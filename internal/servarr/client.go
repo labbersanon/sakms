@@ -270,6 +270,38 @@ func (c *Client) Tags(ctx context.Context) ([]Tag, error) {
 	return out, nil
 }
 
+// CreateTag registers a brand-new tag with the app and returns it (with its
+// real assigned ID) — the "push new tags upstream immediately" half of the
+// design's import-not-duplicate principle. Callers should check Tags first
+// and only call this for a label that genuinely doesn't exist yet, so the
+// app's tag list is never silently duplicated with near-identical labels.
+func (c *Client) CreateTag(ctx context.Context, label string) (Tag, error) {
+	var out Tag
+	if err := c.do(ctx, http.MethodPost, "/api/v3/tag", map[string]any{"label": label}, &out); err != nil {
+		return Tag{}, err
+	}
+	return out, nil
+}
+
+// UpdateItemTags replaces a tracked item's full set of tag IDs. The resource
+// is round-tripped as a raw map, same reasoning as UpdateRootFolder: a typed
+// struct would silently drop every field this tool doesn't declare.
+func (c *Client) UpdateItemTags(ctx context.Context, itemID int, tagIDs []int) error {
+	getPath := fmt.Sprintf("/api/v3/%s/%d", c.itemResource(), itemID)
+	var resource map[string]any
+	if err := c.do(ctx, http.MethodGet, getPath, nil, &resource); err != nil {
+		return fmt.Errorf("fetching current resource: %w", err)
+	}
+	ids := make([]any, len(tagIDs))
+	for i, id := range tagIDs {
+		ids[i] = id
+	}
+	resource["tags"] = ids
+
+	putPath := fmt.Sprintf("/api/v3/%s/%d", c.itemResource(), itemID)
+	return c.do(ctx, http.MethodPut, putPath, resource, nil)
+}
+
 // QualityProfile is one of the app's configured quality profiles — needed to
 // register a new series/movie (Add requires a valid qualityProfileId).
 type QualityProfile struct {

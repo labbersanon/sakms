@@ -494,3 +494,57 @@ func TestDefaultQualityProfileID_ZeroWhenNothingAvailable(t *testing.T) {
 		t.Errorf("expected 0 when there's no tracked convention and no profiles at all, got %d", got)
 	}
 }
+
+func TestCreateTag_SendsLabelAndReturnsAssignedID(t *testing.T) {
+	var gotBody map[string]any
+	c := newTestClient(t, Radarr, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/tag" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"id":5,"label":"needs-review"}`))
+	})
+
+	tag, err := c.CreateTag(context.Background(), "needs-review")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tag.ID != 5 || tag.Label != "needs-review" {
+		t.Errorf("unexpected tag: %+v", tag)
+	}
+	if gotBody["label"] != "needs-review" {
+		t.Errorf("expected label in request body, got %+v", gotBody)
+	}
+}
+
+func TestUpdateItemTags_FetchesThenPutsWithNewTagList(t *testing.T) {
+	var putBody map[string]any
+	c := newTestClient(t, Radarr, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Path != "/api/v3/movie/9" {
+				t.Errorf("unexpected GET path: %s", r.URL.Path)
+			}
+			w.Write([]byte(`{"id":9,"title":"Some Movie","tags":[1],"monitored":true}`))
+		case http.MethodPut:
+			if r.URL.Path != "/api/v3/movie/9" {
+				t.Errorf("unexpected PUT path: %s", r.URL.Path)
+			}
+			json.NewDecoder(r.Body).Decode(&putBody)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	})
+
+	if err := c.UpdateItemTags(context.Background(), 9, []int{1, 5}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if putBody["title"] != "Some Movie" {
+		t.Error("expected unrelated fields (title) to survive the round trip")
+	}
+	tags, ok := putBody["tags"].([]any)
+	if !ok || len(tags) != 2 || tags[0] != float64(1) || tags[1] != float64(5) {
+		t.Errorf("unexpected tags in PUT body: %+v", putBody["tags"])
+	}
+}

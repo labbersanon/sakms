@@ -6,6 +6,16 @@ import (
 	"os"
 )
 
+// SidecarExts are files that must never be treated as orphaned media content
+// needing identification — e.g. Jellyfin-generated .trickplay seek-preview
+// files, which Radarr/Sonarr's own unmappedFolders listing otherwise reports
+// as "unmapped".
+var SidecarExts = map[string]bool{
+	".nfo": true, ".jpg": true, ".jpeg": true, ".png": true, ".txt": true,
+	".srt": true, ".sub": true, ".vtt": true, ".edl": true, ".bif": true,
+	".log": true, ".trickplay": true,
+}
+
 // Config holds settings resolved once at startup.
 type Config struct {
 	// Addr is the HTTP listen address, e.g. ":8080".

@@ -5,19 +5,27 @@ import (
 	"net/http"
 
 	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
+	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
 )
 
 // NewMux returns an http.ServeMux with Tidyarr's API routes mounted.
-// httpClient is shared across every outbound call the API makes (Test), so
-// its timeout and transport settings apply uniformly. store persists what's
-// actually configured — Test and Save are deliberately separate actions,
-// matching Settings' own "Test connection" then "Save" flow.
-func NewMux(httpClient *http.Client, store *connections.Store) *http.ServeMux {
+// httpClient is shared across every outbound call the API makes (Test,
+// Scan, Apply), so its timeout and transport settings apply uniformly.
+// connStore persists what's actually configured — Test and Save are
+// deliberately separate actions, matching Settings' own "Test connection"
+// then "Save" flow. propStore backs the Rename (and future Purge/Dedup/Tag)
+// review queue.
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
-	mux.HandleFunc("GET /api/connections", listConnectionsHandler(store))
-	mux.HandleFunc("PUT /api/connections/{service}", upsertConnectionHandler(store))
-	mux.HandleFunc("DELETE /api/connections/{service}", deleteConnectionHandler(store))
+	mux.HandleFunc("GET /api/connections", listConnectionsHandler(connStore))
+	mux.HandleFunc("PUT /api/connections/{service}", upsertConnectionHandler(connStore))
+	mux.HandleFunc("DELETE /api/connections/{service}", deleteConnectionHandler(connStore))
+
+	mux.HandleFunc("POST /api/modes/{mode}/rename/scan", scanHandler(httpClient, connStore, propStore))
+	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals", listProposalsHandler(propStore))
+	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, propStore))
+	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	return mux
 }
 

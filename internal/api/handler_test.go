@@ -10,13 +10,15 @@ import (
 
 	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
 	"github.com/curtiswtaylorjr/tidyarr/internal/db"
+	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
 	"github.com/curtiswtaylorjr/tidyarr/internal/secrets"
 )
 
-// testConnectionsStore builds a real connections.Store against a freshly
-// migrated temp-file database, the same way internal/connections' own tests
-// do — handler tests exercise the real stack, not a mock.
-func testConnectionsStore(t *testing.T) *connections.Store {
+// testStores builds real connections.Store and proposals.Store instances
+// against one freshly migrated temp-file database, the same way each
+// package's own tests do — handler tests exercise the real stack, not a
+// mock.
+func testStores(t *testing.T) (*connections.Store, *proposals.Store) {
 	t.Helper()
 	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "tidyarr.db"))
 	if err != nil {
@@ -27,7 +29,7 @@ func testConnectionsStore(t *testing.T) *connections.Store {
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)
 	}
-	return connections.New(sqlDB, secretStore)
+	return connections.New(sqlDB, secretStore), proposals.New(sqlDB)
 }
 
 // TestConnectionsTestHandler_EndToEnd exercises the real path a Settings
@@ -43,7 +45,8 @@ func TestConnectionsTestHandler_EndToEnd(t *testing.T) {
 	}))
 	defer fakeRadarr.Close()
 
-	tidyarrSrv := httptest.NewServer(NewMux(testHTTPClient(), testConnectionsStore(t)))
+	connStore, propStore := testStores(t)
+	tidyarrSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore))
 	defer tidyarrSrv.Close()
 
 	reqBody, _ := json.Marshal(ConnectionTestRequest{
@@ -68,7 +71,8 @@ func TestConnectionsTestHandler_EndToEnd(t *testing.T) {
 }
 
 func TestConnectionsTestHandler_MalformedBody(t *testing.T) {
-	srv := httptest.NewServer(NewMux(testHTTPClient(), testConnectionsStore(t)))
+	connStore, propStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/connections/test", "application/json", bytes.NewReader([]byte("not json")))
@@ -87,7 +91,8 @@ func TestConnectionsTestHandler_MalformedBody(t *testing.T) {
 // a real migrated SQLite file — not just the connections package in
 // isolation.
 func TestConnectionsCRUD_EndToEnd(t *testing.T) {
-	srv := httptest.NewServer(NewMux(testHTTPClient(), testConnectionsStore(t)))
+	connStore, propStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore))
 	defer srv.Close()
 
 	// Save a connection.
@@ -140,7 +145,8 @@ func TestConnectionsCRUD_EndToEnd(t *testing.T) {
 }
 
 func TestUpsertConnectionHandler_RequiresURL(t *testing.T) {
-	srv := httptest.NewServer(NewMux(testHTTPClient(), testConnectionsStore(t)))
+	connStore, propStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore))
 	defer srv.Close()
 
 	body, _ := json.Marshal(upsertConnectionRequest{APIKey: "key-with-no-url"})

@@ -35,11 +35,13 @@ func (m Mode) service() (service string, app servarr.App, err error) {
 	case Series:
 		return "sonarr", servarr.Sonarr, nil
 	case Adult:
-		// Whisparr's Add() is fully implemented (see internal/servarr), but
-		// Adult mode's identification pipeline (StashDB/FansDB/TPDB/Ollama,
-		// internal/identify) isn't wired into a Session yet — that's a
-		// separate, larger piece of work, not something to half-build here.
-		return "", 0, fmt.Errorf("mode %q: Adult mode isn't wired up yet", m)
+		// Adult's primary client is Whisparr V3 (a Radarr fork — see
+		// internal/servarr), which is all the Tag workflow needs: Tag only
+		// reads/writes tags on already-tracked items through the generic
+		// servarr.Client. The identification pipeline (StashDB/FansDB/TPDB/
+		// Ollama, internal/identify) that Rename/Purge/Dedup will need is a
+		// separate, larger piece of work and is deliberately not wired here.
+		return "whisparr", servarr.Whisparr, nil
 	default:
 		return "", 0, fmt.Errorf("mode %q: unknown mode", m)
 	}

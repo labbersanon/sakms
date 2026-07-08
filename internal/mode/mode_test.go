@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,11 +71,36 @@ func TestBuild_MissingConnection(t *testing.T) {
 	}
 }
 
-func TestBuild_AdultNotYetSupported(t *testing.T) {
+func TestBuild_AdultUsesWhisparrConnection(t *testing.T) {
+	store := newTestConnStore(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "whisparr", "http://whisparr.local:6969", "whisparr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess, err := Build(ctx, store, &http.Client{Timeout: time.Second}, Adult)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sess.Mode != Adult {
+		t.Errorf("expected Mode to be Adult, got %v", sess.Mode)
+	}
+	if sess.Servarr.AppType() != servarr.Whisparr {
+		t.Errorf("expected the Whisparr app type, got %v", sess.Servarr.AppType())
+	}
+}
+
+func TestBuild_AdultMissingConnection(t *testing.T) {
 	store := newTestConnStore(t)
 	_, err := Build(context.Background(), store, &http.Client{}, Adult)
 	if err == nil {
-		t.Fatal("expected an error — Adult mode's identify pipeline isn't wired into a Session yet")
+		t.Fatal("expected an error when whisparr isn't configured yet")
+	}
+	if !strings.Contains(err.Error(), "isn't configured yet") {
+		t.Errorf("expected the 'not configured yet' error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "wired up") {
+		t.Errorf("stale 'wired up' error still returned: %v", err)
 	}
 }
 

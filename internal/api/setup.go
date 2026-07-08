@@ -102,9 +102,11 @@ func buildSetupStatus(ctx context.Context, connStore *connections.Store, allowSt
 
 func modeStatusFor(ctx context.Context, m mode.Mode, connStore *connections.Store, allowStore *allowlist.Store) (modeStatus, error) {
 	if m == mode.Adult {
-		// Adult's backend isn't wired up at all (see internal/mode.Build) —
-		// report it as a real option the wizard can preview, never as
-		// something that's actually configurable today.
+		// Adult's Tag workflow is wired (Whisparr V3, see internal/mode.Build),
+		// but full mode configuration — Rename/Purge/Dedup and the identify
+		// pipeline they need — isn't yet, and the wizard walks full-mode setup.
+		// So report Adult as a real option the wizard can preview, never as
+		// something that's fully configurable today.
 		return modeStatus{Mode: m, Available: false}, nil
 	}
 

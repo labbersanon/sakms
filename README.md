@@ -8,9 +8,18 @@ staged for approval before anything actually happens. No Stash dependency.
 
 ## Status
 
-Early scaffolding: a Go server skeleton with a SQLite-backed migration
-runner exists; the review workflows and the React frontend don't yet. Not
-ready to run as a media tool.
+Early scaffolding. What's real so far: a Go server with a SQLite-backed
+migration runner, the Sonarr/Radarr/Whisparr client and the full
+StashDB/FansDB/TPDB/Brave/Ollama identification pipeline (ported from the
+CLIs this project grew out of), and a `/api/connections` endpoint to test
+and persist service credentials (encrypted at rest — see below). The actual
+review workflows (Rename/Purge/Dedup/Tag) and the React frontend don't exist
+yet. Not ready to run as a media tool.
+
+Secrets are encrypted at rest with a locally generated key
+(`<data-dir>/secret.key`, mode 0600) rather than an OS keychain — the
+primary deployment target is a headless Docker container, which has no
+desktop session for a keychain to run in.
 
 ## Why
 
@@ -40,7 +49,7 @@ Configuration is via environment variables for now:
 | Variable           | Default   | Purpose                          |
 |---------------------|-----------|-----------------------------------|
 | `TIDYARR_ADDR`      | `:8080`   | HTTP listen address               |
-| `TIDYARR_DATA_DIR`  | `./data`  | Where `tidyarr.db` and config live |
+| `TIDYARR_DATA_DIR`  | `./data`  | Where `tidyarr.db` and `secret.key` live — back both up together, or a backup of one without the other is useless |
 
 ## License
 

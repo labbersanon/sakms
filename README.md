@@ -26,13 +26,15 @@ These three stage proposals in one shared, persisted review queue; `POST
 /api/proposals/{id}/apply` commits exactly the one a human approved —
 Dedup's apply optionally takes `{"keepIndex": n}` or `{"keepAll": true}` to
 override the auto-computed winner. Nothing is ever applied in bulk.
-**Tag** is the fourth: `GET /api/modes/{mode}/tags` for the live vocabulary
-and `POST`/`DELETE /api/modes/{mode}/items/{itemId}/tags[/{tagId}]` to
-assign or remove one, creating a genuinely new tag upstream automatically —
-this one isn't staged through the review queue, since assigning a tag is
-already a single deliberate action, not an automatic decision needing
-approval. Series Dedup, AI-suggested tags, Adult mode, and the React
-frontend don't exist yet. Not ready to run as a media tool.
+**Tag** is the fourth, and the first workflow live for all three modes —
+Movies, Series, and Adult (Whisparr V3): `GET /api/modes/{mode}/tags` for
+the live vocabulary and `POST`/`DELETE
+/api/modes/{mode}/items/{itemId}/tags[/{tagId}]` to assign or remove one,
+creating a genuinely new tag upstream automatically — this one isn't staged
+through the review queue, since assigning a tag is already a single
+deliberate action, not an automatic decision needing approval. The rest of
+Adult mode (Rename/Purge/Dedup), Series Dedup, AI-suggested tags, and the
+React frontend don't exist yet. Not ready to run as a media tool.
 
 Secrets are encrypted at rest with a locally generated key
 (`<data-dir>/secret.key`, mode 0600) rather than an OS keychain — the

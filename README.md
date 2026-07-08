@@ -12,16 +12,21 @@ Early scaffolding. What's real so far: a Go server with a SQLite-backed
 migration runner, the Sonarr/Radarr/Whisparr client and the full
 StashDB/FansDB/TPDB/Brave/Ollama identification pipeline (ported from the
 CLIs this project grew out of), a `/api/connections` endpoint to test and
-persist service credentials (encrypted at rest — see below), and two full
-review workflows for Movies and Series: **Rename** (`POST
-/api/modes/{movies,series}/rename/scan` finds orphaned files, identifies
-them, and stages one proposal per item) and **Purge** (`POST
-/api/modes/{movies,series}/purge/scan` matches a per-mode tag allowlist,
-managed via `/api/modes/{mode}/purge/allowlist`, against every tracked
-item's native tags). Both stage proposals in one shared, persisted review
+persist service credentials (encrypted at rest — see below), and three full
+review workflows: **Rename** (`POST /api/modes/{movies,series}/rename/scan`
+finds orphaned files, identifies them, and stages one proposal per item),
+**Purge** (`POST /api/modes/{movies,series}/purge/scan` matches a per-mode
+tag allowlist, managed via `/api/modes/{mode}/purge/allowlist`, against
+every tracked item's native tags), and **Dedup**, Movies only for now
+(`POST /api/modes/movies/dedup/scan` groups unmapped files with any
+already-tracked item sharing the same TMDB ID, ffprobes every candidate
+directly, and stages a proposal per duplicate group with a precomputed
+quality winner). All three stage proposals in one shared, persisted review
 queue; `POST /api/proposals/{id}/apply` commits exactly the one a human
-approved. Nothing is ever applied in bulk. Dedup/Tag, Adult mode, and the
-React frontend don't exist yet. Not ready to run as a media tool.
+approved — Dedup's apply optionally takes `{"keepIndex": n}` or
+`{"keepAll": true}` to override the auto-computed winner. Nothing is ever
+applied in bulk. Tag, Series Dedup, Adult mode, and the React frontend
+don't exist yet. Not ready to run as a media tool.
 
 Secrets are encrypted at rest with a locally generated key
 (`<data-dir>/secret.key`, mode 0600) rather than an OS keychain — the
@@ -45,7 +50,9 @@ installs — see the design spec for details once it's linked here.
 
 ## Development
 
-Requires Go 1.25+.
+Requires Go 1.25+, plus `ffprobe` on `PATH` if you want to exercise Dedup
+(it ffprobes real files directly — see `internal/mediainfo`). Every other
+workflow runs without it.
 
 ```sh
 go run ./cmd/tidyarr

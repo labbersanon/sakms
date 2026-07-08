@@ -49,11 +49,11 @@ func TestTagWorkflow_AddThenRemove_EndToEnd(t *testing.T) {
 	}))
 	defer fakeRadarr.Close()
 
-	connStore, propStore, allowStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore := testStores(t)
 	if err := connStore.Upsert(context.Background(), "radarr", fakeRadarr.URL, "test-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t)))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
 	defer srv.Close()
 
 	// Assign a brand-new tag.
@@ -98,8 +98,8 @@ func TestTagWorkflow_AddThenRemove_EndToEnd(t *testing.T) {
 }
 
 func TestAddItemTagHandler_RequiresLabel(t *testing.T) {
-	connStore, propStore, allowStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t)))
+	connStore, propStore, allowStore, settingsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
 	defer srv.Close()
 
 	body, _ := json.Marshal(addItemTagRequest{})
@@ -114,8 +114,8 @@ func TestAddItemTagHandler_RequiresLabel(t *testing.T) {
 }
 
 func TestListTagsHandler_ModeNotConfigured(t *testing.T) {
-	connStore, propStore, allowStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t)))
+	connStore, propStore, allowStore, settingsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/tags")

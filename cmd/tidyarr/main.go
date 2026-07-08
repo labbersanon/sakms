@@ -19,6 +19,7 @@ import (
 	"github.com/curtiswtaylorjr/tidyarr/internal/mediainfo"
 	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
 	"github.com/curtiswtaylorjr/tidyarr/internal/secrets"
+	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
 )
 
 // outboundTimeout bounds every call Tidyarr makes to a configured service
@@ -56,8 +57,9 @@ func run() error {
 	propStore := proposals.New(sqlDB)
 	allowStore := allowlist.New(sqlDB)
 	prober := mediainfo.New()
+	settingsStore := settings.New(sqlDB)
 
-	mux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober)
+	mux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, settingsStore)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})

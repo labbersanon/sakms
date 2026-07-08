@@ -8,6 +8,7 @@ import (
 	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
 	"github.com/curtiswtaylorjr/tidyarr/internal/dedup"
 	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
+	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
 )
 
 // NewMux returns an http.ServeMux with Tidyarr's API routes mounted.
@@ -18,8 +19,9 @@ import (
 // then "Save" flow. propStore backs every workflow's review queue (Rename,
 // Purge, Dedup); allowStore backs Purge's per-mode tag allowlist; prober
 // backs Dedup's direct ffprobe reads (a real *mediainfo.Prober in
-// production, anything satisfying dedup.Prober in tests).
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober) *http.ServeMux {
+// production, anything satisfying dedup.Prober in tests); settingsStore
+// backs the setup wizard's dismissed flag.
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, settingsStore *settings.Store) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	mux.HandleFunc("GET /api/connections", listConnectionsHandler(connStore))
@@ -41,6 +43,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/modes/{mode}/tags", listTagsHandler(httpClient, connStore))
 	mux.HandleFunc("POST /api/modes/{mode}/items/{itemId}/tags", addItemTagHandler(httpClient, connStore))
 	mux.HandleFunc("DELETE /api/modes/{mode}/items/{itemId}/tags/{tagId}", removeItemTagHandler(httpClient, connStore))
+
+	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, allowStore, settingsStore))
+	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))
 
 	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))

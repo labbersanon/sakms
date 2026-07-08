@@ -3,7 +3,6 @@ package servarr
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -367,18 +366,58 @@ func TestWhisparr_DeleteTrackedFileUsesMoviefileResource(t *testing.T) {
 	}
 }
 
-func TestWhisparr_AddIsUnsupported(t *testing.T) {
-	called := false
+func TestWhisparr_AddSendsForeignIDAndItemTypeForStashDBMatch(t *testing.T) {
+	var gotBody map[string]any
 	c := newTestClient(t, Whisparr, func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.Write([]byte(`{"id":1}`))
+		if r.URL.Path != "/api/v3/movie" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"id":42}`))
 	})
 
-	_, err := c.Add(context.Background(), AddRequest{Title: "Some Scene", QualityProfileID: 1, RootFolderPath: "/media/Adult"})
-	if !errors.Is(err, ErrWhisparrAddUnsupported) {
-		t.Fatalf("expected ErrWhisparrAddUnsupported, got %v", err)
+	id, err := c.Add(context.Background(), AddRequest{
+		Title: "Some Scene", QualityProfileID: 1, RootFolderPath: "/media/Adult",
+		ForeignID: "550e8400-e29b-41d4-a716-446655440000", ItemType: "scene",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if called {
-		t.Error("Add should return before making any HTTP request for Whisparr")
+	if id != 42 {
+		t.Errorf("expected id 42, got %d", id)
+	}
+	if gotBody["foreignId"] != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("expected the raw stash-box scene UUID in foreignId, got %+v", gotBody["foreignId"])
+	}
+	if gotBody["itemType"] != "scene" {
+		t.Errorf("expected itemType=scene, got %+v", gotBody["itemType"])
+	}
+	addOptions, _ := gotBody["addOptions"].(map[string]any)
+	if addOptions["searchForMovie"] != false {
+		t.Errorf("expected searchForMovie=false, got %+v", gotBody["addOptions"])
+	}
+	if _, hasTMDB := gotBody["tmdbId"]; hasTMDB {
+		t.Error("Whisparr Add body should not include tmdbId — TMDB doesn't catalog adult scenes")
+	}
+	if _, hasTVDB := gotBody["tvdbId"]; hasTVDB {
+		t.Error("Whisparr Add body should not include tvdbId")
+	}
+}
+
+func TestWhisparr_AddSendsTPDBPrefixedForeignID(t *testing.T) {
+	var gotBody map[string]any
+	c := newTestClient(t, Whisparr, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"id":7}`))
+	})
+
+	if _, err := c.Add(context.Background(), AddRequest{
+		Title: "Some Scene", QualityProfileID: 1, RootFolderPath: "/media/Adult",
+		ForeignID: "tpdbId:12345", ItemType: "scene",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotBody["foreignId"] != "tpdbId:12345" {
+		t.Errorf("expected the tpdbId-prefixed foreignId to pass through unchanged, got %+v", gotBody["foreignId"])
 	}
 }

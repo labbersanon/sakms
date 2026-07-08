@@ -6,19 +6,20 @@
 // instead of near-duplicate clients.
 //
 // Whisparr support (App = Whisparr) targets V3 specifically, which is a
-// Radarr fork — confirmed via Whisparr's own GitHub issue tracker ("[V3]
-// Sync with Upstream Radarr Source Code", Whisparr/Whisparr#683) — not V2,
-// which was forked from Sonarr instead and has a different (series/episode-
-// shaped) entity model entirely. Every Whisparr-specific assumption below is
-// commented with how confident it is and where that confidence comes from;
-// none of it has been checked against a live V3 instance yet.
+// Radarr fork — confirmed by reading V3's actual source
+// (github.com/Whisparr/Whisparr-Eros, "Eros" being its internal codename;
+// not github.com/Whisparr/Whisparr, whose default branch is V2 and whose
+// own "master" is an empty placeholder). V2 was forked from Sonarr instead
+// and has a different (series/episode-shaped) entity model entirely — not
+// supported here. Every Whisparr-specific detail below is cited to the
+// exact source file it was confirmed against, not inferred from the fork
+// lineage alone.
 package servarr
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -58,10 +59,10 @@ func New(cfg Config, httpClient *http.Client) *Client {
 // itemResource is "series" for Sonarr, "movie" for Radarr and Whisparr V3 —
 // used to build /api/v3/{itemResource}... paths.
 //
-// Whisparr's "movie" is confirmed, not assumed: multiple real Whisparr V3
-// bug reports show a literal POST /api/v3/movie call for adding a scene
-// (Whisparr/Whisparr#1033), and devopsarr's generated SDK (built from
-// Whisparr's own live OpenAPI schema) documents GET /api/v3/movie/lookup.
+// Whisparr's "movie" is confirmed directly: Whisparr-Eros's
+// src/Whisparr.Api.V3/Movies/MovieController.cs and MovieResource.cs both
+// exist (there is no separate "Scene" resource — a scene is a Movie with
+// ItemType=Scene, see Add), and its frontend hits /movie routes throughout.
 func (c *Client) itemResource() string {
 	switch c.cfg.App {
 	case Sonarr:
@@ -74,10 +75,9 @@ func (c *Client) itemResource() string {
 // fileResource is "episodefile" for Sonarr, "moviefile" for Radarr and
 // Whisparr V3.
 //
-// Whisparr's "moviefile" is a medium-confidence inference, not directly
-// observed: devopsarr's generated SDK docs list a MovieFileApi/
-// MovieFileResource for Whisparr (mirroring Radarr's naming exactly), but no
-// example request showing the literal path was found.
+// Whisparr's "moviefile" is confirmed directly:
+// frontend/src/MovieFile/useMovieFile.ts declares `const PATH =
+// '/moviefile'` in Whisparr-Eros's own source.
 func (c *Client) fileResource() string {
 	switch c.cfg.App {
 	case Sonarr:
@@ -90,30 +90,31 @@ func (c *Client) fileResource() string {
 // rescanCommand is the command name used to rescan a single tracked item's
 // folder for new/changed files.
 //
-// Whisparr's "RescanMovie" is UNVERIFIED — an assumption from V3's confirmed
-// Radarr-fork lineage, not observed directly anywhere. The Command API's
-// "name" field isn't part of Whisparr's published OpenAPI schema (it's a
-// free-form string validated server-side against the app's internal command
-// registry), so this needs a live check. A wrong value fails loudly (the
-// command endpoint rejects an unrecognized name) rather than silently
-// misbehaving, which is why this ships now instead of blocking on it.
+// Whisparr's "RescanMovie" is confirmed directly:
+// src/NzbDrone.Core/MediaFiles/Commands/RescanMovieCommand.cs exists in
+// Whisparr-Eros with a MovieId field, and the base Command type derives its
+// wire "name" as GetType().Name.Replace("Command", "")
+// (Messaging/Commands/Command.cs) — so the literal command name Whisparr's
+// API expects is exactly "RescanMovie", same as Radarr.
 func (c *Client) rescanCommand() string {
 	switch c.cfg.App {
 	case Sonarr:
 		return "RescanSeries"
-	default: // Radarr, Whisparr (Whisparr unverified — see comment above)
+	default: // Radarr, Whisparr
 		return "RescanMovie"
 	}
 }
 
 // downloadedScanCommand is the command name for a broader "scan everything
-// under my root folders for files I don't know about yet" pass. Same
-// unverified-for-Whisparr caveat as rescanCommand.
+// under my root folders for files I don't know about yet" pass.
+//
+// Whisparr's "DownloadedMoviesScan" is confirmed the same way as
+// rescanCommand: DownloadedMoviesScanCommand.cs exists in Whisparr-Eros.
 func (c *Client) downloadedScanCommand() string {
 	switch c.cfg.App {
 	case Sonarr:
 		return "DownloadedEpisodesScan"
-	default: // Radarr, Whisparr (Whisparr unverified — see rescanCommand)
+	default: // Radarr, Whisparr
 		return "DownloadedMoviesScan"
 	}
 }
@@ -253,13 +254,12 @@ func (c *Client) QualityProfiles(ctx context.Context) ([]QualityProfile, error) 
 	return out, nil
 }
 
-// AddRequest is the subset of fields needed to register a new series/movie
-// against a specific root folder — the identification (TVDBID/TMDBID) and
-// kids-classification (which RootFolderPath) decisions are made independently
-// by this tool; this call just hands the resolved answer to Sonarr/Radarr so
-// their own naming/import engine takes it from here.
-//
-// No Whisparr field here yet — see Add.
+// AddRequest is the subset of fields needed to register a new series/movie/
+// scene against a specific root folder — the identification and
+// kids-classification (which RootFolderPath) decisions are made
+// independently by this tool; this call just hands the resolved answer to
+// Sonarr/Radarr/Whisparr so their own naming/import engine takes it from
+// here.
 type AddRequest struct {
 	Title            string
 	TVDBID           int // Sonarr only
@@ -267,42 +267,46 @@ type AddRequest struct {
 	QualityProfileID int
 	RootFolderPath   string
 	Monitored        bool
+
+	// ForeignID and ItemType are Whisparr only. Confirmed directly from
+	// Whisparr-Eros's src/Whisparr.Api.V3/Movies/MovieResource.cs (the
+	// ForeignId/StashId/TpdbId/TmdbId fields) and
+	// MetadataSource/SkyHook/SkyHookProxy.cs's MapForeignId: a scene
+	// identified via StashDB/FansDB sets ForeignID to the raw stash-box
+	// scene UUID (identify.MatchResult.SceneID, unprefixed); a TPDB-only
+	// match instead uses "tpdbId:<id>". TMDB doesn't catalog adult scenes,
+	// so TMDBID/tmdbId is never the right field here despite existing on
+	// the schema (inherited from the Radarr fork).
+	//
+	// ItemType is the literal string "scene" or "movie" (matching
+	// identify.MatchResult.Type and Whisparr's own ItemType enum, which the
+	// server serializes as a lowercase camelCase string). It must be sent
+	// explicitly — the enum's zero value is "movie", so an empty ItemType
+	// would silently misclassify a scene as a movie rather than erroring.
+	ForeignID string
+	ItemType  string
 }
 
-// ErrWhisparrAddUnsupported is returned by Add for a Whisparr client — see
-// Add's doc comment for why this is a hard block rather than a guess.
-var ErrWhisparrAddUnsupported = errors.New("servarr: Add is not yet supported for Whisparr — the scene-identifying request field is unconfirmed")
-
-// Add registers a new series/movie. Sonarr/Radarr's own scan (call
+// Add registers a new series/movie/scene. The app's own scan (call
 // ScanForDownloaded afterward) then imports whatever file already exists
 // under the given root folder, applying their own naming/organization.
-//
-// Whisparr is deliberately unsupported here, not guessed at: Radarr's Add
-// body identifies the item with a "tmdbId" int, and Whisparr's MovieResource
-// schema does list a tmdb_id field (inherited from the Radarr fork), but
-// nothing found confirms that's actually what Whisparr expects for a scene
-// identified by a StashDB UUID rather than a TMDB entry — TMDB doesn't
-// catalog adult scenes at all, so the field may be vestigial or repurposed.
-// Getting this wrong wouldn't fail loudly like a bad command name would; it
-// could silently register a scene with no real identification. Every other
-// method here (read-only or delete-by-ID) doesn't have that risk, which is
-// why they're supported today and this one isn't.
 func (c *Client) Add(ctx context.Context, req AddRequest) (id int, err error) {
-	if c.cfg.App == Whisparr {
-		return 0, ErrWhisparrAddUnsupported
-	}
-
 	body := map[string]any{
 		"title":            req.Title,
 		"qualityProfileId": req.QualityProfileID,
 		"rootFolderPath":   req.RootFolderPath,
 		"monitored":        req.Monitored,
 	}
-	if c.cfg.App == Sonarr {
+	switch c.cfg.App {
+	case Sonarr:
 		body["tvdbId"] = req.TVDBID
 		body["seasonFolder"] = true
 		body["addOptions"] = map[string]any{"monitor": "all", "searchForMissingEpisodes": false, "searchForCutoffUnmetEpisodes": false}
-	} else {
+	case Whisparr:
+		body["foreignId"] = req.ForeignID
+		body["itemType"] = req.ItemType
+		body["addOptions"] = map[string]any{"searchForMovie": false}
+	default: // Radarr
 		body["tmdbId"] = req.TMDBID
 		body["addOptions"] = map[string]any{"searchForMovie": false}
 	}

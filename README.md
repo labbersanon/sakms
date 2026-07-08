@@ -12,13 +12,16 @@ Early scaffolding. What's real so far: a Go server with a SQLite-backed
 migration runner, the Sonarr/Radarr/Whisparr client and the full
 StashDB/FansDB/TPDB/Brave/Ollama identification pipeline (ported from the
 CLIs this project grew out of), a `/api/connections` endpoint to test and
-persist service credentials (encrypted at rest — see below), and the first
-full review workflow: **Rename**, for Movies and Series. `POST
+persist service credentials (encrypted at rest — see below), and two full
+review workflows for Movies and Series: **Rename** (`POST
 /api/modes/{movies,series}/rename/scan` finds orphaned files, identifies
-them, and stages one proposal per item in a persisted review queue; `POST
-/api/proposals/{id}/apply` registers exactly the one a human approved.
-Nothing is ever applied in bulk. Purge/Dedup/Tag, Adult mode, and the React
-frontend don't exist yet. Not ready to run as a media tool.
+them, and stages one proposal per item) and **Purge** (`POST
+/api/modes/{movies,series}/purge/scan` matches a per-mode tag allowlist,
+managed via `/api/modes/{mode}/purge/allowlist`, against every tracked
+item's native tags). Both stage proposals in one shared, persisted review
+queue; `POST /api/proposals/{id}/apply` commits exactly the one a human
+approved. Nothing is ever applied in bulk. Dedup/Tag, Adult mode, and the
+React frontend don't exist yet. Not ready to run as a media tool.
 
 Secrets are encrypted at rest with a locally generated key
 (`<data-dir>/secret.key`, mode 0600) rather than an OS keychain — the

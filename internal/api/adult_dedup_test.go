@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mediainfo"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/mediainfo"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
 )
 
 // TestAdultDedupWorkflow_ScanThenApply_EndToEnd is the full proof of the Adult

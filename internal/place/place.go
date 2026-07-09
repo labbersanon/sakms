@@ -18,9 +18,9 @@ import (
 //
 // SourceRank is best-effort: for a file already tracked by Sonarr/Radarr, it
 // could in principle come from their own reported quality.quality.source
-// ranking, but Tidyarr doesn't fetch that (see internal/dedup's doc comment
+// ranking, but SAK doesn't fetch that (see internal/dedup's doc comment
 // for why) — every candidate, tracked or not, gets its Resolution/Codec/
-// BitRate from Tidyarr's own ffprobe read of the real file, and SourceRank
+// BitRate from SAK's own ffprobe read of the real file, and SourceRank
 // stays 0 (unknown) for all of them today. The field exists so a future pass
 // that does wire up the authoritative source ranking doesn't need to touch
 // this comparison logic at all.

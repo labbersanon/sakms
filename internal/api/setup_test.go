@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
 )
 
 // TestSetupStatus_ReflectsRealConfiguredState exercises the real read model

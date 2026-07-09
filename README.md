@@ -1,4 +1,4 @@
-# Tidyarr
+# SAK Media Server
 
 A unified, human-in-the-loop review console for Sonarr, Radarr, and Whisparr.
 
@@ -81,19 +81,19 @@ Sonarr/Whisparr instance, not a finished design.
 Every install is gated behind three layers, most fundamental first, each
 hiding all navigation until it's satisfied: **login**, then the **connections
 setup wizard**, then the normal app. A fresh instance's very first screen is
-"Create your Tidyarr login" (`POST /api/auth/setup`, one username/password,
+"Create your SAK login" (`POST /api/auth/setup`, one username/password,
 bcrypt-hashed) — there is no unauthenticated path to anything else, since an
-unauthenticated Tidyarr could otherwise be used to control every connected
+unauthenticated SAK could otherwise be used to control every connected
 service. `POST /api/auth/login` and `/logout` manage the session afterward;
 `GET /api/auth/status` reports `{configured, authenticated}`. The session
 itself is a stateless, AES-GCM-encrypted cookie (same key as connection
 secrets, see below) carrying only an expiry — 30-day TTL, `HttpOnly`,
-`SameSite=Lax`, deliberately not `Secure` since Tidyarr's primary deployment
+`SameSite=Lax`, deliberately not `Secure` since SAK's primary deployment
 is plain HTTP on a LAN, same as Radarr/Sonarr/Whisparr themselves. Once
 logged in, the setup wizard walks through connecting Radarr (Movies) and
 Sonarr (Series) — required, since neither mode can do anything without its
 *arr app — plus Whisparr and an AI provider (both optional); "Continue to
-Tidyarr" stays disabled with an inline explanation until Radarr and Sonarr
+SAK" stays disabled with an inline explanation until Radarr and Sonarr
 are both actually configured, so dismissing the wizard can never strand a
 user on a bare, useless Scan button.
 
@@ -108,7 +108,7 @@ Sonarr, Radarr, and Whisparr each make matching, dedup, and cleanup
 decisions well on their own, but there's no single place to see what a
 change is *about* to do before it happens, correct a bad match, resolve a
 duplicate by eye, or search for something to purge that isn't already on an
-allowlist — and no shared view across all three libraries. Tidyarr is that
+allowlist — and no shared view across all three libraries. SAK is that
 review layer, not a replacement for any of them.
 
 ## Install
@@ -124,7 +124,7 @@ Requires Go 1.25+, plus `ffprobe` on `PATH` if you want to exercise Dedup
 workflow runs without it.
 
 ```sh
-go run ./cmd/tidyarr
+go run ./cmd/sak
 ```
 
 Then open `http://localhost:8080/` for the UI (the API itself lives under
@@ -134,8 +134,8 @@ Configuration is via environment variables for now:
 
 | Variable           | Default   | Purpose                          |
 |---------------------|-----------|-----------------------------------|
-| `TIDYARR_ADDR`      | `:8080`   | HTTP listen address               |
-| `TIDYARR_DATA_DIR`  | `./data`  | Where `tidyarr.db` and `secret.key` live — back both up together, or a backup of one without the other is useless |
+| `SAK_ADDR`      | `:8080`   | HTTP listen address               |
+| `SAK_DATA_DIR`  | `./data`  | Where `sak.db` and `secret.key` live — back both up together, or a backup of one without the other is useless |
 
 ### Docker
 
@@ -144,9 +144,9 @@ compile, `debian:trixie-slim` plus `ffmpeg` to run — `ffprobe` needs a real
 build, not Alpine's, and there's no CGO to make musl-vs-glibc a tradeoff
 either way). The container starts as root only long enough for
 `docker-entrypoint.sh` to `chown` a bind-mounted `/data` to the image's
-non-root `tidyarr` user, then drops to it via `gosu` — without that, a plain
+non-root `sak` user, then drops to it via `gosu` — without that, a plain
 `docker run -v host/path:/data` fails on first boot, since sqlite can't
-create `tidyarr.db` in a directory owned by whatever host user made the
+create `sak.db` in a directory owned by whatever host user made the
 mount point.
 
 `scripts/docker-dev.sh` wraps the build-run-check loop into one command for

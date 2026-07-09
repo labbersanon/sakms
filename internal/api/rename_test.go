@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
 )
 
 // fakeRadarrHandler serves just enough of Radarr's API for a Scan followed
@@ -39,7 +39,7 @@ func fakeRadarrHandler(t *testing.T, addedID int) http.HandlerFunc {
 // TestRenameWorkflow_ScanThenApply_EndToEnd exercises the full staged-review
 // loop the design spec describes: Scan populates the queue, the queue is
 // visible via List, and Apply commits exactly the one proposal a human
-// approved — hitting Tidyarr's real HTTP handlers, a real migrated SQLite
+// approved — hitting SAK's real HTTP handlers, a real migrated SQLite
 // database, and a fake Radarr, not any package in isolation.
 func TestRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	fakeRadarr := httptest.NewServer(fakeRadarrHandler(t, 55))

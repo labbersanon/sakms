@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/httpx"
+	"github.com/curtiswtaylorjr/sak/internal/httpx"
 )
 
 type Client struct {

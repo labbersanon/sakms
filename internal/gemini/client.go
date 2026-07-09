@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/httpx"
+	"github.com/curtiswtaylorjr/sak/internal/httpx"
 )
 
 // Client talks to Gemini's v1beta generateContent REST endpoint. baseURL is

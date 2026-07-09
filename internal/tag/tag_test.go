@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
 )
 
 func newTestSession(t *testing.T, handler http.HandlerFunc) *mode.Session {

@@ -1,4 +1,4 @@
-// Package mode builds the live client(s) for one of Tidyarr's three
+// Package mode builds the live client(s) for one of SAK's three
 // isolated modes — Movies, Series, or Adult — from whatever connection is
 // currently configured in Settings. A Session is cheap to build (an HTTP
 // client wrapper, nothing cached), so it's constructed fresh per request:
@@ -13,21 +13,21 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/anthropic"
-	"github.com/curtiswtaylorjr/tidyarr/internal/bravesearch"
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/gemini"
-	"github.com/curtiswtaylorjr/tidyarr/internal/identify"
-	"github.com/curtiswtaylorjr/tidyarr/internal/ollama"
-	"github.com/curtiswtaylorjr/tidyarr/internal/openai"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
-	"github.com/curtiswtaylorjr/tidyarr/internal/stashbox"
-	"github.com/curtiswtaylorjr/tidyarr/internal/throttle"
-	"github.com/curtiswtaylorjr/tidyarr/internal/tpdbrest"
+	"github.com/curtiswtaylorjr/sak/internal/anthropic"
+	"github.com/curtiswtaylorjr/sak/internal/bravesearch"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/gemini"
+	"github.com/curtiswtaylorjr/sak/internal/identify"
+	"github.com/curtiswtaylorjr/sak/internal/ollama"
+	"github.com/curtiswtaylorjr/sak/internal/openai"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/stashbox"
+	"github.com/curtiswtaylorjr/sak/internal/throttle"
+	"github.com/curtiswtaylorjr/sak/internal/tpdbrest"
 )
 
-// Mode is one of Tidyarr's three isolated library contexts. Never blended —
+// Mode is one of SAK's three isolated library contexts. Never blended —
 // see the design spec's "Mode replaces checkboxes" section for why.
 type Mode string
 
@@ -39,7 +39,7 @@ const (
 
 // AIProviderKey is the settings key holding which AI backend every AI-
 // assisted feature talks to — Adult identification AND Movies/Series
-// Rename's AI title-guess fallback share this ONE choice, since Tidyarr
+// Rename's AI title-guess fallback share this ONE choice, since SAK
 // never asks which mode's provider to configure. One of the AIProvider*
 // constants; empty/unset defaults to AIProviderOllama, preserving every
 // existing install's behavior without requiring a migration.

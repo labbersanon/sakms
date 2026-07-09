@@ -8,9 +8,9 @@ import (
 
 // CookieName is the session cookie the browser carries on every request
 // after a successful login/setup.
-const CookieName = "tidyarr_session"
+const CookieName = "sak_session"
 
-// sessionTTL is long-lived on purpose: Tidyarr is a single-operator,
+// sessionTTL is long-lived on purpose: SAK is a single-operator,
 // self-hosted tool where a forced re-login every few hours is friction with
 // no real security benefit (the credential itself, not session length, is
 // the actual boundary) — 30 days means "log in occasionally," not "log in
@@ -60,11 +60,11 @@ func ValidateToken(enc TokenEncryptor, token string) bool {
 
 // SetSessionCookie writes a fresh session cookie to w.
 //
-// Secure isn't set: Tidyarr's primary deployment is a self-hosted instance
+// Secure isn't set: SAK's primary deployment is a self-hosted instance
 // on a trusted LAN, often reached over plain HTTP the same way Radarr/
 // Sonarr/Whisparr themselves are — forcing Secure would silently break the
 // cookie (and therefore all login) for that entirely normal setup. Anyone
-// exposing Tidyarr beyond a trusted network should put a TLS-terminating
+// exposing SAK beyond a trusted network should put a TLS-terminating
 // reverse proxy in front of it, same guidance as those apps.
 func SetSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{

@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/allowlist"
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/dedup"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/allowlist"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/dedup"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
-// NewMux returns an http.ServeMux with Tidyarr's API routes mounted.
+// NewMux returns an http.ServeMux with SAK's API routes mounted.
 // httpClient is shared across every outbound call the API makes (Test,
 // Scan, Apply), so its timeout and transport settings apply uniformly.
 // connStore persists what's actually configured — Test and Save are

@@ -5,12 +5,12 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/auth"
+	"github.com/curtiswtaylorjr/sak/internal/auth"
 )
 
 // NewAuthMux returns the handful of routes that must stay reachable without
 // a session — setup, login, logout, and status — kept on their OWN mux,
-// deliberately separate from NewMux's business-logic routes. cmd/tidyarr
+// deliberately separate from NewMux's business-logic routes. cmd/sak
 // wraps NewMux's result in auth.Middleware but mounts this one unwrapped;
 // keeping them apart means that middleware never needs an exemption list,
 // and NewMux's own large existing test suite never has to know auth exists
@@ -29,7 +29,7 @@ type authCredentialsRequest struct {
 	Password string `json:"password"`
 }
 
-// authSetupHandler creates Tidyarr's one login — refuses once a login
+// authSetupHandler creates SAK's one login — refuses once a login
 // already exists (checked fresh on every call, not cached) so a visitor who
 // reaches an already-configured instance can't silently take it over by
 // "setting up" a login of their own; they need /api/auth/login instead.

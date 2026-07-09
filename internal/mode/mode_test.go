@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/db"
-	"github.com/curtiswtaylorjr/tidyarr/internal/secrets"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/db"
+	"github.com/curtiswtaylorjr/sak/internal/secrets"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
 // newTestStores opens one fresh db and returns a connections store and a
@@ -23,7 +23,7 @@ import (
 // and the Ollama-model setting that Build reads.
 func newTestStores(t *testing.T) (*connections.Store, *settings.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "tidyarr.db"))
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sak.db"))
 	if err != nil {
 		t.Fatalf("opening db: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestBuild_AdultOnlyWhisparr_IdentifyNil(t *testing.T) {
 // swallowing it would look identical to "identification not configured" from
 // the caller's side, hiding an actual outage behind a misleading success.
 func TestBuild_AdultSettingsStoreError_Propagates(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "tidyarr.db"))
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sak.db"))
 	if err != nil {
 		t.Fatalf("opening db: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestBuild_AIClient_UnknownProviderErrors(t *testing.T) {
 // propagate, not be silently swallowed as "just use the default provider"
 // because the zero-value string also happens to equal "".
 func TestBuild_AIClient_ProviderStoreError_Propagates(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "tidyarr.db"))
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sak.db"))
 	if err != nil {
 		t.Fatalf("opening db: %v", err)
 	}

@@ -1,4 +1,4 @@
-// Package dedup implements Tidyarr's Dedup workflow for Movies: find
+// Package dedup implements SAK's Dedup workflow for Movies: find
 // content that's been identified twice — once as an already-tracked item,
 // once (or more) as an orphaned file that resolves to the same TMDB ID — and
 // stage a proposal to keep the better-quality copy instead of leaving both
@@ -12,7 +12,7 @@
 // than silently doing the wrong thing.
 //
 // Quality comparison never trusts a *arr app's own reported file quality —
-// every candidate, tracked or not, gets ffprobed directly by Tidyarr itself
+// every candidate, tracked or not, gets ffprobed directly by SAK itself
 // (see internal/mediainfo and internal/place). This sidesteps depending on
 // Radarr's nested moviefile-quality API shape (unverified against a live
 // instance) and matches the design spec's own framing: Dedup is "always a
@@ -26,14 +26,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/config"
-	"github.com/curtiswtaylorjr/tidyarr/internal/identify"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mediainfo"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/place"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/searchterm"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/config"
+	"github.com/curtiswtaylorjr/sak/internal/identify"
+	"github.com/curtiswtaylorjr/sak/internal/mediainfo"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/place"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/searchterm"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
 )
 
 // Prober is the subset of *mediainfo.Prober Scan needs — an interface so
@@ -236,7 +236,7 @@ func scanMovies(ctx context.Context, sess *mode.Session, prober Prober) ([]propo
 // sess.Identify, independent of any Whisparr response) — no crash, no misgroup,
 // no misfile. This is an UNVERIFIED assumption (no live Whisparr here); see the
 // commit body. Deliberately not logged: no internal/* package in this codebase
-// logs directly (only cmd/tidyarr/main.go does).
+// logs directly (only cmd/sak/main.go does).
 func scanAdult(ctx context.Context, sess *mode.Session, prober Prober) ([]proposals.Proposal, error) {
 	client := sess.Servarr
 

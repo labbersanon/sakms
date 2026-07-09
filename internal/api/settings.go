@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
 type aiModelResponse struct {

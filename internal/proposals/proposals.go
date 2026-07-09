@@ -13,7 +13,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
 )
 
 // Workflow identifies which review workflow a proposal belongs to.

@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/httpx"
+	"github.com/curtiswtaylorjr/sak/internal/httpx"
 )
 
 type Client struct {

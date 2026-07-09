@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
 )
 
 func TestListTracked_ReturnsItemsFromTheRealApp(t *testing.T) {

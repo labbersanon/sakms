@@ -1,4 +1,4 @@
-// Package api implements Tidyarr's HTTP API.
+// Package api implements SAK's HTTP API.
 package api
 
 import (
@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/bravesearch"
-	"github.com/curtiswtaylorjr/tidyarr/internal/ollama"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
-	"github.com/curtiswtaylorjr/tidyarr/internal/stashapi"
-	"github.com/curtiswtaylorjr/tidyarr/internal/stashbox"
-	"github.com/curtiswtaylorjr/tidyarr/internal/tpdbrest"
+	"github.com/curtiswtaylorjr/sak/internal/bravesearch"
+	"github.com/curtiswtaylorjr/sak/internal/ollama"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/stashapi"
+	"github.com/curtiswtaylorjr/sak/internal/stashbox"
+	"github.com/curtiswtaylorjr/sak/internal/tpdbrest"
 )
 
 // ConnectionTestRequest is enough to construct a client and make one real,

@@ -1,4 +1,4 @@
-// Package purge implements Tidyarr's Purge workflow: an editable allowlist
+// Package purge implements SAK's Purge workflow: an editable allowlist
 // of tag names, and a Scan/Apply pair that surfaces every tracked item whose
 // tags match it as a proposal to permanently delete — the same staged-for-
 // approval shape internal/rename uses, just keyed off tags on already-
@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
 )
 
 // MatchesAny reports whether tagName exactly matches (case-insensitive) any

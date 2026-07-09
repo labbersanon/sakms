@@ -1,5 +1,5 @@
-// Package secrets provides at-rest encryption for credentials Tidyarr
-// stores locally. An OS keychain isn't an option here — Tidyarr's primary
+// Package secrets provides at-rest encryption for credentials SAK
+// stores locally. An OS keychain isn't an option here — SAK's primary
 // deployment target is a headless Docker container, which has no desktop
 // session and therefore no keychain daemon to talk to. Instead, a locally
 // generated master key encrypts every secret with AES-256-GCM before it
@@ -24,8 +24,8 @@ const keySize = 32 // AES-256
 // (mode 0600) if the file doesn't exist yet.
 //
 // The key is only as safe as this file's permissions and wherever it ends
-// up backed up — a tidyarr.db backup without the matching key file is just
-// ciphertext, and a key file backed up separately from tidyarr.db defeats
+// up backed up — a sak.db backup without the matching key file is just
+// ciphertext, and a key file backed up separately from sak.db defeats
 // the point. They travel together.
 func LoadOrCreateKey(path string) ([]byte, error) {
 	key, err := os.ReadFile(path)

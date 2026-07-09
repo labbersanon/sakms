@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/identify"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/ollama"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
-	"github.com/curtiswtaylorjr/tidyarr/internal/stashbox"
+	"github.com/curtiswtaylorjr/sak/internal/identify"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/ollama"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/stashbox"
 )
 
 func newTestSession(t *testing.T, app servarr.App, handler http.HandlerFunc) *mode.Session {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tidyarr</title>
+<title>SAK Media Server</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -59,7 +59,7 @@
 </head>
 <body>
 <header>
-  <h1>Tidyarr</h1>
+  <h1>SAK Media Server</h1>
   <div class="tabs" id="mode-tabs"></div>
   <div class="tabs" id="view-tabs" style="margin-left:auto"></div>
   <div id="logout-slot"></div>
@@ -198,8 +198,8 @@ const WIZARD_SERVICE_BY_MODE = { movies: "radarr", series: "sonarr", adult: "whi
 
 async function renderWizard(container) {
   container.innerHTML = "";
-  container.appendChild(el("h2", { text: "Set up Tidyarr" }));
-  container.appendChild(el("p", { class: "muted", text: "Connect the services Tidyarr will review. Movies and Series need their *arr app's URL and API key (found in that app's Settings → General) to do anything at all — Whisparr (Adult) and an AI provider are optional." }));
+  container.appendChild(el("h2", { text: "Set up SAK" }));
+  container.appendChild(el("p", { class: "muted", text: "Connect the services SAK will review. Movies and Series need their *arr app's URL and API key (found in that app's Settings → General) to do anything at all — Whisparr (Adult) and an AI provider are optional." }));
 
   let status, connections;
   try {
@@ -223,7 +223,7 @@ async function renderWizard(container) {
   container.appendChild(await buildWizardAIStep(step++, byService, container));
 
   // Movies and Series can't do anything at all without their *arr app, so
-  // "Continue to Tidyarr" stays disabled until both are actually configured
+  // "Continue to SAK" stays disabled until both are actually configured
   // — otherwise dismissing the wizard just lands on the same bare, useless
   // Scan button the wizard exists to prevent, one step later.
   const moviesConfigured = modeStatusByMode.movies && modeStatusByMode.movies.arrConfigured;
@@ -231,13 +231,13 @@ async function renderWizard(container) {
   const canContinue = moviesConfigured && seriesConfigured;
 
   const footer = el("div", { class: "row", style: "margin-top:1rem" }, [
-    el("button", { class: "primary", text: "Continue to Tidyarr", disabled: !canContinue, onclick: async () => {
+    el("button", { class: "primary", text: "Continue to SAK", disabled: !canContinue, onclick: async () => {
       await api("/api/setup/dismissed", { method: "PUT", body: JSON.stringify({ dismissed: true }) });
       await boot();
     } }),
     el("span", { class: canContinue ? "muted" : "error", text: canContinue
       ? "You can revisit any of this later in Settings."
-      : "Connect Radarr (Movies) and Sonarr (Series) above to continue — Tidyarr can't review anything without them." }),
+      : "Connect Radarr (Movies) and Sonarr (Series) above to continue — SAK can't review anything without them." }),
   ]);
   container.appendChild(footer);
 }
@@ -657,7 +657,7 @@ async function renderKidsRootPath(container) {
 function renderCredentialsGate(container, kind) {
   container.innerHTML = "";
   const isSetup = kind === "setup";
-  container.appendChild(el("h2", { text: isSetup ? "Create your Tidyarr login" : "Log in to Tidyarr" }));
+  container.appendChild(el("h2", { text: isSetup ? "Create your SAK login" : "Log in to SAK" }));
   if (isSetup) {
     container.appendChild(el("p", { class: "muted", text: "This is the one login that protects this instance — anyone who can reach it can otherwise control every connected service. Pick a username and password now, before connecting anything." }));
   }

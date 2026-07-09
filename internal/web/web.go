@@ -1,4 +1,4 @@
-// Package web serves Tidyarr's frontend — a single dependency-free static
+// Package web serves SAK's frontend — a single dependency-free static
 // page (no build step, no framework) embedded directly into the binary, so
 // there's nothing extra to deploy alongside it.
 package web

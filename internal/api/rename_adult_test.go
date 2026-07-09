@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
 )
 
 // sceneUUID is embedded in the unmapped folder name so identification resolves

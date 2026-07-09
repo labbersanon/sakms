@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/db"
-	"github.com/curtiswtaylorjr/tidyarr/internal/secrets"
+	"github.com/curtiswtaylorjr/sak/internal/db"
+	"github.com/curtiswtaylorjr/sak/internal/secrets"
 )
 
 // newTestStore builds a Store against a real, freshly migrated SQLite file
@@ -17,7 +17,7 @@ func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
 
-	sqlDB, err := db.Open(filepath.Join(dir, "tidyarr.db"))
+	sqlDB, err := db.Open(filepath.Join(dir, "sak.db"))
 	if err != nil {
 		t.Fatalf("opening db: %v", err)
 	}

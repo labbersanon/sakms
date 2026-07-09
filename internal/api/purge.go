@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/allowlist"
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/purge"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/allowlist"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/purge"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
 // purgeScanHandler runs the Purge workflow's propose-phase for {mode}:

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/stashbox"
+	"github.com/curtiswtaylorjr/sak/internal/stashbox"
 )
 
 var (

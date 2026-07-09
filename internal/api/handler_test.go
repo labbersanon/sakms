@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/allowlist"
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/db"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mediainfo"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/secrets"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/allowlist"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/db"
+	"github.com/curtiswtaylorjr/sak/internal/mediainfo"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/secrets"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
 // testProber returns a real *mediainfo.Prober — its Probe method is only
@@ -31,7 +31,7 @@ func testProber(t *testing.T) *mediainfo.Prober {
 // handler tests exercise the real stack, not a mock.
 func testStores(t *testing.T) (*connections.Store, *proposals.Store, *allowlist.Store, *settings.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "tidyarr.db"))
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sak.db"))
 	if err != nil {
 		t.Fatalf("opening db: %v", err)
 	}
@@ -44,11 +44,11 @@ func testStores(t *testing.T) (*connections.Store, *proposals.Store, *allowlist.
 }
 
 // TestConnectionsTestHandler_EndToEnd exercises the real path a Settings
-// "Test connection" click takes: an HTTP POST into Tidyarr's own server,
+// "Test connection" click takes: an HTTP POST into SAK's own server,
 // which itself makes a real HTTP call out to the configured service (here, a
 // second httptest server standing in for a live Radarr) and reports back
 // over JSON. This is the thing actually wiring identify/servarr/ollama/
-// stashapi into cmd/tidyarr is meant to prove works, not just that each
+// stashapi into cmd/sak is meant to prove works, not just that each
 // package compiles in isolation.
 func TestConnectionsTestHandler_EndToEnd(t *testing.T) {
 	fakeRadarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,13 +57,13 @@ func TestConnectionsTestHandler_EndToEnd(t *testing.T) {
 	defer fakeRadarr.Close()
 
 	connStore, propStore, allowStore, settingsStore := testStores(t)
-	tidyarrSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
-	defer tidyarrSrv.Close()
+	sakSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	defer sakSrv.Close()
 
 	reqBody, _ := json.Marshal(ConnectionTestRequest{
 		Service: "radarr", URL: fakeRadarr.URL, APIKey: "test-key",
 	})
-	resp, err := http.Post(tidyarrSrv.URL+"/api/connections/test", "application/json", bytes.NewReader(reqBody))
+	resp, err := http.Post(sakSrv.URL+"/api/connections/test", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}

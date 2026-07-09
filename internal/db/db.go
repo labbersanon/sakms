@@ -1,4 +1,4 @@
-// Package db opens Tidyarr's SQLite database and applies pending migrations.
+// Package db opens SAK's SQLite database and applies pending migrations.
 package db
 
 import (

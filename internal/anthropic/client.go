@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/httpx"
+	"github.com/curtiswtaylorjr/sak/internal/httpx"
 )
 
 // anthropicVersion is the Messages API version this client speaks — a

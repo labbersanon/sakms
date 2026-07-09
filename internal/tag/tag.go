@@ -1,4 +1,4 @@
-// Package tag implements Tidyarr's native tag management: browsing a mode's
+// Package tag implements SAK's native tag management: browsing a mode's
 // existing tag vocabulary and assigning/removing tags on tracked items,
 // always through the app's own Tags resource — Radarr, Sonarr, and Whisparr
 // V3 all expose the identical shape (see internal/servarr's Tag/Tags/
@@ -11,7 +11,7 @@
 // Settings' own Save/Delete actions — there's no automatic decision here
 // that needs surfacing for approval first. AI-suggested tags (a genuinely
 // automatic decision, and the design spec's "most new backend work" item
-// for this section) aren't implemented yet: Tidyarr has no per-mode AI-
+// for this section) aren't implemented yet: SAK has no per-mode AI-
 // provider/model configuration to draw on today (Settings' "AI providers"
 // group is still mockup-only), and building a real suggestion feature on
 // top of a guessed model name would be exactly the kind of half-built
@@ -25,13 +25,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
 )
 
 // Vocabulary returns every tag sess's app currently has defined — the
 // "existing tags" list a UI would autocomplete against, imported live
-// rather than mirrored into Tidyarr's own storage.
+// rather than mirrored into SAK's own storage.
 func Vocabulary(ctx context.Context, sess *mode.Session) ([]servarr.Tag, error) {
 	return sess.Servarr.Tags(ctx)
 }
@@ -39,7 +39,7 @@ func Vocabulary(ctx context.Context, sess *mode.Session) ([]servarr.Tag, error) 
 // ensureTag returns the ID of an existing tag matching label
 // (case-insensitively), creating it upstream via CreateTag if no match
 // exists yet — the "tags imported, not duplicated" principle: a genuinely
-// new tag is pushed to the app immediately, never cached Tidyarr-side only.
+// new tag is pushed to the app immediately, never cached SAK-side only.
 func ensureTag(ctx context.Context, client *servarr.Client, label string) (int, error) {
 	tags, err := client.Tags(ctx)
 	if err != nil {

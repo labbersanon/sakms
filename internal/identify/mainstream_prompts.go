@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/ollama"
+	"github.com/curtiswtaylorjr/sak/internal/ollama"
 )
 
 // GuessTitle asks Ollama to guess the real title of a movie or TV series from

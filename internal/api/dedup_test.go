@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mediainfo"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/mediainfo"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
 )
 
 func writeTestVideoFile(t *testing.T, dir, name string, size int) string {
@@ -44,7 +44,7 @@ func (f *fakeDedupProber) Probe(ctx context.Context, path string) (*mediainfo.Pr
 }
 
 // TestDedupWorkflow_ScanThenApply_EndToEnd exercises the full Dedup loop
-// against Tidyarr's real HTTP handlers, a real migrated SQLite database, a
+// against SAK's real HTTP handlers, a real migrated SQLite database, a
 // fake Radarr, and real on-disk files — same rigor as the Rename and Purge
 // end-to-end tests.
 func TestDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {

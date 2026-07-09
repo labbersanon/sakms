@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
 )
 
 // fakeRadarrTagsHandler serves just enough of Radarr's API for a Purge Scan
@@ -38,7 +38,7 @@ func fakeRadarrTagsHandler(t *testing.T, deletedPaths *[]string) http.HandlerFun
 // TestPurgeWorkflow_AllowlistThenScanThenApply_EndToEnd exercises the full
 // Purge loop: add a tag to the allowlist, Scan matches it against a live
 // Radarr's tracked items and tags, and Apply deletes exactly the one
-// approved proposal — hitting Tidyarr's real HTTP handlers and a real
+// approved proposal — hitting SAK's real HTTP handlers and a real
 // migrated SQLite database throughout.
 func TestPurgeWorkflow_AllowlistThenScanThenApply_EndToEnd(t *testing.T) {
 	var deletedPaths []string

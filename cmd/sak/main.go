@@ -1,4 +1,4 @@
-// Command tidyarr runs the Tidyarr server.
+// Command sak runs the SAK server.
 package main
 
 import (
@@ -11,20 +11,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/allowlist"
-	"github.com/curtiswtaylorjr/tidyarr/internal/api"
-	"github.com/curtiswtaylorjr/tidyarr/internal/auth"
-	"github.com/curtiswtaylorjr/tidyarr/internal/config"
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/db"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mediainfo"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/secrets"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
-	"github.com/curtiswtaylorjr/tidyarr/internal/web"
+	"github.com/curtiswtaylorjr/sak/internal/allowlist"
+	"github.com/curtiswtaylorjr/sak/internal/api"
+	"github.com/curtiswtaylorjr/sak/internal/auth"
+	"github.com/curtiswtaylorjr/sak/internal/config"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/db"
+	"github.com/curtiswtaylorjr/sak/internal/mediainfo"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/secrets"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/web"
 )
 
-// outboundTimeout bounds every call Tidyarr makes to a configured service
+// outboundTimeout bounds every call SAK makes to a configured service
 // (Radarr/Sonarr/Ollama/Stash/...) — a Test Connection click against a dead
 // URL should fail in seconds, not hang the request indefinitely.
 const outboundTimeout = 15 * time.Second
@@ -41,7 +41,7 @@ func run() error {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return err
 	}
-	sqlDB, err := db.Open(filepath.Join(cfg.DataDir, "tidyarr.db"))
+	sqlDB, err := db.Open(filepath.Join(cfg.DataDir, "sak.db"))
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	log.Printf("tidyarr listening on %s (data dir %s)", cfg.Addr, cfg.DataDir)
+	log.Printf("sak listening on %s (data dir %s)", cfg.Addr, cfg.DataDir)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

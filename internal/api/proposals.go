@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/dedup"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/purge"
-	"github.com/curtiswtaylorjr/tidyarr/internal/rename"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/dedup"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/purge"
+	"github.com/curtiswtaylorjr/sak/internal/rename"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
 // listProposalsHandler returns {mode}'s review queue for wf, most recently
@@ -48,7 +48,7 @@ type applyProposalRequest struct {
 	KeepAll   bool `json:"keepAll,omitempty"`
 }
 
-// applyProposalHandler is the only place in Tidyarr's API that actually
+// applyProposalHandler is the only place in SAK's API that actually
 // mutates a *arr app on a workflow's behalf — and only for the one proposal
 // ID in the URL, never a batch, matching the design's staged-for-approval
 // principle: a Scan proposes, a human picks, Apply commits exactly that. The

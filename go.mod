@@ -1,4 +1,4 @@
-module github.com/curtiswtaylorjr/tidyarr
+module github.com/curtiswtaylorjr/sak
 
 go 1.25.7
 

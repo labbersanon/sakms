@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/stashbox"
+	"github.com/curtiswtaylorjr/sak/internal/stashbox"
 )
 
 func TestSubmitFingerprint_ZeroDurationRejected(t *testing.T) {

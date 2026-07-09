@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
-	"github.com/curtiswtaylorjr/tidyarr/internal/tag"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/tag"
 )
 
 // listTagsHandler returns {mode}'s current tag vocabulary, straight from

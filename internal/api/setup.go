@@ -6,10 +6,10 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/allowlist"
-	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/allowlist"
+	"github.com/curtiswtaylorjr/sak/internal/connections"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
 // setupWizardDismissedKey is the internal/settings key backing the wizard's
@@ -35,7 +35,7 @@ type modeStatus struct {
 //
 // JellyfinConfigured reports whether a "jellyfin" connection has been
 // saved — connections.Store already accepts any service key generically,
-// so this is honest today even though Tidyarr has no Jellyfin client yet
+// so this is honest today even though SAK has no Jellyfin client yet
 // and nothing acts on that connection until one exists.
 type setupStatus struct {
 	Modes              []modeStatus `json:"modes"`

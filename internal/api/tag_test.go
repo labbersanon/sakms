@@ -12,7 +12,7 @@ import (
 // TestTagWorkflow_AddThenRemove_EndToEnd exercises the real path a tag chip
 // click takes: assign a tag (creating it upstream since it doesn't exist
 // yet), confirm the vocabulary reflects it, then remove it — hitting
-// Tidyarr's real HTTP handlers and a fake Radarr throughout. Unlike Rename/
+// SAK's real HTTP handlers and a fake Radarr throughout. Unlike Rename/
 // Purge/Dedup, there's no proposals queue involved: see internal/tag's doc
 // comment for why assigning a tag is an immediate action, not a staged one.
 func TestTagWorkflow_AddThenRemove_EndToEnd(t *testing.T) {
@@ -98,7 +98,7 @@ func TestTagWorkflow_AddThenRemove_EndToEnd(t *testing.T) {
 }
 
 // TestTagWorkflow_Adult_AddThenRemove_EndToEnd is the Adult-mode twin of the
-// test above: it drives the same add->list->remove cycle through Tidyarr's
+// test above: it drives the same add->list->remove cycle through SAK's
 // real mux, but against a fake Whisparr V3. Because Whisparr's itemResource()
 // maps to "movie" (a Radarr fork — client.go's default: branch), the wire
 // paths here are byte-identical to the Radarr run above; this test therefore

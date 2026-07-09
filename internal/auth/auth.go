@@ -1,9 +1,9 @@
-// Package auth manages Tidyarr's single local login — one username +
+// Package auth manages SAK's single local login — one username +
 // bcrypt-hashed password gating access to the API (and therefore every
 // review workflow) — plus stateless signed session tokens (see session.go)
 // so a browser doesn't need to resend credentials on every request.
 //
-// Single login, not a user table: Tidyarr is a self-hosted, single-operator
+// Single login, not a user table: SAK is a self-hosted, single-operator
 // tool (see the design's trust model), so there is exactly one account, the
 // same way Settings has exactly one AI provider — no per-user permissions
 // to model.
@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
+	"github.com/curtiswtaylorjr/sak/internal/settings"
 )
 
 const (

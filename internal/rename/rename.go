@@ -1,4 +1,4 @@
-// Package rename implements Tidyarr's Rename workflow: propose registering
+// Package rename implements SAK's Rename workflow: propose registering
 // orphaned (unmapped) files with their mode's Sonarr/Radarr instance, then —
 // once a human approves a specific proposal — actually register it.
 //
@@ -16,14 +16,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/classify"
-	"github.com/curtiswtaylorjr/tidyarr/internal/config"
-	"github.com/curtiswtaylorjr/tidyarr/internal/identify"
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/place"
-	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
-	"github.com/curtiswtaylorjr/tidyarr/internal/searchterm"
-	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
+	"github.com/curtiswtaylorjr/sak/internal/classify"
+	"github.com/curtiswtaylorjr/sak/internal/config"
+	"github.com/curtiswtaylorjr/sak/internal/identify"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/place"
+	"github.com/curtiswtaylorjr/sak/internal/proposals"
+	"github.com/curtiswtaylorjr/sak/internal/searchterm"
+	"github.com/curtiswtaylorjr/sak/internal/servarr"
 )
 
 // Scan walks every root folder sess's Servarr app currently reports and
@@ -308,7 +308,7 @@ func classifyAdultMatch(res *identify.MatchResult, err error) (status proposals.
 // A nonzero p.TrackedID means p came from reconcileTracked, not proposeOne —
 // the item is already tracked and just needs to move root folders, which
 // Radarr/Sonarr's own UpdateRootFolder (moveFiles=true) handles entirely on
-// its own side; Tidyarr never touches that file directly.
+// its own side; SAK never touches that file directly.
 //
 // Otherwise (a new orphan), if p was classified into a different root than
 // it was originally found under (see classifyKids in Scan), the file is
@@ -316,7 +316,7 @@ func classifyAdultMatch(res *identify.MatchResult, err error) (status proposals.
 // a file that's already sitting under the root folder it's being registered
 // against. This is the one place Rename ever touches the filesystem
 // directly (mirroring Dedup's existing os.Remove precedent for the same
-// reason: Tidyarr runs with direct local access to the same paths the *arr
+// reason: SAK runs with direct local access to the same paths the *arr
 // apps report).
 //
 // If Add succeeds but the follow-up scan trigger fails, trackedID is still
@@ -371,7 +371,7 @@ func Apply(ctx context.Context, sess *mode.Session, p proposals.Proposal) (track
 // AI+web-search confidently identified a file (Title/Studio present) but it
 // matched no existing scene anywhere. This is a distinct, human-triggered
 // action from Apply — unlike the original CLI, which submitted automatically
-// during its scan, Tidyarr never fires an outbound mutation without an
+// during its scan, SAK never fires an outbound mutation without an
 // explicit human decision (see the design spec's staged-for-approval
 // principle). p must be Unmatched and not already have a DraftID — submitting
 // a draft twice for the same proposal is refused rather than silently

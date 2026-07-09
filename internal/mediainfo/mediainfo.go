@@ -1,7 +1,7 @@
 // Package mediainfo probes real video files for codec/resolution/bitrate —
 // used for both sides of a Dedup comparison. Deliberately not conditional on
 // whether a file is already tracked: see internal/dedup's doc comment for
-// why Tidyarr always reads the real file itself rather than trusting a
+// why SAK always reads the real file itself rather than trusting a
 // *arr app's own reported quality for one side of the comparison.
 package mediainfo
 

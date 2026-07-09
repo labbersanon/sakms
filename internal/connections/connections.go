@@ -1,4 +1,4 @@
-// Package connections persists Tidyarr's configured service connections —
+// Package connections persists SAK's configured service connections —
 // non-secret fields in SQLite, API keys encrypted via internal/secrets. This
 // is what Settings' connection list is backed by. internal/api's
 // TestConnection is a separate, unpersisted one-shot check: you Test before

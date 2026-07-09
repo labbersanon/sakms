@@ -9,7 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
+	"github.com/curtiswtaylorjr/sak/internal/mode"
 )
 
 type Store struct {

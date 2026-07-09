@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build, (re)start, and health-check Tidyarr's Docker image in one command —
+# Build, (re)start, and health-check SAK's Docker image in one command —
 # for the rapid build/rebuild loop while iterating on the Dockerfile itself,
 # not a real deployment (docker-compose.yml, once it exists, is for that).
 #
@@ -10,8 +10,8 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-IMAGE_TAG="${IMAGE_TAG:-tidyarr:dev}"
-CONTAINER_NAME="${CONTAINER_NAME:-tidyarr-dev}"
+IMAGE_TAG="${IMAGE_TAG:-sak:dev}"
+CONTAINER_NAME="${CONTAINER_NAME:-sak-dev}"
 HOST_PORT="${HOST_PORT:-8080}"
 DATA_DIR="${DATA_DIR:-$(pwd)/.dockerdata}"
 HEALTH_URL="http://localhost:${HOST_PORT}/healthz"

@@ -1,4 +1,4 @@
-// Package config loads Tidyarr's runtime configuration from the environment.
+// Package config loads SAK's runtime configuration from the environment.
 package config
 
 import (
@@ -20,14 +20,14 @@ var SidecarExts = map[string]bool{
 type Config struct {
 	// Addr is the HTTP listen address, e.g. ":8080".
 	Addr string
-	// DataDir holds tidyarr.db and anything else Tidyarr owns on disk.
+	// DataDir holds sak.db and anything else SAK owns on disk.
 	DataDir string
 }
 
 // FromEnv reads Config from the environment, applying defaults for anything unset.
 func FromEnv() Config {
 	return Config{
-		Addr:    cmp.Or(os.Getenv("TIDYARR_ADDR"), ":8080"),
-		DataDir: cmp.Or(os.Getenv("TIDYARR_DATA_DIR"), "./data"),
+		Addr:    cmp.Or(os.Getenv("SAK_ADDR"), ":8080"),
+		DataDir: cmp.Or(os.Getenv("SAK_DATA_DIR"), "./data"),
 	}
 }

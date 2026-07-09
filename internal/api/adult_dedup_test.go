@@ -61,7 +61,7 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	}))
 	defer fakeOllama.Close()
 
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	ctx := context.Background()
 	for _, c := range []struct{ service, url string }{
 		{"whisparr", fakeWhisparr.URL},
@@ -80,7 +80,7 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		fileSD: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
 		fileHD: {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, prober, settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, prober, settingsStore, grabsStore))
 	defer srv.Close()
 
 	// Scan → one Dedup proposal carrying the scene identifier + 2 candidates.

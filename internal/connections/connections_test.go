@@ -48,6 +48,48 @@ func TestUpsertAndGet_RoundTripsDecryptedKey(t *testing.T) {
 	}
 }
 
+func TestUpsertWithUsername_RoundTripsUsernameAndDecryptedSecret(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.UpsertWithUsername(ctx, "qbittorrent", "http://192.168.1.12:8080", "wade", "hunter2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := s.Get(ctx, "qbittorrent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Username != "wade" || got.APIKey != "hunter2" {
+		t.Errorf("unexpected connection: %+v", got)
+	}
+
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].Username != "wade" || !list[0].HasAPIKey {
+		t.Errorf("unexpected summary list: %+v", list)
+	}
+}
+
+func TestUpsert_LeavesUsernameBlank(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.Upsert(ctx, "radarr", "http://192.168.1.12:7878", "my-secret-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := s.Get(ctx, "radarr")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Username != "" {
+		t.Errorf("expected blank username for a service that doesn't use one, got %q", got.Username)
+	}
+}
+
 func TestGet_NotConfigured(t *testing.T) {
 	s := newTestStore(t)
 	_, err := s.Get(context.Background(), "radarr")

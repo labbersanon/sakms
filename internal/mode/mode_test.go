@@ -634,6 +634,116 @@ func TestBuild_KidsRootPath_NotApplicableToAdult(t *testing.T) {
 	}
 }
 
+// TestBuild_DownloadPipeline_NilWhenUnconfigured confirms all four of
+// Prowlarr/QBittorrent/NZBGet/TMDB stay nil when none of their connections
+// are set up — search/grab/discover simply aren't possible yet, not an error.
+func TestBuild_DownloadPipeline_NilWhenUnconfigured(t *testing.T) {
+	store, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "radarr", "http://radarr.local:7878", "radarr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sess.Prowlarr != nil || sess.QBittorrent != nil || sess.NZBGet != nil || sess.TMDB != nil {
+		t.Errorf("expected all four search-pipeline clients to be nil, got Prowlarr=%v QBittorrent=%v NZBGet=%v TMDB=%v",
+			sess.Prowlarr, sess.QBittorrent, sess.NZBGet, sess.TMDB)
+	}
+}
+
+// TestBuild_DownloadPipeline_PopulatedWhenConfigured confirms each client is
+// populated independently — a torrent-only install (Prowlarr+qBittorrent,
+// no NZBGet) and a usenet-only install both work.
+func TestBuild_DownloadPipeline_PopulatedWhenConfigured(t *testing.T) {
+	store, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "radarr", "http://radarr.local:7878", "radarr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := store.Upsert(ctx, "prowlarr", "http://prowlarr.local:9696", "prowlarr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := store.UpsertWithUsername(ctx, "qbittorrent", "http://qbt.local:8080", "wade", "hunter2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sess.Prowlarr == nil {
+		t.Error("expected Prowlarr to be populated")
+	}
+	if sess.QBittorrent == nil {
+		t.Error("expected QBittorrent to be populated")
+	}
+	if sess.NZBGet != nil {
+		t.Error("expected NZBGet to stay nil — not configured in this test")
+	}
+	if sess.TMDB != nil {
+		t.Error("expected TMDB to stay nil — not configured in this test")
+	}
+}
+
+// TestBuild_TMDB_PopulatedWhenConfigured confirms TMDB is populated
+// independently of the download-client connections — Discover works even
+// before an indexer/download client is set up.
+func TestBuild_TMDB_PopulatedWhenConfigured(t *testing.T) {
+	store, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "radarr", "http://radarr.local:7878", "radarr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := store.Upsert(ctx, "tmdb", "https://api.themoviedb.org/3", "tmdb-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sess.TMDB == nil {
+		t.Error("expected TMDB to be populated")
+	}
+	if sess.Prowlarr != nil || sess.QBittorrent != nil || sess.NZBGet != nil {
+		t.Error("expected the download-side clients to stay nil — not configured in this test")
+	}
+}
+
+// TestBuildDownloadPipeline_StoreError_Propagates guards against
+// buildSearchPipeline collapsing a real connections-store failure into the
+// same "not configured" outcome as an absent connection — a real error must
+// propagate, not be silently swallowed as all-nil. Calls buildSearchPipeline
+// directly (this test file is part of package mode) rather than through
+// Build, since Build's earlier primary-service lookup shares the same
+// connections table and would fail first, masking whether this function's
+// own error handling is what's actually being exercised.
+func TestBuildDownloadPipeline_StoreError_Propagates(t *testing.T) {
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
+	if err != nil {
+		t.Fatalf("opening db: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	secretStore, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("building secret store: %v", err)
+	}
+	store := connections.New(sqlDB, secretStore)
+	ctx := context.Background()
+
+	if _, err := sqlDB.Exec(`DROP TABLE connections`); err != nil {
+		t.Fatalf("dropping connections table: %v", err)
+	}
+
+	err = buildSearchPipeline(ctx, store, &http.Client{Timeout: time.Second}, &Session{})
+	if err == nil {
+		t.Fatal("expected a real connections-store error to propagate, got nil")
+	}
+}
+
 func writeTestJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")

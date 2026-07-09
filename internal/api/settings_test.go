@@ -24,8 +24,8 @@ var aiModelEndpoints = []struct {
 func TestAIModel_RoundTrip(t *testing.T) {
 	for _, ep := range aiModelEndpoints {
 		t.Run(ep.name, func(t *testing.T) {
-			connStore, propStore, allowStore, settingsStore := testStores(t)
-			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+			connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 			defer srv.Close()
 
 			// Unset is a normal state: GET returns 200 with an empty model.
@@ -75,8 +75,8 @@ func TestAIModel_RoundTrip(t *testing.T) {
 func TestAIModel_EmptyModelRejected(t *testing.T) {
 	for _, ep := range aiModelEndpoints {
 		t.Run(ep.name, func(t *testing.T) {
-			connStore, propStore, allowStore, settingsStore := testStores(t)
-			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+			connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 			defer srv.Close()
 
 			body, _ := json.Marshal(aiModelRequest{Model: ""})
@@ -97,8 +97,8 @@ func TestAIModel_EmptyModelRejected(t *testing.T) {
 func TestAIModel_InvalidBody(t *testing.T) {
 	for _, ep := range aiModelEndpoints {
 		t.Run(ep.name, func(t *testing.T) {
-			connStore, propStore, allowStore, settingsStore := testStores(t)
-			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+			connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 			defer srv.Close()
 
 			req, _ := http.NewRequest(http.MethodPut, srv.URL+ep.path, bytes.NewReader([]byte("not json")))
@@ -118,8 +118,8 @@ func TestAIModel_InvalidBody(t *testing.T) {
 // "ollama" (matching mode.buildAIClient's own default) and round-trips a
 // valid choice.
 func TestAIProvider_RoundTrip(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/settings/ai-provider")
@@ -160,8 +160,8 @@ func TestAIProvider_RoundTrip(t *testing.T) {
 // fails fast at save time rather than surfacing later as an opaque Scan
 // error.
 func TestAIProvider_RejectsUnknownProvider(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	body, _ := json.Marshal(aiProviderRequest{Provider: "chatgpt"})

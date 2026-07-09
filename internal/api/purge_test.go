@@ -45,12 +45,12 @@ func TestPurgeWorkflow_AllowlistThenScanThenApply_EndToEnd(t *testing.T) {
 	fakeRadarr := httptest.NewServer(fakeRadarrTagsHandler(t, &deletedPaths))
 	defer fakeRadarr.Close()
 
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	if err := connStore.Upsert(context.Background(), "radarr", fakeRadarr.URL, "test-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	// Add a tag to the allowlist via the API, not directly on the store.
@@ -142,8 +142,8 @@ func TestPurgeWorkflow_AllowlistThenScanThenApply_EndToEnd(t *testing.T) {
 }
 
 func TestAddAllowlistTagHandler_RequiresTag(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	body, _ := json.Marshal(addAllowlistTagRequest{})
@@ -158,8 +158,8 @@ func TestAddAllowlistTagHandler_RequiresTag(t *testing.T) {
 }
 
 func TestPurgeScanHandler_ModeNotConfigured(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/modes/movies/purge/scan", "application/json", nil)

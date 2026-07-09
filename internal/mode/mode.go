@@ -18,12 +18,16 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/connections"
 	"github.com/curtiswtaylorjr/sakms/internal/gemini"
 	"github.com/curtiswtaylorjr/sakms/internal/identify"
+	"github.com/curtiswtaylorjr/sakms/internal/nzbget"
 	"github.com/curtiswtaylorjr/sakms/internal/ollama"
 	"github.com/curtiswtaylorjr/sakms/internal/openai"
+	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
+	"github.com/curtiswtaylorjr/sakms/internal/qbittorrent"
 	"github.com/curtiswtaylorjr/sakms/internal/servarr"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
 	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
 	"github.com/curtiswtaylorjr/sakms/internal/throttle"
+	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
 	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
 )
 
@@ -157,6 +161,21 @@ type Session struct {
 	// Movies/Series install that hasn't configured one) — Rename simply
 	// skips kids classification/routing in that case.
 	KidsRootPath string
+
+	// Prowlarr, QBittorrent, and NZBGet back the native indexer-search-and-
+	// grab workflow. Like MainstreamAI, these are global — one Prowlarr/
+	// qBittorrent/NZBGet per install, not per-mode — populated the same way
+	// regardless of which mode is building, and tolerantly nil if that
+	// service simply isn't configured (a usenet-only install has no
+	// QBittorrent; a torrent-only one has no NZBGet). Consumers must
+	// nil-check before use, same as Identify.
+	Prowlarr    *prowlarr.Client
+	QBittorrent *qbittorrent.Client
+	NZBGet      *nzbget.Client
+
+	// TMDB backs the Discover browse view — same "global, tolerant" rule as
+	// Prowlarr/QBittorrent/NZBGet above.
+	TMDB *tmdb.Client
 }
 
 // Build constructs a Session for m using the connection currently configured
@@ -196,7 +215,46 @@ func Build(ctx context.Context, store *connections.Store, settingsStore *setting
 		}
 		sess.Identify = id
 	}
+
+	if err := buildSearchPipeline(ctx, store, httpClient, sess); err != nil {
+		return nil, fmt.Errorf("mode %q: building download pipeline: %w", m, err)
+	}
 	return sess, nil
+}
+
+// buildSearchPipeline populates sess.Prowlarr/QBittorrent/NZBGet/TMDB from
+// whatever of those four connections exist — every one tolerant, since a
+// usenet-only or torrent-only install won't have all three download-side
+// connections, and TMDB's Discover browse view is a separate concern again
+// (usable even before any indexer/download client is set up; search itself
+// can still list results even before any download client is set up — grab
+// just isn't possible yet). A real store error still propagates.
+func buildSearchPipeline(ctx context.Context, store *connections.Store, httpClient *http.Client, sess *Session) error {
+	if conn, err := optionalConn(ctx, store, "prowlarr"); err != nil {
+		return err
+	} else if conn != nil {
+		sess.Prowlarr = prowlarr.New(prowlarr.Config{BaseURL: conn.URL, APIKey: conn.APIKey}, httpClient)
+	}
+
+	if conn, err := optionalConn(ctx, store, "qbittorrent"); err != nil {
+		return err
+	} else if conn != nil {
+		sess.QBittorrent = qbittorrent.New(qbittorrent.Config{BaseURL: conn.URL, Username: conn.Username, Password: conn.APIKey}, httpClient)
+	}
+
+	if conn, err := optionalConn(ctx, store, "nzbget"); err != nil {
+		return err
+	} else if conn != nil {
+		sess.NZBGet = nzbget.New(nzbget.Config{BaseURL: conn.URL, Username: conn.Username, Password: conn.APIKey}, httpClient)
+	}
+
+	if conn, err := optionalConn(ctx, store, "tmdb"); err != nil {
+		return err
+	} else if conn != nil {
+		sess.TMDB = tmdb.New(tmdb.Config{BaseURL: conn.URL, APIKey: conn.APIKey}, httpClient)
+	}
+
+	return nil
 }
 
 // buildAIClient assembles the one AI client every AI-assisted feature shares

@@ -45,6 +45,15 @@
   .pill.unmatched { background: #fee2e2; color: #991b1b; }
   .pill.applied { background: #dcfce7; color: #166534; }
   .pill.dismissed { background: #e5e7eb; color: #374151; }
+  .pill.queued, .pill.downloading { background: #fef3c7; color: #92400e; }
+  .pill.completed, .pill.imported { background: #dcfce7; color: #166534; }
+  .pill.failed { background: #fee2e2; color: #991b1b; }
+  .poster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.75rem; }
+  .poster-card { cursor: pointer; border-radius: 8px; overflow: hidden; background: var(--card); border: 1px solid var(--border); transition: border-color 0.15s; }
+  .poster-card:hover { border-color: var(--accent); }
+  .poster-card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; display: block; }
+  .poster-placeholder { width: 100%; aspect-ratio: 2/3; background: var(--border); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.75rem; text-align: center; padding: 0.5rem; }
+  .poster-title { padding: 0.4rem 0.5rem; font-size: 0.8rem; }
   .chip { display: inline-flex; align-items: center; gap: 0.3rem; background: var(--bg); border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.5rem; font-size: 0.8rem; margin: 0.1rem; }
   .chip button { border: none; background: none; padding: 0; margin: 0; line-height: 1; color: var(--muted); font-size: 0.85rem; }
   .error { color: var(--danger); font-size: 0.85rem; }
@@ -73,17 +82,19 @@
 const MODES = ["movies", "series", "adult"];
 const MODE_LABELS = { movies: "Movies", series: "Series", adult: "Adult" };
 // Which workflows apply to which mode — matches the backend's own wiring
-// (Series Dedup isn't built; Tag is live for all three).
+// (Series Dedup isn't built; Tag is live for all three; Search/Discover is
+// Movies/Series only — Prowlarr/qBittorrent/NZBGet/TMDB replace Radarr/
+// Sonarr's own acquisition loop, not Whisparr's).
 const MODE_WORKFLOWS = {
-  movies: ["rename", "purge", "dedup", "tag", "settings"],
-  series: ["rename", "purge", "tag", "settings"],
+  movies: ["search", "rename", "purge", "dedup", "tag", "settings"],
+  series: ["search", "rename", "purge", "tag", "settings"],
   adult:  ["rename", "purge", "dedup", "tag", "settings"],
 };
-const VIEW_LABELS = { rename: "Rename", purge: "Purge", dedup: "Dedup", tag: "Tag", settings: "Settings" };
+const VIEW_LABELS = { search: "Search", rename: "Rename", purge: "Purge", dedup: "Dedup", tag: "Tag", settings: "Settings" };
 
 const state = {
   mode: MODES[0],
-  view: "rename",
+  view: "search",
 };
 
 async function api(path, opts) {
@@ -151,27 +162,43 @@ function renderNav() {
 
 // ---- Connection controls (shared by Settings' table and the Setup Wizard) ----
 
+// SERVICES_WITH_USERNAME authenticate with username+password rather than a
+// single API key — qBittorrent's WebUI login and NZBGet's HTTP Basic auth.
+// Everything else (every *arr app, every AI provider, TPDB/StashDB/FansDB/
+// Brave/TMDB/Prowlarr) uses a single API key, so this list stays short.
+const SERVICES_WITH_USERNAME = ["qbittorrent", "nzbget"];
+
 // buildConnectionControls returns the live input/button elements for one
 // service's connection — Test, Save, and a status readout — without
 // assuming a particular layout, so both the Settings table (table cells)
-// and the Wizard (a plain row) can arrange them differently.
+// and the Wizard (a plain row) can arrange them differently. needsUsername
+// is exposed so callers can decide whether to lay out a username field at
+// all (most services don't need one).
 function buildConnectionControls(service, existingConn, onSaved) {
+  const needsUsername = SERVICES_WITH_USERNAME.includes(service);
+  const usernameInput = el("input", { type: "text", value: existingConn ? (existingConn.username || "") : "", placeholder: "username" });
   const urlInput = el("input", { type: "text", value: existingConn ? existingConn.url : "", placeholder: "https://..." });
-  const keyPlaceholder = existingConn && existingConn.hasApiKey ? "unchanged (••••" + existingConn.keySuffix + ")" : "api key (if needed)";
+  const keyPlaceholder = existingConn && existingConn.hasApiKey ? "unchanged (••••" + existingConn.keySuffix + ")" : (needsUsername ? "password" : "api key (if needed)");
   const keyInput = el("input", { type: "password", placeholder: keyPlaceholder });
   const status = el("span", { class: "muted" });
+
+  const requestBody = () => {
+    const body = { url: urlInput.value, apiKey: keyInput.value };
+    if (needsUsername) body.username = usernameInput.value;
+    return body;
+  };
 
   const testBtn = el("button", { text: "Test", onclick: async () => {
     status.textContent = "testing…"; status.className = "muted";
     try {
-      const result = await api("/api/connections/test", { method: "POST", body: JSON.stringify({ service, url: urlInput.value, apiKey: keyInput.value }) });
+      const result = await api("/api/connections/test", { method: "POST", body: JSON.stringify(Object.assign({ service }, requestBody())) });
       status.textContent = result.ok ? "✓ ok" : ("✗ " + result.error);
       status.className = result.ok ? "muted" : "error";
     } catch (e) { status.textContent = "✗ " + e.message; status.className = "error"; }
   } });
   const saveBtn = el("button", { class: "primary", text: "Save", onclick: async () => {
     try {
-      await api("/api/connections/" + service, { method: "PUT", body: JSON.stringify({ url: urlInput.value, apiKey: keyInput.value }) });
+      await api("/api/connections/" + service, { method: "PUT", body: JSON.stringify(requestBody()) });
       status.textContent = "✓ saved"; status.className = "muted";
       if (onSaved) await onSaved();
     } catch (e) { status.textContent = "✗ " + e.message; status.className = "error"; }
@@ -184,7 +211,7 @@ function buildConnectionControls(service, existingConn, onSaved) {
     } catch (e) { status.textContent = "✗ " + e.message; status.className = "error"; }
   } });
 
-  return { urlInput, keyInput, testBtn, saveBtn, deleteBtn, status };
+  return { urlInput, usernameInput, keyInput, testBtn, saveBtn, deleteBtn, status, needsUsername };
 }
 
 // ---- Setup Wizard ----
@@ -318,6 +345,177 @@ async function dismissProposal(id) {
 }
 async function submitDraft(id) {
   return api("/api/proposals/" + id + "/submit-draft", { method: "POST" });
+}
+
+// ---- Search view (Discover browse -> manual search -> grab -> Grabs status) ----
+// The native replacement for Radarr/Sonarr's own acquisition loop: Discover
+// browses TMDB's trending/popular titles (posters, click to search), the
+// query bar searches Prowlarr directly, Grab sends a chosen release to
+// qBittorrent/NZBGet, and Grabs tracks status through to import. Movies and
+// Series only — this isn't wired for Adult (see MODE_WORKFLOWS).
+
+function fmtFileSize(bytes) {
+  if (!bytes) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = bytes, i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(1) + " " + units[i];
+}
+
+function posterURL(path) {
+  return path ? ("https://image.tmdb.org/t/p/w342" + path) : "";
+}
+
+async function renderSearch(container) {
+  const m = state.mode;
+  container.innerHTML = "";
+  container.appendChild(el("h2", { text: "Search" }));
+
+  const queryInput = el("input", { type: "text", placeholder: "Search for a release...", style: "max-width:20rem" });
+  const resultsSlot = el("div");
+
+  async function runSearch(query, picked) {
+    if (!query) return;
+    queryInput.value = query;
+    resultsSlot.innerHTML = "";
+    resultsSlot.appendChild(el("div", { class: "muted", text: "Searching…" }));
+    let results;
+    try { results = await api("/api/modes/" + m + "/search?q=" + encodeURIComponent(query)); }
+    catch (e) { resultsSlot.innerHTML = ""; resultsSlot.appendChild(fmtErr(e)); return; }
+    renderResults(results, picked || {});
+  }
+
+  function renderResults(results, picked) {
+    resultsSlot.innerHTML = "";
+    if (!results.length) { resultsSlot.appendChild(el("div", { class: "empty", text: "No releases found." })); return; }
+    const table = el("table", {}, [
+      el("thead", {}, [el("tr", {}, ["Title", "Indexer", "Protocol", "Size", "Seeders", "Score", ""].map(h => el("th", { text: h })))]),
+    ]);
+    const tbody = el("tbody");
+    for (const r of results) {
+      const grabBtn = el("button", { class: "primary", text: "Grab", onclick: async () => {
+        grabBtn.disabled = true;
+        try {
+          await grabRelease(r, picked);
+          await renderGrabs(grabsSlot, m);
+        } catch (e) { resultsSlot.appendChild(fmtErr(e)); }
+        grabBtn.disabled = false;
+      } });
+      tbody.appendChild(el("tr", {}, [
+        el("td", { text: r.title }),
+        el("td", { text: r.indexer }),
+        el("td", { text: r.protocol }),
+        el("td", { text: fmtFileSize(r.size) }),
+        el("td", { text: String(r.seeders || 0) }),
+        el("td", { text: String(r.score) }),
+        el("td", {}, [grabBtn]),
+      ]));
+    }
+    table.appendChild(tbody);
+    resultsSlot.appendChild(table);
+  }
+
+  async function grabRelease(release, picked) {
+    let rootFolderPath = "";
+    try {
+      const folders = await api("/api/modes/" + m + "/root-folders");
+      if (folders.length) rootFolderPath = folders[0].path;
+    } catch (e) { /* fall through to the "no root folder" error below */ }
+    if (!rootFolderPath) throw new Error("no root folder configured for " + m + " — add one in Settings first");
+
+    await api("/api/modes/" + m + "/search/grab", { method: "POST", body: JSON.stringify({
+      title: release.title, tmdbId: picked.tmdbId, tvdbId: picked.tvdbId,
+      indexer: release.indexer, protocol: release.protocol, downloadUrl: release.downloadUrl,
+      rootFolderPath,
+    }) });
+  }
+
+  container.appendChild(el("div", { class: "row" }, [
+    queryInput,
+    el("button", { class: "primary", text: "Search releases", onclick: () => runSearch(queryInput.value, {}) }),
+  ]));
+  container.appendChild(resultsSlot);
+
+  container.appendChild(el("h3", { text: "Discover" }));
+  const discoverSlot = el("div");
+  container.appendChild(discoverSlot);
+  await renderDiscover(discoverSlot, m, async (item) => {
+    let tvdbId;
+    if (item.mediaType === "tv") {
+      try { tvdbId = (await api("/api/modes/" + m + "/discover/tvdb-id?tmdbId=" + item.id)).tvdbId; } catch (e) { /* grab still works without it via manual entry later */ }
+    }
+    await runSearch(item.title, { tmdbId: item.mediaType === "movie" ? item.id : undefined, tvdbId });
+  });
+
+  container.appendChild(el("h3", { text: "Grabs" }));
+  const grabsSlot = el("div");
+  container.appendChild(grabsSlot);
+  await renderGrabs(grabsSlot, m);
+}
+
+// renderDiscover shows TMDB's trending titles as clickable poster cards.
+// onPick receives the raw discover item (id/title/mediaType) so the caller
+// can decide what to do — here, kick off a search prefilled with its title.
+async function renderDiscover(container, m, onPick) {
+  container.innerHTML = "";
+  let items;
+  try { items = await api("/api/modes/" + m + "/discover"); }
+  catch (e) {
+    container.appendChild(el("div", { class: "muted", text: "Connect tmdb in Settings to browse trending titles." }));
+    return;
+  }
+  if (!items.length) { container.appendChild(el("div", { class: "empty", text: "No trending titles right now." })); return; }
+
+  const grid = el("div", { class: "poster-grid" });
+  for (const item of items) {
+    grid.appendChild(el("div", { class: "poster-card", onclick: () => onPick(item) }, [
+      item.posterPath
+        ? el("img", { src: posterURL(item.posterPath), alt: item.title })
+        : el("div", { class: "poster-placeholder", text: item.title }),
+      el("div", { class: "poster-title", text: item.title }),
+    ]));
+  }
+  container.appendChild(grid);
+}
+
+// renderGrabs lists this mode's grabs with their current status and a
+// Check & Import action — the one manual refresh step (see
+// checkImportHandler's doc comment for why this isn't a background poller).
+async function renderGrabs(container, m) {
+  container.innerHTML = "";
+  let list;
+  try { list = await api("/api/modes/" + m + "/grabs"); }
+  catch (e) { container.appendChild(fmtErr(e)); return; }
+  if (!list.length) { container.appendChild(el("div", { class: "empty", text: "No grabs yet." })); return; }
+
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, ["Title", "Indexer", "Download client", "Status", "Actions"].map(h => el("th", { text: h })))]),
+  ]);
+  const tbody = el("tbody");
+  for (const g of list) {
+    const actions = el("td");
+    if (g.status !== "imported") {
+      actions.appendChild(el("button", { text: "Check & Import", onclick: async () => {
+        // Render AFTER catching, not before: renderGrabs(container, ...)
+        // clears container's whole innerHTML, which would silently wipe an
+        // error appended beforehand in the same tick — append it after the
+        // refresh instead, so it's actually visible.
+        let err = null;
+        try { await api("/api/grabs/" + g.id + "/check-import", { method: "POST" }); } catch (e) { err = e; }
+        await renderGrabs(container, m);
+        if (err) container.appendChild(fmtErr(err));
+      } }));
+    }
+    tbody.appendChild(el("tr", {}, [
+      el("td", { text: g.title }),
+      el("td", { text: g.indexer }),
+      el("td", { text: g.downloadClient }),
+      el("td", {}, [statusPill(g.status)]),
+      actions,
+    ]));
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
 }
 
 // ---- Rename view ----
@@ -531,7 +729,7 @@ async function renderTag(container) {
 
 // ---- Settings view ----
 
-const CONNECTION_SERVICES = ["radarr", "sonarr", "whisparr", "ollama", "openai", "gemini", "anthropic", "stashdb", "fansdb", "tpdb", "brave", "stash"];
+const CONNECTION_SERVICES = ["radarr", "sonarr", "whisparr", "prowlarr", "qbittorrent", "nzbget", "tmdb", "ollama", "openai", "gemini", "anthropic", "stashdb", "fansdb", "tpdb", "brave", "stash"];
 const AI_PROVIDERS = ["ollama", "openai", "gemini", "anthropic"];
 
 async function renderSettings(container) {
@@ -556,7 +754,7 @@ async function renderConnections(container) {
   for (const c of existing) byService[c.service] = c;
 
   const table = el("table", {}, [
-    el("thead", {}, [el("tr", {}, ["Service", "URL", "API Key", "", ""].map(h => el("th", { text: h })))]),
+    el("thead", {}, [el("tr", {}, ["Service", "URL", "Username", "API Key / Password", "", ""].map(h => el("th", { text: h })))]),
   ]);
   const tbody = el("tbody");
   for (const service of CONNECTION_SERVICES) {
@@ -564,6 +762,7 @@ async function renderConnections(container) {
     tbody.appendChild(el("tr", {}, [
       el("td", { text: service }),
       el("td", {}, [c.urlInput]),
+      el("td", {}, c.needsUsername ? [c.usernameInput] : []),
       el("td", {}, [c.keyInput]),
       el("td", {}, [c.testBtn, c.saveBtn, c.deleteBtn]),
       el("td", {}, [c.status]),
@@ -710,7 +909,7 @@ function renderCredentialsGate(container, kind) {
 
 // ---- Router ----
 
-const RENDERERS = { rename: renderRename, purge: renderPurge, dedup: renderDedup, tag: renderTag, settings: renderSettings };
+const RENDERERS = { search: renderSearch, rename: renderRename, purge: renderPurge, dedup: renderDedup, tag: renderTag, settings: renderSettings };
 
 async function render() {
   renderNav();

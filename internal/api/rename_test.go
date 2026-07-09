@@ -45,12 +45,12 @@ func TestRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	fakeRadarr := httptest.NewServer(fakeRadarrHandler(t, 55))
 	defer fakeRadarr.Close()
 
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	if err := connStore.Upsert(context.Background(), "radarr", fakeRadarr.URL, "test-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	scanResp, err := http.Post(srv.URL+"/api/modes/movies/rename/scan", "application/json", nil)
@@ -99,7 +99,7 @@ func TestRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 }
 
 func TestDismissProposalHandler_EndToEnd(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	saved, err := propStore.ReplacePending(context.Background(), "movies", proposals.Rename, []proposals.Proposal{
 		{Status: proposals.Pending, SourceName: "x", SourcePath: "/x", RootFolderPath: "/media/Movies", Title: "X"},
 	})
@@ -107,7 +107,7 @@ func TestDismissProposalHandler_EndToEnd(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(saved[0].ID, 10)+"/dismiss", "application/json", nil)
@@ -129,8 +129,8 @@ func TestDismissProposalHandler_EndToEnd(t *testing.T) {
 }
 
 func TestApplyProposalHandler_UnknownID(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/proposals/999/apply", "application/json", nil)
@@ -144,8 +144,8 @@ func TestApplyProposalHandler_UnknownID(t *testing.T) {
 }
 
 func TestScanHandler_ModeNotConfigured(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/modes/movies/rename/scan", "application/json", nil)

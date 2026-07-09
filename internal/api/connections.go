@@ -7,10 +7,14 @@ import (
 	"net/http"
 
 	"github.com/curtiswtaylorjr/sakms/internal/bravesearch"
+	"github.com/curtiswtaylorjr/sakms/internal/nzbget"
 	"github.com/curtiswtaylorjr/sakms/internal/ollama"
+	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
+	"github.com/curtiswtaylorjr/sakms/internal/qbittorrent"
 	"github.com/curtiswtaylorjr/sakms/internal/servarr"
 	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
 	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
+	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
 	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
 )
 
@@ -18,9 +22,10 @@ import (
 // read-only call against it — the same thing Settings' "Test connection"
 // button does. Nothing here is persisted.
 type ConnectionTestRequest struct {
-	Service string `json:"service"` // "radarr" | "sonarr" | "whisparr" | "ollama" | "stash" | "stashdb" | "fansdb" | "tpdb" | "brave"
-	URL     string `json:"url"`
-	APIKey  string `json:"apiKey,omitempty"`
+	Service  string `json:"service"` // "radarr" | "sonarr" | "whisparr" | "ollama" | "stash" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "qbittorrent" | "nzbget" | "tmdb"
+	URL      string `json:"url"`
+	Username string `json:"username,omitempty"` // only qbittorrent/nzbget use this
+	APIKey   string `json:"apiKey,omitempty"`
 }
 
 // ConnectionTestResult reports whether the test call succeeded. A false OK
@@ -55,6 +60,14 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 		return testTPDB(ctx, httpClient, req)
 	case "brave":
 		return testBrave(ctx, httpClient, req)
+	case "prowlarr":
+		return testProwlarr(ctx, httpClient, req)
+	case "qbittorrent":
+		return testQBittorrent(ctx, httpClient, req)
+	case "nzbget":
+		return testNZBGet(ctx, httpClient, req)
+	case "tmdb":
+		return testTMDB(ctx, httpClient, req)
 	default:
 		return ConnectionTestResult{Error: fmt.Sprintf("unsupported service %q", req.Service)}
 	}
@@ -117,6 +130,38 @@ func testTPDB(ctx context.Context, httpClient *http.Client, req ConnectionTestRe
 func testBrave(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	c := bravesearch.New(req.URL, req.APIKey, httpClient)
 	if err := c.Ping(ctx); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+func testProwlarr(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := prowlarr.New(prowlarr.Config{BaseURL: req.URL, APIKey: req.APIKey}, httpClient)
+	if _, err := c.Search(ctx, "", nil); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+func testQBittorrent(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := qbittorrent.New(qbittorrent.Config{BaseURL: req.URL, Username: req.Username, Password: req.APIKey}, httpClient)
+	if err := c.Ping(ctx); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+func testNZBGet(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := nzbget.New(nzbget.Config{BaseURL: req.URL, Username: req.Username, Password: req.APIKey}, httpClient)
+	if err := c.Ping(ctx); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+func testTMDB(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := tmdb.New(tmdb.Config{BaseURL: req.URL, APIKey: req.APIKey}, httpClient)
+	if _, err := c.Popular(ctx, tmdb.Movie); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}
 	return ConnectionTestResult{OK: true}

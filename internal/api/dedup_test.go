@@ -78,7 +78,7 @@ func TestDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	}))
 	defer fakeRadarr.Close()
 
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	if err := connStore.Upsert(context.Background(), "radarr", fakeRadarr.URL, "test-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		trackedFile: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
 		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, prober, settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, prober, settingsStore, grabsStore))
 	defer srv.Close()
 
 	scanResp, err := http.Post(srv.URL+"/api/modes/movies/dedup/scan", "application/json", nil)

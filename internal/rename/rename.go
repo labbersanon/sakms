@@ -346,7 +346,7 @@ func Apply(ctx context.Context, sess *mode.Session, p proposals.Proposal) (track
 	}
 
 	if p.SourcePath != "" && filepath.Dir(p.SourcePath) != p.RootFolderPath {
-		if _, err := relocate(p.SourcePath, p.RootFolderPath); err != nil {
+		if _, err := Relocate(p.SourcePath, p.RootFolderPath); err != nil {
 			return 0, fmt.Errorf("relocating %q into %q: %w", p.SourcePath, p.RootFolderPath, err)
 		}
 	}
@@ -395,13 +395,15 @@ func SubmitDraft(ctx context.Context, sess *mode.Session, p proposals.Proposal) 
 	return sess.Identify.GiveBack.SubmitDraft(ctx, p.Title, p.Studio, p.Date)
 }
 
-// relocate physically moves sourcePath into destRoot, preserving its current
+// Relocate physically moves sourcePath into destRoot, preserving its current
 // basename, and returns the new path. filepath.Base already strips any
 // directory components from sourcePath, so the destination Join is safe
 // against a traversal-shaped source path by construction. Collision-checked
 // via place.UniquePath — a Kids and general root can easily already contain
-// something with the same name.
-func relocate(sourcePath, destRoot string) (string, error) {
+// something with the same name. Exported so the native search-and-grab
+// import step (internal/api's check-import handler) can reuse the exact same
+// move logic once a download completes, instead of duplicating it.
+func Relocate(sourcePath, destRoot string) (string, error) {
 	dest := filepath.Join(destRoot, filepath.Base(sourcePath))
 	unique, err := place.UniquePath(dest, func(p string) bool {
 		_, err := os.Stat(p)

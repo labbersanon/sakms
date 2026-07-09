@@ -70,13 +70,50 @@ Purge, Dedup) are now live, though tracked-vs-orphan Adult Dedup rests on an
 unverified assumption about Whisparr's API response shape (see the commit
 history) — not yet run against a real Whisparr instance.
 
+Movies and Series also get a fifth capability, **Search** — phase 1 of a
+longer-term plan to reimplement Radarr's and Sonarr's own indexer-search and
+download-grab functionality directly into SAK, with a Seerr/Overseerr-style
+browse UI in front of it, rather than treating them as a separate app to
+review after the fact. It deliberately isn't staged through the same
+proposals queue as Rename/Purge/Dedup: a grab's lifecycle (queued →
+downloading → completed → imported → failed) doesn't fit that
+Pending/Unmatched/Applied/Dismissed review-queue model, so it's tracked in
+its own `internal/grabs` store instead. `GET /api/modes/{movies,series}/
+search?q=...` proxies a query to **Prowlarr** (one indexer aggregator client,
+not one per tracker), covering both torrent (**qBittorrent**) and usenet
+(**NZBGet**) protocols, and scores every result with `internal/release`'s
+pragmatic title parser (resolution/source/codec/group) against a hardcoded
+default preference order (1080p > 2160p > 720p > 480p; WEB-DL > WEBRip >
+BluRay > WEB > HDTV > DVDRip) — a real per-mode quality-profile UI is a
+later phase. `POST /api/modes/{mode}/search/grab` sends the picked release
+to qBittorrent or NZBGet (by protocol) and records a `Grab`; `GET
+/api/modes/{mode}/grabs` lists them for that mode. Nothing auto-imports:
+`POST /api/grabs/{id}/check-import` is a manual, human-clicked refresh that
+polls the download client's current status and, once it reports complete,
+relocates the finished download and registers it with Radarr/Sonarr
+(reusing Rename's own file-relocation logic) — there is no background
+poller or scheduler anywhere in this codebase, by design, matching every
+other workflow's "nothing happens without a click" rule. A **Discover**
+browse view sits in front of Search: `GET /api/modes/{mode}/discover`
+proxies TMDB's trending/popular titles (poster art, overview, rating) for
+that mode's catalog, and picking a title auto-fills Search's query —
+Series titles resolve their TMDB id to the different TVDB id Sonarr's
+`AddRequest` actually needs via a separate `GET /api/modes/{mode}/
+discover/tvdb-id` call, made only once a specific title is picked rather
+than eagerly for every item in a trending list. None of this touches
+Adult/Whisparr search, or Jellyfin — Jellyfin integration is a distinct,
+not-yet-started piece of the roadmap, kept deliberately separate from this
+milestone. Also out of scope for now: RSS/automatic search, a calendar,
+blocklist/retry-on-failure, and a real quality-profile management UI.
+
 A working frontend now exists: a single dependency-free HTML/JS page (no
 build step, no framework) embedded into the Go binary and served at `/` —
 Settings (connections, AI provider/model, per-mode Kids root path, per-mode
-Purge allowlist) plus all four workflow views (Rename/Purge/Dedup/Tag) for
-each mode, driving the exact same API a script would. Functional, not
-polished — it's for exercising the real workflows against a real Radarr/
-Sonarr/Whisparr instance, not a finished design.
+Purge allowlist) plus all five workflow views (Search/Rename/Purge/Dedup/Tag)
+for each mode (Search only for Movies/Series, matching the backend), driving
+the exact same API a script would. Functional, not polished — it's for
+exercising the real workflows against a real Radarr/Sonarr/Whisparr/
+Prowlarr/qBittorrent/NZBGet/TMDB instance, not a finished design.
 
 Every install is gated behind three layers, most fundamental first, each
 hiding all navigation until it's satisfied: **login**, then the **connections

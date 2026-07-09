@@ -20,13 +20,13 @@ func TestListTracked_ReturnsItemsFromTheRealApp(t *testing.T) {
 	}))
 	defer fakeRadarr.Close()
 
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	ctx := context.Background()
 	if err := connStore.Upsert(ctx, "radarr", fakeRadarr.URL, "test-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/tracked")
@@ -47,8 +47,8 @@ func TestListTracked_ReturnsItemsFromTheRealApp(t *testing.T) {
 }
 
 func TestListTracked_MissingConnection(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/tracked")

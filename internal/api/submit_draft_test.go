@@ -48,7 +48,7 @@ func TestSubmitDraftHandler_GivesUnmatchedProposalBackToTPDB(t *testing.T) {
 	mode.TPDBGraphQLURL = fakeTPDB.URL
 	t.Cleanup(func() { mode.TPDBGraphQLURL = prevTPDBGraphQLURL })
 
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	ctx := context.Background()
 	for _, c := range []struct{ service, url string }{
 		{"whisparr", fakeWhisparr.URL},
@@ -82,7 +82,7 @@ func TestSubmitDraftHandler_GivesUnmatchedProposalBackToTPDB(t *testing.T) {
 		t.Fatalf("seeding proposal: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(saved[0].ID, 10)+"/submit-draft", "application/json", nil)
@@ -112,7 +112,7 @@ func TestSubmitDraftHandler_RejectsPendingProposal(t *testing.T) {
 	}))
 	defer fakeWhisparr.Close()
 
-	connStore, propStore, allowStore, settingsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore := testStores(t)
 	ctx := context.Background()
 	if err := connStore.Upsert(ctx, "whisparr", fakeWhisparr.URL, "test-key"); err != nil {
 		t.Fatalf("seeding whisparr connection: %v", err)
@@ -125,7 +125,7 @@ func TestSubmitDraftHandler_RejectsPendingProposal(t *testing.T) {
 		t.Fatalf("seeding proposal: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), settingsStore, grabsStore))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(saved[0].ID, 10)+"/submit-draft", "application/json", nil)

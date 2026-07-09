@@ -31,62 +31,78 @@ func New(db *sql.DB, secretStore encryptor) *Store {
 	return &Store{db: db, secrets: secretStore}
 }
 
-// Connection is one configured service connection, with its API key already
-// decrypted. Never round-tripped through the HTTP API with the key intact —
-// see Summary for what's actually safe to expose.
+// Connection is one configured service connection, with its secret already
+// decrypted. Never round-tripped through the HTTP API with the secret
+// intact — see Summary for what's actually safe to expose.
 type Connection struct {
 	Service   string
 	URL       string
+	Username  string
 	APIKey    string
 	CreatedAt string
 	UpdatedAt string
 }
 
-// Summary is what's safe to expose over the API: whether a key is set and
+// Summary is what's safe to expose over the API: whether a secret is set and
 // its last 4 characters (matching Settings' masked "••••••••3f2a" display),
-// never the key itself.
+// never the secret itself.
 type Summary struct {
 	Service   string `json:"service"`
 	URL       string `json:"url"`
+	Username  string `json:"username,omitempty"`
 	HasAPIKey bool   `json:"hasApiKey"`
 	KeySuffix string `json:"keySuffix,omitempty"`
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// Upsert creates or replaces the connection for service. An empty apiKey
-// clears any previously stored key (e.g. for a service like Ollama that
-// doesn't need one).
+// Upsert creates or replaces the connection for service, with no username —
+// every service so far (Radarr/Sonarr/Whisparr, the AI providers, the Adult
+// identification pipeline) authenticates with a single API key. It's a thin
+// wrapper around UpsertWithUsername so the encrypt-and-write logic lives in
+// exactly one place. An empty apiKey clears any previously stored key (e.g.
+// for a service like Ollama that doesn't need one).
 func (s *Store) Upsert(ctx context.Context, service, url, apiKey string) error {
+	return s.UpsertWithUsername(ctx, service, url, "", apiKey)
+}
+
+// UpsertWithUsername is Upsert plus a plaintext username — for services like
+// qBittorrent and NZBGet that authenticate with username+password rather
+// than a single API key. secret is encrypted the same way apiKey always has
+// been; the column name (api_key_encrypted) predates this and stays generic
+// in meaning (whatever secret the service needs), not renamed, to avoid a
+// second migration for a cosmetic-only change.
+func (s *Store) UpsertWithUsername(ctx context.Context, service, url, username, secret string) error {
 	encrypted := ""
-	if apiKey != "" {
+	if secret != "" {
 		var err error
-		encrypted, err = s.secrets.Encrypt(apiKey)
+		encrypted, err = s.secrets.Encrypt(secret)
 		if err != nil {
-			return fmt.Errorf("encrypting api key: %w", err)
+			return fmt.Errorf("encrypting secret: %w", err)
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO connections (service, url, api_key_encrypted, updated_at)
-		VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		INSERT INTO connections (service, url, username, api_key_encrypted, updated_at)
+		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		ON CONFLICT(service) DO UPDATE SET
 			url = excluded.url,
+			username = excluded.username,
 			api_key_encrypted = excluded.api_key_encrypted,
 			updated_at = excluded.updated_at
-	`, service, url, encrypted)
+	`, service, url, username, encrypted)
 	if err != nil {
 		return fmt.Errorf("saving connection %q: %w", service, err)
 	}
 	return nil
 }
 
-// Get returns the connection for service with its API key decrypted.
+// Get returns the connection for service with its secret decrypted.
 // Returns ErrNotFound if service isn't configured.
 func (s *Store) Get(ctx context.Context, service string) (*Connection, error) {
 	var c Connection
 	var encrypted string
 	row := s.db.QueryRowContext(ctx,
-		`SELECT service, url, api_key_encrypted, created_at, updated_at FROM connections WHERE service = ?`, service)
-	if err := row.Scan(&c.Service, &c.URL, &encrypted, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		`SELECT service, url, username, api_key_encrypted, created_at, updated_at FROM connections WHERE service = ?`, service)
+	if err := row.Scan(&c.Service, &c.URL, &c.Username, &encrypted, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -95,7 +111,7 @@ func (s *Store) Get(ctx context.Context, service string) (*Connection, error) {
 	if encrypted != "" {
 		key, err := s.secrets.Decrypt(encrypted)
 		if err != nil {
-			return nil, fmt.Errorf("decrypting api key for %q: %w", service, err)
+			return nil, fmt.Errorf("decrypting secret for %q: %w", service, err)
 		}
 		c.APIKey = key
 	}
@@ -103,10 +119,10 @@ func (s *Store) Get(ctx context.Context, service string) (*Connection, error) {
 }
 
 // List returns a redacted Summary for every configured connection, ordered
-// by service name. Never includes a decrypted key in full.
+// by service name. Never includes a decrypted secret in full.
 func (s *Store) List(ctx context.Context) ([]Summary, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT service, url, api_key_encrypted, updated_at FROM connections ORDER BY service`)
+		`SELECT service, url, username, api_key_encrypted, updated_at FROM connections ORDER BY service`)
 	if err != nil {
 		return nil, fmt.Errorf("listing connections: %w", err)
 	}
@@ -119,7 +135,7 @@ func (s *Store) List(ctx context.Context) ([]Summary, error) {
 	for rows.Next() {
 		var sum Summary
 		var encrypted string
-		if err := rows.Scan(&sum.Service, &sum.URL, &encrypted, &sum.UpdatedAt); err != nil {
+		if err := rows.Scan(&sum.Service, &sum.URL, &sum.Username, &encrypted, &sum.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning connection: %w", err)
 		}
 		if encrypted != "" {

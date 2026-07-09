@@ -7,6 +7,7 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/allowlist"
 	"github.com/curtiswtaylorjr/sakms/internal/connections"
 	"github.com/curtiswtaylorjr/sakms/internal/dedup"
+	"github.com/curtiswtaylorjr/sakms/internal/grabs"
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
@@ -21,8 +22,10 @@ import (
 // Purge, Dedup); allowStore backs Purge's per-mode tag allowlist; prober
 // backs Dedup's direct ffprobe reads (a real *mediainfo.Prober in
 // production, anything satisfying dedup.Prober in tests); settingsStore
-// backs the setup wizard's dismissed flag.
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, settingsStore *settings.Store) *http.ServeMux {
+// backs the setup wizard's dismissed flag; grabsStore backs Search's grab
+// tracking (a separate concept from propStore's Scan-stage-Apply queue —
+// see internal/grabs' package doc for why).
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, settingsStore *settings.Store, grabsStore *grabs.Store) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	mux.HandleFunc("GET /api/connections", listConnectionsHandler(connStore))
@@ -45,6 +48,19 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 
 	mux.HandleFunc("POST /api/modes/{mode}/dedup/scan", dedupScanHandler(httpClient, connStore, settingsStore, propStore, prober))
 	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals", listProposalsHandler(propStore, proposals.Dedup))
+
+	// Discover is a read-only proxy against TMDB (trending/popular titles,
+	// poster art) — the browse entry point into Search. Search itself is a
+	// read-only proxy+score against Prowlarr — nothing staged or persisted
+	// (see searchHandler's doc comment). Grab is the one mutating action,
+	// tracked in grabsStore rather than propStore (see internal/grabs'
+	// package doc for why this isn't a proposals.Kind).
+	mux.HandleFunc("GET /api/modes/{mode}/discover", discoverHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/search", searchHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, settingsStore, grabsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
+	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, settingsStore, grabsStore))
 
 	mux.HandleFunc("GET /api/modes/{mode}/tags", listTagsHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("POST /api/modes/{mode}/items/{itemId}/tags", addItemTagHandler(httpClient, connStore, settingsStore))
@@ -94,8 +110,9 @@ func listConnectionsHandler(store *connections.Store) http.HandlerFunc {
 }
 
 type upsertConnectionRequest struct {
-	URL    string `json:"url"`
-	APIKey string `json:"apiKey,omitempty"`
+	URL      string `json:"url"`
+	Username string `json:"username,omitempty"` // only qbittorrent/nzbget use this
+	APIKey   string `json:"apiKey,omitempty"`
 }
 
 func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {
@@ -110,7 +127,7 @@ func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {
 			http.Error(w, "url is required", http.StatusBadRequest)
 			return
 		}
-		if err := store.Upsert(r.Context(), service, req.URL, req.APIKey); err != nil {
+		if err := store.UpsertWithUsername(r.Context(), service, req.URL, req.Username, req.APIKey); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

@@ -12,13 +12,15 @@ package rename
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/curtiswtaylorjr/tidyarr/internal/classify"
 	"github.com/curtiswtaylorjr/tidyarr/internal/config"
 	"github.com/curtiswtaylorjr/tidyarr/internal/identify"
 	"github.com/curtiswtaylorjr/tidyarr/internal/mode"
-	"github.com/curtiswtaylorjr/tidyarr/internal/ollama"
+	"github.com/curtiswtaylorjr/tidyarr/internal/place"
 	"github.com/curtiswtaylorjr/tidyarr/internal/proposals"
 	"github.com/curtiswtaylorjr/tidyarr/internal/searchterm"
 	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
@@ -32,11 +34,11 @@ func Scan(ctx context.Context, sess *mode.Session) ([]proposals.Proposal, error)
 	client := sess.Servarr
 
 	// Adult identification runs through sess.Identify, which mode.Build leaves
-	// nil when the Ollama backbone isn't configured. Fail fast with an
-	// actionable message rather than nil-panicking mid-walk or burying the real
-	// "you haven't configured identification" signal under N Unmatched rows.
+	// nil when the AI backbone isn't configured. Fail fast with an actionable
+	// message rather than nil-panicking mid-walk or burying the real "you
+	// haven't configured identification" signal under N Unmatched rows.
 	if sess.Mode == mode.Adult && sess.Identify == nil {
-		return nil, fmt.Errorf("adult identification isn't configured — add an Ollama connection and set the Ollama model in Settings, plus at least one of StashDB/FansDB/TPDB")
+		return nil, fmt.Errorf("adult identification isn't configured — add a connection for your chosen AI provider and set the AI model in Settings, plus at least one of StashDB/FansDB/TPDB")
 	}
 
 	folders, err := client.RootFolders(ctx)
@@ -52,6 +54,18 @@ func Scan(ctx context.Context, sess *mode.Session) ([]proposals.Proposal, error)
 		return nil, fmt.Errorf("loading quality profiles: %w", err)
 	}
 
+	// Kids classification only ever reroutes content INTO sess.KidsRootPath —
+	// it's only meaningful if that's actually one of this *arr app's own
+	// currently-reported root folders (never a stale or mistyped setting).
+	validRootPaths := map[string]bool{}
+	for _, root := range folders {
+		validRootPaths[root.Path] = true
+	}
+	kidsRootPath := sess.KidsRootPath
+	if kidsRootPath != "" && !validRootPaths[kidsRootPath] {
+		kidsRootPath = ""
+	}
+
 	var out []proposals.Proposal
 	for _, root := range folders {
 		for _, uf := range root.UnmappedFolders {
@@ -61,7 +75,7 @@ func Scan(ctx context.Context, sess *mode.Session) ([]proposals.Proposal, error)
 			if sess.Mode == mode.Adult {
 				out = append(out, proposeOneAdult(ctx, sess.Identify, sess.Mode, root, uf, tracked, profiles))
 			} else {
-				out = append(out, proposeOne(ctx, client, sess.Mode, sess.MainstreamAI, root, uf, tracked, profiles))
+				out = append(out, proposeOne(ctx, client, sess.Mode, sess.MainstreamAI, kidsRootPath, root, uf, tracked, profiles))
 			}
 		}
 	}
@@ -69,7 +83,7 @@ func Scan(ctx context.Context, sess *mode.Session) ([]proposals.Proposal, error)
 }
 
 func proposeOne(
-	ctx context.Context, client *servarr.Client, m mode.Mode, mainstreamAI *ollama.Client,
+	ctx context.Context, client *servarr.Client, m mode.Mode, mainstreamAI identify.AIClient, kidsRootPath string,
 	root servarr.RootFolder, uf servarr.UnmappedFolder,
 	tracked []servarr.TrackedItem, profiles []servarr.QualityProfile,
 ) proposals.Proposal {
@@ -95,12 +109,42 @@ func proposeOne(
 		return p
 	}
 
+	targetPath := root.Path
+	// Only worth classifying if a Kids path is actually configured for this
+	// mode and this item wasn't already found sitting in it — an item
+	// already under the Kids root is already correctly placed by whoever put
+	// it there.
+	if kidsRootPath != "" && kidsRootPath != root.Path {
+		if classifyKids(ctx, mainstreamAI, lr).IsKids {
+			targetPath = kidsRootPath
+		}
+	}
+
 	p.Status = proposals.Pending
 	p.Title = lr.Title
 	p.TVDBID = lr.TVDBID
 	p.TMDBID = lr.TMDBID
-	p.QualityProfileID = servarr.DefaultQualityProfileID(tracked, root.Path, profiles)
+	p.RootFolderPath = targetPath
+	p.QualityProfileID = servarr.DefaultQualityProfileID(tracked, targetPath, profiles)
 	return p
+}
+
+// classifyKids runs the structured-signal-first, AI-fallback-second
+// classification chain (see internal/classify): deterministic
+// certification/genre first, falling back to mainstreamAI only when that
+// signal is too weak to trust AND an AI client is actually configured. On an
+// AI failure, or with no AI configured, the not-confident metadata-only
+// result stands — its IsKids is already false in that case, matching the
+// original CLI's "default to general" behavior when nothing resolves it.
+func classifyKids(ctx context.Context, mainstreamAI identify.AIClient, lr servarr.LookupResult) classify.Result {
+	result := classify.FromMetadata(classify.Signal{Certification: lr.Certification, Genres: lr.Genres})
+	if result.Confident || mainstreamAI == nil {
+		return result
+	}
+	if aiResult, err := classify.WithAI(ctx, mainstreamAI, lr.Title, lr.Overview); err == nil {
+		return aiResult
+	}
+	return result
 }
 
 // lookupFirst runs client.Lookup for term and reports its first result.
@@ -117,12 +161,12 @@ func lookupFirst(ctx context.Context, client *servarr.Client, term string) (lr s
 	return results[0], true, ""
 }
 
-// lookupWithAIFallback asks Ollama to guess the real title from name, then
-// retries Lookup with that guess — Rename's fallback for names the *arr
-// app's own search term couldn't resolve. firstReason (from the failed
-// lookupFirst attempt) is folded into the result so a final Unmatched
-// proposal explains both attempts, not just the last one.
-func lookupWithAIFallback(ctx context.Context, client *servarr.Client, ai *ollama.Client, name, firstReason string) (lr servarr.LookupResult, ok bool, reason string) {
+// lookupWithAIFallback asks the configured AI provider to guess the real
+// title from name, then retries Lookup with that guess — Rename's fallback
+// for names the *arr app's own search term couldn't resolve. firstReason
+// (from the failed lookupFirst attempt) is folded into the result so a final
+// Unmatched proposal explains both attempts, not just the last one.
+func lookupWithAIFallback(ctx context.Context, client *servarr.Client, ai identify.AIClient, name, firstReason string) (lr servarr.LookupResult, ok bool, reason string) {
 	guessed, err := identify.GuessTitle(ctx, ai, name)
 	if err != nil {
 		return servarr.LookupResult{}, false, fmt.Sprintf("%s, and AI title guess failed: %v", firstReason, err)
@@ -204,6 +248,14 @@ func classifyAdultMatch(res *identify.MatchResult, err error) (status proposals.
 // disk under p.RootFolderPath. p must be Pending — Apply refuses anything
 // else (already applied, dismissed, or unmatched with nothing to register).
 //
+// If p was classified into a different root than it was originally found
+// under (see classifyKids in Scan), the file is physically relocated into
+// that root FIRST — Sonarr/Radarr can only import a file that's already
+// sitting under the root folder it's being registered against. This is the
+// one place Rename ever touches the filesystem directly (mirroring Dedup's
+// existing os.Remove precedent for the same reason: Tidyarr runs with direct
+// local access to the same paths the *arr apps report).
+//
 // If Add succeeds but the follow-up scan trigger fails, trackedID is still
 // returned alongside the error: the item is genuinely registered at that
 // point, so the caller should still record it as applied rather than losing
@@ -221,6 +273,12 @@ func Apply(ctx context.Context, sess *mode.Session, p proposals.Proposal) (track
 	// Adult proposal can never be registered without a real scene identifier.
 	if sess.Servarr.AppType() == servarr.Whisparr && (p.ForeignID == "" || p.ItemType == "") {
 		return 0, fmt.Errorf("proposal %d has no scene identifier — refusing to register it as a mis-typed movie", p.ID)
+	}
+
+	if p.SourcePath != "" && filepath.Dir(p.SourcePath) != p.RootFolderPath {
+		if _, err := relocate(p.SourcePath, p.RootFolderPath); err != nil {
+			return 0, fmt.Errorf("relocating %q into %q: %w", p.SourcePath, p.RootFolderPath, err)
+		}
 	}
 
 	id, err := sess.Servarr.Add(ctx, servarr.AddRequest{
@@ -265,4 +323,25 @@ func SubmitDraft(ctx context.Context, sess *mode.Session, p proposals.Proposal) 
 		return "", fmt.Errorf("give-back isn't configured — add a TPDB or StashDB connection in Settings")
 	}
 	return sess.Identify.GiveBack.SubmitDraft(ctx, p.Title, p.Studio, p.Date)
+}
+
+// relocate physically moves sourcePath into destRoot, preserving its current
+// basename, and returns the new path. filepath.Base already strips any
+// directory components from sourcePath, so the destination Join is safe
+// against a traversal-shaped source path by construction. Collision-checked
+// via place.UniquePath — a Kids and general root can easily already contain
+// something with the same name.
+func relocate(sourcePath, destRoot string) (string, error) {
+	dest := filepath.Join(destRoot, filepath.Base(sourcePath))
+	unique, err := place.UniquePath(dest, func(p string) bool {
+		_, err := os.Stat(p)
+		return err == nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(sourcePath, unique); err != nil {
+		return "", fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err)
+	}
+	return unique, nil
 }

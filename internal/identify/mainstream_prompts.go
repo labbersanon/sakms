@@ -18,7 +18,7 @@ import (
 // don't know" escape valve, and ollama.NormalizeField treats that as absent,
 // so a hallucinated title can't go on to match an unrelated lookup result and
 // get registered as a real identification.
-func GuessTitle(ctx context.Context, client *ollama.Client, name string) (string, error) {
+func GuessTitle(ctx context.Context, client AIClient, name string) (string, error) {
 	prompt := fmt.Sprintf(`This is a filename or folder name for a movie or TV series, possibly with release-scene noise mixed in (resolution, codec, source, release group tags): %q
 
 If you can confidently determine the real title from this name, respond with a JSON object of the form {"title": "..."} (include the year if you can tell what it is). If the name is too generic, abbreviated, or opaque to confidently identify — do NOT guess or fabricate a plausible-sounding title — respond with {"title": null} instead.

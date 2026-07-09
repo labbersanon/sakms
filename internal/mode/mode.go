@@ -13,10 +13,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/curtiswtaylorjr/tidyarr/internal/anthropic"
 	"github.com/curtiswtaylorjr/tidyarr/internal/bravesearch"
 	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
+	"github.com/curtiswtaylorjr/tidyarr/internal/gemini"
 	"github.com/curtiswtaylorjr/tidyarr/internal/identify"
 	"github.com/curtiswtaylorjr/tidyarr/internal/ollama"
+	"github.com/curtiswtaylorjr/tidyarr/internal/openai"
 	"github.com/curtiswtaylorjr/tidyarr/internal/servarr"
 	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
 	"github.com/curtiswtaylorjr/tidyarr/internal/stashbox"
@@ -34,26 +37,45 @@ const (
 	Adult  Mode = "adult"
 )
 
-// OllamaModelKey is the settings key holding the Ollama model name every AI-
-// assisted feature runs against — Adult identification (filename parsing +
-// web-grounding, internal/identify's ParseFilename/ExtractFromSearch) AND
+// AIProviderKey is the settings key holding which AI backend every AI-
+// assisted feature talks to — Adult identification AND Movies/Series
+// Rename's AI title-guess fallback share this ONE choice, since Tidyarr
+// never asks which mode's provider to configure. One of the AIProvider*
+// constants; empty/unset defaults to AIProviderOllama, preserving every
+// existing install's behavior without requiring a migration.
+const AIProviderKey = "ai_provider"
+
+// AIProvider identifies which service backs AIClient (see buildAIClient).
+const (
+	AIProviderOllama    = "ollama"
+	AIProviderOpenAI    = "openai"
+	AIProviderGemini    = "gemini"
+	AIProviderAnthropic = "anthropic"
+)
+
+// AIModelKey is the settings key holding the model name to request from
+// whichever AIProviderKey backend is configured (e.g. "qwen2.5vl:7b" for
+// Ollama, "gpt-4o-mini" for OpenAI, "gemini-2.5-flash" for Gemini,
+// "claude-haiku-4-5" for Anthropic) — Adult identification (filename parsing
+// + web-grounding, internal/identify's ParseFilename/ExtractFromSearch) AND
 // Movies/Series Rename's AI title-guess fallback (internal/identify's
-// GuessTitle) share this ONE setting; Tidyarr never asks which mode's model
-// to configure, since a single local Ollama install typically runs one
-// model. Stored in settings (not a connections column) because it's a
-// non-secret scalar with no schema of its own. Empty/unset means "AI
-// features not configured": Build leaves sess.Identify/sess.MainstreamAI nil
-// rather than guessing a model. Exported so internal/api can read/write the
-// same key without duplicating the string literal.
+// GuessTitle) share this ONE setting. Stored in settings (not a connections
+// column) because it's a non-secret scalar with no schema of its own.
+// Empty/unset means "AI features not configured": Build leaves
+// sess.Identify/sess.MainstreamAI nil rather than guessing a model. Exported
+// so internal/api can read/write the same key without duplicating the
+// string literal.
 //
-// Whatever model is configured here MUST support Ollama's structured JSON
-// output mode (format=json — see internal/ollama.Client.ChatJSON) — every
-// prompt in internal/identify asks for a specific JSON shape and parses the
-// response accordingly. Swapping in a different/alternate model works as
-// long as it honors format=json and follows each prompt's own explicit
-// instructions (schema, the "respond with null if unsure" escape valves);
-// nothing here is tuned to one specific model's quirks.
-const OllamaModelKey = "ollama_model"
+// Whatever model is configured here MUST return its response as a parseable
+// JSON object matching the calling prompt's schema — every prompt in
+// internal/identify asks for a specific JSON shape and parses the response
+// accordingly (Ollama/OpenAI/Gemini enforce this via a structured-output
+// mode; Anthropic's client relies on the prompt's own explicit "respond with
+// ONLY valid JSON" instruction, since Claude's Messages API has no separate
+// JSON-mode toggle). Swapping providers or models works as long as the
+// response satisfies that shape; nothing here is tuned to one specific
+// model's quirks.
+const AIModelKey = "ai_model"
 
 // adultThrottleInterval is the per-host minimum call spacing for the Adult
 // identification pipeline's external services — technical call-spacing
@@ -70,6 +92,25 @@ const adultThrottleInterval = 1 * time.Second
 // authenticates here too (as a Bearer token). A var (not const) so tests can
 // override it to point at a fake server.
 var TPDBGraphQLURL = "https://theporndb.net/graphql"
+
+// KidsRootPathKey returns the settings key holding m's paired Kids root
+// folder path — Rename's destination for content classified kids-appropriate
+// (see internal/classify), instead of the general root it was found under.
+// ok is false for Adult, which has no kids/general split concept. An
+// explicit path the user picks from the mode's own real root folders (see
+// internal/api's kids-root-path handler), not an automatic naming-convention
+// guess like the original CLI's "(Kids)"-suffix pairing — blank/unset means
+// the feature is off for that mode.
+func (m Mode) KidsRootPathKey() (key string, ok bool) {
+	switch m {
+	case Movies:
+		return "movies_kids_root_path", true
+	case Series:
+		return "series_kids_root_path", true
+	default:
+		return "", false
+	}
+}
 
 // service reports which connections.Store key and servarr.App back this
 // mode's primary client.
@@ -96,19 +137,26 @@ type Session struct {
 	Servarr *servarr.Client
 
 	// Identify is the AI-assisted content-identification pipeline, populated
-	// ONLY for Adult mode and ONLY when its backbone (an Ollama connection AND
-	// the OllamaModelKey setting) is configured; nil otherwise — including for
-	// every Movies/Series session. Consumers must nil-check before use.
+	// ONLY for Adult mode and ONLY when its backbone (a connection for the
+	// configured AIProviderKey backend AND the AIModelKey setting) is
+	// configured; nil otherwise — including for every Movies/Series session.
+	// Consumers must nil-check before use.
 	Identify *identify.Identifier
 
 	// MainstreamAI is Movies/Series Rename's AI title-guess fallback client —
-	// populated for every mode (cheap, harmless if unused) when an Ollama
-	// connection AND the OllamaModelKey setting are both configured (the SAME
-	// setting Identify's Ollama client uses — one shared model, not a
-	// per-mode choice); nil otherwise. Adult mode doesn't use this field (its
-	// own Identify covers all of its AI needs) but nothing stops it from
-	// being populated too. Consumers must nil-check before use.
-	MainstreamAI *ollama.Client
+	// populated for every mode (cheap, harmless if unused) from the SAME
+	// AIProviderKey/AIModelKey settings Identify's AI client uses (one shared
+	// provider+model, not a per-mode choice); nil otherwise. Adult mode
+	// doesn't use this field (its own Identify covers all of its AI needs)
+	// but nothing stops it from being populated too. Consumers must nil-check
+	// before use.
+	MainstreamAI identify.AIClient
+
+	// KidsRootPath is m's paired Kids root folder path (see
+	// KidsRootPathKey), or "" if unset/not applicable to m (Adult, or a
+	// Movies/Series install that hasn't configured one) — Rename simply
+	// skips kids classification/routing in that case.
+	KidsRootPath string
 }
 
 // Build constructs a Session for m using the connection currently configured
@@ -129,66 +177,47 @@ func Build(ctx context.Context, store *connections.Store, settingsStore *setting
 	client := servarr.New(servarr.Config{BaseURL: conn.URL, APIKey: conn.APIKey, App: app}, httpClient)
 
 	sess := &Session{Mode: m, Servarr: client}
+	aiClient, err := buildAIClient(ctx, store, settingsStore, httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("mode %q: building AI client: %w", m, err)
+	}
+	sess.MainstreamAI = aiClient
+	if key, ok := m.KidsRootPathKey(); ok {
+		path, err := settingsStore.Get(ctx, key)
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			return nil, fmt.Errorf("mode %q: loading kids root path: %w", m, err)
+		}
+		sess.KidsRootPath = path
+	}
 	if m == Adult {
-		id, err := buildIdentifier(ctx, store, settingsStore, httpClient)
+		id, err := buildIdentifier(ctx, store, settingsStore, httpClient, aiClient)
 		if err != nil {
 			return nil, fmt.Errorf("mode %q: building identifier: %w", m, err)
 		}
 		sess.Identify = id
 	}
-	mainstreamAI, err := buildMainstreamAI(ctx, store, settingsStore, httpClient)
-	if err != nil {
-		return nil, fmt.Errorf("mode %q: building mainstream AI fallback: %w", m, err)
-	}
-	sess.MainstreamAI = mainstreamAI
 	return sess, nil
 }
 
-// buildMainstreamAI assembles Movies/Series Rename's AI title-guess fallback
-// client, from the SAME OllamaModelKey setting buildIdentifier uses for
-// Adult. Tolerant by design, same shape as buildIdentifier's Ollama check:
-// without BOTH an Ollama connection and the OllamaModelKey setting, returns
-// (nil, nil) rather than guessing a model — Rename simply skips the fallback
-// in that case. A real store error (anything other than "not configured")
-// propagates.
-func buildMainstreamAI(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client) (*ollama.Client, error) {
-	ollamaConn, err := optionalConn(ctx, store, "ollama")
-	if err != nil {
-		return nil, err
+// buildAIClient assembles the one AI client every AI-assisted feature shares
+// (Adult identification's backbone AND Movies/Series Rename's title-guess
+// fallback) from AIProviderKey/AIModelKey. Tolerant by design: without a
+// connection for the configured provider AND the model setting, returns
+// (nil, nil) rather than guessing — callers treat a nil client as "AI
+// features not configured" and simply skip them. A real store error
+// (anything other than "not configured") propagates. An explicitly-set but
+// unrecognized provider value is a real configuration error, not silently
+// tolerated — the user asked for something specific and it can't be honored.
+func buildAIClient(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client) (identify.AIClient, error) {
+	provider, err := settingsStore.Get(ctx, AIProviderKey)
+	if err != nil && !errors.Is(err, settings.ErrNotFound) {
+		return nil, err // a real store error must propagate, not look like "unset"
 	}
-	if ollamaConn == nil {
-		return nil, nil
+	if provider == "" {
+		provider = AIProviderOllama // default: preserves every existing install's behavior
 	}
-	model, err := settingsStore.Get(ctx, OllamaModelKey)
-	if errors.Is(err, settings.ErrNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if model == "" {
-		return nil, nil
-	}
-	return ollama.New(ollamaConn.URL, model, httpClient), nil
-}
 
-// buildIdentifier assembles the Adult identification pipeline from whatever is
-// configured. Tolerant by design: the Ollama connection AND the
-// OllamaModelKey setting are the backbone — without either, there is no
-// identifier at all (returns nil, nil), because ParseFilename would nil-panic
-// on a missing Ollama client. Every other client (stashdb/fansdb/tpdb/brave)
-// is optional: a missing connection yields a nil client, which BoxSearcher and
-// Identify already treat as "not configured" rather than erroring. A real
-// store error (anything other than "not configured") propagates.
-func buildIdentifier(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client) (*identify.Identifier, error) {
-	ollamaConn, err := optionalConn(ctx, store, "ollama")
-	if err != nil {
-		return nil, err
-	}
-	if ollamaConn == nil {
-		return nil, nil // no Ollama backbone → identification not configured
-	}
-	model, err := settingsStore.Get(ctx, OllamaModelKey)
+	model, err := settingsStore.Get(ctx, AIModelKey)
 	if errors.Is(err, settings.ErrNotFound) {
 		return nil, nil // no model → do NOT guess one
 	}
@@ -197,6 +226,41 @@ func buildIdentifier(ctx context.Context, store *connections.Store, settingsStor
 	}
 	if model == "" {
 		return nil, nil // stored but blank → same as unconfigured
+	}
+
+	conn, err := optionalConn(ctx, store, provider)
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil {
+		return nil, nil // provider chosen but its connection isn't set up yet
+	}
+
+	switch provider {
+	case AIProviderOllama:
+		return ollama.New(conn.URL, model, httpClient), nil
+	case AIProviderOpenAI:
+		return openai.New(conn.URL, conn.APIKey, model, httpClient), nil
+	case AIProviderGemini:
+		return gemini.New(conn.URL, conn.APIKey, model, httpClient), nil
+	case AIProviderAnthropic:
+		return anthropic.New(conn.URL, conn.APIKey, model, httpClient), nil
+	default:
+		return nil, fmt.Errorf("%s %q: expected one of %s, %s, %s, %s",
+			AIProviderKey, provider, AIProviderOllama, AIProviderOpenAI, AIProviderGemini, AIProviderAnthropic)
+	}
+}
+
+// buildIdentifier assembles the Adult identification pipeline around aiClient
+// (already resolved by buildAIClient — nil means AI features aren't
+// configured, so there is no identifier at all: ParseFilename would nil-panic
+// on a missing AI client). Every other client (stashdb/fansdb/tpdb/brave) is
+// optional: a missing connection yields a nil client, which BoxSearcher and
+// Identify already treat as "not configured" rather than erroring. A real
+// store error (anything other than "not configured") propagates.
+func buildIdentifier(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client, aiClient identify.AIClient) (*identify.Identifier, error) {
+	if aiClient == nil {
+		return nil, nil
 	}
 
 	boxes := map[string]*stashbox.Client{}
@@ -236,7 +300,7 @@ func buildIdentifier(ctx context.Context, store *connections.Store, settingsStor
 
 	return &identify.Identifier{
 		Boxes:    identify.NewBoxSearcher(boxes, tpdb),
-		Ollama:   ollama.New(ollamaConn.URL, model, httpClient),
+		AI:       aiClient,
 		Brave:    brave,
 		Throttle: throttle.New(adultThrottleInterval),
 		GiveBack: identify.NewGiveBack(giveBackBoxes),

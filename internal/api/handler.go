@@ -31,6 +31,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 
 	mux.HandleFunc("POST /api/modes/{mode}/rename/scan", renameScanHandler(httpClient, connStore, settingsStore, propStore))
 	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals", listProposalsHandler(propStore, proposals.Rename))
+	mux.HandleFunc("GET /api/modes/{mode}/rename/kids-root-path", getKidsRootPathHandler(settingsStore))
+	mux.HandleFunc("PUT /api/modes/{mode}/rename/kids-root-path", putKidsRootPathHandler(settingsStore))
 
 	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, settingsStore, propStore, allowStore))
 	mux.HandleFunc("GET /api/modes/{mode}/purge/proposals", listProposalsHandler(propStore, proposals.Purge))
@@ -48,11 +50,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, allowStore, settingsStore))
 	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))
 
-	// One shared Ollama model setting for every AI-assisted feature (Adult
+	// One shared AI provider+model pair for every AI-assisted feature (Adult
 	// identification AND Movies/Series Rename's AI fallback) — see
-	// mode.OllamaModelKey's doc comment for why this isn't split per mode.
-	mux.HandleFunc("GET /api/settings/ollama-model", getOllamaModelHandler(settingsStore, mode.OllamaModelKey))
-	mux.HandleFunc("PUT /api/settings/ollama-model", putOllamaModelHandler(settingsStore, mode.OllamaModelKey))
+	// mode.AIModelKey's doc comment for why this isn't split per mode.
+	mux.HandleFunc("GET /api/settings/ai-provider", getAIProviderHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/ai-provider", putAIProviderHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/ai-model", getOllamaModelHandler(settingsStore, mode.AIModelKey))
+	mux.HandleFunc("PUT /api/settings/ai-model", putOllamaModelHandler(settingsStore, mode.AIModelKey))
 
 	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, settingsStore, propStore))

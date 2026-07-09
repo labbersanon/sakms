@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -577,5 +579,267 @@ func TestSubmitDraft_RejectsUnconfiguredGiveBack(t *testing.T) {
 	p := proposals.Proposal{ID: 1, Workflow: proposals.Rename, Status: proposals.Unmatched, Title: "X"}
 	if _, err := SubmitDraft(context.Background(), sess, p); err == nil {
 		t.Fatal("expected an error when give-back isn't configured")
+	}
+}
+
+// TestScan_RoutesKidsClassifiedContentToKidsRoot proves the deterministic
+// (no-AI) path: a "G" certification is a confident kids signal on its own
+// (see internal/classify.FromMetadata), so a proposal for it should target
+// sess.KidsRootPath instead of the general root it was found under.
+func TestScan_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
+	f := &fakeRadarr{
+		rootFolders: `[
+			{"id":1,"path":"/media/Movies","accessible":true,"freeSpace":1,"unmappedFolders":[
+				{"name":"Kids.Movie.2020","path":"/media/Movies/Kids.Movie.2020","relativePath":"Kids.Movie.2020"}
+			]},
+			{"id":2,"path":"/media/Movies (Kids)","accessible":true,"freeSpace":1,"unmappedFolders":[]}
+		]`,
+		tracked:  `[]`,
+		profiles: `[{"id":4,"name":"HD"}]`,
+		lookups: map[string]string{
+			"Kids Movie 2020": `[{"title":"Kids Movie","year":2020,"tmdbId":111,"certification":"G"}]`,
+		},
+	}
+	sess := newTestSession(t, servarr.Radarr, f.handler(t))
+	sess.KidsRootPath = "/media/Movies (Kids)"
+
+	got, err := Scan(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending || p.RootFolderPath != "/media/Movies (Kids)" {
+		t.Fatalf("expected the proposal to be routed to the Kids root, got %+v", p)
+	}
+	// SourcePath must stay where the file was actually found — Apply is what
+	// physically moves it, not Scan.
+	if p.SourcePath != "/media/Movies/Kids.Movie.2020" {
+		t.Errorf("expected SourcePath to stay put, got %q", p.SourcePath)
+	}
+}
+
+// TestScan_NoRerouteWhenKidsPathNotConfigured confirms unconfigured (empty)
+// KidsRootPath is a complete no-op — the default for every existing install.
+func TestScan_NoRerouteWhenKidsPathNotConfigured(t *testing.T) {
+	f := &fakeRadarr{
+		rootFolders: `[{"id":1,"path":"/media/Movies","accessible":true,"freeSpace":1,"unmappedFolders":[
+			{"name":"Kids.Movie.2020","path":"/media/Movies/Kids.Movie.2020","relativePath":"Kids.Movie.2020"}
+		]}]`,
+		tracked:  `[]`,
+		profiles: `[{"id":4,"name":"HD"}]`,
+		lookups: map[string]string{
+			"Kids Movie 2020": `[{"title":"Kids Movie","year":2020,"tmdbId":111,"certification":"G"}]`,
+		},
+	}
+	sess := newTestSession(t, servarr.Radarr, f.handler(t))
+	if sess.KidsRootPath != "" {
+		t.Fatal("precondition: expected an empty KidsRootPath")
+	}
+
+	got, err := Scan(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].RootFolderPath != "/media/Movies" {
+		t.Fatalf("expected the proposal to stay in the general root, got %+v", got)
+	}
+}
+
+// TestScan_IgnoresKidsPathNotAmongRealRootFolders guards against a stale or
+// mistyped setting silently misrouting content into a folder the *arr app
+// doesn't actually report — the same "never guess/never trust unverified
+// config" posture as everything else in this project.
+func TestScan_IgnoresKidsPathNotAmongRealRootFolders(t *testing.T) {
+	f := &fakeRadarr{
+		rootFolders: `[{"id":1,"path":"/media/Movies","accessible":true,"freeSpace":1,"unmappedFolders":[
+			{"name":"Kids.Movie.2020","path":"/media/Movies/Kids.Movie.2020","relativePath":"Kids.Movie.2020"}
+		]}]`,
+		tracked:  `[]`,
+		profiles: `[{"id":4,"name":"HD"}]`,
+		lookups: map[string]string{
+			"Kids Movie 2020": `[{"title":"Kids Movie","year":2020,"tmdbId":111,"certification":"G"}]`,
+		},
+	}
+	sess := newTestSession(t, servarr.Radarr, f.handler(t))
+	sess.KidsRootPath = "/media/Movies (Kids)" // never reported by the fake above
+
+	got, err := Scan(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].RootFolderPath != "/media/Movies" {
+		t.Fatalf("expected no reroute to a nonexistent root folder, got %+v", got)
+	}
+}
+
+// TestScan_SkipsClassificationForItemsAlreadyInKidsRoot confirms an orphan
+// found directly under the Kids root is registered there without ever
+// running classification (a fatal-on-call fake AI proves it isn't invoked)
+// — it's already correctly placed by definition.
+func TestScan_SkipsClassificationForItemsAlreadyInKidsRoot(t *testing.T) {
+	f := &fakeRadarr{
+		rootFolders: `[{"id":1,"path":"/media/Movies (Kids)","accessible":true,"freeSpace":1,"unmappedFolders":[
+			{"name":"Already.Kids.2020","path":"/media/Movies (Kids)/Already.Kids.2020","relativePath":"Already.Kids.2020"}
+		]}]`,
+		tracked:  `[]`,
+		profiles: `[{"id":4,"name":"HD"}]`,
+		lookups: map[string]string{
+			"Already Kids 2020": `[{"title":"Already Kids","year":2020,"tmdbId":222}]`,
+		},
+	}
+	sess := newTestSession(t, servarr.Radarr, f.handler(t))
+	sess.KidsRootPath = "/media/Movies (Kids)"
+	var aiCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aiCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": `{"kids":true}`}})
+	}))
+	defer srv.Close()
+	sess.MainstreamAI = ollama.New(srv.URL, "test-model", srv.Client())
+
+	got, err := Scan(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].RootFolderPath != "/media/Movies (Kids)" {
+		t.Fatalf("expected the proposal to stay in the Kids root, got %+v", got)
+	}
+	if aiCalled {
+		t.Error("expected classification to be skipped entirely for an item already under the Kids root")
+	}
+}
+
+// TestApply_RelocatesFileIntoTargetRootWhenDifferentFromSource is the real
+// filesystem proof: Apply must physically move a classified-Kids item from
+// its source root into the target root before registering it, or Sonarr/
+// Radarr's own import scan would never find it.
+func TestApply_RelocatesFileIntoTargetRootWhenDifferentFromSource(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "Movies")
+	destRoot := filepath.Join(base, "Movies (Kids)")
+	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(sourceRoot, "Kids.Movie.2020.mkv")
+	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var addBody map[string]any
+	sess := newTestSession(t, servarr.Radarr, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/movie":
+			json.NewDecoder(r.Body).Decode(&addBody)
+			w.Write([]byte(`{"id":77}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Kids Movie", TMDBID: 111,
+		QualityProfileID: 4, SourcePath: sourcePath, RootFolderPath: destRoot,
+	}
+	id, err := Apply(context.Background(), sess, p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != 77 {
+		t.Errorf("got id %d", id)
+	}
+
+	wantDest := filepath.Join(destRoot, "Kids.Movie.2020.mkv")
+	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
+		t.Errorf("expected the source file to be gone, stat returned: %v", err)
+	}
+	if data, err := os.ReadFile(wantDest); err != nil || string(data) != "fake video data" {
+		t.Errorf("expected the file to have moved to %q intact, err=%v data=%q", wantDest, err, data)
+	}
+	if addBody["rootFolderPath"] != destRoot {
+		t.Errorf("expected Add to register against the target root, got %+v", addBody)
+	}
+}
+
+// TestApply_RelocateAvoidsFilenameCollision proves place.UniquePath is
+// actually wired in: a pre-existing file at the plain destination path must
+// not be overwritten.
+func TestApply_RelocateAvoidsFilenameCollision(t *testing.T) {
+	base := t.TempDir()
+	sourceRoot := filepath.Join(base, "Movies")
+	destRoot := filepath.Join(base, "Movies (Kids)")
+	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(sourceRoot, "Movie.mkv")
+	if err := os.WriteFile(sourcePath, []byte("new file"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	collidingPath := filepath.Join(destRoot, "Movie.mkv")
+	if err := os.WriteFile(collidingPath, []byte("already there"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := newTestSession(t, servarr.Radarr, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/movie":
+			w.Write([]byte(`{"id":1}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Movie", TMDBID: 1,
+		QualityProfileID: 4, SourcePath: sourcePath, RootFolderPath: destRoot,
+	}
+	if _, err := Apply(context.Background(), sess, p); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if data, err := os.ReadFile(collidingPath); err != nil || string(data) != "already there" {
+		t.Errorf("expected the pre-existing file to survive untouched, err=%v data=%q", err, data)
+	}
+	uniqued := filepath.Join(destRoot, "Movie.2.mkv")
+	if data, err := os.ReadFile(uniqued); err != nil || string(data) != "new file" {
+		t.Errorf("expected the moved file at the .2 collision path, err=%v data=%q", err, data)
+	}
+}
+
+// TestApply_NoRelocateWhenRootFolderPathMatchesSource confirms the common
+// (non-Kids) case never touches the filesystem — proven by SourcePath's
+// directory genuinely not existing on disk at all, which would surface as a
+// real error if relocate were mistakenly attempted anyway.
+func TestApply_NoRelocateWhenRootFolderPathMatchesSource(t *testing.T) {
+	sess := newTestSession(t, servarr.Radarr, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/movie":
+			w.Write([]byte(`{"id":1}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Movie", TMDBID: 1, QualityProfileID: 4,
+		SourcePath: "/this/path/does/not/exist/Movie.mkv", RootFolderPath: "/this/path/does/not/exist",
+	}
+	if _, err := Apply(context.Background(), sess, p); err != nil {
+		t.Fatalf("expected no relocate attempt (and so no error) when the root already matches, got: %v", err)
 	}
 }

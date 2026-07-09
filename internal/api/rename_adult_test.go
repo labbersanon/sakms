@@ -98,7 +98,7 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		}
 	}
 	// Without the model set, buildIdentifier returns nil and Scan fast-fails.
-	if err := settingsStore.Set(ctx, mode.OllamaModelKey, "test-model"); err != nil {
+	if err := settingsStore.Set(ctx, mode.AIModelKey, "test-model"); err != nil {
 		t.Fatalf("seeding ollama model: %v", err)
 	}
 

@@ -111,7 +111,7 @@ func (e *testEnv) identifier(withFansdb, withBrave bool) *Identifier {
 
 	return &Identifier{
 		Boxes:    NewBoxSearcher(boxes, tpdb),
-		Ollama:   ollamaClient,
+		AI:       ollamaClient,
 		Brave:    braveClient,
 		Throttle: throttle.New(0), // no artificial delay in tests
 	}
@@ -179,7 +179,7 @@ func TestIdentify_UUIDDirectLookupSkipsEverythingElse(t *testing.T) {
 				ID: "a29768db-b3cd-4a71-a75e-4294373207bb", Title: "Direct Match", ReleaseDate: "2021-01-01", StudioName: "Hoby Buchanon",
 			}),
 		}, nil),
-		Ollama:   e.identifier(false, false).Ollama, // present but must never be called
+		AI:       e.identifier(false, false).AI, // present but must never be called
 		Brave:    nil,
 		Throttle: throttle.New(0),
 	}

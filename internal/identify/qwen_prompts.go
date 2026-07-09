@@ -21,7 +21,7 @@ type ParsedFilename struct {
 // filename stem. parentName (if non-empty) is passed as extra context — a
 // parent folder often names the real studio/performer/date more reliably than
 // the filename alone.
-func ParseFilename(ctx context.Context, client *ollama.Client, stem, parentName string) (ParsedFilename, error) {
+func ParseFilename(ctx context.Context, client AIClient, stem, parentName string) (ParsedFilename, error) {
 	contextStr := ""
 	if parentName != "" {
 		contextStr = fmt.Sprintf(
@@ -103,7 +103,7 @@ type SearchSnippet struct {
 // cross-reference against actual sources, rather than guessing from filename
 // tokens alone. Rejects a result whose title is too dissimilar to the
 // original filename (search results were clearly about something else).
-func ExtractFromSearch(ctx context.Context, client *ollama.Client, stem string, results []SearchSnippet, parentName string) (GroundedExtraction, error) {
+func ExtractFromSearch(ctx context.Context, client AIClient, stem string, results []SearchSnippet, parentName string) (GroundedExtraction, error) {
 	if len(results) == 0 {
 		return GroundedExtraction{}, nil
 	}

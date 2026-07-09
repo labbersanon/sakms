@@ -50,3 +50,50 @@ func TestQualityKeyGreater_UnknownSourceRankOnlyLosesToKnown(t *testing.T) {
 		t.Error("a known source rank should beat unknown even at lower bitrate")
 	}
 }
+
+func TestUniquePath_NoCollision(t *testing.T) {
+	exists := func(string) bool { return false }
+	got, err := UniquePath("/media/Movies/Foo.mkv", exists)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/media/Movies/Foo.mkv" {
+		t.Errorf("expected unchanged path, got %q", got)
+	}
+}
+
+func TestUniquePath_OneCollision(t *testing.T) {
+	taken := map[string]bool{"/media/Movies/Foo.mkv": true}
+	exists := func(p string) bool { return taken[p] }
+	got, err := UniquePath("/media/Movies/Foo.mkv", exists)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/media/Movies/Foo.2.mkv" {
+		t.Errorf("expected .2 suffix, got %q", got)
+	}
+}
+
+func TestUniquePath_MultipleCollisions(t *testing.T) {
+	taken := map[string]bool{
+		"/media/Movies/Foo.mkv":   true,
+		"/media/Movies/Foo.2.mkv": true,
+		"/media/Movies/Foo.3.mkv": true,
+	}
+	exists := func(p string) bool { return taken[p] }
+	got, err := UniquePath("/media/Movies/Foo.mkv", exists)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/media/Movies/Foo.4.mkv" {
+		t.Errorf("expected .4 suffix, got %q", got)
+	}
+}
+
+func TestUniquePath_Exhausted(t *testing.T) {
+	exists := func(string) bool { return true } // everything taken, forever
+	_, err := UniquePath("/media/Movies/Foo.mkv", exists)
+	if err == nil {
+		t.Error("expected an error when no unique path can be found")
+	}
+}

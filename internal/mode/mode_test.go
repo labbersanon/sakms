@@ -229,7 +229,7 @@ func TestBuild_AdultWithIdentificationConnections_PopulatesIdentify(t *testing.T
 			t.Fatalf("unexpected error upserting %s: %v", c.service, err)
 		}
 	}
-	if err := settingsStore.Set(ctx, OllamaModelKey, "qwen2.5vl:7b"); err != nil {
+	if err := settingsStore.Set(ctx, AIModelKey, "qwen2.5vl:7b"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -243,8 +243,8 @@ func TestBuild_AdultWithIdentificationConnections_PopulatesIdentify(t *testing.T
 	if sess.Identify.Boxes == nil {
 		t.Error("expected the Identifier's Boxes searcher to be non-nil")
 	}
-	if sess.Identify.Ollama == nil {
-		t.Error("expected the Identifier's Ollama client to be non-nil")
+	if sess.Identify.AI == nil {
+		t.Error("expected the Identifier's AI client to be non-nil")
 	}
 }
 
@@ -310,7 +310,7 @@ func TestBuild_AdultIdentifierIsFunctional(t *testing.T) {
 	if err := store.Upsert(ctx, "stashdb", stashSrv.URL, "k"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := settingsStore.Set(ctx, OllamaModelKey, "test-model"); err != nil {
+	if err := settingsStore.Set(ctx, AIModelKey, "test-model"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func TestBuild_MainstreamAI_NilWithoutOllamaConnection(t *testing.T) {
 }
 
 // TestBuild_MainstreamAI_NilWithoutModelSetting confirms an Ollama connection
-// alone isn't enough — the OllamaModelKey setting must also be set, same
+// alone isn't enough — the AIModelKey setting must also be set, same
 // two-part gate as Adult's Identify.
 func TestBuild_MainstreamAI_NilWithoutModelSetting(t *testing.T) {
 	store, settingsStore := newTestStores(t)
@@ -378,7 +378,7 @@ func TestBuild_MainstreamAI_NilWithoutModelSetting(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sess.MainstreamAI != nil {
-		t.Error("expected MainstreamAI to be nil without the OllamaModelKey setting")
+		t.Error("expected MainstreamAI to be nil without the AIModelKey setting")
 	}
 }
 
@@ -399,7 +399,7 @@ func TestBuild_MainstreamAI_PopulatedWhenConfigured(t *testing.T) {
 			if err := store.Upsert(ctx, "ollama", "http://ollama.local:11434", ""); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if err := settingsStore.Set(ctx, OllamaModelKey, "qwen2.5:7b"); err != nil {
+			if err := settingsStore.Set(ctx, AIModelKey, "qwen2.5:7b"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -411,6 +411,226 @@ func TestBuild_MainstreamAI_PopulatedWhenConfigured(t *testing.T) {
 				t.Fatal("expected a non-nil MainstreamAI with ollama+model configured")
 			}
 		})
+	}
+}
+
+// TestBuild_AIClient_UsesConfiguredProvider proves buildAIClient actually
+// dispatches to the right provider client for each of the four supported
+// backends — not just that SOME client comes back non-nil, but that it's
+// functional against that provider's real request/response shape.
+func TestBuild_AIClient_UsesConfiguredProvider(t *testing.T) {
+	cases := []struct {
+		provider string
+		fake     func(t *testing.T) *httptest.Server
+	}{
+		{AIProviderOllama, func(t *testing.T) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, map[string]any{"message": map[string]any{"content": `{"title":"ok"}`}})
+			}))
+		}},
+		{AIProviderOpenAI, func(t *testing.T) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, map[string]any{"choices": []map[string]any{
+					{"message": map[string]any{"content": `{"title":"ok"}`}},
+				}})
+			}))
+		}},
+		{AIProviderGemini, func(t *testing.T) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, map[string]any{"candidates": []map[string]any{
+					{"content": map[string]any{"parts": []map[string]any{{"text": `{"title":"ok"}`}}}},
+				}})
+			}))
+		}},
+		{AIProviderAnthropic, func(t *testing.T) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, map[string]any{"content": []map[string]any{
+					{"type": "text", "text": `{"title":"ok"}`},
+				}})
+			}))
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.provider, func(t *testing.T) {
+			srv := c.fake(t)
+			defer srv.Close()
+
+			store, settingsStore := newTestStores(t)
+			ctx := context.Background()
+			if err := store.Upsert(ctx, "radarr", "http://radarr.local:7878", "radarr-key"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err := store.Upsert(ctx, c.provider, srv.URL, "test-key"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err := settingsStore.Set(ctx, AIProviderKey, c.provider); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err := settingsStore.Set(ctx, AIModelKey, "test-model"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: 5 * time.Second}, Movies)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sess.MainstreamAI == nil {
+				t.Fatal("expected a non-nil MainstreamAI")
+			}
+			result, err := sess.MainstreamAI.ChatJSON(ctx, "prompt")
+			if err != nil {
+				t.Fatalf("expected the %s client to actually work against its fake, got: %v", c.provider, err)
+			}
+			if result["title"] != "ok" {
+				t.Errorf("got %+v", result)
+			}
+		})
+	}
+}
+
+// TestBuild_AIClient_UnknownProviderErrors confirms an explicitly-set but
+// unrecognized provider is a real configuration error, not silently
+// tolerated — the user asked for something specific that can't be honored.
+func TestBuild_AIClient_UnknownProviderErrors(t *testing.T) {
+	store, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "radarr", "http://radarr.local:7878", "radarr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, AIProviderKey, "chatgpt"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, AIModelKey, "test-model"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The connection lookup for an unknown provider name would also miss, but
+	// the provider-name validation must fire before that, with a clear message.
+	if err := store.Upsert(ctx, "chatgpt", "http://example.invalid", "k"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Movies)
+	if err == nil {
+		t.Fatal("expected an error for an unrecognized ai_provider value")
+	}
+	if !strings.Contains(err.Error(), "chatgpt") {
+		t.Errorf("expected the error to name the bad provider value, got: %v", err)
+	}
+}
+
+// TestBuild_AIClient_ProviderStoreError_Propagates is a regression guard for
+// the exact bug class this project has hit before (see buildIdentifier's own
+// history): a real settings-store failure on the ai_provider lookup must
+// propagate, not be silently swallowed as "just use the default provider"
+// because the zero-value string also happens to equal "".
+func TestBuild_AIClient_ProviderStoreError_Propagates(t *testing.T) {
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "tidyarr.db"))
+	if err != nil {
+		t.Fatalf("opening db: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	secretStore, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("building secret store: %v", err)
+	}
+	store := connections.New(sqlDB, secretStore)
+	settingsStore := settings.New(sqlDB)
+	ctx := context.Background()
+
+	if err := store.Upsert(ctx, "radarr", "http://radarr.local:7878", "radarr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := sqlDB.Exec(`DROP TABLE settings`); err != nil {
+		t.Fatalf("dropping settings table: %v", err)
+	}
+
+	_, err = Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Movies)
+	if err == nil {
+		t.Fatal("expected a real settings-store error to propagate, got nil")
+	}
+	if strings.Contains(err.Error(), "not configured") {
+		t.Errorf("a real store error must not be reported as merely unconfigured, got: %v", err)
+	}
+}
+
+// TestBuild_KidsRootPath_DefaultsEmpty confirms the feature is off by
+// default for Movies/Series when nothing has been configured.
+func TestBuild_KidsRootPath_DefaultsEmpty(t *testing.T) {
+	for _, m := range []Mode{Movies, Series} {
+		t.Run(string(m), func(t *testing.T) {
+			store, settingsStore := newTestStores(t)
+			ctx := context.Background()
+			service := "radarr"
+			if m == Series {
+				service = "sonarr"
+			}
+			if err := store.Upsert(ctx, service, "http://app.local", "key"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, m)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sess.KidsRootPath != "" {
+				t.Errorf("expected KidsRootPath to default empty, got %q", sess.KidsRootPath)
+			}
+		})
+	}
+}
+
+// TestBuild_KidsRootPath_ReadsPerModeSetting proves Movies and Series each
+// read their OWN key, not a shared one.
+func TestBuild_KidsRootPath_ReadsPerModeSetting(t *testing.T) {
+	store, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "radarr", "http://radarr.local", "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := store.Upsert(ctx, "sonarr", "http://sonarr.local", "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, "movies_kids_root_path", "/media/Movies (Kids)"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, "series_kids_root_path", "/media/Series (Kids)"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	moviesSess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if moviesSess.KidsRootPath != "/media/Movies (Kids)" {
+		t.Errorf("got %q", moviesSess.KidsRootPath)
+	}
+
+	seriesSess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Series)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if seriesSess.KidsRootPath != "/media/Series (Kids)" {
+		t.Errorf("got %q", seriesSess.KidsRootPath)
+	}
+}
+
+// TestBuild_KidsRootPath_NotApplicableToAdult confirms Adult never resolves
+// a KidsRootPath — the concept doesn't apply there.
+func TestBuild_KidsRootPath_NotApplicableToAdult(t *testing.T) {
+	store, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "whisparr", "http://whisparr.local:6969", "whisparr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, Adult)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sess.KidsRootPath != "" {
+		t.Errorf("expected KidsRootPath to stay empty for Adult, got %q", sess.KidsRootPath)
 	}
 }
 

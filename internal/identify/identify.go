@@ -9,13 +9,16 @@ import (
 	"strings"
 
 	"github.com/curtiswtaylorjr/tidyarr/internal/bravesearch"
-	"github.com/curtiswtaylorjr/tidyarr/internal/ollama"
 	"github.com/curtiswtaylorjr/tidyarr/internal/throttle"
 )
 
 type Identifier struct {
-	Boxes    *BoxSearcher
-	Ollama   *ollama.Client
+	Boxes *BoxSearcher
+	// AI is whichever provider is configured (Ollama, OpenAI, Gemini, or
+	// Anthropic — see mode.buildAIClient) behind the shared AIClient
+	// interface. Every prompt in this package is written to be
+	// provider-agnostic (see AIClient's doc comment).
+	AI       AIClient
 	Brave    *bravesearch.Client // nil if no Brave key is available — web search step is skipped
 	Throttle *throttle.Throttle
 	// GiveBack submits identification results back to the community databases
@@ -49,7 +52,7 @@ func (id *Identifier) Identify(ctx context.Context, stem, parentName string) (*M
 		return result, nil
 	}
 
-	parsed, err := ParseFilename(ctx, id.Ollama, stem, parentName)
+	parsed, err := ParseFilename(ctx, id.AI, stem, parentName)
 	if err != nil {
 		return nil, nil //nolint:nilerr // a parse failure is a soft "no match", not a hard error
 	}
@@ -180,7 +183,7 @@ func (id *Identifier) webSearchAndGround(ctx context.Context, stem, parentName s
 	for i, r := range searchResults {
 		snippets[i] = SearchSnippet{Title: r.Title, Description: r.Description, URL: r.URL}
 	}
-	return ExtractFromSearch(ctx, id.Ollama, stem, snippets, parentName)
+	return ExtractFromSearch(ctx, id.AI, stem, snippets, parentName)
 }
 
 // reSearchAfterGrounding re-checks the internal DBs with the web-grounded

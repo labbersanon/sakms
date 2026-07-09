@@ -1,9 +1,15 @@
 // Package place holds pure decision logic for comparing two candidate copies
 // of the same movie/episode and deciding which is the better quality — the
-// comparison Dedup's compare card surfaces instead of leaving it silent.
+// comparison Dedup's compare card surfaces instead of leaving it silent —
+// plus UniquePath, the filename-collision logic Rename's Kids relocation
+// uses when physically moving a file into a different root folder.
 package place
 
-import "strings"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 // QualityKey ranks two copies of the same content so a dedupe pass can decide
 // which one to keep. Compared most-significant-field-first: Resolution, then
@@ -48,4 +54,28 @@ func NewQualityKey(resolution, sourceRank int, codec string, bitRate int64) Qual
 		IsAV1:      strings.EqualFold(codec, "av1"),
 		BitRate:    bitRate,
 	}
+}
+
+// Exists reports whether a path is already occupied — the caller supplies
+// this (rather than UniquePath calling os.Stat itself) so it stays testable
+// without a real filesystem.
+type Exists func(path string) bool
+
+// UniquePath returns target if it's free, or the first "target.N<ext>"
+// variant (N starting at 2) that is — the same collision-avoidance a
+// physical file move needs when its destination folder might already
+// contain something with the same name.
+func UniquePath(target string, exists Exists) (string, error) {
+	if !exists(target) {
+		return target, nil
+	}
+	ext := filepath.Ext(target)
+	stem := strings.TrimSuffix(target, ext)
+	for i := 2; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s.%d%s", stem, i, ext)
+		if !exists(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not find a unique path for %s", target)
 }

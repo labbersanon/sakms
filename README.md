@@ -10,25 +10,34 @@ staged for approval before anything actually happens. No Stash dependency.
 
 Early scaffolding. What's real so far: a Go server with a SQLite-backed
 migration runner, the Sonarr/Radarr/Whisparr client and the full
-StashDB/FansDB/TPDB/Brave/Ollama identification pipeline (ported from the
-CLIs this project grew out of), a `/api/connections` endpoint to test and
-persist service credentials (encrypted at rest — see below), and all four
-review workflows the design calls for, three of them queue-staged:
+StashDB/FansDB/TPDB/Brave identification pipeline (ported from the CLIs this
+project grew out of), a `/api/connections` endpoint to test and persist
+service credentials (encrypted at rest — see below), and all four review
+workflows the design calls for, three of them queue-staged:
 **Rename** (`POST /api/modes/{movies,series,adult}/rename/scan` finds orphaned
 files, identifies them, and stages one proposal per item — Movies/Series via
-the *arr app's own TVDB/TMDB lookup, falling back to an AI-guessed title (via
-Ollama, `GET`/`PUT /api/settings/ollama-model`) when that lookup finds
-nothing, Adult via the StashDB/FansDB/TPDB/Ollama identification pipeline,
-with Apply carrying the resolved scene identifier through to Whisparr V3. Both
-Movies/Series' AI fallback and Adult's identification pipeline share the same
-configured Ollama model — one local Ollama install, one model setting, no
-per-mode duplication. When Adult identification confidently identifies a file
-via web search but it matches no existing scene anywhere, the resulting
-Unmatched proposal can be given back to the community databases as a new
-scene draft — `POST /api/proposals/{id}/submit-draft`, preferring TPDB when
-configured and falling back to StashDB — a separate, explicitly
-human-triggered action, unlike the original CLIs' automatic submission during
-scan), **Purge** (`POST
+the *arr app's own TVDB/TMDB lookup, falling back to an AI-guessed title when
+that lookup finds nothing, Adult via the StashDB/FansDB/TPDB + AI
+identification pipeline, with Apply carrying the resolved scene identifier
+through to Whisparr V3. Every AI-assisted feature (Adult identification,
+Movies/Series' title-guess fallback, and Kids/general classification below)
+shares one configured provider+model — Ollama, OpenAI, Gemini, or Anthropic,
+`GET`/`PUT /api/settings/ai-provider` and `/api/settings/ai-model` — behind a
+single internal interface every prompt is written against, so switching
+providers needs no other code changes. When Adult identification confidently
+identifies a file via web search but it matches no existing scene anywhere,
+the resulting Unmatched proposal can be given back to the community
+databases as a new scene draft — `POST /api/proposals/{id}/submit-draft`,
+preferring TPDB when configured and falling back to StashDB — a separate,
+explicitly human-triggered action, unlike the original CLIs' automatic
+submission during scan. Movies/Series Rename also classifies matched content
+as kids-appropriate or not (certification/genre first, the same shared AI as
+a fallback when that signal is weak) and routes it to a per-mode Kids root
+folder — `GET`/`PUT /api/modes/{movies,series}/rename/kids-root-path`, picked
+explicitly from the mode's own real root folders rather than guessed from a
+naming convention; Apply physically relocates the file into that root before
+registering it, since Sonarr/Radarr can only import from where it's actually
+sitting), **Purge** (`POST
 /api/modes/{movies,series,adult}/purge/scan` matches a per-mode tag allowlist,
 managed via `/api/modes/{mode}/purge/allowlist`, against every tracked
 item's native tags — Adult needed no code changes, since Whisparr's tracked
@@ -49,8 +58,7 @@ the live vocabulary and `POST`/`DELETE
 creating a genuinely new tag upstream automatically — this one isn't staged
 through the review queue, since assigning a tag is already a single
 deliberate action, not an automatic decision needing approval. Series Dedup,
-AI-suggested tags, Kids/general classification for Movies/Series, and the
-React frontend don't exist yet. All three Adult
+AI-suggested tags, and the React frontend don't exist yet. All three Adult
 workflows (Rename, Purge, Dedup) are now live, though tracked-vs-orphan Adult
 Dedup rests on an unverified assumption about Whisparr's API response shape
 (see the commit history) — not yet run against a real Whisparr instance.

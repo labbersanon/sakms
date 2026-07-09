@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/curtiswtaylorjr/tidyarr/internal/connections"
@@ -10,6 +11,58 @@ import (
 	"github.com/curtiswtaylorjr/tidyarr/internal/rename"
 	"github.com/curtiswtaylorjr/tidyarr/internal/settings"
 )
+
+type kidsRootPathResponse struct {
+	Path string `json:"path"`
+}
+
+type kidsRootPathRequest struct {
+	Path string `json:"path"`
+}
+
+// getKidsRootPathHandler returns {mode}'s configured Kids root folder path,
+// or an empty string if unset (a normal state — the feature is off for that
+// mode). 400s for Adult, which has no kids/general split concept.
+func getKidsRootPathHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key, ok := mode.Mode(r.PathValue("mode")).KidsRootPathKey()
+		if !ok {
+			http.Error(w, "kids root path isn't applicable to this mode", http.StatusBadRequest)
+			return
+		}
+		path, err := settingsStore.Get(r.Context(), key)
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(kidsRootPathResponse{Path: path})
+	}
+}
+
+// putKidsRootPathHandler stores {mode}'s Kids root folder path. An empty
+// path is accepted (turns the feature back off) — unlike the AI model
+// setting, "off" is a perfectly normal, common choice here, not a mistake to
+// reject.
+func putKidsRootPathHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key, ok := mode.Mode(r.PathValue("mode")).KidsRootPathKey()
+		if !ok {
+			http.Error(w, "kids root path isn't applicable to this mode", http.StatusBadRequest)
+			return
+		}
+		var req kidsRootPathRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := settingsStore.Set(r.Context(), key, req.Path); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
 
 // renameScanHandler runs the Rename workflow's propose-phase for {mode} and
 // replaces that mode's live Rename queue with the result — the HTTP

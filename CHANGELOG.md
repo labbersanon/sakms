@@ -590,3 +590,60 @@ have put the coarser algorithm on the deletion path). The full risk analysis
 is preserved in `.omc/autopilot/spec-phash-unification.md`, marked superseded
 on its conclusion (unify + delete) but not its algorithm-fidelity findings
 (§1), which are what prompted this course correction.
+
+## 2026-07-10 — Adult Dedup gets internal/phash
+
+Implemented the first half of the purpose-split decided in the previous
+entry. `dedup.scanAdult` (Servarr/Whisparr-backed, groups by `ForeignID`) no
+longer auto-dedupes every candidate sharing a foreignID — it now refines
+each group by perceptual similarity exactly as Movies and Series already do,
+using `internal/phash` unchanged (no edits to that package; the existing,
+already-validated algorithm and default threshold carry over as-is — no new
+calibration pass, per explicit direction, since the algorithm itself hasn't
+changed, only its third caller).
+
+- New `attachPHashesAdult`, a sibling of `attachPHashes`/`attachPHashesSeries`
+  but deliberately simpler: no cache-read, no write-back, no library-store
+  parameter. Adult has no SAK-owned row to cache a hash against (unlike
+  Movies' `library_items` or Series' `library_episodes`) — every Scan
+  recomputes fresh. This is a genuinely smaller, honestly-scoped capability,
+  not a missing feature; caching was a decode-once optimization for
+  Movies/Series, never a correctness requirement.
+- `scanAdult` gains the same attach→refine→keep-both-on-`<2` block Movies and
+  Series already have, reusing `refineByPHash` verbatim — including its
+  `len<2` panic guard from the original Movies fix, which now protects this
+  third caller too. The tracked Whisparr item gets a nonzero `TrackedID` via
+  `probeCandidate` exactly like Movies/Series, so `refineByPHash`'s existing
+  reference-selection logic (prefer the tracked candidate) needed zero
+  adjustment for Adult's Servarr-backed shape.
+- Closed a real wiring gap in `internal/api/dedup.go`: Adult's Scan branch
+  previously called `dedup.Scan` with neither a hasher nor a resolved
+  threshold at all — the already mode-generic `resolvePHashThreshold` (used
+  by Movies/Series since Series shipped) now resolves for Adult too, and the
+  in-scope hasher is forwarded. `/api/modes/adult/phash-threshold` already
+  worked with zero changes (the config route was built mode-generic from the
+  start); this just makes Adult's Scan actually use it.
+- Added a direct unit test of `refineByPHash`'s reference-selection logic
+  (`TestRefineByPHash_TrackedCandidateSelectedRegardlessOfPosition`) that
+  places the tracked candidate deliberately last in the slice, with a hash
+  arrangement chosen so a wrong (position-based) selection produces a
+  disjoint survivor set from the correct (TrackedID-based) one — every prior
+  "uses tracked as reference" test (Movies, Series, Adult) happened to always
+  put the tracked candidate first, so none of them could actually distinguish
+  correct selection from index-0-by-coincidence. Verified this new test both
+  passes against the real code and fails when the selection logic is broken
+  (confirmed by temporarily disabling it and watching the test catch it,
+  then restoring).
+
+Verified via `go build/vet/test -race` across the whole module (all green,
+`internal/phash`/`internal/videophash`/`internal/rename` genuinely untouched
+— confirmed via `git diff --stat`) and `-tags integration`. Safety property
+traced end to end: an uncomputable-hash candidate is dropped in
+`attachPHashesAdult`, never enters `refineByPHash`, and can never be treated
+as a match or deleted — including when the tracked reference itself is the
+uncomputable one, which correctly degrades to comparing remaining orphans to
+each other rather than silently matching everything.
+
+Adult identification (replacing `rename.scanAdultPhashFirst`'s Stash-read
+dependency with `internal/videophash`) remains a separate, not-yet-started
+slice, per the purpose split.

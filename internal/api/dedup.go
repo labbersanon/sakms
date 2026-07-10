@@ -21,8 +21,10 @@ import (
 // takes dedup.Prober's interface, not the concrete *mediainfo.Prober, so
 // tests can inject a fake instead of depending on a real ffprobe binary.
 // Movies/Series dispatch to dedup.ScanLibrary/ScanLibrarySeries (libStore,
-// no *arr app involved); Adult uses the existing Servarr-backed
-// dedup.Scan, unchanged.
+// no *arr app involved); Adult uses the Servarr-backed dedup.Scan, which now
+// refines each same-foreignID group by perceptual similarity too — so this
+// branch resolves the same already-mode-generic per-mode threshold and forwards
+// the in-scope hasher (previously it passed neither).
 func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, prober dedup.Prober, hasher dedup.PHasher, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -52,7 +54,12 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, set
 				found, err = dedup.ScanLibrarySeries(ctx, sess, libStore, rootPath, prober, hasher, threshold)
 			}
 		} else {
-			found, err = dedup.Scan(ctx, sess, prober)
+			threshold, tErr := resolvePHashThreshold(ctx, settingsStore, m)
+			if tErr != nil {
+				http.Error(w, tErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			found, err = dedup.Scan(ctx, sess, prober, hasher, threshold)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

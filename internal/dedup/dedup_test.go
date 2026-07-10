@@ -142,7 +142,7 @@ func TestScan_RefusesSeries(t *testing.T) {
 	sess := newTestSession(t, servarr.Sonarr, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("Scan must not make any HTTP call for an unsupported app")
 	})
-	if _, err := Scan(context.Background(), sess, &fakeProber{}); err == nil {
+	if _, err := Scan(context.Background(), sess, &fakeProber{}, &fakePHasher{}, 10); err == nil {
 		t.Fatal("expected Scan to refuse a Series (Sonarr) session")
 	}
 }
@@ -178,7 +178,7 @@ func TestScan_TrackedItemPlusOrphan_ProposesWithCorrectWinner(t *testing.T) {
 		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
 
-	got, err := Scan(context.Background(), sess, prober)
+	got, err := Scan(context.Background(), sess, prober, &fakePHasher{}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestScan_SingleNewOrphanIsNotADuplicate(t *testing.T) {
 		}
 	})
 
-	got, err := Scan(context.Background(), sess, &fakeProber{})
+	got, err := Scan(context.Background(), sess, &fakeProber{}, &fakePHasher{}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestScan_Adult_RefusesWhenIdentifyNil(t *testing.T) {
 	sess := newAdultApplySession(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("Scan must fail fast before any HTTP call, got %s %s", r.Method, r.URL.Path)
 	})
-	_, err := Scan(context.Background(), sess, &fakeProber{})
+	_, err := Scan(context.Background(), sess, &fakeProber{}, &fakePHasher{}, 10)
 	if err == nil {
 		t.Fatal("expected Scan to refuse an Adult session with no identify backbone")
 	}
@@ -506,7 +506,7 @@ func TestScan_Adult_TrackedPlusOrphan_GroupsByForeignID(t *testing.T) {
 		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
 
-	got, err := Scan(context.Background(), sess, prober)
+	got, err := Scan(context.Background(), sess, prober, matchingPHasher(trackedFile, orphanFile), 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -570,7 +570,7 @@ func TestScan_Adult_TwoOrphans_GroupByForeignID(t *testing.T) {
 		fileB: {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
 
-	got, err := Scan(context.Background(), sess, prober)
+	got, err := Scan(context.Background(), sess, prober, matchingPHasher(fileA, fileB), 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestScan_Adult_NoForeignIDOnTracked_DegradesGracefully(t *testing.T) {
 		prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
 			orphanFile: {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 		}}
-		got, err := Scan(context.Background(), sess, prober)
+		got, err := Scan(context.Background(), sess, prober, &fakePHasher{}, 10)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -665,7 +665,7 @@ func TestScan_Adult_NoForeignIDOnTracked_DegradesGracefully(t *testing.T) {
 			fileA: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
 			fileB: {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 		}}
-		got, err := Scan(context.Background(), sess, prober)
+		got, err := Scan(context.Background(), sess, prober, matchingPHasher(fileA, fileB), 10)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

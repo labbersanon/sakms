@@ -70,13 +70,19 @@ split:
   Stash-read dependency, and any future direct StashDB/FansDB/TPDB fingerprint
   lookups. It is explicitly NOT a Dedup signal.
 
+**Shipped (2026-07-10): Adult Dedup gets `internal/phash`.** `dedup.scanAdult`
+(Servarr/Whisparr-backed, groups by `ForeignID`) gets the same
+refine-within-identifier-grouping phash gate Movies/Series already have.
+`internal/phash` itself is unchanged — reused verbatim, no new calibration,
+same default threshold. New `attachPHashesAdult` is deliberately simpler than
+its Movies/Series siblings: no cache (Adult has no SAK-owned row to cache a
+hash against — `library_items`/`library_episodes` have no Adult equivalent),
+every Scan recomputes fresh. Closed a real gap in `internal/api/dedup.go`
+where Adult's Scan branch previously received neither a hasher nor a resolved
+threshold at all. See the CHANGELOG entry of the same date for the full
+safety trace and the new direct `refineByPHash` reference-selection test.
+
 **Still open (next slices):**
-- **Adult Dedup gets `internal/phash`.** Give `dedup.scanAdult` the same
-  refine-within-identifier-grouping phash gate Movies/Series already have,
-  using `internal/phash`'s own ffmpeg+ajdnik/imghash computation (Servarr/
-  Whisparr-backed grouping by `ForeignID`, not library-backed like
-  Movies/Series — the integration shape differs). Not yet designed at the
-  file/function level — needs its own Phase 0/1 pass.
 - **Adult identify gets `internal/videophash`.** Replace
   `rename.scanAdultPhashFirst`'s current dependency on reading a live Stash
   instance's phash with SAK's own `internal/videophash.Hash` call. Separate

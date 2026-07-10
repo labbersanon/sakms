@@ -54,11 +54,13 @@ type Prober interface {
 	Probe(ctx context.Context, path string) (*mediainfo.Probe, error)
 }
 
-// PHasher is the subset of *phash.Hasher ScanLibrary/ScanLibrarySeries need —
-// an interface so tests can inject a fake without a real ffmpeg binary or video
-// file, exactly as Prober does for ffprobe. Both library-backed modes (Movies
-// and Series) refine their groups with it; only the Servarr-backed Scan (Adult)
-// doesn't compute perceptual hashes yet.
+// PHasher is the subset of *phash.Hasher the phash-refined Scans need — an
+// interface so tests can inject a fake without a real ffmpeg binary or video
+// file, exactly as Prober does for ffprobe. All three modes refine their groups
+// with it: the library-backed Movies (ScanLibrary) and Series
+// (ScanLibrarySeries), and the Servarr-backed Adult (scanAdult). Adult alone
+// recomputes every scan (no SAK-owned row to cache against — see
+// attachPHashesAdult).
 type PHasher interface {
 	Hash(ctx context.Context, path string) (string, error)
 }
@@ -139,6 +141,28 @@ func attachPHashesSeries(ctx context.Context, hasher PHasher, libStore *library.
 				_ = libStore.UpdateEpisodePHash(ctx, int64(c.TrackedID), h, size, mtime)
 			}
 		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// attachPHashesAdult is attachPHashes' Servarr/Adult-typed sibling, stripped to
+// its essence: hash every candidate fresh and drop any it can't hash. Adult is
+// Whisparr-backed with no SAK-owned library row to cache a hash against (unlike
+// Movies' library_items / Series' library_episodes), so there is deliberately no
+// cache-read and no write-back — every Adult Dedup scan recomputes. That is a
+// smaller, equally-correct scope, not a missing feature: refineByPHash's
+// keep-both-on-<2 behavior is identical with or without a cache (see the package
+// doc and CHANGELOG). A candidate whose hash can't be computed is dropped, the
+// same tolerant posture as probeCandidate and attachPHashes.
+func attachPHashesAdult(ctx context.Context, hasher PHasher, candidates []proposals.Candidate) []proposals.Candidate {
+	out := make([]proposals.Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		h, err := hasher.Hash(ctx, c.Path)
+		if err != nil {
+			continue // uncomputable — drop, same tolerance as attachPHashes/probeCandidate
+		}
+		c.PHash = h
 		out = append(out, c)
 	}
 	return out
@@ -263,18 +287,23 @@ func markWinner(candidates []proposals.Candidate) {
 // session, whether it's still Sonarr-backed or already on its own library —
 // sess.Servarr is nil in the latter case) is refused, since Series dedup
 // isn't built yet (see the package doc).
-func Scan(ctx context.Context, sess *mode.Session, prober Prober) ([]proposals.Proposal, error) {
+//
+// hasher and perFrameThreshold refine the Adult path by perceptual similarity
+// exactly as ScanLibrary/ScanLibrarySeries do (see scanAdult). They are
+// threaded through to scanMovies too for signature consistency, but the legacy
+// Radarr path does not use them — Movies' real dedup is ScanLibrary.
+func Scan(ctx context.Context, sess *mode.Session, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
 	if sess.Servarr == nil {
 		return nil, fmt.Errorf("dedup: Series-library dedup isn't implemented yet (tracked separately) — Movies and Adult only")
 	}
 	switch sess.Servarr.AppType() {
 	case servarr.Radarr:
-		return scanMovies(ctx, sess, prober)
+		return scanMovies(ctx, sess, prober, hasher, perFrameThreshold)
 	case servarr.Whisparr:
 		if sess.Identify == nil {
 			return nil, fmt.Errorf("adult identification isn't configured — add an Ollama connection and set the Ollama model in Settings, plus at least one of StashDB/FansDB/TPDB")
 		}
-		return scanAdult(ctx, sess, prober)
+		return scanAdult(ctx, sess, prober, hasher, perFrameThreshold)
 	default:
 		return nil, fmt.Errorf("dedup: Series-library dedup isn't implemented yet (tracked separately) — Movies and Adult only, not %v", sess.Mode)
 	}
@@ -284,7 +313,11 @@ func Scan(ctx context.Context, sess *mode.Session, prober Prober) ([]proposals.P
 // already-tracked item) by resolved TMDB ID. A group with 2+ probeable
 // candidates becomes a Pending Dedup proposal; a lone new item is left for
 // Rename to handle, not reported here.
-func scanMovies(ctx context.Context, sess *mode.Session, prober Prober) ([]proposals.Proposal, error) {
+//
+// hasher and perFrameThreshold are accepted for signature consistency with the
+// phash-refined Scan dispatch but deliberately unused here: this is the legacy
+// Radarr path, and Movies' real (phash-refined) dedup is ScanLibrary.
+func scanMovies(ctx context.Context, sess *mode.Session, prober Prober, _ PHasher, _ int) ([]proposals.Proposal, error) {
 	client := sess.Servarr
 
 	folders, err := client.RootFolders(ctx)
@@ -382,7 +415,7 @@ func scanMovies(ctx context.Context, sess *mode.Session, prober Prober) ([]propo
 // no misfile. This is an UNVERIFIED assumption (no live Whisparr here); see the
 // commit body. Deliberately not logged: no internal/* package in this codebase
 // logs directly (only cmd/sakms/main.go does).
-func scanAdult(ctx context.Context, sess *mode.Session, prober Prober) ([]proposals.Proposal, error) {
+func scanAdult(ctx context.Context, sess *mode.Session, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
 	client := sess.Servarr
 
 	folders, err := client.RootFolders(ctx)
@@ -450,6 +483,19 @@ func scanAdult(ctx context.Context, sess *mode.Session, prober Prober) ([]propos
 		}
 		if len(candidates) < 2 {
 			continue // couldn't probe enough of the group to compare
+		}
+
+		// Refine the same-foreignID group by perceptual similarity, exactly as
+		// ScanLibrary/ScanLibrarySeries do: hash each candidate (always fresh —
+		// Adult has no library row to cache against, see attachPHashesAdult), then
+		// drop any candidate outside the threshold of the group's reference (the
+		// tracked scene if present via its nonzero TrackedID, else the first
+		// orphan). A group refined below 2 survivors is not a duplicate — the
+		// strictly-more-conservative keep-both.
+		candidates = attachPHashesAdult(ctx, hasher, candidates)
+		candidates = refineByPHash(candidates, phash.Frames, perFrameThreshold)
+		if len(candidates) < 2 {
+			continue // perceptually dissimilar — keep both, no proposal
 		}
 		markWinner(candidates)
 

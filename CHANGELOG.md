@@ -752,3 +752,32 @@ confirms zero remaining references to `SubmitFingerprintRetry`,
 `submitFingerprintHandler`, `/submit-fingerprint`, or `submitFingerprint()`
 outside this note; `sess.Stash` now shows only `mode.go`'s write and the
 retained `mode_test.go` reads.
+
+## 2026-07-10 — Add internal/jellyfin client + "jellyfin" connection type (Slice 1 of player-rescan-notify)
+
+New `internal/jellyfin` package: a minimal REST client (`Config`/`Client`/`New`,
+house HTTP-client pattern — hand-built requests via `internal/httpx`'s
+`DoJSON`/`DoJSONAllowEmpty`, no interfaces) exposing `NotifyMediaUpdated`
+(`POST {base}/Library/Media/Updated`, fire-and-forget, 204 expected) and `Ping`
+(`GET {base}/System/Info`). Auth is the `Authorization: MediaBrowser
+Token="<key>"` header. **HONESTY NOTE, carried into the package doc:** the
+request/response shapes are modeled from Jellyfin's master source
+(`LibraryController.PostUpdatedMedia`, `SystemController.GetSystemInfo`), not
+confirmed against a live instance — `System/Info` was chosen over the
+unauthenticated `System/Info/Public` specifically because it actually
+exercises the API key.
+
+Wired a `"jellyfin"` connection type end to end for Settings' Test Connection
+flow only: `TestConnection` dispatch, `testJellyfin` (mirrors `testOllama`),
+and the frontend's `CONNECTION_SERVICES` array (its render loop already
+treats every service generically — URL + API key fields, no per-service
+casing needed).
+
+**This slice is standalone and inert** — a user can add/test a Jellyfin
+connection in Settings today, but nothing in SAK calls
+`NotifyMediaUpdated` yet. The actual notify-on-Apply wiring
+(`internal/mode.Session.NotifyPlayers` and its call sites) lands in later
+slices of the same feature.
+
+Verified via `go build/vet/test -race` across the whole module (all green)
+and `-tags integration` (compiles clean).

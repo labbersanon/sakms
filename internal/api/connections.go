@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/curtiswtaylorjr/sakms/internal/bravesearch"
+	"github.com/curtiswtaylorjr/sakms/internal/jellyfin"
 	"github.com/curtiswtaylorjr/sakms/internal/nzbget"
 	"github.com/curtiswtaylorjr/sakms/internal/ollama"
 	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
@@ -22,7 +23,7 @@ import (
 // read-only call against it — the same thing Settings' "Test connection"
 // button does. Nothing here is persisted.
 type ConnectionTestRequest struct {
-	Service  string `json:"service"` // "sonarr" | "whisparr" | "ollama" | "stash" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "qbittorrent" | "nzbget" | "tmdb"
+	Service  string `json:"service"` // "sonarr" | "whisparr" | "ollama" | "stash" | "jellyfin" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "qbittorrent" | "nzbget" | "tmdb"
 	URL      string `json:"url"`
 	Username string `json:"username,omitempty"` // only qbittorrent/nzbget use this
 	APIKey   string `json:"apiKey,omitempty"`
@@ -55,6 +56,8 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 		return testOllama(ctx, httpClient, req)
 	case "stash":
 		return testStash(ctx, httpClient, req)
+	case "jellyfin":
+		return testJellyfin(ctx, httpClient, req)
 	case "stashdb", "fansdb":
 		return testStashBox(ctx, httpClient, req)
 	case "tpdb":
@@ -95,6 +98,17 @@ func testOllama(ctx context.Context, httpClient *http.Client, req ConnectionTest
 func testStash(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	c := stashapi.New(stashapi.Config{URL: req.URL, APIKey: req.APIKey}, httpClient)
 	if _, err := c.AllTags(ctx); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+// testJellyfin expects req.URL to point at Jellyfin's base URL (e.g.
+// "https://jf.zaena.us") — req.APIKey is a Jellyfin API key, matching
+// jellyfin.Config.
+func testJellyfin(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := jellyfin.New(jellyfin.Config{URL: req.URL, APIKey: req.APIKey}, httpClient)
+	if err := c.Ping(ctx); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}
 	return ConnectionTestResult{OK: true}

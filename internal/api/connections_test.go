@@ -142,6 +142,44 @@ func TestTestConnection_Stash_GraphQLError(t *testing.T) {
 	}
 }
 
+func TestTestConnection_Jellyfin_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/System/Info" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != `MediaBrowser Token="jf-key"` {
+			t.Error("missing/wrong Authorization header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"Version":"10.9.0"}`))
+	}))
+	defer srv.Close()
+
+	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
+		Service: "jellyfin", URL: srv.URL, APIKey: "jf-key",
+	})
+	if !result.OK || result.Error != "" {
+		t.Fatalf("expected success, got %+v", result)
+	}
+}
+
+func TestTestConnection_Jellyfin_WrongKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
+		Service: "jellyfin", URL: srv.URL, APIKey: "wrong-key",
+	})
+	if result.OK {
+		t.Fatal("expected failure on 401")
+	}
+	if result.Error == "" {
+		t.Error("expected a populated error message")
+	}
+}
+
 func TestTestConnection_StashDB_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("ApiKey") != "stashdb-key" {

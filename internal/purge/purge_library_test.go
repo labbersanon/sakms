@@ -95,9 +95,10 @@ func TestApplyLibrary_DeletesFileAndLibraryItem(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := ApplyLibrary(ctx, libStore, proposals.Proposal{
+	changes, err := ApplyLibrary(ctx, libStore, proposals.Proposal{
 		ID: 1, Status: proposals.Pending, Title: "Flagged Movie", TrackedID: int(item.ID),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -107,12 +108,15 @@ func TestApplyLibrary_DeletesFileAndLibraryItem(t *testing.T) {
 	if _, err := libStore.Get(ctx, item.ID); err != library.ErrNotFound {
 		t.Errorf("expected the library item to be deleted, got err=%v", err)
 	}
+	if len(changes) != 1 || changes[0].Path != filePath || changes[0].Kind != mode.Deleted {
+		t.Errorf("expected exactly one Deleted PathChange for %q, got %+v", filePath, changes)
+	}
 }
 
 func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status, TrackedID: 5})
+		_, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status, TrackedID: 5})
 		if err == nil {
 			t.Errorf("expected ApplyLibrary to refuse a %q proposal", status)
 		}
@@ -121,7 +125,7 @@ func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 
 func TestApplyLibrary_RejectsMissingTrackedID(t *testing.T) {
 	libStore := newTestLibraryStore(t)
-	err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: proposals.Pending, TrackedID: 0})
+	_, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: proposals.Pending, TrackedID: 0})
 	if err == nil {
 		t.Fatal("expected ApplyLibrary to refuse a proposal with no tracked id")
 	}

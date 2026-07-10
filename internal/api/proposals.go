@@ -117,6 +117,15 @@ var errUnknownWorkflow = errors.New("unknown proposal workflow")
 // branch marks the queue accordingly rather than forcing all three through
 // one shared success rule.
 func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, sess *mode.Session, p proposals.Proposal, req applyProposalRequest) error {
+	// changes accumulates whatever file-level mutations the branch below
+	// actually commits to disk; the deferred NotifyPlayers fires on
+	// whatever landed in it even when the branch goes on to return a
+	// non-nil err (partial success — see each Apply function's doc
+	// comment). Nil changes on an early error means nothing committed, so
+	// NotifyPlayers correctly no-ops (len(changes) == 0 short-circuit).
+	var changes []mode.PathChange
+	defer func() { sess.NotifyPlayers(ctx, changes) }()
+
 	switch p.Workflow {
 	case proposals.Rename:
 		switch p.Mode {
@@ -131,13 +140,15 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 				return err
 			}
 			if p.Mode == mode.Movies {
-				itemID, err := rename.ApplyLibrary(ctx, libStore, p, preset)
+				itemID, c, err := rename.ApplyLibrary(ctx, libStore, p, preset)
+				changes = c
 				if err != nil {
 					return err
 				}
 				return propStore.MarkApplied(ctx, p.ID, int(itemID))
 			}
-			episodeID, err := rename.ApplyLibrarySeries(ctx, libStore, p, preset)
+			episodeID, c, err := rename.ApplyLibrarySeries(ctx, libStore, p, preset)
+			changes = c
 			if err != nil {
 				return err
 			}
@@ -161,12 +172,16 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 	case proposals.Purge:
 		switch p.Mode {
 		case mode.Movies:
-			if err := purge.ApplyLibrary(ctx, libStore, p); err != nil {
+			c, err := purge.ApplyLibrary(ctx, libStore, p)
+			changes = c
+			if err != nil {
 				return err
 			}
 			return propStore.MarkApplied(ctx, p.ID, p.TrackedID)
 		case mode.Series:
-			if err := purge.ApplyLibrarySeries(ctx, libStore, p); err != nil {
+			c, err := purge.ApplyLibrarySeries(ctx, libStore, p)
+			changes = c
+			if err != nil {
 				return err
 			}
 			return propStore.MarkApplied(ctx, p.ID, p.TrackedID)
@@ -178,13 +193,15 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 	case proposals.Dedup:
 		switch p.Mode {
 		case mode.Movies:
-			itemID, err := dedup.ApplyLibrary(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			itemID, c, err := dedup.ApplyLibrary(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			changes = c
 			if err != nil {
 				return err
 			}
 			return propStore.MarkApplied(ctx, p.ID, int(itemID))
 		case mode.Series:
-			episodeID, err := dedup.ApplyLibrarySeries(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			episodeID, c, err := dedup.ApplyLibrarySeries(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			changes = c
 			if err != nil {
 				return err
 			}

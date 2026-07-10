@@ -730,27 +730,33 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 // removed directly, and an untracked winner is recorded via libStore.Upsert
 // (no registration/rescan round trip needed — Upsert itself IS the "now
 // tracked" state).
-func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, keepAll bool) (itemID int64, err error) {
+//
+// changes accumulates one Deleted PathChange per removed loser (the winner
+// never moves, so it never appears in changes) — a named return so a
+// post-removal failure (the winner's libStore.Upsert) still reports every
+// loser that was actually removed to the caller for Session.NotifyPlayers.
+// keepAll never removes anything, so it always returns nil changes.
+func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, keepAll bool) (itemID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
-		return 0, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
+		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
 	if len(p.Candidates) < 2 {
-		return 0, fmt.Errorf("proposal %d has fewer than 2 candidates to resolve", p.ID)
+		return 0, nil, fmt.Errorf("proposal %d has fewer than 2 candidates to resolve", p.ID)
 	}
 
 	if keepAll {
 		for _, c := range p.Candidates {
 			if c.TrackedID != 0 {
-				return int64(c.TrackedID), nil
+				return int64(c.TrackedID), nil, nil
 			}
 		}
-		return 0, nil
+		return 0, nil, nil
 	}
 
 	idx := winnerIndex(p.Candidates)
 	if keepIndex != nil {
 		if *keepIndex < 0 || *keepIndex >= len(p.Candidates) {
-			return 0, fmt.Errorf("proposal %d: keepIndex %d out of range", p.ID, *keepIndex)
+			return 0, nil, fmt.Errorf("proposal %d: keepIndex %d out of range", p.ID, *keepIndex)
 		}
 		idx = *keepIndex
 	}
@@ -760,13 +766,17 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 		if i == idx {
 			continue
 		}
-		if err := removeLibraryCandidate(ctx, libStore, c); err != nil {
-			return 0, fmt.Errorf("removing %s: %w", c.Path, err)
+		removedPath, err := removeLibraryCandidate(ctx, libStore, c)
+		if err != nil {
+			return 0, changes, fmt.Errorf("removing %s: %w", c.Path, err)
+		}
+		if removedPath != "" {
+			changes = append(changes, mode.PathChange{Path: removedPath, Kind: mode.Deleted})
 		}
 	}
 
 	if winner.TrackedID != 0 {
-		return int64(winner.TrackedID), nil
+		return int64(winner.TrackedID), changes, nil
 	}
 
 	// Persist the winner's phash + file identity so the next Scan finds it
@@ -780,25 +790,38 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 		PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("registering surviving copy %q: %w", p.Title, err)
+		return 0, changes, fmt.Errorf("registering surviving copy %q: %w", p.Title, err)
 	}
-	return item.ID, nil
+	return item.ID, changes, nil
 }
 
-func removeLibraryCandidate(ctx context.Context, libStore *library.Store, c proposals.Candidate) error {
+// removeLibraryCandidate removes c's file (and, for a tracked candidate, its
+// libStore record) and returns the exact path that was removed — "" if
+// nothing was actually deleted (a tracked candidate whose FilePath is
+// already empty), so callers must guard against appending an empty-path
+// PathChange (see ApplyLibrary).
+func removeLibraryCandidate(ctx context.Context, libStore *library.Store, c proposals.Candidate) (string, error) {
 	if c.TrackedID == 0 {
-		return os.Remove(c.Path)
+		if err := os.Remove(c.Path); err != nil {
+			return "", err
+		}
+		return c.Path, nil
 	}
 	item, err := libStore.Get(ctx, int64(c.TrackedID))
 	if err != nil {
-		return fmt.Errorf("loading library item %d: %w", c.TrackedID, err)
+		return "", fmt.Errorf("loading library item %d: %w", c.TrackedID, err)
 	}
+	removedPath := ""
 	if item.FilePath != "" {
 		if err := os.Remove(item.FilePath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("deleting %q: %w", item.FilePath, err)
+			return "", fmt.Errorf("deleting %q: %w", item.FilePath, err)
 		}
+		removedPath = item.FilePath
 	}
-	return libStore.Delete(ctx, int64(c.TrackedID))
+	if err := libStore.Delete(ctx, int64(c.TrackedID)); err != nil {
+		return "", err
+	}
+	return removedPath, nil
 }
 
 // episodeDedupKey groups Series duplicates at the episode level — the
@@ -951,27 +974,33 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 // delete: the (series, season, episode) row the tracked loser occupied is
 // simply overwritten by the winner's file path via UpsertEpisode — there's
 // nothing else that could ever point at that exact slot.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, keepAll bool) (episodeID int64, err error) {
+//
+// changes accumulates one Deleted PathChange per removed loser (the winner
+// never moves, so it never appears in changes) — a named return so a
+// post-removal failure further down still reports every loser that was
+// actually removed to the caller for Session.NotifyPlayers. keepAll never
+// removes anything, so it always returns nil changes.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, keepAll bool) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
-		return 0, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
+		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
 	if len(p.Candidates) < 2 {
-		return 0, fmt.Errorf("proposal %d has fewer than 2 candidates to resolve", p.ID)
+		return 0, nil, fmt.Errorf("proposal %d has fewer than 2 candidates to resolve", p.ID)
 	}
 
 	if keepAll {
 		for _, c := range p.Candidates {
 			if c.TrackedID != 0 {
-				return int64(c.TrackedID), nil
+				return int64(c.TrackedID), nil, nil
 			}
 		}
-		return 0, nil
+		return 0, nil, nil
 	}
 
 	idx := winnerIndex(p.Candidates)
 	if keepIndex != nil {
 		if *keepIndex < 0 || *keepIndex >= len(p.Candidates) {
-			return 0, fmt.Errorf("proposal %d: keepIndex %d out of range", p.ID, *keepIndex)
+			return 0, nil, fmt.Errorf("proposal %d: keepIndex %d out of range", p.ID, *keepIndex)
 		}
 		idx = *keepIndex
 	}
@@ -982,26 +1011,29 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 			continue
 		}
 		if err := os.Remove(c.Path); err != nil && !os.IsNotExist(err) {
-			return 0, fmt.Errorf("removing %s: %w", c.Path, err)
+			return 0, changes, fmt.Errorf("removing %s: %w", c.Path, err)
+		}
+		if c.Path != "" {
+			changes = append(changes, mode.PathChange{Path: c.Path, Kind: mode.Deleted})
 		}
 	}
 
 	if winner.TrackedID != 0 {
-		return int64(winner.TrackedID), nil
+		return int64(winner.TrackedID), changes, nil
 	}
 
 	series, err := libStore.UpsertSeries(ctx, library.Series{
 		TMDBID: p.TMDBID, Title: p.Title, RootFolderPath: p.RootFolderPath,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("recording series %q: %w", p.Title, err)
+		return 0, changes, fmt.Errorf("recording series %q: %w", p.Title, err)
 	}
 
 	title, airDate := "", ""
 	if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, p.EpisodeNumber); err == nil {
 		title, airDate = existing.Title, existing.AirDate
 	} else if !errors.Is(err, library.ErrNotFound) {
-		return 0, fmt.Errorf("checking existing episode metadata: %w", err)
+		return 0, changes, fmt.Errorf("checking existing episode metadata: %w", err)
 	}
 
 	// Persist the winner's phash + file identity so the next Scan finds it
@@ -1015,7 +1047,7 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("registering surviving copy %q: %w", p.Title, err)
+		return 0, changes, fmt.Errorf("registering surviving copy %q: %w", p.Title, err)
 	}
-	return ep.ID, nil
+	return ep.ID, changes, nil
 }

@@ -149,24 +149,34 @@ func ScanLibrary(ctx context.Context, libStore *library.Store, allowlist []strin
 // from libStore. p must be Pending and carry a TrackedID from ScanLibrary
 // (the library item's own id, following the same field convention Scan
 // already established for the Servarr-backed path).
-func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal) error {
+//
+// changes is a named return so a post-delete failure (libStore.Delete)
+// still reports the committed removal to the caller for
+// Session.NotifyPlayers. item.FilePath can legitimately be "" (a
+// library-tracked row with no file yet) — the Deleted PathChange is only
+// ever appended inside the non-empty guard, never for an empty path.
+func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal) (changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
-		return fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
+		return nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
 	if p.TrackedID == 0 {
-		return fmt.Errorf("proposal %d has no library item id to delete", p.ID)
+		return nil, fmt.Errorf("proposal %d has no library item id to delete", p.ID)
 	}
 
 	item, err := libStore.Get(ctx, int64(p.TrackedID))
 	if err != nil {
-		return fmt.Errorf("loading library item %d: %w", p.TrackedID, err)
+		return nil, fmt.Errorf("loading library item %d: %w", p.TrackedID, err)
 	}
 	if item.FilePath != "" {
 		if err := os.Remove(item.FilePath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("deleting %q: %w", item.FilePath, err)
+			return nil, fmt.Errorf("deleting %q: %w", item.FilePath, err)
 		}
+		changes = append(changes, mode.PathChange{Path: item.FilePath, Kind: mode.Deleted})
 	}
-	return libStore.Delete(ctx, int64(p.TrackedID))
+	if err := libStore.Delete(ctx, int64(p.TrackedID)); err != nil {
+		return changes, err
+	}
+	return changes, nil
 }
 
 // ScanLibrarySeries is Purge's Series-library counterpart to ScanLibrary —
@@ -212,25 +222,35 @@ func ScanLibrarySeries(ctx context.Context, libStore *library.Store, allowlist [
 // Movies' (a whole show's files, not one movie's) — the same blast radius
 // Sonarr's own DeleteTracked(deleteFiles=true) already had, just executed
 // locally now; still exactly one already-approved proposal per call.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal) error {
+//
+// changes accumulates one Deleted PathChange per removed episode file (N
+// deletes in one batch is expected, not an edge case) — a named return so a
+// post-delete failure (libStore.DeleteSeries) still reports every file that
+// was actually removed to the caller for Session.NotifyPlayers. An episode
+// with no file (ep.FilePath == "") is skipped entirely, same as before.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal) (changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
-		return fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
+		return nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
 	if p.TrackedID == 0 {
-		return fmt.Errorf("proposal %d has no series id to delete", p.ID)
+		return nil, fmt.Errorf("proposal %d has no series id to delete", p.ID)
 	}
 
 	episodes, err := libStore.ListEpisodes(ctx, int64(p.TrackedID))
 	if err != nil {
-		return fmt.Errorf("loading episodes for series %d: %w", p.TrackedID, err)
+		return nil, fmt.Errorf("loading episodes for series %d: %w", p.TrackedID, err)
 	}
 	for _, ep := range episodes {
 		if ep.FilePath == "" {
 			continue
 		}
 		if err := os.Remove(ep.FilePath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("deleting %q: %w", ep.FilePath, err)
+			return changes, fmt.Errorf("deleting %q: %w", ep.FilePath, err)
 		}
+		changes = append(changes, mode.PathChange{Path: ep.FilePath, Kind: mode.Deleted})
 	}
-	return libStore.DeleteSeries(ctx, int64(p.TrackedID))
+	if err := libStore.DeleteSeries(ctx, int64(p.TrackedID)); err != nil {
+		return changes, err
+	}
+	return changes, nil
 }

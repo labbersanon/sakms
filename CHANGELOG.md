@@ -835,3 +835,69 @@ This slice is still inert in practice — nothing calls `NotifyPlayers` yet.
 The Movies/Series and Adult Apply call sites land in the next two slices.
 
 Verified via `go build/vet/test -race` across the whole module (all green).
+
+## 2026-07-10 — Notify Jellyfin on Movies/Series Apply: rename/purge/dedup (Slice 3 of player-rescan-notify)
+
+Wires Slice 2's `mode.PathChange`/`Session.NotifyPlayers` contract into the
+six Movies/Series library-backed Apply functions
+(`rename.ApplyLibrary`/`ApplyLibrarySeries`, `purge.ApplyLibrary`/
+`ApplyLibrarySeries`, `dedup.ApplyLibrary`/`ApplyLibrarySeries`), each now
+returning `[]mode.PathChange` via a named return alongside their existing
+id/err. `internal/api.applyByWorkflow` gains a single `changes`
+accumulator and a deferred `sess.NotifyPlayers(ctx, changes)` call, so every
+one of Movies/Series' six call sites funnels through one notify site instead
+of each wiring it separately.
+
+Path precision follows the verified call-site table exactly: Movies rename's
+Deleted side is the *resolved video file* (`library.ResolveVideoFile(p.SourcePath)`),
+not `p.SourcePath` itself (which can be a wrapping directory) — Series
+rename's Deleted side is `p.SourcePath` directly, since Series' Apply never
+has that directory indirection. This asymmetry between the two Apply
+functions is intentional, not a bug. Both rename functions additionally
+guard against RelocateMovie/RelocateEpisode's own self-collision no-op (a
+file already sitting at its preset-computed destination): when the returned
+destination equals the source, nothing moved, so no PathChange is emitted —
+avoiding a bogus Deleted+Created pair for an unchanged path.
+
+Purge and Dedup only ever emit Deleted entries, each guarded against an
+empty `FilePath`/candidate path so a library row with no file on disk can
+never produce a bogus notify. Series purge reports every removed episode
+file in one batch (N deletes, not just the first). Dedup's Movies path
+required widening `removeLibraryCandidate`'s signature to `(string, error)`
+so the *exact* removed path is captured — the tracked-loser branch returns
+the library item's own `FilePath` (looked up fresh via `libStore.Get`), not
+the proposal's (possibly stale, scan-time) candidate path; the untracked
+branch returns `c.Path`. Series dedup's inline loop, lacking that same
+lookup indirection, emits `c.Path` directly per the verified table — winners
+never move, so they never appear; `keepAll` removes nothing and always
+returns nil changes.
+
+Partial-success discipline (Critic fix #1/#2 from planning): every dispatch
+call site receives the Apply function's returned changes into a fresh local
+and assigns the outer accumulator with plain `=`, never `:=` — a `:=` here
+would shadow the deferred closure's accumulator. Every one of the six Apply
+functions uses named returns for `changes` so a post-mutation failure (e.g.
+`libStore.Upsert` erroring right after a successful file move) still reports
+the change that physically committed — notify fires on whatever actually
+landed on disk, then the original error still propagates to the caller.
+
+Tests (`internal/rename`, `internal/purge`, `internal/dedup` unit level;
+`internal/api` end-to-end against a fake Jellyfin server and the real HTTP
+dispatch): exact-path assertions for both rename asymmetries; the
+no-physical-move guard; Series purge's N-deletes-in-one-batch; Dedup's
+tracked-loser-uses-library-FilePath-not-candidate-path distinction (a
+dedicated test with a deliberately stale candidate path); `keepAll` →
+zero `PathChange`s and zero notify calls; a collision-renamed destination
+(pre-occupied path forces `place.UniquePath`'s `.2`-suffix fallback) →
+notify reports the actual returned path, never the originally intended one;
+best-effort — a 500 from the fake Jellyfin still leaves the proposal
+Applied; and a scoping check — a Movies Apply with a `"stash"` connection
+fully configured sends zero requests to it, since `sess.Stash` stays nil
+outside Adult mode (hardcoded per-mode scoping, unchanged from Slice 2).
+
+Adult's three Apply functions (rows 3/6/9) are unwired still — that's Slice
+4, which also needs the partial-success mechanism landed here to actually
+matter (row 3's `Add`-fails-after-a-successful-`Relocate` sub-case).
+
+Verified via `go build/vet/test -race` across the whole module (all green,
+including `-tags integration`).

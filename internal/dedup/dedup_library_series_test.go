@@ -253,7 +253,7 @@ func TestApplyLibrarySeries_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	id, err := ApplyLibrarySeries(ctx, libStore, p, nil, false)
+	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,6 +269,11 @@ func TestApplyLibrarySeries_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T
 	}
 	if ep.FilePath != "/winner.mkv" || ep.Title != "Pilot" {
 		t.Errorf("expected the episode row untouched, got %+v", ep)
+	}
+	// The winner didn't move, so only the loser's exact candidate path
+	// shows up in changes.
+	if len(changes) != 1 || changes[0].Path != loserPath || changes[0].Kind != mode.Deleted {
+		t.Errorf("expected exactly one Deleted PathChange for %q, got %+v", loserPath, changes)
 	}
 }
 
@@ -298,7 +303,7 @@ func TestApplyLibrarySeries_WinnerIsOrphan_DeletesTrackedLoserFile_UpsertsSameEp
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	id, err := ApplyLibrarySeries(ctx, libStore, p, nil, false)
+	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,6 +332,12 @@ func TestApplyLibrarySeries_WinnerIsOrphan_DeletesTrackedLoserFile_UpsertsSameEp
 	if ep.Title != "Pilot" || ep.AirDate != "2020-01-01" {
 		t.Errorf("expected existing episode metadata preserved, got %+v", ep)
 	}
+	// Row 8 (player-rescan-notify plan): the removed loser's candidate path
+	// (c.Path) is reported. The winner's slot was overwritten in place, not
+	// moved, so it never appears in changes.
+	if len(changes) != 1 || changes[0].Path != trackedFile || changes[0].Kind != mode.Deleted {
+		t.Errorf("expected exactly one Deleted PathChange for %q, got %+v", trackedFile, changes)
+	}
 }
 
 func TestApplyLibrarySeries_KeepAll_NoMutation(t *testing.T) {
@@ -350,7 +361,7 @@ func TestApplyLibrarySeries_KeepAll_NoMutation(t *testing.T) {
 			{Label: "b", Path: "/b.mkv"},
 		},
 	}
-	id, err := ApplyLibrarySeries(ctx, libStore, p, nil, true)
+	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -360,6 +371,11 @@ func TestApplyLibrarySeries_KeepAll_NoMutation(t *testing.T) {
 	if _, err := libStore.GetEpisode(ctx, series.ID, 1, 1); err != nil {
 		t.Errorf("expected keepAll to leave the episode row untouched, got err=%v", err)
 	}
+	// Edge #3 (player-rescan-notify plan): keepAll removes nothing, so it
+	// must report zero PathChanges.
+	if len(changes) != 0 {
+		t.Errorf("expected keepAll to report zero PathChanges, got %+v", changes)
+	}
 }
 
 func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
@@ -368,7 +384,7 @@ func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 		Status:     proposals.Applied,
 		Candidates: []proposals.Candidate{{Path: "/a.mkv"}, {Path: "/b.mkv"}},
 	}
-	if _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrarySeries to refuse an already-applied proposal")
 	}
 }
@@ -376,7 +392,7 @@ func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibrarySeries_RejectsFewerThanTwoCandidates(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	p := proposals.Proposal{Status: proposals.Pending, Candidates: []proposals.Candidate{{Path: "/a.mkv"}}}
-	if _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrarySeries to refuse a proposal with fewer than 2 candidates")
 	}
 }

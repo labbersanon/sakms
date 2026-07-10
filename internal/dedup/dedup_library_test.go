@@ -191,7 +191,7 @@ func TestApplyLibrary_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T) {
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	id, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,6 +200,11 @@ func TestApplyLibrary_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T) {
 	}
 	if _, err := os.Stat(loserPath); !os.IsNotExist(err) {
 		t.Error("expected the losing orphan file to be deleted")
+	}
+	// The winner didn't move, so only the untracked loser's exact path
+	// (c.Path, since it was never tracked) shows up in changes.
+	if len(changes) != 1 || changes[0].Path != loserPath || changes[0].Kind != mode.Deleted {
+		t.Errorf("expected exactly one Deleted PathChange for %q, got %+v", loserPath, changes)
 	}
 }
 
@@ -224,7 +229,7 @@ func TestApplyLibrary_WinnerIsOrphan_DeletesTrackedLoserAndRegistersWinner(t *te
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	id, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,6 +250,52 @@ func TestApplyLibrary_WinnerIsOrphan_DeletesTrackedLoserAndRegistersWinner(t *te
 	if item.FilePath != winnerPath || item.TMDBID != 42 {
 		t.Errorf("unexpected registered item: %+v", item)
 	}
+
+	// Row 7 (player-rescan-notify plan): the removed loser's EXACT tracked
+	// path (item.FilePath, resolved via removeLibraryCandidate — not c.Path)
+	// is what's reported. Here they're the same value, but the assertion is
+	// against trackedFile (the library item's own FilePath) specifically to
+	// prove the tracked lookup path, not the proposal's own candidate path.
+	// The winner never moved, so it never appears in changes.
+	if len(changes) != 1 || changes[0].Path != trackedFile || changes[0].Kind != mode.Deleted {
+		t.Errorf("expected exactly one Deleted PathChange for %q, got %+v", trackedFile, changes)
+	}
+}
+
+// TestApplyLibrary_TrackedLoserChangeUsesLibraryItemPathNotCandidatePath
+// proves the exact-path discipline row 7 (player-rescan-notify plan)
+// requires: for a tracked loser, the Deleted PathChange must come from
+// removeLibraryCandidate's libStore.Get lookup (item.FilePath) — the
+// source of truth — not the proposal's own (possibly stale) c.Path.
+func TestApplyLibrary_TrackedLoserChangeUsesLibraryItemPathNotCandidatePath(t *testing.T) {
+	dir := t.TempDir()
+	actualFile := writeVideoFile(t, dir, "actual.mkv", 10)
+	winnerPath := writeVideoFile(t, dir, "winner.mkv", 10)
+
+	libStore := newTestLibraryStore(t)
+	tracked, err := libStore.Upsert(context.Background(), library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "X", FilePath: actualFile, RootFolderPath: dir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "X", TMDBID: 1, RootFolderPath: dir,
+		Candidates: []proposals.Candidate{
+			// A deliberately stale candidate path, distinct from what's
+			// actually recorded in libStore for this tracked item.
+			{Label: "tracked", Path: filepath.Join(dir, "stale-scan-time-path.mkv"), TrackedID: int(tracked.ID)},
+			{Label: "winner", Path: winnerPath, Winner: true},
+		},
+	}
+	_, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Path != actualFile || changes[0].Kind != mode.Deleted {
+		t.Errorf("expected the Deleted PathChange to be the library item's actual FilePath %q, got %+v", actualFile, changes)
+	}
 }
 
 func TestApplyLibrary_KeepAll_NoMutation(t *testing.T) {
@@ -263,7 +314,7 @@ func TestApplyLibrary_KeepAll_NoMutation(t *testing.T) {
 			{Label: "b", Path: "/b.mkv"},
 		},
 	}
-	id, err := ApplyLibrary(context.Background(), libStore, p, nil, true)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,6 +324,11 @@ func TestApplyLibrary_KeepAll_NoMutation(t *testing.T) {
 	if _, err := libStore.Get(context.Background(), tracked.ID); err != nil {
 		t.Errorf("expected keepAll to leave the library item untouched, got err=%v", err)
 	}
+	// Edge #3 (player-rescan-notify plan): keepAll removes nothing, so it
+	// must report zero PathChanges.
+	if len(changes) != 0 {
+		t.Errorf("expected keepAll to report zero PathChanges, got %+v", changes)
+	}
 }
 
 func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
@@ -281,7 +337,7 @@ func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 		Status:     proposals.Applied,
 		Candidates: []proposals.Candidate{{Path: "/a.mkv"}, {Path: "/b.mkv"}},
 	}
-	if _, err := ApplyLibrary(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrary(context.Background(), libStore, p, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrary to refuse an already-applied proposal")
 	}
 }
@@ -289,7 +345,7 @@ func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibrary_RejectsFewerThanTwoCandidates(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	p := proposals.Proposal{Status: proposals.Pending, Candidates: []proposals.Candidate{{Path: "/a.mkv"}}}
-	if _, err := ApplyLibrary(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrary(context.Background(), libStore, p, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrary to refuse a proposal with fewer than 2 candidates")
 	}
 }

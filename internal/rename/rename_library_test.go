@@ -289,7 +289,7 @@ func TestApplyLibrary_RelocatesFileAndRecordsInLibrary(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Some Movie", TMDBID: 453, Year: 2020,
 		SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	id, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,12 +312,21 @@ func TestApplyLibrary_RelocatesFileAndRecordsInLibrary(t *testing.T) {
 	if item.TMDBID != 453 || item.Title != "Some Movie" || item.Year != 2020 || item.FilePath != wantDest {
 		t.Errorf("unexpected library item: %+v", item)
 	}
+
+	// Row 1 (player-rescan-notify plan): the Deleted side is the resolved
+	// VIDEO FILE (sourcePath here, since it's the file directly, not a
+	// wrapping directory), never p.SourcePath re-derived some other way;
+	// the Created side is the actual returned destPath, verbatim.
+	want := []mode.PathChange{{Path: sourcePath, Kind: mode.Deleted}, {Path: wantDest, Kind: mode.Created}}
+	if len(changes) != 2 || changes[0] != want[0] || changes[1] != want[1] {
+		t.Errorf("expected changes %+v, got %+v", want, changes)
+	}
 }
 
 func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin); err == nil {
+		if _, _, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin); err == nil {
 			t.Errorf("expected ApplyLibrary to refuse a %q proposal", status)
 		}
 	}
@@ -346,7 +355,7 @@ func TestApplyLibrary_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Movie", TMDBID: 1,
 		SourcePath: sourcePath, RootFolderPath: base,
 	}
-	id, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -359,5 +368,10 @@ func TestApplyLibrary_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
 	}
 	if item.FilePath != sourcePath {
 		t.Errorf("expected the recorded file path to be the unchanged source path, got %q", item.FilePath)
+	}
+	// No physical move happened, so no bogus Deleted+Created pair for the
+	// same unchanged path should be reported.
+	if len(changes) != 0 {
+		t.Errorf("expected zero PathChanges when the file didn't move, got %+v", changes)
 	}
 }

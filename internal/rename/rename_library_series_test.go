@@ -312,7 +312,7 @@ func TestApplyLibrarySeries_RelocatesIntoSeasonFolderAndPreservesMetadata(t *tes
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	epID, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin)
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -338,6 +338,62 @@ func TestApplyLibrarySeries_RelocatesIntoSeasonFolderAndPreservesMetadata(t *tes
 	if ep.Title != "Pilot" || ep.AirDate != "2020-01-01" {
 		t.Errorf("expected existing episode metadata to be preserved, got %+v", ep)
 	}
+
+	// Row 2 (player-rescan-notify plan): unlike Movies, the Deleted side is
+	// p.SourcePath DIRECTLY (no ResolveVideoFile indirection) — intentional
+	// asymmetry with row 1.
+	want := []mode.PathChange{{Path: sourcePath, Kind: mode.Deleted}, {Path: wantDest, Kind: mode.Created}}
+	if len(changes) != 2 || changes[0] != want[0] || changes[1] != want[1] {
+		t.Errorf("expected changes %+v, got %+v", want, changes)
+	}
+}
+
+// TestApplyLibrarySeries_NoMoveWhenAlreadyCorrectlyPlaced is the Series
+// mirror of rename's TestApplyLibrary_NoMoveWhenAlreadyCorrectlyPlaced:
+// RelocateEpisode's own self-collision guard means moved can equal
+// p.SourcePath when the file already sits at the preset-computed
+// destination — no os.Rename happens, so ApplyLibrarySeries must not report
+// a bogus Deleted+Created pair for the same unchanged path.
+func TestApplyLibrarySeries_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
+	base := t.TempDir()
+	seasonDir := filepath.Join(base, "Show Name [tmdbid-555]", "Season 01")
+	sourcePath := filepath.Join(seasonDir, "Show Name S01E01.mkv")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
+		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: base,
+	}
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Errorf("expected the file to stay in place (already correctly named), got: %v", err)
+	}
+	series, err := libStore.GetSeriesByTMDBID(ctx, 555)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ep, err := libStore.GetEpisode(ctx, series.ID, 1, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.ID != epID || ep.FilePath != sourcePath {
+		t.Errorf("expected the recorded file path to be the unchanged source path, got %q", ep.FilePath)
+	}
+	// No physical move happened, so no bogus Deleted+Created pair for the
+	// same unchanged path should be reported.
+	if len(changes) != 0 {
+		t.Errorf("expected zero PathChanges when the file didn't move, got %+v", changes)
+	}
 }
 
 // TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape proves the Legacy
@@ -362,7 +418,7 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	if _, err := ApplyLibrarySeries(ctx, libStore, p, naming.Legacy); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, p, naming.Legacy); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -375,7 +431,7 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin); err == nil {
+		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin); err == nil {
 			t.Errorf("expected ApplyLibrarySeries to refuse a %q proposal", status)
 		}
 	}

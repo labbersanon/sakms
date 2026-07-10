@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/curtiswtaylorjr/sakms/internal/library"
+	"github.com/curtiswtaylorjr/sakms/internal/mode"
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
 )
 
@@ -97,9 +98,10 @@ func TestApplyLibrarySeries_DeletesAllEpisodeFilesAndSeries(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := ApplyLibrarySeries(ctx, libStore, proposals.Proposal{
+	changes, err := ApplyLibrarySeries(ctx, libStore, proposals.Proposal{
 		ID: 1, Status: proposals.Pending, Title: "Flagged Show", TrackedID: int(series.ID),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -115,12 +117,32 @@ func TestApplyLibrarySeries_DeletesAllEpisodeFilesAndSeries(t *testing.T) {
 	if eps, err := libStore.ListEpisodes(ctx, series.ID); err != nil || len(eps) != 0 {
 		t.Errorf("expected episode rows to be deleted, got %v (err=%v)", eps, err)
 	}
+
+	// Edge #2 (player-rescan-notify plan): a series purge with N episode
+	// files removed reports N Deleted PathChanges in one batch — not just
+	// the first, and never one for the known-missing (no file) episode 3.
+	wantPaths := map[string]bool{ep1Path: true, ep2Path: true}
+	if len(changes) != 2 {
+		t.Fatalf("expected exactly 2 Deleted PathChanges (one per episode file), got %+v", changes)
+	}
+	for _, c := range changes {
+		if c.Kind != mode.Deleted {
+			t.Errorf("expected Kind Deleted, got %+v", c)
+		}
+		if !wantPaths[c.Path] {
+			t.Errorf("unexpected PathChange path %q, want one of %v", c.Path, wantPaths)
+		}
+		delete(wantPaths, c.Path)
+	}
+	if len(wantPaths) != 0 {
+		t.Errorf("missing PathChange(s) for: %v", wantPaths)
+	}
 }
 
 func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: status, TrackedID: 5})
+		_, err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: status, TrackedID: 5})
 		if err == nil {
 			t.Errorf("expected ApplyLibrarySeries to refuse a %q proposal", status)
 		}
@@ -129,7 +151,7 @@ func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 
 func TestApplyLibrarySeries_RejectsMissingTrackedID(t *testing.T) {
 	libStore := newTestLibraryStore(t)
-	err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: proposals.Pending, TrackedID: 0})
+	_, err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: proposals.Pending, TrackedID: 0})
 	if err == nil {
 		t.Fatal("expected ApplyLibrarySeries to refuse a proposal with no series id")
 	}

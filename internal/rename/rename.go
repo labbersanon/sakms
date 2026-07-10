@@ -655,18 +655,30 @@ func RelocateMovie(sourcePath, destRoot, title string, year, tmdbID int, preset 
 // preset-formatted folder via RelocateMovie, then record it directly in
 // libStore — no registration/rescan round trip needed, since
 // libStore.Upsert itself IS the "now tracked" state, immediately.
-func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset) (itemID int64, err error) {
+//
+// changes is a named return so a post-move failure (e.g. libStore.Upsert)
+// still reports the committed file move to the caller for
+// Session.NotifyPlayers — the physical relocate already happened by then
+// and must not go unnotified (partial-success rule, player-rescan-notify).
+func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset) (itemID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
-		return 0, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
+		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
 
 	videoPath, err := library.ResolveVideoFile(p.SourcePath)
 	if err != nil {
-		return 0, fmt.Errorf("resolving the video file under %q: %w", p.SourcePath, err)
+		return 0, nil, fmt.Errorf("resolving the video file under %q: %w", p.SourcePath, err)
 	}
 	destPath, err := RelocateMovie(videoPath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, preset)
 	if err != nil {
-		return 0, fmt.Errorf("relocating %q into %q: %w", videoPath, p.RootFolderPath, err)
+		return 0, nil, fmt.Errorf("relocating %q into %q: %w", videoPath, p.RootFolderPath, err)
+	}
+	// RelocateMovie's self-collision guard means destPath can equal videoPath
+	// (file was already correctly placed — no os.Rename happened). Emitting
+	// a Deleted+Created pair for the same unchanged path would be a bogus
+	// notify, so only report a change when a move actually occurred.
+	if destPath != videoPath {
+		changes = []mode.PathChange{{Path: videoPath, Kind: mode.Deleted}, {Path: destPath, Kind: mode.Created}}
 	}
 
 	item, err := libStore.Upsert(ctx, library.Item{
@@ -674,9 +686,9 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 		FilePath: destPath, RootFolderPath: p.RootFolderPath,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("recording %q in the library: %w", p.Title, err)
+		return 0, changes, fmt.Errorf("recording %q in the library: %w", p.Title, err)
 	}
-	return item.ID, nil
+	return item.ID, changes, nil
 }
 
 // episodeKey identifies one already-tracked-with-a-file episode, for
@@ -878,28 +890,47 @@ func RelocateEpisode(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbI
 // prior Sonarr import or Scan reporting it as missing) is preserved rather
 // than blanked out, since this Apply call only ever supplies a file path,
 // never episode metadata of its own.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset) (episodeID int64, err error) {
+//
+// Unlike ApplyLibrary (Movies), p.SourcePath here IS the file being moved
+// directly — Series' ScanLibrarySeries never wraps the path in a directory
+// indirection the way Movies' orphan-folder case can — so the Deleted side
+// of changes is p.SourcePath itself, not a resolved video file. This
+// asymmetry with ApplyLibrary is intentional, not an oversight.
+//
+// changes is a named return so a post-move failure (e.g. libStore.UpsertSeries)
+// still reports the committed file move to the caller for
+// Session.NotifyPlayers — the physical relocate already happened by then
+// and must not go unnotified (partial-success rule, player-rescan-notify).
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
-		return 0, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
+		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
 
 	moved, err := RelocateEpisode(p.SourcePath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, p.SeasonNumber, p.EpisodeNumber, preset)
 	if err != nil {
-		return 0, fmt.Errorf("relocating %q: %w", p.SourcePath, err)
+		return 0, nil, fmt.Errorf("relocating %q: %w", p.SourcePath, err)
+	}
+	// RelocateEpisode's self-collision guard means moved can equal
+	// p.SourcePath (file was already correctly placed — no os.Rename
+	// happened). Emitting a Deleted+Created pair for the same unchanged
+	// path would be a bogus notify, so only report a change when a move
+	// actually occurred.
+	if moved != p.SourcePath {
+		changes = []mode.PathChange{{Path: p.SourcePath, Kind: mode.Deleted}, {Path: moved, Kind: mode.Created}}
 	}
 
 	series, err := libStore.UpsertSeries(ctx, library.Series{
 		TMDBID: p.TMDBID, Title: p.Title, Year: p.Year, RootFolderPath: p.RootFolderPath,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("recording series %q: %w", p.Title, err)
+		return 0, changes, fmt.Errorf("recording series %q: %w", p.Title, err)
 	}
 
 	title, airDate := "", ""
 	if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, p.EpisodeNumber); err == nil {
 		title, airDate = existing.Title, existing.AirDate
 	} else if !errors.Is(err, library.ErrNotFound) {
-		return 0, fmt.Errorf("checking existing episode metadata: %w", err)
+		return 0, changes, fmt.Errorf("checking existing episode metadata: %w", err)
 	}
 
 	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
@@ -907,7 +938,7 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		Title: title, AirDate: airDate, FilePath: moved,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("recording episode: %w", err)
+		return 0, changes, fmt.Errorf("recording episode: %w", err)
 	}
-	return ep.ID, nil
+	return ep.ID, changes, nil
 }

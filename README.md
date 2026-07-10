@@ -280,6 +280,16 @@ non-root `sakms` user, then drops to it via `gosu` — without that, a plain
 create `sakms.db` in a directory owned by whatever host user made the
 mount point.
 
+By default the in-container `sakms` user is uid/gid `1000:1000`. Set
+`PUID`/`PGID` to match your host user instead (common when the bind-mounted
+`/data` is owned by something other than 1000:1000) — the entrypoint
+re-maps `sakms` to those ids at container start, before the `chown`/`gosu`
+step above, e.g.:
+
+```sh
+docker run -e PUID=$(id -u) -e PGID=$(id -g) -v host/path:/data ...
+```
+
 `scripts/docker-dev.sh` wraps the build-run-check loop into one command for
 iterating on the image itself (not a deployment tool — a `docker-compose.yml`
 for real use, with the volume mounts Rename's file moves need to match

@@ -32,7 +32,8 @@ ENV SAKMS_ADDR=:8080 \
 VOLUME /data
 EXPOSE 8080
 # Stays root here so the entrypoint can chown a bind-mounted /data before
-# dropping to the unprivileged sakms user via gosu — see
-# docker-entrypoint.sh for why.
+# dropping to the unprivileged sakms user via gosu, and can re-map that
+# user to a caller-supplied PUID/PGID (both default 1000, matching this
+# baked-in uid/gid) before doing so — see docker-entrypoint.sh for why.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/usr/local/bin/sakms"]

@@ -37,29 +37,31 @@ threshold are reused verbatim, and the API handler is un-gated to pass
 `hasher`+`threshold` for any library-backed mode. Season packs need no special
 handling (flattened per-episode upstream of grouping).
 
+**Shipped (2026-07-10): `internal/videophash`, the SAK-owned StashDB-compatible
+hasher.** A fully independent sibling of `internal/phash` (zero shared code —
+different algorithm, different consumers; `internal/phash` is unaffected and
+stays exactly as shipped for Movies/Series). Computes the exact `PHASH`
+algorithm StashDB/FansDB's stash-box network indexes: 25-frame 5x5 collage,
+`goimagehash.PerceptionHash`, unpadded hex encoding — verified against
+Stash's actual source, not assumed. **Live-cross-validated against a real
+production Stash instance (`stash.zaena.us`) and a real library file: Hamming
+distance 0/64 bits — byte-identical, on the first attempt.** See the
+CHANGELOG entry of the same date for the full validation detail. This slice
+is hasher-only — NOT yet wired into anything.
+
 **Still open (next slices):**
-- **Adult phash refinement — direction changed 2026-07-10, do not build the
-  original plan.** An investigation (`.omc/autopilot/spec-phash-dedup-adult.md`)
-  originally recommended Adult Dedup read Stash's already-computed phash
-  read-only (no new hashing infra) — that recommendation is **superseded**.
-  The actual mission (see `CLAUDE.md` Mission/Scope, decided 2026-07-10): SAK
-  is eliminating its *dependency* on a live Stash instance for Adult
-  entirely, the same way Radarr/Sonarr were eliminated for Movies/Series.
-  So Adult Dedup's phash gate should NOT read Stash's live value — it should
-  use a **SAK-owned, StashDB-compatible phash hasher** SAK builds for itself:
-  the `PHASH` algorithm StashDB/FansDB's stash-box network actually indexes
-  (25-frame collage, goimagehash-style PerceptionHash, 64-bit — verified via
-  research, cited in the spec doc; a *different, incompatible* algorithm from
-  `internal/phash`'s Movies/Series one, which is unaffected and stays as-is).
-  This hasher is a shared capability, not Dedup-specific: it also replaces
-  Rename's current Stash-read dependency for phash-first identification, and
-  positions SAK to talk to StashDB/FansDB/TPDB directly for fingerprint
-  lookups without a local Stash bridging it. Not yet designed at the
-  file/function level — needs its own Phase 0/1 pass (a new frame-decode
-  path producing the 25-frame/64-bit format, likely sibling to
-  `internal/phash` rather than a modification of it). The spec doc's
-  StashDB-algorithm research (§1) is still accurate and directly reusable;
-  only its §3 recommendation is superseded.
+- **Wire `internal/videophash` into Adult identify and Dedup.** The obvious
+  next step, named explicitly so this doesn't become dead code (the
+  "compute-utility-first" exception's condition): (a) replace
+  `rename.scanAdultPhashFirst`'s current dependency on reading a live Stash
+  instance's phash with SAK's own `internal/videophash.Hash` call — SAK
+  computes its own fingerprint instead of relying on Stash having already
+  indexed the file; (b) give Adult's `dedup.scanAdult` the same
+  refine-within-identifier-grouping phash gate Movies/Series already got,
+  using this hasher instead of a live Stash read. Not yet designed at the
+  file/function level — needs its own Phase 0/1 pass. Note this also
+  positions SAK to query StashDB/FansDB/TPDB fingerprint lookups directly,
+  without a local Stash instance bridging it.
 - **Whisparr elimination for Adult.** Adult gets its own library-owned
   Rename/Purge/Dedup/Tag path, same pattern as Movies/Sonarr. Decided
   2026-07-10 (`CLAUDE.md` Scope), no design yet — this is a substantial

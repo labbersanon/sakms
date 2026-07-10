@@ -501,3 +501,55 @@ Adult-phash-dedup spec doc is marked superseded (its StashDB-algorithm
 research stays accurate and reusable, only its recommendation changed). No
 code shipped this entry — Whisparr elimination and the new hasher both need
 their own Phase 0/1 design pass, not yet started.
+
+## 2026-07-10 — internal/videophash: SAK-owned, StashDB-compatible video phash hasher
+
+Built the SAK-owned hasher named in the previous entry — a new, fully
+independent package that computes a video perceptual hash in the exact
+format StashDB/FansDB's stash-box network indexes under `algorithm: "PHASH"`,
+so SAK will eventually be able to identify and dedupe Adult content without
+depending on a live local Stash instance. **Hasher + validation only this
+slice** — deliberately NOT wired into Rename's identify path or Dedup yet
+(the obvious next slice, per `docs/ROADMAP.md`).
+
+- **Algorithm, verified against Stash's actual source** (`stashapp/stash`
+  `pkg/hash/videophash`), not assumed: 25 frames sampled at
+  `offset + i*stepSize` where `offset = 0.05*duration`,
+  `stepSize = (0.9*duration)/25` — the middle 5%-95% of the video, no
+  half-step centering — each scaled to width 160 (aspect preserved),
+  composited row-major into a single 5x5 collage image, hashed via
+  `goimagehash.PerceptionHash` (SAK implements none of the DCT/median/
+  threshold math itself — only correct frame sampling, collage assembly, and
+  output encoding). Encoded as `strconv.FormatUint(hash, 16)` — lowercase,
+  **unpadded** hex, byte-identical in shape to Stash's own
+  `Fingerprint.Value()`. Deliberately zero shared code with `internal/phash`
+  (Movies/Series' algorithm — different library, different frame
+  composition, different bit length, and it stays exactly as shipped).
+- `goimagehash` pinned to `v1.1.0` (exact tag); the package doc states that
+  any version bump requires re-running the live cross-validation below, the
+  same self-invalidation discipline `internal/phash`'s `Scheme` tag
+  documents, without adding a scheme tag (which would break byte-identity).
+- **Validated, not just structurally plausible: live-cross-checked against
+  a real production Stash instance (`stash.zaena.us`) using a real file from
+  the user's library.** Fetched Stash's own already-computed phash via the
+  existing `stashapi.Client` (the same client Adult identification already
+  uses), independently computed this package's hash for the same file, and
+  compared them as parsed `uint64` via Hamming distance — **byte-identical:
+  Hamming distance 0/64 bits, on the first attempt.** This is the gold-
+  standard proof this hasher is genuinely StashDB-compatible, not just
+  algorithmically plausible. The reference-vector tier (a synthetic-clip
+  fixture from Stash's own test suite) was investigated and not found —
+  `pkg/hash/videophash/` ships no test file — so live cross-validation was
+  the only tier available, and it succeeded outright.
+- New `internal/videophash/integration_test.go` (`//go:build integration`)
+  carries both the real-ffmpeg determinism check (same clip hashes
+  identically twice through actual decode) and the live-Stash cross-
+  validation, gated behind `SAK_STASH_URL`/`SAK_STASH_APIKEY`/
+  `SAK_STASH_TEST_FILE` environment variables — `t.Skip()`s cleanly when
+  unset, so CI stays green with no live dependency. No credential is
+  hardcoded or written to any file; sourced at test-run time only.
+
+Verified via `go build/vet/test -race` across the whole module (all green,
+`internal/phash`/`internal/rename`/`internal/dedup` genuinely untouched —
+confirmed via `git status`, not assumed) and `-tags integration` (real-ffmpeg
+determinism + the live Stash cross-validation above, both passing).

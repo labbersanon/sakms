@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/ajdnik/imghash v1.1.0
+	github.com/corona10/goimagehash v1.1.0
 	github.com/pressly/goose/v3 v3.27.2
 	golang.org/x/crypto v0.54.0
 	modernc.org/sqlite v1.53.0

@@ -368,9 +368,6 @@ async function dismissProposal(id) {
 async function submitDraft(id) {
   return api("/api/proposals/" + id + "/submit-draft", { method: "POST" });
 }
-async function submitFingerprint(id) {
-  return api("/api/proposals/" + id + "/submit-fingerprint", { method: "POST" });
-}
 
 // ---- Search view (Discover browse -> manual search -> grab -> Grabs status) ----
 // The native replacement for Radarr/Sonarr's own acquisition loop: Discover
@@ -603,9 +600,6 @@ async function renderRename(container) {
     }
     if (p.status === "unmatched") {
       actions.appendChild(el("button", { text: "Give back" + (p.draftId ? "ed" : ""), disabled: !!p.draftId, onclick: async () => { try { await submitDraft(p.id); } catch (e) { container.appendChild(fmtErr(e)); } await renderRename(container); } }));
-    }
-    if (p.status === "applied" && p.giveBackBox && !p.fingerprintSubmittedAt) {
-      actions.appendChild(el("button", { text: "Give back fingerprint", onclick: async () => { try { await submitFingerprint(p.id); } catch (e) { container.appendChild(fmtErr(e)); } await renderRename(container); } }));
     }
     if (p.status === "pending" || p.status === "unmatched") {
       actions.appendChild(el("button", { class: "danger", text: "Dismiss", onclick: async () => { try { await dismissProposal(p.id); } catch (e) { container.appendChild(fmtErr(e)); } await renderRename(container); } }));

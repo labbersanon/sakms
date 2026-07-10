@@ -107,7 +107,6 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 
 	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, settingsStore, propStore, libStore))
 	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, settingsStore, propStore))
-	mux.HandleFunc("POST /api/proposals/{id}/submit-fingerprint", submitFingerprintHandler(httpClient, connStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	return mux
 }

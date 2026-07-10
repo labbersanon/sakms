@@ -453,45 +453,6 @@ func submitFingerprintGiveBack(ctx context.Context, sess *mode.Session, p propos
 	return err == nil
 }
 
-// SubmitFingerprintRetry re-attempts give-back for an already-Applied Adult
-// proposal that had no phash yet at Apply time (Stash's own phash generation
-// runs asynchronously and can finish well after Apply already ran) — a
-// separate, human-triggered action, matching SubmitDraft's precedent of never
-// firing an outbound mutation without an explicit decision. Re-reads
-// p.SourcePath's CURRENT phash/duration from Stash fresh rather than trusting
-// whatever (possibly still-empty) snapshot the proposal carries from Scan
-// time, since a fresh read is exactly the point of retrying.
-func SubmitFingerprintRetry(ctx context.Context, sess *mode.Session, p proposals.Proposal) error {
-	if p.Workflow != proposals.Rename {
-		return fmt.Errorf("proposal %d is a %q proposal, not rename — cannot submit a fingerprint", p.ID, p.Workflow)
-	}
-	if p.Status != proposals.Applied {
-		return fmt.Errorf("proposal %d is %q, not applied — nothing to give back yet", p.ID, p.Status)
-	}
-	if p.FingerprintSubmittedAt != "" {
-		return fmt.Errorf("proposal %d already has a submitted fingerprint — refusing to submit a duplicate", p.ID)
-	}
-	if p.GiveBackBox == "" || p.GiveBackSceneID == "" {
-		return fmt.Errorf("proposal %d has no give-back target — nothing to submit a fingerprint to", p.ID)
-	}
-	if sess.Stash == nil {
-		return fmt.Errorf("stash isn't configured — add a connection in Settings")
-	}
-	if sess.Identify == nil || sess.Identify.GiveBack == nil {
-		return fmt.Errorf("give-back isn't configured — add a StashDB, FansDB, or TPDB connection in Settings")
-	}
-
-	file, err := sess.Stash.FindSceneInfoByPath(ctx, p.SourcePath)
-	if err != nil {
-		return fmt.Errorf("checking %q for a phash: %w", p.SourcePath, err)
-	}
-	if file == nil || file.PHash == "" {
-		return fmt.Errorf("stash still has no phash for %q yet", p.SourcePath)
-	}
-
-	return sess.Identify.GiveBack.SubmitFingerprint(ctx, p.GiveBackBox, p.GiveBackSceneID, file.PHash, int(file.Duration))
-}
-
 // SubmitDraft gives an Adult proposal's identification back to the community
 // databases (TPDB preferred, StashDB as fallback — see identify.GiveBack) when
 // AI+web-search confidently identified a file (Title/Studio present) but it

@@ -14,7 +14,6 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
 	"github.com/curtiswtaylorjr/sakms/internal/servarr"
-	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
 	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
 	"github.com/curtiswtaylorjr/sakms/internal/throttle"
 )
@@ -57,97 +56,6 @@ func (f *fakeProber) Probe(_ context.Context, path string) (*mediainfo.Probe, er
 	return &mediainfo.Probe{Duration: f.durations[path]}, nil
 }
 
-// sceneJSON renders a StashFile fixture into the raw shape Stash's own
-// findScenes query returns, for fakeStash below.
-func sceneJSON(path string, f *stashapi.StashFile) map[string]any {
-	fps := []map[string]any{}
-	if f.PHash != "" {
-		fps = append(fps, map[string]any{"type": "phash", "value": f.PHash})
-	}
-	return map[string]any{
-		"id": f.SceneID, "title": f.Title, "date": f.Date,
-		"studio":    map[string]any{"name": f.Studio},
-		"stash_ids": []any{},
-		"files": []map[string]any{{
-			"path": path, "width": f.Width, "height": f.Height, "duration": f.Duration,
-			"video_codec": f.VideoCodec, "bit_rate": f.BitRate, "fingerprints": fps,
-		}},
-	}
-}
-
-// fakeStash stands in for a local Stash instance's FindSceneInfoByPath(s) — no
-// longer used by Scan (identification computes its own phash now), but still
-// exercised by rename_test.go's SubmitFingerprintRetry tests, which re-read a
-// current phash/duration off a live Stash. Kept here for those callers.
-type fakeStash struct {
-	t         *testing.T
-	files     map[string]*stashapi.StashFile
-	failLoad  bool
-	scanCalls [][]string
-	onScan    func(paths []string)
-}
-
-func newFakeStash(t *testing.T, f *fakeStash) *stashapi.Client {
-	t.Helper()
-	f.t = t
-	srv := httptest.NewServer(http.HandlerFunc(f.handle))
-	t.Cleanup(srv.Close)
-	return stashapi.New(stashapi.Config{URL: srv.URL, APIKey: "k"}, srv.Client())
-}
-
-func (f *fakeStash) handle(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Query     string                     `json:"query"`
-		Variables map[string]json.RawMessage `json:"variables"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-	w.Header().Set("Content-Type", "application/json")
-
-	switch {
-	case strings.Contains(req.Query, "ScanPaths"):
-		var input struct {
-			Paths []string `json:"paths"`
-		}
-		json.Unmarshal(req.Variables["input"], &input)
-		f.scanCalls = append(f.scanCalls, input.Paths)
-		if f.onScan != nil {
-			f.onScan(input.Paths)
-		}
-		fmt.Fprint(w, `{"data":{"metadataScan":"job1"}}`)
-	case strings.Contains(req.Query, "FindJob"):
-		fmt.Fprint(w, `{"data":{"findJob":{"status":"FINISHED"}}}`)
-	case f.failLoad:
-		fmt.Fprint(w, `{"errors":[{"message":"stash unreachable"}]}`)
-	case strings.Contains(req.Query, "BatchFindByPath"):
-		data := map[string]any{}
-		for key, raw := range req.Variables {
-			if !strings.HasPrefix(key, "p") {
-				continue
-			}
-			var path string
-			json.Unmarshal(raw, &path)
-			scenes := []any{}
-			if file := f.files[path]; file != nil {
-				scenes = append(scenes, sceneJSON(path, file))
-			}
-			data["s"+strings.TrimPrefix(key, "p")] = map[string]any{"scenes": scenes}
-		}
-		body, _ := json.Marshal(map[string]any{"data": data})
-		w.Write(body)
-	case strings.Contains(req.Query, "FindByPath("):
-		var path string
-		json.Unmarshal(req.Variables["path"], &path)
-		scenes := []any{}
-		if file := f.files[path]; file != nil {
-			scenes = append(scenes, sceneJSON(path, file))
-		}
-		body, _ := json.Marshal(map[string]any{"data": map[string]any{"findScenes": map[string]any{"scenes": scenes}}})
-		w.Write(body)
-	default:
-		f.t.Fatalf("unexpected stash query: %s", req.Query)
-	}
-}
-
 // giveBackRecord captures what a fake stash-box saw at fingerprint give-back,
 // so the give-back-through-Apply test can assert the duration actually flowed
 // (the guard against the silent duration-coupling regression).
@@ -158,13 +66,23 @@ type giveBackRecord struct {
 	duration  int
 }
 
-// newFakeAdultBox stands in for one stash-box's fingerprint endpoints. It
-// serves BOTH the cascade lookup (findScenesBySceneFingerprints, keyed by phash
-// — a missing key means no match) AND, when rec is non-nil, the give-back
-// submitFingerprint mutation, recording the submitted duration. Reimplemented
-// here (rather than shared with internal/identify's own fingerprint test fake)
-// since that one is unexported to its own package.
-func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title string }, rec *giveBackRecord) *stashbox.Client {
+// textMatchScene is the canned searchScene (text-search) response newFakeAdultBox
+// serves when textMatch is non-nil — the counterpart to the fingerprint-cascade
+// results map, for tests exercising the legacy text/AI fallback path
+// (identify.BoxSearcher.SearchStashBox -> stashbox.Client.SearchScene).
+type textMatchScene struct {
+	id, title, studio string
+}
+
+// newFakeAdultBox stands in for one stash-box's fingerprint + text-search
+// endpoints. It serves the cascade lookup (findScenesBySceneFingerprints, keyed
+// by phash — a missing key means no match); when rec is non-nil, the give-back
+// submitFingerprint mutation, recording the submitted duration; and, when
+// textMatch is non-nil, the searchScene text-search query used by the legacy
+// AI/text identification fallback. Reimplemented here (rather than shared with
+// internal/identify's own fingerprint test fake) since that one is unexported
+// to its own package.
+func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title string }, rec *giveBackRecord, textMatch *textMatchScene) *stashbox.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -174,7 +92,8 @@ func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title string }
 		json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "application/json")
 
-		if strings.Contains(req.Query, "SubmitFingerprint") {
+		switch {
+		case strings.Contains(req.Query, "SubmitFingerprint"):
 			var v struct {
 				Input struct {
 					SceneID     string `json:"scene_id"`
@@ -192,24 +111,33 @@ func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title string }
 				rec.duration = v.Input.Fingerprint.Duration
 			}
 			fmt.Fprint(w, `{"data":{"submitFingerprint":true}}`)
-			return
-		}
-
-		var v struct {
-			FPs [][]map[string]string `json:"fps"`
-		}
-		json.Unmarshal(req.Variables, &v)
-		matches := make([][]map[string]any, len(v.FPs))
-		for i, fp := range v.FPs {
-			hash := fp[0]["hash"]
-			if scene, ok := results[hash]; ok {
-				matches[i] = []map[string]any{{"id": scene.id, "title": scene.title, "release_date": "", "studio": map[string]any{"name": ""}}}
-			} else {
-				matches[i] = []map[string]any{}
+		case strings.Contains(req.Query, "SearchScene"):
+			scenes := []any{}
+			if textMatch != nil {
+				scenes = append(scenes, map[string]any{
+					"id": textMatch.id, "title": textMatch.title, "release_date": "",
+					"studio": map[string]any{"name": textMatch.studio},
+				})
 			}
+			body, _ := json.Marshal(map[string]any{"data": map[string]any{"searchScene": scenes}})
+			w.Write(body)
+		default:
+			var v struct {
+				FPs [][]map[string]string `json:"fps"`
+			}
+			json.Unmarshal(req.Variables, &v)
+			matches := make([][]map[string]any, len(v.FPs))
+			for i, fp := range v.FPs {
+				hash := fp[0]["hash"]
+				if scene, ok := results[hash]; ok {
+					matches[i] = []map[string]any{{"id": scene.id, "title": scene.title, "release_date": "", "studio": map[string]any{"name": ""}}}
+				} else {
+					matches[i] = []map[string]any{}
+				}
+			}
+			body, _ := json.Marshal(map[string]any{"data": map[string]any{"findScenesBySceneFingerprints": matches}})
+			w.Write(body)
 		}
-		body, _ := json.Marshal(map[string]any{"data": map[string]any{"findScenesBySceneFingerprints": matches}})
-		w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
 	return stashbox.New(stashbox.Config{Endpoint: srv.URL, APIKey: "k", HasVoteField: true}, srv.Client())
@@ -219,12 +147,11 @@ func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title string }
 // pipeline. The fake Servarr handler fails the test if it's ever called —
 // scanAdultPhashFirst and its legacy fallback (proposeOneAdult) never touch
 // the *arr app; that's Apply's job, not Scan's.
-func adultTestSession(t *testing.T, stash *stashapi.Client, ai *countingAI, boxes map[string]*stashbox.Client) *mode.Session {
+func adultTestSession(t *testing.T, ai *countingAI, boxes map[string]*stashbox.Client) *mode.Session {
 	t.Helper()
 	sess := newTestSession(t, servarr.Whisparr, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("must never call the *arr app during Scan, got %s %s", r.Method, r.URL.Path)
 	})
-	sess.Stash = stash
 	var aiClient identify.AIClient
 	if ai != nil {
 		aiClient = ai
@@ -232,6 +159,7 @@ func adultTestSession(t *testing.T, stash *stashapi.Client, ai *countingAI, boxe
 	sess.Identify = &identify.Identifier{
 		AI:       aiClient,
 		GiveBack: identify.NewGiveBack(boxes),
+		Boxes:    identify.NewBoxSearcher(boxes, nil),
 		Throttle: throttle.New(0),
 	}
 	return sess
@@ -243,9 +171,9 @@ func TestScanAdultPhashFirst_CascadeHit_SkipsAIEntirely(t *testing.T) {
 	prober := &fakeProber{durations: map[string]float64{path: 1800}}
 	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
-	}, nil)
+	}, nil, nil)
 	ai := &countingAI{}
-	sess := adultTestSession(t, nil, ai, map[string]*stashbox.Client{"stashdb": stashdb})
+	sess := adultTestSession(t, ai, map[string]*stashbox.Client{"stashdb": stashdb})
 
 	candidates := []adultCandidate{{
 		root: servarr.RootFolder{Path: "/media/Adult"},
@@ -274,9 +202,9 @@ func TestScanAdultPhashFirst_CascadeMiss_FallsThroughToProposeOneAdult(t *testin
 	path := "/media/Adult/scene1.mp4"
 	hasher := &fakeHasher{hashes: map[string]string{path: "hash1"}}
 	prober := &fakeProber{}
-	stashdb := newFakeAdultBox(t, nil, nil) // no match anywhere
+	stashdb := newFakeAdultBox(t, nil, nil, nil) // no match anywhere
 	ai := &countingAI{resp: map[string]any{"studio": nil, "title": nil, "year": nil, "performers": nil}}
-	sess := adultTestSession(t, nil, ai, map[string]*stashbox.Client{"stashdb": stashdb})
+	sess := adultTestSession(t, ai, map[string]*stashbox.Client{"stashdb": stashdb})
 
 	candidates := []adultCandidate{{
 		root: servarr.RootFolder{Path: "/media/Adult"},
@@ -309,9 +237,9 @@ func TestScanAdultPhashFirst_HashError_PerFileFallsOpenToLegacy(t *testing.T) {
 	prober := &fakeProber{durations: map[string]float64{pathA: 1800}}
 	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
 		"hashA": {id: "box-a", title: "Scene A"},
-	}, nil)
+	}, nil, nil)
 	ai := &countingAI{resp: map[string]any{"studio": nil, "title": nil, "year": nil, "performers": nil}}
-	sess := adultTestSession(t, nil, ai, map[string]*stashbox.Client{"stashdb": stashdb})
+	sess := adultTestSession(t, ai, map[string]*stashbox.Client{"stashdb": stashdb})
 
 	candidates := []adultCandidate{
 		{root: servarr.RootFolder{Path: "/media/Adult"}, uf: servarr.UnmappedFolder{Name: "a.mp4", Path: pathA}},
@@ -321,7 +249,8 @@ func TestScanAdultPhashFirst_HashError_PerFileFallsOpenToLegacy(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("expected 2 proposals (one cascade hit, one legacy), got %d: %+v", len(out), out)
 	}
-	// Order-preserved build: cascade hits first, then legacy fallbacks.
+	// Order-preserved build: candidate-index order (A before B), regardless
+	// of whether each one resolved via cascade hit or legacy fallback.
 	if out[0].Status != proposals.Pending || out[0].Title != "Scene A" || out[0].PHash != "hashA" {
 		t.Errorf("expected candidate A to resolve via the cascade despite B erroring, got %+v", out[0])
 	}
@@ -346,7 +275,7 @@ func TestScanAdultPhashFirst_GiveBackFiresWithProberDuration(t *testing.T) {
 	rec := &giveBackRecord{}
 	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
-	}, rec)
+	}, rec, nil)
 	hasher := &fakeHasher{hashes: map[string]string{path: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{path: 1800}}
 
@@ -395,5 +324,89 @@ func TestScanAdultPhashFirst_GiveBackFiresWithProberDuration(t *testing.T) {
 	}
 	if rec.hash != "hash1" || rec.sceneID != "box-scene-1" {
 		t.Errorf("expected give-back to carry the scanned phash/scene, got hash=%q scene=%q", rec.hash, rec.sceneID)
+	}
+}
+
+// TestScanAdultPhashFirst_TextMatchFallback_GivesBackAtApplyStashFree is the
+// Part 1 regression guard: a candidate that hashes fine but MISSES the
+// fingerprint cascade and instead resolves via the legacy AI/text pipeline
+// (searchInternalDBs -> BoxSearcher.SearchStashBox) must still carry its
+// LOCAL phash+prober duration into its proposal, so fingerprint give-back
+// fires at Apply — Stash-free. Before the Part 1 fix, only cascade hits
+// stamped PHash/DurationSeconds, so this exact scenario reached Apply with
+// GiveBackBox set but PHash == "", and submitFingerprintGiveBack silently
+// no-op'd; recovery required the now-retired SubmitFingerprintRetry.
+func TestScanAdultPhashFirst_TextMatchFallback_GivesBackAtApplyStashFree(t *testing.T) {
+	path := "/media/Adult/scene1.mp4"
+	rec := &giveBackRecord{}
+	stashdb := newFakeAdultBox(t, nil, rec, &textMatchScene{
+		id: "box-scene-1", title: "Text Match Scene", studio: "Test Studio",
+	}) // cascade miss (no fingerprint results), text search resolves via textMatch
+	hasher := &fakeHasher{hashes: map[string]string{path: "hash1"}}
+	prober := &fakeProber{durations: map[string]float64{path: 1800}}
+	ai := &countingAI{resp: map[string]any{
+		"studio": "Test Studio", "title": "Text Match Scene", "year": nil, "performers": nil,
+	}}
+
+	// A session whose Whisparr accepts Apply's Add + downloaded-scan (Scan never
+	// touches the *arr app; Apply does), and whose Identify has Boxes wired
+	// (unlike the plain GiveBack-only literals in the cascade-hit tests above)
+	// because this test's fallback path actually reaches searchInternalDBs ->
+	// SearchStashBox, unlike a cascade hit which never touches AI/Boxes.
+	sess := newTestSession(t, servarr.Whisparr, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v3/movie" && r.Method == http.MethodPost:
+			json.NewEncoder(w).Encode(map[string]any{"id": 77})
+		case r.URL.Path == "/api/v3/command":
+			w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected *arr call during Apply: %s %s", r.Method, r.URL.Path)
+		}
+	})
+	boxes := map[string]*stashbox.Client{"stashdb": stashdb}
+	sess.Identify = &identify.Identifier{
+		AI:       ai,
+		GiveBack: identify.NewGiveBack(boxes),
+		Boxes:    identify.NewBoxSearcher(boxes, nil),
+		Throttle: throttle.New(0),
+	}
+
+	candidates := []adultCandidate{{
+		root: servarr.RootFolder{Path: "/media/Adult"},
+		uf:   servarr.UnmappedFolder{Name: "scene1.mp4", Path: path},
+	}}
+	out := scanAdultPhashFirst(context.Background(), sess, hasher, prober, candidates, nil, []servarr.QualityProfile{{ID: 4}})
+	if len(out) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(out), out)
+	}
+	p := out[0]
+	if ai.calls == 0 {
+		t.Error("expected the legacy AI/text pipeline to actually run on a cascade miss")
+	}
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected the text match's valid scene ID to classify as Pending, got %+v", p)
+	}
+	if p.PHash != "hash1" || p.DurationSeconds != 1800 {
+		t.Fatalf("expected the cascade-miss/text-match proposal to still carry the LOCAL phash+prober duration (the Part 1 fix), got phash=%q duration=%d", p.PHash, p.DurationSeconds)
+	}
+	if p.GiveBackBox != "stashdb" || p.GiveBackSceneID != "box-scene-1" {
+		t.Fatalf("expected give-back target captured from the text match, got box=%q scene=%q", p.GiveBackBox, p.GiveBackSceneID)
+	}
+
+	trackedID, submitted, err := Apply(context.Background(), sess, p)
+	if err != nil {
+		t.Fatalf("Apply returned an error: %v", err)
+	}
+	if trackedID != 77 {
+		t.Fatalf("expected Apply to register the proposal with Whisparr, got trackedID=%d", trackedID)
+	}
+	if !submitted {
+		t.Fatal("expected give-back to fire at Apply for a text-matched proposal, Stash-free (the Part 1 fix) — no sess.Stash was ever configured in this test")
+	}
+	if !rec.submitted {
+		t.Fatal("expected the stash-box to have received a give-back submission end-to-end through Apply")
+	}
+	if rec.hash != "hash1" || rec.duration != 1800 || rec.sceneID != "box-scene-1" {
+		t.Errorf("expected give-back to carry the local phash/prober duration/text-matched scene, got hash=%q duration=%d scene=%q", rec.hash, rec.duration, rec.sceneID)
 	}
 }

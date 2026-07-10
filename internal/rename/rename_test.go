@@ -16,7 +16,6 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/ollama"
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
 	"github.com/curtiswtaylorjr/sakms/internal/servarr"
-	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
 	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
 )
 
@@ -1104,77 +1103,5 @@ func TestApply_Adult_NoGiveBack_WhenPHashUnknown(t *testing.T) {
 	}
 	if submitted {
 		t.Fatal("expected no give-back to be attempted without a phash")
-	}
-}
-
-func TestSubmitFingerprintRetry_Success(t *testing.T) {
-	stash := newFakeStash(t, &fakeStash{files: map[string]*stashapi.StashFile{
-		"/media/Adult/scene1.mp4": {PHash: "hash1", Duration: 1800},
-	}})
-	gotInput := map[string]any{}
-	stashdb := newFakeGiveBackBox(t, &gotInput)
-
-	sess := newTestSession(t, servarr.Whisparr, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("must never call the *arr app")
-	})
-	sess.Stash = stash
-	sess.Identify = &identify.Identifier{GiveBack: identify.NewGiveBack(map[string]*stashbox.Client{"stashdb": stashdb})}
-
-	p := proposals.Proposal{
-		ID: 1, Workflow: proposals.Rename, Status: proposals.Applied,
-		SourcePath: "/media/Adult/scene1.mp4", GiveBackBox: "stashdb", GiveBackSceneID: "abc-uuid",
-	}
-	if err := SubmitFingerprintRetry(context.Background(), sess, p); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	fp, _ := gotInput["fingerprint"].(map[string]any)
-	if gotInput["scene_id"] != "abc-uuid" || fp["hash"] != "hash1" {
-		t.Errorf("expected the freshly-read phash to be submitted, got %+v", gotInput)
-	}
-}
-
-func TestSubmitFingerprintRetry_AlreadySubmitted_Rejected(t *testing.T) {
-	sess := newTestSession(t, servarr.Whisparr, func(w http.ResponseWriter, r *http.Request) { t.Fatal("must not call the *arr app") })
-	p := proposals.Proposal{
-		ID: 1, Workflow: proposals.Rename, Status: proposals.Applied,
-		GiveBackBox: "stashdb", GiveBackSceneID: "x", FingerprintSubmittedAt: "2024-01-01T00:00:00Z",
-	}
-	if err := SubmitFingerprintRetry(context.Background(), sess, p); err == nil {
-		t.Fatal("expected an error for an already-submitted fingerprint")
-	}
-}
-
-func TestSubmitFingerprintRetry_NotApplied_Rejected(t *testing.T) {
-	sess := newTestSession(t, servarr.Whisparr, func(w http.ResponseWriter, r *http.Request) { t.Fatal("must not call the *arr app") })
-	p := proposals.Proposal{ID: 1, Workflow: proposals.Rename, Status: proposals.Pending, GiveBackBox: "stashdb", GiveBackSceneID: "x"}
-	if err := SubmitFingerprintRetry(context.Background(), sess, p); err == nil {
-		t.Fatal("expected an error for a non-Applied proposal")
-	}
-}
-
-func TestSubmitFingerprintRetry_NoGiveBackTarget_Rejected(t *testing.T) {
-	sess := newTestSession(t, servarr.Whisparr, func(w http.ResponseWriter, r *http.Request) { t.Fatal("must not call the *arr app") })
-	sess.Stash = newFakeStash(t, &fakeStash{})
-	sess.Identify = &identify.Identifier{GiveBack: identify.NewGiveBack(nil)}
-	p := proposals.Proposal{ID: 1, Workflow: proposals.Rename, Status: proposals.Applied}
-	if err := SubmitFingerprintRetry(context.Background(), sess, p); err == nil {
-		t.Fatal("expected an error when the proposal has no give-back target")
-	}
-}
-
-func TestSubmitFingerprintRetry_StashStillHasNoPHash_Errors(t *testing.T) {
-	stash := newFakeStash(t, &fakeStash{files: map[string]*stashapi.StashFile{
-		"/media/Adult/scene1.mp4": {}, // still no phash
-	}})
-	sess := newTestSession(t, servarr.Whisparr, func(w http.ResponseWriter, r *http.Request) { t.Fatal("must not call the *arr app") })
-	sess.Stash = stash
-	sess.Identify = &identify.Identifier{GiveBack: identify.NewGiveBack(map[string]*stashbox.Client{"stashdb": nil})}
-
-	p := proposals.Proposal{
-		ID: 1, Workflow: proposals.Rename, Status: proposals.Applied,
-		SourcePath: "/media/Adult/scene1.mp4", GiveBackBox: "stashdb", GiveBackSceneID: "abc-uuid",
-	}
-	if err := SubmitFingerprintRetry(context.Background(), sess, p); err == nil {
-		t.Fatal("expected an error when Stash still has no phash")
 	}
 }

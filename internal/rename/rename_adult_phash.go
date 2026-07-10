@@ -71,6 +71,18 @@ type hashResult struct {
 // probe simply carries duration 0, so give-back fails open for that ONE file.
 // A file that fails to hash degrades to the legacy pipeline for that ONE file
 // (per-file fail-open, replacing the old all-or-nothing Stash fail-open).
+//
+// The build phase is a single order-preserving loop over every candidate:
+// each hashed candidate (r.ok) has its local phash/duration stamped onto its
+// proposal regardless of HOW that proposal was resolved — a fingerprint
+// cascade hit, or the legacy AI/text fallback (proposeOneAdult) for a cascade
+// miss. This matters because give-back at Apply only fires when PHash is set;
+// previously only cascade hits carried a phash, so a candidate that hashed
+// fine but text-matched instead reached Apply with GiveBackBox set and
+// PHash == "", silently losing give-back. A cascade lookup error is handled
+// the same way (fail open into the unified loop) so those candidates also
+// keep their local phash. Output order is candidate-index order (interleaved
+// cascade hits and fallbacks), not "cascade hits first" as before.
 func scanAdultPhashFirst(
 	ctx context.Context, sess *mode.Session, hasher PHasher, prober Prober,
 	candidates []adultCandidate, tracked []servarr.TrackedItem, profiles []servarr.QualityProfile,
@@ -110,39 +122,25 @@ func scanAdultPhashFirst(
 
 	matches, err := sess.Identify.LookupFingerprints(ctx, phashes)
 	if err != nil {
-		// Fail open: a cascade error shouldn't block the whole Adult scan —
-		// every candidate still gets identified, just via the slower legacy path.
-		return legacyProposeAll(ctx, sess, candidates, tracked, profiles)
+		matches = nil // fail open: everything falls back, but still carries its local phash
 	}
 
-	// Sequential, order-preserving build phase: deterministic output.
-	var out []proposals.Proposal
-	var fallback []adultCandidate
+	// Single order-preserving loop over candidates; stamp phash/duration on
+	// EVERY r.ok candidate — cascade hit or legacy/text fallback alike.
+	out := make([]proposals.Proposal, 0, len(candidates))
 	for i, c := range candidates {
 		r := results[i]
-		match, hit := matches[r.phash]
-		if !r.ok || !hit {
-			fallback = append(fallback, c)
-			continue
+		var p proposals.Proposal
+		if match, hit := matches[r.phash]; r.ok && hit {
+			p = buildAdultProposal(sess.Mode, c.root, c.uf, match, nil, tracked, profiles)
+		} else {
+			p = proposeOneAdult(ctx, sess.Identify, sess.Mode, c.root, c.uf, tracked, profiles)
 		}
-		p := buildAdultProposal(sess.Mode, c.root, c.uf, match, nil, tracked, profiles)
-		p.PHash = r.phash
-		p.DurationSeconds = r.duration
+		if r.ok {
+			p.PHash = r.phash
+			p.DurationSeconds = r.duration
+		}
 		out = append(out, p)
-	}
-
-	return append(out, legacyProposeAll(ctx, sess, fallback, tracked, profiles)...)
-}
-
-// legacyProposeAll runs the AI/text identification pipeline (proposeOneAdult)
-// for every candidate the phash cascade didn't resolve.
-func legacyProposeAll(
-	ctx context.Context, sess *mode.Session,
-	candidates []adultCandidate, tracked []servarr.TrackedItem, profiles []servarr.QualityProfile,
-) []proposals.Proposal {
-	out := make([]proposals.Proposal, 0, len(candidates))
-	for _, c := range candidates {
-		out = append(out, proposeOneAdult(ctx, sess.Identify, sess.Mode, c.root, c.uf, tracked, profiles))
 	}
 	return out
 }

@@ -97,17 +97,27 @@ AI/text path. See the CHANGELOG entry of the same date for the full
 duration-regression trace and the honest performance note (N ffmpeg decodes
 vs. one batched Stash read).
 
+**Shipped (2026-07-10): `SubmitFingerprintRetry` retired — NOT a full
+`sess.Stash` teardown.** A correctness fix first: `scanAdultPhashFirst` now
+stamps the local phash/duration onto every hashed candidate's proposal,
+cascade hit or legacy/text fallback alike (previously only cascade hits got
+one), so give-back fires at Apply Stash-free for text matches too. That made
+`SubmitFingerprintRetry` and its `/submit-fingerprint` API/UI surface
+genuinely unreachable, so they're removed. Give-back at Apply now depends on
+BOTH the local hash AND probe succeeding — not "always ready synchronously
+at Scan time" as this section previously framed it; the small accepted gap
+(a file SAK can't hash, or can't probe, that only text-matches loses
+give-back) is documented in the CHANGELOG entry of the same date.
+`internal/stashapi`, `sess.Stash`, `buildStashClient`, `mode.Session.Stash`,
+and the `"stash"` connection type + `testStash` are RETAINED and
+repurposed — not dead code — for the next item below.
+
 **Still open (next slices):**
-- **`sess.Stash` teardown.** Now that identify no longer needs Stash, the
-  only remaining reader is `SubmitFingerprintRetry` — whose reason to exist
-  (recovering a phash that arrived late from Stash's async generation) has
-  evaporated, since SAK's hash is always ready synchronously at Scan time.
-  `sess.Stash`, `SubmitFingerprintRetry`, `buildStashClient`,
-  `mode.Session.Stash`, and the `"stash"` connection type + `testStash` are
-  all still in place but unreachable in practice. Deliberately left
-  untouched through both the Dedup and identify slices (mirrors the "should
-  we delete internal/phash" caution) — removal is its own deliberate
-  decision, not yet made.
+- **player-rescan-notify.** SAK triggers a targeted Stash rescan whenever it
+  updates a file (rename/relocate/replace) so the downstream player's index
+  stays fresh. Spec at `.omc/autopilot/spec-player-rescan-trigger.md`. This
+  is what the retained Stash client (`sess.Stash`/`buildStashClient`) is now
+  for. Not yet started.
 - **Whisparr elimination for Adult.** Adult gets its own library-owned
   Rename/Purge/Dedup/Tag path, same pattern as Movies/Sonarr. Decided
   2026-07-10 (`CLAUDE.md` Scope), no design yet — this is a substantial

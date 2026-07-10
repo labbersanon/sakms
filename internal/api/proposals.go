@@ -245,49 +245,6 @@ func submitDraftHandler(httpClient *http.Client, connStore *connections.Store, s
 	}
 }
 
-// submitFingerprintHandler re-attempts give-back for an already-Applied
-// Adult proposal whose phash wasn't ready yet at Apply time — a separate,
-// explicitly human-triggered retry action (see rename.SubmitFingerprintRetry's
-// doc comment for why this isn't automatic).
-func submitFingerprintHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, ok := parseProposalID(w, r)
-		if !ok {
-			return
-		}
-		ctx := r.Context()
-
-		p, err := propStore.Get(ctx, id)
-		if err != nil {
-			proposalNotFoundOr500(w, err)
-			return
-		}
-
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, p.Mode)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if err := rename.SubmitFingerprintRetry(ctx, sess, *p); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		if err := propStore.MarkFingerprintSubmitted(ctx, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		updated, err := propStore.Get(ctx, id)
-		if err != nil {
-			proposalNotFoundOr500(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(updated)
-	}
-}
-
 // dismissProposalHandler marks one proposal reviewed-and-rejected, dropping
 // it out of the live queue without acting on it.
 func dismissProposalHandler(propStore *proposals.Store) http.HandlerFunc {

@@ -704,3 +704,51 @@ and `-tags integration` (compiles clean; the new live-identify test —
 which validates a SAK-computed hash actually resolves against a real
 StashDB, not just that it matches Stash's own value — skips cleanly with
 no credentials configured for this pass).
+
+## 2026-07-10 — SubmitFingerprintRetry retired (after making it genuinely dead)
+
+**Part 1 is the correctness fix, not the deletion.** The retry was NOT a pure
+no-op: `scanAdultPhashFirst`'s fallback (cascade-miss + text-match) proposals
+discarded the already-computed local phash/duration, so give-back silently
+no-op'd at Apply for text-matched Adult scenes — `SubmitFingerprintRetry` was
+their only recovery. `scanAdultPhashFirst` now stamps the local
+phash/duration onto EVERY hashed candidate's proposal, cascade hit or
+legacy/text fallback alike, so give-back fires at Apply, Stash-free. The
+fail-open (cascade-lookup-error) path now also carries the local phash.
+Output order changed from "cascade hits first, then legacy fallbacks" to
+candidate-index order (still fully deterministic).
+
+**Only then Part 2:** removed `SubmitFingerprintRetry`, its
+`/submit-fingerprint` route + handler, and the frontend "Give back
+fingerprint" button/JS — genuinely unreachable once give-back fires at
+Apply.
+
+**Accepted residual (explicit, not buried):** give-back at Apply fires for a
+text match only when BOTH the local hash AND probe succeed
+(`submitFingerprintGiveBack` gates on `PHash != "" && DurationSeconds > 0`).
+A file SAK cannot hash, or can hash but not probe (duration 0), that only
+text-matches loses fingerprint give-back entirely — previously recoverable
+via the retry's live-Stash read. Accepted: an unhashable/unprobeable file is
+a strong corruption signal, not worth a Stash dependency. This is NOT "all
+text matches now give back" — it's "text matches whose file also hashed and
+probed cleanly."
+
+**Retained, deliberately:** `internal/stashapi`, `sess.Stash`,
+`buildStashClient`, `mode.Session.Stash`, the `"stash"` connection type, and
+`testStash` are KEPT — repurposed from "identification data source"
+(retired) to the upcoming **player-rescan-notify** feature (SAK triggers a
+targeted Stash rescan whenever it updates a file, so a downstream player's
+index stays fresh). They are written-but-not-read after this slice ON
+PURPOSE; a future "no dead code" pass must not delete them.
+
+Also deleted the now-orphaned `fakeStash`/`newFakeStash`/`sceneJSON` test
+fixtures and the five `TestSubmitFingerprintRetry_*` tests. The
+player-rescan-notify slice will reintroduce a Stash fake tailored to its own
+ScanPaths/WaitJob API surface — this is intentional, not a loss.
+
+Verified via `go build/vet/test -race` across the whole module (all green)
+and `-tags integration` (compiles clean, skips with no live env). Grep
+confirms zero remaining references to `SubmitFingerprintRetry`,
+`submitFingerprintHandler`, `/submit-fingerprint`, or `submitFingerprint()`
+outside this note; `sess.Stash` now shows only `mode.go`'s write and the
+retained `mode_test.go` reads.

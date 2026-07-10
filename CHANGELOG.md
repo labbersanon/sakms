@@ -1083,3 +1083,27 @@ Verified via `go build/vet/test -race` across the whole module (all green).
 Both fixes are inside the feature's existing best-effort envelope — neither
 changes what Apply itself reports to its caller, only what the player
 learns about after the fact.
+
+## 2026-07-10 — PUID/PGID Docker support
+
+The image bakes in uid/gid 1000 for the `sakms` user; a bind-mounted
+`/data` owned by a different host uid previously had no way to line up
+except accepting `docker-entrypoint.sh`'s existing `chown -R` re-owning the
+mount to 1000 regardless of what the host side actually used.
+
+`docker-entrypoint.sh` now reads `PUID`/`PGID` (both default `1000`,
+matching today's baked-in ids — fully backward compatible with no env vars
+set) and re-maps the `sakms` user/group to them via `groupmod -o -g` /
+`usermod -o -u` before the existing `chown -R` + `gosu` drop-privileges
+step. No new package needed — `usermod`/`groupmod` ship in the same
+`passwd` package `useradd` already relies on at image build time.
+Documented in `README.md`'s Docker section with a usage example.
+
+**Not live-tested** against a real `docker build`/`docker run` in this
+session — the sandboxed dev environment's Docker daemon socket required
+`sudo`, which wasn't used for a routine dev-tooling change without being
+asked. Verified via `sh -n` (clean) and a manual trace of the id-remap +
+unconditional-`chown -R`-afterward logic instead. Per this project's own
+script-verification convention, treat this as unverified end-to-end until
+confirmed with `./scripts/docker-dev.sh` (or a manual `docker run -e
+PUID=... -e PGID=...`) against a real container.

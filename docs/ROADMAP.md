@@ -171,10 +171,6 @@ explicit update to `CLAUDE.md`'s stated principle once built (not a silent
 reversal).
 
 ### Cheap, independent wins
-- **PUID/PGID Docker support** — confirmed gap: the image hardcodes uid
-  1000, `docker-entrypoint.sh` chowns to that fixed uid via `gosu`, no
-  PUID/PGID env vars exist anywhere. Small, well-understood, standard
-  container-native fix.
 - **Clearer mount-disconnect error messaging** — confirmed already SAFE
   (no workflow deletes anything on a missing file; see CHANGELOG's
   2026-07-10 redesign-discussion entry for the verification). Remaining

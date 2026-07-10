@@ -553,3 +553,40 @@ Verified via `go build/vet/test -race` across the whole module (all green,
 `internal/phash`/`internal/rename`/`internal/dedup` genuinely untouched —
 confirmed via `git status`, not assumed) and `-tags integration` (real-ffmpeg
 determinism + the live Stash cross-validation above, both passing).
+
+## 2026-07-10 — Rejected unifying phash onto videophash; split by purpose instead
+
+Investigated (not built) unifying all three modes' Dedup onto
+`internal/videophash` and deleting `internal/phash` entirely, per an initial
+"unify then remove the competing variant" request. The investigation surfaced
+a real risk before any code was written: `internal/videophash` is mechanically
+coarser than `internal/phash` — a single 64-bit hash of one 25-frame collage
+versus `internal/phash`'s 320 bits from 5 separately-hashed frames — and
+Stash's collage algorithm was tuned for adult-scene content, never validated
+against arbitrary movies/TV. Because Dedup deletes the losing file, using the
+coarser, unvalidated algorithm as the deletion gate would have been a real
+data-loss risk, not just a maintenance simplification.
+
+**Reversing course, not the earlier decisions**: `internal/phash` and
+`internal/videophash` both stay, split by purpose rather than by mode:
+- **`internal/phash`** (the higher-fidelity, SAK-only system, never needing
+  external compatibility) becomes the one **Deduplication** signal across all
+  three modes. Movies/Series already have it, unchanged by this decision.
+  Adult Dedup will get it next — SAK computing its own hash for Adult files,
+  not reading Stash's live value.
+- **`internal/videophash`** (StashDB-compatible, byte-identical to Stash) stays
+  reserved for **identification** only — the still-planned replacement for
+  Adult Rename's Stash-read dependency. It is explicitly not a Dedup signal;
+  Dedup never needed StashDB compatibility since it's a purely local
+  file-vs-file comparison, a point the original Adult phash investigation
+  (2026-07-10, "Mission clarified" entry) had already established but that
+  got blurred when unification was first proposed.
+
+No code changed this entry — Movies/Series required no migration, reset, or
+recalibration since `internal/phash` is untouched. `docs/ROADMAP.md`'s phash
+entry was rewritten to state the two-system split explicitly, replacing the
+prior "wire videophash into Adult identify and Dedup" framing (which would
+have put the coarser algorithm on the deletion path). The full risk analysis
+is preserved in `.omc/autopilot/spec-phash-unification.md`, marked superseded
+on its conclusion (unify + delete) but not its algorithm-fidelity findings
+(§1), which are what prompted this course correction.

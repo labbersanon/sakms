@@ -41,15 +41,15 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, set
 				http.Error(w, rpErr.Error(), http.StatusInternalServerError)
 				return
 			}
+			threshold, tErr := resolvePHashThreshold(ctx, settingsStore, m)
+			if tErr != nil {
+				http.Error(w, tErr.Error(), http.StatusInternalServerError)
+				return
+			}
 			if m == mode.Movies {
-				threshold, tErr := resolvePHashThreshold(ctx, settingsStore, m)
-				if tErr != nil {
-					http.Error(w, tErr.Error(), http.StatusInternalServerError)
-					return
-				}
 				found, err = dedup.ScanLibrary(ctx, sess, libStore, rootPath, prober, hasher, threshold)
 			} else {
-				found, err = dedup.ScanLibrarySeries(ctx, sess, libStore, rootPath, prober)
+				found, err = dedup.ScanLibrarySeries(ctx, sess, libStore, rootPath, prober, hasher, threshold)
 			}
 		} else {
 			found, err = dedup.Scan(ctx, sess, prober)

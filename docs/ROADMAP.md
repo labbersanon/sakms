@@ -13,7 +13,7 @@ briefly here.
 
 ## In progress
 
-### phash-based Dedup — Movies refinement shipped; Series/Adult and phash-primary grouping still open
+### phash-based Dedup — Movies + Series refinement shipped; Adult and phash-primary grouping still open
 The other half of "phash as the defacto standard across all media." Unlike
 Adult, there's no Stash instance for Movies/Series to lean on — SAK computes
 perceptual hashes itself (real frame-decode work via ffmpeg).
@@ -29,11 +29,18 @@ test + a full-flow walkthrough (see the CHANGELOG entry of the same date for
 the measured Hamming numbers). Ships imghash's released **PHash**, not PDQ —
 see "PDQ is still pending" below.
 
+**Shipped (2026-07-10): Series** — extended the same refine-within-identifier
+approach to `dedup.ScanLibrarySeries` (group key `(show, season, episode)`):
+migration `0018` adds the episode phash cache, `attachPHashesSeries` is an
+Episode-typed sibling of `attachPHashes`, `refineByPHash` and the per-mode
+threshold are reused verbatim, and the API handler is un-gated to pass
+`hasher`+`threshold` for any library-backed mode. Season packs need no special
+handling (flattened per-episode upstream of grouping).
+
 **Still open (next slices):**
-- **Series and Adult phash refinement.** Extend the same
-  refine-within-identifier-grouping approach to `ScanLibrarySeries` (group key
-  `(show, season, episode)`) and to Adult's Servarr-backed `scanAdult`
-  (foreignID grouping). Deferred from this slice, not designed at the
+- **Adult phash refinement.** Extend the same
+  refine-within-identifier-grouping approach to Adult's Servarr-backed
+  `scanAdult` (foreignID grouping). Deferred, not designed at the
   file/function level yet.
 - **phash-PRIMARY grouping (TMDB-less).** The larger ambition from the original
   entry: making phash the *primary* duplicate signal that groups files with no

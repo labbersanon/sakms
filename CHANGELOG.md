@@ -388,3 +388,65 @@ the tracked copy + its near-duplicate, with the perceptually-different file
 correctly left out. The default of 10 sits cleanly between the two on real
 ffmpeg-decoded frames — but it remains a *starting* default and a per-mode
 tunable, not a value proven correct for arbitrary real-world movie frames.
+
+## 2026-07-10 — phash-refined Series Dedup
+
+Series Dedup no longer auto-dedupes every file resolving to the same
+`(show, season, episode)`. Within each such group it now computes a CPU
+perceptual hash over several sampled frames of each candidate and only treats
+two files as duplicates if their hashes are also within the tunable
+Hamming-distance threshold — the same strictly MORE conservative keep-both
+behavior Movies shipped in the entry above: same-slot-but-perceptually-
+different files (a wrong match, a different cut, an extras file) are kept, not
+removed. Adult Dedup is unchanged (still deferred — see the ROADMAP entry).
+
+**Almost pure reuse — no new phash infrastructure.** This is the notable part:
+nothing in `internal/phash` changed, `refineByPHash` is reused verbatim, and
+the per-mode `phash-threshold` setting/resolver/routes were already
+mode-generic, so the `series_phash_dedup_threshold` key path works with zero
+new wiring. The slice is the Movies mechanism pointed at episodes, not a second
+implementation of it.
+
+- **Migration `0018`** clones `0017`'s columns onto `library_episodes`, adding
+  a file-identity-keyed phash cache (`phash` + `phash_file_size` +
+  `phash_file_mtime`) so a tracked episode is decoded once, not every Scan; all
+  `NOT NULL DEFAULT`, safe on a populated table (existing and not-yet-on-disk
+  missing-episode rows get an empty phash = "compute on next Scan"). The
+  missing-episode rows (`file_path = ''`) are skipped before any phash logic
+  runs, so their empty default is never read. `library.Store` gains
+  `UpdateEpisodePHash` — a targeted mid-scan write-back (`WHERE id = ?`) that
+  caches a tracked episode's hash without ever touching its title/air_date/
+  file_path — and the three fields ride through `UpsertEpisode`'s INSERT/
+  CONFLICT clause and the `GetEpisode`/`ListEpisodes`/`MissingEpisodes` SELECT
+  column lists.
+- **`dedup.ScanLibrarySeries`** gains `hasher`+`threshold` params and refines
+  each `(show, season, episode)` group before `markWinner`, via
+  **`attachPHashesSeries`** — an Episode-typed sibling of `attachPHashes` with
+  an identical body, differing only in the tracked type and the write-back
+  method. This follows CLAUDE.md's parallel-sibling-function convention over a
+  forced-shared interface: smallest blast radius, and the just-shipped Movies
+  path is left completely untouched. `refineByPHash` (its `len < 2` panic guard
+  included) is shared as-is — no Series variant. `ApplyLibrarySeries` persists
+  the winner's phash + file identity via `UpsertEpisode`, so the next Scan
+  finds it cached.
+- **The Dedup Scan handler** now resolves the threshold for any library-backed
+  mode and passes `hasher`+`threshold` to both `ScanLibrary` and
+  `ScanLibrarySeries`, dropping the Movies-only special-case gate.
+- **Season packs are orthogonal**: they're flattened into per-episode files
+  (`library.ResolveEpisodeVideoFiles`) upstream of grouping, so the phash
+  helpers stay pack-unaware — a pack-split duplicate refines against a loose
+  single-episode duplicate on the flat candidate list with no pack-specific
+  code path.
+
+Unlike the Movies slice above, this one passed Phase-4 review with zero
+blocking findings — a clean pass, no fix-cycle. Verified via `go build/vet/test
+-race` across the whole module (all green), both without and **with** `-tags
+integration`. Coverage mirrors the Movies refinement tier for Series (keeps a
+near-identical pair, drops a divergent orphan to no-proposal, tracked-episode-
+as-reference, cache-reuse-avoids-rehash, the whole-group-uncomputable panic
+regression) plus a season-pack duplicate refining together with a loose
+duplicate, `library_episodes` phash round-trip + `UpdateEpisodePHash` store
+tests, and Series `phash-threshold` API round-trip/validation. The
+`internal/phash` integration tier already proved `Hash` mode-agnostically, so
+it needed no new work — only that the module still passes under `-tags
+integration`.

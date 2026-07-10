@@ -72,13 +72,13 @@ already-tracked item sharing the same identifier — TMDB ID for Movies,
 `(show TMDB id, season, episode)` for Series, the resolved scene's
 foreignID for Adult — ffprobes every candidate directly, and stages a
 proposal per duplicate group with a precomputed quality winner. For
-Movies, sharing a TMDB id is necessary but no longer sufficient: within
-each same-TMDB group SAK also computes a CPU perceptual hash over several
-sampled frames of each candidate and only treats two files as duplicates
-if their hashes are within a Hamming-distance threshold (tunable per mode
-via `GET`/`PUT /api/modes/{mode}/phash-threshold`, default 10) — so
-same-TMDB files that look different (a wrong match, a different cut, an
-extras file) are kept, not auto-deduped. Series and Adult still group by
+Movies and Series, sharing an identifier is necessary but no longer
+sufficient: within each such group SAK also computes a CPU perceptual hash
+over several sampled frames of each candidate and only treats two files as
+duplicates if their hashes are within a Hamming-distance threshold (tunable
+per mode via `GET`/`PUT /api/modes/{mode}/phash-threshold`, default 10) — so
+same-identifier files that look different (a wrong match, a different cut, an
+extras file) are kept, not auto-deduped. Adult still groups by
 identifier alone. For
 Series, "the tracked copy" for a duplicate group is simply the one
 `library.Episode` row for that exact season/episode — the schema's own

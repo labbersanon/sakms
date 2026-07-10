@@ -35,14 +35,14 @@ func fakeTMDBSeriesSearch(t *testing.T, results map[string]string) *tmdb.Client 
 
 func TestScanLibrarySeries_RequiresTMDBConfigured(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Series}
-	if _, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), &fakeProber{}); err == nil {
+	if _, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), &fakeProber{}, &fakePHasher{}, 10); err == nil {
 		t.Fatal("expected an error when TMDB isn't configured")
 	}
 }
 
 func TestScanLibrarySeries_RequiresRootFolderPath(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesSearch(t, nil)}
-	if _, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), "", &fakeProber{}); err == nil {
+	if _, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), "", &fakeProber{}, &fakePHasher{}, 10); err == nil {
 		t.Fatal("expected an error when no root folder path is configured")
 	}
 }
@@ -73,7 +73,7 @@ func TestScanLibrarySeries_TrackedEpisodePlusOrphan_ProposesWithCorrectWinner(t 
 		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, dir, prober)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, dir, prober, matchingPHasher(trackedFile, orphanFile), 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestScanLibrarySeries_DiscoversDuplicateEpisodeAlongsideAlreadyTrackedOne(t
 		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, dir, prober)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, dir, prober, matchingPHasher(trackedFile, orphanFile), 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestScanLibrarySeries_SeasonPackOrphanMatchesExistingSingleEpisodeDuplicate
 		packEp2:     {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, dir, prober)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, dir, prober, matchingPHasher(trackedFile, packEp1, packEp2), 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestScanLibrarySeries_SingleNewOrphanEpisodeIsNotADuplicate(t *testing.T) {
 		"New Show": `{"results":[{"id":777,"name":"New Show"}]}`,
 	})}
 
-	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), dir, &fakeProber{})
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), dir, &fakeProber{}, &fakePHasher{}, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

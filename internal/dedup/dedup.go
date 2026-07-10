@@ -54,10 +54,11 @@ type Prober interface {
 	Probe(ctx context.Context, path string) (*mediainfo.Probe, error)
 }
 
-// PHasher is the subset of *phash.Hasher ScanLibrary needs — an interface so
-// tests can inject a fake without a real ffmpeg binary or video file, exactly
-// as Prober does for ffprobe. Movies-library Dedup only; the Servarr-backed
-// Scan and Series' ScanLibrarySeries don't compute perceptual hashes.
+// PHasher is the subset of *phash.Hasher ScanLibrary/ScanLibrarySeries need —
+// an interface so tests can inject a fake without a real ffmpeg binary or video
+// file, exactly as Prober does for ffprobe. Both library-backed modes (Movies
+// and Series) refine their groups with it; only the Servarr-backed Scan (Adult)
+// doesn't compute perceptual hashes yet.
 type PHasher interface {
 	Hash(ctx context.Context, path string) (string, error)
 }
@@ -104,6 +105,38 @@ func attachPHashes(ctx context.Context, hasher PHasher, libStore *library.Store,
 		if c.TrackedID != 0 {
 			if size, mtime, statErr := fileIdentity(c.Path); statErr == nil {
 				_ = libStore.UpdatePHash(ctx, int64(c.TrackedID), h, size, mtime)
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// attachPHashesSeries is attachPHashes' Series-typed sibling — identical body,
+// differing only in the tracked type (*library.Episode) and the write-back
+// method (UpdateEpisodePHash on library_episodes). Kept as a parallel sibling
+// rather than a shared generic helper (CLAUDE.md's "prefer parallel sibling
+// functions" convention), so the just-shipped Movies path stays untouched.
+func attachPHashesSeries(ctx context.Context, hasher PHasher, libStore *library.Store, candidates []proposals.Candidate, tracked *library.Episode) []proposals.Candidate {
+	out := make([]proposals.Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		if c.TrackedID != 0 && tracked != nil && tracked.PHash != "" &&
+			strings.HasPrefix(tracked.PHash, phash.Scheme+":") {
+			if size, mtime, err := fileIdentity(c.Path); err == nil &&
+				size == tracked.PHashFileSize && mtime == tracked.PHashFileMTime {
+				c.PHash = tracked.PHash
+				out = append(out, c)
+				continue
+			}
+		}
+		h, err := hasher.Hash(ctx, c.Path)
+		if err != nil {
+			continue // uncomputable — drop this candidate, same tolerance as probeCandidate
+		}
+		c.PHash = h
+		if c.TrackedID != 0 {
+			if size, mtime, statErr := fileIdentity(c.Path); statErr == nil {
+				_ = libStore.UpdateEpisodePHash(ctx, int64(c.TrackedID), h, size, mtime)
 			}
 		}
 		out = append(out, c)
@@ -741,7 +774,7 @@ type episodeDedupKey struct {
 // the schema's own UNIQUE(series_id, season_number, episode_number)
 // constraint already rules out there ever being more than one, unlike
 // Adult's string-matched foreignID grouping.
-func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober) ([]proposals.Proposal, error) {
+func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
 	if sess.TMDB == nil {
 		return nil, fmt.Errorf("tmdb isn't configured yet — add it in Settings first")
 	}
@@ -837,6 +870,23 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 		if len(candidates) < 2 {
 			continue // couldn't probe enough of the group to compare
 		}
+
+		// Refine the same-(show,season,episode) group by perceptual
+		// similarity, exactly as ScanLibrary does per-TMDB: hash each
+		// candidate (reusing a tracked episode's cached hash when its file is
+		// unchanged), then drop any candidate outside the threshold of the
+		// group's reference. A group refined below 2 survivors is not a
+		// duplicate — the strictly-more-conservative keep-both behavior.
+		var trackedPtr *library.Episode
+		if isTracked {
+			te := trackedEp
+			trackedPtr = &te
+		}
+		candidates = attachPHashesSeries(ctx, hasher, libStore, candidates, trackedPtr)
+		candidates = refineByPHash(candidates, phash.Frames, perFrameThreshold)
+		if len(candidates) < 2 {
+			continue // perceptually dissimilar — keep both, no proposal
+		}
 		markWinner(candidates)
 
 		out = append(out, proposals.Proposal{
@@ -908,9 +958,15 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		return 0, fmt.Errorf("checking existing episode metadata: %w", err)
 	}
 
+	// Persist the winner's phash + file identity so the next Scan finds it
+	// cached and skips re-decoding this file. winner.PHash was computed at Scan
+	// time (attachPHashesSeries) and rode through candidates_json; a stat
+	// failure just leaves the identity empty, self-invalidating on the next Scan.
+	winnerSize, winnerMTime, _ := fileIdentity(winner.Path)
 	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
 		SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: p.EpisodeNumber,
 		Title: title, AirDate: airDate, FilePath: winner.Path,
+		PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("registering surviving copy %q: %w", p.Title, err)

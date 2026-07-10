@@ -39,8 +39,19 @@ type Episode struct {
 	Title         string `json:"title,omitempty"`
 	AirDate       string `json:"airDate,omitempty"`
 	FilePath      string `json:"filePath"`
-	CreatedAt     string `json:"createdAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	// PHash is the SAK-computed perceptual hash of this episode's video file,
+	// cached so Dedup decodes each tracked file once rather than every Scan.
+	// PHashFileSize/PHashFileMTime are the file-identity key it's valid for:
+	// the cache is trusted only if the current file's os.Stat size+mtime still
+	// match, which detects a replaced/re-encoded file at the same path. Empty/
+	// zero means "not computed yet" — recomputed lazily on the next Dedup Scan.
+	// The phash string is scheme-tagged (see internal/phash), so a value cached
+	// under an older algorithm/frame-count is self-invalidating on comparison.
+	PHash          string `json:"phash,omitempty"`
+	PHashFileSize  int64  `json:"phashFileSize,omitempty"`
+	PHashFileMTime string `json:"phashFileMtime,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+	UpdatedAt      string `json:"updatedAt"`
 }
 
 // UpsertSeries creates a series, or updates it if one already exists for
@@ -135,20 +146,44 @@ func (s *Store) DeleteSeries(ctx context.Context, seriesID int64) error {
 // exactly mirroring how Upsert's idempotent shape works for Item.
 func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) {
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date, file_path)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
 			title = excluded.title,
 			air_date = excluded.air_date,
 			file_path = excluded.file_path,
+			phash = excluded.phash,
+			phash_file_size = excluded.phash_file_size,
+			phash_file_mtime = excluded.phash_file_mtime,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		RETURNING id, created_at, updated_at
-	`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath)
+	`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime)
 
 	if err := row.Scan(&ep.ID, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 		return Episode{}, fmt.Errorf("upserting episode s%de%d for series %d: %w", ep.SeasonNumber, ep.EpisodeNumber, ep.SeriesID, err)
 	}
 	return ep, nil
+}
+
+// UpdateEpisodePHash writes a freshly-computed perceptual hash and its
+// file-identity key (size + mtime) onto an existing tracked episode, without
+// rewriting the rest of the row — the targeted write Dedup's Scan uses to
+// cache a tracked episode's hash mid-scan (orphans have no row yet; their
+// surviving winner's hash is persisted via UpsertEpisode in
+// ApplyLibrarySeries). Kept separate from UpsertEpisode precisely so caching a
+// hash never touches title/air_date/file_path. Updating an id that doesn't
+// exist is not an error, matching DeleteSeries's convention.
+func (s *Store) UpdateEpisodePHash(ctx context.Context, id int64, phash string, fileSize int64, fileMTime string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE library_episodes
+		SET phash = ?, phash_file_size = ?, phash_file_mtime = ?,
+		    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE id = ?
+	`, phash, fileSize, fileMTime, id)
+	if err != nil {
+		return fmt.Errorf("updating phash for library episode %d: %w", id, err)
+	}
+	return nil
 }
 
 // GetEpisode returns a single episode by (seriesID, season, episode), or
@@ -157,7 +192,7 @@ func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) 
 // Scan) before overwriting it with a freshly-relocated file.
 func (s *Store) GetEpisode(ctx context.Context, seriesID int64, seasonNumber, episodeNumber int) (*Episode, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, created_at, updated_at
+		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
 		FROM library_episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?
 	`, seriesID, seasonNumber, episodeNumber)
 	ep, err := scanEpisode(row)
@@ -174,7 +209,7 @@ func (s *Store) GetEpisode(ctx context.Context, seriesID int64, seasonNumber, ep
 // episode number.
 func (s *Store) ListEpisodes(ctx context.Context, seriesID int64) ([]Episode, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, created_at, updated_at
+		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
 		FROM library_episodes WHERE series_id = ? ORDER BY season_number, episode_number
 	`, seriesID)
 	if err != nil {
@@ -199,7 +234,7 @@ func (s *Store) ListEpisodes(ctx context.Context, seriesID int64) ([]Episode, er
 // the Sonarr importer/Rename's ScanLibrarySeries instead of inferred.
 func (s *Store) MissingEpisodes(ctx context.Context, seriesID int64) ([]Episode, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, created_at, updated_at
+		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
 		FROM library_episodes WHERE series_id = ? AND file_path = '' ORDER BY season_number, episode_number
 	`, seriesID)
 	if err != nil {
@@ -292,7 +327,8 @@ func scanSeries(row rowScanner) (Series, error) {
 func scanEpisode(row rowScanner) (Episode, error) {
 	var ep Episode
 	err := row.Scan(&ep.ID, &ep.SeriesID, &ep.SeasonNumber, &ep.EpisodeNumber,
-		&ep.Title, &ep.AirDate, &ep.FilePath, &ep.CreatedAt, &ep.UpdatedAt)
+		&ep.Title, &ep.AirDate, &ep.FilePath, &ep.PHash, &ep.PHashFileSize, &ep.PHashFileMTime,
+		&ep.CreatedAt, &ep.UpdatedAt)
 	return ep, err
 }
 

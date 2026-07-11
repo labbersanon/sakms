@@ -156,6 +156,35 @@ func middlewareTestServer(t *testing.T, enc TokenEncryptor, store *Store) (*http
 	return srv, &innerCalled
 }
 
+// TestMiddleware_UnaffectedByProxyIdentityHeaders (autopilot-impl-wizard-
+// autodetect plan, guardrails table, EC3) proves ProxyHeadersPresent's
+// detection signal (proxydetect.go), consumed only by the status handler's
+// wizard pre-select, never influences a real authorization decision here.
+// Password mode (the default), a protected route, and a request carrying
+// two of the recognized proxy identity headers but no valid credential at
+// all must still 401 — a spoofed header can at most flip a first-run
+// dropdown default, never bypass Middleware.
+func TestMiddleware_UnaffectedByProxyIdentityHeaders(t *testing.T) {
+	enc := testEncryptor(t)
+	store := newTestStore(t)
+	srv, called := middlewareTestServer(t, enc, store)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+	req.Header.Set("X-authentik-username", "someone")
+	req.Header.Set("Remote-User", "someone")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 — proxy identity headers must never authorize a request, got %d", resp.StatusCode)
+	}
+	if *called {
+		t.Error("expected the inner handler to never run for a request with only spoofed identity headers and no real credential")
+	}
+}
+
 // TestMiddleware_NoCookieValidKey_Passes covers AC1: a valid X-Api-Key
 // header with no session cookie at all authenticates.
 func TestMiddleware_NoCookieValidKey_Passes(t *testing.T) {

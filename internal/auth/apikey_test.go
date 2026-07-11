@@ -234,6 +234,18 @@ func TestRegenerate_InvalidatesPreviousKey(t *testing.T) {
 	}
 }
 
+func TestEnvKeyActive(t *testing.T) {
+	s := newTestStore(t)
+	if s.EnvKeyActive() {
+		t.Error("expected EnvKeyActive to be false before UseEnvAPIKey is called")
+	}
+
+	s.UseEnvAPIKey("env-supplied-key-value")
+	if !s.EnvKeyActive() {
+		t.Error("expected EnvKeyActive to be true after UseEnvAPIKey")
+	}
+}
+
 func TestRegenerate_EnvManaged_Refused(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

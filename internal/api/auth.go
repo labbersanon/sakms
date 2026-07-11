@@ -69,6 +69,14 @@ type authCredentialsRequest struct {
 // Empty for "password"/"none", which still respond with a bare 204.
 type authSetupResponse struct {
 	ForwardSecret string `json:"forwardSecret,omitempty"`
+	// APIKey is the one-time break-glass API key minted during a forward-mode
+	// first-run (spec §4/Decision #3) — revealed ONCE here, same discipline as
+	// ForwardSecret. Empty when SAKMS_API_KEY is active (see APIKeyNote).
+	APIKey string `json:"apiKey,omitempty"`
+	// APIKeyNote replaces APIKey when SAKMS_API_KEY is active: no settings key
+	// is minted (it would be a no-op under env precedence), so instead point
+	// the operator at the env value as their break-glass credential.
+	APIKeyNote string `json:"apiKeyNote,omitempty"`
 }
 
 // authSetupHandler creates SAK's one login — refuses once a login
@@ -157,15 +165,45 @@ func authSetupHandler(authStore *auth.Store, tokenEnc auth.TokenEncryptor) http.
 					return
 				}
 			}
+			// Break-glass key (spec §4/Decision #3): forward first-run has no
+			// interactive login fallback, so mint a working recovery credential
+			// now, while setup is still public and Configured()-guarded.
+			// Env-precedence guardrail: if the env key is active, a settings
+			// key would never authenticate (activeKeyHash) — so point at the
+			// env value instead of minting a dead key (mirrors Regenerate's own
+			// ErrEnvManaged refusal).
+			//
+			// CRITICAL ORDERING (Critic fix #1): this ENTIRE block runs BEFORE
+			// SetAuthMode(ctx, auth.ModeForward) below — a mint/persist failure
+			// here must leave Configured()==false so the operator gets a clean
+			// retry, not a half-configured, permanently-locked instance. Do not
+			// move this after SetAuthMode for any reason.
+			resp := authSetupResponse{ForwardSecret: rawSecret}
+			if authStore.EnvKeyActive() {
+				resp.APIKeyNote = "SAKMS_API_KEY is set — that environment value is your break-glass credential. Send it as an X-Api-Key header to reach Settings if your proxy locks you out."
+			} else {
+				// Regenerate, NOT EnsureAPIKey — see plan §0: boot already
+				// persisted a key (main.go:92), so EnsureAPIKey would return ""
+				// here and reveal nothing. Regenerate always mints+returns a
+				// working key (invalidating the boot-logged one, which only ever
+				// hit stdout on this fresh instance).
+				rawKey, _, keyErr := authStore.Regenerate(ctx)
+				if keyErr != nil {
+					http.Error(w, keyErr.Error(), http.StatusInternalServerError)
+					return // Configured() still false here — auth_mode not yet written. Clean retry.
+				}
+				resp.APIKey = rawKey
+			}
+
 			if err := authStore.SetAuthMode(ctx, auth.ModeForward); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			// No cookie — forward mode has no cookie concept. The secret is
-			// shown ONCE here (G6); there is no later endpoint that can ever
-			// retrieve it again.
+			// No cookie — forward mode has no cookie concept. The secret and
+			// break-glass key are shown ONCE here (G6); there is no later
+			// endpoint that can ever retrieve either again.
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(authSetupResponse{ForwardSecret: rawSecret})
+			json.NewEncoder(w).Encode(resp)
 		case auth.ModeAuthentik:
 			// First-run bootstrap (plan §0.7/§3.3b): carried in this same
 			// public setup body, not a protected config endpoint, because no
@@ -259,9 +297,10 @@ func authLogoutHandler() http.HandlerFunc {
 }
 
 type authStatusResponse struct {
-	Configured    bool   `json:"configured"`
-	Authenticated bool   `json:"authenticated"`
-	Mode          string `json:"mode"`
+	Configured           bool   `json:"configured"`
+	Authenticated        bool   `json:"authenticated"`
+	Mode                 string `json:"mode"`
+	ProxyHeadersDetected bool   `json:"proxyHeadersDetected,omitempty"`
 }
 
 // authStatusHandler is the one endpoint the frontend calls before it knows
@@ -320,11 +359,22 @@ func authStatusHandler(authStore *auth.Store, tokenEnc auth.TokenEncryptor) http
 			authenticated = auth.Authenticated(tokenEnc, r)
 		}
 
+		// Detection is a first-run-only hint: computed ONLY while unconfigured,
+		// so an already-configured instance NEVER discloses it regardless of
+		// what headers a caller presents (disclosure-scoping, spec §1). The
+		// wizard is the signal's only consumer and is never shown once
+		// configured.
+		var proxyHeadersDetected bool
+		if !configured {
+			proxyHeadersDetected = auth.ProxyHeadersPresent(r)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(authStatusResponse{
-			Configured:    configured,
-			Authenticated: authenticated,
-			Mode:          mode,
+			Configured:           configured,
+			Authenticated:        authenticated,
+			Mode:                 mode,
+			ProxyHeadersDetected: proxyHeadersDetected,
 		})
 	}
 }

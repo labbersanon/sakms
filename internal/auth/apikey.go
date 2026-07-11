@@ -139,6 +139,15 @@ func (s *Store) persistKey(ctx context.Context, raw string) error {
 	return s.settings.Set(ctx, apikeySuffixKey, suffix(raw))
 }
 
+// EnvKeyActive reports whether SAKMS_API_KEY was supplied at boot (see
+// UseEnvAPIKey). When true, a freshly minted settings key would be dead on
+// arrival — env precedence (activeKeyHash) makes the env hash win every
+// verify — which is exactly why Regenerate refuses with ErrEnvManaged in this
+// state. Callers that would otherwise mint must branch on this first.
+func (s *Store) EnvKeyActive() bool {
+	return s.envKeyHash != nil
+}
+
 // activeKeyHash resolves the hash currently in effect, preferring the
 // in-memory env key over whatever's persisted in settings (env precedence —
 // see UseEnvAPIKey and ErrEnvManaged). configured=false means no key is set

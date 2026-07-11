@@ -1276,7 +1276,7 @@ async function renderKidsRootPath(container) {
 // here. An operator who wants Authentik mode configures it later from
 // Settings → Authentication mode (renderAuthMode above), which offers all
 // FOUR modes, once they already have a session or the universal API key.
-function renderCredentialsGate(container, kind) {
+function renderCredentialsGate(container, kind, authStatus) {
   container.innerHTML = "";
   const isSetup = kind === "setup";
   container.appendChild(el("h2", { text: isSetup ? "Create your SAK login" : "Log in to SAK" }));
@@ -1330,6 +1330,16 @@ function renderCredentialsGate(container, kind) {
   const modeSelect = el("select", {});
   for (const m of SETUP_MODES) modeSelect.appendChild(el("option", { value: m.value, text: m.label }));
 
+  // Auto-detect (spec Decision #1): if the server saw reverse-proxy identity
+  // headers on THIS first-run request, PRE-SELECT forward — password fields
+  // hidden — so a likely-proxied operator lands on the right default. This
+  // only moves the dropdown's starting position; it submits NOTHING, the
+  // operator still explicitly confirms, and the selector stays freely
+  // changeable.
+  if (authStatus && authStatus.proxyHeadersDetected) {
+    modeSelect.value = "forward";
+  }
+
   const status = el("div", { class: "error" });
   const reveal = el("div", { class: "muted" });
 
@@ -1355,17 +1365,46 @@ function renderCredentialsGate(container, kind) {
     el("label", {}, [document.createTextNode("Identity header (default)"), forwardUserHeaderInput]),
     el("label", {}, [document.createTextNode("Secret header (default)"), forwardSecretHeaderInput]),
     el("div", { class: "muted", style: "margin-top:0.5rem", text: "Your reverse proxy must SET the secret header on every request — overwriting any client-supplied value, never appending or passing one through. This header is the entire authorization gate for this mode." }),
+    el("div", { class: "muted", style: "margin-top:0.5rem", text: "Note: if this mode was pre-selected for you, that only reflects headers seen on this one request — it does not verify your proxy will actually send the secret header. A break-glass API key will be shown after setup in case it doesn't." }),
   ]);
 
   // -- none: no fields at all --
   const noneGroup = el("div", { class: "muted", text: "No credentials, no header, nothing — anyone who can reach this instance has full control. You'll be asked to confirm before this takes effect." });
 
   const modeFieldsWrap = el("div");
+
+  // Skip button (spec Decision #2): a one-click "none"-mode quick path,
+  // meaningful only while looking at the password default. Declared here,
+  // BEFORE renderModeFields() is defined/first called below — Critic
+  // finding M1: renderModeFields() references skipBtn to toggle its
+  // visibility, and renderModeFields() is invoked (at the bottom of this
+  // block) before the button row further down the source is ever built; if
+  // skipBtn were declared down at the button row instead, that first
+  // invocation would hit a temporal-dead-zone ReferenceError and blank the
+  // entire setup screen. This declaration is about where the JS variable is
+  // declared — where the button gets INSERTED INTO THE DOM is still the
+  // button row below.
+  const skipBtn = el("button", { type: "button", text: "Skip — no authentication", onclick: async () => {
+    if (!confirm("This instance will have no authentication at all — anyone who can reach it will have full control. Continue?")) return;
+    try {
+      const res = await fetch("/api/auth/setup", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "none", acknowledgeInsecure: true }),
+      });
+      if (!res.ok) { status.textContent = (await res.text()) || ("HTTP " + res.status); return; }
+      await boot();
+    } catch (e) { status.textContent = e.message; }
+  }});
+
   function renderModeFields() {
     modeFieldsWrap.innerHTML = "";
     if (modeSelect.value === "password") modeFieldsWrap.appendChild(passwordGroup);
     else if (modeSelect.value === "forward") modeFieldsWrap.appendChild(forwardGroup);
     else if (modeSelect.value === "none") modeFieldsWrap.appendChild(noneGroup);
+    // Skip is only meaningful when looking at the password default — a
+    // quick-path around creating a password, not a general escape hatch
+    // shown alongside forward/none (none already has its own submit).
+    skipBtn.style.display = modeSelect.value === "password" ? "" : "none";
   }
 
   const submitLabel = () => modeSelect.value === "password" ? "Create login" : modeSelect.value === "forward" ? "Generate shared secret" : "Continue without authentication";
@@ -1417,6 +1456,19 @@ function renderCredentialsGate(container, kind) {
         secretInput.select();
         reveal.appendChild(el("button", { text: "Copy", onclick: () => { secretInput.select(); if (navigator.clipboard) navigator.clipboard.writeText(data.forwardSecret || "").catch(() => {}); } }));
         reveal.appendChild(el("div", { class: "error", text: "Shown once — copy this into your reverse proxy's config now; it cannot be retrieved later." }));
+        // Break-glass API key (spec AC6, Decision #3): same reveal-once /
+        // readonly-input / "copy now" treatment as the forward secret above.
+        // Both response fields are mutually exclusive — env-managed key
+        // active means a note instead of a mintable value.
+        if (data.apiKey) {
+          const keyInput = el("input", { type: "text", readonly: "readonly", value: data.apiKey, style: "width:100%" });
+          reveal.appendChild(el("div", { class: "muted", style: "margin-top:0.75rem", text: "Break-glass API key (save this now):" }));
+          reveal.appendChild(keyInput);
+          reveal.appendChild(el("button", { text: "Copy", onclick: () => { keyInput.select(); if (navigator.clipboard) navigator.clipboard.writeText(data.apiKey).catch(() => {}); } }));
+          reveal.appendChild(el("div", { class: "error", text: "Shown once — if your proxy locks you out, send this as an X-Api-Key header to reach Settings. It cannot be retrieved later." }));
+        } else if (data.apiKeyNote) {
+          reveal.appendChild(el("div", { class: "muted", style: "margin-top:0.75rem", text: data.apiKeyNote }));
+        }
         reveal.appendChild(el("div", { class: "row", style: "margin-top:0.5rem" }, [
           el("button", { class: "primary", text: "I've copied it — continue", onclick: async () => { await boot(); } }),
         ]));
@@ -1431,7 +1483,7 @@ function renderCredentialsGate(container, kind) {
   const form = el("form", { onsubmit: (e) => { e.preventDefault(); submit(); } }, [
     el("label", {}, [document.createTextNode("Authentication mode"), modeSelect]),
     modeFieldsWrap,
-    el("div", { class: "row", style: "margin-top:0.75rem" }, [submitBtn]),
+    el("div", { class: "row", style: "margin-top:0.75rem" }, [submitBtn, skipBtn]),
     status,
     reveal,
   ]);
@@ -1451,6 +1503,15 @@ function renderProxyAuthNotice(container, mode) {
     ? "This instance authenticates through your reverse proxy. This request arrived without a valid proxy identity/secret — check that your proxy is forwarding the configured headers, and that the shared secret matches what's configured in Settings → Authentication mode."
     : "This instance authenticates by validating a caller-presented Authentik bearer token via token introspection. Provide a valid Authorization: Bearer <token> header when calling this instance.";
   container.appendChild(el("p", { class: "muted", text: message }));
+  if (mode === "forward") {
+    // Recovery guidance (spec AC7/Edge Case #5, Critic finding M2): copy-only
+    // — this screen has no access to the one-time break-glass key (already
+    // revealed and gone from memory), so it can only instruct. Must NOT
+    // imply in-browser recovery is possible: X-Api-Key is a header-only
+    // credential a plain browser tab can't attach, so a header-capable
+    // client (e.g. curl) is named explicitly.
+    container.appendChild(el("p", { class: "muted", text: "If you saved the one-time break-glass API key shown during setup, use a header-capable client (e.g. curl) to send it as an X-Api-Key header against this instance's API — for example to PUT /api/auth/mode and switch back to password mode, or to reach other Settings endpoints and fix your proxy configuration. A plain browser tab cannot attach this header on its own." }));
+  }
   container.appendChild(el("div", { class: "row", style: "margin-top:0.75rem" }, [
     el("button", { class: "primary", text: "Retry", onclick: async () => { await boot(); } }),
   ]));
@@ -1522,7 +1583,7 @@ async function boot() {
   if (authStatus && !authStatus.configured) {
     updateNoneModeBanner(false);
     hideNav();
-    renderCredentialsGate(view, "setup"); // mode-aware 3-way selector
+    renderCredentialsGate(view, "setup", authStatus); // mode-aware 3-way selector
     return;
   }
 

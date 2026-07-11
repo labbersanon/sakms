@@ -151,6 +151,13 @@ slice. Spec at `.omc/autopilot/spec-player-rescan-trigger.md`.
 
 ## Recently shipped (outside this backlog)
 
+### First-run break-glass recovery — shipped 2026-07-11
+Forward-mode first-run now mints a one-time recovery API key (see
+CHANGELOG). Possible future hardening (not committed): a post-setup "verify
+your proxy actually sends the secret header" round-trip check before the
+one-time reveal scrolls away, which would let detection reduce lockout risk
+rather than only smoothing selection. Deferred until proven needed.
+
 ### Four-mode auth strategy switch — shipped 2026-07-11
 A human-directed addition, not a pre-existing item anywhere in this
 backlog. Auth is now chosen at first-run and switchable later from

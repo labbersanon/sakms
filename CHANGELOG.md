@@ -1424,3 +1424,50 @@ guarantee (the authentik status endpoint never introspects; an
 unauthenticated request can never reconfigure an already-configured
 instance) were independently re-verified clean by every security reviewer
 across all four review groups.
+
+---
+
+## 2026-07-11 — First-run setup: proxy-header auto-detect, Skip, and forward-mode break-glass key
+
+**Fix for a real lockout that happened today.** An operator selected forward
+auth at first-run, but the reverse proxy was never configured to send the
+secret header — an immediate, unrecoverable-without-server-access lockout
+(the setup screen never reappears once configured, and forward mode has no
+interactive login fallback). Two changes close the gap:
+
+1. **Break-glass API key (the actual fix).** A forward-mode first-run now mints
+   and reveals a one-time API key alongside the forward secret, same
+   reveal-once discipline. A locked-out operator can present it as `X-Api-Key`
+   to reach Settings and fix the proxy or switch modes. When `SAKMS_API_KEY`
+   is set, no key is minted (env precedence would make it a no-op); the
+   response instead points at the env value. Recovery guidance also added to
+   the forward "Not authenticated" screen.
+   - **Implementation note (deviation from the drafted spec):** the spec said
+     call `EnsureAPIKey`, but boot (`cmd/sakms/main.go:92`) already persists a
+     key on first start, so `EnsureAPIKey` would return `""` and reveal
+     nothing. `Regenerate` is used instead — the only mechanism that can hand
+     back a working raw key, since the boot key's raw value is never stored.
+     This **invalidates the boot-logged key**; acceptable because forward
+     first-run fires seconds after boot on a fresh instance and that key only
+     ever hit stdout.
+   - **Ordering is load-bearing:** the break-glass mint runs BEFORE
+     `SetAuthMode` commits, not after. A mint failure after the mode commit
+     would leave the instance `Configured()==true` with neither the forward
+     secret nor a break-glass key ever revealed — the exact unrecoverable
+     lockout this feature exists to prevent, reintroduced via a rare DB
+     error. `TestSetup_ForwardMintFailure_LeavesUnconfigured` proves a forced
+     mint failure still leaves `Configured()==false` for a clean retry.
+2. **Proxy-header auto-detect (convenience, NOT the fix).** When the first-run
+   request carries a recognized reverse-proxy identity header
+   (`Remote-User`/`X-Remote-User`/`X-Forwarded-User`/`X-authentik-username`),
+   the wizard PRE-SELECTS forward mode (dropdown default only — never
+   auto-submits, freely changeable). Surfaced via a `!configured`-gated
+   `proxyHeadersDetected` on `GET /api/auth/status`. A "Skip" button offers a
+   one-click `none`-mode path reusing the exact existing `acknowledgeInsecure`
+   guardrail and warning copy — no new endpoint.
+
+   **Residual risk (honest):** detection only smooths mode *selection* — it
+   cannot verify the proxy will actually send the secret header correctly.
+   Detection is not a mitigation for the lockout; the break-glass key is. A
+   spoofed identity header can at most flip a first-run dropdown default; no
+   authorization path ever reads these headers.

@@ -1660,3 +1660,80 @@ even before the added coverage — the extra tests are precision, not a fix.
 
 Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
 and full `go test ./...` (all green).
+
+## 2026-07-11 — Confidence scoring for Rename matches (Movies/Series)
+
+Closed the "Matching quality" ROADMAP item: Movies/Series Rename search
+(`proposeOneLibrary`/`proposeOneEpisodeLibrary` in `internal/rename/
+rename.go`) previously took TMDB's `items[0]` unconditionally — only a
+*zero-result* search routed to Unmatched, never "found something, but it's
+a weak match."
+
+New `internal/rename/confidence.go`: `matchConfidence(searchTerm,
+matchTitle, matchReleaseDate string) int` returns a 0-100 score. Two
+independent signals:
+- `titleSimilarity` — a Dice coefficient (`2*|A∩B| / (|A|+|B|)`) over
+  normalized, lowercased, punctuation-stripped word-token sets. Tolerant of
+  word reordering and partial overlap (`searchterm.FromName`'s output is an
+  explicitly best-effort heuristic, not guaranteed to equal TMDB's
+  canonical title verbatim); not tolerant of misspellings (no
+  character-level edit distance) — a deliberate simplicity tradeoff.
+- `extractYear` — pulls a year out of the search term, preferring an
+  unambiguous parenthesized form (`(2001)`) and falling back to a bare
+  4-digit year only when exactly one candidate is present (two or more is
+  treated as "no reliable signal", not a guess). When both the search term
+  and TMDB's release date have a known year, a mismatch of more than one
+  year halves the score; when either side's year is unknown, no penalty
+  applies at all.
+
+`ScanLibrary`/`ScanLibrarySeries` gained a `confidenceThreshold int`
+parameter, threaded from a new per-mode setting (`GET/PUT /api/modes/
+{mode}/match-confidence-threshold`, 0-100, defaults to
+`rename.DefaultConfidenceThreshold` = 40) via `internal/api/library.go`'s
+`resolveConfidenceThreshold` — mirroring `phashThresholdKey`/
+`resolvePHashThreshold`'s existing pattern exactly (same range validation,
+same garbage-tolerant fallback to the default). A below-threshold
+`items[0]` now routes to Unmatched with a reason naming the search term,
+the rejected title, the computed score, and the threshold — e.g. `weak
+TMDB match for "FathersLLDVD": best result "Father's Day" (confidence 0%,
+threshold 40%) — needs manual review`. No frontend control yet, same
+precedent as `phash-threshold` (also API-only since it shipped).
+
+**Deliberately out of scope:** Adult's Whisparr-lookup path
+(`lookupFirst`/`lookupWithAIFallback`) still takes `results[0]`
+unconditionally — flagged by the same-day review as arguably within the
+ROADMAP item's "TMDB/community-DB search" wording, but it's a genuinely
+different mechanism (`servarr.LookupResult` from Whisparr's own `/lookup`
+proxy, not a `tmdb.Item`) and Adult/Whisparr elimination hasn't started
+(see `CLAUDE.md` Scope). Left as a conscious deferral, documented in
+ROADMAP.md, for whoever designs Adult's own library-owned Rename path —
+the natural point to revisit this rather than patching `lookupFirst` in
+place ahead of that redesign.
+
+New tests: `internal/rename/confidence_test.go` (unit coverage of
+`titleSimilarity`/`extractYear`/`matchConfidence`, including the documented
+numeric-title-year false-positive case proving the halving alone doesn't
+drop a genuinely correct match below the default threshold), two
+integration tests each for Movies and Series (a weak match routes to
+Unmatched at the default threshold; a threshold of 0 still accepts it,
+proving the parameter is load-bearing rather than decorative), and
+`internal/api/confidence_threshold_test.go` (GET/PUT/round-trip/range
+validation, mirroring `phash_threshold_test.go`). All ~18 pre-existing
+`ScanLibrary`/`ScanLibrarySeries` test call sites were updated to pass
+`DefaultConfidenceThreshold` — confirmed this changes no existing test's
+expected outcome.
+
+Same-day `code-reviewer` pass (separate context, per house policy): 0
+blocking issues, verdict COMMENT (to surface the Adult scope question
+above as a conscious call, not a silent skip). Reviewer independently
+reimplemented and reran the scorer against real fixture data, confirming
+every genuine match clears the default threshold with a wide margin (e.g.
+86, 80) while a genuinely unrelated result scores 0, and confirmed the
+year-penalty branch has no panic/rounding edge cases at the threshold
+boundary. Two LOW polish items from the review were fixed before
+committing: a stale doc-comment symbol reference, and the missing
+Series-specific weak-match test (Movies had one, Series didn't).
+
+Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
+and full `go test ./...` (all green) — both before and after the
+reviewer-prompted fixes.

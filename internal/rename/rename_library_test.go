@@ -58,7 +58,7 @@ func TestScanLibrary_ProducesPendingProposalForNewItem(t *testing.T) {
 	})}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,14 +76,14 @@ func TestScanLibrary_ProducesPendingProposalForNewItem(t *testing.T) {
 
 func TestScanLibrary_RequiresTMDBConfigured(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Movies}
-	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), naming.Jellyfin); err == nil {
+	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), naming.Jellyfin, DefaultConfidenceThreshold); err == nil {
 		t.Fatal("expected an error when TMDB isn't configured")
 	}
 }
 
 func TestScanLibrary_RequiresRootFolderPath(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, nil)}
-	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), "", naming.Jellyfin); err == nil {
+	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), "", naming.Jellyfin, DefaultConfidenceThreshold); err == nil {
 		t.Fatal("expected an error when no root folder path is configured")
 	}
 }
@@ -104,7 +104,7 @@ func TestScanLibrary_MarksUnmatchedForAlreadyInLibrary(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,12 +123,62 @@ func TestScanLibrary_MarksUnmatchedWhenNoTMDBMatch(t *testing.T) {
 		"xyz123": `{"results":[]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 1 || got[0].Status != proposals.Unmatched {
 		t.Fatalf("expected 1 unmatched proposal, got %+v", got)
+	}
+}
+
+// TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch proves the
+// confidence gate itself, not just its unit-level scoring function: a
+// garbled/opaque search term that still returns SOME TMDB result (unlike
+// the zero-results case above) is routed to Unmatched instead of silently
+// accepting a confidently-wrong top hit.
+func TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "FathersLLDVD"), 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
+		"FathersLLDVD": `{"results":[{"id":999,"title":"Father's Day","overview":"...","release_date":"1997-05-09"}]}`,
+	})}
+
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Unmatched {
+		t.Fatalf("expected the weak match to route to unmatched, got %+v", got)
+	}
+	if got[0].TMDBID != 0 {
+		t.Errorf("expected no TMDB id to be assigned on a rejected weak match, got %d", got[0].TMDBID)
+	}
+}
+
+// TestScanLibrary_ThresholdZeroAcceptsAnyTMDBResult proves the threshold
+// parameter is actually load-bearing (not a hardcoded gate): a threshold of
+// 0 must let even a zero-similarity result through, same as today's
+// pre-feature unconditional-items[0] behavior.
+func TestScanLibrary_ThresholdZeroAcceptsAnyTMDBResult(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "FathersLLDVD"), 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
+		"FathersLLDVD": `{"results":[{"id":999,"title":"Father's Day","overview":"...","release_date":"1997-05-09"}]}`,
+	})}
+
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 999 {
+		t.Fatalf("expected a threshold of 0 to accept the weak match, got %+v", got)
 	}
 }
 
@@ -163,7 +213,7 @@ func TestScanLibrary_DiscoversNewFileAlongsideAlreadyTrackedItem(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,7 +248,7 @@ func TestScanLibrary_SkipsAlreadyConformantEntry(t *testing.T) {
 		"A Beautiful Mind 2001": `{"results":[{"id":453,"title":"A Beautiful Mind"}]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +264,7 @@ func TestScanLibrary_SkipsSidecarFiles(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, nil)}
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +290,7 @@ func TestScanLibrary_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
 	defer aiSrv.Close()
 	sess.MainstreamAI = ollama.New(aiSrv.URL, "test-model", aiSrv.Client())
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +310,7 @@ func TestScanLibrary_NoRerouteWithoutMainstreamAI(t *testing.T) {
 		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie."}]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

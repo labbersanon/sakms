@@ -11,6 +11,7 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/naming"
 	"github.com/curtiswtaylorjr/sakms/internal/phash"
 	"github.com/curtiswtaylorjr/sakms/internal/quality"
+	"github.com/curtiswtaylorjr/sakms/internal/rename"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
 )
 
@@ -279,6 +280,81 @@ type phashThresholdResponse struct {
 
 type phashThresholdRequest struct {
 	Threshold int `json:"threshold"`
+}
+
+// confidenceThresholdKey is per-mode — the Rename match-confidence cut is
+// configured independently per mode (only Movies/Series read it today, since
+// Adult's identification path doesn't use TMDB's items[0]-style search at
+// all), mirroring phashThresholdKey's per-mode shape. Stored as the string
+// form of an int (a 0-100 percentage, see internal/rename's matchConfidence).
+func confidenceThresholdKey(m mode.Mode) string { return string(m) + "_rename_confidence_threshold" }
+
+// resolveConfidenceThreshold loads m's Rename match-confidence threshold,
+// defaulting to rename.DefaultConfidenceThreshold when unset — the same
+// fallback getConfidenceThresholdHandler reports, reused by rename.go's Scan
+// handler so ScanLibrary/ScanLibrarySeries gate on whatever is configured. A
+// stored value is always a validated int (putConfidenceThresholdHandler
+// rejects otherwise), so a parse failure falls back to the default rather
+// than failing a Scan — same tolerance as resolvePHashThreshold.
+func resolveConfidenceThreshold(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (int, error) {
+	raw, err := settingsStore.Get(ctx, confidenceThresholdKey(m))
+	if err != nil && !errors.Is(err, settings.ErrNotFound) {
+		return 0, err
+	}
+	if raw == "" {
+		return rename.DefaultConfidenceThreshold, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return rename.DefaultConfidenceThreshold, nil
+	}
+	return v, nil
+}
+
+type confidenceThresholdResponse struct {
+	Threshold int `json:"threshold"`
+}
+
+type confidenceThresholdRequest struct {
+	Threshold int `json:"threshold"`
+}
+
+// getConfidenceThresholdHandler returns {mode}'s Rename match-confidence
+// threshold (0-100 percentage) — defaults to rename.DefaultConfidenceThreshold
+// when unset.
+func getConfidenceThresholdHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		threshold, err := resolveConfidenceThreshold(r.Context(), settingsStore, mode.Mode(r.PathValue("mode")))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(confidenceThresholdResponse{Threshold: threshold})
+	}
+}
+
+// putConfidenceThresholdHandler stores {mode}'s Rename match-confidence
+// threshold. Rejects a value outside 0-100 (a percentage), mirroring
+// putPHashThresholdHandler's invalid-input rejection.
+func putConfidenceThresholdHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		var req confidenceThresholdRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Threshold < 0 || req.Threshold > 100 {
+			http.Error(w, "threshold must be between 0 and 100", http.StatusBadRequest)
+			return
+		}
+		if err := settingsStore.Set(r.Context(), confidenceThresholdKey(m), strconv.Itoa(req.Threshold)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // adultIdentifyEnabledKey gates Adult phash-first identification. Unlike the

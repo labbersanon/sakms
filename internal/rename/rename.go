@@ -536,7 +536,7 @@ func Relocate(sourcePath, destRoot string) (string, error) {
 // classified (via AI, using title+overview only, since certification/genre
 // metadata isn't available here without an extra per-item call), just not
 // already-tracked items.
-func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, preset naming.Preset) ([]proposals.Proposal, error) {
+func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, preset naming.Preset, confidenceThreshold int) ([]proposals.Proposal, error) {
 	if sess.TMDB == nil {
 		return nil, fmt.Errorf("tmdb isn't configured yet — add it in Settings first")
 	}
@@ -577,7 +577,7 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 			if naming.MatchesMovieSchema(entry.Path, preset) {
 				continue // already organized under the active preset — nothing to propose
 			}
-			out = append(out, proposeOneLibrary(ctx, sess, byTMDB, rootFolderPath, root, entry))
+			out = append(out, proposeOneLibrary(ctx, sess, byTMDB, rootFolderPath, root, entry, confidenceThreshold))
 		}
 	}
 	return out, nil
@@ -585,7 +585,7 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 
 func proposeOneLibrary(
 	ctx context.Context, sess *mode.Session, byTMDB map[int]bool,
-	generalRoot, foundRoot string, entry library.UnmappedEntry,
+	generalRoot, foundRoot string, entry library.UnmappedEntry, confidenceThreshold int,
 ) proposals.Proposal {
 	p := proposals.Proposal{
 		Mode: mode.Movies, Workflow: proposals.Rename,
@@ -605,6 +605,18 @@ func proposeOneLibrary(
 		return p
 	}
 	match := items[0]
+
+	// Confidence gate: items[0] is TMDB's own best-ranked result, but "best
+	// available" isn't the same as "good enough" — a messy/opaque search
+	// term can still return a confidently-wrong top result. Below
+	// threshold routes to Unmatched for manual review instead of silently
+	// accepting it, same tolerance-of-failure as the zero-results case
+	// above.
+	if confidence := matchConfidence(term, match.Title, match.ReleaseDate); confidence < confidenceThreshold {
+		p.Status = proposals.Unmatched
+		p.Reason = fmt.Sprintf("weak TMDB match for %q: best result %q (confidence %d%%, threshold %d%%) — needs manual review", term, match.Title, confidence, confidenceThreshold)
+		return p
+	}
 
 	if byTMDB[match.ID] {
 		p.Status = proposals.Unmatched
@@ -724,7 +736,7 @@ type episodeKey struct {
 // One proposal per resolved episode file, never one per season-pack folder
 // — same "surface everything individually" posture ScanLibrary (Movies)
 // and every other workflow already follows.
-func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, preset naming.Preset) ([]proposals.Proposal, error) {
+func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, preset naming.Preset, confidenceThreshold int) ([]proposals.Proposal, error) {
 	if sess.TMDB == nil {
 		return nil, fmt.Errorf("tmdb isn't configured yet — add it in Settings first")
 	}
@@ -786,7 +798,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				if naming.MatchesSeriesSchema(videoPath, preset) {
 					continue // already organized under the active preset — nothing to propose
 				}
-				out = append(out, proposeOneEpisodeLibrary(ctx, sess, tracked, rootFolderPath, root, videoPath))
+				out = append(out, proposeOneEpisodeLibrary(ctx, sess, tracked, rootFolderPath, root, videoPath, confidenceThreshold))
 			}
 		}
 	}
@@ -795,7 +807,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 
 func proposeOneEpisodeLibrary(
 	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool,
-	generalRoot, foundRoot, videoPath string,
+	generalRoot, foundRoot, videoPath string, confidenceThreshold int,
 ) proposals.Proposal {
 	name := filepath.Base(videoPath)
 	p := proposals.Proposal{
@@ -823,6 +835,15 @@ func proposeOneEpisodeLibrary(
 		return p
 	}
 	match := items[0]
+
+	// Confidence gate — same tolerance-of-failure as Movies'
+	// proposeOneLibrary: TMDB's best-ranked result isn't automatically a
+	// good one for a messy/opaque search term.
+	if confidence := matchConfidence(term, match.Title, match.ReleaseDate); confidence < confidenceThreshold {
+		p.Status = proposals.Unmatched
+		p.Reason = fmt.Sprintf("weak TMDB match for %q: best result %q (confidence %d%%, threshold %d%%) — needs manual review", term, match.Title, confidence, confidenceThreshold)
+		return p
+	}
 
 	if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
 		p.Status = proposals.Unmatched

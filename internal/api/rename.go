@@ -97,10 +97,15 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, se
 				http.Error(w, presetErr.Error(), http.StatusInternalServerError)
 				return
 			}
+			confidenceThreshold, ctErr := resolveConfidenceThreshold(ctx, settingsStore, m)
+			if ctErr != nil {
+				http.Error(w, ctErr.Error(), http.StatusInternalServerError)
+				return
+			}
 			if m == mode.Movies {
-				found, err = rename.ScanLibrary(ctx, sess, libStore, rootPath, preset)
+				found, err = rename.ScanLibrary(ctx, sess, libStore, rootPath, preset, confidenceThreshold)
 			} else {
-				found, err = rename.ScanLibrarySeries(ctx, sess, libStore, rootPath, preset)
+				found, err = rename.ScanLibrarySeries(ctx, sess, libStore, rootPath, preset, confidenceThreshold)
 			}
 		} else {
 			enabled, enErr := resolveAdultIdentifyEnabled(ctx, settingsStore)

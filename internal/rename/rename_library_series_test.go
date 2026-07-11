@@ -62,7 +62,7 @@ func TestScanLibrarySeries_ProducesPendingProposalForNewEpisode(t *testing.T) {
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestScanLibrarySeries_SeasonPackProducesOneProposalPerEpisode(t *testing.T)
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestScanLibrarySeries_DiscoversNewEpisodeAlongsideAlreadyTrackedOne(t *test
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestScanLibrarySeries_SkipsAlreadyConformantEpisodeInMixedSeasonPack(t *tes
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestScanLibrarySeries_SkipsAlreadyTrackedWithFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestScanLibrarySeries_DoesNotSkipEpisodeKnownAsMissing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestScanLibrarySeries_UnmatchedWhenParseFails(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, nil, nil)}
-	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -270,12 +270,60 @@ func TestScanLibrarySeries_UnmatchedWhenSeasonDetailsFail(t *testing.T) {
 		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
 	}, map[int]bool{1: true})}
 
-	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin)
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 1 || got[0].Status != proposals.Unmatched {
 		t.Fatalf("expected unmatched when TMDB can't confirm the season, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeries_MarksUnmatchedWhenTMDBResultIsWeakMatch is Series'
+// counterpart to Movies' TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch
+// — the confidence gate in proposeOneEpisodeLibrary is a separate call site
+// from Movies' proposeOneLibrary and needs its own direct coverage, not just
+// the shared matchConfidence unit tests.
+func TestScanLibrarySeries_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "xyz123.S01E01.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+		"xyz123": `{"results":[{"id":555,"name":"Completely Unrelated Show"}]}`,
+	}, nil)}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Unmatched {
+		t.Fatalf("expected the weak match to route to unmatched, got %+v", got)
+	}
+	if got[0].TMDBID != 0 {
+		t.Errorf("expected no TMDB id to be assigned on a rejected weak match, got %d", got[0].TMDBID)
+	}
+}
+
+// TestScanLibrarySeries_ThresholdZeroAcceptsAnyTMDBResult is Series'
+// counterpart to Movies' TestScanLibrary_ThresholdZeroAcceptsAnyTMDBResult.
+func TestScanLibrarySeries_ThresholdZeroAcceptsAnyTMDBResult(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "xyz123.S01E01.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+		"xyz123": `{"results":[{"id":555,"name":"Completely Unrelated Show"}]}`,
+	}, nil)}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 555 {
+		t.Fatalf("expected a threshold of 0 to accept the weak match, got %+v", got)
 	}
 }
 

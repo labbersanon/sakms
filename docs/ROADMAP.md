@@ -164,6 +164,41 @@ One classification point, not four — every caller (`rename.ScanLibrary`/
 `ScanLibrarySeries`, `dedup.ScanLibrary`/`ScanLibrarySeries`) inherits it for
 free through their existing `fmt.Errorf("scanning %s: %w", ...)` wraps.
 
+### Confidence scoring for Rename matches — shipped 2026-07-11
+Closed the "Matching quality" backlog item above for Movies/Series (see that
+entry for the deliberate Adult/`lookupFirst` scope deferral). `internal/
+rename/confidence.go` (new): `matchConfidence` scores TMDB's best
+(`items[0]`) search result against the cleaned search term, 0-100, combining
+a Dice-coefficient word-token similarity (`titleSimilarity`) with a year-
+corroboration check (`extractYear`, preferring a parenthesized year, falling
+back to an unambiguous bare one) that halves the score on a >1-year mismatch
+against TMDB's release year — but only when both sides have a known year, so
+a search term with no year signal at all isn't penalized. `ScanLibrary`/
+`ScanLibrarySeries` and their per-item `proposeOneLibrary`/
+`proposeOneEpisodeLibrary` helpers gained a `confidenceThreshold int`
+parameter; a below-threshold `items[0]` now routes to `Unmatched` (reason
+names the search term, the rejected title, the score, and the threshold)
+instead of being silently accepted — the exact gap the backlog item
+described. New per-mode setting (`GET/PUT /api/modes/{mode}/match-
+confidence-threshold`, 0-100, defaults to `rename.DefaultConfidenceThreshold`
+= 40), mirroring `phash-threshold`'s existing storage/validation shape
+exactly. No frontend control yet — same precedent as `phash-threshold`,
+which also shipped API-only.
+
+Same-day `code-reviewer` pass (separate context, per house policy): 0
+blocking issues. Verdict COMMENT, not APPROVE, specifically to surface the
+Adult/`lookupFirst` scope question as a conscious decision rather than a
+silent skip (see above) — everything else was polish (a stale doc-comment
+symbol reference, fixed; a missing Series-specific weak-match test
+symmetric to the Movies one, added). Reviewer independently reran the
+scorer against real fixture data and confirmed the default threshold (40)
+clears every genuine match with a wide margin (e.g. 86, 80) while an
+unrelated result scores 0.
+
+Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
+and full `go test ./...` (all green) — both before and after the
+reviewer-prompted fixes.
+
 ### First-run break-glass recovery — shipped 2026-07-11
 OIDC-mode first-run mints a one-time recovery API key (see CHANGELOG) —
 there's no interactive-login fallback at setup time (the browser hasn't
@@ -224,10 +259,20 @@ reversal).
 - **Clearer mount-disconnect error messaging** — shipped 2026-07-11, see
   "Recently shipped" below.
 ### Matching quality
-- **Confidence scoring** — today `items[0]` from TMDB/community-DB search
-  is always taken unconditionally as the match; the only thing that routes
-  to Unmatched is *zero* results, never "found something, but it's a weak
-  match." Add a similarity/year-match score with a configurable threshold.
+- **Confidence scoring** — shipped 2026-07-11 for the TMDB-backed Movies/
+  Series paths (`proposeOneLibrary`/`proposeOneEpisodeLibrary`), see
+  "Recently shipped" below. **Deliberately NOT extended to Adult's
+  Whisparr-lookup path** (`lookupFirst`/`lookupWithAIFallback` in
+  `internal/rename/rename.go`, called from `Scan`) — a different mechanism
+  entirely (`servarr.LookupResult` from Whisparr's own `/lookup` proxy to
+  TPDB, not a raw `tmdb.Item`), and Adult/Whisparr elimination (see
+  `CLAUDE.md` Scope) hasn't started. `lookupFirst` still takes
+  `results[0]` unconditionally today — a conscious deferral, not an
+  oversight, flagged by the same-day code-reviewer pass and left for
+  whoever designs Adult's own library-owned Rename path to pick up (the
+  natural point to revisit Adult's matching logic anyway, since that
+  slice replaces `lookupFirst`'s Whisparr dependency entirely rather than
+  patching it in place).
 - **Manual override / re-pick** — a search box to manually assign a
   different TMDB id / community scene when Rename matched wrong. Today
   Dismiss only removes something from the queue, it can't correct it.

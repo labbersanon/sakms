@@ -431,3 +431,68 @@ func TestDismiss_NotFound(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestRepick_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Repick(context.Background(), 999, "New Title", 42, 2020); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestRepick_OverwritesFieldsAndPromotesToPending(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	saved, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Unmatched, SourceName: "gibberish", SourcePath: "/media/Movies/gibberish", RootFolderPath: "/media/Movies", Reason: "no TMDB match for \"gibberish\""},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	id := saved[0].ID
+
+	if err := s.Repick(ctx, id, "The Real Movie", 777, 2019); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Status != Pending {
+		t.Errorf("expected re-picking to promote the proposal to pending, got %q", got.Status)
+	}
+	if got.Title != "The Real Movie" || got.TMDBID != 777 || got.Year != 2019 {
+		t.Errorf("expected the overwritten fields to stick, got title=%q tmdbId=%d year=%d", got.Title, got.TMDBID, got.Year)
+	}
+	if got.Reason != "" {
+		t.Errorf("expected the stale rejection reason to be cleared, got %q", got.Reason)
+	}
+}
+
+// A proposal that was already Pending (a wrong-but-not-zero match) stays
+// Pending after a re-pick — same end state, not demoted or re-promoted.
+func TestRepick_AlreadyPendingStaysPending(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	saved, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Movie A", SourcePath: "/media/Movies/Movie A", RootFolderPath: "/media/Movies", Title: "Wrong Movie", TMDBID: 1},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	id := saved[0].ID
+
+	if err := s.Repick(ctx, id, "Correct Movie", 2, 2021); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Status != Pending || got.Title != "Correct Movie" || got.TMDBID != 2 {
+		t.Errorf("unexpected result: %+v", got)
+	}
+}

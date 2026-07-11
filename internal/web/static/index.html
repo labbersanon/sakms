@@ -373,6 +373,12 @@ async function dismissProposal(id) {
 async function submitDraft(id) {
   return api("/api/proposals/" + id + "/submit-draft", { method: "POST" });
 }
+async function tmdbSearchForRepick(m, query) {
+  return api("/api/modes/" + m + "/tmdb-search?q=" + encodeURIComponent(query));
+}
+async function repickProposal(id, tmdbId, title, year) {
+  return api("/api/proposals/" + id + "/repick", { method: "POST", body: JSON.stringify({ tmdbId, title, year }) });
+}
 
 // ---- Search view (Discover browse -> manual search -> grab -> Grabs status) ----
 // The native replacement for Radarr/Sonarr's own acquisition loop: Discover
@@ -594,6 +600,62 @@ async function renderRename(container) {
 
   if (!proposals.length) { container.appendChild(el("div", { class: "empty", text: "No proposals yet — click Scan." })); return; }
 
+  // Re-pick's search panel: a single shared area below the table, opened
+  // against whichever proposal's "Re-pick" button was clicked. Movies/
+  // Series only (TMDB-backed) — Adult's identification uses a different id
+  // space with its own correction path (Give back), not this one.
+  const repickPanel = el("div", { class: "card repick-panel", style: "display:none; margin-top:1rem" });
+
+  function closeRepick() {
+    repickPanel.style.display = "none";
+    repickPanel.innerHTML = "";
+  }
+
+  function openRepick(p) {
+    repickPanel.innerHTML = "";
+    repickPanel.style.display = "";
+    repickPanel.appendChild(el("h4", { text: "Re-pick match for \"" + (p.sourceName || "") + "\"" }));
+    if (p.title) {
+      repickPanel.appendChild(el("div", { class: "muted", text: "Currently matched: " + p.title + (p.year ? " (" + p.year + ")" : "") }));
+    }
+
+    const queryInput = el("input", { type: "text", value: p.title || p.sourceName || "", style: "width:20rem" });
+    const results = el("div", { class: "repick-results", style: "margin-top:0.5rem" });
+
+    const runSearch = async () => {
+      if (!queryInput.value.trim()) return;
+      results.innerHTML = "Searching…";
+      try {
+        const items = await tmdbSearchForRepick(m, queryInput.value);
+        results.innerHTML = "";
+        if (!items.length) { results.appendChild(el("div", { class: "empty", text: "No results." })); return; }
+        for (const item of items) {
+          const year = (item.releaseDate || "").slice(0, 4);
+          results.appendChild(el("div", { class: "row repick-result", style: "align-items:center; gap:0.5rem" }, [
+            el("span", { text: (item.title || "") + (year ? " (" + year + ")" : "") + " — TMDB #" + item.id }),
+            el("button", {
+              class: "primary", text: "Use this", onclick: async () => {
+                try {
+                  await repickProposal(p.id, item.id, item.title, year ? parseInt(year, 10) : undefined);
+                  closeRepick();
+                } catch (e) { container.appendChild(fmtErr(e)); }
+                await renderRename(container);
+              }
+            }),
+          ]));
+        }
+      } catch (e) { results.innerHTML = ""; results.appendChild(fmtErr(e)); }
+    };
+
+    repickPanel.appendChild(el("div", { class: "row", style: "margin-top:0.5rem" }, [
+      queryInput,
+      el("button", { text: "Search", onclick: runSearch }),
+      el("button", { text: "Cancel", onclick: closeRepick }),
+    ]));
+    repickPanel.appendChild(results);
+    runSearch();
+  }
+
   const table = el("table", {}, [
     el("thead", {}, [el("tr", {}, ["Source", "Title", "Status", "Root Folder", "Reason", "Actions"].map(h => el("th", { text: h })))]),
   ]);
@@ -605,6 +667,9 @@ async function renderRename(container) {
     }
     if (p.status === "unmatched") {
       actions.appendChild(el("button", { text: "Give back" + (p.draftId ? "ed" : ""), disabled: !!p.draftId, onclick: async () => { try { await submitDraft(p.id); } catch (e) { container.appendChild(fmtErr(e)); } await renderRename(container); } }));
+    }
+    if ((p.status === "pending" || p.status === "unmatched") && (m === "movies" || m === "series")) {
+      actions.appendChild(el("button", { text: "Re-pick", onclick: () => openRepick(p) }));
     }
     if (p.status === "pending" || p.status === "unmatched") {
       actions.appendChild(el("button", { class: "danger", text: "Dismiss", onclick: async () => { try { await dismissProposal(p.id); } catch (e) { container.appendChild(fmtErr(e)); } await renderRename(container); } }));
@@ -620,6 +685,7 @@ async function renderRename(container) {
   }
   table.appendChild(tbody);
   container.appendChild(table);
+  container.appendChild(repickPanel);
 }
 
 // ---- Purge view ----

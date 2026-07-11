@@ -282,6 +282,74 @@ func dismissProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 	}
 }
 
+type repickProposalRequest struct {
+	TMDBID int    `json:"tmdbId"`
+	Title  string `json:"title"`
+	Year   int    `json:"year,omitempty"`
+}
+
+// repickProposalHandler is Rename's manual-override workflow: when Scan's
+// automatic TMDB match picked wrong, or scored too low to auto-accept (see
+// internal/rename/confidence.go), Dismiss alone can't correct it — it only
+// removes the proposal from the queue. This lets an operator search TMDB
+// directly (GET /api/modes/{mode}/tmdb-search, tmdbSearchHandler in
+// discover.go) and assign a specific result instead, promoting an Unmatched
+// proposal back to Pending (or correcting an already-Pending one) so it
+// becomes actionable via the normal Apply path.
+//
+// Movies/Series Rename proposals only — Purge/Dedup have no "wrong
+// identification" concept to correct, and Adult's Whisparr-lookup
+// identification uses a different id space (foreignId, not tmdbId) with its
+// own correction path, not this one. Applied/Dismissed proposals are
+// refused: re-picking one would silently rewrite the queue's record of what
+// already happened without touching anything on disk to match.
+func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseProposalID(w, r)
+		if !ok {
+			return
+		}
+		ctx := r.Context()
+
+		var req repickProposalRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.TMDBID <= 0 || req.Title == "" {
+			http.Error(w, "tmdbId and title are both required", http.StatusBadRequest)
+			return
+		}
+
+		p, err := propStore.Get(ctx, id)
+		if err != nil {
+			proposalNotFoundOr500(w, err)
+			return
+		}
+		if p.Workflow != proposals.Rename || (p.Mode != mode.Movies && p.Mode != mode.Series) {
+			http.Error(w, "re-picking is only supported for movies/series rename proposals", http.StatusBadRequest)
+			return
+		}
+		if p.Status != proposals.Pending && p.Status != proposals.Unmatched {
+			http.Error(w, fmt.Sprintf("proposal %d is %q — only pending or unmatched proposals can be re-picked", id, p.Status), http.StatusBadRequest)
+			return
+		}
+
+		if err := propStore.Repick(ctx, id, req.Title, req.TMDBID, req.Year); err != nil {
+			proposalNotFoundOr500(w, err)
+			return
+		}
+
+		updated, err := propStore.Get(ctx, id)
+		if err != nil {
+			proposalNotFoundOr500(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
+	}
+}
+
 func parseProposalID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

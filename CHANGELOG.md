@@ -1737,3 +1737,84 @@ Series-specific weak-match test (Movies had one, Series didn't).
 Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
 and full `go test ./...` (all green) — both before and after the
 reviewer-prompted fixes.
+
+## 2026-07-11 — Manual override / re-pick for Rename matches (Movies/Series)
+
+Closed the "Matching quality" ROADMAP item: Dismiss only removed a
+proposal from the queue — it couldn't correct a wrong match, or promote a
+proposal that confidence scoring (see the entry above) routed to Unmatched
+for being too weak to auto-accept.
+
+New `proposals.Store.Repick(ctx, id, title string, tmdbID, year int) error`
+(`internal/proposals/proposals.go`) overwrites a proposal's title/tmdbId/
+year, unconditionally promotes it to Pending, and clears any stale
+`Reason`. No status guard in the SQL — by design, since its one caller
+(`repickProposalHandler`) already enforces the eligible-status
+precondition before ever calling it: Pending or Unmatched only, refusing
+an Applied or Dismissed proposal (re-picking one would silently rewrite
+the queue's record of something that already happened on disk without
+touching the disk to match).
+
+New routes:
+- `POST /api/proposals/{id}/repick` (`{tmdbId, title, year}` — tmdbId>0
+  and title required, year optional) — validates the proposal is a
+  Movies/Series Rename proposal in an eligible status, then calls
+  `Repick` and returns the updated row.
+- `GET /api/modes/{mode}/tmdb-search?q=...` (`internal/api/discover.go`'s
+  `tmdbSearchHandler`) — a thin `SearchMovies`/`SearchTV` proxy mirroring
+  `discoverHandler`'s existing session-building pattern, the search box's
+  backend. Movies/Series only via an **explicit** mode check — not by
+  relying on `sess.TMDB` being nil for Adult, which would be false:
+  `mode.Build`'s `buildSearchPipeline` populates TMDB from the one global
+  connection for every mode, Adult included, so an unguarded version of
+  this handler would return real-but-useless movie results for Adult
+  calls instead of a clear 400.
+
+Frontend (`internal/web/static/index.html`): `renderRename`'s Actions
+column gained a "Re-pick" button (Pending/Unmatched, Movies/Series only —
+Adult's identification uses a different id space with its own separate
+correction mechanism, Give back) that opens a shared inline search panel
+below the queue table: a query input pre-filled with the current title (or
+source name if Unmatched), a Search button, and a results list with "Use
+this" per result that calls the repick endpoint and refreshes the queue.
+
+**Trust tradeoff, stated explicitly:** the repick request carries the
+client-supplied `{tmdbId, title, year}` triple directly — from a prior
+tmdb-search response the frontend already displayed — rather than the
+server re-fetching authoritative values from TMDB by id. This mirrors
+Scan's own `proposeOneLibrary`/`proposeOneEpisodeLibrary`, which already
+take `{ID, Title, ReleaseDate}` straight from a TMDB search `Item` with no
+second "details" round trip. Consistent with the single-operator trust
+model (`CLAUDE.md`: no permissions system, one login gates the whole
+app) — there's no second party to defend the data against, only the
+operator's own client.
+
+New tests: `internal/proposals/proposals_test.go` (`Repick` not-found,
+overwrite-and-promote-to-pending, already-pending-stays-pending) and
+`internal/api/repick_test.go` — two full end-to-end flows (Movies AND
+Series: weak-match Scan → Unmatched → tmdb-search → repick → Apply →
+verify the library row carries the re-picked TMDB id), plus rejection
+tests (unknown id, missing fields, already-applied, non-Rename workflow,
+Adult mode on tmdb-search).
+
+Same-day `code-reviewer` pass (separate context, per house policy): 0
+blocking issues, 5 LOW findings. Two fixed before committing:
+- The `tmdb-search` Adult-mode gap above — added the explicit mode check;
+  the original doc comment's claim that Adult "naturally 400s" was false,
+  fixed the actual behavior rather than just the comment.
+- A missing Series-specific end-to-end test — the exact same category of
+  gap the confidence-scoring review caught two commits ago, now closed
+  the same way (`TestRepickWorkflow_Series_WeakMatchSearchRepickApply_EndToEnd`).
+
+Three LOW findings left as documented, non-blocking, matching existing
+codebase conventions: a `Get`-then-`Repick` TOCTOU (two round trips, not
+one atomic `UPDATE ... WHERE` — same shape as the existing dismiss/apply
+handlers, no new risk introduced); a repick failure's error message
+getting overwritten by the immediately-following queue refresh (matches
+the pre-existing Apply/Give-back/Dismiss convention, not a regression);
+and the client-trust tradeoff above.
+
+Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
+full `go test ./...` (all green), and `node --check` on the extracted
+`<script>` block (frontend syntax valid) — both before and after the
+reviewer-prompted fixes.

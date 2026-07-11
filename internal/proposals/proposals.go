@@ -270,6 +270,24 @@ func (s *Store) Dismiss(ctx context.Context, id int64) error {
 	return checkAffected(res, id)
 }
 
+// Repick overwrites proposal id's title/tmdbId/year with an operator-chosen
+// alternative and promotes it to Pending — Rename's manual-override
+// workflow (see internal/api's repickProposalHandler, which enforces the
+// eligible-status precondition — Pending or Unmatched only — before ever
+// calling this, so this method itself doesn't need a status guard). Clears
+// Reason too: whatever explained the old (wrong, or too-weak-to-auto-accept)
+// match no longer describes anything true about the row.
+func (s *Store) Repick(ctx context.Context, id int64, title string, tmdbID, year int) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE proposals SET title = ?, tmdb_id = ?, year = ?, status = ?, reason = ''
+		WHERE id = ?
+	`, title, tmdbID, year, string(Pending), id)
+	if err != nil {
+		return fmt.Errorf("re-picking proposal %d: %w", id, err)
+	}
+	return checkAffected(res, id)
+}
+
 // MarkDraftSubmitted records that a scene draft was successfully submitted to
 // a community database for proposal id, stamping draftID and the current
 // time. Does not change Status — the proposal stays Unmatched (or whatever it

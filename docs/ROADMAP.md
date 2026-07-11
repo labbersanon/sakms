@@ -199,6 +199,56 @@ Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
 and full `go test ./...` (all green) — both before and after the
 reviewer-prompted fixes.
 
+### Manual override / re-pick for Rename matches — shipped 2026-07-11
+Closed the "Matching quality" backlog item above for Movies/Series. Today
+Dismiss only removed something from the queue — it couldn't correct a
+match that Scan got wrong, or that confidence scoring (see above) routed
+to Unmatched for being too weak to auto-accept.
+
+New `proposals.Store.Repick(ctx, id, title string, tmdbID, year int) error`
+overwrites a proposal's title/tmdbId/year, unconditionally promotes it to
+Pending, and clears any stale `Reason` — no status guard in the SQL itself
+by design, since its one caller (`repickProposalHandler`) already enforces
+the eligible-status precondition (Pending or Unmatched only; Applied/
+Dismissed proposals are refused, so a re-pick can never silently rewrite
+the queue's record of something that already happened). New `POST /api/
+proposals/{id}/repick` (`{tmdbId, title, year}`, all but year required) and
+`GET /api/modes/{mode}/tmdb-search?q=...` (a thin `SearchMovies`/`SearchTV`
+proxy, mirroring `discoverHandler`'s session pattern — the search box's
+backend) — both Movies/Series only, `tmdb-search` via an explicit mode
+check rather than relying on `sess.TMDB` being nil for Adult (it isn't;
+`mode.Build`'s `buildSearchPipeline` populates TMDB for every mode from the
+one global connection, Adult included). Frontend: `renderRename` gained a
+"Re-pick" button (Pending/Unmatched, Movies/Series) opening a shared inline
+search panel with a pre-filled query, results, and "Use this" per result.
+
+The repick request trusts the client-supplied `{tmdbId, title, year}`
+triple directly (from a prior tmdb-search response) rather than the server
+re-fetching authoritative values by id — same tradeoff Scan's own
+`proposeOneLibrary`/`proposeOneEpisodeLibrary` already make from a TMDB
+search response, consistent with the single-operator trust model (no
+permissions surface to protect against the operator's own client).
+
+Same-day `code-reviewer` pass (separate context, per house policy): 0
+blocking issues (5 LOW). Two were fixed before committing: `tmdb-search`
+gained the explicit Movies/Series mode check described above (the original
+comment's claim that Adult naturally 400s was false — fixed the invariant,
+not just the comment), and a missing Series-specific end-to-end test was
+added (`TestRepickWorkflow_Series_WeakMatchSearchRepickApply_EndToEnd`) —
+the same category of gap confidence scoring's review caught, now checked
+for on both features. Three LOW items left as documented, non-blocking
+tradeoffs matching existing codebase conventions: a `Get`-then-`Repick`
+TOCTOU (two round trips, not one atomic `UPDATE ... WHERE`— real but low,
+same shape as the existing dismiss/apply handlers), a repick failure's
+error message getting wiped by the immediately-following queue refresh
+(matches the pre-existing Apply/Give-back/Dismiss convention, not a
+regression), and the client-trust tradeoff above.
+
+Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
+full `go test ./...` (all green), and `node --check` on the extracted
+`<script>` block (frontend syntax valid) — both before and after the
+reviewer-prompted fixes.
+
 ### First-run break-glass recovery — shipped 2026-07-11
 OIDC-mode first-run mints a one-time recovery API key (see CHANGELOG) —
 there's no interactive-login fallback at setup time (the browser hasn't
@@ -273,9 +323,10 @@ reversal).
   natural point to revisit Adult's matching logic anyway, since that
   slice replaces `lookupFirst`'s Whisparr dependency entirely rather than
   patching it in place).
-- **Manual override / re-pick** — a search box to manually assign a
-  different TMDB id / community scene when Rename matched wrong. Today
-  Dismiss only removes something from the queue, it can't correct it.
+- **Manual override / re-pick** — shipped 2026-07-11 for Movies/Series
+  (TMDB-backed), see "Recently shipped" below. Adult's community-scene
+  correction (a different id space, foreignId via Whisparr) already has its
+  own separate mechanism (Give back) and wasn't extended here.
 - **Logical episode-splitting** — one video file that's actually two
   episodes bundled together: record two `Episode` rows pointing at the same
   `FilePath`, no re-encoding. (Explicitly NOT physical file-splitting —

@@ -74,6 +74,11 @@
   <div id="logout-slot"></div>
 </header>
 <main>
+  <!-- Sibling of #view, deliberately outside anything render() ever clears
+       (render() does view.innerHTML = "" on every navigation) — populated
+       once per boot() call by updateNoneModeBanner() so a "none" auth mode
+       stays visible across every SPA navigation, not just the first render. -->
+  <div id="none-mode-banner" style="display:none"></div>
   <div id="view"></div>
 </main>
 <script>
@@ -808,6 +813,7 @@ async function renderSettings(container) {
   ]));
   await renderConnections(container);
   await renderAPIAccess(container);
+  await renderAuthMode(container);
   await renderAISettings(container);
   await renderLibrarySettings(container, state.mode);
   await renderQualityPrefs(container);
@@ -1044,6 +1050,155 @@ async function renderAPIAccess(container) {
   container.appendChild(fs);
 }
 
+// renderAuthMode is the Settings "Authentication mode" panel — mirrors
+// renderAPIAccess's fieldset pattern. Unlike renderCredentialsGate's
+// first-run selector (a 3-way password/forward/none choice — see that
+// function's doc comment for why "authentik" is deliberately absent
+// there), this panel offers ALL FOUR modes: an operator who already holds
+// a session or the universal API key can configure and switch into
+// "authentik" here, even though the first-run screen never offers it.
+// Mode-independent, same as renderAPIAccess — not gated on state.mode.
+async function renderAuthMode(container) {
+  const fs = el("fieldset", {}, [el("legend", { text: "Authentication mode" })]);
+
+  let current = "password";
+  try { current = (await api("/api/auth/mode")).mode; } catch (e) { fs.appendChild(fmtErr(e)); }
+
+  if (current === "none") {
+    fs.appendChild(el("div", { class: "error", text: "Authentication is currently disabled — this instance and every connected service is open to anyone who can reach it." }));
+  }
+
+  const AUTH_MODES = [
+    { value: "password", label: "Password" },
+    { value: "forward", label: "Forward auth (reverse proxy header)" },
+    { value: "authentik", label: "Authentik (bearer token introspection)" },
+    { value: "none", label: "None (no authentication)" },
+  ];
+  const modeSelect = el("select", {});
+  for (const m of AUTH_MODES) modeSelect.appendChild(el("option", { value: m.value, text: m.label, selected: m.value === current ? "selected" : null }));
+
+  const reveal = el("div", { class: "muted" });
+
+  // -- password: nothing to configure here — there is no change-password
+  // endpoint; a password is only ever set at first-run setup. Switching
+  // back to it just requires one was set at some point (G4's
+  // PasswordConfigured precondition; SetAuthMode never wipes config, so a
+  // password set at first run, then switched away from, still verifies). --
+  const passwordGroup = el("div", { class: "muted", text: "Switches back to the username/password login already set up for this instance. There's no way to set or change the password from here — that only happens at first-run setup." });
+
+  // -- forward --
+  let forwardStatus = { hasSecret: false, userHeader: "Remote-User", secretHeader: "X-Proxy-Secret" };
+  try { forwardStatus = await api("/api/auth/forward"); } catch (e) {}
+  const forwardStatusLine = el("div", { class: "muted", text: forwardStatus.hasSecret ? "A shared secret is already configured." : "No shared secret configured yet — generate one before switching to this mode." });
+  const forwardUserHeaderInput = el("input", { type: "text", value: forwardStatus.userHeader });
+  const forwardSecretHeaderInput = el("input", { type: "text", value: forwardStatus.secretHeader });
+  const forwardGenStatus = el("span", { class: "muted" });
+  const forwardGenBtn = el("button", {
+    text: forwardStatus.hasSecret ? "Regenerate shared secret" : "Generate shared secret",
+    onclick: async () => {
+      if (forwardStatus.hasSecret && !confirm("This immediately invalidates the current shared secret. Continue?")) return;
+      try {
+        const r = await api("/api/auth/forward/secret", { method: "POST" });
+        reveal.innerHTML = "";
+        const secretInput = el("input", { type: "text", readonly: "readonly", value: r.secret, style: "width:100%" });
+        reveal.appendChild(secretInput);
+        secretInput.select();
+        reveal.appendChild(el("button", { text: "Copy", onclick: () => { secretInput.select(); if (navigator.clipboard) navigator.clipboard.writeText(r.secret).catch(() => {}); } }));
+        reveal.appendChild(el("div", { class: "error", text: "Shown once — copy it into your reverse proxy's config now; it cannot be retrieved later." }));
+        forwardStatus.hasSecret = true;
+        forwardStatusLine.textContent = "A shared secret is already configured.";
+        forwardGenBtn.textContent = "Regenerate shared secret";
+        forwardGenStatus.textContent = "";
+      } catch (e) { forwardGenStatus.textContent = "✗ " + e.message; forwardGenStatus.className = "error"; }
+    },
+  });
+  const forwardHeadersStatus = el("span", { class: "muted" });
+  const forwardHeadersSaveBtn = el("button", {
+    text: "Save header names", onclick: async () => {
+      try {
+        await api("/api/auth/forward/headers", { method: "PUT", body: JSON.stringify({ userHeader: forwardUserHeaderInput.value, secretHeader: forwardSecretHeaderInput.value }) });
+        forwardHeadersStatus.textContent = "saved"; forwardHeadersStatus.className = "muted";
+      } catch (e) { forwardHeadersStatus.textContent = "✗ " + e.message; forwardHeadersStatus.className = "error"; }
+    },
+  });
+  const forwardGroup = el("div", {}, [
+    forwardStatusLine,
+    el("div", { class: "row", style: "margin-top:0.5rem" }, [forwardGenBtn, forwardGenStatus]),
+    el("label", {}, [document.createTextNode("Identity header"), forwardUserHeaderInput]),
+    el("label", {}, [document.createTextNode("Secret header"), forwardSecretHeaderInput]),
+    el("div", { class: "row", style: "margin-top:0.5rem" }, [forwardHeadersSaveBtn, forwardHeadersStatus]),
+  ]);
+
+  // -- authentik: new field group, no §4.1-setup equivalent (this mode
+  // isn't offered on the first-run screen at all). --
+  let authentikStatus = { url: "", clientId: "", hasSecret: false };
+  try { authentikStatus = await api("/api/auth/authentik"); } catch (e) {}
+  const authentikUrlInput = el("input", { type: "text", value: authentikStatus.url, placeholder: "https://authentik.example.com" });
+  const authentikClientIdInput = el("input", { type: "text", value: authentikStatus.clientId });
+  const authentikClientSecretInput = el("input", { type: "password", placeholder: authentikStatus.hasSecret ? "unchanged (configured)" : "client secret" });
+  const authentikSaveStatus = el("span", { class: "muted" });
+  const authentikSaveBtn = el("button", {
+    text: "Save Authentik config", onclick: async () => {
+      try {
+        await api("/api/auth/authentik", { method: "PUT", body: JSON.stringify({ url: authentikUrlInput.value, clientId: authentikClientIdInput.value, clientSecret: authentikClientSecretInput.value }) });
+        authentikSaveStatus.textContent = "saved"; authentikSaveStatus.className = "muted";
+        authentikClientSecretInput.value = "";
+        authentikClientSecretInput.placeholder = "unchanged (configured)";
+      } catch (e) { authentikSaveStatus.textContent = "✗ " + e.message; authentikSaveStatus.className = "error"; }
+    },
+  });
+  const authentikGroup = el("div", {}, [
+    el("div", { class: "muted", text: "sakms validates a caller-presented Authorization: Bearer token via RFC 7662 introspection against Authentik — for API/script clients holding their own Authentik token, not browser/proxy-mediated login." }),
+    el("label", {}, [document.createTextNode("Authentik URL"), authentikUrlInput]),
+    el("label", {}, [document.createTextNode("Client ID"), authentikClientIdInput]),
+    el("label", {}, [document.createTextNode("Client secret"), authentikClientSecretInput]),
+    el("div", { class: "row", style: "margin-top:0.5rem" }, [authentikSaveBtn, authentikSaveStatus]),
+  ]);
+
+  // -- none --
+  const noneGroup = el("div", { class: "error", text: "Disables authentication entirely — this instance and every connected service becomes reachable by anyone who can reach it. You'll be asked to confirm before this takes effect." });
+
+  const modeFieldsWrap = el("div");
+  function renderModeFields() {
+    modeFieldsWrap.innerHTML = "";
+    if (modeSelect.value === "password") modeFieldsWrap.appendChild(passwordGroup);
+    else if (modeSelect.value === "forward") modeFieldsWrap.appendChild(forwardGroup);
+    else if (modeSelect.value === "authentik") modeFieldsWrap.appendChild(authentikGroup);
+    else if (modeSelect.value === "none") modeFieldsWrap.appendChild(noneGroup);
+  }
+  modeSelect.addEventListener("change", renderModeFields);
+  renderModeFields();
+
+  const switchStatus = el("span", { class: "muted" });
+  const switchBtn = el("button", {
+    class: "primary", text: "Switch to this mode", onclick: async () => {
+      switchStatus.textContent = "";
+      const mode = modeSelect.value;
+      const body = { mode };
+      if (mode === "none") {
+        if (!confirm("Disabling authentication leaves this instance and every connected service open to anyone who can reach it. Continue?")) return;
+        body.acknowledgeInsecure = true;
+      }
+      try {
+        await api("/api/auth/mode", { method: "PUT", body: JSON.stringify(body) });
+        switchStatus.textContent = "switched"; switchStatus.className = "muted";
+        // Re-fetch status and re-gate — the same await boot() pattern used
+        // after login/wizard-dismiss (plan §4.3): otherwise the SPA keeps
+        // showing this now-stale Settings panel even though the active
+        // mode (and possibly authenticated-ness) just changed.
+        await boot();
+      } catch (e) { switchStatus.textContent = "✗ " + e.message; switchStatus.className = "error"; }
+    },
+  });
+
+  fs.appendChild(el("label", {}, [document.createTextNode("Mode"), modeSelect]));
+  fs.appendChild(modeFieldsWrap);
+  fs.appendChild(reveal);
+  fs.appendChild(el("div", { class: "row", style: "margin-top:0.5rem" }, [switchBtn, switchStatus]));
+  fs.appendChild(el("div", { class: "muted", text: "Save a mode's config above (forward's shared secret/headers, Authentik's URL/client credentials) before switching into it — switching enforces the config already exists." }));
+  container.appendChild(fs);
+}
+
 async function renderAISettings(container) {
   const fs = el("fieldset", {}, [el("legend", { text: "AI (shared by Adult identification and the Movies/Series title-guess fallback)" })]);
   let provider = "ollama", model = "";
@@ -1106,43 +1261,165 @@ async function renderKidsRootPath(container) {
 // in". Both hide the nav entirely, same as the wizard, so there's no path
 // to a Scan button (or anything else) without getting through this first.
 
+// renderCredentialsGate(container, "login") is UNCHANGED from before this
+// feature — password-only, only reachable when the active mode is
+// "password" (authLoginHandler 400s in every other mode, so boot() never
+// routes here for forward/authentik/none).
+//
+// renderCredentialsGate(container, "setup") offers a 3-WAY mode selector —
+// password/forward/none — NOT all four. "authentik" is deliberately
+// omitted from THIS screen: its real audience is API/script clients that
+// already hold their own Authentik bearer token, not someone filling in a
+// browser form, and the backend still accepts `mode:"authentik"` on
+// POST /api/auth/setup exactly as built in slice 3 — it just isn't offered
+// here. An operator who wants Authentik mode configures it later from
+// Settings → Authentication mode (renderAuthMode above), which offers all
+// FOUR modes, once they already have a session or the universal API key.
 function renderCredentialsGate(container, kind) {
   container.innerHTML = "";
   const isSetup = kind === "setup";
   container.appendChild(el("h2", { text: isSetup ? "Create your SAK login" : "Log in to SAK" }));
-  if (isSetup) {
-    container.appendChild(el("p", { class: "muted", text: "This is the one login that protects this instance — anyone who can reach it can otherwise control every connected service. Pick a username and password now, before connecting anything." }));
+
+  if (!isSetup) {
+    // ---- Login: password-only, unchanged ----
+    container.appendChild(el("p", { class: "muted", text: "This is the one login that protects this instance." }));
+    const usernameInput = el("input", { type: "text", placeholder: "username", autocomplete: "username" });
+    const passwordInput = el("input", { type: "password", placeholder: "password", autocomplete: "current-password" });
+    const status = el("div", { class: "error" });
+    const submit = async () => {
+      status.textContent = "";
+      if (!usernameInput.value || !passwordInput.value) {
+        status.textContent = "Username and password are both required.";
+        return;
+      }
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: usernameInput.value, password: passwordInput.value }),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          status.textContent = res.status === 401 ? "Invalid username or password." : (text || ("HTTP " + res.status));
+          return;
+        }
+        await boot();
+      } catch (e) { status.textContent = e.message; }
+    };
+    const form = el("form", { onsubmit: (e) => { e.preventDefault(); submit(); } }, [
+      el("label", {}, [document.createTextNode("Username"), usernameInput]),
+      el("label", {}, [document.createTextNode("Password"), passwordInput]),
+      el("div", { class: "row", style: "margin-top:0.75rem" }, [
+        el("button", { class: "primary", type: "submit", text: "Log in" }),
+      ]),
+      status,
+    ]);
+    form.style.maxWidth = "20rem";
+    container.appendChild(form);
+    return;
   }
 
-  const usernameInput = el("input", { type: "text", placeholder: "username", autocomplete: "username" });
-  const passwordInput = el("input", { type: "password", placeholder: "password", autocomplete: isSetup ? "new-password" : "current-password" });
-  const confirmInput = isSetup ? el("input", { type: "password", placeholder: "confirm password", autocomplete: "new-password" }) : null;
-  const status = el("div", { class: "error" });
+  // ---- Setup: 3-way mode selector (password/forward/none) ----
+  container.appendChild(el("p", { class: "muted", text: "This is the one login that protects this instance — anyone who can reach it can otherwise control every connected service. Pick how this instance authenticates now, before connecting anything." }));
 
-  const fields = [
+  const SETUP_MODES = [
+    { value: "password", label: "Password (username + password login)" },
+    { value: "forward", label: "Forward auth (reverse proxy header + shared secret)" },
+    { value: "none", label: "None (no authentication — not recommended)" },
+  ];
+  const modeSelect = el("select", {});
+  for (const m of SETUP_MODES) modeSelect.appendChild(el("option", { value: m.value, text: m.label }));
+
+  const status = el("div", { class: "error" });
+  const reveal = el("div", { class: "muted" });
+
+  // -- password fields (today's default/unchanged shape) --
+  const usernameInput = el("input", { type: "text", placeholder: "username", autocomplete: "username" });
+  const passwordInput = el("input", { type: "password", placeholder: "password", autocomplete: "new-password" });
+  const confirmInput = el("input", { type: "password", placeholder: "confirm password", autocomplete: "new-password" });
+  const passwordGroup = el("div", {}, [
     el("label", {}, [document.createTextNode("Username"), usernameInput]),
     el("label", {}, [document.createTextNode("Password"), passwordInput]),
-  ];
-  if (isSetup) fields.push(el("label", {}, [document.createTextNode("Confirm password"), confirmInput]));
+    el("label", {}, [document.createTextNode("Confirm password"), confirmInput]),
+  ]);
+
+  // -- forward fields: the setup request has no field for custom header
+  // names (authCredentialsRequest carries ForwardSecret only — see
+  // internal/api/auth.go), so these are shown disabled/informational at
+  // SAK's documented defaults; customize them later in Settings →
+  // Authentication mode once authenticated through the proxy. --
+  const forwardUserHeaderInput = el("input", { type: "text", value: "Remote-User", disabled: "disabled" });
+  const forwardSecretHeaderInput = el("input", { type: "text", value: "X-Proxy-Secret", disabled: "disabled" });
+  const forwardGroup = el("div", {}, [
+    el("div", { class: "muted", text: "SAK will generate a shared secret and reveal it once below — put it in your reverse proxy's config as the value of the secret header. Header names shown are SAK's defaults; change them later in Settings → Authentication mode." }),
+    el("label", {}, [document.createTextNode("Identity header (default)"), forwardUserHeaderInput]),
+    el("label", {}, [document.createTextNode("Secret header (default)"), forwardSecretHeaderInput]),
+  ]);
+
+  // -- none: no fields at all --
+  const noneGroup = el("div", { class: "muted", text: "No credentials, no header, nothing — anyone who can reach this instance has full control. You'll be asked to confirm before this takes effect." });
+
+  const modeFieldsWrap = el("div");
+  function renderModeFields() {
+    modeFieldsWrap.innerHTML = "";
+    if (modeSelect.value === "password") modeFieldsWrap.appendChild(passwordGroup);
+    else if (modeSelect.value === "forward") modeFieldsWrap.appendChild(forwardGroup);
+    else if (modeSelect.value === "none") modeFieldsWrap.appendChild(noneGroup);
+  }
+
+  const submitLabel = () => modeSelect.value === "password" ? "Create login" : modeSelect.value === "forward" ? "Generate shared secret" : "Continue without authentication";
+  const submitBtn = el("button", { class: "primary", type: "submit", text: submitLabel() });
+  modeSelect.addEventListener("change", () => { renderModeFields(); submitBtn.textContent = submitLabel(); });
+  renderModeFields();
 
   const submit = async () => {
     status.textContent = "";
-    if (isSetup && passwordInput.value !== confirmInput.value) {
-      status.textContent = "Passwords don't match.";
-      return;
+    reveal.innerHTML = "";
+    const mode = modeSelect.value;
+    const body = { mode };
+
+    if (mode === "password") {
+      if (passwordInput.value !== confirmInput.value) {
+        status.textContent = "Passwords don't match.";
+        return;
+      }
+      if (!usernameInput.value || !passwordInput.value) {
+        status.textContent = "Username and password are both required.";
+        return;
+      }
+      body.username = usernameInput.value;
+      body.password = passwordInput.value;
+    } else if (mode === "none") {
+      if (!confirm("This instance will have no authentication at all — anyone who can reach it will have full control. Continue?")) return;
+      body.acknowledgeInsecure = true;
     }
-    if (!usernameInput.value || !passwordInput.value) {
-      status.textContent = "Username and password are both required.";
-      return;
-    }
+    // forward: no extra fields — the server generates the shared secret.
+
     try {
-      const res = await fetch(isSetup ? "/api/auth/setup" : "/api/auth/login", {
+      const res = await fetch("/api/auth/setup", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: usernameInput.value, password: passwordInput.value }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const text = await res.text();
-        status.textContent = res.status === 401 ? "Invalid username or password." : (text || ("HTTP " + res.status));
+        status.textContent = text || ("HTTP " + res.status);
+        return;
+      }
+      if (mode === "forward") {
+        // Reveal-once, mirroring renderAPIAccess's reveal-input pattern —
+        // the operator must copy this before moving on; boot() only runs
+        // once they click through, not automatically.
+        const isJSON = (res.headers.get("Content-Type") || "").includes("application/json");
+        const data = isJSON ? await res.json() : {};
+        const secretInput = el("input", { type: "text", readonly: "readonly", value: data.forwardSecret || "", style: "width:100%" });
+        reveal.appendChild(secretInput);
+        secretInput.select();
+        reveal.appendChild(el("button", { text: "Copy", onclick: () => { secretInput.select(); if (navigator.clipboard) navigator.clipboard.writeText(data.forwardSecret || "").catch(() => {}); } }));
+        reveal.appendChild(el("div", { class: "error", text: "Shown once — copy this into your reverse proxy's config now; it cannot be retrieved later." }));
+        reveal.appendChild(el("div", { class: "row", style: "margin-top:0.5rem" }, [
+          el("button", { class: "primary", text: "I've copied it — continue", onclick: async () => { await boot(); } }),
+        ]));
+        submitBtn.disabled = true;
+        modeSelect.disabled = true;
         return;
       }
       await boot();
@@ -1150,14 +1427,31 @@ function renderCredentialsGate(container, kind) {
   };
 
   const form = el("form", { onsubmit: (e) => { e.preventDefault(); submit(); } }, [
-    ...fields,
-    el("div", { class: "row", style: "margin-top:0.75rem" }, [
-      el("button", { class: "primary", type: "submit", text: isSetup ? "Create login" : "Log in" }),
-    ]),
+    el("label", {}, [document.createTextNode("Authentication mode"), modeSelect]),
+    modeFieldsWrap,
+    el("div", { class: "row", style: "margin-top:0.75rem" }, [submitBtn]),
     status,
+    reveal,
   ]);
-  form.style.maxWidth = "20rem";
+  form.style.maxWidth = "24rem";
   container.appendChild(form);
+}
+
+// renderProxyAuthNotice is the informational screen shown in forward/
+// authentik modes when boot() finds the request isn't authenticated —
+// neither mode has a cookie/password concept (Edge Case #3), so there is
+// no field to fill in here; the fix happens outside the browser (proxy
+// config, or a bearer token on the request).
+function renderProxyAuthNotice(container, mode) {
+  container.innerHTML = "";
+  container.appendChild(el("h2", { text: "Not authenticated" }));
+  const message = mode === "forward"
+    ? "This instance authenticates through your reverse proxy. This request arrived without a valid proxy identity/secret — check that your proxy is forwarding the configured headers, and that the shared secret matches what's configured in Settings → Authentication mode."
+    : "This instance authenticates by validating a caller-presented Authentik bearer token via token introspection. Provide a valid Authorization: Bearer <token> header when calling this instance.";
+  container.appendChild(el("p", { class: "muted", text: message }));
+  container.appendChild(el("div", { class: "row", style: "margin-top:0.75rem" }, [
+    el("button", { class: "primary", text: "Retry", onclick: async () => { await boot(); } }),
+  ]));
 }
 
 // ---- Router ----
@@ -1183,24 +1477,84 @@ function showNav() {
   document.getElementById("logout-slot").style.display = "";
 }
 
+// updateNoneModeBanner populates (or clears) the #none-mode-banner slot —
+// a sibling of #view in the app chrome, NOT inside #view itself, so it
+// survives render()'s per-navigation view.innerHTML = "" wipe (plan §4.3's
+// critic-fix). Called once per boot() call with the current mode's
+// none-ness; never re-emitted per render() call.
+function updateNoneModeBanner(isNone) {
+  const banner = document.getElementById("none-mode-banner");
+  banner.innerHTML = "";
+  if (!isNone) {
+    banner.style.display = "none";
+    return;
+  }
+  banner.style.display = "";
+  banner.appendChild(el("div", { class: "banner" }, [
+    el("span", { class: "error", text: "Authentication is disabled for this instance — it and every connected service is reachable by anyone who can reach it. Switch to a different mode in Settings → Authentication mode to fix this." }),
+  ]));
+}
+
 // boot is the single entry point for "what should be on screen right now,"
-// re-run after every login/setup/logout/wizard-dismiss transition. Order
-// matters: the login gate comes before the connections Setup Wizard comes
-// before the normal app — each one hides the nav entirely so there's no way
-// to land on a bare Scan button before getting through the ones before it.
+// re-run after every login/setup/logout/wizard-dismiss/mode-switch
+// transition. Order matters: the login/proxy-notice gate comes before the
+// connections Setup Wizard comes before the normal app — each one hides
+// the nav entirely so there's no way to land on a bare Scan button before
+// getting through the ones before it.
+//
+// /api/auth/status now returns {configured, authenticated, mode}.
+// "authenticated" means something slightly different per mode (plan
+// §3.3/§4.3): a REAL check for password/forward/none, but an OPTIMISTIC
+// presence-only signal for authentik — a present-but-invalid bearer token
+// reports authenticated:true here and boot() proceeds; the real
+// enforcement happens on every actual protected API call via the backend's
+// Middleware (which DOES introspect for real), surfacing as a normal
+// request error through api()'s existing error handling if the token
+// turns out invalid. No new error-handling path is needed for that case.
 async function boot() {
   let authStatus = null;
   try { authStatus = await api("/api/auth/status"); } catch (e) { /* fall through */ }
 
+  const view = document.getElementById("view");
+
   if (authStatus && !authStatus.configured) {
+    updateNoneModeBanner(false);
     hideNav();
-    renderCredentialsGate(document.getElementById("view"), "setup");
+    renderCredentialsGate(view, "setup"); // mode-aware 3-way selector
     return;
   }
-  if (authStatus && !authStatus.authenticated) {
-    hideNav();
-    renderCredentialsGate(document.getElementById("view"), "login");
-    return;
+
+  if (authStatus) {
+    const mode = authStatus.mode;
+    if (mode === "password" && !authStatus.authenticated) {
+      updateNoneModeBanner(false);
+      hideNav();
+      renderCredentialsGate(view, "login");
+      return;
+    }
+    if (mode === "forward" && !authStatus.authenticated) {
+      // REAL check (auth.ForwardAuth, called directly by the status
+      // handler) — a browser without the proxy's identity/secret headers
+      // genuinely isn't authenticated.
+      updateNoneModeBanner(false);
+      hideNav();
+      renderProxyAuthNotice(view, "forward");
+      return;
+    }
+    if (mode === "authentik" && !authStatus.authenticated) {
+      // PRESENCE-only heuristic — false here means no bearer token at all
+      // was presented on this status request, not that one was checked
+      // and rejected (see the doc comment above).
+      updateNoneModeBanner(false);
+      hideNav();
+      renderProxyAuthNotice(view, "authentik");
+      return;
+    }
+    // Reachable for: mode === "none" (authenticated is always true, nothing
+    // to gate on) or an authenticated password/forward/authentik session.
+    // Arm/clear the persistent banner exactly once here, then fall through
+    // to the existing wizard/app tail below.
+    updateNoneModeBanner(mode === "none");
   }
 
   let setupStatus = null;
@@ -1208,7 +1562,7 @@ async function boot() {
 
   if (setupStatus && !setupStatus.dismissed) {
     hideNav();
-    await renderWizard(document.getElementById("view"));
+    await renderWizard(view);
     return;
   }
   showNav();

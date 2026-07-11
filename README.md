@@ -267,6 +267,14 @@ Configuration is via environment variables for now:
 |---------------------|-----------|-----------------------------------|
 | `SAKMS_ADDR`      | `:8080`   | HTTP listen address               |
 | `SAKMS_DATA_DIR`  | `./data`  | Where `sakms.db` and `secret.key` live — back both up together, or a backup of one without the other is useless |
+| `SAKMS_API_KEY`   | (unset)   | Optional. If set, its value is the API key external clients send as the `X-Api-Key` header — hashed at boot, stable across restarts/redeploys, never persisted. If unset, SAK auto-generates one on first boot (logged once) and stores its hash. Note: unsetting this after it was once set falls back to whatever key was last persisted in Settings (e.g. an earlier auto-generated one), not to "no key" — only relevant on a deployment with a persistent database. |
+
+Every `/api/...` route accepts either the session cookie a browser carries
+after login, or an `X-Api-Key: <key>` header — useful for scripts and other
+out-of-process clients that shouldn't need a browser session. The key is
+managed from Settings → API Access (or via `SAKMS_API_KEY` above); it is
+shown in full exactly once, at generation/regeneration time, and only its
+last 4 characters are ever displayed afterward.
 
 ### Docker
 

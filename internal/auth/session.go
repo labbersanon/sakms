@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -94,17 +95,38 @@ func Authenticated(enc TokenEncryptor, r *http.Request) bool {
 	return ValidateToken(enc, cookie.Value)
 }
 
-// Middleware gates every request to next behind a valid session cookie —
-// meant to wrap the business-logic API mux only; the auth endpoints
-// themselves (setup/login/logout/status) live on a separate, always-public
-// mux that never passes through this (see internal/api.NewAuthMux), so
-// there's no exemption list to keep in sync here.
-func Middleware(enc TokenEncryptor, next http.Handler) http.Handler {
+// Middleware gates every request to next behind either a valid session
+// cookie or a valid X-Api-Key header — meant to wrap the business-logic API
+// mux only; the auth endpoints themselves (setup/login/logout/status) live
+// on a separate, always-public mux that never passes through this (see
+// internal/api.NewAuthMux), so there's no exemption list to keep in sync
+// here.
+//
+// Cookie is checked first via the unchanged Authenticated — Authenticated
+// itself is not modified, so authStatusHandler (internal/api/auth.go) stays
+// cookie-only, unaware the key path exists. Only if there's no valid cookie
+// does the X-Api-Key header get a look, verified via store.VerifyAPIKey.
+//
+// A store read error fails CLOSED (500), never falls through to allow —
+// "the store couldn't tell us" must never be treated as "the key is fine".
+func Middleware(enc TokenEncryptor, store *Store, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !Authenticated(enc, r) {
-			http.Error(w, "authentication required", http.StatusUnauthorized)
+		if Authenticated(enc, r) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		presented := strings.TrimSpace(r.Header.Get("X-Api-Key"))
+		if presented != "" {
+			ok, err := store.VerifyAPIKey(r.Context(), presented)
+			if err != nil {
+				http.Error(w, "authentication error", http.StatusInternalServerError)
+				return
+			}
+			if ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.Error(w, "authentication required", http.StatusUnauthorized)
 	})
 }

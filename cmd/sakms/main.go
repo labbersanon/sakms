@@ -73,20 +73,47 @@ func run() error {
 	libStore := library.New(sqlDB)
 	authStore := auth.New(settingsStore)
 
-	// Every review-workflow route requires a valid session; login/setup/
-	// logout/status live on their own always-public mux instead of an
-	// exemption list on this one (see internal/api.NewAuthMux's doc
-	// comment) — NewMux stays unaware auth exists either way, so its own
-	// large test suite never had to change for auth specifically.
+	// Boot-time API key resolution: SAKMS_API_KEY (if set) always wins over
+	// whatever's persisted, and is never itself persisted (see
+	// auth.Store.UseEnvAPIKey). Otherwise reuse a previously generated key,
+	// or auto-generate one and log it exactly once — the only sanctioned
+	// full-key log line anywhere in this codebase (see auth/apikey.go).
+	// context.Background() is used here rather than the signal-driven ctx
+	// below, which doesn't exist yet at this point in run() — this is a
+	// one-shot boot step, not a long-lived operation that needs cancellation.
+	if cfg.APIKey != "" {
+		authStore.UseEnvAPIKey(cfg.APIKey)
+		log.Printf("API key: using SAKMS_API_KEY from environment")
+	} else if raw, err := authStore.EnsureAPIKey(context.Background()); err != nil {
+		return err
+	} else if raw != "" {
+		log.Printf("API key generated (shown once, store it now): %s", raw)
+	}
+
+	// Every review-workflow route requires a valid session OR a valid
+	// X-Api-Key header; login/setup/logout/status live on their own
+	// always-public mux instead of an exemption list on this one (see
+	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
+	// exists either way, so its own large test suite never had to change
+	// for auth specifically.
 	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, hasher, videoHasher, settingsStore, grabsStore, libStore)
-	protectedAPI := auth.Middleware(secretStore, apiMux)
+	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
+
+	// API-key management (status + regenerate) is session-protected like
+	// the rest of /api/..., but deliberately NOT part of NewMux (see
+	// api.NewAPIKeyMux's doc comment) — its own small mux, wrapped in the
+	// same middleware so either a cookie or a key can reach it.
+	apikeyMux := api.NewAPIKeyMux(authStore)
+	protectedAPIKey := auth.Middleware(secretStore, authStore, apikeyMux)
 
 	top := http.NewServeMux()
 	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
 	top.Handle("/api/auth/", api.NewAuthMux(authStore, secretStore))
-	top.Handle("/api/", protectedAPI)
+	top.Handle("/api/apikey", protectedAPIKey)  // exact match: GET status
+	top.Handle("/api/apikey/", protectedAPIKey) // subtree: POST .../regenerate
+	top.Handle("/api/", protectedAPI)           // more general; still wins for everything else
 	// The frontend is mounted last and matches only what no /api/... route
 	// already claimed — Go's ServeMux picks the most specific pattern, so
 	// this never shadows a real API route. It's deliberately NOT behind

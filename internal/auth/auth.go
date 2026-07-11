@@ -34,6 +34,13 @@ var ErrNotConfigured = errors.New("auth: no login configured yet")
 // plaintext-in-DB; that's the entire point of a one-way hash).
 type Store struct {
 	settings *settings.Store
+
+	// envKeyHash/envKeySuffix hold an externally-supplied API key
+	// (SAKMS_API_KEY) for this process's lifetime only — see
+	// UseEnvAPIKey in apikey.go for why these are never persisted.
+	// envKeyHash is nil unless UseEnvAPIKey has been called.
+	envKeyHash   []byte
+	envKeySuffix string
 }
 
 func New(settingsStore *settings.Store) *Store {

@@ -35,6 +35,13 @@ type Config struct {
 	Addr string
 	// DataDir holds sakms.db and anything else SAK owns on disk.
 	DataDir string
+	// APIKey, if set, is the X-Api-Key clients must send to authenticate
+	// without a session cookie (see internal/auth). Deliberately has no
+	// default and is read via plain os.Getenv below, NOT cmp.Or like
+	// Addr/DataDir — an empty string here is itself the meaningful
+	// "not set, fall through to auto-generation" sentinel, not a value
+	// that needs a fallback.
+	APIKey string
 }
 
 // FromEnv reads Config from the environment, applying defaults for anything unset.
@@ -42,5 +49,6 @@ func FromEnv() Config {
 	return Config{
 		Addr:    cmp.Or(os.Getenv("SAKMS_ADDR"), ":8080"),
 		DataDir: cmp.Or(os.Getenv("SAKMS_DATA_DIR"), "./data"),
+		APIKey:  os.Getenv("SAKMS_API_KEY"),
 	}
 }

@@ -57,6 +57,25 @@ func TestParseFilename_IncludesParentFolderContext(t *testing.T) {
 	}
 }
 
+func TestParseFilename_PromptIncludesDateFormatGuidance(t *testing.T) {
+	var seenPrompt string
+	client, closeSrv := fakeOllama(t, func(prompt string) string {
+		seenPrompt = prompt
+		return `{"studio":"Tushy","title":"Deep Desires","year":"2024","performers":["Riley Reid"]}`
+	})
+	defer closeSrv()
+
+	if _, err := ParseFilename(context.Background(), client, "tushy.24.03.15.riley.reid.deep.desires.1080p", ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(seenPrompt, "YY.MM.DD") {
+		t.Error("expected the prompt to explain the YY.MM.DD/YYYY.MM.DD date convention")
+	}
+	if !strings.Contains(seenPrompt, "20XX") {
+		t.Error("expected the prompt to explain 2-digit year expansion")
+	}
+}
+
 func TestParseFilename_OmitsContextWhenNoParentName(t *testing.T) {
 	var seenPrompt string
 	client, closeSrv := fakeOllama(t, func(prompt string) string {

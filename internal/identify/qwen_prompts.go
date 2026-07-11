@@ -40,6 +40,9 @@ func ParseFilename(ctx context.Context, client AIClient, stem, parentName string
 		"Guidelines:\n" +
 		"- Clean up the title and studio names (remove extra tags like resolution, video quality, site domains, etc.).\n" +
 		"- For studio, do NOT return names of aggregator/tube sites or host sites if there is a real studio name.\n" +
+		"- Release dates are commonly embedded right after the studio name as YY.MM.DD or YYYY.MM.DD (e.g., 'tushy.24.03.15...' means 2024-03-15, so year = 2024) — a 2-digit year should be read as 20XX, since this content is virtually always from 2000 onward.\n" +
+		"- Only treat a numeric token as part of a date if it plausibly is one (a middle value 01-12 and a following value 01-31, positioned right after the studio name) — do not extract a year from resolution (1080p, 4k), scene/episode numbers, or video ID tags that happen to be numeric.\n" +
+		"- If the filename does NOT contain a YY.MM.DD/YYYY.MM.DD-style date token, return null for year. Never guess or infer a year from your own general knowledge of the studio, performers, or scene — only extract a year that is actually written in the filename.\n" +
 		"Return ONLY valid JSON with exactly these keys: studio, title, year, performers.\n" +
 		"Use null for any field you cannot determine.\n\n" +
 		fmt.Sprintf("Filename: %s\n\nJSON:", stem)

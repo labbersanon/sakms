@@ -6,9 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/curtiswtaylorjr/sakms/internal/secrets"
 )
@@ -84,7 +82,7 @@ func TestSetSessionCookie_ThenAuthenticatedRoundTrip(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	SetSessionCookie(rec, token)
+	SetSessionCookie(rec, token, false)
 	resp := rec.Result()
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -156,14 +154,11 @@ func middlewareTestServer(t *testing.T, enc TokenEncryptor, store *Store) (*http
 	return srv, &innerCalled
 }
 
-// TestMiddleware_UnaffectedByProxyIdentityHeaders (autopilot-impl-wizard-
-// autodetect plan, guardrails table, EC3) proves ProxyHeadersPresent's
-// detection signal (proxydetect.go), consumed only by the status handler's
-// wizard pre-select, never influences a real authorization decision here.
-// Password mode (the default), a protected route, and a request carrying
-// two of the recognized proxy identity headers but no valid credential at
-// all must still 401 — a spoofed header can at most flip a first-run
-// dropdown default, never bypass Middleware.
+// TestMiddleware_UnaffectedByProxyIdentityHeaders proves a reverse-proxy
+// identity header never influences a real authorization decision. Password
+// mode (the default), a protected route, and a request carrying two such
+// headers but no valid credential at all must still 401 — a spoofed header
+// can never bypass Middleware.
 func TestMiddleware_UnaffectedByProxyIdentityHeaders(t *testing.T) {
 	enc := testEncryptor(t)
 	store := newTestStore(t)
@@ -525,89 +520,22 @@ func TestMiddleware_PasswordMode_CookieOrKey(t *testing.T) {
 	})
 }
 
-// TestMiddleware_StaleCookieIgnoredOutsidePassword covers Edge Case #3: a
-// valid session cookie must never authenticate a request once the active
-// mode is not "password" — here, a valid cookie is set but the mode is
-// "none" (where it's simply moot, everything passes anyway) and a stubbed
-// non-password mode (where the cookie must be ignored and the request
-// rejected, since no mode-specific helper honors it and no key is
-// presented).
-// TestMiddleware_ForwardMode covers AC3/Edge Case #3 for forward mode: a
-// correct secret header (with an identity header also present) passes;
-// a wrong or absent secret header — even with an identity header present —
-// is rejected; and a valid session cookie never substitutes for the
-// secret header outside password mode.
-func TestMiddleware_ForwardMode(t *testing.T) {
+// TestMiddleware_OIDCMode covers oidc mode's per-request gate, which is
+// cookie-only: after the operator completes the IdP redirect dance (exercised
+// end-to-end at the api layer, see internal/api's oidc_test.go), the callback
+// issues the SAME session cookie password mode uses, so Middleware's ongoing
+// check is identical to password mode's. A valid cookie passes; no cookie
+// (and no key) is rejected. No OIDC config or discovery is needed here — the
+// per-request path never calls the IdP.
+func TestMiddleware_OIDCMode(t *testing.T) {
 	enc := testEncryptor(t)
 	store := newTestStore(t)
 	ctx := context.Background()
-
-	raw, err := store.GenerateForwardSecret(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := store.SetAuthMode(ctx, ModeForward); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	userHeader, secretHeader, err := store.ForwardHeaders(ctx)
-	if err != nil {
+	if err := store.SetAuthMode(ctx, ModeOIDC); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	t.Run("correct secret and identity passes", func(t *testing.T) {
-		srv, called := middlewareTestServer(t, enc, store)
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
-		req.Header.Set(secretHeader, raw)
-		req.Header.Set(userHeader, "wade")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected 200, got %d", resp.StatusCode)
-		}
-		if !*called {
-			t.Error("expected the inner handler to run for a correct secret")
-		}
-	})
-
-	t.Run("wrong secret with identity present is rejected", func(t *testing.T) {
-		srv, called := middlewareTestServer(t, enc, store)
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
-		req.Header.Set(secretHeader, "definitely-the-wrong-secret")
-		req.Header.Set(userHeader, "wade")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected 401, got %d", resp.StatusCode)
-		}
-		if *called {
-			t.Error("inner handler must not run for a wrong secret, even with identity present")
-		}
-	})
-
-	t.Run("absent secret with identity present is rejected", func(t *testing.T) {
-		srv, called := middlewareTestServer(t, enc, store)
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
-		req.Header.Set(userHeader, "wade")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected 401, got %d", resp.StatusCode)
-		}
-		if *called {
-			t.Error("inner handler must not run for an absent secret, even with identity present")
-		}
-	})
-
-	t.Run("stale cookie present but wrong secret is rejected", func(t *testing.T) {
+	t.Run("valid session cookie passes", func(t *testing.T) {
 		token, err := IssueToken(enc)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -615,222 +543,41 @@ func TestMiddleware_ForwardMode(t *testing.T) {
 		srv, called := middlewareTestServer(t, enc, store)
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
 		req.AddCookie(&http.Cookie{Name: CookieName, Value: token})
-		req.Header.Set(secretHeader, "definitely-the-wrong-secret")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected a stale cookie to never substitute for a wrong forward secret (401), got %d", resp.StatusCode)
-		}
-		if *called {
-			t.Error("inner handler must not run — a cookie must never authenticate forward mode")
-		}
-	})
-}
-
-// TestMiddleware_AuthentikMode covers AC4/G5: active introspection passes,
-// inactive/error/timeout all fail closed to 401. Also covers Edge Case #7 —
-// an empty/whitespace bearer must be treated as absent and NEVER trigger an
-// introspection call at all (proven here with a call counter; the
-// amplification-avoidance proof for the STATUS endpoint specifically lives
-// in internal/api/authentik_test.go's TestStatus_AuthentikMode_
-// PresenceOnly_NeverIntrospects — this test is about Middleware's own
-// dispatch, a different code path).
-func TestMiddleware_AuthentikMode(t *testing.T) {
-	enc := testEncryptor(t)
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	var introspectionCalls int32
-	var responseMode atomic.Value // "active" | "inactive" | "error"
-	responseMode.Store("active")
-	fakeIntrospect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&introspectionCalls, 1)
-		switch responseMode.Load().(string) {
-		case "active":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"active": true}`))
-		case "inactive":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"active": false}`))
-		case "error":
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-	}))
-	defer fakeIntrospect.Close()
-
-	cipher, err := enc.Encrypt("the-client-secret")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := store.SetAuthentikConfig(ctx, fakeIntrospect.URL, "the-client-id", cipher); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := store.SetAuthMode(ctx, ModeAuthentik); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	t.Run("active token passes", func(t *testing.T) {
-		responseMode.Store("active")
-		srv, called := middlewareTestServer(t, enc, store)
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
-		req.Header.Set("Authorization", "Bearer some-valid-token")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected 200 for an active token, got %d", resp.StatusCode)
+			t.Fatalf("expected 200 for a valid session cookie in oidc mode, got %d", resp.StatusCode)
 		}
 		if !*called {
-			t.Error("expected the inner handler to run for an active token")
+			t.Error("expected the inner handler to run for a valid cookie in oidc mode")
 		}
 	})
 
-	t.Run("inactive token 401", func(t *testing.T) {
-		responseMode.Store("inactive")
+	t.Run("no cookie and no key 401", func(t *testing.T) {
 		srv, called := middlewareTestServer(t, enc, store)
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
-		req.Header.Set("Authorization", "Bearer some-inactive-token")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.Get(srv.URL + "/")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected 401 for an inactive token, got %d", resp.StatusCode)
+			t.Fatalf("expected 401 with neither cookie nor key in oidc mode, got %d", resp.StatusCode)
 		}
 		if *called {
-			t.Error("inner handler must not run for an inactive token")
-		}
-	})
-
-	t.Run("introspection error 401", func(t *testing.T) {
-		responseMode.Store("error")
-		srv, called := middlewareTestServer(t, enc, store)
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
-		req.Header.Set("Authorization", "Bearer any-token")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected 401 (fail closed) on an introspection server error, got %d", resp.StatusCode)
-		}
-		if *called {
-			t.Error("inner handler must not run when introspection errors")
-		}
-	})
-
-	t.Run("empty bearer 401, never introspected", func(t *testing.T) {
-		responseMode.Store("active") // would pass if (wrongly) introspected
-		before := atomic.LoadInt32(&introspectionCalls)
-		srv, called := middlewareTestServer(t, enc, store)
-		resp, err := http.Get(srv.URL + "/") // no Authorization header at all
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected 401 for an absent bearer, got %d", resp.StatusCode)
-		}
-		if *called {
-			t.Error("inner handler must not run for an absent bearer")
-		}
-		if got := atomic.LoadInt32(&introspectionCalls); got != before {
-			t.Errorf("expected an absent bearer to never trigger introspection (EC7), calls went from %d to %d", before, got)
-		}
-		// A whitespace-only bearer ("Authorization: Bearer   ", no real
-		// token) is covered separately by TestAuthentikAuth_
-		// WhitespaceBearer_NeverIntrospected below, calling AuthentikAuth
-		// directly against an in-memory *http.Request — real HTTP transit
-		// strips trailing OWS from header values (RFC 7230), so a request
-		// sent over an actual httptest.NewServer round trip can't
-		// distinguish "Bearer" from "Bearer   " at the wire level the way
-		// an in-process Request can.
-	})
-
-	t.Run("timeout 401", func(t *testing.T) {
-		slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(200 * time.Millisecond)
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"active": true}`))
-		}))
-		defer slowServer.Close()
-
-		slowStore := New(store.settings, enc, &http.Client{Timeout: 20 * time.Millisecond})
-		cipher, err := enc.Encrypt("the-client-secret")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if err := slowStore.SetAuthentikConfig(ctx, slowServer.URL, "the-client-id", cipher); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if err := slowStore.SetAuthMode(ctx, ModeAuthentik); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		srv, called := middlewareTestServer(t, enc, slowStore)
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
-		req.Header.Set("Authorization", "Bearer any-token")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected 401 (fail closed) on a bounded-timeout introspection call, got %d", resp.StatusCode)
-		}
-		if *called {
-			t.Error("inner handler must not run when introspection times out")
+			t.Error("inner handler must not run with neither credential in oidc mode")
 		}
 	})
 }
 
-// TestAuthentikAuth_WhitespaceBearer_NeverIntrospected covers EC7's other
-// half against AuthentikAuth directly (not through a real HTTP round trip —
-// see the comment in TestMiddleware_AuthentikMode's "empty bearer" subtest
-// for why): "Authorization: Bearer   " (whitespace after the scheme, no
-// real token) must be treated as absent, never introspected.
-func TestAuthentikAuth_WhitespaceBearer_NeverIntrospected(t *testing.T) {
-	enc := testEncryptor(t)
-	store := newTestStore(t)
-	ctx := context.Background()
-
-	var introspected bool
-	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		introspected = true
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"active": true}`))
-	}))
-	defer fake.Close()
-
-	cipher, err := enc.Encrypt("the-client-secret")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := store.SetAuthentikConfig(ctx, fake.URL, "the-client-id", cipher); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer    ")
-	allowed, err := AuthentikAuth(ctx, store, req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if allowed {
-		t.Error("expected a whitespace-only bearer to be rejected")
-	}
-	if introspected {
-		t.Error("expected a whitespace-only bearer to never trigger introspection (EC7)")
-	}
-}
-
+// TestMiddleware_StaleCookieIgnoredOutsidePassword covers fail-closed
+// dispatch: a valid session cookie must never authenticate a request once the
+// active mode is an unknown/corrupt value (neither password nor oidc, both of
+// which legitimately honor the cookie, nor "none", which passes everything).
+// The cookie is ignored and the request rejected, since the default switch
+// arm honors no credential and no key is presented.
 func TestMiddleware_StaleCookieIgnoredOutsidePassword(t *testing.T) {
 	enc := testEncryptor(t)
 	store := newTestStore(t)

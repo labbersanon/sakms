@@ -1051,12 +1051,8 @@ async function renderAPIAccess(container) {
 }
 
 // renderAuthMode is the Settings "Authentication mode" panel — mirrors
-// renderAPIAccess's fieldset pattern. Unlike renderCredentialsGate's
-// first-run selector (a 3-way password/forward/none choice — see that
-// function's doc comment for why "authentik" is deliberately absent
-// there), this panel offers ALL FOUR modes: an operator who already holds
-// a session or the universal API key can configure and switch into
-// "authentik" here, even though the first-run screen never offers it.
+// renderAPIAccess's fieldset pattern. Offers the three supported modes
+// (password / oidc / none); the same three the first-run selector offers.
 // Mode-independent, same as renderAPIAccess — not gated on state.mode.
 async function renderAuthMode(container) {
   const fs = el("fieldset", {}, [el("legend", { text: "Authentication mode" })]);
@@ -1070,14 +1066,11 @@ async function renderAuthMode(container) {
 
   const AUTH_MODES = [
     { value: "password", label: "Password" },
-    { value: "forward", label: "Forward auth (reverse proxy header)" },
-    { value: "authentik", label: "Authentik (bearer token introspection)" },
+    { value: "oidc", label: "OIDC (single sign-on)" },
     { value: "none", label: "None (no authentication)" },
   ];
   const modeSelect = el("select", {});
   for (const m of AUTH_MODES) modeSelect.appendChild(el("option", { value: m.value, text: m.label, selected: m.value === current ? "selected" : null }));
-
-  const reveal = el("div", { class: "muted" });
 
   // -- password: nothing to configure here — there is no change-password
   // endpoint; a password is only ever set at first-run setup. Switching
@@ -1086,74 +1079,35 @@ async function renderAuthMode(container) {
   // password set at first run, then switched away from, still verifies). --
   const passwordGroup = el("div", { class: "muted", text: "Switches back to the username/password login already set up for this instance. There's no way to set or change the password from here — that only happens at first-run setup." });
 
-  // -- forward --
-  let forwardStatus = { hasSecret: false, userHeader: "Remote-User", secretHeader: "X-Proxy-Secret" };
-  try { forwardStatus = await api("/api/auth/forward"); } catch (e) {}
-  const forwardStatusLine = el("div", { class: "muted", text: forwardStatus.hasSecret ? "A shared secret is already configured." : "No shared secret configured yet — generate one before switching to this mode." });
-  const forwardUserHeaderInput = el("input", { type: "text", value: forwardStatus.userHeader });
-  const forwardSecretHeaderInput = el("input", { type: "text", value: forwardStatus.secretHeader });
-  const forwardGenStatus = el("span", { class: "muted" });
-  const forwardGenBtn = el("button", {
-    text: forwardStatus.hasSecret ? "Regenerate shared secret" : "Generate shared secret",
-    onclick: async () => {
-      if (forwardStatus.hasSecret && !confirm("This immediately invalidates the current shared secret. Continue?")) return;
+  // -- oidc: issuer/client id/client secret/redirect URL. The redirect URL
+  // is operator-supplied (SAK never derives it from the request Host, which
+  // is spoofable) and must match the callback registered with the IdP. --
+  let oidcStatus = { issuerUrl: "", clientId: "", redirectUrl: "", hasSecret: false };
+  try { oidcStatus = await api("/api/auth/oidc"); } catch (e) {}
+  const oidcIssuerInput = el("input", { type: "text", value: oidcStatus.issuerUrl, placeholder: "https://sso.example.com/application/o/sakms/" });
+  const oidcClientIdInput = el("input", { type: "text", value: oidcStatus.clientId });
+  const oidcClientSecretInput = el("input", { type: "password", placeholder: oidcStatus.hasSecret ? "unchanged (configured)" : "client secret" });
+  const oidcRedirectInput = el("input", { type: "text", value: oidcStatus.redirectUrl, placeholder: "https://media-admin.example.com/api/auth/oidc/callback" });
+  const oidcSaveStatus = el("span", { class: "muted" });
+  const oidcSaveBtn = el("button", {
+    text: "Save OIDC config", onclick: async () => {
       try {
-        const r = await api("/api/auth/forward/secret", { method: "POST" });
-        reveal.innerHTML = "";
-        const secretInput = el("input", { type: "text", readonly: "readonly", value: r.secret, style: "width:100%" });
-        reveal.appendChild(secretInput);
-        secretInput.select();
-        reveal.appendChild(el("button", { text: "Copy", onclick: () => { secretInput.select(); if (navigator.clipboard) navigator.clipboard.writeText(r.secret).catch(() => {}); } }));
-        reveal.appendChild(el("div", { class: "error", text: "Shown once — copy it into your reverse proxy's config now; it cannot be retrieved later." }));
-        forwardStatus.hasSecret = true;
-        forwardStatusLine.textContent = "A shared secret is already configured.";
-        forwardGenBtn.textContent = "Regenerate shared secret";
-        forwardGenStatus.textContent = "";
-      } catch (e) { forwardGenStatus.textContent = "✗ " + e.message; forwardGenStatus.className = "error"; }
+        await api("/api/auth/oidc", { method: "PUT", body: JSON.stringify({ issuerUrl: oidcIssuerInput.value, clientId: oidcClientIdInput.value, clientSecret: oidcClientSecretInput.value, redirectUrl: oidcRedirectInput.value }) });
+        oidcSaveStatus.textContent = "saved"; oidcSaveStatus.className = "muted";
+        oidcStatus.hasSecret = true;
+        oidcClientSecretInput.value = "";
+        oidcClientSecretInput.placeholder = "unchanged (configured)";
+      } catch (e) { oidcSaveStatus.textContent = "✗ " + e.message; oidcSaveStatus.className = "error"; }
     },
   });
-  const forwardHeadersStatus = el("span", { class: "muted" });
-  const forwardHeadersSaveBtn = el("button", {
-    text: "Save header names", onclick: async () => {
-      try {
-        await api("/api/auth/forward/headers", { method: "PUT", body: JSON.stringify({ userHeader: forwardUserHeaderInput.value, secretHeader: forwardSecretHeaderInput.value }) });
-        forwardHeadersStatus.textContent = "saved"; forwardHeadersStatus.className = "muted";
-      } catch (e) { forwardHeadersStatus.textContent = "✗ " + e.message; forwardHeadersStatus.className = "error"; }
-    },
-  });
-  const forwardGroup = el("div", {}, [
-    forwardStatusLine,
-    el("div", { class: "row", style: "margin-top:0.5rem" }, [forwardGenBtn, forwardGenStatus]),
-    el("label", {}, [document.createTextNode("Identity header"), forwardUserHeaderInput]),
-    el("label", {}, [document.createTextNode("Secret header"), forwardSecretHeaderInput]),
-    el("div", { class: "row", style: "margin-top:0.5rem" }, [forwardHeadersSaveBtn, forwardHeadersStatus]),
-    el("div", { class: "muted", style: "margin-top:0.5rem", text: "Your reverse proxy must SET the secret header on every request it forwards — overwriting any value a client sent, never appending to or passing one through. The secret header is this mode's entire authorization gate; the identity header is informational only and is never trusted on its own." }),
-  ]);
-
-  // -- authentik: new field group, no §4.1-setup equivalent (this mode
-  // isn't offered on the first-run screen at all). --
-  let authentikStatus = { url: "", clientId: "", hasSecret: false };
-  try { authentikStatus = await api("/api/auth/authentik"); } catch (e) {}
-  const authentikUrlInput = el("input", { type: "text", value: authentikStatus.url, placeholder: "https://authentik.example.com" });
-  const authentikClientIdInput = el("input", { type: "text", value: authentikStatus.clientId });
-  const authentikClientSecretInput = el("input", { type: "password", placeholder: authentikStatus.hasSecret ? "unchanged (configured)" : "client secret" });
-  const authentikSaveStatus = el("span", { class: "muted" });
-  const authentikSaveBtn = el("button", {
-    text: "Save Authentik config", onclick: async () => {
-      try {
-        await api("/api/auth/authentik", { method: "PUT", body: JSON.stringify({ url: authentikUrlInput.value, clientId: authentikClientIdInput.value, clientSecret: authentikClientSecretInput.value }) });
-        authentikSaveStatus.textContent = "saved"; authentikSaveStatus.className = "muted";
-        authentikClientSecretInput.value = "";
-        authentikClientSecretInput.placeholder = "unchanged (configured)";
-      } catch (e) { authentikSaveStatus.textContent = "✗ " + e.message; authentikSaveStatus.className = "error"; }
-    },
-  });
-  const authentikGroup = el("div", {}, [
-    el("div", { class: "muted", text: "sakms validates a caller-presented Authorization: Bearer token via RFC 7662 introspection against Authentik — for API/script clients holding their own Authentik token, not browser/proxy-mediated login." }),
-    el("label", {}, [document.createTextNode("Authentik URL"), authentikUrlInput]),
-    el("label", {}, [document.createTextNode("Client ID"), authentikClientIdInput]),
-    el("label", {}, [document.createTextNode("Client secret"), authentikClientSecretInput]),
-    el("div", { class: "row", style: "margin-top:0.5rem" }, [authentikSaveBtn, authentikSaveStatus]),
+  const oidcGroup = el("div", {}, [
+    el("div", { class: "muted", text: "sakms runs a real OpenID Connect Authorization Code flow (with PKCE) as the Relying Party — it verifies the IdP's signed ID token against its published JWKS, so no proxy-held shared secret is needed. Restricting who may complete the IdP login is the IdP's own job (its application/provider policy)." }),
+    el("label", {}, [document.createTextNode("Issuer URL"), oidcIssuerInput]),
+    el("label", {}, [document.createTextNode("Client ID"), oidcClientIdInput]),
+    el("label", {}, [document.createTextNode("Client secret"), oidcClientSecretInput]),
+    el("label", {}, [document.createTextNode("Redirect URL"), oidcRedirectInput]),
+    el("div", { class: "row", style: "margin-top:0.5rem" }, [oidcSaveBtn, oidcSaveStatus]),
+    el("div", { class: "muted", style: "margin-top:0.5rem", text: "The redirect URL must be registered as an allowed callback in your IdP's client config, and must point at this instance's /api/auth/oidc/callback." }),
   ]);
 
   // -- none --
@@ -1163,8 +1117,7 @@ async function renderAuthMode(container) {
   function renderModeFields() {
     modeFieldsWrap.innerHTML = "";
     if (modeSelect.value === "password") modeFieldsWrap.appendChild(passwordGroup);
-    else if (modeSelect.value === "forward") modeFieldsWrap.appendChild(forwardGroup);
-    else if (modeSelect.value === "authentik") modeFieldsWrap.appendChild(authentikGroup);
+    else if (modeSelect.value === "oidc") modeFieldsWrap.appendChild(oidcGroup);
     else if (modeSelect.value === "none") modeFieldsWrap.appendChild(noneGroup);
   }
   modeSelect.addEventListener("change", renderModeFields);
@@ -1194,9 +1147,8 @@ async function renderAuthMode(container) {
 
   fs.appendChild(el("label", {}, [document.createTextNode("Mode"), modeSelect]));
   fs.appendChild(modeFieldsWrap);
-  fs.appendChild(reveal);
   fs.appendChild(el("div", { class: "row", style: "margin-top:0.5rem" }, [switchBtn, switchStatus]));
-  fs.appendChild(el("div", { class: "muted", text: "Save a mode's config above (forward's shared secret/headers, Authentik's URL/client credentials) before switching into it — switching enforces the config already exists." }));
+  fs.appendChild(el("div", { class: "muted", text: "Save OIDC's config above before switching into it — switching enforces the config already exists." }));
   container.appendChild(fs);
 }
 
@@ -1262,20 +1214,16 @@ async function renderKidsRootPath(container) {
 // in". Both hide the nav entirely, same as the wizard, so there's no path
 // to a Scan button (or anything else) without getting through this first.
 
-// renderCredentialsGate(container, "login") is UNCHANGED from before this
-// feature — password-only, only reachable when the active mode is
-// "password" (authLoginHandler 400s in every other mode, so boot() never
-// routes here for forward/authentik/none).
+// renderCredentialsGate(container, "login") is password-only — reachable
+// only when the active mode is "password" (authLoginHandler 400s in every
+// other mode, so boot() never routes here for oidc/none; oidc's login is the
+// SSO redirect, handled by renderOIDCLoginNotice instead).
 //
-// renderCredentialsGate(container, "setup") offers a 3-WAY mode selector —
-// password/forward/none — NOT all four. "authentik" is deliberately
-// omitted from THIS screen: its real audience is API/script clients that
-// already hold their own Authentik bearer token, not someone filling in a
-// browser form, and the backend still accepts `mode:"authentik"` on
-// POST /api/auth/setup exactly as built in slice 3 — it just isn't offered
-// here. An operator who wants Authentik mode configures it later from
-// Settings → Authentication mode (renderAuthMode above), which offers all
-// FOUR modes, once they already have a session or the universal API key.
+// renderCredentialsGate(container, "setup") offers a 3-way mode selector —
+// password / oidc / none. For "oidc", the operator supplies issuer/client
+// id/client secret/redirect URL; after saving, a one-time break-glass API key
+// is revealed, and then the browser is sent to /api/auth/oidc/login to
+// complete first login through the IdP.
 function renderCredentialsGate(container, kind, authStatus) {
   container.innerHTML = "";
   const isSetup = kind === "setup";
@@ -1319,26 +1267,16 @@ function renderCredentialsGate(container, kind, authStatus) {
     return;
   }
 
-  // ---- Setup: 3-way mode selector (password/forward/none) ----
+  // ---- Setup: 3-way mode selector (password/oidc/none) ----
   container.appendChild(el("p", { class: "muted", text: "This is the one login that protects this instance — anyone who can reach it can otherwise control every connected service. Pick how this instance authenticates now, before connecting anything." }));
 
   const SETUP_MODES = [
     { value: "password", label: "Password (username + password login)" },
-    { value: "forward", label: "Forward auth (reverse proxy header + shared secret)" },
+    { value: "oidc", label: "OIDC / single sign-on" },
     { value: "none", label: "None (no authentication — not recommended)" },
   ];
   const modeSelect = el("select", {});
   for (const m of SETUP_MODES) modeSelect.appendChild(el("option", { value: m.value, text: m.label }));
-
-  // Auto-detect (spec Decision #1): if the server saw reverse-proxy identity
-  // headers on THIS first-run request, PRE-SELECT forward — password fields
-  // hidden — so a likely-proxied operator lands on the right default. This
-  // only moves the dropdown's starting position; it submits NOTHING, the
-  // operator still explicitly confirms, and the selector stays freely
-  // changeable.
-  if (authStatus && authStatus.proxyHeadersDetected) {
-    modeSelect.value = "forward";
-  }
 
   const status = el("div", { class: "error" });
   const reveal = el("div", { class: "muted" });
@@ -1353,19 +1291,22 @@ function renderCredentialsGate(container, kind, authStatus) {
     el("label", {}, [document.createTextNode("Confirm password"), confirmInput]),
   ]);
 
-  // -- forward fields: the setup request has no field for custom header
-  // names (authCredentialsRequest carries ForwardSecret only — see
-  // internal/api/auth.go), so these are shown disabled/informational at
-  // SAK's documented defaults; customize them later in Settings →
-  // Authentication mode once authenticated through the proxy. --
-  const forwardUserHeaderInput = el("input", { type: "text", value: "Remote-User", disabled: "disabled" });
-  const forwardSecretHeaderInput = el("input", { type: "text", value: "X-Proxy-Secret", disabled: "disabled" });
-  const forwardGroup = el("div", {}, [
-    el("div", { class: "muted", text: "SAK will generate a shared secret and reveal it once below — put it in your reverse proxy's config as the value of the secret header. Header names shown are SAK's defaults; change them later in Settings → Authentication mode." }),
-    el("label", {}, [document.createTextNode("Identity header (default)"), forwardUserHeaderInput]),
-    el("label", {}, [document.createTextNode("Secret header (default)"), forwardSecretHeaderInput]),
-    el("div", { class: "muted", style: "margin-top:0.5rem", text: "Your reverse proxy must SET the secret header on every request — overwriting any client-supplied value, never appending or passing one through. This header is the entire authorization gate for this mode." }),
-    el("div", { class: "muted", style: "margin-top:0.5rem", text: "Note: if this mode was pre-selected for you, that only reflects headers seen on this one request — it does not verify your proxy will actually send the secret header. A break-glass API key will be shown after setup in case it doesn't." }),
+  // -- oidc fields: issuer/client id/client secret/redirect URL, all
+  // required. The redirect URL is operator-supplied (SAK never derives it
+  // from the request Host, which is spoofable) and must match the callback
+  // registered with the IdP. After setup, a break-glass API key is revealed
+  // once and the browser is sent to the IdP to complete first login. --
+  const oidcIssuerInput = el("input", { type: "text", placeholder: "https://sso.example.com/application/o/sakms/" });
+  const oidcClientIdInput = el("input", { type: "text", placeholder: "client id" });
+  const oidcClientSecretInput = el("input", { type: "password", placeholder: "client secret" });
+  const oidcRedirectInput = el("input", { type: "text", placeholder: "https://media-admin.example.com/api/auth/oidc/callback" });
+  const oidcGroup = el("div", {}, [
+    el("div", { class: "muted", text: "SAK runs a real OpenID Connect Authorization Code flow (with PKCE) as the Relying Party — it verifies the IdP's signed ID token, so no proxy-held shared secret is needed. Register the redirect URL below as an allowed callback in your IdP's client config." }),
+    el("label", {}, [document.createTextNode("Issuer URL"), oidcIssuerInput]),
+    el("label", {}, [document.createTextNode("Client ID"), oidcClientIdInput]),
+    el("label", {}, [document.createTextNode("Client secret"), oidcClientSecretInput]),
+    el("label", {}, [document.createTextNode("Redirect URL"), oidcRedirectInput]),
+    el("div", { class: "muted", style: "margin-top:0.5rem", text: "A one-time break-glass API key is shown after setup, in case SSO login ever fails and you need to reach Settings to fix or switch modes." }),
   ]);
 
   // -- none: no fields at all --
@@ -1399,15 +1340,15 @@ function renderCredentialsGate(container, kind, authStatus) {
   function renderModeFields() {
     modeFieldsWrap.innerHTML = "";
     if (modeSelect.value === "password") modeFieldsWrap.appendChild(passwordGroup);
-    else if (modeSelect.value === "forward") modeFieldsWrap.appendChild(forwardGroup);
+    else if (modeSelect.value === "oidc") modeFieldsWrap.appendChild(oidcGroup);
     else if (modeSelect.value === "none") modeFieldsWrap.appendChild(noneGroup);
     // Skip is only meaningful when looking at the password default — a
     // quick-path around creating a password, not a general escape hatch
-    // shown alongside forward/none (none already has its own submit).
+    // shown alongside oidc/none (none already has its own submit).
     skipBtn.style.display = modeSelect.value === "password" ? "" : "none";
   }
 
-  const submitLabel = () => modeSelect.value === "password" ? "Create login" : modeSelect.value === "forward" ? "Generate shared secret" : "Continue without authentication";
+  const submitLabel = () => modeSelect.value === "password" ? "Create login" : modeSelect.value === "oidc" ? "Save and continue to SSO" : "Continue without authentication";
   const submitBtn = el("button", { class: "primary", type: "submit", text: submitLabel() });
   modeSelect.addEventListener("change", () => { renderModeFields(); submitBtn.textContent = submitLabel(); });
   renderModeFields();
@@ -1432,8 +1373,20 @@ function renderCredentialsGate(container, kind, authStatus) {
     } else if (mode === "none") {
       if (!confirm("This instance will have no authentication at all — anyone who can reach it will have full control. Continue?")) return;
       body.acknowledgeInsecure = true;
+    } else if (mode === "oidc") {
+      const issuer = oidcIssuerInput.value.trim();
+      const clientId = oidcClientIdInput.value.trim();
+      const clientSecret = oidcClientSecretInput.value;
+      const redirect = oidcRedirectInput.value.trim();
+      if (!issuer || !clientId || !clientSecret || !redirect) {
+        status.textContent = "Issuer URL, client ID, client secret, and redirect URL are all required.";
+        return;
+      }
+      body.oidcIssuerUrl = issuer;
+      body.oidcClientId = clientId;
+      body.oidcClientSecret = clientSecret;
+      body.oidcRedirectUrl = redirect;
     }
-    // forward: no extra fields — the server generates the shared secret.
 
     try {
       const res = await fetch("/api/auth/setup", {
@@ -1445,45 +1398,37 @@ function renderCredentialsGate(container, kind, authStatus) {
         status.textContent = text || ("HTTP " + res.status);
         return;
       }
-      if (mode === "forward") {
-        // Reveal-once, mirroring renderAPIAccess's reveal-input pattern —
-        // the operator must copy this before moving on; boot() only runs
-        // once they click through, not automatically.
+      if (mode === "oidc") {
+        // Reveal-once, mirroring renderAPIAccess's reveal-input pattern — the
+        // operator saves the break-glass key before moving on; the "continue"
+        // button navigates to /api/auth/oidc/login to complete first login
+        // through the IdP (NOT boot(), which would just re-show this screen
+        // since no session exists yet).
         const isJSON = (res.headers.get("Content-Type") || "").includes("application/json");
         const data = isJSON ? await res.json() : {};
-        const secretInput = el("input", { type: "text", readonly: "readonly", value: data.forwardSecret || "", style: "width:100%" });
-        reveal.appendChild(secretInput);
-        secretInput.select();
-        // BUG FIX (2026-07-11, live incident: "copy button breaks login"):
-        // every button below lives inside the setup <form> (see the `form =
-        // el("form", ...)` a few lines down, which appends `reveal` as a
-        // child). A <button> with no explicit "type" defaults to
-        // type="submit" INSIDE a form — clicking it fires the form's
-        // onsubmit handler too, which calls submit() again. submit()'s
-        // first line is `reveal.innerHTML = ""`, so clicking "Copy" (or
-        // "I've copied it — continue") was wiping this entire reveal panel
-        // — the secret, the break-glass key, and the continue button — the
-        // instant it was clicked, and then hitting a 409 (mode already
-        // committed by the first successful submit) with no visible way
-        // forward. type: "button" on all three stops them from being
-        // treated as implicit submit buttons.
-        reveal.appendChild(el("button", { type: "button", text: "Copy", onclick: () => { secretInput.select(); if (navigator.clipboard) navigator.clipboard.writeText(data.forwardSecret || "").catch(() => {}); } }));
-        reveal.appendChild(el("div", { class: "error", text: "Shown once — copy this into your reverse proxy's config now; it cannot be retrieved later." }));
-        // Break-glass API key (spec AC6, Decision #3): same reveal-once /
-        // readonly-input / "copy now" treatment as the forward secret above.
-        // Both response fields are mutually exclusive — env-managed key
+        // Break-glass API key: reveal-once / readonly-input / "copy now"
+        // treatment. Mutually exclusive with apiKeyNote — an env-managed key
         // active means a note instead of a mintable value.
+        //
+        // BUG FIX (2026-07-11, live incident: "copy button breaks login"):
+        // every button below lives inside the setup <form> (which appends
+        // `reveal` as a child). A <button> with no explicit "type" defaults
+        // to type="submit" INSIDE a form — clicking it fires the form's
+        // onsubmit handler, which calls submit() again, whose first line is
+        // `reveal.innerHTML = ""`, wiping the whole panel. type: "button" on
+        // all three stops them from being treated as implicit submit buttons.
         if (data.apiKey) {
           const keyInput = el("input", { type: "text", readonly: "readonly", value: data.apiKey, style: "width:100%" });
-          reveal.appendChild(el("div", { class: "muted", style: "margin-top:0.75rem", text: "Break-glass API key (save this now):" }));
+          reveal.appendChild(el("div", { class: "muted", text: "Break-glass API key (save this now):" }));
           reveal.appendChild(keyInput);
+          keyInput.select();
           reveal.appendChild(el("button", { type: "button", text: "Copy", onclick: () => { keyInput.select(); if (navigator.clipboard) navigator.clipboard.writeText(data.apiKey).catch(() => {}); } }));
-          reveal.appendChild(el("div", { class: "error", text: "Shown once — if your proxy locks you out, send this as an X-Api-Key header to reach Settings. It cannot be retrieved later." }));
+          reveal.appendChild(el("div", { class: "error", text: "Shown once — if SSO login ever fails, send this as an X-Api-Key header to reach Settings. It cannot be retrieved later." }));
         } else if (data.apiKeyNote) {
-          reveal.appendChild(el("div", { class: "muted", style: "margin-top:0.75rem", text: data.apiKeyNote }));
+          reveal.appendChild(el("div", { class: "muted", text: data.apiKeyNote }));
         }
         reveal.appendChild(el("div", { class: "row", style: "margin-top:0.5rem" }, [
-          el("button", { type: "button", class: "primary", text: "I've copied it — continue", onclick: async () => { await boot(); } }),
+          el("button", { type: "button", class: "primary", text: "Continue to SSO login", onclick: () => { window.location.href = "/api/auth/oidc/login"; } }),
         ]));
         submitBtn.disabled = true;
         modeSelect.disabled = true;
@@ -1504,30 +1449,24 @@ function renderCredentialsGate(container, kind, authStatus) {
   container.appendChild(form);
 }
 
-// renderProxyAuthNotice is the informational screen shown in forward/
-// authentik modes when boot() finds the request isn't authenticated —
-// neither mode has a cookie/password concept (Edge Case #3), so there is
-// no field to fill in here; the fix happens outside the browser (proxy
-// config, or a bearer token on the request).
-function renderProxyAuthNotice(container, mode) {
+// renderOIDCLoginNotice is the screen shown in oidc mode when boot() finds
+// the request has no valid session yet. Unlike the old forward/authentik
+// notices, there IS a real in-browser login flow to send the operator to:
+// a "Log in with SSO" button that navigates to /api/auth/oidc/login, which
+// starts the Authorization Code redirect and, on success, drops the session
+// cookie and returns to the app.
+function renderOIDCLoginNotice(container) {
   container.innerHTML = "";
-  container.appendChild(el("h2", { text: "Not authenticated" }));
-  const message = mode === "forward"
-    ? "This instance authenticates through your reverse proxy. This request arrived without a valid proxy identity/secret — check that your proxy is forwarding the configured headers, and that the shared secret matches what's configured in Settings → Authentication mode."
-    : "This instance authenticates by validating a caller-presented Authentik bearer token via token introspection. Provide a valid Authorization: Bearer <token> header when calling this instance.";
-  container.appendChild(el("p", { class: "muted", text: message }));
-  if (mode === "forward") {
-    // Recovery guidance (spec AC7/Edge Case #5, Critic finding M2): copy-only
-    // — this screen has no access to the one-time break-glass key (already
-    // revealed and gone from memory), so it can only instruct. Must NOT
-    // imply in-browser recovery is possible: X-Api-Key is a header-only
-    // credential a plain browser tab can't attach, so a header-capable
-    // client (e.g. curl) is named explicitly.
-    container.appendChild(el("p", { class: "muted", text: "If you saved the one-time break-glass API key shown during setup, use a header-capable client (e.g. curl) to send it as an X-Api-Key header against this instance's API — for example to PUT /api/auth/mode and switch back to password mode, or to reach other Settings endpoints and fix your proxy configuration. A plain browser tab cannot attach this header on its own." }));
-  }
+  container.appendChild(el("h2", { text: "Log in to SAK" }));
+  container.appendChild(el("p", { class: "muted", text: "This instance uses single sign-on. Log in through your identity provider to continue." }));
   container.appendChild(el("div", { class: "row", style: "margin-top:0.75rem" }, [
-    el("button", { class: "primary", text: "Retry", onclick: async () => { await boot(); } }),
+    el("button", { class: "primary", text: "Log in with SSO", onclick: () => { window.location.href = "/api/auth/oidc/login"; } }),
   ]));
+  // Break-glass recovery: if SSO is misconfigured/unreachable, the operator
+  // can still reach Settings with the one-time API key shown at setup. Header-
+  // only, so a header-capable client (e.g. curl) is named explicitly — a
+  // plain browser tab can't attach X-Api-Key on its own.
+  container.appendChild(el("p", { class: "muted", style: "margin-top:0.75rem", text: "If SSO login fails and you saved the one-time break-glass API key from setup, use a header-capable client (e.g. curl) to send it as an X-Api-Key header — for example to PUT /api/auth/mode and switch back to password mode. A plain browser tab cannot attach this header on its own." }));
 }
 
 // ---- Router ----
@@ -1573,20 +1512,16 @@ function updateNoneModeBanner(isNone) {
 
 // boot is the single entry point for "what should be on screen right now,"
 // re-run after every login/setup/logout/wizard-dismiss/mode-switch
-// transition. Order matters: the login/proxy-notice gate comes before the
-// connections Setup Wizard comes before the normal app — each one hides
-// the nav entirely so there's no way to land on a bare Scan button before
-// getting through the ones before it.
+// transition. Order matters: the login/SSO gate comes before the connections
+// Setup Wizard comes before the normal app — each one hides the nav entirely
+// so there's no way to land on a bare Scan button before getting through the
+// ones before it.
 //
-// /api/auth/status now returns {configured, authenticated, mode}.
-// "authenticated" means something slightly different per mode (plan
-// §3.3/§4.3): a REAL check for password/forward/none, but an OPTIMISTIC
-// presence-only signal for authentik — a present-but-invalid bearer token
-// reports authenticated:true here and boot() proceeds; the real
-// enforcement happens on every actual protected API call via the backend's
-// Middleware (which DOES introspect for real), surfacing as a normal
-// request error through api()'s existing error handling if the token
-// turns out invalid. No new error-handling path is needed for that case.
+// /api/auth/status returns {configured, authenticated, mode}. "authenticated"
+// is a real, cheap local check for every mode now: "none" is always true,
+// and "password"/"oidc" both gate on the same session cookie (oidc issues
+// that cookie once the IdP redirect completes). No outbound call, no
+// optimistic heuristic.
 async function boot() {
   let authStatus = null;
   try { authStatus = await api("/api/auth/status"); } catch (e) { /* fall through */ }
@@ -1608,28 +1543,19 @@ async function boot() {
       renderCredentialsGate(view, "login");
       return;
     }
-    if (mode === "forward" && !authStatus.authenticated) {
-      // REAL check (auth.ForwardAuth, called directly by the status
-      // handler) — a browser without the proxy's identity/secret headers
-      // genuinely isn't authenticated.
+    if (mode === "oidc" && !authStatus.authenticated) {
+      // No valid session cookie yet — send the operator through the SSO
+      // redirect flow (there IS a real in-browser login now, unlike the old
+      // forward/authentik notices).
       updateNoneModeBanner(false);
       hideNav();
-      renderProxyAuthNotice(view, "forward");
-      return;
-    }
-    if (mode === "authentik" && !authStatus.authenticated) {
-      // PRESENCE-only heuristic — false here means no bearer token at all
-      // was presented on this status request, not that one was checked
-      // and rejected (see the doc comment above).
-      updateNoneModeBanner(false);
-      hideNav();
-      renderProxyAuthNotice(view, "authentik");
+      renderOIDCLoginNotice(view);
       return;
     }
     // Reachable for: mode === "none" (authenticated is always true, nothing
-    // to gate on) or an authenticated password/forward/authentik session.
-    // Arm/clear the persistent banner exactly once here, then fall through
-    // to the existing wizard/app tail below.
+    // to gate on) or an authenticated password/oidc session. Arm/clear the
+    // persistent banner exactly once here, then fall through to the existing
+    // wizard/app tail below.
     updateNoneModeBanner(mode === "none");
   }
 

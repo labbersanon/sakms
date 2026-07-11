@@ -109,13 +109,53 @@ func TestPutMode_PasswordWithoutHash_400(t *testing.T) {
 	}
 }
 
-// TestPutMode_AuthentikNotAvailableYet_400 was removed (Phase 4 fix-up):
-// dated from slice 1's 400 placeholder for "authentik" mode. Slice 3
-// replaced the placeholder with real G4 precondition handling, so this
-// test kept passing for a different, unstated reason (no configured
-// credentials, not "mode not available yet"). Superseded by
-// TestPutMode_AuthentikWithoutCreds_400 in authentik_test.go, which is the
-// exact same scenario, correctly named and documented.
+// TestPutMode_OIDCWithoutConfig_400 covers the G4 switch-into precondition
+// for oidc: switching to "oidc" before its config exists must 400, since a
+// switch could otherwise strand the instance with an unusable mode.
+func TestPutMode_OIDCWithoutConfig_400(t *testing.T) {
+	authStore, _ := testAuthStore(t)
+	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	defer srv.Close()
+
+	body, _ := json.Marshal(authModeRequest{Mode: auth.ModeOIDC})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/auth/mode", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 switching to oidc with no config configured, got %d", resp.StatusCode)
+	}
+}
+
+// TestPutMode_OIDCWithConfig_204 covers the positive precondition: once OIDC
+// config is set, the switch succeeds.
+func TestPutMode_OIDCWithConfig_204(t *testing.T) {
+	authStore, secretStore := testAuthStore(t)
+	ctx := context.Background()
+	cipher, err := secretStore.Encrypt("the-client-secret")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := authStore.SetOIDCConfig(ctx, "https://sso.example.com", "the-client-id", cipher, "https://sak.example.com/api/auth/oidc/callback"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	defer srv.Close()
+
+	body, _ := json.Marshal(authModeRequest{Mode: auth.ModeOIDC})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/auth/mode", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 switching to oidc with config present, got %d", resp.StatusCode)
+	}
+}
 
 // TestPutMode_SwitchAwayKeepsConfig covers G4/AC6: switching password ->
 // none -> password must never wipe the password hash — the operator's

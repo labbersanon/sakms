@@ -26,10 +26,8 @@ func newTestStore(t *testing.T) *Store {
 // deterministic test encryptor (testEncryptor, session_test.go — the same
 // all-zero-key secrets.Store used everywhere else in this package's tests,
 // so a secret encrypted via testEncryptor(t) in one test and stored via
-// SetAuthentikConfig decrypts correctly through this Store's own internal
-// enc field — see TestMiddleware_AuthentikMode) and a plain default HTTP
-// client (authentik tests point Config.URL directly at an httptest.Server,
-// so no special transport is needed). Shared by newTestStore here and
+// SetOIDCConfig decrypts correctly through this Store's own internal enc
+// field) and a plain default HTTP client. Shared by newTestStore here and
 // apikey_test.go's newTestStoreWithDB.
 func newStoreFromDB(t *testing.T, sqlDB *sql.DB) *Store {
 	t.Helper()

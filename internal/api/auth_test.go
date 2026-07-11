@@ -37,9 +37,9 @@ func testAuthStoreWithDB(t *testing.T) (*auth.Store, *secrets.Store, *sql.DB) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// secretStore doubles as authStore's Authentik-client-secret decryptor,
+	// secretStore doubles as authStore's OIDC-client-secret decryptor,
 	// mirroring cmd/sakms/main.go's production wiring (the same secretStore
-	// instance is passed to both auth.New and api.NewAuthMux/NewAuthentikMux).
+	// instance is passed to both auth.New and api.NewAuthMux/NewOIDCMux).
 	return auth.New(settings.New(sqlDB), secretStore, http.DefaultClient), secretStore, sqlDB
 }
 
@@ -268,22 +268,13 @@ func TestSetup_None_NoCookieNoCreds(t *testing.T) {
 	}
 }
 
-// TestSetup_AuthentikPlaceholderRejected was removed (Phase 4 fix-up): it
-// dated from slice 1, when "authentik" mode was a 400 placeholder. Slice 3
-// replaced that placeholder with real handling, so this test kept passing
-// but for an entirely different, unstated reason (missing required fields,
-// not "mode not selectable yet") — a misleading-test-intent hazard. Its
-// coverage is now provided by TestSetup_AuthentikMissingFields_400 in
-// authentik_test.go, whose first case ({Mode:"authentik"}, all fields
-// blank) is the exact same scenario, correctly named and asserted.
-
-// TestSetup_ForwardGeneratesSecretAndWritesMode is the first-run bootstrap
-// fix's end-to-end proof (plan §0.7/§2.2b): POST /api/auth/setup with
-// mode:"forward" and NO prior credential must succeed through the PUBLIC
-// setup endpoint, generate a shared secret server-side, persist it, write
-// auth_mode atomically, and reveal the generated secret once in the
-// response body — all in one request, with no protected round-trip needed.
-func TestSetup_ForwardGeneratesSecretAndWritesMode(t *testing.T) {
+// TestSetup_OIDCWritesConfigAndMode is the first-run bootstrap end-to-end
+// proof for oidc mode: POST /api/auth/setup with mode:"oidc" and all four
+// fields, and NO prior credential, must succeed through the PUBLIC setup
+// endpoint, persist the config (client secret encrypted), write auth_mode
+// atomically, and mint a break-glass key in the response — with NO session
+// cookie (the browser hasn't completed the redirect dance yet).
+func TestSetup_OIDCWritesConfigAndMode(t *testing.T) {
 	authStore, tokenEnc := testAuthStore(t)
 	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
 	defer srv.Close()
@@ -296,109 +287,88 @@ func TestSetup_ForwardGeneratesSecretAndWritesMode(t *testing.T) {
 		t.Fatal("expected a fresh instance to be unconfigured before setup")
 	}
 
-	body, _ := json.Marshal(authCredentialsRequest{Mode: "forward"})
+	body, _ := json.Marshal(authCredentialsRequest{
+		Mode:             "oidc",
+		OIDCIssuerURL:    "https://sso.example.com",
+		OIDCClientID:     "the-client-id",
+		OIDCClientSecret: "the-client-secret",
+		OIDCRedirectURL:  "https://sak.example.com/api/auth/oidc/callback",
+	})
 	resp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 with a generated secret in the body, got %d", resp.StatusCode)
-	}
-	var setupResp authSetupResponse
-	if err := json.NewDecoder(resp.Body).Decode(&setupResp); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
-	if setupResp.ForwardSecret == "" {
-		t.Fatal("expected a generated forward secret in the setup response")
+		t.Fatalf("expected 200 with the break-glass key in the body, got %d", resp.StatusCode)
 	}
 	if len(resp.Cookies()) != 0 {
-		t.Errorf("expected no session cookie for forward mode, got %+v", resp.Cookies())
+		t.Errorf("expected no session cookie for oidc setup, got %+v", resp.Cookies())
 	}
 
 	mode, err := authStore.AuthMode(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if mode != auth.ModeForward {
-		t.Errorf("expected auth_mode to be written as %q, got %q", auth.ModeForward, mode)
+	if mode != auth.ModeOIDC {
+		t.Errorf("expected auth_mode to be written as %q, got %q", auth.ModeOIDC, mode)
 	}
 	configuredAfter, err := authStore.Configured(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !configuredAfter {
-		t.Fatal("expected the instance to report Configured=true after forward-mode setup")
+		t.Fatal("expected the instance to report Configured=true after oidc setup")
 	}
 
-	ok, err := authStore.VerifyForwardSecret(context.Background(), setupResp.ForwardSecret)
+	// The client secret must round-trip: the stored config reports it
+	// configured, and OIDCConfigured (the mode-switch precondition) is true.
+	ok, err := authStore.OIDCConfigured(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !ok {
-		t.Error("expected the secret returned in the setup response to verify against what was persisted")
+		t.Error("expected OIDCConfigured=true after oidc setup")
 	}
 }
 
-// TestSetup_ForwardAcceptsProvidedSecret covers the "operator supplies
-// their own secret" branch of the same first-run bootstrap path.
-func TestSetup_ForwardAcceptsProvidedSecret(t *testing.T) {
-	authStore, tokenEnc := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
-	defer srv.Close()
+// TestSetup_OIDCMissingFields_400 covers the "all four fields required
+// together" validation: any missing field rejects with 400 and leaves the
+// instance unconfigured.
+func TestSetup_OIDCMissingFields_400(t *testing.T) {
+	cases := []struct {
+		name string
+		req  authCredentialsRequest
+	}{
+		{"all blank", authCredentialsRequest{Mode: "oidc"}},
+		{"no issuer", authCredentialsRequest{Mode: "oidc", OIDCClientID: "c", OIDCClientSecret: "s", OIDCRedirectURL: "https://x/cb"}},
+		{"no client id", authCredentialsRequest{Mode: "oidc", OIDCIssuerURL: "https://i", OIDCClientSecret: "s", OIDCRedirectURL: "https://x/cb"}},
+		{"no secret", authCredentialsRequest{Mode: "oidc", OIDCIssuerURL: "https://i", OIDCClientID: "c", OIDCRedirectURL: "https://x/cb"}},
+		{"no redirect", authCredentialsRequest{Mode: "oidc", OIDCIssuerURL: "https://i", OIDCClientID: "c", OIDCClientSecret: "s"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			authStore, tokenEnc := testAuthStore(t)
+			srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
+			defer srv.Close()
 
-	body, _ := json.Marshal(authCredentialsRequest{Mode: "forward", ForwardSecret: "operator-supplied-secret-value"})
-	resp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	var setupResp authSetupResponse
-	if err := json.NewDecoder(resp.Body).Decode(&setupResp); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
-	if setupResp.ForwardSecret != "operator-supplied-secret-value" {
-		t.Errorf("expected the provided secret to be echoed back, got %q", setupResp.ForwardSecret)
-	}
-
-	ok, err := authStore.VerifyForwardSecret(context.Background(), "operator-supplied-secret-value")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !ok {
-		t.Error("expected the operator-provided secret to verify")
-	}
-}
-
-// TestSetup_ForwardTooShortSecretRejected (Phase 4 fix-up) covers a MEDIUM
-// finding from the security/code-quality reviews: an operator-supplied
-// forward secret had no minimum-length validation, unlike the generated
-// default (32 bytes crypto/rand) — a one-character secret was silently
-// accepted, directly undermining forward mode's entire authorization gate.
-func TestSetup_ForwardTooShortSecretRejected(t *testing.T) {
-	authStore, tokenEnc := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
-	defer srv.Close()
-
-	body, _ := json.Marshal(authCredentialsRequest{Mode: "forward", ForwardSecret: "short"})
-	resp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for a too-short operator-supplied secret, got %d", resp.StatusCode)
-	}
-
-	configured, err := authStore.Configured(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if configured {
-		t.Error("expected a rejected too-short secret to leave the instance unconfigured, not partially set up")
+			body, _ := json.Marshal(tc.req)
+			resp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %s, got %d", tc.name, resp.StatusCode)
+			}
+			configured, err := authStore.Configured(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if configured {
+				t.Error("expected a rejected oidc setup to leave the instance unconfigured")
+			}
+		})
 	}
 }
 
@@ -537,7 +507,7 @@ func TestSetup_NoneMode_SecondCallRejected_409(t *testing.T) {
 	}
 }
 
-// --- Proxy-header auto-detect + break-glass key (autopilot-impl-wizard-autodetect) ---
+// --- Break-glass key (oidc first-run) ---
 
 // readSetting reads a raw settings row directly via SQL, bypassing package
 // auth's unexported settings-key constants — used by tests that must prove a
@@ -555,89 +525,14 @@ func readSetting(t *testing.T, sqlDB *sql.DB, key string) (string, bool) {
 	return value, true
 }
 
-// TestStatus_ProxyHeadersDetected_UnconfiguredTrue covers AC1: a recognized
-// proxy identity header present on an unconfigured instance's status request
-// must be reported.
-func TestStatus_ProxyHeadersDetected_UnconfiguredTrue(t *testing.T) {
-	authStore, tokenEnc := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
-	defer srv.Close()
-
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/auth/status", nil)
-	req.Header.Set("X-authentik-username", "wade")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer resp.Body.Close()
-	var status authStatusResponse
-	json.NewDecoder(resp.Body).Decode(&status)
-	if !status.ProxyHeadersDetected {
-		t.Error("expected proxyHeadersDetected=true with a recognized header present on an unconfigured instance")
-	}
-}
-
-// TestStatus_ProxyHeadersDetected_NoHeadersFalse covers AC1's negative case.
-func TestStatus_ProxyHeadersDetected_NoHeadersFalse(t *testing.T) {
-	authStore, tokenEnc := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/api/auth/status")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer resp.Body.Close()
-	var status authStatusResponse
-	json.NewDecoder(resp.Body).Decode(&status)
-	if status.ProxyHeadersDetected {
-		t.Error("expected proxyHeadersDetected=false with no recognized headers present")
-	}
-}
-
-// TestStatus_ProxyHeadersDetected_ConfiguredNeverDisclosed is the
-// disclosure-scoping guardrail's proof (plan §1c): once an instance is
-// configured, proxyHeadersDetected must report false regardless of what
-// headers a caller presents — the field is computed ONLY inside the
-// `!configured` branch, not merely hidden via omitempty.
-func TestStatus_ProxyHeadersDetected_ConfiguredNeverDisclosed(t *testing.T) {
-	authStore, tokenEnc := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
-	defer srv.Close()
-
-	setupBody, _ := json.Marshal(authCredentialsRequest{Mode: "none", AcknowledgeInsecure: true})
-	setupResp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(setupBody))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	setupResp.Body.Close()
-
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/auth/status", nil)
-	req.Header.Set("Remote-User", "wade")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer resp.Body.Close()
-	var status authStatusResponse
-	json.NewDecoder(resp.Body).Decode(&status)
-	if !status.Configured {
-		t.Fatal("expected the instance to be configured after none-mode setup")
-	}
-	if status.ProxyHeadersDetected {
-		t.Error("disclosure-scoping regression: a configured instance must never report proxyHeadersDetected=true, even with a recognized header present")
-	}
-}
-
-// TestSetup_ForwardMintsBreakGlassKey covers AC4 (and EC2, since no proxy
-// headers are set here — proving manual forward selection mints too): a
-// forward-mode first-run with no env key active mints a working one-time
-// break-glass API key, revealed once in the setup response. It also folds in
-// the Critic-required boot-key-invalidation proof: a key already minted at
-// simulated "boot" (EnsureAPIKey, mirroring cmd/sakms/main.go:92) must stop
-// verifying once Regenerate runs here — proving the new key is genuinely a
-// distinct, freshly minted credential, not just "a key happens to work."
-func TestSetup_ForwardMintsBreakGlassKey(t *testing.T) {
+// TestSetup_OIDCMintsBreakGlassKey covers the break-glass mint: an oidc-mode
+// first-run with no env key active mints a working one-time break-glass API
+// key, revealed once in the setup response. It also folds in the
+// boot-key-invalidation proof: a key already minted at simulated "boot"
+// (EnsureAPIKey, mirroring cmd/sakms/main.go) must stop verifying once
+// Regenerate runs here — proving the new key is genuinely a distinct, freshly
+// minted credential, not just "a key happens to work."
+func TestSetup_OIDCMintsBreakGlassKey(t *testing.T) {
 	authStore, tokenEnc := testAuthStore(t)
 	ctx := context.Background()
 
@@ -661,7 +556,13 @@ func TestSetup_ForwardMintsBreakGlassKey(t *testing.T) {
 	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
 	defer srv.Close()
 
-	body, _ := json.Marshal(authCredentialsRequest{Mode: "forward"})
+	body, _ := json.Marshal(authCredentialsRequest{
+		Mode:             "oidc",
+		OIDCIssuerURL:    "https://sso.example.com",
+		OIDCClientID:     "the-client-id",
+		OIDCClientSecret: "the-client-secret",
+		OIDCRedirectURL:  "https://sak.example.com/api/auth/oidc/callback",
+	})
 	resp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -708,16 +609,16 @@ func TestSetup_ForwardMintsBreakGlassKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if bootKeyOKAfter {
-		t.Error("expected the pre-setup boot key to no longer verify after forward setup's Regenerate call")
+		t.Error("expected the pre-setup boot key to no longer verify after oidc setup's Regenerate call")
 	}
 }
 
-// TestSetup_ForwardEnvKeyActive_NoMintNote covers AC5/EC1: when
-// SAKMS_API_KEY is active, forward-mode first-run must not mint a settings
+// TestSetup_OIDCEnvKeyActive_NoMintNote covers the env-precedence case: when
+// SAKMS_API_KEY is active, oidc-mode first-run must not mint a settings
 // key (it would be dead on arrival under env precedence) — instead the
 // response carries a note, and the settings-persisted key (a stand-in for
 // "whatever existed before, from an earlier boot") is left byte-identical.
-func TestSetup_ForwardEnvKeyActive_NoMintNote(t *testing.T) {
+func TestSetup_OIDCEnvKeyActive_NoMintNote(t *testing.T) {
 	authStore, tokenEnc, sqlDB := testAuthStoreWithDB(t)
 	ctx := context.Background()
 
@@ -736,7 +637,13 @@ func TestSetup_ForwardEnvKeyActive_NoMintNote(t *testing.T) {
 	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
 	defer srv.Close()
 
-	body, _ := json.Marshal(authCredentialsRequest{Mode: "forward"})
+	body, _ := json.Marshal(authCredentialsRequest{
+		Mode:             "oidc",
+		OIDCIssuerURL:    "https://sso.example.com",
+		OIDCClientID:     "the-client-id",
+		OIDCClientSecret: "the-client-secret",
+		OIDCRedirectURL:  "https://sak.example.com/api/auth/oidc/callback",
+	})
 	resp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -776,7 +683,7 @@ func TestSetup_ForwardEnvKeyActive_NoMintNote(t *testing.T) {
 // start failing: Configured() would report true even though neither the
 // forward secret nor a break-glass key was ever revealed — the exact
 // unrecoverable lockout this whole feature exists to prevent.
-func TestSetup_ForwardMintFailure_LeavesUnconfigured(t *testing.T) {
+func TestSetup_OIDCMintFailure_LeavesUnconfigured(t *testing.T) {
 	authStore, tokenEnc, sqlDB := testAuthStoreWithDB(t)
 	srv := httptest.NewServer(NewAuthMux(authStore, tokenEnc))
 	defer srv.Close()
@@ -792,7 +699,13 @@ func TestSetup_ForwardMintFailure_LeavesUnconfigured(t *testing.T) {
 		t.Fatalf("installing failure trigger: %v", err)
 	}
 
-	body, _ := json.Marshal(authCredentialsRequest{Mode: "forward"})
+	body, _ := json.Marshal(authCredentialsRequest{
+		Mode:             "oidc",
+		OIDCIssuerURL:    "https://sso.example.com",
+		OIDCClientID:     "the-client-id",
+		OIDCClientSecret: "the-client-secret",
+		OIDCRedirectURL:  "https://sak.example.com/api/auth/oidc/callback",
+	})
 	resp, err := http.Post(srv.URL+"/api/auth/setup", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

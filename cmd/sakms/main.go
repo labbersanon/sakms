@@ -71,11 +71,11 @@ func run() error {
 	settingsStore := settings.New(sqlDB)
 	grabsStore := grabs.New(sqlDB)
 	libStore := library.New(sqlDB)
-	// secretStore doubles as authStore's Authentik-client-secret decryptor
-	// and the outbound HTTP client is the same outboundTimeout-bounded one
-	// every other external client in this program uses (RFC 7662
-	// introspection, slice 3) — the single additive auth.New wiring change
-	// the plan sanctions (§3.3); Middleware's own signature is untouched.
+	// secretStore doubles as authStore's OIDC-client-secret decryptor, and
+	// the outbound HTTP client is the same outboundTimeout-bounded one every
+	// other external client in this program uses — it bounds OIDC discovery,
+	// token exchange, and JWKS fetch (oidc mode). Middleware's own signature
+	// is untouched.
 	authStore := auth.New(settingsStore, secretStore, &http.Client{Timeout: outboundTimeout})
 
 	// Boot-time API key resolution: SAKMS_API_KEY (if set) always wins over
@@ -122,30 +122,27 @@ func run() error {
 	authModeMux := api.NewAuthModeMux(authStore)
 	protectedAuthMode := auth.Middleware(secretStore, authStore, authModeMux)
 
-	// Forward-mode config (GET status, POST-generate secret, PUT header
-	// names) — the post-first-run Settings-switch path (plan §2.3), not
-	// first-run bootstrap (that's carried in the public /api/auth/setup
-	// body, see api.authSetupHandler's "forward" branch). Session-protected
-	// like the other mode-specific muxes above.
-	forwardMux := api.NewForwardMux(authStore)
-	protectedForward := auth.Middleware(secretStore, authStore, forwardMux)
-
-	// Authentik-mode config (GET status, PUT url/client id/client secret) —
-	// the post-first-run Settings-switch path (plan §3.4), not first-run
+	// OIDC-mode config (GET status, PUT issuer/client id/client secret/
+	// redirect URL) — the post-first-run Settings-switch path, not first-run
 	// bootstrap (that's carried in the public /api/auth/setup body, see
-	// api.authSetupHandler's "authentik" branch). Session-protected like the
+	// api.authSetupHandler's "oidc" branch) and not the public login/callback
+	// redirect legs (those are on NewAuthMux). Session-protected like the
 	// other mode-specific muxes above.
-	authentikMux := api.NewAuthentikMux(authStore, secretStore)
-	protectedAuthentik := auth.Middleware(secretStore, authStore, authentikMux)
+	oidcMux := api.NewOIDCMux(authStore, secretStore)
+	protectedOIDC := auth.Middleware(secretStore, authStore, oidcMux)
 
 	top := http.NewServeMux()
 	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
 	top.Handle("/api/auth/mode", protectedAuthMode)
-	top.Handle("/api/auth/forward", protectedForward)     // exact match: GET status
-	top.Handle("/api/auth/forward/", protectedForward)    // subtree: POST .../secret, PUT .../headers
-	top.Handle("/api/auth/authentik", protectedAuthentik) // exact match: GET status, PUT config
+	top.Handle("/api/auth/oidc", protectedOIDC) // exact match: GET status, PUT config (session-protected)
+	// Everything else under /api/auth/ — including the PUBLIC OIDC redirect
+	// legs /api/auth/oidc/login and /api/auth/oidc/callback — goes to the
+	// unwrapped NewAuthMux. The exact "/api/auth/oidc" match above beats this
+	// subtree only for that exact path, so config stays protected while the
+	// login/callback subpaths stay public (they must run before a session
+	// exists).
 	top.Handle("/api/auth/", api.NewAuthMux(authStore, secretStore))
 	top.Handle("/api/apikey", protectedAPIKey)  // exact match: GET status
 	top.Handle("/api/apikey/", protectedAPIKey) // subtree: POST .../regenerate

@@ -54,13 +54,10 @@ type authModeRequest struct {
 // switch-into preconditions before writing anything:
 //   - "password": a password hash must already exist (PasswordConfigured) —
 //     otherwise a switch could strand the instance with no way back in.
-//   - "forward": a forward-mode shared secret must already exist
-//     (ForwardConfigured) — reachable post-setup because the operator is
-//     already authenticated some other way (password or the universal API
-//     key) by the time they're switching modes from Settings (plan §2.3).
-//   - "authentik": a url/client id/client secret must already exist
-//     (AuthentikConfigured) — reachable post-setup for the same reason as
-//     forward's precondition above.
+//   - "oidc": issuer/client id/client secret/redirect URL must already exist
+//     (OIDCConfigured) — reachable post-setup because the operator is already
+//     authenticated some other way (password or the universal API key) by the
+//     time they're switching modes from Settings.
 //   - "none": requires acknowledgeInsecure:true (G2).
 //
 // On success, SetAuthMode writes ONLY auth_mode — the departed mode's
@@ -87,26 +84,15 @@ func putAuthModeHandler(authStore *auth.Store) http.HandlerFunc {
 				http.Error(w, "password auth is not configured yet — set a password before switching to it", http.StatusBadRequest)
 				return
 			}
-		case auth.ModeForward:
-			ok, err := authStore.ForwardConfigured(ctx)
+		case auth.ModeOIDC:
+			ok, err := authStore.OIDCConfigured(ctx)
 			if err != nil {
-				log.Printf("auth mode switch (forward precondition): %v", err)
+				log.Printf("auth mode switch (oidc precondition): %v", err)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
 			if !ok {
-				http.Error(w, "forward auth is not configured yet — generate a shared secret before switching to it", http.StatusBadRequest)
-				return
-			}
-		case auth.ModeAuthentik:
-			ok, err := authStore.AuthentikConfigured(ctx)
-			if err != nil {
-				log.Printf("auth mode switch (authentik precondition): %v", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			if !ok {
-				http.Error(w, "authentik auth is not configured yet — set url/client id/client secret before switching to it", http.StatusBadRequest)
+				http.Error(w, "oidc auth is not configured yet — set issuer/client id/client secret/redirect URL before switching to it", http.StatusBadRequest)
 				return
 			}
 		case auth.ModeNone:

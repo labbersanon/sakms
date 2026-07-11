@@ -152,31 +152,24 @@ slice. Spec at `.omc/autopilot/spec-player-rescan-trigger.md`.
 ## Recently shipped (outside this backlog)
 
 ### First-run break-glass recovery — shipped 2026-07-11
-Forward-mode first-run now mints a one-time recovery API key (see
-CHANGELOG). Possible future hardening (not committed): a post-setup "verify
-your proxy actually sends the secret header" round-trip check before the
-one-time reveal scrolls away, which would let detection reduce lockout risk
-rather than only smoothing selection. Deferred until proven needed.
+OIDC-mode first-run mints a one-time recovery API key (see CHANGELOG) —
+there's no interactive-login fallback at setup time (the browser hasn't
+completed the IdP redirect dance yet), so the key is the operator's way back
+in if SSO login is ever unavailable.
 
-### Four-mode auth strategy switch — shipped 2026-07-11
-A human-directed addition, not a pre-existing item anywhere in this
-backlog. Auth is now chosen at first-run and switchable later from
-Settings, across four strategies: `password` (today's session-cookie
-login, unchanged), `forward` (trust a reverse-proxy identity header,
-gated by a constant-time-compared shared secret header), `authentik`
-(RFC 7662 bearer-token introspection against an Authentik OAuth2
-provider — API/script-client use, not a browser OIDC flow), and `none`
-(no auth, gated by a mandatory acknowledgment both at setup and at any
-later switch, plus a persistent UI warning banner). All four share one
-mode-aware `Middleware` that fails closed on any mode-read error. The
-existing `X-Api-Key` header (see the entry below) now works in all four
-modes by deliberate operator choice, not just `password` — a real,
-accepted narrowing of `forward`/`authentik` mode's trust boundary. JWKS-
-based local token validation for `authentik` mode was considered and
-explicitly deferred, not built. See `CHANGELOG.md`'s entry of the same
-date for the full design/decision/honesty-framing detail, and
-`.omc/plans/autopilot-impl-auth-mode-switch.md` for the implementation
-plan.
+### Auth strategy switch — shipped 2026-07-11 (superseded same day)
+A human-directed addition, not a pre-existing backlog item. Auth is chosen at
+first-run and switchable later from Settings. Originally shipped with four
+strategies (`password`, `forward`, `authentik`, `none`); later the same day,
+`forward` (reverse-proxy shared-secret) and `authentik` (RFC 7662 bearer-token
+introspection) were **both deleted and replaced by a single `oidc` mode** — a
+real, provider-agnostic OpenID Connect Authorization Code flow with PKCE where
+SAK is the Relying Party (JWKS-verified ID token, no proxy-held secret). The
+supported set is now exactly `password`, `oidc`, `none`. All three share one
+mode-aware `Middleware` that fails closed on any mode-read error, and the
+`X-Api-Key` header works in all three modes. See `CHANGELOG.md`'s two
+2026-07-11 entries (the original switch, then the OIDC replacement) for the
+full design/decision detail.
 
 ### API-key auth (X-Api-Key) — shipped 2026-07-10
 A human-directed addition, not a pre-existing item anywhere in this
@@ -294,11 +287,13 @@ lowest priority.
   nothing for it to accelerate. (GPU accel is back in scope, but narrowly,
   for phash frame-decoding — see the "phash-based Dedup" in-progress entry
   above, a different and more concrete driver.)
-- **Full OIDC/SAML client** — dropped in favor of forward-auth header
-  support (shipped 2026-07-11, see "Recently shipped" above, as part of
-  the four-mode auth strategy switch) — a proxy in front of SAK already
-  solves this for most people in this situation, and a full client is a
-  bigger lift in tension with SAK's single-operator design.
+- **Full OIDC client** — **built after all (2026-07-11)**, reversing the
+  earlier "dropped in favor of forward-auth" decision: `oidc` mode is now a
+  real OpenID Connect Relying Party (Authorization Code flow with PKCE,
+  JWKS-verified ID token), replacing both the forward-auth and Authentik-
+  introspection modes. See "Recently shipped" above and the CHANGELOG. A full
+  **SAML** client remains out of scope — OIDC covers the same need for this
+  single-operator tool with far less surface.
 - **GraphQL API** — dropped; the existing REST surface has no problem a
   GraphQL rewrite would actually solve.
 

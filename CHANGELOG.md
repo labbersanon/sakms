@@ -1509,3 +1509,112 @@ so they were never affected and needed no change.
 
 Verified via `go build/vet/test -race` (all green) and the live CDP
 reproduce-then-fix cycle above, not just a syntax check.
+
+---
+
+## 2026-07-11 — Auth: replace `forward` + `authentik` modes with a real OIDC flow
+
+Collapsed the four auth strategies down to three — **`password`, `oidc`,
+`none`** — deleting both `forward` (reverse-proxy shared-secret) and
+`authentik` (RFC 7662 bearer-token introspection) modes outright, not
+deprecating them in place.
+
+**Why both modes were wrong for this use case.** `forward` mode trusted
+reverse-proxy-injected headers (`Remote-User` + a shared `X-Proxy-Secret`),
+which forced a live secret to be smuggled into the reverse proxy's config —
+in direct conflict with the deployment's "no plaintext secret in any proxy
+config file" policy — and, worse, the proxy-secret model isn't even what
+Authentik/Authelia themselves recommend: their real forward-auth model is
+header-stripping plus network isolation, with no shared secret at all.
+`authentik` mode was RFC 7662 introspection only: built for API/machine
+clients that already hold a token, it was never a real browser login (its own
+package doc said "SAK never becomes an OIDC client of Authentik — no
+redirect/callback flow, no JWKS"). Neither was a genuine, provider-agnostic,
+cryptographically-verified browser login.
+
+**What replaced them.** A single real **OpenID Connect Authorization Code flow
+with PKCE**, where SAK is the Relying Party (new `internal/oidcauth`, built on
+`github.com/coreos/go-oidc/v3` for discovery + JWKS-backed ID-token
+verification and `golang.org/x/oauth2` for the code exchange — no hand-rolled
+JWT/JWKS validation). This is provider-agnostic (any OIDC IdP, not just
+Authentik), and the ID token is verified by signature against the IdP's
+published JWKS, with issuer/audience/expiry/nonce all checked — a real
+cryptographic gate, not a trusted header. It needs **no** proxy-held secret.
+
+**Single-operator model unchanged.** Successfully completing the IdP login
+(valid ID token) IS the one operator authenticating — there is no
+subject-allowlist step, exactly as `forward`/`authentik` never checked
+identity either (a forward identity header and an Authentik `sub` were always
+cosmetic, never the authorization gate). Restricting *who* may complete the
+IdP's login screen is the IdP's own Application/Provider policy job, not SAK's.
+After a successful callback, SAK issues the SAME signed session cookie password
+mode uses, so every ongoing per-request check is identical to password mode's —
+no new middleware path.
+
+**Shape.** New public redirect legs `GET /api/auth/oidc/login` (mints
+state + nonce + PKCE verifier into a short-lived, HttpOnly, Secure,
+SameSite=Lax flow cookie scoped to `/api/auth/oidc`, then redirects to the
+IdP) and `GET /api/auth/oidc/callback` (verifies state, exchanges the code with
+the PKCE verifier, verifies the ID token + nonce, issues the session cookie,
+redirects to `/`) — both public by necessity, since the whole point is to
+establish a session where none exists. The redirect URL is an explicit,
+operator-supplied setting (never derived from the spoofable request Host).
+Post-setup config moves to a session-protected `GET/PUT /api/auth/oidc`
+(replacing the deleted `/api/auth/forward*` and `/api/auth/authentik` routes).
+The one-time break-glass API-key mechanism carries over unchanged (oidc
+first-run has no interactive-login fallback at setup time either).
+
+**Deleted, not kept as dead code:** `internal/authentik/` (the introspection
+client), `internal/auth/forward.go` (forward-secret storage/verify),
+`internal/auth/proxydetect.go` (its only consumer was the wizard's
+now-gone forward pre-select), `internal/api/forward.go`,
+`internal/api/authentik.go`, and the `proxyHeadersDetected` status field.
+`internal/auth/session.go`'s `ForwardAuth`/`AuthentikAuth`/`BearerToken` are
+gone; the mode switch now routes `oidc` through the same cookie check as
+`password`. Frontend: the wizard's forward reveal-once panel and the
+Settings-panel forward/authentik config groups are replaced with OIDC
+issuer/client-id/client-secret/redirect-URL forms, and the old dead-end
+"not authenticated" proxy notice becomes an actionable **"Log in with SSO"**
+button.
+
+Verified via `go build ./... && go vet ./... && go test ./...` — all green
+except a pre-existing, unrelated `internal/grabs` ordering test
+(`TestList_ScopedByModeAndOrderedNewestFirst`) that ties on sub-millisecond
+`created_at` values and is untouched by this change. New OIDC tests stand up a
+minimal in-process IdP (discovery + JWKS + token endpoint, RS256 ID tokens
+signed by hand) and cover the full happy path plus state-mismatch,
+nonce-mismatch, expired-token, bad-signature, wrong-audience, and
+missing-flow-cookie rejections, and the mode-switch preconditions.
+
+**Same-day follow-up: independent security review + 4 hardening fixes.**
+A `security-reviewer` pass (separate from the implementing agent, per house
+policy — auth code doesn't get self-approved) traced all 10 adversarial
+checks (CSRF/state, PKCE, nonce, flow-cookie handling, ID-token verification,
+session issuance, routing precedence, secret handling, open-redirect,
+fail-closed) against the actual code, not the implementer's comments.
+Verdict: 0 critical/high findings — the cryptographic and authorization core
+was correct as shipped. Four lower-severity findings were fixed the same day:
+1. **(Medium) Unauthenticated discovery-fetch DoS** — `OIDCClient` performed
+   a live OIDC discovery (well-known + JWKS) fetch on every call, reachable
+   from the public, unauthenticated `/api/auth/oidc/login` route — looping
+   that endpoint could flood the configured IdP. Fixed by memoizing the
+   discovered `*oidcauth.Client` on `auth.Store`, keyed by a fingerprint of
+   the four config fields (`internal/auth/oidc.go`'s `oidcFingerprint`); a
+   config change naturally invalidates the cache via a fingerprint mismatch,
+   no separate invalidation call needed.
+2. **(Low) Session cookie missing `Secure`** — `SetSessionCookie` gained a
+   `secure bool` parameter. Password mode still passes `false` (preserves
+   the documented plain-HTTP LAN use case); the OIDC callback passes `true`
+   unconditionally, since a redirect URL an external IdP can reach is, in
+   every real deployment, already HTTPS.
+3. **(Low) Flow-cookie TTL was browser-enforced only** — `oidcFlowState`
+   gained an `IssuedAt` field; the callback now rejects a flow older than
+   `oidcFlowTTL` server-side, not just via the cookie's own `Expires`/`MaxAge`.
+4. **(Low) Empty state/nonce/verifier not explicitly rejected** — the
+   callback now rejects a degenerate (any-field-empty) flow cookie outright
+   instead of relying on the state-compare or the IdP exchange to catch it
+   incidentally.
+
+Re-verified after the fixes: `gofmt -l` clean, `go build ./...` /
+`go vet ./...` clean, full `go test ./...` green (including the previously-tied
+`internal/grabs` test, which passed cleanly on this run).

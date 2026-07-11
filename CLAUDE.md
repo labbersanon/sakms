@@ -82,16 +82,31 @@ above, so don't drop them for convenience:
   key file, not an OS keychain — the primary deployment target is a
   headless container with no keychain to use).
 - **Single-operator auth**, not multi-tenant. No permissions system, no
-  per-user roles — one login gates the whole app, across all four
-  supported auth strategies (`password`, `forward`, `authentik`, `none`).
-  A forward-auth request's identity header value (e.g. `Remote-User`) and
-  an Authentik bearer token's `sub` claim are never treated as a second
-  identity to authorize against — they still map to the SAME one
-  operator; no user table, no roles, no permissions surface is
-  introduced by any of the four modes. The `X-Api-Key` header (additive
-  to whichever mode is active, for out-of-process clients) doesn't change
-  this either: a key inherits the one operator's full access in every
-  mode, it is not a second user or a permissions surface.
+  per-user roles — one login gates the whole app, across all three
+  supported auth strategies (`password`, `oidc`, `none`). In `oidc` mode
+  SAK is a real OpenID Connect Relying Party (Authorization Code flow with
+  PKCE, `internal/oidcauth`): successfully completing the IdP login — a
+  valid ID token, signature-verified against the IdP's JWKS, with
+  issuer/audience/nonce/expiry all checked — IS the one operator
+  authenticating. There is no subject-claim allowlist step; restricting
+  *who* may complete the IdP's login screen is the IdP's own
+  Application/Provider policy job, not SAK's. No user table, no roles, no
+  permissions surface is introduced by any mode. The `X-Api-Key` header
+  (additive to whichever mode is active, for out-of-process clients)
+  doesn't change this either: a key inherits the one operator's full access
+  in every mode, it is not a second user or a permissions surface.
+  - **Why `oidc` replaced the earlier `forward` + `authentik` modes**
+    (2026-07-11): `forward` mode trusted reverse-proxy-injected headers
+    (`Remote-User` + a shared `X-Proxy-Secret`), which forced a live secret
+    into the proxy's config — against this deployment's secrets policy — and
+    isn't even Authentik/Authelia's own model (they use header-stripping +
+    network isolation, no shared secret). `authentik` mode was RFC 7662
+    bearer-token introspection only: built for API/machine clients that
+    already hold a token, never a real browser redirect/callback login. The
+    single OIDC flow is provider-agnostic and cryptographically verified
+    (JWKS signature check, not a trusted header) and needs no proxy-held
+    secret. Both old modes were deleted outright, not deprecated in place —
+    see the CHANGELOG entry for full detail.
 - **Honesty about unverified assumptions.** When a client's response shape
   is modeled from documentation but not confirmed against a live instance,
   say so explicitly in the package doc — don't present a guess as fact.

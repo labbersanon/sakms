@@ -1,14 +1,10 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/curtiswtaylorjr/sakms/internal/authentik"
 )
 
 // CookieName is the session cookie the browser carries on every request
@@ -65,16 +61,21 @@ func ValidateToken(enc TokenEncryptor, token string) bool {
 
 // SetSessionCookie writes a fresh session cookie to w.
 //
-// Secure isn't set: SAK's primary deployment is a self-hosted instance
-// on a trusted LAN, often reached over plain HTTP the same way Radarr/
-// Sonarr/Whisparr themselves are — forcing Secure would silently break the
-// cookie (and therefore all login) for that entirely normal setup. Anyone
-// exposing SAK beyond a trusted network should put a TLS-terminating
-// reverse proxy in front of it, same guidance as those apps.
-func SetSessionCookie(w http.ResponseWriter, token string) {
+// secure controls the cookie's Secure attribute. Password mode passes
+// false: SAK's primary deployment is a self-hosted instance on a trusted
+// LAN, often reached over plain HTTP the same way Radarr/Sonarr/Whisparr
+// themselves are — forcing Secure would silently break the cookie (and
+// therefore all login) for that entirely normal setup. Anyone exposing SAK
+// beyond a trusted network should put a TLS-terminating reverse proxy in
+// front of it, same guidance as those apps. OIDC mode passes true
+// unconditionally instead: a redirect URL an external IdP can reach is, in
+// every real deployment, already HTTPS, so there's no equivalent
+// plain-HTTP case to preserve for it (Finding 2, 2026-07-11 OIDC security
+// review).
+func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name: CookieName, Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure,
 		Expires: time.Now().Add(sessionTTL),
 	})
 }
@@ -100,11 +101,12 @@ func Authenticated(enc TokenEncryptor, r *http.Request) bool {
 }
 
 // Middleware gates every request to next according to the instance's
-// active auth mode (password/forward/authentik/none) — meant to wrap the
-// business-logic API mux only; the auth endpoints themselves (setup/login/
-// logout/status) live on a separate, always-public mux that never passes
-// through this (see internal/api.NewAuthMux), so there's no exemption list
-// to keep in sync here.
+// active auth mode (password/oidc/none) — meant to wrap the business-logic
+// API mux only; the auth endpoints themselves (setup/login/logout/status,
+// plus the public OIDC login/callback redirects) live on a separate,
+// always-public mux that never passes through this (see
+// internal/api.NewAuthMux), so there's no exemption list to keep in sync
+// here.
 //
 // Dispatch order (deliberate, do not reorder):
 //  1. Read the effective mode via store.AuthMode. Any error (not the
@@ -120,12 +122,13 @@ func Authenticated(enc TokenEncryptor, r *http.Request) bool {
 //     per-mode helper, so no future mode addition can accidentally scope it
 //     to one mode.
 //  4. Only if the key didn't pass does a mode-specific credential get
-//     checked (cookie for password, etc). The password branch is
-//     cookie-ONLY (passwordAuth) — the key is no longer localized to this
-//     branch, it already had its shot in step 3 — and a session cookie is
-//     honored ONLY in the password branch (Edge Case #3: a stale cookie
-//     must never authenticate a request once the active mode is
-//     forward/authentik/none).
+//     checked. Both "password" and "oidc" are cookie-ONLY (passwordAuth):
+//     oidc mode, after the operator completes the IdP redirect dance, issues
+//     the exact same signed session cookie password mode does (see
+//     internal/api's oidcCallbackHandler), so the ongoing per-request check
+//     is identical — a valid session cookie. A session cookie is honored
+//     ONLY in these two branches, never in "none" (which short-circuited
+//     above) or an unknown/corrupt mode (which fails closed).
 //
 // A mode-read or credential-check store error fails CLOSED (500), never
 // falls through to allow.
@@ -162,18 +165,13 @@ func Middleware(enc TokenEncryptor, store *Store, next http.Handler) http.Handle
 		// Mode-specific credential.
 		var allowed bool
 		switch mode {
-		case ModePassword:
+		case ModePassword, ModeOIDC:
+			// Both are cookie-only: oidc's callback issues the same session
+			// cookie password mode does, so there is no separate per-request
+			// check to add here.
 			allowed = passwordAuth(enc, r)
-		case ModeForward:
-			allowed, err = ForwardAuth(store, r)
-		case ModeAuthentik:
-			allowed, err = AuthentikAuth(r.Context(), store, r)
 		default: // unknown/corrupt mode → fail closed
 			allowed = false
-		}
-		if err != nil {
-			http.Error(w, "authentication error", http.StatusInternalServerError)
-			return
 		}
 		if allowed {
 			next.ServeHTTP(w, r)
@@ -183,128 +181,11 @@ func Middleware(enc TokenEncryptor, store *Store, next http.Handler) http.Handle
 	})
 }
 
-// passwordAuth is the cookie-only check for password mode (Edge Case #3: a
-// session cookie is honored ONLY in this branch, never in forward/
-// authentik/none). The X-Api-Key path is deliberately NOT here — it is
+// passwordAuth is the cookie-only check shared by "password" and "oidc" modes
+// (a session cookie is honored ONLY in those two branches, never in "none" or
+// an unknown mode). The X-Api-Key path is deliberately NOT here — it is
 // universal and lives in Middleware's own body above, checked before this
 // helper ever runs.
 func passwordAuth(enc TokenEncryptor, r *http.Request) bool {
 	return Authenticated(enc, r)
-}
-
-// ForwardAuth is the forward-mode check: a constant-time compare of the
-// configured secret header's value against the stored forward-secret hash.
-// Exported (unlike passwordAuth) because internal/api's status handler also
-// calls it directly for a REAL per-request check — per the plan's §3.3
-// critic-fix, this is safe to do from the public status endpoint because
-// the check is purely local (a settings read + subtle.ConstantTimeCompare,
-// no outbound network call), unlike authentik mode's RFC 7662 introspection
-// (slice 3), which carries an amplification concern the status endpoint
-// must avoid by using a presence-only heuristic instead. Calling the exact
-// same function from both Middleware and the status handler guarantees the
-// status result reflects the real gate, not a parallel reimplementation
-// that could drift into a heuristic.
-func ForwardAuth(store *Store, r *http.Request) (bool, error) {
-	_, secretHeader, err := store.ForwardHeaders(r.Context())
-	if err != nil {
-		return false, err
-	}
-	presented := strings.TrimSpace(r.Header.Get(secretHeader))
-	ok, err := store.VerifyForwardSecret(r.Context(), presented)
-	if err != nil {
-		return false, err // fail closed (G1/G5)
-	}
-	// The identity header is intentionally never read here: its value is
-	// cosmetic in single-operator SAK (Scope Risk #2) — presence/logging
-	// only, never the authorization gate. Authorization is entirely
-	// determined by the secret-header compare above.
-	return ok, nil
-}
-
-// authentikClient builds an internal/authentik.Client from the stored,
-// decrypted Authentik config — the one place the client secret's ciphertext
-// (auth_authentik_client_secret_enc) is ever decrypted, using this Store's
-// own enc field (see auth.go's New).
-//
-// Return shape distinguishes two different failure classes, matching the
-// rest of this file's convention (see ForwardAuth/VerifyForwardSecret): a
-// nil client with a nil error means "authentik mode is active but has no
-// config yet" — a legitimate not-configured state (mirrors
-// VerifyForwardSecret's "not configured" → false, no error), which
-// AuthentikAuth turns into a plain 401, not a 500. A non-nil error means a
-// genuine internal fault (the settings store itself is broken, or the
-// stored ciphertext no longer decrypts under the current secret key) — that
-// fails closed via Middleware's existing G1 500 path, the same way a broken
-// settings store already does for every other mode.
-func (s *Store) authentikClient(ctx context.Context) (*authentik.Client, error) {
-	url, clientID, cipher, err := s.AuthentikConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if url == "" || clientID == "" || cipher == "" {
-		return nil, nil // not configured — not a store fault
-	}
-	if s.enc == nil {
-		return nil, errors.New("auth: no secret decryptor configured for authentik mode")
-	}
-	secret, err := s.enc.Decrypt(cipher)
-	if err != nil {
-		return nil, err
-	}
-	return authentik.New(authentik.Config{URL: url, ClientID: clientID, ClientSecret: secret}, s.httpClient), nil
-}
-
-// AuthentikAuth is the authentik-mode check: RFC 7662 token introspection
-// against a presented `Authorization: Bearer <token>` header. Exported
-// (mirroring ForwardAuth's naming convention), but — UNLIKE ForwardAuth —
-// must NEVER be called from the public status endpoint's per-request check.
-// ForwardAuth's check is a purely local, cheap subtle.ConstantTimeCompare
-// against a stored hash; this one makes a real outbound HTTP call to
-// Authentik, so calling it from an unauthenticated, attacker-rate-controlled
-// endpoint (the public /api/auth/status) would be a real amplification
-// vector against Authentik itself (plan §3.3's critic-driven fix) — the
-// status endpoint uses a cheaper presence-only heuristic instead (see
-// internal/api's authStatusHandler). This function remains the one true,
-// fully-enforced gate for every actual protected API request via Middleware.
-//
-// AC4/G5: an active token passes; an inactive token, a failed/timed-out
-// introspection call, or an unconfigured instance all deny with a plain
-// 401 (returned error is nil) — Authentik being unreachable is a fact about
-// an EXTERNAL service, not "our own store couldn't tell us" (that
-// distinction is what reserves Middleware's 500 path for a genuine local
-// store/decrypt fault, via the non-nil error returned by store.authentikClient
-// above).
-func AuthentikAuth(ctx context.Context, store *Store, r *http.Request) (bool, error) {
-	token := BearerToken(r) // case-insensitive "Bearer" scheme match, per RFC 7235 §2.1 (Phase 4 fix-up)
-	if token == "" {
-		return false, nil // empty/whitespace bearer treated as absent — never introspected (EC7)
-	}
-	client, err := store.authentikClient(ctx)
-	if err != nil {
-		return false, err // genuine store/decrypt fault — fail closed via 500 (G1)
-	}
-	if client == nil {
-		return false, nil // authentik mode active but not configured — fail closed via 401
-	}
-	active, err := client.Introspect(ctx, token)
-	if err != nil {
-		return false, nil // transport/timeout/non-2xx — fail closed via 401 (G5), not 500: Authentik being unreachable isn't a local store fault
-	}
-	return active, nil // active==false → (false, nil), same effect: 401
-}
-
-// BearerToken extracts the token from an "Authorization: Bearer <token>"
-// header, matching the "Bearer" scheme case-insensitively per RFC 7235 §2.1
-// (auth-scheme names are case-insensitive) — plain strings.TrimPrefix only
-// matched an exact-case "Bearer " and would fail closed (deny, not a
-// security bug) on a lowercase "bearer" scheme some clients send. Returns
-// "" (never introspected) if the header is absent or doesn't use the
-// Bearer scheme.
-func BearerToken(r *http.Request) string {
-	const scheme = "Bearer "
-	h := r.Header.Get("Authorization")
-	if len(h) < len(scheme) || !strings.EqualFold(h[:len(scheme)], scheme) {
-		return ""
-	}
-	return strings.TrimSpace(h[len(scheme):])
 }

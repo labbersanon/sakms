@@ -15,9 +15,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/curtiswtaylorjr/sakms/internal/oidcauth"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
 )
 
@@ -27,13 +29,16 @@ const (
 	authModeKey     = "auth_mode"
 )
 
-// The four auth strategies a first-run install can pick from and switch
-// between later (see GET/PUT /api/auth/mode).
+// The three auth strategies a first-run install can pick from and switch
+// between later (see GET/PUT /api/auth/mode). The earlier "forward"
+// (reverse-proxy shared secret) and "authentik" (RFC 7662 bearer
+// introspection) modes were removed in favor of "oidc" — a real
+// provider-agnostic OpenID Connect Authorization Code flow with PKCE where
+// SAK is the Relying Party (see internal/oidcauth).
 const (
-	ModePassword  = "password"
-	ModeForward   = "forward"
-	ModeAuthentik = "authentik"
-	ModeNone      = "none"
+	ModePassword = "password"
+	ModeOIDC     = "oidc"
+	ModeNone     = "none"
 )
 
 // ErrNotConfigured is returned by Verify when no login has been set up yet.
@@ -46,20 +51,19 @@ var ErrNotConfigured = errors.New("auth: no login configured yet")
 type Store struct {
 	settings *settings.Store
 
-	// enc decrypts the Authentik client secret (auth_authentik_client_secret_enc,
-	// slice 3) — the secret is encrypted at the API handler layer (which
-	// already holds the same secretStore instance, see internal/api's
-	// authSetupHandler/authentikPutHandler) and stored as ciphertext through
-	// settings.Set; this Store only needs to decrypt it, at the point
-	// AuthentikAuth builds an internal/authentik.Client. It is the same
-	// TokenEncryptor shape session tokens already use (see session.go), not
-	// a second crypto primitive.
+	// enc decrypts the OIDC client secret (auth_oidc_client_secret_enc) — the
+	// secret is encrypted at the API handler layer (which already holds the
+	// same secretStore instance, see internal/api's authSetupHandler/
+	// oidcPutHandler) and stored as ciphertext through settings.Set; this
+	// Store only needs to decrypt it, at the point OIDCClient builds an
+	// internal/oidcauth.Client. It is the same TokenEncryptor shape session
+	// tokens already use (see session.go), not a second crypto primitive.
 	enc TokenEncryptor
 
-	// httpClient bounds every outbound call this Store makes (Authentik
-	// token introspection, slice 3) — the caller (cmd/sakms) supplies one
-	// wrapping the program's shared outboundTimeout, same convention as
-	// every other external client in this program.
+	// httpClient bounds every outbound call this Store makes (OIDC discovery,
+	// token exchange, and JWKS fetch, via OIDCClient) — the caller (cmd/sakms)
+	// supplies one wrapping the program's shared outboundTimeout, same
+	// convention as every other external client in this program.
 	httpClient *http.Client
 
 	// envKeyHash/envKeySuffix hold an externally-supplied API key
@@ -68,15 +72,34 @@ type Store struct {
 	// envKeyHash is nil unless UseEnvAPIKey has been called.
 	envKeyHash   []byte
 	envKeySuffix string
+
+	// oidcCacheMu/oidcCache memoize the discovered *oidcauth.Client so the
+	// public, unauthenticated /api/auth/oidc/{login,callback} routes don't
+	// perform a live OIDC discovery (well-known + JWKS) fetch against the
+	// IdP on every single hit — an attacker looping the public login
+	// endpoint would otherwise be able to flood the configured IdP and
+	// exhaust SAK's own outbound connections (Finding 1, 2026-07-11 OIDC
+	// security review). Keyed by a fingerprint of the four config fields;
+	// OIDCClient rebuilds automatically whenever they change (no separate
+	// invalidation call needed from SetOIDCConfig — a changed fingerprint
+	// is a cache miss on its own).
+	oidcCacheMu sync.Mutex
+	oidcCache   *oidcClientCache
 }
 
-// New builds a Store. enc decrypts the Authentik client secret (slice 3;
-// pass the same secretStore already used elsewhere for at-rest encryption)
-// and httpClient bounds outbound introspection calls — both additive to
-// slice 1/2's original single-argument constructor, wired once in
-// cmd/sakms/main.go (plan §3.3's sanctioned wiring change). Middleware's own
-// signature is unaffected by this — it still takes its own TokenEncryptor
-// argument for session-cookie validation, orthogonal to this Store-level one.
+// oidcClientCache pairs a discovered *oidcauth.Client with the exact config
+// fingerprint it was built from (see OIDCClient).
+type oidcClientCache struct {
+	fingerprint string
+	client      *oidcauth.Client
+}
+
+// New builds a Store. enc decrypts the OIDC client secret (pass the same
+// secretStore already used elsewhere for at-rest encryption) and httpClient
+// bounds the outbound OIDC calls (discovery, token exchange, JWKS) — both
+// wired once in cmd/sakms/main.go. Middleware's own signature is unaffected
+// by this — it still takes its own TokenEncryptor argument for session-cookie
+// validation, orthogonal to this Store-level one.
 func New(settingsStore *settings.Store, enc TokenEncryptor, httpClient *http.Client) *Store {
 	return &Store{settings: settingsStore, enc: enc, httpClient: httpClient}
 }
@@ -96,9 +119,8 @@ func New(settingsStore *settings.Store, enc TokenEncryptor, httpClient *http.Cli
 // unauthenticated visitor re-POST /api/auth/setup and overwrite the owner's
 // credentials. The OR keeps existing password installs correctly
 // "configured" (effective mode defaults to "password", see AuthMode) while
-// still marking a fresh none/forward/authentik first-run choice as
-// configured too, since those write auth_mode without ever writing
-// auth_username.
+// still marking a fresh none/oidc first-run choice as configured too, since
+// those write auth_mode without ever writing auth_username.
 func (s *Store) Configured(ctx context.Context) (bool, error) {
 	if _, err := s.settings.Get(ctx, authModeKey); err == nil {
 		return true, nil
@@ -135,8 +157,8 @@ func (s *Store) AuthMode(ctx context.Context) (string, error) {
 
 // SetAuthMode persists the active auth mode. This is a raw write — the
 // switch-into preconditions (a password hash must exist before switching to
-// "password", forward/authentik must have their config, "none" needs an
-// explicit acknowledgement) live in the API handler layer
+// "password", oidc must have its config, "none" needs an explicit
+// acknowledgement) live in the API handler layer
 // (internal/api/authmode.go), not here, mirroring SetCredentials/Verify's
 // existing split between storage and validation.
 func (s *Store) SetAuthMode(ctx context.Context, mode string) error {

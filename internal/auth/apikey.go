@@ -110,18 +110,22 @@ func (s *Store) EnsureAPIKey(ctx context.Context) (rawIfGenerated string, err er
 
 // Regenerate mints and persists a new key, returning it once. Refused with
 // ErrEnvManaged while an env key is active (see ErrEnvManaged's doc).
-func (s *Store) Regenerate(ctx context.Context) (raw string, err error) {
+func (s *Store) Regenerate(ctx context.Context) (raw, keySuffix string, err error) {
 	if s.envKeyHash != nil {
-		return "", ErrEnvManaged
+		return "", "", ErrEnvManaged
 	}
 	raw, err = newRandomKey()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := s.persistKey(ctx, raw); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return raw, nil
+	// keySuffix is derived from raw directly, not re-read from settings — a
+	// successful rotation (persistKey already committed) must never be lost
+	// to an unrelated, later read failure. See the Phase 4 review that
+	// caught the prior re-read design's key-loss window.
+	return raw, suffix(raw), nil
 }
 
 // persistKey writes raw's hash + suffix to settings, replacing whatever was

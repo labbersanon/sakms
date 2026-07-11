@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/curtiswtaylorjr/sakms/internal/auth"
@@ -27,7 +28,8 @@ func apikeyStatusHandler(authStore *auth.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status, err := authStore.APIKeyStatus(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("apikey status: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -44,28 +46,18 @@ type apikeyRegenerateResponse struct {
 
 func apikeyRegenerateHandler(authStore *auth.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		raw, err := authStore.Regenerate(ctx)
+		raw, keySuffix, err := authStore.Regenerate(r.Context())
 		if errors.Is(err, auth.ErrEnvManaged) {
 			http.Error(w, "API key is managed by the SAKMS_API_KEY environment variable; unset it to manage the key here", http.StatusConflict)
 			return
 		}
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Re-read status rather than deriving the suffix locally, so the
-		// suffix returned here is guaranteed to match exactly what's now
-		// persisted (single source of truth, no second suffix()-shaped
-		// implementation to keep in sync).
-		status, err := authStore.APIKeyStatus(ctx)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("apikey regenerate: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(apikeyRegenerateResponse{APIKey: raw, KeySuffix: status.KeySuffix})
+		json.NewEncoder(w).Encode(apikeyRegenerateResponse{APIKey: raw, KeySuffix: keySuffix})
 	}
 }

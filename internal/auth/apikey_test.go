@@ -207,12 +207,15 @@ func TestRegenerate_InvalidatesPreviousKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	newRaw, err := s.Regenerate(ctx)
+	newRaw, newSuffix, err := s.Regenerate(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if newRaw == "" || newRaw == oldRaw {
 		t.Fatalf("expected a fresh, different raw key, got %q (old was %q)", newRaw, oldRaw)
+	}
+	if newSuffix != suffix(newRaw) {
+		t.Errorf("expected Regenerate's returned suffix to match the new raw key's own suffix, got %q for raw %q", newSuffix, newRaw)
 	}
 
 	ok, err := s.VerifyAPIKey(ctx, oldRaw)
@@ -237,7 +240,7 @@ func TestRegenerate_EnvManaged_Refused(t *testing.T) {
 	ctx := context.Background()
 	s.UseEnvAPIKey("env-key-value")
 
-	_, err := s.Regenerate(ctx)
+	_, _, err := s.Regenerate(ctx)
 	if !errors.Is(err, ErrEnvManaged) {
 		t.Fatalf("expected ErrEnvManaged, got %v", err)
 	}

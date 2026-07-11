@@ -1180,3 +1180,34 @@ new "API Access" fieldset in Settings (`internal/web/static/index.html`).
 Full `go build/vet/test -race` green throughout, plus live end-to-end
 verification against the real binary for all three boot paths (fresh
 auto-generate, reuse-on-restart, `SAKMS_API_KEY` precedence).
+
+## 2026-07-10 — API-key auth: Phase 4 fix-up
+
+Independent Phase 4 review (architect/security/code-reviewer, all three
+APPROVE, zero blocking findings) surfaced two real-but-minor issues in
+`POST /api/apikey/regenerate`, applied before push:
+
+1. `Regenerate` re-read `APIKeyStatus` after persisting the new key, purely
+   to obtain its suffix for the response. If that unrelated second read
+   failed, the handler returned 500 and discarded the raw key — which is
+   shown exactly once and unrecoverable — even though rotation had already
+   succeeded and the old key was already dead. `Regenerate` now derives and
+   returns the suffix directly from the raw key it just generated (it
+   already computes the same value internally via `persistKey`), so a
+   successful rotation can never be lost to a later, unrelated read error.
+2. The status and regenerate handlers echoed raw internal error strings
+   (e.g. settings-store failure detail) back to the client instead of a
+   generic message — inconsistent with `Middleware`'s own
+   `"authentication error"` posture for the same class of failure. Both
+   now log the detail server-side and return a generic `"internal error"`.
+
+Also noted, not code-changed (an operational/deployment observation, not a
+bug in this app): on any host that ships container stdout to a central log
+store, the auto-generated boot key (logged in plaintext exactly once, by
+design) becomes a retained, searchable credential there rather than an
+ephemeral console line — already covered by the "shown once" tradeoff
+disclosed in the entry above, but worth restating plainly: prefer setting
+`SAKMS_API_KEY` explicitly on any log-shipping deployment rather than
+relying on the auto-generate-then-rotate path.
+
+Verified via `go build/vet/test -race` across the whole module (all green).

@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/curtiswtaylorjr/sakms/internal/config"
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
@@ -335,9 +336,27 @@ func ScanRootFolder(rootPath string, known map[string]bool) ([]UnmappedEntry, er
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", rootPath, err)
+		return nil, classifyScanErr(rootPath, err)
 	}
 	return out, nil
+}
+
+// classifyScanErr wraps a WalkDir failure with an operator-actionable
+// message when it looks like a mount disconnecting mid-scan (a dropped
+// CIFS/NFS mount, an unplugged drive) — the overwhelmingly common real
+// cause of a scan aborting outright, and one an operator can actually act
+// on, unlike a bare "no such file or directory". The original error is
+// still wrapped via %w either way, so logs/debugging keep the raw OS error
+// underneath regardless of which message is shown.
+func classifyScanErr(rootPath string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) ||
+		errors.Is(err, syscall.ENOTCONN) ||
+		errors.Is(err, syscall.ESTALE) ||
+		errors.Is(err, syscall.EIO) ||
+		errors.Is(err, syscall.EHOSTUNREACH) {
+		return fmt.Errorf("root folder unreadable — check that %s is still mounted and reachable: %w", rootPath, err)
+	}
+	return fmt.Errorf("reading %s: %w", rootPath, err)
 }
 
 // dirIsLeafEntry reports whether path should be reported as one atomic

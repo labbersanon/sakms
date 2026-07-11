@@ -1618,3 +1618,45 @@ was correct as shipped. Four lower-severity findings were fixed the same day:
 Re-verified after the fixes: `gofmt -l` clean, `go build ./...` /
 `go vet ./...` clean, full `go test ./...` green (including the previously-tied
 `internal/grabs` test, which passed cleanly on this run).
+
+## 2026-07-11 — Clearer mount-disconnect error messaging
+
+Closed the "Cheap, independent wins" ROADMAP item confirmed safe on
+2026-07-10 (no workflow deletes anything on a missing file — this was
+purely an error-message clarity gap, not a safety one).
+
+Previously, a network mount dropping mid-scan (a CIFS/NFS disconnect, an
+unmounted drive) surfaced as a raw, unhelpful `WalkDir`/`os.Stat` error —
+e.g. `scanning /mnt/Media-NAS/Movies: reading /mnt/Media-NAS/Movies: lstat
+/mnt/Media-NAS/Movies: no such file or directory` — straight through to the
+operator via the Scan API's `502` error body, with no indication of what
+actually went wrong or what to do about it.
+
+`library.ScanRootFolder` gained a single classification point
+(`classifyScanErr`) at its one error-return site: when the underlying error
+looks like the root itself became unreachable
+(`fs.ErrNotExist`/`syscall.ENOTCONN`/`ESTALE`/`EIO`/`EHOSTUNREACH` — the
+overwhelmingly common real causes of a scan aborting outright), the
+returned error becomes `root folder unreadable — check that <path> is
+still mounted and reachable`, still wrapping the original OS error via `%w`
+so `errors.Is` and logs retain the raw detail. All four Scan call sites
+(`rename.ScanLibrary`/`ScanLibrarySeries`, `dedup.ScanLibrary`/
+`ScanLibrarySeries`) inherit the clearer message for free through their
+existing `fmt.Errorf("scanning %s: %w", ...)` wraps around
+`ScanRootFolder`'s return — no per-call-site changes needed.
+
+New tests: `TestScanRootFolder_MissingRootGivesActionableMountMessage`
+confirms both the actionable message text and that `errors.Is(err,
+fs.ErrNotExist)` still holds through the wrap. A same-day `code-reviewer`
+pass (separate from the authoring context, per house policy) flagged that
+the four network/mount errnos the feature is actually named for
+(`ENOTCONN`/`ESTALE`/`EIO`/`EHOSTUNREACH`) had no direct coverage — closed
+with `TestClassifyScanErr_MountDisconnectErrnosGetActionableMessage`
+(table-driven over synthetic `*fs.PathError` values) and
+`TestClassifyScanErr_OtherErrorsStayGeneric` (confirms an unrelated errno
+like `EACCES` does NOT get the mount-specific wording, while still
+preserving `errors.Is`). Review verdict: 0 blocking issues, approved as-is
+even before the added coverage — the extra tests are precision, not a fix.
+
+Verified via `gofmt -l` (clean), `go build ./...` / `go vet ./...` (clean),
+and full `go test ./...` (all green).

@@ -3,8 +3,11 @@ package library
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/curtiswtaylorjr/sakms/internal/db"
@@ -286,6 +289,57 @@ func TestScanRootFolder_SkipsKnownAndSidecarFiles(t *testing.T) {
 
 	if len(entries) != 1 || entries[0].Name != "New Movie (2024)" {
 		t.Fatalf("expected only the one genuinely unmapped entry, got %+v", entries)
+	}
+}
+
+func TestScanRootFolder_MissingRootGivesActionableMountMessage(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+
+	_, err := ScanRootFolder(missing, nil)
+	if err == nil {
+		t.Fatal("expected an error for a missing root folder, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "unreadable") || !strings.Contains(msg, "mounted") {
+		t.Errorf("expected an actionable mount-disconnect message, got: %s", msg)
+	}
+	if !strings.Contains(msg, missing) {
+		t.Errorf("expected the message to name the unreachable path %s, got: %s", missing, msg)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("expected the wrapped error to still satisfy errors.Is(err, fs.ErrNotExist), got: %v", err)
+	}
+}
+
+func TestClassifyScanErr_MountDisconnectErrnosGetActionableMessage(t *testing.T) {
+	root := "/mnt/example"
+	mountErrnos := []syscall.Errno{syscall.ENOTCONN, syscall.ESTALE, syscall.EIO, syscall.EHOSTUNREACH}
+	for _, errno := range mountErrnos {
+		t.Run(errno.Error(), func(t *testing.T) {
+			wrapped := &fs.PathError{Op: "lstat", Path: root, Err: errno}
+			got := classifyScanErr(root, wrapped)
+			msg := got.Error()
+			if !strings.Contains(msg, "unreadable") || !strings.Contains(msg, "mounted") {
+				t.Errorf("expected an actionable mount-disconnect message for %v, got: %s", errno, msg)
+			}
+			if !errors.Is(got, errno) {
+				t.Errorf("expected errors.Is(got, %v) to hold through the wrap, got: %v", errno, got)
+			}
+		})
+	}
+}
+
+func TestClassifyScanErr_OtherErrorsStayGeneric(t *testing.T) {
+	root := "/mnt/example"
+	wrapped := &fs.PathError{Op: "lstat", Path: root, Err: syscall.EACCES}
+	got := classifyScanErr(root, wrapped)
+	msg := got.Error()
+	if strings.Contains(msg, "mounted") {
+		t.Errorf("did not expect the mount-specific message for a permission error, got: %s", msg)
+	}
+	if !errors.Is(got, syscall.EACCES) {
+		t.Errorf("expected errors.Is(got, syscall.EACCES) to hold through the wrap, got: %v", got)
 	}
 }
 

@@ -151,6 +151,19 @@ slice. Spec at `.omc/autopilot/spec-player-rescan-trigger.md`.
 
 ## Recently shipped (outside this backlog)
 
+### Clearer mount-disconnect error messaging — shipped 2026-07-11
+`library.ScanRootFolder`'s single error-return point (all four Rename/Dedup
+Scan call sites share it) now classifies the underlying OS error: a missing
+path, a dropped network mount, or an I/O error against it
+(`fs.ErrNotExist`/`syscall.ENOTCONN`/`ESTALE`/`EIO`/`EHOSTUNREACH`) gets
+wrapped as "root folder unreadable — check that `<path>` is still mounted
+and reachable", instead of a bare `lstat ...: no such file or directory`
+surfacing straight to the operator. The original error is still wrapped via
+`%w` either way, so `errors.Is`/logs keep the raw OS error underneath.
+One classification point, not four — every caller (`rename.ScanLibrary`/
+`ScanLibrarySeries`, `dedup.ScanLibrary`/`ScanLibrarySeries`) inherits it for
+free through their existing `fmt.Errorf("scanning %s: %w", ...)` wraps.
+
 ### First-run break-glass recovery — shipped 2026-07-11
 OIDC-mode first-run mints a one-time recovery API key (see CHANGELOG) —
 there's no interactive-login fallback at setup time (the browser hasn't
@@ -208,12 +221,8 @@ explicit update to `CLAUDE.md`'s stated principle once built (not a silent
 reversal).
 
 ### Cheap, independent wins
-- **Clearer mount-disconnect error messaging** — confirmed already SAFE
-  (no workflow deletes anything on a missing file; see CHANGELOG's
-  2026-07-10 redesign-discussion entry for the verification). Remaining
-  work is just turning a raw `WalkDir`/`os.Stat` error into a clear "root
-  folder unreadable — check your mount" message in Rename/Dedup's Scan
-  error path.
+- **Clearer mount-disconnect error messaging** — shipped 2026-07-11, see
+  "Recently shipped" below.
 ### Matching quality
 - **Confidence scoring** — today `items[0]` from TMDB/community-DB search
   is always taken unconditionally as the match; the only thing that routes

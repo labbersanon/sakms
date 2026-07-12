@@ -159,24 +159,41 @@ above, so don't drop them for convenience:
   duplicate groups with a loose single-episode duplicate naturally, since
   a pack is broken into individual files
   (`library.ResolveEpisodeVideoFiles`) before grouping happens.
-- **Adult (Whisparr + Stash)**: still fully dependent on both today — Whisparr
-  for the library/API surface (`internal/servarr`), Stash for identification
-  (`mode.Session.Stash`, phash-first `rename.scanAdultPhashFirst`, both read
-  a phash Stash already computed, SAK never computes one). Both dependencies
-  are slated for elimination (see Mission/Scope above), mirroring
-  Movies/Sonarr — not yet started. The concrete shape decided so far: SAK
-  will build its own frame-decode + StashDB-compatible phash hasher (the
-  `PHASH` algorithm StashDB/FansDB's stash-box network indexes — 25-frame
-  collage, 64-bit, a *different* algorithm from `internal/phash`'s
-  Movies/Series one, which stays as-is and unrelated) so SAK can identify
-  and dedupe Adult content by talking to StashDB/FansDB/TPDB directly,
-  without needing a live local Stash instance as a bridge. One hash,
-  multiple consumers (identification, Dedup, and a future filename-embedded
-  phash for fast rescans if Adult gets its own renaming feature). See
+- **Adult**: fully off Whisparr. Owns its own library
+  (`internal/library`'s `Scene` type + `library_scenes` table, keyed on the
+  separate `(box, scene_id)` columns a stash-box scene's identity actually
+  is), own library-backed Rename/Purge/Dedup/Tag paths
+  (`rename.ScanLibraryAdult`/`ApplyLibraryAdult` and the matching Dedup/Purge
+  siblings, plus scene-level tags via the `/api/modes/adult/scenes/...`
+  routes), own free-typed root-folder setting, and its own fixed Adult naming
+  scheme (`naming.AdultFileName`: `Studio - Title (Date) [phash-HASH]`, the
+  filename-embedded phash CLAUDE.md always wanted). `mode.Build` constructs no
+  Servarr client for Adult anymore — the same displacement already done to
+  Radarr/Sonarr. `internal/servarr`'s Whisparr support is kept (still a valid
+  generic capability, same precedent as Radarr/Sonarr) even though nothing in
+  `mode.Build` constructs one. **Stash is unchanged and still used** — for
+  identification (`mode.Session.Stash`, phash-first `rename.scanAdultPhashFirst`
+  reads a phash Stash already computed; SAK never computes one) and for
+  player-rescan-notify (`Session.NotifyPlayers`); it is a downstream player,
+  never an organizational authority, exactly like Jellyfin for Movies/Series.
+  A one-time, human-triggered importer (`internal/whisparrimport`, "Import from
+  Whisparr" in Settings) migrates an existing Whisparr-tracked Adult library by
+  walking disk directly + re-resolving each scene's stash-box UUID against
+  StashDB/FansDB — it builds its own standalone `servarr.Client{App: Whisparr}`
+  from the saved connection (not through `mode.Build`), so it keeps working now
+  that Adult's own Servarr wiring is gone.
+- **Adult phash (future work, unchanged by the Whisparr elimination above):**
+  the concrete shape decided so far is that SAK will build its own frame-decode
+  + StashDB-compatible phash hasher (the `PHASH` algorithm StashDB/FansDB's
+  stash-box network indexes — 25-frame collage, 64-bit, a *different* algorithm
+  from `internal/phash`'s Movies/Series one, which stays as-is and unrelated)
+  so SAK can identify and dedupe Adult content by talking to StashDB/FansDB/TPDB
+  directly, without needing a live local Stash instance as a bridge. One hash,
+  multiple consumers (identification, Dedup, and the filename-embedded phash for
+  fast rescans now that Adult has its own renaming feature). See
   `docs/ROADMAP.md`'s phash entry and `.omc/autopilot/spec-phash-dedup-adult.md`
   (superseded recommendation, kept for its StashDB-algorithm research) for
-  detail. Whisparr elimination itself (Adult owning its own library the way
-  Movies/Series do) has no design yet.
+  detail.
 - **Jellyfin**: a live connection now exists (`internal/jellyfin`, the
   "jellyfin" connection type), but for ONE narrow purpose — receiving
   targeted rescan notifications (`mode.Session.NotifyPlayers`, Movies/Series

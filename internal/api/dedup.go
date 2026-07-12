@@ -37,7 +37,14 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, set
 		}
 
 		var found []proposals.Proposal
-		if key, ok := libraryRootFolderKey(m); ok {
+		// Movies/Series dispatch to the library-backed scan; Adult stays on
+		// the Servarr-backed dedup.Scan. This gate is deliberately explicit
+		// rather than keyed off libraryRootFolderKey(m)'s ok: Adult now has a
+		// free-typed library-root-folder key too, but its library-backed
+		// dedup sibling isn't wired here yet (that lands with Whisparr
+		// elimination).
+		if m == mode.Movies || m == mode.Series {
+			key, _ := libraryRootFolderKey(m)
 			rootPath, rpErr := settingsStore.Get(ctx, key)
 			if rpErr != nil && !errors.Is(rpErr, settings.ErrNotFound) {
 				http.Error(w, rpErr.Error(), http.StatusInternalServerError)

@@ -102,6 +102,15 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/modes/{mode}/items/{itemId}/tags", addItemTagHandler(httpClient, connStore, settingsStore, libStore))
 	mux.HandleFunc("DELETE /api/modes/{mode}/items/{itemId}/tags/{tagId}", removeItemTagHandler(httpClient, connStore, settingsStore, libStore))
 
+	// Adult scene tags — a parallel, fully library-backed path (see tag.go).
+	// Adult-only and hardcoded in the path (scenes exist only for Adult),
+	// leaving Adult's still-Whisparr-backed /items and /tags routes above
+	// untouched until Whisparr elimination lands.
+	mux.HandleFunc("GET /api/modes/adult/scenes/tags", sceneTagVocabularyHandler(libStore))
+	mux.HandleFunc("GET /api/modes/adult/scenes/{sceneId}/tags", listSceneTagsHandler(libStore))
+	mux.HandleFunc("POST /api/modes/adult/scenes/{sceneId}/tags", addSceneTagHandler(libStore))
+	mux.HandleFunc("DELETE /api/modes/adult/scenes/{sceneId}/tags/{tagId}", removeSceneTagHandler(libStore))
+
 	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, allowStore, settingsStore))
 	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))
 

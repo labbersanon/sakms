@@ -179,6 +179,94 @@ func removeItemTagHandler(httpClient *http.Client, connStore *connections.Store,
 	}
 }
 
+// Adult scene tags are a parallel, fully library-backed path — the exact
+// Movies/Series precedent (libStore called directly, no *arr app), just
+// keyed on a library_scenes row instead of a library item/series. They live
+// under /api/modes/adult/scenes/... rather than the {mode}/items/... routes
+// so they don't disturb Adult's still-Whisparr-backed /items and /tags
+// routes, which stay untouched until Whisparr elimination lands. A scene id
+// is a library_scenes.id (int64); a tag is just a string, so there's no
+// numeric-tag-id step and DELETE's {tagId} segment is the label itself,
+// same as Movies/Series.
+
+// sceneTagVocabularyHandler returns Adult's scene-tag vocabulary — every
+// distinct tag any scene currently uses. Sibling of listTagsHandler's
+// Movies/Series branch, returning the same {id, label} shape.
+func sceneTagVocabularyHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vocab, err := libStore.SceneTagVocabulary(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]libraryTagEntry, len(vocab))
+		for i, label := range vocab {
+			out[i] = libraryTagEntry{ID: label, Label: label}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out)
+	}
+}
+
+// listSceneTagsHandler returns one scene's assigned tags as a string list.
+func listSceneTagsHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sceneID, ok := parseIntPathValue(w, r, "sceneId")
+		if !ok {
+			return
+		}
+		tags, err := libStore.SceneTags(r.Context(), int64(sceneID))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tags)
+	}
+}
+
+// addSceneTagHandler assigns a tag to one scene — a single, immediately-
+// committed action (not staged through proposals), matching addItemTagHandler.
+func addSceneTagHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sceneID, ok := parseIntPathValue(w, r, "sceneId")
+		if !ok {
+			return
+		}
+		var req addItemTagRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Label == "" {
+			http.Error(w, "label is required", http.StatusBadRequest)
+			return
+		}
+		if err := libStore.AddSceneTag(r.Context(), int64(sceneID), req.Label); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// removeSceneTagHandler unassigns a tag from one scene. The {tagId} segment
+// is the tag string itself (a local tag has no numeric id), same as
+// removeItemTagHandler's Movies/Series branch.
+func removeSceneTagHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sceneID, ok := parseIntPathValue(w, r, "sceneId")
+		if !ok {
+			return
+		}
+		if err := libStore.RemoveSceneTag(r.Context(), int64(sceneID), r.PathValue("tagId")); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func parseIntPathValue(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
 	v, err := strconv.Atoi(r.PathValue(name))
 	if err != nil {

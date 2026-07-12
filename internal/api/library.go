@@ -15,25 +15,30 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
 )
 
-// moviesLibraryRootFolderKey and seriesLibraryRootFolderKey are the
-// settings keys holding each mode's library root folder path — the
-// free-typed replacement for picking a path from a *arr app's own
-// RootFolders response, since neither Radarr nor Sonarr sits in front of
-// SAK's own library anymore (see internal/library's package doc). Adult
-// still gets its root folders from Whisparr — no key exists for it.
+// moviesLibraryRootFolderKey, seriesLibraryRootFolderKey, and
+// adultLibraryRootFolderKey are the settings keys holding each mode's
+// library root folder path — the free-typed replacement for picking a path
+// from a *arr app's own RootFolders response, since SAK owns its own
+// library (see internal/library's package doc). Adult now carries its own
+// free-typed key too; its separate Whisparr-backed root-folder LISTING
+// (GET /api/modes/{mode}/root-folders, see rootfolders.go) is unchanged and
+// stays until Whisparr elimination lands.
 const (
 	moviesLibraryRootFolderKey = "movies_library_root_folder"
 	seriesLibraryRootFolderKey = "series_library_root_folder"
+	adultLibraryRootFolderKey  = "adult_library_root_folder"
 )
 
 // libraryRootFolderKey returns m's library-root-folder settings key, or
-// ok=false if m doesn't have one (Adult).
+// ok=false if m doesn't have one.
 func libraryRootFolderKey(m mode.Mode) (key string, ok bool) {
 	switch m {
 	case mode.Movies:
 		return moviesLibraryRootFolderKey, true
 	case mode.Series:
 		return seriesLibraryRootFolderKey, true
+	case mode.Adult:
+		return adultLibraryRootFolderKey, true
 	default:
 		return "", false
 	}
@@ -48,9 +53,9 @@ type libraryRootFolderRequest struct {
 }
 
 // getLibraryRootFolderHandler returns {mode}'s configured library root
-// folder path, or an empty string if unset. 400s for Adult, which has no
-// library-root-folder concept — it still gets its root folder from
-// Whisparr.
+// folder path, or an empty string if unset. Movies, Series, and Adult all
+// have a free-typed key now; only a mode without one (via
+// libraryRootFolderKey) 400s.
 func getLibraryRootFolderHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key, ok := libraryRootFolderKey(mode.Mode(r.PathValue("mode")))

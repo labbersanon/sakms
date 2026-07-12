@@ -218,6 +218,79 @@ func TestTagWorkflow_Adult_AddThenRemove_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestSceneTagWorkflow_Adult_AddThenRemove_EndToEnd is Adult's own library-
+// backed scene-tag counterpart to the Movies/Series tests above — no Whisparr
+// connection at all, driving the full add -> list-scene-tags -> vocabulary ->
+// remove cycle through SAK's real mux against libStore's scene-tag methods.
+// These /scenes/... routes are deliberately separate from Adult's still-
+// Whisparr-backed /items and /tags routes (covered by
+// TestTagWorkflow_Adult_AddThenRemove_EndToEnd), which stay untouched.
+func TestSceneTagWorkflow_Adult_AddThenRemove_EndToEnd(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
+	scene, err := libStore.UpsertScene(context.Background(), library.Scene{
+		Box: "stashdb", SceneID: "abc-123", Title: "Some Scene", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
+	defer srv.Close()
+
+	scenePath := "/api/modes/adult/scenes/" + strconv.FormatInt(scene.ID, 10) + "/tags"
+
+	addBody, _ := json.Marshal(addItemTagRequest{Label: "needs-review"})
+	addResp, err := http.Post(srv.URL+scenePath, "application/json", bytes.NewReader(addBody))
+	if err != nil {
+		t.Fatalf("add tag POST failed: %v", err)
+	}
+	addResp.Body.Close()
+	if addResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 from add, got %d", addResp.StatusCode)
+	}
+
+	// The scene's own tag list reflects the new tag.
+	sceneTagsResp, err := http.Get(srv.URL + scenePath)
+	if err != nil {
+		t.Fatalf("list scene tags GET failed: %v", err)
+	}
+	defer sceneTagsResp.Body.Close()
+	var sceneTags []string
+	json.NewDecoder(sceneTagsResp.Body).Decode(&sceneTags)
+	if len(sceneTags) != 1 || sceneTags[0] != "needs-review" {
+		t.Fatalf("expected the scene to carry the new tag, got %+v", sceneTags)
+	}
+
+	// The vocabulary now reflects the new tag.
+	vocabResp, err := http.Get(srv.URL + "/api/modes/adult/scenes/tags")
+	if err != nil {
+		t.Fatalf("list vocabulary GET failed: %v", err)
+	}
+	defer vocabResp.Body.Close()
+	var vocab []libraryTagEntry
+	json.NewDecoder(vocabResp.Body).Decode(&vocab)
+	if len(vocab) != 1 || vocab[0].Label != "needs-review" || vocab[0].ID != "needs-review" {
+		t.Fatalf("expected the vocabulary to include the new tag, got %+v", vocab)
+	}
+
+	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+scenePath+"/needs-review", nil)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("remove tag DELETE failed: %v", err)
+	}
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 from remove, got %d", delResp.StatusCode)
+	}
+
+	tags, err := libStore.SceneTags(context.Background(), scene.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tags) != 0 {
+		t.Fatalf("expected no tags after removal, got %v", tags)
+	}
+}
+
 func TestAddItemTagHandler_RequiresLabel(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))

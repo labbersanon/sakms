@@ -126,95 +126,45 @@ func TestTagWorkflow_Movies_AddThenRemove_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestTagWorkflow_Adult_AddThenRemove_EndToEnd is the Adult-mode twin of the
-// test above: it drives the same add->list->remove cycle through SAK's
-// real mux, but against a fake Whisparr V3. Because Whisparr's itemResource()
-// maps to "movie" (a Radarr fork — client.go's default: branch), the wire
-// paths here are byte-identical to the Radarr run above; this test therefore
-// pins that Adult routes as a *movie-shaped* app (not Sonarr/series — the
-// default: t.Fatalf below is the guard that proves it). Whisparr-specificity
-// itself is pinned separately by the "whisparr" connStore key here plus
-// AppType()==servarr.Whisparr in internal/mode's TestBuild_AdultUsesWhisparr-
-// Connection — there is no way to distinguish Whisparr from Radarr on the wire.
-func TestTagWorkflow_Adult_AddThenRemove_EndToEnd(t *testing.T) {
-	tags := []map[string]any{}
-	itemTags := []int{}
-
-	fakeWhisparr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v3/tag" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(tags)
-		case r.URL.Path == "/api/v3/tag" && r.Method == http.MethodPost:
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			newTag := map[string]any{"id": 7, "label": body["label"]}
-			tags = append(tags, newTag)
-			json.NewEncoder(w).Encode(newTag)
-		case r.URL.Path == "/api/v3/movie/9" && r.Method == http.MethodGet:
-			ids := make([]any, len(itemTags))
-			for i, id := range itemTags {
-				ids[i] = id
-			}
-			json.NewEncoder(w).Encode(map[string]any{"id": 9, "title": "Some Scene", "tags": ids})
-		case r.URL.Path == "/api/v3/movie/9" && r.Method == http.MethodPut:
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			itemTags = itemTags[:0]
-			for _, v := range body["tags"].([]any) {
-				itemTags = append(itemTags, int(v.(float64)))
-			}
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer fakeWhisparr.Close()
-
+// TestTagWorkflow_Adult_OldItemRoutesGone proves the old *arr-item tag routes
+// fail cleanly with a 400 for Adult now (Whisparr eliminated, Stage 4) rather
+// than nil-derefing sess.Servarr: Adult tags moved to the library-backed
+// /scenes/... routes (covered by TestSceneTagWorkflow_Adult_AddThenRemove_
+// EndToEnd). All three old entry points — GET /tags, POST /items/{id}/tags,
+// and DELETE /items/{id}/tags/{tagId} — must 400, not 500/panic. No *arr
+// connection is configured, precisely because there is nothing left to talk to.
+func TestTagWorkflow_Adult_OldItemRoutesGone(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
-	if err := connStore.Upsert(context.Background(), "whisparr", fakeWhisparr.URL, "test-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
 	defer srv.Close()
 
-	// Assign a brand-new tag.
+	vocabResp, err := http.Get(srv.URL + "/api/modes/adult/tags")
+	if err != nil {
+		t.Fatalf("list tags GET failed: %v", err)
+	}
+	vocabResp.Body.Close()
+	if vocabResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from the old adult /tags route, got %d", vocabResp.StatusCode)
+	}
+
 	addBody, _ := json.Marshal(addItemTagRequest{Label: "needs-review"})
 	addResp, err := http.Post(srv.URL+"/api/modes/adult/items/9/tags", "application/json", bytes.NewReader(addBody))
 	if err != nil {
 		t.Fatalf("add tag POST failed: %v", err)
 	}
 	addResp.Body.Close()
-	if addResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204 from add, got %d", addResp.StatusCode)
-	}
-	if len(itemTags) != 1 || itemTags[0] != 7 {
-		t.Fatalf("expected the item to be tagged with the newly created tag (7), got %v", itemTags)
+	if addResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from the old adult /items/{id}/tags add route, got %d", addResp.StatusCode)
 	}
 
-	// The vocabulary now reflects the newly created tag.
-	vocabResp, err := http.Get(srv.URL + "/api/modes/adult/tags")
-	if err != nil {
-		t.Fatalf("list tags GET failed: %v", err)
-	}
-	defer vocabResp.Body.Close()
-	var vocab []map[string]any
-	json.NewDecoder(vocabResp.Body).Decode(&vocab)
-	if len(vocab) != 1 || vocab[0]["label"] != "needs-review" {
-		t.Fatalf("expected the vocabulary to include the new tag, got %+v", vocab)
-	}
-
-	// Remove it again.
 	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/modes/adult/items/9/tags/7", nil)
 	delResp, err := http.DefaultClient.Do(delReq)
 	if err != nil {
 		t.Fatalf("remove tag DELETE failed: %v", err)
 	}
 	delResp.Body.Close()
-	if delResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204 from remove, got %d", delResp.StatusCode)
-	}
-	if len(itemTags) != 0 {
-		t.Fatalf("expected the item to have no tags after removal, got %v", itemTags)
+	if delResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from the old adult /items/{id}/tags/{tagId} remove route, got %d", delResp.StatusCode)
 	}
 }
 
@@ -222,9 +172,9 @@ func TestTagWorkflow_Adult_AddThenRemove_EndToEnd(t *testing.T) {
 // backed scene-tag counterpart to the Movies/Series tests above — no Whisparr
 // connection at all, driving the full add -> list-scene-tags -> vocabulary ->
 // remove cycle through SAK's real mux against libStore's scene-tag methods.
-// These /scenes/... routes are deliberately separate from Adult's still-
-// Whisparr-backed /items and /tags routes (covered by
-// TestTagWorkflow_Adult_AddThenRemove_EndToEnd), which stay untouched.
+// These /scenes/... routes are now the only Adult tag path: the old
+// /items and /tags routes 400 for Adult since Whisparr was eliminated
+// (covered by TestTagWorkflow_Adult_OldItemRoutesGone).
 func TestSceneTagWorkflow_Adult_AddThenRemove_EndToEnd(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	scene, err := libStore.UpsertScene(context.Background(), library.Scene{

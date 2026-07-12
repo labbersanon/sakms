@@ -20,11 +20,11 @@ import (
 // the live Dedup queue with whatever duplicate groups it found. prober
 // takes dedup.Prober's interface, not the concrete *mediainfo.Prober, so
 // tests can inject a fake instead of depending on a real ffprobe binary.
-// Movies/Series dispatch to dedup.ScanLibrary/ScanLibrarySeries (libStore,
-// no *arr app involved); Adult uses the Servarr-backed dedup.Scan, which now
-// refines each same-foreignID group by perceptual similarity too — so this
-// branch resolves the same already-mode-generic per-mode threshold and forwards
-// the in-scope hasher (previously it passed neither).
+// Every mode dispatches to a library-backed sibling now (no *arr app
+// involved): Movies/Series to dedup.ScanLibrary/ScanLibrarySeries, Adult to
+// dedup.ScanLibraryAdult (Whisparr eliminated, Stage 4), which groups by
+// (box, scene_id) and refines by perceptual similarity — so the Adult branch
+// resolves the same per-mode threshold and forwards the in-scope hasher.
 func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, prober dedup.Prober, hasher dedup.PHasher, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -66,7 +66,17 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, set
 				http.Error(w, tErr.Error(), http.StatusInternalServerError)
 				return
 			}
-			found, err = dedup.Scan(ctx, sess, prober, hasher, threshold)
+			// Adult owns its own library now too (Whisparr eliminated, Stage 4):
+			// dispatch to the library-backed sibling, the mirror image of the
+			// Movies/Series branch above, using Adult's own free-typed
+			// library-root-folder key.
+			key, _ := libraryRootFolderKey(m)
+			rootPath, rpErr := settingsStore.Get(ctx, key)
+			if rpErr != nil && !errors.Is(rpErr, settings.ErrNotFound) {
+				http.Error(w, rpErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			found, err = dedup.ScanLibraryAdult(ctx, sess, libStore, rootPath, prober, hasher, threshold)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

@@ -360,11 +360,14 @@ func TestApplyProposalHandler_UnknownID(t *testing.T) {
 	}
 }
 
-// TestScanHandler_ModeNotConfigured proves Adult's Scan still requires a
-// Whisparr connection (unchanged, *arr-backed) — Movies/Series' own Scan
-// requirements are covered by TestScanHandler_Movies_RequiresTMDBConfigured
-// and TestScanHandler_Series_RequiresTMDBConfigured below.
-func TestScanHandler_ModeNotConfigured(t *testing.T) {
+// TestScanHandler_Adult_RequiresIdentifyConfigured proves Adult's Scan no
+// longer needs a Whisparr connection (Whisparr eliminated, Stage 4) — it now
+// runs the library-backed ScanLibraryAdult, which fails with a clear 502 (not
+// a crash) when the identification pipeline isn't configured, the same way
+// Series' Scan surfaces a missing TMDB. Movies/Series' own Scan requirements
+// are covered by TestScanHandler_Movies_RequiresTMDBConfigured and
+// TestScanHandler_Series_RequiresTMDBConfigured below.
+func TestScanHandler_Adult_RequiresIdentifyConfigured(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
 	defer srv.Close()
@@ -374,8 +377,8 @@ func TestScanHandler_ModeNotConfigured(t *testing.T) {
 		t.Fatalf("POST failed: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 when whisparr isn't configured yet, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502 when adult identification isn't configured yet, got %d", resp.StatusCode)
 	}
 }
 

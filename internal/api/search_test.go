@@ -589,11 +589,12 @@ func TestCheckImportHandler_JellyfinBestEffort_ImportStillSucceeds(t *testing.T)
 }
 
 // TestCheckImportHandler_AdultCompleted_NotifiesStash proves grab-import
-// reaches Adult too (via the default switch branch's sess.Servarr.Add +
-// ScanForDownloaded), and that it notifies Stash (not Jellyfin — hardcoded
-// scoping via mode.Build) with movedPath directly, since no per-file
-// resolution happens in this branch (Whisparr owns file placement) and
-// Stash's RescanPaths scans directory trees fine.
+// reaches Adult too (via the mode.Adult branch), and that it notifies Stash
+// (not Jellyfin — hardcoded scoping via mode.Build) with movedPath directly.
+// Since Whisparr was eliminated (Stage 4) an Adult grab has no scene identity
+// at import time, so nothing is UpsertScene'd here — the file is relocated and
+// left for the next Rename scan to identify (see the handler's mode.Adult
+// branch); Stash's RescanPaths scans the directory tree fine.
 func TestCheckImportHandler_AdultCompleted_NotifiesStash(t *testing.T) {
 	dir := t.TempDir()
 	downloadDir := filepath.Join(dir, "downloads", "Some.Scene.mp4")
@@ -625,10 +626,6 @@ func TestCheckImportHandler_AdultCompleted_NotifiesStash(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
 	if err := connStore.UpsertWithUsername(ctx, "qbittorrent", fakeQB.URL, "wade", "hunter2"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	whisparr := &fakeAdultServarr{addedID: 77}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	stash := newFakeStash(0)

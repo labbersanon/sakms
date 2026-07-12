@@ -21,7 +21,6 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/quality"
 	"github.com/curtiswtaylorjr/sakms/internal/release"
 	"github.com/curtiswtaylorjr/sakms/internal/rename"
-	"github.com/curtiswtaylorjr/sakms/internal/servarr"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
 )
 
@@ -289,8 +288,10 @@ func classifyNZBGetState(state string) grabs.Status {
 // checkImportHandler refreshes one grab's status from its download client,
 // and — the moment it's seen as complete — performs the import: relocates
 // the downloaded content into the grab's target root folder (reusing
-// internal/rename's exact Relocate logic) and registers it with the mode's
-// *arr app, exactly like Rename's Apply does for a brand-new orphan. This is
+// internal/rename's exact Relocate logic) and records it in SAK's own library
+// (Movies/Series), exactly like Rename's Apply does for a brand-new orphan.
+// Adult records nothing here — it has no scene identity at grab time — and
+// defers tracking to the next Rename scan (see the mode.Adult branch). This is
 // a manual, human-triggered refresh (there is no background poller anywhere
 // in this program) — the user clicks it, same as every other mutating
 // action in SAK.
@@ -378,9 +379,10 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			// wrapping directory (Relocate moves contentPath's whole tree),
 			// so Movies/Series notify with the resolved video file path(s) —
 			// same "actual path, not the directory" discipline as rename.go's
-			// row 1/2 — while Adult (no per-file resolution happens in this
-			// codepath; Whisparr owns file placement, and Stash's RescanPaths
-			// scans directory trees fine) notifies with movedPath directly.
+			// row 1/2 — while Adult (no per-file resolution here: the scene is
+			// left untracked for the next Rename scan to identify, and Stash's
+			// RescanPaths scans directory trees fine) notifies with movedPath
+			// directly.
 			var changes []mode.PathChange
 			switch g.Mode {
 			case mode.Movies:
@@ -434,19 +436,35 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 					}
 					changes = append(changes, mode.PathChange{Path: videoPath, Kind: mode.Created})
 				}
-			default:
-				if _, err := sess.Servarr.Add(ctx, servarr.AddRequest{
-					Title: g.Title, TVDBID: g.TVDBID, TMDBID: g.TMDBID,
-					QualityProfileID: g.QualityProfileID, RootFolderPath: g.RootFolderPath, Monitored: true,
-				}); err != nil {
-					http.Error(w, fmt.Sprintf("file relocated but registering with %s failed: %v", g.Mode, err), http.StatusBadGateway)
-					return
-				}
-				if err := sess.Servarr.ScanForDownloaded(ctx); err != nil {
-					http.Error(w, fmt.Sprintf("registered but triggering a rescan failed: %v", err), http.StatusBadGateway)
-					return
-				}
+			case mode.Adult:
+				// Adult owns its own library now (Whisparr eliminated, Stage 4),
+				// but — unlike Movies/Series — an Adult grab carries NO stable
+				// scene identity at grab time: grabRequest has no box/scene_id,
+				// and TMDBID is always 0 for Adult. library.Scene is keyed on
+				// (box, scene_id), so there is nothing to UpsertScene on yet.
+				//
+				// DELIBERATE DEVIATION from the Stage-4 plan's literal
+				// "resolve the grabbed file and UpsertScene here": recording a
+				// scene with an empty (box, scene_id) would be actively harmful —
+				// (a) every unidentified grab collides onto the single
+				// ON CONFLICT(box, scene_id) = ("","") row, clobbering the prior
+				// one; and (b) a scene recorded at import time is masked from the
+				// next Rename scan, since ScanLibraryAdult builds its `known` set
+				// from scene FilePaths and ScanRootFolder skips known paths — so
+				// the very pass meant to identify it would never see it. Both
+				// defeat the plan's own stated goal ("let the next Rename scan
+				// fully identify/reconcile it later").
+				//
+				// So we relocate the download into the Adult root folder and stop
+				// there, exactly as before but without the Whisparr registration.
+				// The next Adult Rename scan discovers the untracked file,
+				// identifies it, and UpsertScenes it with a real (box, scene_id).
+				// Stash's RescanPaths handles a directory tree fine, so notify
+				// with movedPath directly (no per-file resolution here).
 				changes = []mode.PathChange{{Path: movedPath, Kind: mode.Created}}
+			default:
+				http.Error(w, fmt.Sprintf("unknown mode %q", g.Mode), http.StatusInternalServerError)
+				return
 			}
 			sess.NotifyPlayers(ctx, changes)
 			newStatus = grabs.Imported

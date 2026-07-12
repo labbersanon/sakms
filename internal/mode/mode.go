@@ -119,23 +119,6 @@ func (m Mode) KidsRootPathKey() (key string, ok bool) {
 	}
 }
 
-// service reports which connections.Store key and servarr.App back this
-// mode's primary client. Movies and Series have none — SAK owns its own
-// library for both now (internal/library) instead of proxying Radarr/
-// Sonarr; Build skips this entirely for them rather than calling it.
-func (m Mode) service() (service string, app servarr.App, err error) {
-	switch m {
-	case Adult:
-		// Adult's primary client is Whisparr V3 (a Radarr fork — see
-		// internal/servarr), hard-required for every Adult workflow. The
-		// identification pipeline (StashDB/FansDB/TPDB/Ollama, internal/identify)
-		// is built separately and tolerantly — see buildIdentifier.
-		return "whisparr", servarr.Whisparr, nil
-	default:
-		return "", 0, fmt.Errorf("mode %q: unknown mode", m)
-	}
-}
-
 // ChangeKind classifies a PathChange (see PathChange).
 type ChangeKind int
 
@@ -157,10 +140,13 @@ type PathChange struct {
 // Session holds the live client(s) for one mode.
 type Session struct {
 	Mode Mode
-	// Servarr is nil for Movies and Series (SAK owns its own library for
-	// both instead of proxying Radarr/Sonarr — see Build's doc comment);
-	// populated for Adult (Whisparr) only. Movies/Series-mode callers must
-	// not assume this is non-nil.
+	// Servarr is nil for every mode now — SAK owns its own library across all
+	// three (Movies/Series since their Radarr/Sonarr eliminations, Adult since
+	// Stage 4's Whisparr elimination), so Build never constructs one. The field
+	// (and internal/servarr) is retained because the workflow packages still
+	// carry their generic Servarr-backed Scan/Apply functions as unused generic
+	// capability (the "don't strip generic capability" convention); no live
+	// path reads this. Callers must not assume this is non-nil.
 	Servarr *servarr.Client
 
 	// Identify is the AI-assisted content-identification pipeline, populated
@@ -220,31 +206,31 @@ type Session struct {
 	Jellyfin *jellyfin.Client
 }
 
-// Build constructs a Session for m using the connection currently configured
-// in store. Returns an error if m isn't supported yet, or if its service has
-// no connection configured (Settings hasn't been filled in for it yet).
+// Build constructs a Session for m from whatever connections are currently
+// configured in store. Returns an error only if m isn't one of the three
+// known modes (the sole hard requirement) — no mode requires a *arr
+// connection anymore.
 //
-// Movies and Series are the exception: neither has a Servarr connection
-// requirement at all anymore — SAK owns its own library for both
-// (internal/library) instead of proxying Radarr/Sonarr, so sess.Servarr
-// stays nil for both unconditionally. Adult is unaffected; it still
-// requires Whisparr exactly as before.
+// SAK owns its own library for all three modes now (internal/library) instead
+// of proxying Radarr/Sonarr/Whisparr, so sess.Servarr stays nil for every
+// mode. What Build still wires per-mode is the tolerant, optional clientry:
+// Adult's identification pipeline (sess.Identify) and local Stash notify
+// client (sess.Stash), Movies/Series' Jellyfin notify client (sess.Jellyfin),
+// and the shared search/download pipeline — each left nil when unconfigured.
 func Build(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client, m Mode) (*Session, error) {
 	sess := &Session{Mode: m}
 
-	if m != Movies && m != Series {
-		service, app, err := m.service()
-		if err != nil {
-			return nil, err
-		}
-		conn, err := store.Get(ctx, service)
-		if err != nil {
-			if errors.Is(err, connections.ErrNotFound) {
-				return nil, fmt.Errorf("mode %q: %s isn't configured yet — add it in Settings first", m, service)
-			}
-			return nil, fmt.Errorf("mode %q: loading %s connection: %w", m, service, err)
-		}
-		sess.Servarr = servarr.New(servarr.Config{BaseURL: conn.URL, APIKey: conn.APIKey, App: app}, httpClient)
+	// Every mode owns its own library now — Movies/Series since their Radarr/
+	// Sonarr eliminations, Adult since Stage 4's Whisparr elimination — so no
+	// mode constructs a Servarr client anymore; sess.Servarr stays nil for all
+	// three. This switch is now purely the unknown-mode validator that
+	// Mode.service() used to be: Build is the sole chokepoint, since handlers
+	// pass mode.Mode(r.PathValue("mode")) through unvalidated.
+	switch m {
+	case Movies, Series, Adult:
+		// SAK-owned library; no *arr construction.
+	default:
+		return nil, fmt.Errorf("mode %q: unknown mode", m)
 	}
 
 	aiClient, err := buildAIClient(ctx, store, settingsStore, httpClient)

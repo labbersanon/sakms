@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -12,41 +14,16 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
 )
 
-// sceneUUID is embedded in the unmapped folder name so identification resolves
+// sceneUUID is embedded in the scene folder name so identification resolves
 // via the direct UUID lookup path (Identify.tryUUIDLookup) — skipping Ollama,
 // the similarity gate, and all-but-the-first throttle wait, which keeps this
 // one test (the only one running the real mode.Build with its 1s production
-// throttle) fast and non-flaky.
+// throttle) fast and non-flaky. Shared with adult_dedup_test.go.
 const sceneUUID = "a29768db-b3cd-4a71-a75e-4294373207bb"
-
-// fakeWhisparrHandler serves just enough of Whisparr V3's API for an Adult
-// Scan followed by an Apply, capturing the Add body so the test can assert the
-// scene identifiers made it onto the wire.
-func fakeWhisparrHandler(t *testing.T, addedID int, addBody *map[string]any) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v3/rootfolder":
-			w.Write([]byte(`[{"id":1,"path":"/media/Adult","accessible":true,"freeSpace":1,"unmappedFolders":[
-				{"name":"Some.Scene.` + sceneUUID + `","path":"/media/Adult/Some.Scene.` + sceneUUID + `","relativePath":"Some.Scene.` + sceneUUID + `"}
-			]}]`))
-		case r.URL.Path == "/api/v3/movie" && r.Method == http.MethodGet:
-			w.Write([]byte(`[]`))
-		case r.URL.Path == "/api/v3/movie" && r.Method == http.MethodPost:
-			json.NewDecoder(r.Body).Decode(addBody)
-			json.NewEncoder(w).Encode(map[string]any{"id": addedID})
-		case r.URL.Path == "/api/v3/qualityprofile":
-			w.Write([]byte(`[{"id":4,"name":"HD"}]`))
-		case r.URL.Path == "/api/v3/command":
-			w.Write([]byte(`{}`))
-		default:
-			t.Fatalf("unexpected whisparr request: %s %s", r.Method, r.URL.Path)
-		}
-	}
-}
 
 // fakeStashboxFindScene serves the StashDB GraphQL findScene-by-id query for
 // sceneUUID (mirrors identify_test.go's stashboxWithFindScene shape, which is
-// unexported cross-package).
+// unexported cross-package). Shared with adult_dedup_test.go.
 func fakeStashboxFindScene(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -68,15 +45,20 @@ func fakeStashboxFindScene(t *testing.T) http.HandlerFunc {
 }
 
 // TestAdultRenameWorkflow_ScanThenApply_EndToEnd is the full proof of the
-// slice: a real mode.Build-backed Scan emits a Pending Adult proposal carrying
-// a ForeignID, and applying it through the GENERIC /api/proposals/{id}/apply
-// route — the exact route that was a foot-gun before this slice — now
-// correctly registers a Whisparr scene with foreignId/itemType. No real
-// network: whisparr, stashdb, and ollama are all httptest fakes.
+// library-backed Adult rename slice (Whisparr eliminated, Stage 4): a real
+// mode.Build-backed Scan walks Adult's own library root folder, identifies the
+// scene by its embedded UUID, and emits a Pending proposal carrying the raw
+// (box, scene_id) give-back identity. Applying it through the GENERIC
+// /api/proposals/{id}/apply route relocates+renames the file to SAK's Adult
+// naming scheme and records it in SAK's own library (library_scenes) — no
+// Whisparr anywhere. No real network: stashdb and ollama are httptest fakes.
 func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
-	var addBody map[string]any
-	fakeWhisparr := httptest.NewServer(fakeWhisparrHandler(t, 88, &addBody))
-	defer fakeWhisparr.Close()
+	adultRoot := t.TempDir()
+	// A real scene file on disk under a UUID-named folder — ScanRootFolder
+	// walks the actual filesystem now (not a Whisparr unmapped-folder list),
+	// and the UUID in the parent folder name drives identification.
+	sceneFile := writeTestVideoFile(t, filepath.Join(adultRoot, "Some.Scene."+sceneUUID), "scene.mp4", 10)
+
 	fakeStashDB := httptest.NewServer(fakeStashboxFindScene(t))
 	defer fakeStashDB.Close()
 	// Ollama is present (required for buildIdentifier to return a non-nil
@@ -89,7 +71,6 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
 	for _, c := range []struct{ service, url string }{
-		{"whisparr", fakeWhisparr.URL},
 		{"stashdb", fakeStashDB.URL},
 		{"ollama", fakeOllama.URL},
 	} {
@@ -100,6 +81,10 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	// Without the model set, buildIdentifier returns nil and Scan fast-fails.
 	if err := settingsStore.Set(ctx, mode.AIModelKey, "test-model"); err != nil {
 		t.Fatalf("seeding ollama model: %v", err)
+	}
+	// Adult's own free-typed library root folder (replaces Whisparr's rootfolder).
+	if err := settingsStore.Set(ctx, adultLibraryRootFolderKey, adultRoot); err != nil {
+		t.Fatalf("seeding adult root folder: %v", err)
 	}
 
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
@@ -112,7 +97,8 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	}
 	defer scanResp.Body.Close()
 	if scanResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from scan, got %d", scanResp.StatusCode)
+		body, _ := io.ReadAll(scanResp.Body)
+		t.Fatalf("expected 200 from scan, got %d: %s", scanResp.StatusCode, body)
 	}
 	var scanned []proposals.Proposal
 	if err := json.NewDecoder(scanResp.Body).Decode(&scanned); err != nil {
@@ -125,8 +111,14 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	if p.Status != proposals.Pending || p.ForeignID != sceneUUID || p.ItemType != "scene" {
 		t.Fatalf("expected a Pending proposal carrying the scene id, got %+v", p)
 	}
-	if p.Title != "Some Scene" || p.RootFolderPath != "/media/Adult" || p.SourcePath != "/media/Adult/Some.Scene."+sceneUUID {
-		t.Fatalf("unexpected proposal fields: %+v", p)
+	if p.GiveBackBox != "stashdb" || p.GiveBackSceneID != sceneUUID {
+		t.Fatalf("expected the raw (box, scene_id) give-back identity captured, got box=%q scene=%q", p.GiveBackBox, p.GiveBackSceneID)
+	}
+	if p.Title != "Some Scene" || p.Studio != "Some Studio" || p.Date != "2021-01-01" {
+		t.Fatalf("unexpected identification fields: %+v", p)
+	}
+	if p.SourcePath != sceneFile {
+		t.Fatalf("expected SourcePath to be the resolved video file %q, got %q", sceneFile, p.SourcePath)
 	}
 
 	// The queue reflects what scan just staged.
@@ -141,23 +133,32 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		t.Fatalf("expected the queue to reflect the staged proposal, got %+v", listed)
 	}
 
-	// Apply through the generic route → Whisparr receives the identifiers.
+	// Apply through the generic route → the scene lands in SAK's own library.
 	applyResp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(p.ID, 10)+"/apply", "application/json", nil)
 	if err != nil {
 		t.Fatalf("apply POST failed: %v", err)
 	}
 	defer applyResp.Body.Close()
 	if applyResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from apply, got %d", applyResp.StatusCode)
+		body, _ := io.ReadAll(applyResp.Body)
+		t.Fatalf("expected 200 from apply, got %d: %s", applyResp.StatusCode, body)
 	}
 	var applied proposals.Proposal
 	if err := json.NewDecoder(applyResp.Body).Decode(&applied); err != nil {
 		t.Fatalf("decoding apply response: %v", err)
 	}
-	if applied.Status != proposals.Applied || applied.TrackedID != 88 {
-		t.Fatalf("expected the proposal to come back Applied with trackedId=88, got %+v", applied)
+	if applied.Status != proposals.Applied || applied.TrackedID == 0 {
+		t.Fatalf("expected the proposal Applied with a nonzero library scene id, got %+v", applied)
 	}
-	if addBody["foreignId"] != sceneUUID || addBody["itemType"] != "scene" {
-		t.Fatalf("expected Whisparr to receive the scene identifiers, got %+v", addBody)
+
+	// The scene is recorded under its (box, scene_id) identity, renamed to
+	// SAK's Adult scheme (phash embedded, since the hasher succeeded).
+	scene, err := libStore.GetScene(ctx, "stashdb", sceneUUID)
+	if err != nil {
+		t.Fatalf("expected the scene to be recorded in the library, got: %v", err)
+	}
+	wantDest := filepath.Join(adultRoot, "Some Studio - Some Scene (2021-01-01) [phash-ffffffffffffffff].mp4")
+	if scene.Title != "Some Scene" || scene.Studio != "Some Studio" || scene.Date != "2021-01-01" || scene.FilePath != wantDest {
+		t.Fatalf("unexpected recorded scene: %+v (wanted FilePath %q)", scene, wantDest)
 	}
 }

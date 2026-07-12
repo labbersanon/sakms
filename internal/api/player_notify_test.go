@@ -678,75 +678,29 @@ func (f *fakeStash) CleanCalls() []map[string]any {
 	return out
 }
 
-// fakeAdultServarr serves just enough of Whisparr V3's API for rename/purge/
-// dedup Apply against sess.Servarr: registering a scene (POST /api/v3/movie),
-// deleting a tracked one (DELETE /api/v3/movie/{id}), and the downloaded-
-// files scan trigger (POST /api/v3/command). addStatus/scanStatus let a test
-// force either call to fail, for the partial-success tests.
-type fakeAdultServarr struct {
-	mu           sync.Mutex
-	addedID      int
-	addStatus    int
-	scanStatus   int
-	addBodies    []map[string]any
-	deletedIDs   []string
-	scanTriggers int
-}
-
-func (f *fakeAdultServarr) Server(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/movie":
-			f.mu.Lock()
-			if f.addStatus != 0 {
-				status := f.addStatus
-				f.mu.Unlock()
-				w.WriteHeader(status)
-				return
-			}
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			f.addBodies = append(f.addBodies, body)
-			id := f.addedID
-			f.mu.Unlock()
-			json.NewEncoder(w).Encode(map[string]any{"id": id})
-		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v3/movie/"):
-			f.mu.Lock()
-			f.deletedIDs = append(f.deletedIDs, strings.TrimPrefix(r.URL.Path, "/api/v3/movie/"))
-			f.mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
-			f.mu.Lock()
-			if f.scanStatus != 0 {
-				status := f.scanStatus
-				f.mu.Unlock()
-				w.WriteHeader(status)
-				return
-			}
-			f.scanTriggers++
-			f.mu.Unlock()
-			w.Write([]byte(`{}`))
-		default:
-			t.Fatalf("unexpected whisparr request: %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 func adultProposalBase() proposals.Proposal {
 	return proposals.Proposal{
 		Status: proposals.Pending, Title: "Some Scene",
+		Studio: "Some Studio", Date: "2021-01-01",
 		ForeignID: "a29768db-b3cd-4a71-a75e-4294373207bb", ItemType: "scene",
-		QualityProfileID: 4,
+		// GiveBackBox/GiveBackSceneID are the library-keyed scene identity
+		// ApplyLibraryAdult now requires (Whisparr eliminated, Stage 4) — the
+		// raw (box, scene_id) pair, kept separate from ForeignID.
+		GiveBackBox: "stashdb", GiveBackSceneID: "a29768db-b3cd-4a71-a75e-4294373207bb",
 	}
 }
 
-// TestApplyProposalHandler_AdultRename_NotifiesStash proves row 3's dir-change
-// path end to end: the moved file's ACTUAL unique destination reaches Stash
-// as a phash-free scan (RescanPaths, scanGeneratePhashes=false), and the
-// vacated SourcePath reaches it as a clean (CleanMetadata).
+// adultRenameDestName is the AdultFileName scheme ApplyLibraryAdult relocates
+// an adultProposalBase() scene to — "Studio - Title (Date).ext", with no
+// [phash-...] tag since these proposals carry no phash.
+const adultRenameDestName = "Some Studio - Some Scene (2021-01-01).mp4"
+
+// TestApplyProposalHandler_AdultRename_NotifiesStash proves the Adult rename
+// dir-change path end to end on the library-backed Apply (Whisparr
+// eliminated, Stage 4): the moved file's AdultFileName destination reaches
+// Stash as a phash-free scan (RescanPaths, scanGeneratePhashes=false), the
+// vacated SourcePath reaches it as a clean (CleanMetadata), and the scene is
+// now tracked in SAK's own library — no *arr app is touched.
 func TestApplyProposalHandler_AdultRename_NotifiesStash(t *testing.T) {
 	base := t.TempDir()
 	sourceRoot := filepath.Join(base, "incoming")
@@ -764,10 +718,6 @@ func TestApplyProposalHandler_AdultRename_NotifiesStash(t *testing.T) {
 
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
-	whisparr := &fakeAdultServarr{addedID: 77}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	stash := newFakeStash(0)
 	if err := connStore.Upsert(ctx, "stash", stash.Server(t).URL, "stash-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -784,16 +734,24 @@ func TestApplyProposalHandler_AdultRename_NotifiesStash(t *testing.T) {
 	defer srv.Close()
 
 	applied := applyProposal(t, srv, saved[0].ID, nil)
-	if applied.TrackedID != 77 {
-		t.Fatalf("expected the registered id 77, got %d", applied.TrackedID)
+	if applied.TrackedID == 0 {
+		t.Fatalf("expected the recorded scene's library id, got %d", applied.TrackedID)
 	}
 
-	wantDest := filepath.Join(destRoot, "Some.Scene.mp4")
+	wantDest := filepath.Join(destRoot, adultRenameDestName)
 	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
 		t.Errorf("expected the source file to be gone, stat returned: %v", err)
 	}
 	if _, err := os.Stat(wantDest); err != nil {
 		t.Fatalf("expected the file to have moved to %q: %v", wantDest, err)
+	}
+
+	scenes, err := libStore.ListScenes(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scenes) != 1 || scenes[0].FilePath != wantDest {
+		t.Fatalf("expected exactly one tracked scene at %q, got %+v", wantDest, scenes)
 	}
 
 	scanCalls, cleanCalls := stash.ScanCalls(), stash.CleanCalls()
@@ -814,31 +772,32 @@ func TestApplyProposalHandler_AdultRename_NotifiesStash(t *testing.T) {
 	if len(cleanPaths) != 1 || cleanPaths[0] != sourcePath {
 		t.Errorf("expected clean of [%q], got %+v", sourcePath, cleanCalls[0]["paths"])
 	}
-	if whisparr.scanTriggers != 1 {
-		t.Errorf("expected the existing Whisparr downloaded-files scan trigger to still fire once, got %d", whisparr.scanTriggers)
-	}
 }
 
 // TestApplyProposalHandler_AdultRenameNoMove_NoStashNotify is Edge #1: when
-// SourcePath's directory already matches RootFolderPath, rename.Apply never
-// attempts a relocate, so Stash must receive zero notify calls even though
-// the proposal still registers successfully.
+// the file already sits at its AdultFileName destination, ApplyLibraryAdult's
+// self-collision guard computes dest == source and never relocates, so Stash
+// must receive zero notify calls even though the scene still gets recorded.
 func TestApplyProposalHandler_AdultRenameNoMove_NoStashNotify(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
-	ctx := context.Background()
-	whisparr := &fakeAdultServarr{addedID: 1}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
+	base := t.TempDir()
+	destRoot := filepath.Join(base, "Adult")
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	alreadyNamed := filepath.Join(destRoot, adultRenameDestName)
+	if err := os.WriteFile(alreadyNamed, []byte("data"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
+	ctx := context.Background()
 	stash := newFakeStash(0)
 	if err := connStore.Upsert(ctx, "stash", stash.Server(t).URL, "stash-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	p := adultProposalBase()
-	p.SourceName = "Some Scene"
-	p.SourcePath = "/media/Adult/Some.Scene.mp4"
-	p.RootFolderPath = "/media/Adult"
+	p.SourceName, p.SourcePath, p.RootFolderPath = "Some Scene", alreadyNamed, destRoot
 	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Rename, []proposals.Proposal{p})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -850,183 +809,42 @@ func TestApplyProposalHandler_AdultRenameNoMove_NoStashNotify(t *testing.T) {
 	applyProposal(t, srv, saved[0].ID, nil)
 
 	if got := len(stash.ScanCalls()) + len(stash.CleanCalls()); got != 0 {
-		t.Errorf("expected zero Stash calls for a same-root (no-move) rename, got %d", got)
+		t.Errorf("expected zero Stash calls for a same-name (no-move) rename, got %d", got)
 	}
 }
 
-// TestApplyProposalHandler_AdultRenamePartialSuccess_ScanTriggerFails is the
-// single most important test in this slice, proving Critic fix #3: Relocate
-// succeeds (the file physically moves) but the follow-up ScanForDownloaded
-// call fails. Apply's pre-existing partial-success design still marks the
-// proposal Applied (trackedID != 0, registered via Add). What's new here is
-// that Stash is ALSO still notified of the move — a phantom scene would
-// otherwise result, since the file really did move but Stash was never told.
-func TestApplyProposalHandler_AdultRenamePartialSuccess_ScanTriggerFails(t *testing.T) {
-	base := t.TempDir()
-	sourceRoot := filepath.Join(base, "incoming")
-	destRoot := filepath.Join(base, "Adult")
-	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := os.MkdirAll(destRoot, 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	sourcePath := filepath.Join(sourceRoot, "Some.Scene.mp4")
-	if err := os.WriteFile(sourcePath, []byte("data"), 0o644); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+// NOTE (Stage 4, Whisparr elimination): the two former Adult-rename
+// partial-success tests here — *_ScanTriggerFails and *_AddFails — asserted
+// behavior of the Servarr-backed rename.Apply (a Whisparr Add followed by a
+// ScanForDownloaded trigger, either of which could fail after the file
+// already moved). The library-backed ApplyLibraryAdult has neither call, so
+// those exact failure modes no longer exist and the tests were removed. The
+// analogous library-path partial-success rule (a committed move still fed to
+// NotifyPlayers even if the later UpsertScene fails — changes captured before
+// the error check) lives in applyByWorkflow and is unit-tested against
+// ApplyLibraryAdult in internal/rename.
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
-	ctx := context.Background()
-	whisparr := &fakeAdultServarr{addedID: 77, scanStatus: http.StatusInternalServerError}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	stash := newFakeStash(0)
-	if err := connStore.Upsert(ctx, "stash", stash.Server(t).URL, "stash-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	p := adultProposalBase()
-	p.SourceName, p.SourcePath, p.RootFolderPath = "Some Scene", sourcePath, destRoot
-	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Rename, []proposals.Proposal{p})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
-	defer srv.Close()
-
-	// The scan-trigger failure surfaces as a non-200 from Apply (existing
-	// behavior, unrelated to this slice) — but the proposal must still have
-	// been marked Applied underneath, since Add itself succeeded.
-	resp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(saved[0].ID, 10)+"/apply", "application/json", nil)
-	if err != nil {
-		t.Fatalf("apply POST failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		t.Fatalf("expected a non-200 response surfacing the scan-trigger failure, got %d", resp.StatusCode)
-	}
-
-	getResp, err := http.Get(srv.URL + "/api/modes/adult/rename/proposals")
-	if err != nil {
-		t.Fatalf("list GET failed: %v", err)
-	}
-	defer getResp.Body.Close()
-	var listed []proposals.Proposal
-	json.NewDecoder(getResp.Body).Decode(&listed)
-	if len(listed) != 1 || listed[0].Status != proposals.Applied || listed[0].TrackedID != 77 {
-		t.Fatalf("expected the proposal to still be marked Applied with trackedID 77 despite the scan-trigger failure, got %+v", listed)
-	}
-
-	wantDest := filepath.Join(destRoot, "Some.Scene.mp4")
-	if _, err := os.Stat(wantDest); err != nil {
-		t.Fatalf("expected the file to have actually moved to %q despite the later failure: %v", wantDest, err)
-	}
-
-	scanCalls, cleanCalls := stash.ScanCalls(), stash.CleanCalls()
-	if len(scanCalls) != 1 || scanCalls[0]["paths"].([]any)[0] != wantDest {
-		t.Fatalf("expected Stash to still be notified of the move (scan %q) despite the scan-trigger failure, got %+v", wantDest, scanCalls)
-	}
-	if len(cleanCalls) != 1 || cleanCalls[0]["paths"].([]any)[0] != sourcePath {
-		t.Fatalf("expected Stash to still be notified of the vacated source (clean %q) despite the scan-trigger failure, got %+v", sourcePath, cleanCalls)
-	}
-}
-
-// TestApplyProposalHandler_AdultRenamePartialSuccess_AddFails covers the
-// OTHER partial-success sub-case Critic fix #3 targets specifically: Relocate
-// succeeds but Add itself fails, so trackedID never becomes nonzero and the
-// proposal is NOT marked Applied (existing behavior, unchanged) — but the
-// file has still physically moved, so Stash must be told regardless, or a
-// phantom scene results with no corresponding SAK record at all.
-func TestApplyProposalHandler_AdultRenamePartialSuccess_AddFails(t *testing.T) {
-	base := t.TempDir()
-	sourceRoot := filepath.Join(base, "incoming")
-	destRoot := filepath.Join(base, "Adult")
-	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := os.MkdirAll(destRoot, 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	sourcePath := filepath.Join(sourceRoot, "Some.Scene.mp4")
-	if err := os.WriteFile(sourcePath, []byte("data"), 0o644); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
-	ctx := context.Background()
-	whisparr := &fakeAdultServarr{addStatus: http.StatusInternalServerError}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	stash := newFakeStash(0)
-	if err := connStore.Upsert(ctx, "stash", stash.Server(t).URL, "stash-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	p := adultProposalBase()
-	p.SourceName, p.SourcePath, p.RootFolderPath = "Some Scene", sourcePath, destRoot
-	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Rename, []proposals.Proposal{p})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
-	defer srv.Close()
-
-	resp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(saved[0].ID, 10)+"/apply", "application/json", nil)
-	if err != nil {
-		t.Fatalf("apply POST failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		t.Fatalf("expected a non-200 response surfacing the Add failure, got %d", resp.StatusCode)
-	}
-
-	getResp, err := http.Get(srv.URL + "/api/modes/adult/rename/proposals")
-	if err != nil {
-		t.Fatalf("list GET failed: %v", err)
-	}
-	defer getResp.Body.Close()
-	var listed []proposals.Proposal
-	json.NewDecoder(getResp.Body).Decode(&listed)
-	if len(listed) != 1 || listed[0].Status != proposals.Pending {
-		t.Fatalf("expected the proposal to remain Pending (Add never succeeded, so trackedID stayed 0), got %+v", listed)
-	}
-
-	wantDest := filepath.Join(destRoot, "Some.Scene.mp4")
-	if _, err := os.Stat(wantDest); err != nil {
-		t.Fatalf("expected the file to have actually moved to %q despite Add failing afterward: %v", wantDest, err)
-	}
-
-	scanCalls, cleanCalls := stash.ScanCalls(), stash.CleanCalls()
-	if len(scanCalls) != 1 || scanCalls[0]["paths"].([]any)[0] != wantDest {
-		t.Fatalf("expected Stash to still be notified of the move (scan %q) even though Add failed and nothing got MarkApplied, got %+v", wantDest, scanCalls)
-	}
-	if len(cleanCalls) != 1 || cleanCalls[0]["paths"].([]any)[0] != sourcePath {
-		t.Fatalf("expected Stash to still be notified of the vacated source (clean %q) even though Add failed, got %+v", sourcePath, cleanCalls)
-	}
-}
-
-// TestApplyProposalHandler_AdultPurge_NotifiesStash is row 6 end to end:
-// p.SourcePath reaches Stash as a clean, with no corresponding scan.
+// TestApplyProposalHandler_AdultPurge_NotifiesStash is the Adult purge path
+// end to end on the library-backed Apply (Whisparr eliminated, Stage 4): the
+// scene is removed from SAK's own library (DeleteScene, not DeleteTracked) and
+// its file path reaches Stash as a clean, with no corresponding scan.
 func TestApplyProposalHandler_AdultPurge_NotifiesStash(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
-	whisparr := &fakeAdultServarr{}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	stash := newFakeStash(0)
 	if err := connStore.Upsert(ctx, "stash", stash.Server(t).URL, "stash-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sourcePath := "/media/Adult/Flagged Scene"
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "Flagged Scene",
+		FilePath: "/media/Adult/Flagged Scene", RootFolderPath: "/media/Adult",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Purge, []proposals.Proposal{
-		{Status: proposals.Pending, Title: "Flagged Scene", SourcePath: sourcePath, TrackedID: 2},
+		{Status: proposals.Pending, Title: "Flagged Scene", SourcePath: scene.FilePath, TrackedID: int(scene.ID)},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1037,8 +855,12 @@ func TestApplyProposalHandler_AdultPurge_NotifiesStash(t *testing.T) {
 
 	applyProposal(t, srv, saved[0].ID, nil)
 
-	if len(whisparr.deletedIDs) != 1 || whisparr.deletedIDs[0] != "2" {
-		t.Fatalf("expected DeleteTracked(2) against Whisparr, got %+v", whisparr.deletedIDs)
+	scenes, err := libStore.ListScenes(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scenes) != 0 {
+		t.Fatalf("expected the purged scene to be removed from the library, got %+v", scenes)
 	}
 	if got := len(stash.ScanCalls()); got != 0 {
 		t.Errorf("expected zero metadataScan calls for a purge, got %d", got)
@@ -1048,31 +870,43 @@ func TestApplyProposalHandler_AdultPurge_NotifiesStash(t *testing.T) {
 		t.Fatalf("expected exactly 1 metadataClean call, got %d: %+v", len(cleanCalls), cleanCalls)
 	}
 	cleanPaths, _ := cleanCalls[0]["paths"].([]any)
-	if len(cleanPaths) != 1 || cleanPaths[0] != sourcePath {
-		t.Errorf("expected clean of [%q], got %+v", sourcePath, cleanCalls[0]["paths"])
+	if len(cleanPaths) != 1 || cleanPaths[0] != scene.FilePath {
+		t.Errorf("expected clean of [%q], got %+v", scene.FilePath, cleanCalls[0]["paths"])
 	}
 }
 
-// TestApplyProposalHandler_AdultDedupLoser_NotifiesStash is row 9 end to end:
-// the removed tracked loser's candidate path reaches Stash as a clean; the
-// newly-registered winner never moved, so it never appears.
+// TestApplyProposalHandler_AdultDedupLoser_NotifiesStash is the Adult dedup
+// path end to end on the library-backed Apply (Whisparr eliminated, Stage 4):
+// the removed tracked loser is deleted from SAK's own library (DeleteScene)
+// and its path reaches Stash as a clean; the surviving winner is recorded via
+// UpsertScene but never moved, so no scan is emitted.
 func TestApplyProposalHandler_AdultDedupLoser_NotifiesStash(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
-	ctx := context.Background()
-	whisparr := &fakeAdultServarr{addedID: 88}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
+	base := t.TempDir()
+	loserPath := filepath.Join(base, "tracked-scene.mp4")
+	if err := os.WriteFile(loserPath, []byte("data"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
+	ctx := context.Background()
 	stash := newFakeStash(0)
 	if err := connStore.Upsert(ctx, "stash", stash.Server(t).URL, "stash-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	loserPath := "/tracked/scene.mp4"
+	loser, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "loser", Title: "Some Scene",
+		FilePath: loserPath, RootFolderPath: base,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
 	p := adultProposalBase()
+	p.RootFolderPath = base
 	p.Candidates = []proposals.Candidate{
-		{Label: "tracked", Path: loserPath, TrackedID: 9},
-		{Label: "winner", Path: "/media/Adult/winner.mp4", Winner: true},
+		{Label: "tracked", Path: loserPath, TrackedID: int(loser.ID)},
+		{Label: "winner", Path: filepath.Join(base, "winner.mp4"), Winner: true},
 	}
 	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Dedup, []proposals.Proposal{p})
 	if err != nil {
@@ -1084,8 +918,17 @@ func TestApplyProposalHandler_AdultDedupLoser_NotifiesStash(t *testing.T) {
 
 	applyProposal(t, srv, saved[0].ID, nil)
 
-	if len(whisparr.deletedIDs) != 1 || whisparr.deletedIDs[0] != "9" {
-		t.Fatalf("expected DeleteTracked(9) against Whisparr for the tracked loser, got %+v", whisparr.deletedIDs)
+	// The tracked loser's file is gone and so is its library row; the winner is
+	// now the one tracked scene for this (box, scene_id).
+	if _, err := os.Stat(loserPath); !os.IsNotExist(err) {
+		t.Errorf("expected the loser file to be deleted, stat returned: %v", err)
+	}
+	scenes, err := libStore.ListScenes(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scenes) != 1 || scenes[0].SceneID != "a29768db-b3cd-4a71-a75e-4294373207bb" {
+		t.Fatalf("expected only the winning scene to remain tracked, got %+v", scenes)
 	}
 	if got := len(stash.ScanCalls()); got != 0 {
 		t.Errorf("expected zero metadataScan calls — the winner never moved, so nothing is Created — got %d", got)
@@ -1098,9 +941,6 @@ func TestApplyProposalHandler_AdultDedupLoser_NotifiesStash(t *testing.T) {
 	if len(cleanPaths) != 1 || cleanPaths[0] != loserPath {
 		t.Errorf("expected clean of [%q], got %+v", loserPath, cleanCalls[0]["paths"])
 	}
-	if whisparr.scanTriggers != 1 {
-		t.Errorf("expected the existing Whisparr downloaded-files scan trigger to still fire once for the newly-registered winner, got %d", whisparr.scanTriggers)
-	}
 }
 
 // TestApplyProposalHandler_AdultDedupKeepAll_NoStashNotify is Edge #3's Adult
@@ -1108,10 +948,6 @@ func TestApplyProposalHandler_AdultDedupLoser_NotifiesStash(t *testing.T) {
 func TestApplyProposalHandler_AdultDedupKeepAll_NoStashNotify(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
-	whisparr := &fakeAdultServarr{}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	stash := newFakeStash(0)
 	if err := connStore.Upsert(ctx, "stash", stash.Server(t).URL, "stash-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1151,17 +987,19 @@ func TestApplyProposalHandler_AdultApply_JellyfinConnectionConfigured_SendsNothi
 
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
-	whisparr := &fakeAdultServarr{}
-	if err := connStore.Upsert(ctx, "whisparr", whisparr.Server(t).URL, "test-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if err := connStore.Upsert(ctx, "jellyfin", jfSrv.URL, "jf-key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sourcePath := "/media/Adult/Flagged Scene"
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "Flagged Scene",
+		FilePath: "/media/Adult/Flagged Scene", RootFolderPath: "/media/Adult",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Purge, []proposals.Proposal{
-		{Status: proposals.Pending, Title: "Flagged Scene", SourcePath: sourcePath, TrackedID: 2},
+		{Status: proposals.Pending, Title: "Flagged Scene", SourcePath: scene.FilePath, TrackedID: int(scene.ID)},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

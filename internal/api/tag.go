@@ -22,10 +22,12 @@ type libraryTagEntry struct {
 	Label string `json:"label"`
 }
 
-// listTagsHandler returns {mode}'s current tag vocabulary. For Movies/
-// Series this is entirely local (libStore's TagVocabulary/
-// SeriesTagVocabulary — distinct tags already in use, imported live from
-// usage); Adult still goes straight to the live *arr app, unchanged.
+// listTagsHandler returns {mode}'s current tag vocabulary for Movies/Series —
+// entirely local (libStore's TagVocabulary/SeriesTagVocabulary, distinct tags
+// already in use, imported live from usage). Adult's tags moved to the
+// scene-tag routes when Whisparr was eliminated (Stage 4), so this old
+// *arr-item route 400s for Adult; the trailing mode.Build path now only ever
+// serves an unknown mode (which mode.Build rejects before any nil deref).
 func listTagsHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -50,6 +52,16 @@ func listTagsHandler(httpClient *http.Client, connStore *connections.Store, sett
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
+			return
+		}
+
+		// Adult owns its own library now (Whisparr eliminated, Stage 4), so
+		// there is no *arr Tags resource to browse and the old Whisparr-backed
+		// tag.Vocabulary path is gone. Adult tags are scene-level: fail cleanly
+		// here (rather than nil-deref sess.Servarr) and point at the scene-tag
+		// route. This guard MUST precede mode.Build/tag.Vocabulary below.
+		if m == mode.Adult {
+			http.Error(w, "adult tags are managed per scene now — use /api/modes/adult/scenes/tags and /api/modes/adult/scenes/{sceneId}/tags", http.StatusBadRequest)
 			return
 		}
 
@@ -113,6 +125,12 @@ func addItemTagHandler(httpClient *http.Client, connStore *connections.Store, se
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return
+		case mode.Adult:
+			// Adult tags are scene-level now (Whisparr eliminated, Stage 4) —
+			// this old *arr-item route no longer applies. Fail cleanly (rather
+			// than nil-deref sess.Servarr) and point at the scene-tag route.
+			http.Error(w, "adult tags are managed per scene now — use POST /api/modes/adult/scenes/{sceneId}/tags", http.StatusBadRequest)
+			return
 		}
 
 		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, m)
@@ -158,6 +176,12 @@ func removeItemTagHandler(httpClient *http.Client, connStore *connections.Store,
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+			return
+		case mode.Adult:
+			// Adult tags are scene-level now (Whisparr eliminated, Stage 4) —
+			// this old *arr-item route no longer applies. Fail cleanly (rather
+			// than nil-deref sess.Servarr) and point at the scene-tag route.
+			http.Error(w, "adult tags are managed per scene now — use DELETE /api/modes/adult/scenes/{sceneId}/tags/{tagId}", http.StatusBadRequest)
 			return
 		}
 

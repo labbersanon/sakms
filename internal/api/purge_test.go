@@ -163,31 +163,17 @@ func TestAddAllowlistTagHandler_RequiresTag(t *testing.T) {
 	}
 }
 
-// TestPurgeScanHandler_ModeNotConfigured proves Adult's Purge Scan still
-// requires a Whisparr connection (unchanged, *arr-backed) — Movies/Series
-// no longer need any connection at all for Purge (see
-// TestPurgeScanHandler_NoConnectionNeeded below).
-func TestPurgeScanHandler_ModeNotConfigured(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
-	defer srv.Close()
-
-	resp, err := http.Post(srv.URL+"/api/modes/adult/purge/scan", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 when whisparr isn't configured yet, got %d", resp.StatusCode)
-	}
-}
-
+// TestPurgeScanHandler_NoConnectionNeeded proves no mode needs any *arr
+// connection for Purge anymore — Movies/Series since their eliminations, and
+// Adult since Stage 4's Whisparr elimination (its Scan is now the pure
+// library-backed purge.ScanLibraryAdult, returning an empty queue for an
+// empty library rather than 400-ing on a missing Whisparr).
 func TestPurgeScanHandler_NoConnectionNeeded(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
 	defer srv.Close()
 
-	for _, m := range []string{"movies", "series"} {
+	for _, m := range []string{"movies", "series", "adult"} {
 		resp, err := http.Post(srv.URL+"/api/modes/"+m+"/purge/scan", "application/json", nil)
 		if err != nil {
 			t.Fatalf("POST failed: %v", err)

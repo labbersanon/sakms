@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -15,16 +16,16 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
 )
 
-// TestAdultDedupWorkflow_ScanThenApply_EndToEnd is the full proof of the Adult
-// Dedup slice against the real HTTP handlers, a real migrated SQLite database,
-// a fake Whisparr + fake StashDB + present-but-unused fake Ollama, and real
-// on-disk files. Two unmapped folders resolve (via the UUID path) to the same
-// scene → one Dedup proposal carrying a ForeignID; applying it through the
-// generic /api/proposals/{id}/apply route registers the surviving copy as a
-// Whisparr scene (foreignId/itemType) and removes the loser.
+// TestAdultDedupWorkflow_ScanThenApply_EndToEnd is the full proof of the
+// library-backed Adult Dedup slice (Whisparr eliminated, Stage 4) against the
+// real HTTP handlers, a real migrated SQLite database, a fake StashDB +
+// present-but-unused fake Ollama, and real on-disk files. Two scene folders
+// resolve (via the UUID path) to the same (box, scene_id) → one Dedup proposal
+// carrying that identity and 2 candidates; applying it through the generic
+// /api/proposals/{id}/apply route records the surviving copy in SAK's own
+// library (library_scenes) and removes the loser's file — no Whisparr.
 func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
-	dir := t.TempDir()
-	adultRoot := filepath.Join(dir, "Adult")
+	adultRoot := t.TempDir()
 	nameSD := "Some.Scene.SD." + sceneUUID
 	nameHD := "Some.Scene.HD." + sceneUUID
 	dirSD := filepath.Join(adultRoot, nameSD)
@@ -32,28 +33,6 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	fileSD := writeTestVideoFile(t, dirSD, "scene.mkv", 10)
 	fileHD := writeTestVideoFile(t, dirHD, "scene.mkv", 10)
 
-	var addBody map[string]any
-	fakeWhisparr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v3/rootfolder":
-			w.Write([]byte(`[{"id":1,"path":"` + adultRoot + `","accessible":true,"freeSpace":1,"unmappedFolders":[
-				{"name":"` + nameSD + `","path":"` + dirSD + `","relativePath":"` + nameSD + `"},
-				{"name":"` + nameHD + `","path":"` + dirHD + `","relativePath":"` + nameHD + `"}
-			]}]`))
-		case r.URL.Path == "/api/v3/movie" && r.Method == http.MethodGet:
-			w.Write([]byte(`[]`))
-		case r.URL.Path == "/api/v3/movie" && r.Method == http.MethodPost:
-			json.NewDecoder(r.Body).Decode(&addBody)
-			json.NewEncoder(w).Encode(map[string]any{"id": 88})
-		case r.URL.Path == "/api/v3/qualityprofile":
-			w.Write([]byte(`[{"id":4,"name":"HD"}]`))
-		case r.URL.Path == "/api/v3/command":
-			w.Write([]byte(`{}`))
-		default:
-			t.Fatalf("unexpected whisparr request: %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer fakeWhisparr.Close()
 	fakeStashDB := httptest.NewServer(fakeStashboxFindScene(t))
 	defer fakeStashDB.Close()
 	fakeOllama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +43,6 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
 	for _, c := range []struct{ service, url string }{
-		{"whisparr", fakeWhisparr.URL},
 		{"stashdb", fakeStashDB.URL},
 		{"ollama", fakeOllama.URL},
 	} {
@@ -74,6 +52,9 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	}
 	if err := settingsStore.Set(ctx, mode.AIModelKey, "test-model"); err != nil {
 		t.Fatalf("seeding ollama model: %v", err)
+	}
+	if err := settingsStore.Set(ctx, adultLibraryRootFolderKey, adultRoot); err != nil {
+		t.Fatalf("seeding adult root folder: %v", err)
 	}
 
 	prober := &fakeDedupProber{byPath: map[string]*mediainfo.Probe{
@@ -99,15 +80,22 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		t.Fatalf("expected exactly one dedup proposal, got %+v", scanned)
 	}
 	p := scanned[0]
-	if p.Status != proposals.Pending || p.ForeignID != sceneUUID || p.ItemType != "scene" {
-		t.Fatalf("expected a Pending proposal keyed by foreignID, got %+v", p)
+	// A dedup proposal keys by the raw (box, scene_id) give-back identity, not
+	// ForeignID (which stays empty on the dedup path — the group identity lives
+	// in GiveBackBox/GiveBackSceneID, the same separate-column pair
+	// library_scenes is keyed on).
+	if p.Status != proposals.Pending || p.ItemType != "scene" {
+		t.Fatalf("expected a Pending scene proposal, got %+v", p)
+	}
+	if p.GiveBackBox != "stashdb" || p.GiveBackSceneID != sceneUUID {
+		t.Fatalf("expected the raw (box, scene_id) give-back identity captured, got box=%q scene=%q", p.GiveBackBox, p.GiveBackSceneID)
 	}
 	if len(p.Candidates) != 2 {
 		t.Fatalf("expected 2 candidates, got %+v", p.Candidates)
 	}
 
-	// Apply with no body → auto-resolve by quality (the HD orphan wins, gets
-	// registered as a scene; the SD orphan is removed).
+	// Apply with no body → auto-resolve by quality (the HD copy wins and is
+	// recorded as the tracked scene; the SD copy's file is removed).
 	applyResp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(p.ID, 10)+"/apply", "application/json", nil)
 	if err != nil {
 		t.Fatalf("apply POST failed: %v", err)
@@ -119,10 +107,20 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	}
 	var applied proposals.Proposal
 	json.NewDecoder(applyResp.Body).Decode(&applied)
-	if applied.Status != proposals.Applied || applied.TrackedID != 88 {
-		t.Fatalf("expected the proposal Applied with trackedId=88, got %+v", applied)
+	if applied.Status != proposals.Applied || applied.TrackedID == 0 {
+		t.Fatalf("expected the proposal Applied with a nonzero library scene id, got %+v", applied)
 	}
-	if addBody["foreignId"] != sceneUUID || addBody["itemType"] != "scene" {
-		t.Fatalf("expected Whisparr to receive the scene identifiers on register, got %+v", addBody)
+
+	// The winning copy is now the one tracked scene for this (box, scene_id).
+	scene, err := libStore.GetScene(ctx, "stashdb", sceneUUID)
+	if err != nil {
+		t.Fatalf("expected the surviving scene to be recorded, got: %v", err)
+	}
+	if scene.FilePath != fileHD {
+		t.Errorf("expected the HD copy %q to be the tracked survivor, got %q", fileHD, scene.FilePath)
+	}
+	// The loser's file is gone.
+	if _, err := os.Stat(fileSD); !os.IsNotExist(err) {
+		t.Errorf("expected the SD loser file to be deleted, stat returned: %v", err)
 	}
 }

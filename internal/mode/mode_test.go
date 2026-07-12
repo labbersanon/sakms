@@ -16,7 +16,6 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/db"
 	"github.com/curtiswtaylorjr/sakms/internal/jellyfin"
 	"github.com/curtiswtaylorjr/sakms/internal/secrets"
-	"github.com/curtiswtaylorjr/sakms/internal/servarr"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
 	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
 )
@@ -78,14 +77,30 @@ func TestBuild_Series_NoServarrConnectionRequired(t *testing.T) {
 	}
 }
 
-func TestBuild_MissingConnection(t *testing.T) {
+// TestBuild_Adult_NoServarrConnectionRequired proves Adult no longer needs a
+// Whisparr connection (Whisparr eliminated, Stage 4) — Build succeeds with no
+// connections configured at all and leaves sess.Servarr nil, exactly like
+// Movies/Series now do.
+func TestBuild_Adult_NoServarrConnectionRequired(t *testing.T) {
 	store, settingsStore := newTestStores(t)
-	if _, err := Build(context.Background(), store, settingsStore, &http.Client{}, Adult); err == nil {
-		t.Fatal("expected an error when whisparr isn't configured yet")
+
+	sess, err := Build(context.Background(), store, settingsStore, &http.Client{Timeout: time.Second}, Adult)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sess.Mode != Adult {
+		t.Errorf("expected Mode to be Adult, got %v", sess.Mode)
+	}
+	if sess.Servarr != nil {
+		t.Errorf("expected a nil Servarr client for Adult now, got %+v", sess.Servarr)
 	}
 }
 
-func TestBuild_AdultUsesWhisparrConnection(t *testing.T) {
+// TestBuild_Adult_ServarrAlwaysNil proves that even with a "whisparr"
+// connection still configured, Build constructs no Servarr client for Adult —
+// the wiring that read that connection is gone (Stage 4), though the shared
+// internal/servarr client package is retained.
+func TestBuild_Adult_ServarrAlwaysNil(t *testing.T) {
 	store, settingsStore := newTestStores(t)
 	ctx := context.Background()
 	if err := store.Upsert(ctx, "whisparr", "http://whisparr.local:6969", "whisparr-key"); err != nil {
@@ -96,25 +111,8 @@ func TestBuild_AdultUsesWhisparrConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sess.Mode != Adult {
-		t.Errorf("expected Mode to be Adult, got %v", sess.Mode)
-	}
-	if sess.Servarr.AppType() != servarr.Whisparr {
-		t.Errorf("expected the Whisparr app type, got %v", sess.Servarr.AppType())
-	}
-}
-
-func TestBuild_AdultMissingConnection(t *testing.T) {
-	store, settingsStore := newTestStores(t)
-	_, err := Build(context.Background(), store, settingsStore, &http.Client{}, Adult)
-	if err == nil {
-		t.Fatal("expected an error when whisparr isn't configured yet")
-	}
-	if !strings.Contains(err.Error(), "isn't configured yet") {
-		t.Errorf("expected the 'not configured yet' error, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "wired up") {
-		t.Errorf("stale 'wired up' error still returned: %v", err)
+	if sess.Servarr != nil {
+		t.Errorf("expected sess.Servarr to stay nil for Adult even with whisparr configured, got %+v", sess.Servarr)
 	}
 }
 

@@ -9,25 +9,23 @@ import (
 
 	"github.com/curtiswtaylorjr/sakms/internal/library"
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/servarr"
 )
 
-// TestListTracked_Adult_ReturnsItemsFromTheRealApp proves the generic
-// Servarr-backed path still works for Adult (Whisparr) — the only mode
-// left on it now that Movies and Series both own their own library.
-func TestListTracked_Adult_ReturnsItemsFromTheRealApp(t *testing.T) {
-	fakeWhisparr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v3/movie" {
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"id":1,"title":"Some Scene","foreignId":"abc","tags":[2,3]}]`))
-	}))
-	defer fakeWhisparr.Close()
-
+// TestListTracked_Adult_ReturnsSceneLibraryItems proves Adult is served
+// straight from libStore now (Whisparr eliminated, Stage 4) — scene id,
+// title, and scene-level tags, the same {id, title, tags} shape Movies/Series
+// return, keyed on a library_scenes row.
+func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
-	if err := connStore.Upsert(ctx, "whisparr", fakeWhisparr.URL, "test-key"); err != nil {
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
+		FilePath: "/media/Adult/Some Scene.mp4", RootFolderPath: "/media/Adult",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := libStore.AddSceneTag(ctx, scene.ID, "favorite"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -42,16 +40,19 @@ func TestListTracked_Adult_ReturnsItemsFromTheRealApp(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	var got []servarr.TrackedItem
+	var got []libraryTrackedItem
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
-	if len(got) != 1 || got[0].Title != "Some Scene" || len(got[0].TagIDs) != 2 {
+	if len(got) != 1 || got[0].Title != "Some Scene" || len(got[0].Tags) != 1 || got[0].Tags[0] != "favorite" {
 		t.Fatalf("unexpected response: %+v", got)
 	}
 }
 
-func TestListTracked_Adult_MissingConnection(t *testing.T) {
+// TestListTracked_Adult_EmptyWhenNoScenes proves Adult needs no *arr
+// connection at all now — an empty library returns an empty list with 200,
+// not a 400 (the old Whisparr-missing behavior).
+func TestListTracked_Adult_EmptyWhenNoScenes(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
 	defer srv.Close()
@@ -61,8 +62,15 @@ func TestListTracked_Adult_MissingConnection(t *testing.T) {
 		t.Fatalf("GET failed: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 when whisparr isn't configured, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with no connection and an empty library, got %d", resp.StatusCode)
+	}
+	var got []libraryTrackedItem
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected an empty list, got %+v", got)
 	}
 }
 

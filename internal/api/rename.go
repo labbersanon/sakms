@@ -68,12 +68,12 @@ func putKidsRootPathHandler(settingsStore *settings.Store) http.HandlerFunc {
 
 // renameScanHandler runs the Rename workflow's propose-phase for {mode} and
 // replaces that mode's live Rename queue with the result — the HTTP
-// equivalent of the top bar's Scan button. Movies/Series dispatch to
-// rename.ScanLibrary/ScanLibrarySeries (libStore, no *arr app involved);
-// Adult uses the Servarr-backed rename.Scan, threading in the videophash
-// hasher and the mediainfo prober for phash-first identification and resolving
-// the per-mode identify-enabled toggle as Scan's sole dispatch gate. prober is
-// the mux's shared *mediainfo.Prober (its method set satisfies rename.Prober).
+// equivalent of the top bar's Scan button. Every mode dispatches to a
+// library-backed sibling now (no *arr app involved): Movies/Series to
+// rename.ScanLibrary/ScanLibrarySeries, Adult to rename.ScanLibraryAdult
+// (Whisparr eliminated, Stage 4), threading in the videophash hasher and the
+// mediainfo prober for its phash-first identification cascade. prober is the
+// mux's shared *mediainfo.Prober (its method set satisfies rename.Prober).
 func renameScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, prober dedup.Prober, videoHasher rename.PHasher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -115,12 +115,19 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, se
 				found, err = rename.ScanLibrarySeries(ctx, sess, libStore, rootPath, preset, confidenceThreshold)
 			}
 		} else {
-			enabled, enErr := resolveAdultIdentifyEnabled(ctx, settingsStore)
-			if enErr != nil {
-				http.Error(w, enErr.Error(), http.StatusInternalServerError)
+			// Adult owns its own library now too (Whisparr eliminated, Stage 4):
+			// dispatch to the library-backed sibling, the mirror image of the
+			// Movies/Series branch above. Adult has its own free-typed
+			// library-root-folder key (libraryRootFolderKey). Identification is
+			// always run (ScanLibraryAdult requires sess.Identify), so the old
+			// adult_identify_enabled toggle no longer gates the scan.
+			key, _ := libraryRootFolderKey(m)
+			rootPath, rpErr := settingsStore.Get(ctx, key)
+			if rpErr != nil && !errors.Is(rpErr, settings.ErrNotFound) {
+				http.Error(w, rpErr.Error(), http.StatusInternalServerError)
 				return
 			}
-			found, err = rename.Scan(ctx, sess, videoHasher, prober, enabled)
+			found, err = rename.ScanLibraryAdult(ctx, sess, libStore, videoHasher, prober, rootPath)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

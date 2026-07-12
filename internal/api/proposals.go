@@ -49,13 +49,13 @@ type applyProposalRequest struct {
 	KeepAll   bool `json:"keepAll,omitempty"`
 }
 
-// applyProposalHandler is the only place in SAK's API that actually
-// mutates a *arr app on a workflow's behalf — and only for the one proposal
-// ID in the URL, never a batch, matching the design's staged-for-approval
-// principle: a Scan proposes, a human picks, Apply commits exactly that. The
-// proposal's own Workflow field (set at Scan time) decides which package's
-// Apply actually runs — the URL doesn't need to say which, since a proposal
-// ID alone is already unambiguous.
+// applyProposalHandler commits exactly the one proposal ID in the URL, never
+// a batch, matching the design's staged-for-approval principle: a Scan
+// proposes, a human picks, Apply commits exactly that. The proposal's own
+// Workflow field (set at Scan time) decides which package's Apply actually
+// runs — the URL doesn't need to say which, since a proposal ID alone is
+// already unambiguous. No mode touches a *arr app anymore; every Apply is
+// library-backed (see applyByWorkflow).
 func applyProposalHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
@@ -76,9 +76,11 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 			return
 		}
 
-		// Movies proposals never need a Servarr session (their Apply path is
-		// entirely libStore-backed — see applyByWorkflow), but mode.Build is
-		// still cheap and harmless to call: it just leaves sess.Servarr nil.
+		// No proposal needs a Servarr session anymore (every Apply path is
+		// libStore-backed — see applyByWorkflow), but mode.Build is still
+		// needed for sess.Identify/sess.Stash (Adult give-back + player-rescan
+		// notify) and sess.Jellyfin (Movies/Series notify); it leaves
+		// sess.Servarr nil for every mode now.
 		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, p.Mode)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -107,15 +109,17 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 var errUnknownWorkflow = errors.New("unknown proposal workflow")
 
 // applyByWorkflow dispatches to the right package's Apply and records the
-// outcome. Movies/Series route each workflow to its libStore-backed
-// *Library counterpart instead (no *arr app involved); Adult uses the
-// existing Servarr-backed functions, unchanged. The three workflows have
-// different success shapes — Rename can partially succeed (registered, but
-// the follow-up scan trigger failed) and still counts as applied; Purge's
-// delete either fully succeeds or fully fails; Dedup's Apply already
-// returns the resulting tracked id the same way Rename's does — so each
+// outcome. Every mode routes each workflow to its libStore-backed *Library
+// counterpart now (no *arr app involved): Movies to *Library, Series to
+// *LibrarySeries, Adult to *LibraryAdult (Whisparr eliminated, Stage 4). The
+// three workflows have different success shapes — Rename relocates+records
+// (and Adult's variant additionally reports a best-effort fingerprint
+// give-back); Purge's delete either fully succeeds or fully fails; Dedup's
+// Apply returns the resulting tracked id the same way Rename's does — so each
 // branch marks the queue accordingly rather than forcing all three through
-// one shared success rule.
+// one shared success rule. A committed file move is still fed to
+// sess.NotifyPlayers even when the branch returns a non-nil err afterward
+// (partial-success rule; changes is captured before the error check).
 func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, sess *mode.Session, p proposals.Proposal, req applyProposalRequest) error {
 	// changes accumulates whatever file-level mutations the branch below
 	// actually commits to disk; the deferred NotifyPlayers fires on
@@ -153,23 +157,29 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 				return err
 			}
 			return propStore.MarkApplied(ctx, p.ID, int(episodeID))
-		}
-		trackedID, fingerprintSubmitted, c, err := rename.Apply(ctx, sess, p)
-		changes = c
-		if trackedID != 0 {
-			// Registered even if the follow-up scan trigger failed — see
-			// rename.Apply's doc comment. Record it as applied either way so
-			// the queue doesn't lose track of an item that's now real.
-			if markErr := propStore.MarkApplied(ctx, p.ID, trackedID); markErr != nil {
+		case mode.Adult:
+			// Adult owns its own library now too (Whisparr eliminated,
+			// Stage 4): relocate+rename to the AdultFileName scheme and
+			// UpsertScene, never touching Whisparr. sess is threaded in only
+			// for fingerprint give-back (best-effort). changes is captured
+			// before the error check so a post-move UpsertScene failure still
+			// notifies Stash of what physically moved (partial-success rule,
+			// same as the Movies/Series library path).
+			sceneID, fingerprintSubmitted, c, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p)
+			changes = c
+			if err != nil {
+				return err
+			}
+			if markErr := propStore.MarkApplied(ctx, p.ID, int(sceneID)); markErr != nil {
 				return markErr
 			}
 			if fingerprintSubmitted {
-				if markErr := propStore.MarkFingerprintSubmitted(ctx, p.ID); markErr != nil {
-					return markErr
-				}
+				return propStore.MarkFingerprintSubmitted(ctx, p.ID)
 			}
+			return nil
+		default:
+			return fmt.Errorf("rename for unknown mode %q", p.Mode)
 		}
-		return err
 	case proposals.Purge:
 		switch p.Mode {
 		case mode.Movies:
@@ -186,13 +196,16 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 				return err
 			}
 			return propStore.MarkApplied(ctx, p.ID, p.TrackedID)
+		case mode.Adult:
+			c, err := purge.ApplyLibraryAdult(ctx, libStore, p)
+			changes = c
+			if err != nil {
+				return err
+			}
+			return propStore.MarkApplied(ctx, p.ID, p.TrackedID)
+		default:
+			return fmt.Errorf("purge for unknown mode %q", p.Mode)
 		}
-		c, err := purge.Apply(ctx, sess, p)
-		changes = c
-		if err != nil {
-			return err
-		}
-		return propStore.MarkApplied(ctx, p.ID, p.TrackedID)
 	case proposals.Dedup:
 		switch p.Mode {
 		case mode.Movies:
@@ -209,13 +222,16 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 				return err
 			}
 			return propStore.MarkApplied(ctx, p.ID, int(episodeID))
+		case mode.Adult:
+			sceneID, c, err := dedup.ApplyLibraryAdult(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			changes = c
+			if err != nil {
+				return err
+			}
+			return propStore.MarkApplied(ctx, p.ID, int(sceneID))
+		default:
+			return fmt.Errorf("dedup for unknown mode %q", p.Mode)
 		}
-		trackedID, c, err := dedup.Apply(ctx, sess, p, req.KeepIndex, req.KeepAll)
-		changes = c
-		if err != nil {
-			return err
-		}
-		return propStore.MarkApplied(ctx, p.ID, trackedID)
 	default:
 		return fmt.Errorf("%w: %q", errUnknownWorkflow, p.Workflow)
 	}

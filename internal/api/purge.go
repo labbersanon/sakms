@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/curtiswtaylorjr/sakms/internal/allowlist"
@@ -16,9 +17,11 @@ import (
 // purgeScanHandler runs the Purge workflow's propose-phase for {mode}:
 // fetches that mode's current allowlist, matches it against every tracked
 // item's tags, and replaces the live Purge queue with whatever matched.
-// Movies/Series dispatch to purge.ScanLibrary/ScanLibrarySeries (libStore,
-// no *arr app involved); Adult uses the existing Servarr-backed
-// purge.Scan, unchanged.
+// Every mode dispatches to a library-backed sibling now (libStore, no *arr
+// app involved): Movies/Series to purge.ScanLibrary/ScanLibrarySeries, Adult
+// to purge.ScanLibraryAdult (Whisparr eliminated, Stage 4). connStore/
+// settingsStore/httpClient are retained on the signature (NewMux wires them)
+// but no longer used here, since no mode builds a Servarr session.
 func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -36,13 +39,13 @@ func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, set
 			found, err = purge.ScanLibrary(ctx, libStore, rules)
 		case mode.Series:
 			found, err = purge.ScanLibrarySeries(ctx, libStore, rules)
+		case mode.Adult:
+			// Adult owns its own library now too (Whisparr eliminated, Stage 4)
+			// — served straight from libStore, no *arr app to ask.
+			found, err = purge.ScanLibraryAdult(ctx, libStore, rules)
 		default:
-			sess, buildErr := mode.Build(ctx, connStore, settingsStore, httpClient, m)
-			if buildErr != nil {
-				http.Error(w, buildErr.Error(), http.StatusBadRequest)
-				return
-			}
-			found, err = purge.Scan(ctx, sess, rules)
+			http.Error(w, fmt.Sprintf("unknown mode %q", m), http.StatusBadRequest)
+			return
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

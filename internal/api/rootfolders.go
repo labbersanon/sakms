@@ -1,53 +1,24 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
 )
 
-type rootFolderSummary struct {
-	Path       string `json:"path"`
-	Accessible bool   `json:"accessible"`
-}
-
-// listRootFoldersHandler returns {mode}'s currently configured root folders
-// as reported by its own *arr app — the same call Rename's Scan already
-// makes, exposed read-only so a Settings UI can offer a real picker (e.g.
-// for kids-root-path) instead of free-text entry, which would reintroduce
-// exactly the typo/staleness risk that control is designed to avoid. Not
-// applicable to Movies or Series anymore — neither has a *arr app to ask
-// (see GET/PUT /api/modes/{mode}/library/root-folder instead).
+// listRootFoldersHandler used to proxy the mode's *arr app root-folder list so
+// a Settings UI could offer a real picker. Every mode owns its own library
+// now — Movies/Series since their Radarr/Sonarr eliminations, Adult since
+// Stage 4's Whisparr elimination — so there is no *arr app to ask for any
+// mode. All modes are directed to the free-typed library root-folder setting
+// (GET/PUT /api/modes/{mode}/library/root-folder) instead. Kept as a clean
+// 400 rather than deleting the route, so an older frontend build gets a clear
+// message instead of a 404. connStore/settingsStore/httpClient are retained
+// on the signature (NewMux wires them) but no longer used, since there is no
+// Servarr session to build.
 func listRootFoldersHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		m := mode.Mode(r.PathValue("mode"))
-		ctx := r.Context()
-
-		if m == mode.Movies || m == mode.Series {
-			http.Error(w, "movies and series have no *arr-reported root folders anymore — see /library/root-folder", http.StatusBadRequest)
-			return
-		}
-
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, m)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		folders, err := sess.Servarr.RootFolders(ctx)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-
-		out := make([]rootFolderSummary, len(folders))
-		for i, f := range folders {
-			out[i] = rootFolderSummary{Path: f.Path, Accessible: f.Accessible}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(out)
+		http.Error(w, "root folders come from each mode's own library setting now — see GET/PUT /api/modes/{mode}/library/root-folder", http.StatusBadRequest)
 	}
 }

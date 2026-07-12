@@ -3,13 +3,17 @@ package identify
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/curtiswtaylorjr/sakms/internal/ollama"
 )
 
-// ParsedFilename is the result of asking the local LLM to extract metadata
-// from a bare filename stem (+ optional parent-folder context).
+// ParsedFilename is the result of extracting metadata from a bare filename
+// stem (+ optional parent-folder context): studio/title/performers come from
+// the local LLM, Year is resolved deterministically (see
+// ExtractYearFromToken) since a qwen2.5:1.5b-scale model was found to
+// frequently mis-bind which segment of a YY.MM.DD token is the year.
 type ParsedFilename struct {
 	Studio     string
 	Title      string
@@ -17,16 +21,44 @@ type ParsedFilename struct {
 	Performers []string
 }
 
-// ParseFilename asks Ollama to extract studio/title/year/performers from a
-// filename stem. parentName (if non-empty) is passed as extra context — a
-// parent folder often names the real studio/performer/date more reliably than
-// the filename alone.
+// dateTokenPattern matches a YY.MM.DD or YYYY.MM.DD-style date token: a
+// 2-or-4-digit year, a valid month (01-12), and a valid day (01-31),
+// dot-separated. This is a fully mechanical pattern, not something that
+// benefits from an LLM's judgment.
+var dateTokenPattern = regexp.MustCompile(`\b(\d{2}|\d{4})\.(0[1-9]|1[0-2])\.(0[1-9]|[12]\d|3[01])\b`)
+
+// ExtractYearFromToken finds a YY.MM.DD or YYYY.MM.DD-style date token in s
+// and returns its normalized 4-digit year, or "" if no such token is present.
+// A 2-digit year is expanded as 20XX.
+func ExtractYearFromToken(s string) string {
+	m := dateTokenPattern.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	year := m[1]
+	if len(year) == 2 {
+		return "20" + year
+	}
+	return year
+}
+
+// ParseFilename asks Ollama to extract studio/title/performers from a
+// filename stem, and resolves the year deterministically from a date token in
+// the stem (falling back to parentName) rather than asking the LLM — see
+// ExtractYearFromToken. parentName (if non-empty) is also passed to the LLM as
+// extra context — a parent folder often names the real studio/performer more
+// reliably than the filename alone.
 func ParseFilename(ctx context.Context, client AIClient, stem, parentName string) (ParsedFilename, error) {
+	year := ExtractYearFromToken(stem)
+	if year == "" {
+		year = ExtractYearFromToken(parentName)
+	}
+
 	contextStr := ""
 	if parentName != "" {
 		contextStr = fmt.Sprintf(
 			"Context: The file was found in a parent folder named: '%s'.\n"+
-				"This folder name often contains the real studio name, performer name, release date, or other key identifiers. Use it to guide your extraction.\n\n",
+				"This folder name often contains the real studio name or performer name. Use it to guide your extraction.\n\n",
 			parentName)
 	}
 
@@ -35,16 +67,12 @@ func ParseFilename(ctx context.Context, client AIClient, stem, parentName string
 		"Analyze the filename stem and extract:\n" +
 		"1. studio: The production company/site/label (usually at the very beginning of the filename or matching the parent folder name, e.g., 'Tushy', 'Wow Girls', 'Brazzers', 'Candygirl Video').\n" +
 		"2. title: The main descriptive name/title of the scene.\n" +
-		"3. year: The release year (4 digits), or null if not found — see the date rule below.\n" +
-		"4. performers: A JSON array of performer/actor names mentioned in the filename or parent folder name, or null/empty array if none.\n\n" +
+		"3. performers: A JSON array of performer/actor names mentioned in the filename or parent folder name, or null/empty array if none.\n\n" +
 		"Guidelines:\n" +
-		"- Clean up the title, studio, and performer names (remove extra tags like resolution, video quality, site domains, etc.).\n" +
+		"- Clean up the title, studio, and performer names (remove extra tags like resolution, video quality, site domains, release dates, and release-group suffixes).\n" +
 		"- Dots, dashes, and underscores in the filename are typically word separators, not literal characters — when extracting studio, title, or performer names, replace them with spaces and capitalize each word normally (e.g., 'riley.reid' becomes 'Riley Reid', 'deep-desires' becomes 'Deep Desires'). Only keep punctuation that's a genuine part of a name (e.g., a hyphenated surname).\n" +
 		"- For studio, do NOT return names of aggregator/tube sites or host sites if there is a real studio name.\n" +
-		"- DATE RULE (read carefully): a year may ONLY come from a YY.MM.DD or YYYY.MM.DD-style date token actually present in the filename — never from your own knowledge of the studio, performers, or scene. Such a token is usually right after the studio name, with a middle value 01-12 (month) and a following value 01-31 (day); a 2-digit year reads as 20XX.\n" +
-		"  * Example WITH a date token: 'tushy.24.03.15.riley.reid.deep.desires.1080p' → '24.03.15' is a date token (03 = month, 15 = day) → year = \"2024\".\n" +
-		"  * Example WITHOUT a date token: 'brazzers.scene442.riley.reid.1080p' → there is no date token ('scene442' is a scene number, '1080p' is a resolution — neither has a valid month/day pair) → year = null. Do NOT fill this in from what you know about Riley Reid or Brazzers — you must return null here.\n" +
-		"Return ONLY valid JSON with exactly these keys: studio, title, year, performers.\n" +
+		"Return ONLY valid JSON with exactly these keys: studio, title, performers.\n" +
 		"Use null for any field you cannot determine.\n\n" +
 		fmt.Sprintf("Filename: %s\n\nJSON:", stem)
 
@@ -58,7 +86,7 @@ func ParseFilename(ctx context.Context, client AIClient, stem, parentName string
 	return ParsedFilename{
 		Studio:     ollama.NormalizeField(result["studio"]),
 		Title:      ollama.NormalizeField(result["title"]),
-		Year:       ollama.NormalizeField(result["year"]),
+		Year:       year,
 		Performers: performers,
 	}, nil
 }

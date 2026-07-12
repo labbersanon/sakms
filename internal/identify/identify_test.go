@@ -221,14 +221,17 @@ func stashboxWithFindScene(t *testing.T, wantID string, scene stashbox.Scene) *s
 func TestIdentify_QwenParseThenStashDBMatch_BackfillsYear(t *testing.T) {
 	e := newTestEnv(t)
 	e.ollamaResponse = func(idx int, prompt string) string {
-		return `{"studio":"Tushy","title":"Some Scene","year":"2019","performers":null}`
+		return `{"studio":"Tushy","title":"Some Scene","performers":null}`
 	}
 	e.stashdbSearchScene = func(term string) []stashbox.Scene {
 		return []stashbox.Scene{{ID: "1", Title: "Some Scene", StudioName: "Tushy"}} // no release_date
 	}
 	id := e.identifier(false, false)
 
-	result, err := id.Identify(context.Background(), "tushy-some-scene", "")
+	// The year is no longer trusted from the LLM (see ExtractYearFromToken) —
+	// it must come from a real date token in the stem for backfill to have
+	// anything to work with.
+	result, err := id.Identify(context.Background(), "tushy.19.05.20.some.scene", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +239,7 @@ func TestIdentify_QwenParseThenStashDBMatch_BackfillsYear(t *testing.T) {
 		t.Fatalf("got %+v", result)
 	}
 	if result.Date != "2019" {
-		t.Fatalf("expected date backfilled from Qwen's parsed year, got %q", result.Date)
+		t.Fatalf("expected date backfilled from the deterministic year extraction, got %q", result.Date)
 	}
 }
 

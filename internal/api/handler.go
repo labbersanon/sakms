@@ -70,6 +70,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// migrate from.
 	mux.HandleFunc("POST /api/series/import-from-sonarr", sonarrImportHandler(httpClient, connStore, libStore))
 
+	// One-time Whisparr library importer (see internal/whisparrimport) — Adult
+	// only, migrating an existing Whisparr library into SAK's own Scene table.
+	mux.HandleFunc("POST /api/adult/import-from-whisparr", whisparrImportHandler(httpClient, connStore, libStore))
+
 	mux.HandleFunc("POST /api/modes/{mode}/rename/scan", renameScanHandler(httpClient, connStore, settingsStore, propStore, libStore, prober, videoHasher))
 	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals", listProposalsHandler(propStore, proposals.Rename))
 	mux.HandleFunc("GET /api/modes/{mode}/rename/kids-root-path", getKidsRootPathHandler(settingsStore))

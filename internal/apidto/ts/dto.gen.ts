@@ -487,3 +487,28 @@ export interface DedupApplyRequest {
   keepIndex?: number /* int */;
   keepAll?: boolean;
 }
+/**
+ * TagEntry is one entry in a mode's tag vocabulary — mirrors internal/api's
+ * libraryTagEntry. A local tag has no numeric id, so ID and Label are the same
+ * string value; ID exists only to keep the {id, label} shape the frontend's
+ * datalist/lookup logic expects. Returned by both the Movies/Series generic
+ * vocab route and Adult's dedicated scene-tag vocab route.
+ */
+export interface TagEntry {
+  id: string;
+  label: string;
+}
+/**
+ * TrackedItem is one row in the Tag workflow's item picker — mirrors
+ * internal/api's libraryTrackedItem, served from GET /api/modes/{mode}/tracked
+ * for EVERY mode (items for Movies, series for Series, scenes for Adult). ID is
+ * the library row id (a library_scenes.id for Adult, which is exactly the
+ * {sceneId} the scene-tag routes take). Tags is the item's current tag labels
+ * (a local tag has no numeric id — it's the label string itself, matching
+ * TagEntry.ID).
+ */
+export interface TrackedItem {
+  id: number /* int64 */;
+  title: string;
+  tags: string[];
+}

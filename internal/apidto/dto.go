@@ -510,3 +510,42 @@ type DedupApplyRequest struct {
 	KeepIndex *int `json:"keepIndex,omitempty"`
 	KeepAll   bool `json:"keepAll,omitempty"`
 }
+
+// --- Tag workflow: vocabulary + tracked-item picker ------------------------
+//
+// The Tag workflow is direct CRUD on a tracked item's tags — no staged
+// scan→propose→apply queue like Rename/Purge/Dedup. Two GETs back the view (a
+// tag vocabulary for autocomplete + the tracked items each carrying their
+// current tags), and add/remove act immediately on one item.
+//
+// CRITICAL per-mode routing (see internal/api/tag.go and the frontend's
+// src/api/tag.ts): Movies/Series use the GENERIC item-tag routes
+// (GET /api/modes/{mode}/tags, POST/DELETE /api/modes/{mode}/items/{itemId}/tags[/{tagId}]),
+// while Adult uses its OWN DEDICATED scene-tag routes
+// (GET /api/modes/adult/scenes/tags, GET/POST/DELETE /api/modes/adult/scenes/{sceneId}/tags[/{tagId}])
+// — the generic routes 400 for Adult (Whisparr eliminated; Adult tags are
+// scene-level). The wire SHAPES below are identical across modes; only the URLs
+// the client builds differ.
+
+// TagEntry is one entry in a mode's tag vocabulary — mirrors internal/api's
+// libraryTagEntry. A local tag has no numeric id, so ID and Label are the same
+// string value; ID exists only to keep the {id, label} shape the frontend's
+// datalist/lookup logic expects. Returned by both the Movies/Series generic
+// vocab route and Adult's dedicated scene-tag vocab route.
+type TagEntry struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// TrackedItem is one row in the Tag workflow's item picker — mirrors
+// internal/api's libraryTrackedItem, served from GET /api/modes/{mode}/tracked
+// for EVERY mode (items for Movies, series for Series, scenes for Adult). ID is
+// the library row id (a library_scenes.id for Adult, which is exactly the
+// {sceneId} the scene-tag routes take). Tags is the item's current tag labels
+// (a local tag has no numeric id — it's the label string itself, matching
+// TagEntry.ID).
+type TrackedItem struct {
+	ID    int64    `json:"id"`
+	Title string   `json:"title"`
+	Tags  []string `json:"tags"`
+}

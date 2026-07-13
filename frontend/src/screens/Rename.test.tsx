@@ -213,6 +213,96 @@ describe("Rename — Dismiss (single row)", () => {
   });
 });
 
+describe("Rename — mode-specific columns", () => {
+  it("Movies shows a Year column and no Series/Adult-only columns", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 1, sourceName: "Movie.A", year: 1999 }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("Movie.A");
+
+    expect(screen.getByText("Year")).toBeInTheDocument();
+    expect(screen.getByText("1999")).toBeInTheDocument();
+    expect(screen.queryByText("Season")).toBeNull();
+    expect(screen.queryByText("Episode")).toBeNull();
+    expect(screen.queryByText("Studio")).toBeNull();
+    expect(screen.queryByText("PHash")).toBeNull();
+  });
+
+  it("Series shows Year/Season/Episode columns", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/series/rename/proposals"))
+        return jsonResponse([
+          proposal({
+            id: 2,
+            sourceName: "Show.S02E05",
+            title: "Some Show",
+            year: 2015,
+            seasonNumber: 2,
+            episodeNumber: 5,
+          }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Series"));
+    await screen.findByText("Show.S02E05");
+
+    expect(screen.getByText("Year")).toBeInTheDocument();
+    expect(screen.getByText("Season")).toBeInTheDocument();
+    expect(screen.getByText("Episode")).toBeInTheDocument();
+    expect(screen.getByText("2015")).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.queryByText("Studio")).toBeNull();
+    expect(screen.queryByText("PHash")).toBeNull();
+  });
+
+  it("Adult shows Studio/Date/PHash columns, no Year/Season/Episode", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/adult/rename/proposals"))
+        return jsonResponse([
+          proposal({
+            id: 3,
+            sourceName: "Studio.Scene",
+            title: "Scene Title",
+            year: 0,
+            studio: "Brazzers",
+            date: "2021-03-04",
+            phash: "abcdef0123456789",
+          }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("Studio.Scene");
+
+    expect(screen.getByText("Studio")).toBeInTheDocument();
+    expect(screen.getByText("Date")).toBeInTheDocument();
+    expect(screen.getByText("PHash")).toBeInTheDocument();
+    expect(screen.getByText("Brazzers")).toBeInTheDocument();
+    expect(screen.getByText("2021-03-04")).toBeInTheDocument();
+    // Hash is truncated in the cell; full value lives in the title attribute.
+    const hashCell = screen.getByTitle("abcdef0123456789");
+    expect(hashCell.textContent).toBe("abcdef0123456789".slice(0, 12) + "…");
+    expect(screen.queryByText("Year")).toBeNull();
+    expect(screen.queryByText("Season")).toBeNull();
+    expect(screen.queryByText("Episode")).toBeNull();
+  });
+});
+
 describe("Rename — Adult (give back on unmatched; no Re-pick)", () => {
   it("shows Give back for an unmatched row and hides Re-pick for Adult", async () => {
     const calls = stubFetch((url, init) => {

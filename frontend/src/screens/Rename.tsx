@@ -1,17 +1,24 @@
-// Rename — the staged scan→propose→apply review queue, ported verbatim from the
-// vanilla-JS frontend (internal/web/static/index.html's renderRename). Scan
-// enqueues proposals; the operator reviews a table of them and acts on EXACTLY
-// ONE per click. There is no bulk affordance anywhere — no "apply all", no
-// multi-select (Guardrail #3 / the project's no-bulk invariant); a dedicated
-// test asserts this.
+// Rename — the staged scan→propose→apply review queue, ported from the
+// vanilla-JS frontend (internal/web/static/index.html's renderRename), with one
+// deliberate enhancement on top of the port: mode-specific columns (Wade-approved
+// follow-up, see .omc/handoffs/stage-3-rename.md — the old frontend's single
+// generic table never surfaced these, and an earlier wave correctly declined to
+// add them without an explicit decision). Scan enqueues proposals; the operator
+// reviews a table of them and acts on EXACTLY ONE per click. There is no bulk
+// affordance anywhere — no "apply all", no multi-select (Guardrail #3 / the
+// project's no-bulk invariant); a dedicated test asserts this.
 //
-// Faithful-port notes (do not "improve" these into per-mode shapes without a
-// deliberate decision — the old frontend renders ONE generic table for all three
-// modes; the ONLY per-mode branch is the Re-pick button):
-//   - Columns are fixed: Source / Title / Status / Root Folder / Reason /
-//     Actions, identical across Movies/Series/Adult. The old UI never surfaced
-//     Studio/Date/PHash or Season/Episode columns here; adding them would be a
-//     new enhancement, not a port.
+// Table shape:
+//   - Shared columns, every mode: Source / Title / Status / Root Folder /
+//     Reason / Actions.
+//   - Movies additionally show Year.
+//   - Series additionally show Year / Season / Episode.
+//   - Adult additionally show Studio / Date / PHash (truncated with a title
+//     attribute for the full value — proposals.Proposal's PHash is a long
+//     scheme-tagged hex string, not something to render in full inline).
+//   Extra columns are only ever ADDED for a mode, never removed from the
+//   shared set — Source/Title/Status/Root Folder/Reason/Actions stay present
+//   and in the same relative order across all three modes.
 //   - Apply shows on a `pending` row; Give back on an `unmatched` row (any mode,
 //     even though it is Adult-give-back-semantic); Re-pick on pending/unmatched
 //     for Movies/Series only; Dismiss on pending/unmatched.
@@ -72,6 +79,13 @@ const StatusPill: Component<{ status: string }> = (props) => (
 function yearOf(date: string): number | undefined {
   const y = date && date.length >= 4 ? parseInt(date.slice(0, 4), 10) : NaN;
   return Number.isFinite(y) ? y : undefined;
+}
+
+// shortHash renders the PHash column value — the full scheme-tagged hash is
+// too long to usefully show inline, so the cell shows a short prefix and the
+// full value lives in the title attribute (hover) for anyone who needs it.
+function shortHash(hash: string): string {
+  return hash.length > 12 ? `${hash.slice(0, 12)}…` : hash;
 }
 
 // RepickPanel is the shared Movies/Series re-pick search area — one instance
@@ -256,6 +270,18 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                 <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
                   <th class="px-2 py-2 font-medium">Source</th>
                   <th class="px-2 py-2 font-medium">Title</th>
+                  <Show when={props.mode === "movies" || props.mode === "series"}>
+                    <th class="px-2 py-2 font-medium">Year</th>
+                  </Show>
+                  <Show when={props.mode === "series"}>
+                    <th class="px-2 py-2 font-medium">Season</th>
+                    <th class="px-2 py-2 font-medium">Episode</th>
+                  </Show>
+                  <Show when={props.mode === "adult"}>
+                    <th class="px-2 py-2 font-medium">Studio</th>
+                    <th class="px-2 py-2 font-medium">Date</th>
+                    <th class="px-2 py-2 font-medium">PHash</th>
+                  </Show>
                   <th class="px-2 py-2 font-medium">Status</th>
                   <th class="px-2 py-2 font-medium">Root Folder</th>
                   <th class="px-2 py-2 font-medium">Reason</th>
@@ -272,6 +298,26 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                       <tr class="border-b border-border/60 align-top">
                         <td class="px-2 py-2 text-fg">{p.sourceName}</td>
                         <td class="px-2 py-2 text-fg">{p.title || ""}</td>
+                        <Show when={props.mode === "movies" || props.mode === "series"}>
+                          <td class="px-2 py-2 text-muted">{p.year || ""}</td>
+                        </Show>
+                        <Show when={props.mode === "series"}>
+                          <td class="px-2 py-2 text-muted">
+                            {p.seasonNumber ?? ""}
+                          </td>
+                          <td class="px-2 py-2 text-muted">
+                            {p.episodeNumber ?? ""}
+                          </td>
+                        </Show>
+                        <Show when={props.mode === "adult"}>
+                          <td class="px-2 py-2 text-muted">{p.studio || ""}</td>
+                          <td class="px-2 py-2 text-muted">{p.date || ""}</td>
+                          <td class="px-2 py-2 text-muted">
+                            <Show when={p.phash}>
+                              <span title={p.phash}>{shortHash(p.phash!)}</span>
+                            </Show>
+                          </td>
+                        </Show>
                         <td class="px-2 py-2">
                           <StatusPill status={p.status} />
                         </td>

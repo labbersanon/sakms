@@ -35,7 +35,7 @@ func TestTrending_Movie_NormalizesTitleAndReleaseDate(t *testing.T) {
 		w.Write([]byte(movieFixture))
 	})
 
-	items, err := c.Trending(context.Background(), Movie, "week")
+	items, err := c.Trending(context.Background(), Movie, "week", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestTrending_TV_NormalizesNameAndFirstAirDate(t *testing.T) {
 		w.Write([]byte(tvFixture))
 	})
 
-	items, err := c.Trending(context.Background(), TV, "day")
+	items, err := c.Trending(context.Background(), TV, "day", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,12 +77,103 @@ func TestPopular_Movie(t *testing.T) {
 		w.Write([]byte(movieFixture))
 	})
 
-	items, err := c.Popular(context.Background(), Movie)
+	items, err := c.Popular(context.Background(), Movie, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(items) != 1 || items[0].MediaType != Movie {
 		t.Errorf("unexpected items: %+v", items)
+	}
+}
+
+// TestTrending_PageParam proves the page cursor rides through to TMDB: page 1
+// (and page <= 1) sends no `page` param (identical URL to the pre-pagination
+// call), while page 2 sends page=2 — the two requests are distinguishable,
+// which is exactly what a "Show more" append relies on.
+func TestTrending_PageParam(t *testing.T) {
+	var gotPage string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPage = r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(movieFixture))
+	})
+
+	if _, err := c.Trending(context.Background(), Movie, "week", 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPage != "" {
+		t.Errorf("page 1 should omit the page param, got %q", gotPage)
+	}
+
+	if _, err := c.Trending(context.Background(), Movie, "week", 2); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPage != "2" {
+		t.Errorf("expected page=2, got %q", gotPage)
+	}
+}
+
+// TestPopular_PageParam is Trending's direct sibling for the /popular endpoint.
+func TestPopular_PageParam(t *testing.T) {
+	var gotPage string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPage = r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(movieFixture))
+	})
+
+	if _, err := c.Popular(context.Background(), Movie, 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPage != "" {
+		t.Errorf("page 1 should omit the page param, got %q", gotPage)
+	}
+
+	if _, err := c.Popular(context.Background(), Movie, 3); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPage != "3" {
+		t.Errorf("expected page=3, got %q", gotPage)
+	}
+}
+
+// TestMovieDetails_ParsesPosterPath proves /movie/{id}'s poster_path decodes
+// into MovieDetails.PosterPath — the field posterHandler serves to Discover's
+// lazy per-card poster fetch.
+func TestMovieDetails_ParsesPosterPath(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/movie/77" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id": 77, "title": "A Movie", "poster_path": "/poster77.jpg"}`))
+	})
+
+	d, err := c.MovieDetails(context.Background(), 77)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d.PosterPath != "/poster77.jpg" {
+		t.Errorf("expected poster path, got %q", d.PosterPath)
+	}
+}
+
+// TestTVDetails_ParsesPosterPath is MovieDetails' sibling for /tv/{id}.
+func TestTVDetails_ParsesPosterPath(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tv/88" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id": 88, "name": "A Show", "poster_path": "/poster88.jpg"}`))
+	})
+
+	d, err := c.TVDetails(context.Background(), 88)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d.PosterPath != "/poster88.jpg" {
+		t.Errorf("expected poster path, got %q", d.PosterPath)
 	}
 }
 

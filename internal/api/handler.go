@@ -109,6 +109,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/availability", availabilityHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tmdb-search", tmdbSearchHandler(httpClient, connStore, settingsStore))
+	// poster resolves a library card's TMDB poster art lazily, per card (the
+	// library caches no poster path) — see posterHandler.
+	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/search", searchHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, settingsStore, grabsStore))
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +

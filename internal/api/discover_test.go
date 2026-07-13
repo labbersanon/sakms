@@ -110,6 +110,99 @@ func TestDiscoverHandler_TMDBNotConfigured(t *testing.T) {
 	}
 }
 
+// TestDiscoverHandler_PageParamForwarded proves the ?page cursor threads
+// through to TMDB: a default request omits the page param (first page), and
+// ?page=2 forwards page=2 — the two are distinguishable upstream, which is
+// what Discover's "Show more" append depends on.
+func TestDiscoverHandler_PageParamForwarded(t *testing.T) {
+	var gotPage string
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPage = r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":1,"title":"Some Movie"}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	resp.Body.Close()
+	if gotPage != "" {
+		t.Errorf("default request should omit page, got %q", gotPage)
+	}
+
+	resp, err = http.Get(srv.URL + "/api/modes/movies/discover?category=popular&page=2")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	resp.Body.Close()
+	if gotPage != "2" {
+		t.Errorf("expected page=2 forwarded to TMDB, got %q", gotPage)
+	}
+}
+
+// TestPosterHandler_ReturnsPosterPath proves the lazy per-card poster lookup
+// resolves a Movies tmdbId to its TMDB poster_path via /movie/{id}.
+func TestPosterHandler_ReturnsPosterPath(t *testing.T) {
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/movie/99" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":99,"title":"A Movie","poster_path":"/p99.jpg"}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/poster?tmdbId=99")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got["posterPath"] != "/p99.jpg" {
+		t.Errorf("expected poster path, got %+v", got)
+	}
+}
+
+// TestPosterHandler_RequiresTmdbID proves a missing/invalid tmdbId is a 400,
+// not a silent zero-id upstream lookup.
+func TestPosterHandler_RequiresTmdbID(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/poster")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 without a tmdbId param, got %d", resp.StatusCode)
+	}
+}
+
 func TestResolveTVDBIDHandler_ResolvesID(t *testing.T) {
 	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/tv/2/external_ids" {

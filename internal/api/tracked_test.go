@@ -80,7 +80,7 @@ func TestListTracked_Adult_EmptyWhenNoScenes(t *testing.T) {
 func TestListTracked_Movies_ReturnsLibraryItemsWithLabelTags(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
-	item, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 453, Title: "A Beautiful Mind", RootFolderPath: "/movies"})
+	item, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 453, Title: "A Beautiful Mind", Year: 2001, RootFolderPath: "/movies"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,6 +106,12 @@ func TestListTracked_Movies_ReturnsLibraryItemsWithLabelTags(t *testing.T) {
 	if len(got) != 1 || got[0].Title != "A Beautiful Mind" || len(got[0].Tags) != 1 || got[0].Tags[0] != "favorite" {
 		t.Fatalf("unexpected response: %+v", got)
 	}
+	// Movies carry TMDBID/Year through so Discover's existing-library row can
+	// render a real poster card (lazy poster + availability + auto-grab all
+	// key off tmdbId; year is display).
+	if got[0].TMDBID != 453 || got[0].Year != 2001 {
+		t.Fatalf("expected tmdbId 453 / year 2001 on the tracked item, got %+v", got[0])
+	}
 }
 
 // TestListTracked_Series_ReturnsLibrarySeriesWithLabelTags proves Series
@@ -114,7 +120,7 @@ func TestListTracked_Movies_ReturnsLibraryItemsWithLabelTags(t *testing.T) {
 func TestListTracked_Series_ReturnsLibrarySeriesWithLabelTags(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	ctx := context.Background()
-	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Some Show", RootFolderPath: "/tv"})
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Some Show", Year: 2019, RootFolderPath: "/tv"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,5 +145,8 @@ func TestListTracked_Series_ReturnsLibrarySeriesWithLabelTags(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Title != "Some Show" || len(got[0].Tags) != 1 || got[0].Tags[0] != "favorite" {
 		t.Fatalf("unexpected response: %+v", got)
+	}
+	if got[0].TMDBID != 555 || got[0].Year != 2019 {
+		t.Fatalf("expected tmdbId 555 / year 2019 on the tracked series, got %+v", got[0])
 	}
 }

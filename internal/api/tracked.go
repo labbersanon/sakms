@@ -15,11 +15,22 @@ import (
 // Tags is a list of label strings (a local tag has no numeric id), matching
 // the label-as-id shape listTagsHandler's Movies branch returns for its
 // vocabulary, so the frontend's existing id-keyed matching logic works
-// unchanged for either mode.
+// unchanged for either mode. ID is always the library row id (a
+// library_scenes.id for Adult, which the scene-tag routes take directly) —
+// never overwritten by TMDBID, which is a different id space.
+//
+// TMDBID/Year are additive omitempty fields, populated for Movies/Series (both
+// carry them in the library) so Discover's existing-library row can render a
+// real poster card: TMDBID drives the lazy poster-fetch + availability probe +
+// auto-grab, Year is display. They stay zero (omitted) for Adult, whose scenes
+// are keyed on (box, sceneId) and have no TMDB identity — the Tag picker, this
+// type's original caller, ignores them for every mode.
 type libraryTrackedItem struct {
-	ID    int64    `json:"id"`
-	Title string   `json:"title"`
-	Tags  []string `json:"tags"`
+	ID     int64    `json:"id"`
+	Title  string   `json:"title"`
+	Tags   []string `json:"tags"`
+	TMDBID int      `json:"tmdbId,omitempty"`
+	Year   int      `json:"year,omitempty"`
 }
 
 // listTrackedHandler returns every item {mode} currently tracks — straight
@@ -48,7 +59,7 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags}
+				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
@@ -67,7 +78,7 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags}
+				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)

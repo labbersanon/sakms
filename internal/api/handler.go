@@ -102,6 +102,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// {mode}/availability route below, which branches internally on the
 	// studio/title identity shape.
 	mux.HandleFunc("GET /api/modes/adult/discover", adultDiscoverHandler(httpClient, connStore))
+	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
+	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
+	// (see images.go / internal/imageproxy). Read-only, auth-gated like every
+	// route here.
+	mux.HandleFunc("GET /api/images/proxy", imageProxyHandler(httpClient))
 	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/availability", availabilityHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tmdb-search", tmdbSearchHandler(httpClient, connStore, settingsStore))

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/curtiswtaylorjr/sakms/internal/apidto"
@@ -74,7 +75,11 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 			return
 		}
 
-		candidates := buildAutoGrabCandidates(releases, runtimeSeconds)
+		// A real per-episode runtime (Series single-episode grab) mustn't be
+		// applied to season packs the indexer returned for the episode query —
+		// neutralize those so they can't over-qualify (see buildAutoGrabCandidates).
+		neutralizeSeasonPacks := m == mode.Series && runtimeSeconds > 0
+		candidates := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
 		sel := autograb.Select(candidates, autoGrabTier(ctx, settingsStore, m), autograb.DefaultMinSeeders)
 
 		// Fallback: nothing cleared the floor → hand back the ranked pick list
@@ -129,10 +134,11 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 // id-scoped (mirroring availability.CheckMovie/CheckSeries); Adult uses a
 // studio+title free-text query over the XXX category (mirroring
 // availability.CheckAdultScene). Runtime: Movies from TMDB MovieDetails;
-// Adult from the request's DurationSeconds; Series 0 (unknown — TMDB exposes
-// no per-episode runtime pre-grab, so Series always falls through to the
-// manual pick list, which is the graceful, documented outcome). Callers must
-// have already confirmed sess.TMDB != nil for Movies/Series.
+// Adult from the request's DurationSeconds; Series from the picked episode's
+// TMDB runtime (seriesEpisodeRuntimeSeconds) for a single-episode grab, or 0
+// (unknown → manual pick list) for a whole-season grab, whose runtime is
+// ambiguous (see seriesEpisodeRuntimeSeconds). Callers must have already
+// confirmed sess.TMDB != nil for Movies/Series.
 func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
 	switch m {
 	case mode.Adult:
@@ -148,7 +154,7 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req ap
 			TVDBID: tvdbID, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
 			Categories: categoriesForSearch(mode.Series),
 		})
-		return releases, 0, err
+		return releases, seriesEpisodeRuntimeSeconds(ctx, sess, req), err
 	default: // Movies
 		details, err := sess.TMDB.MovieDetails(ctx, req.TMDBID)
 		if err != nil {
@@ -162,22 +168,90 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req ap
 	}
 }
 
+// seriesEpisodeRuntimeSeconds resolves the pre-grab runtime (seconds) for a
+// Series auto-grab. Only a single-episode grab (EpisodeNumber > 0) gets a real
+// runtime: it fetches the whole season once (SeasonDetails) and returns the
+// picked episode's runtime × 60. A whole-season grab (EpisodeNumber == 0)
+// returns 0 (unknown) on purpose — a season pack's implied bitrate is
+// ambiguous (its size spans many episodes muxed into one release), and the
+// scorer applies one runtime scalar to the whole candidate list, so no single
+// value grades a mixed pack-and-single result list correctly; unknown → the
+// safe neutral (manual pick list). Any failure (SeasonDetails error, the
+// episode absent from TMDB's list, or a null/zero runtime) also degrades to 0
+// rather than failing the grab: the season lookup only enriches runtime, it is
+// not required for the search (ExternalIDs already supplied the search's id).
+func seriesEpisodeRuntimeSeconds(ctx context.Context, sess *mode.Session, req apidto.AutoGrabRequest) float64 {
+	if req.EpisodeNumber <= 0 {
+		return 0
+	}
+	episodes, err := sess.TMDB.SeasonDetails(ctx, req.TMDBID, req.SeasonNumber)
+	if err != nil {
+		return 0
+	}
+	for _, e := range episodes {
+		if e.EpisodeNumber == req.EpisodeNumber {
+			return float64(e.Runtime) * 60
+		}
+	}
+	return 0
+}
+
+// These patterns classify a release title as a season pack / multi-episode
+// release rather than the single episode a single-episode grab asked for.
+// Indexers routinely return season packs among the matches for an
+// episode-scoped (ep=) Torznab/Newznab query, so a single-episode runtime
+// applied to a pack's whole-season size yields an implausibly high implied
+// bitrate that auto-qualifies (the scorer's mislabel check only catches
+// bitrates that are too LOW). isSeasonPackTitle neutralizes those packs back
+// to unknown — erring toward "treat as a pack" so a single-episode grab never
+// silently auto-grabs a whole season.
+var (
+	// singleEpisodeMarker is a lone SxxEyy / NxNN episode tag (a single episode).
+	singleEpisodeMarker = regexp.MustCompile(`(?i)\bS\d{1,2}E\d{1,4}\b|\b\d{1,2}x\d{1,3}\b`)
+	// multiEpisodeMarker is an episode range or list — S01E01E02, S01E01-E05,
+	// S01E01-05 — i.e. more than one episode in one release.
+	multiEpisodeMarker = regexp.MustCompile(`(?i)S\d{1,2}(E\d{1,4}){2,}|S\d{1,2}E\d{1,4}\s*[-\x{2013}]\s*E?\d{1,4}`)
+)
+
+// isSeasonPackTitle reports whether title looks like a season pack / multi-
+// episode release rather than a single episode. It errs toward true (safe:
+// a false positive only sends a real single episode to the manual pick list;
+// a false negative would let a pack auto-grab under a single episode's
+// runtime). Only a title carrying a clean single SxxEyy/NxNN marker and no
+// multi-episode marker is treated as a single episode; everything else
+// (season-only tags, "Complete", or no recognizable marker at all — none of
+// which can be confirmed as the requested single episode) is a pack.
+func isSeasonPackTitle(title string) bool {
+	if multiEpisodeMarker.MatchString(title) {
+		return true
+	}
+	return !singleEpisodeMarker.MatchString(title)
+}
+
 // buildAutoGrabCandidates turns Prowlarr releases into autograb.Candidates by
 // combining release.Parse's title-derived Resolution/Codec/Source with each
 // release's Prowlarr-reported Size/Seeders/Protocol and the shared known
 // runtime. Pure and order-preserving: candidates[i] corresponds to
 // releases[i], so a Selection's indices map straight back to the originating
-// release for grabbing.
-func buildAutoGrabCandidates(releases []prowlarr.Release, runtimeSeconds float64) []autograb.Candidate {
+// release for grabbing. When neutralizeSeasonPacks is set (a single-episode
+// Series grab with a real per-episode runtime), a candidate whose title is a
+// season pack keeps RuntimeSeconds 0 — the single-episode runtime is wrong for
+// a whole-season file, so it grades as unknown-bitrate (manual review) instead
+// of being over-graded into a false auto-grab.
+func buildAutoGrabCandidates(releases []prowlarr.Release, runtimeSeconds float64, neutralizeSeasonPacks bool) []autograb.Candidate {
 	candidates := make([]autograb.Candidate, len(releases))
 	for i, rel := range releases {
 		info := release.Parse(rel.Title)
+		rt := runtimeSeconds
+		if neutralizeSeasonPacks && isSeasonPackTitle(rel.Title) {
+			rt = 0
+		}
 		candidates[i] = autograb.Candidate{
 			Title:          rel.Title,
 			Protocol:       string(rel.Protocol),
 			Seeders:        rel.Seeders,
 			SizeBytes:      rel.Size,
-			RuntimeSeconds: runtimeSeconds,
+			RuntimeSeconds: rt,
 			Resolution:     info.Resolution,
 			Codec:          info.Codec,
 			Source:         info.Source,

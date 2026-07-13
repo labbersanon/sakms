@@ -277,17 +277,23 @@ func (c *Client) TVDetails(ctx context.Context, tmdbID int) (TVDetails, error) {
 
 // SeasonEpisode is one episode as TMDB's season-details endpoint reports
 // it — enough to record a canonical episode row even before any file for
-// it exists on disk (see internal/library's Episode).
+// it exists on disk (see internal/library's Episode). Runtime (minutes; 0
+// if TMDB reports null) is the per-episode duration Discover's auto-grab
+// bitrate scorer needs for a single-episode Series grab — the whole-season
+// list in one call, so the picked episode's runtime is a lookup, not an
+// extra per-episode round-trip.
 type SeasonEpisode struct {
 	EpisodeNumber int    `json:"episodeNumber"`
 	Name          string `json:"name"`
 	AirDate       string `json:"airDate"`
+	Runtime       int    `json:"runtime"`
 }
 
 type seasonEpisodeRaw struct {
 	EpisodeNumber int    `json:"episode_number"`
 	Name          string `json:"name"`
 	AirDate       string `json:"air_date"`
+	Runtime       int    `json:"runtime"`
 }
 
 type seasonDetailsResponse struct {
@@ -308,7 +314,7 @@ func (c *Client) SeasonDetails(ctx context.Context, tmdbTVID, seasonNumber int) 
 	}
 	out := make([]SeasonEpisode, len(resp.Episodes))
 	for i, e := range resp.Episodes {
-		out[i] = SeasonEpisode{EpisodeNumber: e.EpisodeNumber, Name: e.Name, AirDate: e.AirDate}
+		out[i] = SeasonEpisode{EpisodeNumber: e.EpisodeNumber, Name: e.Name, AirDate: e.AirDate, Runtime: e.Runtime}
 	}
 	return out, nil
 }

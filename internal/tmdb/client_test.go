@@ -259,8 +259,8 @@ func TestSeasonDetails_NormalizesEpisodes(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"episodes": [
-		  {"episode_number": 1, "name": "Pilot", "air_date": "2022-01-01"},
-		  {"episode_number": 2, "name": "Second", "air_date": "2022-01-08"}
+		  {"episode_number": 1, "name": "Pilot", "air_date": "2022-01-01", "runtime": 58},
+		  {"episode_number": 2, "name": "Second", "air_date": "2022-01-08", "runtime": 47}
 		]}`))
 	})
 
@@ -270,5 +270,28 @@ func TestSeasonDetails_NormalizesEpisodes(t *testing.T) {
 	}
 	if len(episodes) != 2 || episodes[0].EpisodeNumber != 1 || episodes[0].Name != "Pilot" || episodes[0].AirDate != "2022-01-01" {
 		t.Errorf("unexpected episodes: %+v", episodes)
+	}
+	if episodes[0].Runtime != 58 || episodes[1].Runtime != 47 {
+		t.Errorf("unexpected per-episode runtimes: %+v", episodes)
+	}
+}
+
+// TestSeasonDetails_HandlesNullRuntime confirms a null per-episode runtime
+// (TMDB reports it for not-yet-aired or sparse episodes) decodes to 0 without
+// erroring — the auto-grab scorer treats 0 as unknown/neutral.
+func TestSeasonDetails_HandlesNullRuntime(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"episodes": [
+		  {"episode_number": 1, "name": "Pilot", "air_date": "2022-01-01", "runtime": null}
+		]}`))
+	})
+
+	episodes, err := c.SeasonDetails(context.Background(), 2, 1)
+	if err != nil {
+		t.Fatalf("unexpected error decoding null runtime: %v", err)
+	}
+	if len(episodes) != 1 || episodes[0].Runtime != 0 {
+		t.Errorf("expected zero runtime for null, got %+v", episodes)
 	}
 }

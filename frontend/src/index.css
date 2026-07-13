@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/*
+ * Dark-theme-primary palette, carried over from the current vanilla-JS
+ * frontend (internal/web/static/index.html) so the re-skin stays visually
+ * continuous. Declaring these under @theme makes Tailwind v4 generate the
+ * matching utilities automatically: bg-bg, bg-surface, text-fg, text-muted,
+ * border-border, bg-accent, etc. Real view work (later waves) should reach
+ * for these tokens rather than hard-coded hex.
+ */
+@theme {
+  --color-bg: #15161a;
+  --color-surface: #1d1e23;
+  --color-surface-2: #24252b;
+  --color-border: #2c2d33;
+  --color-fg: #e8e8ea;
+  --color-muted: #9a9aa2;
+  --color-accent: #2563eb;
+  --color-accent-fg: #ffffff;
+  --color-danger: #dc2626;
+  --color-ok: #16a34a;
+  --color-warn: #d97706;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}

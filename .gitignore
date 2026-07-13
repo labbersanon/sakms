@@ -4,8 +4,14 @@
 *.db-wal
 *.db-shm
 
-/web/node_modules/
-/web/dist/
+# Frontend (SolidJS + Vite). Source lives in frontend/; the compiled bundle
+# is generated and never committed (plan Guardrail #6).
+/frontend/node_modules/
+/frontend/dist/
+# Vite build output — embedded by the Go binary at build time, not committed.
+# Note: this ignores the app/ subfolder only, NOT static/index.html (the
+# currently-live production frontend, which stays tracked).
+/internal/web/static/app/
 
 /sakms
 /bin/

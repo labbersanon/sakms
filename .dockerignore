@@ -11,5 +11,12 @@ data/
 /sakms
 web/node_modules/
 web/dist/
+# Frontend: keep source in the build context, but not local install/build
+# artifacts — the Docker "frontend" stage reinstalls and rebuilds from the
+# committed lockfile. internal/web/static/app is rebuilt in that stage and
+# COPY'd into the Go build, so a stale local copy must not enter the context.
+frontend/node_modules/
+frontend/dist/
+internal/web/static/app/
 *.png
 *.log

@@ -37,8 +37,6 @@ const scene = (over: Partial<AdultDiscoverItem>): AdultDiscoverItem => ({
   ...over,
 });
 
-const avail = () => jsonResponse({ available: true, releaseCount: 3, checkedAt: "" });
-
 type Call = { url: string; method: string; body: unknown };
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 
@@ -61,13 +59,12 @@ const autograbCalls = (calls: Call[]) =>
   calls.filter((c) => c.url.includes("/autograb"));
 
 // mainstreamDefaults quiets the combined page's background fetches (the other
-// three category rows, the library row, per-card poster/availability probes)
-// so each test only special-cases the mode + call it asserts on.
+// three category rows, the library row, per-card poster probes) so each test
+// only special-cases the mode + call it asserts on.
 const mainstreamDefaults = (url: string): Response | null => {
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
-  if (url.includes("/availability")) return avail();
   return null;
 };
 
@@ -204,7 +201,6 @@ describe("Discover auto-grab — Adult (runtime-sourced)", () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/adult/discover"))
         return jsonResponse([scene({ id: "s1", title: "Scene One", studio: "Vixen", durationSeconds: 2400 })]);
-      if (url.includes("/api/modes/adult/availability")) return avail();
       if (url.includes("/api/modes/adult/autograb"))
         return jsonResponse({
           grabbed: true,
@@ -227,6 +223,59 @@ describe("Discover auto-grab — Adult (runtime-sourced)", () => {
       title: "Scene One",
       studio: "Vixen",
       durationSeconds: 2400,
+    });
+  });
+});
+
+describe("Discover auto-grab — Series picker gates via the search-result path", () => {
+  it("a series search result reveals its picker before any auto-grab fires, then grabs the chosen episode", async () => {
+    // Same season/episode gating the category-row test covers, but reached
+    // through the merged search grid instead — only the series search returns a
+    // card, so the single "Grab" is the series result and its per-item mode must
+    // still route it through the picker rather than a direct grab.
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tmdb-search")) return jsonResponse([]);
+      if (url.includes("/api/modes/series/tmdb-search"))
+        return jsonResponse([movie({ id: 77, title: "Searched Series", mediaType: "tv" })]);
+      if (url.includes("/api/modes/series/autograb"))
+        return jsonResponse({
+          grabbed: false,
+          fallback: true,
+          message: "nothing cleared the quality floor automatically — pick one below",
+          candidates: [],
+        });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+
+    // Run a search so the merged result grid (not the category rows) is on screen.
+    fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
+      target: { value: "searched" },
+    });
+    fireEvent.submit(
+      screen.getByPlaceholderText("Search movies & shows…").closest("form")!,
+    );
+    expect(await screen.findByText("Searched Series")).toBeInTheDocument();
+
+    // Clicking Grab reveals the picker and must NOT auto-grab yet.
+    fireEvent.click(await screen.findByText("Grab"));
+    expect(await screen.findAllByLabelText("Season")).not.toHaveLength(0);
+    expect(autograbCalls(calls)).toHaveLength(0);
+
+    fireEvent.input(screen.getAllByLabelText("Season")[0]!, { target: { value: "2" } });
+    fireEvent.input(screen.getAllByLabelText("Episode")[0]!, { target: { value: "4" } });
+    fireEvent.click(screen.getByText("Go"));
+
+    await waitFor(() => expect(autograbCalls(calls)).toHaveLength(1));
+    expect(autograbCalls(calls)[0]!.body).toMatchObject({
+      title: "Searched Series",
+      tmdbId: 77,
+      seasonNumber: 2,
+      episodeNumber: 4,
+      seasonSpecified: true,
     });
   });
 });

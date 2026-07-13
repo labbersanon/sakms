@@ -168,6 +168,36 @@ export function ScreenTabBar(props: {
   );
 }
 
+// ScreenTabs is the generic tab-registration wrapper over an arbitrary TabDef
+// set: it registers the set with the app shell (which then draws the bar in its
+// one consistent location) and renders nothing inline, OR — rendered standalone
+// with no shell context (a screen's own unit test) — falls back to drawing the
+// bar inline. This is the same register-or-fallback pattern ModeTabs applies to
+// the fixed Movies/Series/Adult set, hoisted out so any screen with its own tab
+// set (Discover's Mainstream/Adult, Settings' section tabs) reuses it instead of
+// hand-rolling useScreenTabs + an inline Show/ScreenTabBar fallback.
+export function ScreenTabs(props: {
+  tabs: TabDef[];
+  current: () => string;
+  onSelect: (id: string) => void;
+  class?: string;
+}): JSX.Element {
+  const registered = useScreenTabs({
+    tabs: props.tabs,
+    current: props.current,
+    onSelect: props.onSelect,
+  });
+  if (registered) return null as unknown as JSX.Element;
+  return (
+    <ScreenTabBar
+      tabs={props.tabs}
+      current={props.current}
+      onSelect={props.onSelect}
+      class={props.class}
+    />
+  );
+}
+
 // ModeTabs is the shared Movies/Series/Adult tab set for the workflow/browse
 // screens. Inside the app shell it registers its tab set so the shell draws the
 // bar in its consistent location and renders nothing inline. Rendered standalone

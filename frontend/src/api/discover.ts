@@ -1,18 +1,16 @@
 // Discover data access — the read-only slice of SAK's Discover surface this
-// wave ships (poster/scene lists + per-card availability badges). Every call
-// goes through api() (src/api/client.ts) so it inherits the session cookie and
-// the global 401 → re-boot session-expiry fallback. Request/response shapes are
-// the generated DTOs (@dto), never hand-duplicated (plan Guardrail #4).
+// wave ships (TMDB title lists / TPDB scene lists + lazy poster art). Discovery
+// is sourced purely from TMDB/TPDB and the local library; Prowlarr is never
+// consulted here (there is no per-card availability probe — that only happens
+// later, when a grab actually retrieves a title). Every call goes through api()
+// (src/api/client.ts) so it inherits the session cookie and the global 401 →
+// re-boot session-expiry fallback. Request/response shapes are the generated
+// DTOs (@dto), never hand-duplicated (plan Guardrail #4).
 
 import { api } from "./client";
-import type {
-  AdultDiscoverItem,
-  AvailabilityResponse,
-  DiscoverItem,
-  PosterResponse,
-} from "@dto";
+import type { AdultDiscoverItem, DiscoverItem, PosterResponse } from "@dto";
 
-export type { AdultDiscoverItem, AvailabilityResponse, DiscoverItem };
+export type { AdultDiscoverItem, DiscoverItem };
 
 // Mode is the three top-level libraries. Movies/Series share the TMDB
 // title-shaped Discover path; Adult is scene-shaped (TPDB).
@@ -69,9 +67,10 @@ export function fetchDiscover(
 
 // fetchTitlePoster lazily resolves one library card's TMDB poster path by
 // tmdbId (Movies/Series only) — the library caches no poster art, so each
-// rendered existing-library card fetches its own poster on demand, mirroring
-// the per-card availability probe rather than an N+1 on the tracked list.
-// Returns "" when TMDB has no art (the card then renders its text fallback).
+// rendered existing-library card fetches its own poster on demand. The library
+// row paginates, so only one page's worth of these fetch at a time rather than
+// an N+1 across the whole tracked list. Returns "" when TMDB has no art (the
+// card then renders its text fallback).
 export function fetchTitlePoster(
   mode: Exclude<Mode, "adult">,
   tmdbId: number,
@@ -102,28 +101,4 @@ export function fetchAdultDiscover(query?: string): Promise<AdultDiscoverItem[]>
     ? `/api/modes/adult/discover?q=${encodeURIComponent(q)}`
     : `/api/modes/adult/discover`;
   return api<AdultDiscoverItem[]>(path);
-}
-
-// fetchTitleAvailability probes whether a release exists for a Movies/Series
-// title (tmdbId-keyed). Backs a poster card's availability badge.
-export function fetchTitleAvailability(
-  mode: Exclude<Mode, "adult">,
-  tmdbId: number,
-): Promise<AvailabilityResponse> {
-  return api<AvailabilityResponse>(
-    `/api/modes/${mode}/availability?tmdbId=${tmdbId}`,
-  );
-}
-
-// fetchAdultAvailability probes an Adult scene's availability. Adult has no
-// tmdbId — its identity is studio+title (see internal/api/availability.go), so
-// the badge probe takes those instead.
-export function fetchAdultAvailability(
-  studio: string,
-  title: string,
-): Promise<AvailabilityResponse> {
-  const params = new URLSearchParams({ studio: studio || "", title });
-  return api<AvailabilityResponse>(
-    `/api/modes/adult/availability?${params.toString()}`,
-  );
 }

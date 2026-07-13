@@ -1,7 +1,12 @@
-// Discover — the Seerr-inspired browse landing, now MUTATING (Stage 2). Hero
-// banner + horizontal category rows for Movies/Series, a scene grid for Adult.
-// Poster/scene art renders ONLY through the image proxy (src/api/discover.ts's
-// proxyImage/tmdbPoster), never hot-linked from TMDB/TPDB (plan Decision #7).
+// Discover — the Seerr-inspired browse landing, now MUTATING (Stage 2). The
+// Mainstream tab is a search bar over four stacked, independently-paginated TMDB
+// category rows (Trending/Popular × Movies/Series) plus a paginated "In your
+// library" row of what's already tracked; the Adult tab is an unchanged TPDB
+// scene grid. Discovery is sourced purely from TMDB/TPDB (and the local
+// library) — Prowlarr is never consulted here; it's only involved later, when a
+// grab actually retrieves a title. Poster/scene art renders ONLY through the
+// image proxy (src/api/discover.ts's proxyImage/tmdbPoster), never hot-linked
+// from TMDB/TPDB (plan Decision #7).
 //
 // One-click auto-grab (plan Decision #5): a card's "Grab" triggers the backend
 // auto-grab — search + bitrate-quality-floor scoring — which either grabs the
@@ -33,14 +38,11 @@ import {
 } from "solid-js";
 import {
   type AdultDiscoverItem,
-  type AvailabilityResponse,
   type DiscoverItem,
   type DiscoverCategory,
   type Mode,
-  fetchAdultAvailability,
   fetchAdultDiscover,
   fetchDiscover,
-  fetchTitleAvailability,
   fetchTitlePoster,
   fetchTmdbSearch,
   proxyImage,
@@ -60,8 +62,7 @@ import {
   Button,
   ErrorText,
   Muted,
-  ScreenTabBar,
-  useScreenTabs,
+  ScreenTabs,
   yearOf,
 } from "../components/ui";
 import { buildConnectionUpsertBody, upsertConnection } from "../api/settings";
@@ -492,38 +493,6 @@ const GrabButton: Component<{
   );
 };
 
-// AvailabilityBadge renders the outcome of a per-card availability probe. It is
-// deliberately quiet on failure: Prowlarr may not be configured (a 400/502),
-// which must not break the card — it just shows no badge. Loading shows a
-// neutral pill so the grid doesn't jump.
-const AvailabilityBadge: Component<{
-  result: AvailabilityResponse | null | undefined;
-  loading: boolean;
-}> = (props) => (
-  <Show
-    when={!props.loading}
-    fallback={
-      <span class="inline-block rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
-        checking…
-      </span>
-    }
-  >
-    <Show when={props.result}>
-      {(r) => (
-        <span
-          class="inline-block rounded-full px-2 py-0.5 text-[11px] font-medium"
-          classList={{
-            "bg-ok/20 text-ok": r().available,
-            "bg-surface-2 text-muted": !r().available,
-          }}
-        >
-          {r().available ? `${r().releaseCount} available` : "no release"}
-        </span>
-      )}
-    </Show>
-  </Show>
-);
-
 // TextPoster is the fallback tile when no art exists (TMDB/TPDB returned a
 // blank poster/image) — a titled placeholder that keeps the card's footprint
 // identical to an image card so rows don't reflow.
@@ -541,10 +510,6 @@ const PosterCard: Component<{
   item: DiscoverItem;
   onGrab: (t: GrabTarget) => void;
 }> = (props) => {
-  const [avail] = createResource(
-    () => props.item.id,
-    (id) => fetchTitleAvailability(props.mode, id).catch(() => null),
-  );
   const src = () => tmdbPoster(props.item.posterPath);
   return (
     <div class="w-36 shrink-0" title={props.item.overview}>
@@ -566,9 +531,6 @@ const PosterCard: Component<{
         <Show when={props.item.voteAverage > 0}>
           <span>★ {props.item.voteAverage.toFixed(1)}</span>
         </Show>
-      </div>
-      <div class="mt-1">
-        <AvailabilityBadge result={avail()} loading={avail.loading} />
       </div>
       <div class="mt-1.5">
         <GrabButton mode={props.mode} item={props.item} onGrab={props.onGrab} />
@@ -661,10 +623,9 @@ const PaginatedRow: Component<{
 // fetch and the auto-grab path. The library caches no poster art, so the
 // poster is resolved on demand by tmdbId (fetchTitlePoster) — one bounded call
 // per rendered card, then routed through the image proxy exactly like every
-// other card. availability + grab reuse the same tmdbId. A synthetic
-// DiscoverItem (id = tmdbId) feeds GrabButton so a library card grabs through
-// the identical GrabDialog/autoGrab path a Discover card does — Series still
-// gets its season/episode picker.
+// other card. A synthetic DiscoverItem (id = tmdbId) feeds GrabButton so a
+// library card grabs through the identical GrabDialog/autoGrab path a Discover
+// card does — Series still gets its season/episode picker.
 const LibraryCard: Component<{
   mode: "movies" | "series";
   item: TrackedItem;
@@ -673,11 +634,6 @@ const LibraryCard: Component<{
   const tmdbId = () => props.item.tmdbId ?? 0;
   const [poster] = createResource(tmdbId, (id) =>
     id ? fetchTitlePoster(props.mode, id).catch(() => "") : Promise.resolve(""),
-  );
-  const [avail] = createResource(tmdbId, (id) =>
-    id
-      ? fetchTitleAvailability(props.mode, id).catch(() => null)
-      : Promise.resolve(null),
   );
   const src = () => tmdbPoster(poster() ?? "");
   const grabItem = (): DiscoverItem => ({
@@ -707,9 +663,6 @@ const LibraryCard: Component<{
       <div class="flex items-center gap-2 text-xs text-muted">
         <span>{props.item.year || "—"}</span>
       </div>
-      <div class="mt-1">
-        <AvailabilityBadge result={avail()} loading={avail.loading} />
-      </div>
       <div class="mt-1.5">
         <GrabButton mode={props.mode} item={grabItem()} onGrab={props.onGrab} />
       </div>
@@ -717,11 +670,19 @@ const LibraryCard: Component<{
   );
 };
 
+// LIBRARY_PAGE_SIZE bounds how many library cards render (and therefore how many
+// per-card poster fetches fire) at once, mirroring the category rows' "Show
+// more" paging. Without this the whole tracked set mounts in one shot, firing a
+// poster fetch per card — a real fan-out on a large library.
+const LIBRARY_PAGE_SIZE = 20;
+
 // LibraryRow surfaces what's already tracked, movies + series merged into one
-// strip (each card tagged with its own mode). No "Show more" here — the whole
-// tracked set is shown at once, since it's the operator's own bounded library,
-// not TMDB's effectively-infinite catalog (noted per task: library row keeps it
-// simple). Reloads on reloadToken alongside the category rows.
+// strip (each card tagged with its own mode). The full tracked set is fetched
+// once (it's the operator's own bounded library, not TMDB's infinite catalog),
+// but only one page's worth is rendered at a time behind a "Show more" — the
+// same paging shape PaginatedRow uses — so DOM size and concurrent per-card
+// poster fetches stay bounded. Reloads on reloadToken alongside the category
+// rows; the visible count resets to one page on every reload.
 const LibraryRow: Component<{
   reloadToken: () => number;
   onGrab: (t: GrabTarget) => void;
@@ -736,18 +697,35 @@ const LibraryRow: Component<{
       ...series.map((item) => ({ mode: "series" as const, item })),
     ];
   });
+
+  const [visible, setVisible] = createSignal(LIBRARY_PAGE_SIZE);
+  createEffect(on(props.reloadToken, () => setVisible(LIBRARY_PAGE_SIZE)));
+
+  const shown = () => (entries() ?? []).slice(0, visible());
+  const hasMore = () => (entries()?.length ?? 0) > visible();
+
   return (
     <Show when={(entries()?.length ?? 0) > 0}>
       <section class="mt-6">
         <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">
           In your library
         </h2>
-        <div class="flex gap-3 overflow-x-auto pb-2">
-          <For each={entries()}>
+        <div class="flex items-stretch gap-3 overflow-x-auto pb-2">
+          <For each={shown()}>
             {(e) => (
               <LibraryCard mode={e.mode} item={e.item} onGrab={props.onGrab} />
             )}
           </For>
+          <Show when={hasMore()}>
+            <div class="flex w-28 shrink-0 items-center justify-center">
+              <Button
+                class="!py-1 text-xs"
+                onClick={() => setVisible((n) => n + LIBRARY_PAGE_SIZE)}
+              >
+                Show more
+              </Button>
+            </div>
+          </Show>
         </div>
       </section>
     </Show>
@@ -775,14 +753,24 @@ const MainstreamDiscover: Component = () => {
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
     async (q): Promise<ModedTitle[]> => {
-      const [movies, series] = await Promise.all([
-        fetchTmdbSearch("movies", q).catch(() => [] as DiscoverItem[]),
-        fetchTmdbSearch("series", q).catch(() => [] as DiscoverItem[]),
-      ]);
-      return [
-        ...movies.map((item) => ({ mode: "movies" as const, item })),
-        ...series.map((item) => ({ mode: "series" as const, item })),
-      ];
+      // A search error is surfaced the same way a category row's is: hand it to
+      // setSetupError so a "tmdb isn't configured yet" failure raises the same
+      // setup modal (the render's notConfiguredService gate decides modal vs.
+      // plain error), instead of being swallowed into an empty "No results
+      // found". Reusing the row plumbing keeps one detection path, not two.
+      try {
+        const [movies, series] = await Promise.all([
+          fetchTmdbSearch("movies", q),
+          fetchTmdbSearch("series", q),
+        ]);
+        return [
+          ...movies.map((item) => ({ mode: "movies" as const, item })),
+          ...series.map((item) => ({ mode: "series" as const, item })),
+        ];
+      } catch (e) {
+        setSetupError(e);
+        return [];
+      }
     },
   );
 
@@ -891,13 +879,6 @@ const AdultCard: Component<{
   item: AdultDiscoverItem;
   onGrab: (t: GrabTarget) => void;
 }> = (props) => {
-  const [avail] = createResource(
-    () => props.item.id,
-    () =>
-      fetchAdultAvailability(props.item.studio, props.item.title).catch(
-        () => null,
-      ),
-  );
   const src = () => proxyImage(props.item.image);
   const subtitle = () =>
     [props.item.studio, yearOf(props.item.date)].filter(Boolean).join(" · ");
@@ -925,9 +906,6 @@ const AdultCard: Component<{
       </div>
       <div class="mt-1.5 truncate text-sm text-fg">{props.item.title}</div>
       <div class="truncate text-xs text-muted">{subtitle() || "—"}</div>
-      <div class="mt-1">
-        <AvailabilityBadge result={avail()} loading={avail.loading} />
-      </div>
       <div class="mt-1.5">
         <Button class="w-full !py-1 text-xs" onClick={grab}>
           Grab
@@ -982,8 +960,8 @@ const AdultDiscover: Component = () => {
           )}
         </Show>
       </Show>
-      {/* Same accessor-in-error-state guard as TitleDiscover above — reading
-          scenes() while it's errored throws synchronously in Solid. */}
+      {/* Same accessor-in-error-state guard as MainstreamDiscover above —
+          reading scenes() while it's errored throws synchronously in Solid. */}
       <Show when={!scenes.error}>
         <Show when={!scenes.loading} fallback={<Muted>Loading…</Muted>}>
           <Show
@@ -1012,21 +990,14 @@ const AdultDiscover: Component = () => {
 // click "Adult" without mounting the whole shell.
 export const Discover: Component = () => {
   const [tab, setTab] = createSignal("mainstream");
-  const registered = useScreenTabs({
-    tabs: MAINSTREAM_TABS,
-    current: tab,
-    onSelect: setTab,
-  });
   return (
     <div>
-      <Show when={!registered}>
-        <ScreenTabBar
-          tabs={MAINSTREAM_TABS}
-          current={tab}
-          onSelect={setTab}
-          class="flex gap-1"
-        />
-      </Show>
+      <ScreenTabs
+        tabs={MAINSTREAM_TABS}
+        current={tab}
+        onSelect={setTab}
+        class="flex gap-1"
+      />
       <div class="mt-4">
         <Switch>
           <Match when={tab() === "adult"}>

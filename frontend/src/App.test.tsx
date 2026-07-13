@@ -123,8 +123,7 @@ describe("boot branch: authed app shell", () => {
       }
       if (url === "/api/setup/status") return jsonResponse({ dismissed: true });
       // The app shell renders the read-only Discover view, which fetches the
-      // Movies trending/popular rows on mount — stub them empty (no cards, so
-      // no availability probes fire).
+      // trending/popular category rows on mount — stub them empty (no cards).
       if (url.includes("/discover")) return jsonResponse([]);
       throw new Error("unexpected " + url);
     });

@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import type {
-  AdultDiscoverItem,
-  AvailabilityResponse,
-  DiscoverItem,
-  TrackedItem,
-} from "@dto";
+import type { AdultDiscoverItem, DiscoverItem, TrackedItem } from "@dto";
 import { Discover } from "./Discover";
 
 const jsonResponse = (obj: unknown): Response =>
@@ -44,13 +39,6 @@ const tracked = (over: Partial<TrackedItem>): TrackedItem => ({
   ...over,
 });
 
-const avail = (over: Partial<AvailabilityResponse> = {}): AvailabilityResponse => ({
-  available: true,
-  releaseCount: 3,
-  checkedAt: "2026-07-13T00:00:00Z",
-  ...over,
-});
-
 type Handler = (url: string) => Response | Promise<Response>;
 const stubFetch = (handler: Handler) => {
   const fn = vi.fn(async (input: RequestInfo | URL) => handler(String(input)));
@@ -60,21 +48,20 @@ const stubFetch = (handler: Handler) => {
 
 // mainstreamDefaults answers the background fetches the combined Mainstream page
 // fires on mount (four category rows + the library row's two tracked calls +
-// per-card poster/availability probes) with empties, so each test only has to
-// special-case the calls it actually asserts on. Returns null for anything it
-// doesn't recognize, so the caller can fall through to its own handler / throw.
+// per-card poster probes) with empties, so each test only has to special-case
+// the calls it actually asserts on. Returns null for anything it doesn't
+// recognize, so the caller can fall through to its own handler / throw.
 const mainstreamDefaults = (url: string): Response | null => {
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
-  if (url.includes("/availability")) return jsonResponse(avail());
   return null;
 };
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Discover — Mainstream combined rows", () => {
-  it("renders all four category rows (movies + series × trending + popular) with cards and availability badges", async () => {
+  it("renders all four category rows (movies + series × trending + popular) with cards", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
         return jsonResponse([movie({ id: 1, title: "Trend Movie" })]);
@@ -103,9 +90,6 @@ describe("Discover — Mainstream combined rows", () => {
     expect(await screen.findByText("Trend Show")).toBeInTheDocument();
     expect(await screen.findByText("Pop Movie")).toBeInTheDocument();
     expect(await screen.findByText("Pop Show")).toBeInTheDocument();
-
-    // Availability badge resolves for the cards.
-    expect((await screen.findAllByText("3 available")).length).toBeGreaterThan(0);
   });
 
   it("routes every poster image through the image proxy — never hot-links image.tmdb.org", async () => {
@@ -261,7 +245,6 @@ describe("Discover — Adult tab (unchanged)", () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/adult/discover"))
         return jsonResponse([scene({ id: "s1", title: "Scene One" })]);
-      if (url.includes("/api/modes/adult/availability")) return jsonResponse(avail());
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -335,7 +318,6 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
       }
       if (url.includes("/discover")) return configured ? jsonResponse([]) : notConfigured("tmdb");
       if (url.includes("/tracked")) return jsonResponse([]);
-      if (url.includes("/availability")) return jsonResponse(avail());
       if (url === "/api/connections/tmdb" && init?.method === "PUT") {
         configured = true;
         return new Response(null, { status: 204 });

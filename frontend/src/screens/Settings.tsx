@@ -86,19 +86,15 @@ import type { ConnectionSummary, NetscanFinding } from "../api/settings";
 import {
   Button,
   ErrorText,
+  MODES,
   Muted,
   ScreenTabBar,
+  ScreenTabs,
   type TabDef,
   inputClass,
   labelClass,
-  useScreenTabs,
 } from "../components/ui";
 
-const MODES: { id: Mode; label: string }[] = [
-  { id: "movies", label: "Movies" },
-  { id: "series", label: "Series" },
-  { id: "adult", label: "Adult" },
-];
 const MODE_LABELS: Record<Mode, string> = {
   movies: "Movies",
   series: "Series",
@@ -1205,26 +1201,11 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
   const [mode, setMode] = createSignal<Mode>("movies");
   const perModeApplies = () => mode() !== "adult"; // library/quality/naming/kids
 
-  // Register the section tabs with the shell. In a standalone unit-test mount
-  // (no shell context) this returns false and we draw the bar inline instead —
-  // the same fallback pattern ModeTabs uses.
-  const registered = useScreenTabs({
-    tabs: SECTION_TABS,
-    current: section,
-    onSelect: setSection,
-  });
-
   return (
     <div>
       <h2 class="mb-4 text-lg font-semibold text-fg">Settings</h2>
 
-      <Show when={!registered}>
-        <ScreenTabBar
-          tabs={SECTION_TABS}
-          current={section}
-          onSelect={setSection}
-        />
-      </Show>
+      <ScreenTabs tabs={SECTION_TABS} current={section} onSelect={setSection} />
 
       <Show when={section() === "connections"}>
         <ConnectionsSection />

@@ -164,7 +164,7 @@ func testNZBGet(ctx context.Context, httpClient *http.Client, req ConnectionTest
 
 func testTMDB(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	c := tmdb.New(tmdb.Config{BaseURL: req.URL, APIKey: req.APIKey}, httpClient)
-	if _, err := c.Popular(ctx, tmdb.Movie); err != nil {
+	if _, err := c.Popular(ctx, tmdb.Movie, 1); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}
 	return ConnectionTestResult{OK: true}

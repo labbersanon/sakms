@@ -97,9 +97,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/modes/{mode}/discover", discoverHandler(httpClient, connStore, settingsStore))
 	// Adult Discover is TPDB-backed (browse + search-by-term), not TMDB — the
 	// concrete path wins over the {mode} wildcard above for Adult (see
-	// adultDiscoverHandler). Availability for Adult goes through the same
-	// {mode}/availability route below, which branches internally on the
-	// studio/title identity shape.
+	// adultDiscoverHandler).
 	mux.HandleFunc("GET /api/modes/adult/discover", adultDiscoverHandler(httpClient, connStore))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
@@ -107,8 +105,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// route here.
 	mux.HandleFunc("GET /api/images/proxy", imageProxyHandler(httpClient))
 	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, settingsStore))
-	mux.HandleFunc("GET /api/modes/{mode}/availability", availabilityHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tmdb-search", tmdbSearchHandler(httpClient, connStore, settingsStore))
+	// poster resolves a library card's TMDB poster art lazily, per card (the
+	// library caches no poster path) — see posterHandler.
+	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/search", searchHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, settingsStore, grabsStore))
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +

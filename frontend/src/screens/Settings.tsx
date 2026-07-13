@@ -1,11 +1,20 @@
-// Settings — ported verbatim from the vanilla-JS frontend's renderSettings
-// (internal/web/static/index.html) plus the new Advanced Settings section. Top
-// to bottom: mode-independent panels (Connections, API Access, Authentication
-// mode, AI) always render; a Movies/Series/Adult tab bar governs the per-mode
-// panels below it (library root folder, quality prefs, naming preset, kids root
-// path — Movies/Series only, matching the old UI) and the per-mode fields of
-// Advanced Settings (phash-threshold; match-confidence-threshold for
-// Movies/Series; identify-enabled for Adult only; recheck-interval is global).
+// Settings — ported from the vanilla-JS frontend's renderSettings
+// (internal/web/static/index.html) plus the new Advanced Settings section.
+// SECTION TABS (registered with the app shell via useScreenTabs, so the shell
+// draws the bar in its one consistent location; inline fallback when rendered
+// standalone in a unit test): Connections; Auth (Authentication mode + API
+// Access break-glass key together); AI; Library (per-mode root folder, quality
+// prefs, naming preset, kids path — Movies/Series only); Advanced (per-mode
+// phash-threshold; match-confidence-threshold for Movies/Series; identify-
+// enabled for Adult only; recheck-interval is global).
+//
+// There are TWO INDEPENDENT selectors here and they must not be conflated: the
+// section-tab selector above, and a Movies/Series/Adult MODE selector rendered
+// INLINE inside the Library and Advanced tabs (the only tabs with per-mode
+// content). The mode selector is a plain ScreenTabBar — it is NOT registered
+// with the shell, since the shell's single tab slot already holds the section
+// tabs. One shared `mode` signal backs both per-mode tabs, so switching between
+// Library and Advanced preserves the selected mode.
 //
 // THE SAFETY-CRITICAL PIECE is the Connections table's save path: it goes
 // through buildConnectionUpsertBody (src/api/settings.ts), which OMITS the
@@ -74,13 +83,18 @@ import {
   upsertConnection,
 } from "../api/settings";
 import type { ConnectionSummary, NetscanFinding } from "../api/settings";
-import { Button, ErrorText, Muted, inputClass, labelClass } from "../components/ui";
+import {
+  Button,
+  ErrorText,
+  MODES,
+  Muted,
+  ScreenTabBar,
+  ScreenTabs,
+  type TabDef,
+  inputClass,
+  labelClass,
+} from "../components/ui";
 
-const MODES: { id: Mode; label: string }[] = [
-  { id: "movies", label: "Movies" },
-  { id: "series", label: "Series" },
-  { id: "adult", label: "Adult" },
-];
 const MODE_LABELS: Record<Mode, string> = {
   movies: "Movies",
   series: "Series",
@@ -1155,7 +1169,35 @@ const AdvancedSection: Component<{ mode: () => Mode }> = (props) => {
 
 // ---- Settings root --------------------------------------------------------
 
+// SECTION_TABS is the section-level tab set (distinct from the Movies/Series/
+// Adult mode selector). Connections is first so it is the default tab — that
+// keeps the safety-critical Connections table (and its three-state secret gate)
+// on screen at mount with zero navigation.
+const SECTION_TABS: TabDef[] = [
+  { id: "connections", label: "Connections" },
+  { id: "auth", label: "Auth" },
+  { id: "ai", label: "AI" },
+  { id: "library", label: "Library" },
+  { id: "advanced", label: "Advanced" },
+];
+
+// ModeSelector is the inline Movies/Series/Adult tab bar shared by the Library
+// and Advanced sections. It is a plain ScreenTabBar (NOT registered with the
+// shell) so it never competes with the section tabs for the shell's tab slot.
+const ModeSelector: Component<{
+  mode: () => Mode;
+  onSelect: (m: Mode) => void;
+}> = (props) => (
+  <ScreenTabBar
+    tabs={MODES}
+    current={props.mode}
+    onSelect={(id) => props.onSelect(id as Mode)}
+    class="mb-4 flex gap-1"
+  />
+);
+
 export const Settings: Component<{ onReboot: () => void }> = (props) => {
+  const [section, setSection] = createSignal<string>("connections");
   const [mode, setMode] = createSignal<Mode>("movies");
   const perModeApplies = () => mode() !== "adult"; // library/quality/naming/kids
 
@@ -1163,39 +1205,44 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
     <div>
       <h2 class="mb-4 text-lg font-semibold text-fg">Settings</h2>
 
-      {/* Mode-independent panels. */}
-      <ConnectionsSection />
-      <APIAccessSection />
-      <AuthModeSection onReboot={props.onReboot} />
-      <AISection />
+      <ScreenTabs tabs={SECTION_TABS} current={section} onSelect={setSection} />
 
-      {/* Per-mode panels, governed by the tab bar below. */}
-      <div class="mb-4 mt-6 flex gap-1">
-        <For each={MODES}>
-          {(m) => (
-            <button
-              type="button"
-              class="rounded-md px-3 py-1.5 text-sm font-medium transition"
-              classList={{
-                "bg-accent text-accent-fg": mode() === m.id,
-                "bg-surface-2 text-muted hover:text-fg": mode() !== m.id,
-              }}
-              onClick={() => setMode(m.id)}
-            >
-              {m.label}
-            </button>
-          )}
-        </For>
-      </div>
-
-      <Show when={perModeApplies()}>
-        <LibraryRootFolderSection mode={mode} />
-        <QualityPrefsSection mode={mode} />
-        <NamingPresetSection mode={mode} />
-        <KidsRootPathSection mode={mode} />
+      <Show when={section() === "connections"}>
+        <ConnectionsSection />
       </Show>
 
-      <AdvancedSection mode={mode} />
+      <Show when={section() === "auth"}>
+        <AuthModeSection onReboot={props.onReboot} />
+        <APIAccessSection />
+      </Show>
+
+      <Show when={section() === "ai"}>
+        <AISection />
+      </Show>
+
+      <Show when={section() === "library"}>
+        <ModeSelector mode={mode} onSelect={setMode} />
+        <Show
+          when={perModeApplies()}
+          fallback={
+            <Muted>
+              Adult has no per-mode library, quality, naming, or kids settings —
+              those apply to Movies and Series only. Adult's own settings live in
+              the Advanced tab.
+            </Muted>
+          }
+        >
+          <LibraryRootFolderSection mode={mode} />
+          <QualityPrefsSection mode={mode} />
+          <NamingPresetSection mode={mode} />
+          <KidsRootPathSection mode={mode} />
+        </Show>
+      </Show>
+
+      <Show when={section() === "advanced"}>
+        <ModeSelector mode={mode} onSelect={setMode} />
+        <AdvancedSection mode={mode} />
+      </Show>
     </div>
   );
 };

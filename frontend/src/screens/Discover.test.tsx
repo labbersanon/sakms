@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import type {
-  AdultDiscoverItem,
-  AvailabilityResponse,
-  DiscoverItem,
-} from "@dto";
+import type { AdultDiscoverItem, DiscoverItem, TrackedItem } from "@dto";
 import { Discover } from "./Discover";
 
 const jsonResponse = (obj: unknown): Response =>
@@ -34,10 +30,12 @@ const scene = (over: Partial<AdultDiscoverItem>): AdultDiscoverItem => ({
   ...over,
 });
 
-const avail = (over: Partial<AvailabilityResponse> = {}): AvailabilityResponse => ({
-  available: true,
-  releaseCount: 3,
-  checkedAt: "2026-07-13T00:00:00Z",
+const tracked = (over: Partial<TrackedItem>): TrackedItem => ({
+  id: 10,
+  title: "Owned Title",
+  tags: [],
+  tmdbId: 500,
+  year: 2020,
   ...over,
 });
 
@@ -48,57 +46,69 @@ const stubFetch = (handler: Handler) => {
   return fn;
 };
 
+// mainstreamDefaults answers the background fetches the combined Mainstream page
+// fires on mount (four category rows + the library row's two tracked calls +
+// per-card poster probes) with empties, so each test only has to special-case
+// the calls it actually asserts on. Returns null for anything it doesn't
+// recognize, so the caller can fall through to its own handler / throw.
+const mainstreamDefaults = (url: string): Response | null => {
+  if (url.includes("/discover")) return jsonResponse([]);
+  if (url.includes("/tracked")) return jsonResponse([]);
+  if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+  return null;
+};
+
 afterEach(() => vi.unstubAllGlobals());
 
-describe("Discover — Movies/Series title view", () => {
-  it("renders a hero, rows, poster cards, and availability badges", async () => {
+describe("Discover — Mainstream combined rows", () => {
+  it("renders all four category rows (movies + series × trending + popular) with cards", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending")) {
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" }), movie({ id: 2, title: "Second Movie" })]);
-      }
-      if (url.includes("/api/modes/movies/discover") && url.includes("popular")) {
-        return jsonResponse([movie({ id: 3, title: "Popular Movie" })]);
-      }
-      if (url.includes("/api/modes/movies/availability")) {
-        return jsonResponse(avail());
-      }
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Trend Movie" })]);
+      if (url.includes("/api/modes/movies/discover") && url.includes("popular"))
+        return jsonResponse([movie({ id: 2, title: "Pop Movie" })]);
+      if (url.includes("/api/modes/series/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 3, title: "Trend Show", mediaType: "tv" })]);
+      if (url.includes("/api/modes/series/discover") && url.includes("popular"))
+        return jsonResponse([movie({ id: 4, title: "Pop Show", mediaType: "tv" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Discover />);
 
-    // The top trending title appears in BOTH the hero and the trending row
-    // (Netflix-style — the featured item is also first in its row), so expect
-    // multiple matches.
-    expect((await screen.findAllByText("Hero Movie")).length).toBeGreaterThan(1);
-    // A poster card from the Popular row renders too (row-only, so unique).
-    expect(await screen.findByText("Popular Movie")).toBeInTheDocument();
-    // Availability badge resolves.
-    expect(await screen.findAllByText("3 available")).not.toHaveLength(0);
+    // All four row headers are present (the combined page, not a Movies/Series
+    // toggle).
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    expect(screen.getByText("Trending Shows")).toBeInTheDocument();
+    expect(screen.getByText("Popular Movies")).toBeInTheDocument();
+    expect(screen.getByText("Popular Shows")).toBeInTheDocument();
+
+    // A card from each row renders.
+    expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
+    expect(await screen.findByText("Trend Show")).toBeInTheDocument();
+    expect(await screen.findByText("Pop Movie")).toBeInTheDocument();
+    expect(await screen.findByText("Pop Show")).toBeInTheDocument();
   });
 
   it("routes every poster image through the image proxy — never hot-links image.tmdb.org", async () => {
     stubFetch((url) => {
-      if (url.includes("/discover") && url.includes("trending")) {
-        return jsonResponse([movie({ id: 1, title: "Hero Movie", posterPath: "/p1.jpg" })]);
-      }
-      if (url.includes("/discover") && url.includes("popular")) {
-        return jsonResponse([movie({ id: 2, title: "Pop", posterPath: "/p2.jpg" })]);
-      }
-      if (url.includes("/availability")) return jsonResponse(avail());
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Trend Movie", posterPath: "/p1.jpg" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
 
     const { container } = render(() => <Discover />);
-    await screen.findAllByText("Hero Movie");
+    await screen.findByText("Trend Movie");
 
     const imgs = Array.from(container.querySelectorAll("img"));
     expect(imgs.length).toBeGreaterThan(0);
     for (const img of imgs) {
       const src = img.getAttribute("src") ?? "";
       expect(src.startsWith("/api/images/proxy?url=")).toBe(true);
-      // The raw TMDB host must be percent-encoded inside the proxy param, never
-      // the <img src>'s own host (that would be a direct hot-link).
       expect(src.startsWith("https://image.tmdb.org")).toBe(false);
       expect(decodeURIComponent(src)).toContain("https://image.tmdb.org/t/p/");
     }
@@ -106,34 +116,141 @@ describe("Discover — Movies/Series title view", () => {
 
   it("falls back to a text tile when a title has no poster", async () => {
     stubFetch((url) => {
-      if (url.includes("/discover") && url.includes("trending")) {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
         return jsonResponse([movie({ id: 1, title: "No Art Movie", posterPath: "" })]);
-      }
-      if (url.includes("/discover") && url.includes("popular")) return jsonResponse([]);
-      if (url.includes("/availability")) return jsonResponse(avail({ available: false, releaseCount: 0 }));
+      const d = mainstreamDefaults(url);
+      if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
 
     const { container } = render(() => <Discover />);
+    // "No Art Movie" appears twice per card (the text-tile label + the title
+    // line), so use findAllByText.
     await screen.findAllByText("No Art Movie");
-    // No <img> for a poster-less card; the title still shows via the text tile.
+    // No <img> anywhere (no poster, empty library) — the title still shows via
+    // the text tile.
     expect(container.querySelectorAll("img").length).toBe(0);
   });
 });
 
-describe("Discover — mode switching + Adult view", () => {
-  it("switches to Adult and renders scene cards with proxied art", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover")) return jsonResponse([]);
-      if (url.includes("/api/modes/adult/discover")) {
-        return jsonResponse([scene({ id: "s1", title: "Scene One" })]);
+describe("Discover — Show more pagination (append, not replace)", () => {
+  it("appends the next TMDB page to the row instead of replacing it", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending")) {
+        if (url.includes("page=2"))
+          return jsonResponse([movie({ id: 2, title: "Page Two Movie" })]);
+        return jsonResponse([movie({ id: 1, title: "Page One Movie" })]);
       }
-      if (url.includes("/api/modes/adult/availability")) return jsonResponse(avail());
+      const d = mainstreamDefaults(url);
+      if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
 
+    render(() => <Discover />);
+    // Only the Trending Movies row has items → exactly one "Show more" button.
+    expect(await screen.findByText("Page One Movie")).toBeInTheDocument();
+    fireEvent.click(await screen.findByText("Show more"));
+
+    // Page two's card appears AND page one's is still present (append).
+    expect(await screen.findByText("Page Two Movie")).toBeInTheDocument();
+    expect(screen.getByText("Page One Movie")).toBeInTheDocument();
+
+    // The second page was actually requested with page=2.
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/movies/discover") &&
+        String(u).includes("trending") &&
+        String(u).includes("page=2"),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("Discover — existing-library row", () => {
+  it("renders owned movies + series as poster cards with lazily-fetched, proxied art", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([tracked({ id: 10, title: "Owned Movie", tmdbId: 500, year: 2020 })]);
+      if (url.includes("/api/modes/series/tracked"))
+        return jsonResponse([tracked({ id: 11, title: "Owned Show", tmdbId: 600, year: 2019 })]);
+      if (url.includes("/api/modes/movies/poster?tmdbId=500"))
+        return jsonResponse({ posterPath: "/libmovie.jpg" });
+      if (url.includes("/api/modes/series/poster?tmdbId=600"))
+        return jsonResponse({ posterPath: "/libshow.jpg" });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
     const { container } = render(() => <Discover />);
-    // Start on Movies; switch to Adult.
+
+    expect(await screen.findByText("In your library")).toBeInTheDocument();
+    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
+    expect(await screen.findByText("Owned Show")).toBeInTheDocument();
+
+    // The lazily-resolved library posters render through the proxy.
+    const libImgs = Array.from(container.querySelectorAll("img")).filter((img) =>
+      decodeURIComponent(img.getAttribute("src") ?? "").match(/libmovie|libshow/),
+    );
+    expect(libImgs.length).toBe(2);
+    for (const img of libImgs) {
+      const src = img.getAttribute("src") ?? "";
+      expect(src.startsWith("/api/images/proxy?url=")).toBe(true);
+      expect(src.startsWith("https://image.tmdb.org")).toBe(false);
+    }
+  });
+});
+
+describe("Discover — Mainstream search (replaces rows, then restores)", () => {
+  it("replaces the category rows with merged movie+series results, and restores them on Clear", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "A Row Movie" })]);
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse([movie({ id: 90, title: "Search Movie" })]);
+      if (url.includes("/api/modes/series/tmdb-search"))
+        return jsonResponse([movie({ id: 91, title: "Search Show", mediaType: "tv" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    // Rows are visible initially.
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    expect(await screen.findByText("A Row Movie")).toBeInTheDocument();
+
+    // Search — the rows are replaced by one merged result grid.
+    fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
+      target: { value: "search" },
+    });
+    fireEvent.submit(screen.getByPlaceholderText("Search movies & shows…").closest("form")!);
+
+    expect(await screen.findByText("Search results")).toBeInTheDocument();
+    expect(await screen.findByText("Search Movie")).toBeInTheDocument();
+    expect(await screen.findByText("Search Show")).toBeInTheDocument();
+    // Rows are gone while searching.
+    expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
+    expect(screen.queryByText("A Row Movie")).not.toBeInTheDocument();
+
+    // Clearing restores the rows and drops the search view.
+    fireEvent.click(screen.getByText("Clear"));
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    expect(await screen.findByText("A Row Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Search results")).not.toBeInTheDocument();
+  });
+});
+
+describe("Discover — Adult tab (unchanged)", () => {
+  it("switches to Adult and renders scene cards with proxied art", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/adult/discover"))
+        return jsonResponse([scene({ id: "s1", title: "Scene One" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    const { container } = render(() => <Discover />);
+
     fireEvent.click(await screen.findByText("Adult"));
 
     expect(await screen.findByText("Scene One")).toBeInTheDocument();
@@ -143,51 +260,9 @@ describe("Discover — mode switching + Adult view", () => {
       expect((img.getAttribute("src") ?? "").startsWith("/api/images/proxy?url=")).toBe(true);
     }
   });
-
-  it("switches to Series (same TMDB title path, different mode) and fetches series discover", async () => {
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover")) return jsonResponse([]);
-      if (url.includes("/api/modes/series/discover")) {
-        return jsonResponse([movie({ id: 42, title: "A Series", mediaType: "tv" })]);
-      }
-      if (url.includes("/availability")) return jsonResponse(avail());
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Series"));
-
-    // The mode-keyed resources refetch against the series endpoint (title
-    // shows in both hero and row, so expect it present at least once).
-    expect((await screen.findAllByText("A Series")).length).toBeGreaterThan(0);
-    expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/series/discover"),
-      ),
-    ).toBe(true);
-  });
-
-  it("renders an Adult scene with no art as a text tile (no hot-link, no broken img)", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover")) return jsonResponse([]);
-      if (url.includes("/api/modes/adult/discover")) {
-        return jsonResponse([scene({ id: "s2", title: "Artless Scene", image: "" })]);
-      }
-      if (url.includes("/api/modes/adult/availability")) return jsonResponse(avail());
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    const { container } = render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-    await screen.findAllByText("Artless Scene");
-    expect(container.querySelectorAll("img").length).toBe(0);
-  });
 });
 
 describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
-  // Richer stubFetch (captures method/body) scoped to this block only — the
-  // file's shared stubFetch above only exposes the URL, which the plain
-  // GET-only tests never needed. Doesn't touch that shared helper.
   type Call = { url: string; method: string; body: unknown };
   const stubFetchWithCalls = (
     handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
@@ -211,17 +286,14 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
       status: 400,
     });
 
-  it("does not crash and shows a setup pop-up when TMDB isn't configured (regression: this used to be an uncaught exception + stuck 'Loading…')", async () => {
+  it("shows a setup pop-up (no uncaught error) when TMDB isn't configured", async () => {
     const pageErrors: unknown[] = [];
-    // solid-testing-library runs in jsdom; an uncaught error surfaces as an
-    // unhandled 'error' event on window, which is the closest equivalent
-    // available here to the real browser's uncaught-exception signal this
-    // regression was originally caught with via CDP.
     const onError = (e: ErrorEvent) => pageErrors.push(e.error ?? e.message);
     window.addEventListener("error", onError);
 
     stubFetchWithCalls((url) => {
-      if (url.includes("/api/modes/movies/discover")) return notConfigured("tmdb");
+      if (url.includes("/discover")) return notConfigured("tmdb");
+      if (url.includes("/tracked")) return jsonResponse([]);
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -236,14 +308,16 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
     window.removeEventListener("error", onError);
   });
 
-  it("saving an API key from the pop-up PUTs to the connections endpoint with the correct three-state body, then refetches", async () => {
+  it("saving an API key from the pop-up PUTs the three-state body, then refetches the rows", async () => {
     let configured = false;
     const calls = stubFetchWithCalls((url, init) => {
-      if (url.includes("/api/modes/movies/discover")) {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending")) {
         return configured
           ? jsonResponse([movie({ id: 1, title: "Now Visible Movie" })])
           : notConfigured("tmdb");
       }
+      if (url.includes("/discover")) return configured ? jsonResponse([]) : notConfigured("tmdb");
+      if (url.includes("/tracked")) return jsonResponse([]);
       if (url === "/api/connections/tmdb" && init?.method === "PUT") {
         configured = true;
         return new Response(null, { status: 204 });
@@ -259,14 +333,7 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    // The title only appears once the modal's onSaved refetch succeeds
-    // against the now-configured connection. findAllByText (not findByText)
-    // because the mock returns the same movie for both the trending and
-    // popular categories, and the intentional hero+row duplication (see the
-    // comment in Discover.tsx) means it legitimately renders more than once.
-    expect(
-      (await screen.findAllByText("Now Visible Movie")).length,
-    ).toBeGreaterThan(0);
+    expect(await screen.findByText("Now Visible Movie")).toBeInTheDocument();
 
     const putCall = calls.find(
       (c) => c.url === "/api/connections/tmdb" && c.method === "PUT",
@@ -279,12 +346,13 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
 
   it("shows the TPDB pop-up (not TMDB's) when Adult's scene fetch reports tpdb not configured", async () => {
     stubFetchWithCalls((url) => {
-      if (url.includes("/api/modes/movies/discover")) return jsonResponse([]);
       if (url.includes("/api/modes/adult/discover")) return notConfigured("tpdb");
+      const d = mainstreamDefaults(url);
+      if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
-
     render(() => <Discover />);
+
     fireEvent.click(await screen.findByText("Adult"));
 
     expect(await screen.findByText("Set up TPDB")).toBeInTheDocument();
@@ -295,9 +363,8 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
 
   it("falls back to plain error text (no pop-up) for an unrelated error", async () => {
     stubFetchWithCalls((url) => {
-      if (url.includes("/api/modes/movies/discover")) {
-        return new Response("internal server error", { status: 500 });
-      }
+      if (url.includes("/discover")) return new Response("internal server error", { status: 500 });
+      if (url.includes("/tracked")) return jsonResponse([]);
       throw new Error("unexpected fetch: " + url);
     });
 

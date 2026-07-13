@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/curtiswtaylorjr/sakms/internal/httpx"
 )
@@ -120,20 +121,34 @@ func normalize(r rawResult, fallbackType MediaType) Item {
 	return item
 }
 
+// pageQuery builds the optional TMDB `page` query param (1-based). A page <= 1
+// is left off entirely — TMDB defaults to page 1, and omitting it keeps the
+// request URL identical to the pre-pagination shape for the common first-page
+// call. Matches SearchMovies/SearchTV's url.Values-based query building.
+func pageQuery(page int) url.Values {
+	if page <= 1 {
+		return nil
+	}
+	q := url.Values{}
+	q.Set("page", strconv.Itoa(page))
+	return q
+}
+
 // Trending returns TMDB's trending titles for mt over timeWindow ("day" or
-// "week").
-func (c *Client) Trending(ctx context.Context, mt MediaType, timeWindow string) ([]Item, error) {
+// "week"), for the given 1-based page (page <= 1 fetches the first page).
+func (c *Client) Trending(ctx context.Context, mt MediaType, timeWindow string, page int) ([]Item, error) {
 	var resp listResponse
-	if err := c.do(ctx, fmt.Sprintf("/trending/%s/%s", mt, timeWindow), nil, &resp); err != nil {
+	if err := c.do(ctx, fmt.Sprintf("/trending/%s/%s", mt, timeWindow), pageQuery(page), &resp); err != nil {
 		return nil, err
 	}
 	return normalizeAll(resp.Results, mt), nil
 }
 
-// Popular returns TMDB's currently popular titles for mt.
-func (c *Client) Popular(ctx context.Context, mt MediaType) ([]Item, error) {
+// Popular returns TMDB's currently popular titles for mt, for the given 1-based
+// page (page <= 1 fetches the first page).
+func (c *Client) Popular(ctx context.Context, mt MediaType, page int) ([]Item, error) {
 	var resp listResponse
-	if err := c.do(ctx, fmt.Sprintf("/%s/popular", mt), nil, &resp); err != nil {
+	if err := c.do(ctx, fmt.Sprintf("/%s/popular", mt), pageQuery(page), &resp); err != nil {
 		return nil, err
 	}
 	return normalizeAll(resp.Results, mt), nil
@@ -195,19 +210,21 @@ func (c *Client) ExternalIDs(ctx context.Context, tmdbTVID int) (tvdbID int, err
 // external_ids round-trip, unlike TV — see TVDetails). Runtime/Genres are
 // cheap extras from the same response.
 type MovieDetails struct {
-	ID      int
-	Title   string
-	IMDBID  string // "" if TMDB has none on file
-	Runtime int    // minutes; 0 if TMDB reports null
-	Genres  []string
+	ID         int
+	Title      string
+	PosterPath string // "" if TMDB has none on file
+	IMDBID     string // "" if TMDB has none on file
+	Runtime    int    // minutes; 0 if TMDB reports null
+	Genres     []string
 }
 
 type movieDetailsResponse struct {
-	ID      int    `json:"id"`
-	Title   string `json:"title"`
-	IMDBID  string `json:"imdb_id"`
-	Runtime int    `json:"runtime"`
-	Genres  []struct {
+	ID         int    `json:"id"`
+	Title      string `json:"title"`
+	PosterPath string `json:"poster_path"`
+	IMDBID     string `json:"imdb_id"`
+	Runtime    int    `json:"runtime"`
+	Genres     []struct {
 		Name string `json:"name"`
 	} `json:"genres"`
 }
@@ -223,11 +240,12 @@ func (c *Client) MovieDetails(ctx context.Context, tmdbID int) (MovieDetails, er
 		return MovieDetails{}, err
 	}
 	details := MovieDetails{
-		ID:      resp.ID,
-		Title:   resp.Title,
-		IMDBID:  resp.IMDBID,
-		Runtime: resp.Runtime,
-		Genres:  make([]string, len(resp.Genres)),
+		ID:         resp.ID,
+		Title:      resp.Title,
+		PosterPath: resp.PosterPath,
+		IMDBID:     resp.IMDBID,
+		Runtime:    resp.Runtime,
+		Genres:     make([]string, len(resp.Genres)),
 	}
 	for i, g := range resp.Genres {
 		details.Genres[i] = g.Name
@@ -242,15 +260,17 @@ func (c *Client) MovieDetails(ctx context.Context, tmdbID int) (MovieDetails, er
 // parity with a bound-to-be-empty IMDBID field, this type omits it; a caller
 // that needs a TV show's IMDB id must fetch external_ids separately.
 type TVDetails struct {
-	ID     int
-	Title  string
-	Genres []string
+	ID         int
+	Title      string
+	PosterPath string // "" if TMDB has none on file
+	Genres     []string
 }
 
 type tvDetailsResponse struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Genres []struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	PosterPath string `json:"poster_path"`
+	Genres     []struct {
 		Name string `json:"name"`
 	} `json:"genres"`
 }
@@ -265,9 +285,10 @@ func (c *Client) TVDetails(ctx context.Context, tmdbID int) (TVDetails, error) {
 		return TVDetails{}, err
 	}
 	details := TVDetails{
-		ID:     resp.ID,
-		Title:  resp.Name,
-		Genres: make([]string, len(resp.Genres)),
+		ID:         resp.ID,
+		Title:      resp.Name,
+		PosterPath: resp.PosterPath,
+		Genres:     make([]string, len(resp.Genres)),
 	}
 	for i, g := range resp.Genres {
 		details.Genres[i] = g.Name

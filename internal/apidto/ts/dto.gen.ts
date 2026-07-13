@@ -231,6 +231,17 @@ export interface AdultDiscoverItem {
   durationSeconds: number /* int */;
 }
 /**
+ * PosterResponse is GET /api/modes/{mode}/poster's response — the lazily
+ * resolved TMDB poster path for one library card, keyed by tmdbId (Movies/
+ * Series only). PosterPath is a bare TMDB path (e.g. "/abc.jpg") the client
+ * turns into a proxied image URL, or "" when TMDB has no art on file (the
+ * card then renders its text fallback). Mirrors the availability probe's
+ * per-card, on-demand shape rather than an N+1 on the library list endpoint.
+ */
+export interface PosterResponse {
+  posterPath: string;
+}
+/**
  * AvailabilityResponse is GET /api/modes/{mode}/availability's response —
  * backs a Discover card's availability badge (Stage 1 scope: "poster cards
  * with availability badges" per the plan). CheckedAt is an RFC3339Nano
@@ -506,11 +517,19 @@ export interface TagEntry {
  * {sceneId} the scene-tag routes take). Tags is the item's current tag labels
  * (a local tag has no numeric id — it's the label string itself, matching
  * TagEntry.ID).
+ * TmdbId/Year are additive, present only for Movies/Series (both carry a TMDB
+ * identity in the library); they are absent for Adult scenes, which are keyed
+ * on (box, sceneId) with no TMDB id. Discover's existing-library row uses
+ * TmdbId to lazily fetch each card's poster + availability and to drive
+ * auto-grab; Year is display-only. The Tag picker (this type's original
+ * caller) ignores both.
  */
 export interface TrackedItem {
   id: number /* int64 */;
   title: string;
   tags: string[];
+  tmdbId?: number /* int */;
+  year?: number /* int */;
 }
 /**
  * ConnectionTestRequest is POST /api/connections/test's body — enough to

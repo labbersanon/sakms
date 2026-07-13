@@ -3,7 +3,17 @@
 // tokens from src/index.css (bg-surface, text-fg, text-muted, bg-accent,
 // border-border, text-danger) so the palette stays in one place.
 
-import { type Component, type JSX, For, splitProps } from "solid-js";
+import {
+  type Component,
+  type JSX,
+  type Setter,
+  For,
+  createContext,
+  onCleanup,
+  onMount,
+  splitProps,
+  useContext,
+} from "solid-js";
 import type { Mode } from "../api/discover";
 
 export const inputClass =
@@ -91,34 +101,128 @@ export const MODES: { id: Mode; label: string }[] = [
   { id: "adult", label: "Adult" },
 ];
 
-// ModeTabs is the shared mode tab bar mounted above each screen's mode-specific
-// body. `current` is a Solid accessor (NOT a frozen value) so the active-tab
-// highlight tracks the caller's mode signal; `onSelect` sets it. The container
-// class defaults to the standard `mb-4 flex gap-1`; Discover overrides it (its
-// tabs sit above a separately-spaced body).
+// TabDef is one entry in a screen's tab set. `id` is an opaque string (Movies/
+// Series/Adult for the workflow screens today; Mainstream/Adult for Discover
+// and section names for Settings in later waves) — the tab mechanism is
+// deliberately not tied to `Mode`.
+export type TabDef = { id: string; label: string };
+
+// ScreenTabsRegistration is what a screen hands the app shell so the shell can
+// render that screen's tab bar in its one consistent location above the page
+// content. `current` is a Solid accessor (NOT a frozen value) so the active-tab
+// highlight tracks the screen's own selection signal; `onSelect` sets it.
+export type ScreenTabsRegistration = {
+  tabs: TabDef[];
+  current: () => string;
+  onSelect: (id: string) => void;
+};
+
+// ScreenTabsContext lets the shell (provider) receive the active screen's tab
+// set. The value is the shell's registration setter. When absent (a screen
+// rendered standalone, e.g. in its own unit test) registration is a no-op and
+// callers fall back to rendering their tab bar inline.
+export const ScreenTabsContext =
+  createContext<Setter<ScreenTabsRegistration | null>>();
+
+// useScreenTabs registers a screen's tab set with the shell for the lifetime of
+// the calling component. Returns true when a shell context was found (so the
+// caller renders nothing inline), false when standalone (caller renders inline).
+// The cleanup only clears the slot if it still holds THIS registration, so a
+// route swap where the new screen registers before the old one disposes stays
+// correct regardless of order.
+export function useScreenTabs(reg: ScreenTabsRegistration): boolean {
+  const setReg = useContext(ScreenTabsContext);
+  if (!setReg) return false;
+  onMount(() => setReg(reg));
+  onCleanup(() => setReg((prev) => (prev === reg ? null : prev)));
+  return true;
+}
+
+// ScreenTabBar is the generic tab bar: a row of pill buttons over an opaque
+// TabDef set. The shell renders it in its consistent location; screens rendered
+// standalone (no shell) render it inline via ModeTabs' fallback.
+export function ScreenTabBar(props: {
+  tabs: TabDef[];
+  current: () => string;
+  onSelect: (id: string) => void;
+  class?: string;
+}): JSX.Element {
+  return (
+    <div class={props.class ?? "mb-4 flex gap-1"}>
+      <For each={props.tabs}>
+        {(t) => (
+          <button
+            type="button"
+            class="rounded-md px-3 py-1.5 text-sm font-medium transition"
+            classList={{
+              "bg-accent text-accent-fg": props.current() === t.id,
+              "bg-surface-2 text-muted hover:text-fg": props.current() !== t.id,
+            }}
+            onClick={() => props.onSelect(t.id)}
+          >
+            {t.label}
+          </button>
+        )}
+      </For>
+    </div>
+  );
+}
+
+// ScreenTabs is the generic tab-registration wrapper over an arbitrary TabDef
+// set: it registers the set with the app shell (which then draws the bar in its
+// one consistent location) and renders nothing inline, OR — rendered standalone
+// with no shell context (a screen's own unit test) — falls back to drawing the
+// bar inline. This is the same register-or-fallback pattern ModeTabs applies to
+// the fixed Movies/Series/Adult set, hoisted out so any screen with its own tab
+// set (Discover's Mainstream/Adult, Settings' section tabs) reuses it instead of
+// hand-rolling useScreenTabs + an inline Show/ScreenTabBar fallback.
+export function ScreenTabs(props: {
+  tabs: TabDef[];
+  current: () => string;
+  onSelect: (id: string) => void;
+  class?: string;
+}): JSX.Element {
+  const registered = useScreenTabs({
+    tabs: props.tabs,
+    current: props.current,
+    onSelect: props.onSelect,
+  });
+  if (registered) return null as unknown as JSX.Element;
+  return (
+    <ScreenTabBar
+      tabs={props.tabs}
+      current={props.current}
+      onSelect={props.onSelect}
+      class={props.class}
+    />
+  );
+}
+
+// ModeTabs is the shared Movies/Series/Adult tab set for the workflow/browse
+// screens. Inside the app shell it registers its tab set so the shell draws the
+// bar in its consistent location and renders nothing inline. Rendered standalone
+// (a screen's own unit test, which has no shell context) it falls back to
+// drawing the bar inline — preserving the pre-sidebar behavior every existing
+// screen test relies on. `current` is a Solid accessor; `class` only affects the
+// inline fallback (the shell owns placement).
 export function ModeTabs(props: {
   current: () => Mode;
   onSelect: (mode: Mode) => void;
   class?: string;
 }): JSX.Element {
+  const registered = useScreenTabs({
+    tabs: MODES,
+    current: props.current,
+    onSelect: (id) => props.onSelect(id as Mode),
+  });
+  if (registered) return null as unknown as JSX.Element;
   return (
-    <div class={props.class ?? "mb-4 flex gap-1"}>
-      <For each={MODES}>
-        {(m) => (
-          <button
-            type="button"
-            class="rounded-md px-3 py-1.5 text-sm font-medium transition"
-            classList={{
-              "bg-accent text-accent-fg": props.current() === m.id,
-              "bg-surface-2 text-muted hover:text-fg": props.current() !== m.id,
-            }}
-            onClick={() => props.onSelect(m.id)}
-          >
-            {m.label}
-          </button>
-        )}
-      </For>
-    </div>
+    <ScreenTabBar
+      tabs={MODES}
+      current={props.current}
+      onSelect={(id) => props.onSelect(id as Mode)}
+      class={props.class}
+    />
   );
 }
 

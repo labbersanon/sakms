@@ -93,6 +93,14 @@ const stubFetch = (override?: Override) => {
 
 const renderSettings = () => render(() => <Settings onReboot={() => {}} />);
 
+// goToSection clicks a section tab. Settings now splits its panels across
+// section tabs (Connections is the default), so a test targeting any non-
+// Connections panel must navigate there first. Section-tab buttons are queried
+// by role+name so they never collide with a Card's <legend> of the same text
+// (legends aren't buttons) nor with the Movies/Series/Adult mode buttons.
+const goToSection = (name: "Connections" | "Auth" | "AI" | "Library" | "Advanced") =>
+  fireEvent.click(screen.getByRole("button", { name }));
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -343,6 +351,7 @@ describe("API Access", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("Auth");
     fireEvent.click(await screen.findByText("Generate key"));
     expect(await screen.findByDisplayValue("brand-new-key")).toBeInTheDocument();
     expect(
@@ -357,6 +366,7 @@ describe("Authentication mode", () => {
   it("switching to password PUTs /api/auth/mode", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("Auth");
     await screen.findByText("Switch to this mode");
     fireEvent.click(screen.getByText("Switch to this mode"));
     await waitFor(() =>
@@ -379,6 +389,7 @@ describe("Authentication mode", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("Auth");
     const select = (await screen.findByLabelText(
       "Mode",
     )) as HTMLSelectElement;
@@ -392,6 +403,7 @@ describe("Authentication mode", () => {
   it("switching to none requires acknowledgeInsecure (after confirm)", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("Auth");
     const select = (await screen.findByLabelText(
       "Mode",
     )) as HTMLSelectElement;
@@ -413,6 +425,7 @@ describe("Authentication mode", () => {
   it("saving OIDC config PUTs /api/auth/oidc with the full config", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("Auth");
     const select = (await screen.findByLabelText(
       "Mode",
     )) as HTMLSelectElement;
@@ -443,6 +456,7 @@ describe("AI provider/model", () => {
   it("saves provider then model", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("AI");
     const modelInput = await screen.findByPlaceholderText(/qwen2.5vl/);
     fireEvent.input(modelInput, { target: { value: "gpt-4o-mini" } });
     // The AI panel's Save is the first "Save" in a form with a Model field.
@@ -476,6 +490,7 @@ describe("Per-mode panels", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("Library");
     const input = (await screen.findByLabelText(
       "Library root folder",
     )) as HTMLInputElement;
@@ -503,6 +518,7 @@ describe("Per-mode panels", () => {
   it("switching to Series refetches the per-mode panels against /series/", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("Library");
     await screen.findByText("Series");
     fireEvent.click(screen.getByText("Series"));
     await waitFor(() =>
@@ -517,7 +533,12 @@ describe("Per-mode panels", () => {
   it("Adult hides Movies/Series-only panels (no library/quality/naming/kids)", async () => {
     stubFetch();
     renderSettings();
-    fireEvent.click(await screen.findByText("Adult"));
+    goToSection("Library");
+    // Movies (default mode) shows the per-mode panels on the Library tab...
+    await screen.findByLabelText("Library root folder");
+    // ...and switching to Adult hides them (the mode logic, verified while the
+    // Library tab is active — not because the tab itself is hidden).
+    fireEvent.click(screen.getByText("Adult"));
     await waitFor(() =>
       expect(screen.queryByLabelText("Library root folder")).toBeNull(),
     );
@@ -535,6 +556,7 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("Advanced");
     const input = (await screen.findByLabelText(
       "Background recheck interval (seconds) — global",
     )) as HTMLInputElement;
@@ -560,6 +582,7 @@ describe("Advanced Settings", () => {
   it("rejects a negative recheck-interval client-side (no PUT fired)", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("Advanced");
     const input = (await screen.findByLabelText(
       "Background recheck interval (seconds) — global",
     )) as HTMLInputElement;
@@ -578,6 +601,7 @@ describe("Advanced Settings", () => {
   it("phash-threshold rejects a value above 64 client-side (no PUT)", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("Advanced");
     const input = (await screen.findByLabelText(
       "Dedup phash similarity threshold (0–64)",
     )) as HTMLInputElement;
@@ -599,6 +623,7 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("Advanced");
     const input = (await screen.findByLabelText(
       "Dedup phash similarity threshold (0–64)",
     )) as HTMLInputElement;
@@ -624,6 +649,7 @@ describe("Advanced Settings", () => {
   it("match-confidence-threshold shows for Movies but NOT Adult", async () => {
     stubFetch();
     renderSettings();
+    goToSection("Advanced");
     expect(
       await screen.findByLabelText("Rename match-confidence threshold (0–100)"),
     ).toBeInTheDocument();
@@ -642,8 +668,10 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    // Not present for Movies.
-    await screen.findByText("Switch to this mode");
+    goToSection("Advanced");
+    // Not present for Movies (default mode) — wait for a Movies-only Advanced
+    // field to confirm the tab mounted before asserting the toggle's absence.
+    await screen.findByLabelText("Rename match-confidence threshold (0–100)");
     expect(
       screen.queryByLabelText("Adult phash-first identification enabled"),
     ).toBeNull();
@@ -670,13 +698,103 @@ describe("Advanced Settings", () => {
   });
 });
 
+// --- Section tabs (layout: one section on screen at a time) ----------------
+
+describe("Section tabs", () => {
+  it("defaults to Connections and hides every other section", async () => {
+    stubFetch();
+    renderSettings();
+    // Connections table is on screen at mount (its column header is unique).
+    expect(await screen.findByText("API Key / Password")).toBeInTheDocument();
+    // The signature control of each other section is absent.
+    expect(screen.queryByText("Switch to this mode")).toBeNull(); // Auth
+    expect(screen.queryByPlaceholderText(/qwen2.5vl/)).toBeNull(); // AI
+    expect(screen.queryByLabelText("Library root folder")).toBeNull(); // Library
+    expect(
+      screen.queryByLabelText("Background recheck interval (seconds) — global"),
+    ).toBeNull(); // Advanced
+  });
+
+  it("Auth tab groups Authentication mode AND API Access, hiding Connections", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("Auth");
+    expect(await screen.findByText("Switch to this mode")).toBeInTheDocument();
+    // API Access's break-glass key control lives on the same tab.
+    expect(screen.getByText("Generate key")).toBeInTheDocument();
+    // The Connections table is no longer mounted.
+    expect(screen.queryByText("API Key / Password")).toBeNull();
+  });
+
+  it("AI tab shows the provider/model panel only", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("AI");
+    expect(await screen.findByPlaceholderText(/qwen2.5vl/)).toBeInTheDocument();
+    expect(screen.queryByText("Switch to this mode")).toBeNull();
+    expect(screen.queryByText("API Key / Password")).toBeNull();
+  });
+
+  it("Library tab shows per-mode panels beside its own mode selector", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("Library");
+    expect(
+      await screen.findByLabelText("Library root folder"),
+    ).toBeInTheDocument();
+    // The section tab bar and the independent mode selector coexist: the mode
+    // buttons are present (exact-text, so they don't match Card titles like
+    // "Movies library").
+    expect(screen.getByText("Movies")).toBeInTheDocument();
+    expect(screen.getByText("Series")).toBeInTheDocument();
+    expect(screen.getByText("Adult")).toBeInTheDocument();
+    // Advanced's global field is NOT on this tab.
+    expect(
+      screen.queryByLabelText("Background recheck interval (seconds) — global"),
+    ).toBeNull();
+  });
+
+  it("Advanced tab shows the Advanced panel and hides Library panels", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("Advanced");
+    expect(
+      await screen.findByLabelText(
+        "Background recheck interval (seconds) — global",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Library root folder")).toBeNull();
+  });
+
+  it("the selected mode persists from Library to Advanced (one shared signal, not two)", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("Library");
+    // Pick Adult on the Library tab — its per-mode panels vanish there.
+    fireEvent.click(await screen.findByText("Adult"));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Library root folder")).toBeNull(),
+    );
+    // Cross to Advanced: Adult must still be the active mode, so the Adult-only
+    // identify toggle shows and the Movies/Series-only confidence field doesn't.
+    goToSection("Advanced");
+    expect(
+      await screen.findByLabelText("Adult phash-first identification enabled"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Rename match-confidence threshold (0–100)"),
+    ).toBeNull();
+  });
+});
+
 // --- No bulk actions (Acceptance Criterion 6) ------------------------------
 
 describe("Settings — no bulk-action affordances", () => {
   it("has no save-all / apply-all across the whole view", async () => {
     stubFetch();
     renderSettings();
-    await screen.findByText("Switch to this mode");
+    // Mount confirmed via the always-present section tab bar.
+    await screen.findByRole("button", { name: "Connections" });
     expect(screen.queryByText(/save all/i)).toBeNull();
     expect(screen.queryByText(/apply all/i)).toBeNull();
     expect(screen.queryByText(/test all/i)).toBeNull();

@@ -54,7 +54,15 @@ var ErrInvalidURL = errors.New("invalid image URL")
 
 // ErrHostNotAllowed is returned when a syntactically valid https URL points at
 // a host outside the allowlist — the core SSRF guardrail. Caller maps to 400.
+// A redirect whose target is off-allowlist also fails wrapping this sentinel
+// (see newGuardedClient): the allowlist is enforced on every hop, not just the
+// initial URL.
 var ErrHostNotAllowed = errors.New("image host is not on the allowlist")
+
+// maxRedirects caps redirect-following, mirroring net/http's own default of 10
+// (which only applies when CheckRedirect is nil — supplying our own guard opts
+// out of that default, so we re-impose the same bound).
+const maxRedirects = 10
 
 // hostRule matches one allowed host. exact matches a single host verbatim
 // (TMDB's one image host); suffix matches a registrable domain and all its
@@ -142,13 +150,45 @@ type Proxy struct {
 
 // New returns a Proxy that allows the production TMDB + TPDB image hosts, with
 // a default cache size/TTL. client is the shared outbound HTTP client (its
-// timeout bounds each image fetch).
+// timeout bounds each image fetch); New does NOT use it directly — it derives a
+// dedicated redirect-guarded client from it (see newGuardedClient), so the
+// SSRF allowlist is enforced on redirects too without changing redirect
+// behavior for the shared client's other callers.
 func New(client *http.Client) *Proxy {
 	return &Proxy{
-		client: client,
+		client: newGuardedClient(client, defaultHosts),
 		cache:  newCache(defaultCacheCap, defaultCacheTTL),
 		hosts:  defaultHosts,
 	}
+}
+
+// newGuardedClient returns a dedicated *http.Client for image fetching: a
+// shallow copy of base (preserving its Timeout/Transport) whose CheckRedirect
+// re-runs the allowlist check against every redirect target. This is the fix
+// for the SSRF hole in the naive design: net/http's default client re-validates
+// nothing on a 3xx, so an allowlisted upstream (TMDB / a TPDB CDN) that ever
+// redirected to an internal address would be followed server-side, defeating
+// the allowlist. CRITICAL: base is copied, never mutated — the caller's client
+// is the process-wide outbound client shared by TMDB/Prowlarr/other calls, and
+// those must keep net/http's default redirect behavior. hosts is the same
+// allowlist the Proxy validates initial URLs against, so a legitimate redirect
+// between allowlisted hosts still follows.
+func newGuardedClient(base *http.Client, hosts []hostRule) *http.Client {
+	guarded := &http.Client{}
+	if base != nil {
+		clone := *base // shallow copy: keep Timeout, Transport, Jar; do not touch base
+		guarded = &clone
+	}
+	guarded.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		if _, err := validate(req.URL.String(), hosts); err != nil {
+			return fmt.Errorf("refusing off-allowlist redirect to %q: %w", req.URL.Host, err)
+		}
+		return nil
+	}
+	return guarded
 }
 
 // newTestProxy builds a Proxy whose allowlist and cache are caller-supplied —
@@ -156,7 +196,7 @@ func New(client *http.Client) *Proxy {
 // (the production allowlist rejects 127.0.0.1). Kept unexported so no test-only
 // allowlist bypass leaks into the production API surface.
 func newTestProxy(client *http.Client, c *cache, hosts []hostRule) *Proxy {
-	return &Proxy{client: client, cache: c, hosts: hosts}
+	return &Proxy{client: newGuardedClient(client, hosts), cache: c, hosts: hosts}
 }
 
 // Fetch validates raw against the allowlist, returns a cached copy if one is
@@ -183,6 +223,11 @@ func (p *Proxy) Fetch(ctx context.Context, raw string) (*Image, error) {
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
+		// On a refused redirect, net/http returns the last (3xx) response
+		// alongside the error; close it so the guard doesn't leak a body.
+		if resp != nil {
+			resp.Body.Close()
+		}
 		return nil, fmt.Errorf("fetching %s: %w", u.Host, err)
 	}
 	defer resp.Body.Close()

@@ -2,6 +2,7 @@ package imageproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -224,6 +225,69 @@ func TestFetch_DoesNotCacheErrorStatus(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Fatalf("upstream hit %d times, want 2", hits)
+	}
+}
+
+// TestFetch_RefusesOffAllowlistRedirect proves the SSRF gate is enforced on
+// redirects, not just the initial URL: an allowlisted upstream that 3xx-es to an
+// off-allowlist (e.g. internal) address must not be followed server-side. This
+// is the redirect-SSRF fix — net/http's default client would blindly follow it.
+func TestFetch_RefusesOffAllowlistRedirect(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Redirect to a host NOT on the allowlist (an internal-style address).
+		// The guard must refuse this next hop before any request is made to it.
+		http.Redirect(w, r, "https://evil.example.com/internal/x.jpg", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	// Allowlist only the test server's host; the redirect target is off-list.
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
+	_, err := p.Fetch(context.Background(), srv.URL+"/poster.jpg")
+	if err == nil {
+		t.Fatal("Fetch followed an off-allowlist redirect, want error")
+	}
+	// The refusal must surface as an allowlist violation (wrapping the same
+	// sentinel the initial-URL check uses), not a generic transport error.
+	if !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("Fetch redirect refusal = %v, want wrapping ErrHostNotAllowed", err)
+	}
+}
+
+// TestFetch_FollowsAllowlistedRedirect proves the guard is not over-broad:
+// a redirect whose target is itself on the allowlist is still followed, so
+// legitimate CDN redirects (e.g. between allowlisted TPDB hosts) keep working.
+func TestFetch_FollowsAllowlistedRedirect(t *testing.T) {
+	const wantBody = "\x89PNGREDIRECTEDIMAGE"
+	// Final destination: serves the actual image bytes.
+	dest := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write([]byte(wantBody))
+	}))
+	defer dest.Close()
+
+	// First hop: 302s to the destination.
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, dest.URL+"/final.png", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	// Both servers listen on 127.0.0.1 (different ports); hostRule matches on
+	// Hostname() with the port stripped, so a single 127.0.0.1 rule allowlists
+	// both hops. Use a client that trusts both self-signed certs.
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+	p := newTestProxy(client, newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, origin.URL))
+
+	img, err := p.Fetch(context.Background(), origin.URL+"/poster.png")
+	if err != nil {
+		t.Fatalf("Fetch of allowlisted redirect chain: %v", err)
+	}
+	if string(img.Body) != wantBody {
+		t.Fatalf("body = %q, want %q (should have followed to destination)", img.Body, wantBody)
+	}
+	if img.ContentType != "image/png" {
+		t.Fatalf("content type = %q, want image/png", img.ContentType)
 	}
 }
 

@@ -271,7 +271,41 @@ above, so don't drop them for convenience:
     coexisting with `internal/release.ScoreCandidate` (which still ranks the
     manual Search view). See `internal/autograb`'s package doc for the full
     reconciliation and why there are two scorers, not one.
-  - **Break-glass after a wipe**: every deploy wipes the DB + `secret.key`, so
-    on the next start a fresh `X-Api-Key` is logged once (`main.go:104`). If a
-    deploy lands with a broken auth-boot shell, that key is the recovery net —
-    the retrieval + use procedure is in `docs/break-glass-recovery.md`.
+  - **Break-glass after a wipe**: a normal deploy no longer wipes anything
+    (that data-wipe policy was removed from the normal deploy path on
+    2026-07-12 — see `sakms_auto_update.md` in memory). Only a failed deploy's
+    rollback, or an explicit manual `--wipe-data` CLI flag, wipes the DB +
+    `secret.key`; either case logs a fresh `X-Api-Key` once on the next start
+    (`main.go:104`). If a deploy lands with a broken auth-boot shell after a
+    wipe, that key is the recovery net — the retrieval + use procedure is in
+    `docs/break-glass-recovery.md`.
+- **Sidebar + section-tab redesign (2026-07-13)**: the horizontal top nav was
+  replaced with a collapsible left sidebar (icon-only when collapsed,
+  localStorage-persisted). A generic `useScreenTabs`/`ScreenTabs` mechanism
+  (`frontend/src/components/ui.tsx`) lets any screen register its own tab set
+  with the shell's one consistent tab-bar slot — Settings uses it to split
+  into Connections/Auth/AI/Library/Advanced tabs instead of one long scrolling
+  page; Discover uses it for a Mainstream/Adult split, where Mainstream merges
+  Movies+Series into paginated Trending/Popular rows plus a paginated
+  existing-library row and a search bar.
+  - **Discover never queries Prowlarr, full stop.** An earlier version of this
+    redesign gave every Discover card a live per-card Prowlarr
+    "availability" probe (`internal/availability`, badge-only, no grab) —
+    removed entirely (HTTP route, frontend calls, badge component) after
+    review found it fired hundreds of concurrent live indexer queries on a
+    single page load with a populated library, and the owner made this a
+    firm architectural rule: Discover is TMDB/TPDB-sourced only; the
+    filesystem/library is what's already "available"; Prowlarr is
+    grab-time-only (searching for a release once an operator actually picks
+    something to download). Don't reintroduce an availability/indexer probe
+    into Discover for any reason — if a "do I already own this" signal is
+    ever wanted there, source it from the tracked library (`/api/tracked`),
+    never from Prowlarr. `internal/availability`'s Go package itself is kept
+    (it still backs the separate, pre-existing `internal/recheck` background
+    watch feature, unrelated to Discover) — only the Discover-facing HTTP
+    handler was removed.
+  - A known, harmless leftover from before this fix: `internal/apidto/dto.go`
+    still defines an unused `AvailabilityResponse` type (dead even before
+    this fix — the old handler used `availability.Result` directly). Left
+    alone since removing it means regenerating `ts/dto.gen.ts`; fine to clean
+    up in a future pass.

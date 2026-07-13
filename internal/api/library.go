@@ -21,8 +21,9 @@ import (
 // from a *arr app's own RootFolders response, since SAK owns its own
 // library (see internal/library's package doc). Adult now carries its own
 // free-typed key too; the generic root-folder LISTING route
-// (GET /api/modes/{mode}/root-folders, see rootfolders.go) 400s for every
-// mode now, so each mode's path comes from its own library setting here.
+// (GET /api/modes/{mode}/root-folders) that used to proxy each mode's *arr
+// app has been removed entirely (Stage 4 cleanup) — every mode's path comes
+// from its own library setting here instead.
 const (
 	moviesLibraryRootFolderKey = "movies_library_root_folder"
 	seriesLibraryRootFolderKey = "series_library_root_folder"

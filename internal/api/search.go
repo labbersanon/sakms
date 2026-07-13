@@ -66,8 +66,8 @@ func episodeSearchQuery(title string, seasonNumber, episodeNumber int) string {
 
 // searchHandler queries Prowlarr for {mode} and scores every result against
 // that mode's configured quality-prefs (tier + max resolution, defaulting
-// to quality.Default/no cap when unset) — a read-only proxy+transform (like
-// listRootFoldersHandler), nothing staged or persisted.
+// to quality.Default/no cap when unset) — a read-only proxy+transform,
+// nothing staged or persisted.
 func searchHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))

@@ -11,9 +11,10 @@ import (
 // TestLibraryRootFolder_Adult_PutThenGet_RoundTrip proves Adult now shares
 // Movies/Series' free-typed library-root-folder route: a PUT stores the path
 // and a subsequent GET reads it back. Adult previously 400'd on this route
-// (no key existed); adultLibraryRootFolderKey now makes it work. Adult's
-// separate Whisparr-backed /root-folders LISTING is unchanged and covered by
-// TestListRootFolders_Adult_ReturnsPathsFromTheRealApp.
+// (no key existed); adultLibraryRootFolderKey now makes it work. The old
+// generic /root-folders LISTING route (once a proxy to each mode's *arr app)
+// has been removed entirely — see TestRootFolders_RouteRemoved in
+// rootfolders_test.go.
 func TestLibraryRootFolder_Adult_PutThenGet_RoundTrip(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))

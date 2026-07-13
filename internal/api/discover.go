@@ -23,8 +23,8 @@ func mediaTypeForMode(m mode.Mode) tmdb.MediaType {
 }
 
 // discoverHandler returns TMDB's trending or popular titles for {mode}'s
-// media type — a read-only proxy+normalize (like listRootFoldersHandler),
-// nothing staged or persisted. Series items carry only their TMDB id here;
+// media type — a read-only proxy+normalize, nothing staged or persisted.
+// Series items carry only their TMDB id here;
 // resolving the TVDB id Sonarr's AddRequest actually needs is deferred to
 // resolveTVDBIDHandler, called only once a user picks a specific title to
 // search+grab — not eagerly for every item in a trending list, which would

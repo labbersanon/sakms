@@ -6,11 +6,14 @@ import (
 	"testing"
 )
 
-// TestListRootFolders_NotApplicableToAnyMode confirms every mode gets a clear
-// 400 pointing at the library root-folder setting, instead of a nil-Servarr
-// crash — no mode has a *arr app to ask anymore (Movies/Series since their
-// Radarr/Sonarr eliminations, Adult since Stage 4's Whisparr elimination).
-func TestListRootFolders_NotApplicableToAnyMode(t *testing.T) {
+// TestRootFolders_RouteRemoved confirms the deprecated
+// GET /api/modes/{mode}/root-folders route (a leftover proxy to each mode's
+// *arr app root-folder list, dead since every mode now owns its own library)
+// is genuinely gone from the mux — a 404 from Go's own ServeMux, not just an
+// unreferenced handler function that could still be silently re-wired. Every
+// mode's root folder now comes exclusively from
+// GET/PUT /api/modes/{mode}/library/root-folder.
+func TestRootFolders_RouteRemoved(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore))
 	defer srv.Close()
@@ -21,8 +24,8 @@ func TestListRootFolders_NotApplicableToAnyMode(t *testing.T) {
 			t.Fatalf("GET failed: %v", err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("expected 400 for %s, got %d", m, resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 for %s, got %d", m, resp.StatusCode)
 		}
 	}
 }

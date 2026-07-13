@@ -183,3 +183,127 @@ describe("Discover — mode switching + Adult view", () => {
     expect(container.querySelectorAll("img").length).toBe(0);
   });
 });
+
+describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
+  // Richer stubFetch (captures method/body) scoped to this block only — the
+  // file's shared stubFetch above only exposes the URL, which the plain
+  // GET-only tests never needed. Doesn't touch that shared helper.
+  type Call = { url: string; method: string; body: unknown };
+  const stubFetchWithCalls = (
+    handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  ) => {
+    const calls: Call[] = [];
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({
+        url,
+        method: (init?.method ?? "GET").toUpperCase(),
+        body: init?.body ? JSON.parse(init.body as string) : undefined,
+      });
+      return handler(url, init);
+    });
+    vi.stubGlobal("fetch", fn);
+    return calls;
+  };
+
+  const notConfigured = (service: string) =>
+    new Response(`${service} isn't configured yet — add it in Settings first`, {
+      status: 400,
+    });
+
+  it("does not crash and shows a setup pop-up when TMDB isn't configured (regression: this used to be an uncaught exception + stuck 'Loading…')", async () => {
+    const pageErrors: unknown[] = [];
+    // solid-testing-library runs in jsdom; an uncaught error surfaces as an
+    // unhandled 'error' event on window, which is the closest equivalent
+    // available here to the real browser's uncaught-exception signal this
+    // regression was originally caught with via CDP.
+    const onError = (e: ErrorEvent) => pageErrors.push(e.error ?? e.message);
+    window.addEventListener("error", onError);
+
+    stubFetchWithCalls((url) => {
+      if (url.includes("/api/modes/movies/discover")) return notConfigured("tmdb");
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+
+    expect(await screen.findByText("Set up TMDB")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /themoviedb\.org\/settings\/api/i }),
+    ).toHaveAttribute("href", "https://www.themoviedb.org/settings/api");
+    expect(pageErrors).toHaveLength(0);
+
+    window.removeEventListener("error", onError);
+  });
+
+  it("saving an API key from the pop-up PUTs to the connections endpoint with the correct three-state body, then refetches", async () => {
+    let configured = false;
+    const calls = stubFetchWithCalls((url, init) => {
+      if (url.includes("/api/modes/movies/discover")) {
+        return configured
+          ? jsonResponse([movie({ id: 1, title: "Now Visible Movie" })])
+          : notConfigured("tmdb");
+      }
+      if (url === "/api/connections/tmdb" && init?.method === "PUT") {
+        configured = true;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    await screen.findByText("Set up TMDB");
+
+    fireEvent.input(screen.getByPlaceholderText("API key"), {
+      target: { value: "a-real-tmdb-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The title only appears once the modal's onSaved refetch succeeds
+    // against the now-configured connection. findAllByText (not findByText)
+    // because the mock returns the same movie for both the trending and
+    // popular categories, and the intentional hero+row duplication (see the
+    // comment in Discover.tsx) means it legitimately renders more than once.
+    expect(
+      (await screen.findAllByText("Now Visible Movie")).length,
+    ).toBeGreaterThan(0);
+
+    const putCall = calls.find(
+      (c) => c.url === "/api/connections/tmdb" && c.method === "PUT",
+    );
+    expect(putCall?.body).toEqual({
+      url: "https://api.themoviedb.org/3",
+      apiKey: "a-real-tmdb-key",
+    });
+  });
+
+  it("shows the TPDB pop-up (not TMDB's) when Adult's scene fetch reports tpdb not configured", async () => {
+    stubFetchWithCalls((url) => {
+      if (url.includes("/api/modes/movies/discover")) return jsonResponse([]);
+      if (url.includes("/api/modes/adult/discover")) return notConfigured("tpdb");
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+
+    expect(await screen.findByText("Set up TPDB")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /theporndb\.net\/user\/api-tokens/i }),
+    ).toHaveAttribute("href", "https://theporndb.net/user/api-tokens");
+  });
+
+  it("falls back to plain error text (no pop-up) for an unrelated error", async () => {
+    stubFetchWithCalls((url) => {
+      if (url.includes("/api/modes/movies/discover")) {
+        return new Response("internal server error", { status: 500 });
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+
+    expect(await screen.findByText("internal server error")).toBeInTheDocument();
+    expect(screen.queryByText(/^Set up/)).not.toBeInTheDocument();
+  });
+});

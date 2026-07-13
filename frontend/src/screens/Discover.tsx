@@ -57,6 +57,7 @@ import {
   Muted,
   yearOf,
 } from "../components/ui";
+import { buildConnectionUpsertBody, upsertConnection } from "../api/settings";
 
 // GrabTarget is one pending auto-grab: which mode, a human label for the
 // dialog title, and the exact request body the backend needs. For Series the
@@ -98,6 +99,129 @@ const Modal: Component<{
     </div>
   </div>
 );
+
+// NOT_CONFIGURED_SERVICES maps the two external services Discover itself
+// depends on (backend errors are the fixed strings "tmdb isn't configured
+// yet — add it in Settings first" / "tpdb isn't configured yet — add it in
+// Settings first", see internal/api/discover.go and adultdiscover.go) to
+// their fixed base URL (both are external APIs with one canonical endpoint,
+// not self-hosted — the operator only ever needs to supply a key, unlike
+// Prowlarr/qBittorrent/etc.) and the external page to obtain a key. TMDB's
+// is well-known and stable; TPDB's was confirmed directly by Wade
+// (2026-07-13) rather than guessed, since it isn't discoverable from a
+// plain page fetch (the site is JS-rendered).
+const NOT_CONFIGURED_SERVICES: Record<
+  "tmdb" | "tpdb",
+  { label: string; url: string; keyPageUrl: string; keyPageLabel: string }
+> = {
+  tmdb: {
+    label: "TMDB",
+    url: "https://api.themoviedb.org/3",
+    keyPageUrl: "https://www.themoviedb.org/settings/api",
+    keyPageLabel: "themoviedb.org/settings/api",
+  },
+  tpdb: {
+    label: "TPDB",
+    url: "https://api.theporndb.net",
+    keyPageUrl: "https://theporndb.net/user/api-tokens",
+    keyPageLabel: "theporndb.net/user/api-tokens",
+  },
+};
+
+// notConfiguredService detects which (if either) of Discover's two external
+// dependencies a resource error is reporting missing, by matching the
+// backend's fixed error string — returns undefined for any other error (a
+// genuine network failure, a 500, etc.), which callers fall back to
+// ErrorText for instead of assuming it's a "go configure this" case.
+function notConfiguredService(
+  err: unknown,
+): "tmdb" | "tpdb" | undefined {
+  const msg = (err as Error)?.message ?? "";
+  if (!/isn't configured yet/i.test(msg)) return undefined;
+  if (/\btmdb\b/i.test(msg)) return "tmdb";
+  if (/\btpdb\b/i.test(msg)) return "tpdb";
+  return undefined;
+}
+
+// ConfigureConnectionModal — shown instead of a bare error message when
+// Discover detects TMDB/TPDB isn't configured. Saves directly into the same
+// connection store Settings' own form writes to (upsertConnection/
+// buildConnectionUpsertBody, reused verbatim, not duplicated) so there's
+// exactly one place that actually persists a connection — this is just a
+// second, more contextual entry point into it. First-time save, so
+// hasExistingKey is always false and keyTouched is always true here (see
+// buildConnectionUpsertBody's own doc comment on why that combination is
+// safe: a first save always sends the key, even if it were left blank).
+const ConfigureConnectionModal: Component<{
+  service: "tmdb" | "tpdb";
+  onClose: () => void;
+  onSaved: () => void;
+}> = (props) => {
+  const info = NOT_CONFIGURED_SERVICES[props.service];
+  const [key, setKey] = createSignal("");
+  const [saving, setSaving] = createSignal(false);
+  const [error, setError] = createSignal("");
+
+  const save = async () => {
+    setError("");
+    if (!key().trim()) {
+      setError("Enter an API key first.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await upsertConnection(
+        props.service,
+        buildConnectionUpsertBody({
+          url: info.url,
+          needsUsername: false,
+          keyTouched: true,
+          keyValue: key(),
+          hasExistingKey: false,
+        }),
+      );
+      props.onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={`Set up ${info.label}`} onClose={props.onClose}>
+      <p class="mb-3 text-sm text-muted">
+        {info.label} isn't configured yet — Discover needs it to browse{" "}
+        {props.service === "tpdb" ? "Adult scenes" : "titles"}. Paste an API
+        key below to enable it now, or add it later in Settings.
+      </p>
+      <a
+        href={info.keyPageUrl}
+        target="_blank"
+        rel="noreferrer"
+        class="mb-3 block text-sm text-accent underline"
+      >
+        Get an API key at {info.keyPageLabel}
+      </a>
+      <input
+        type="password"
+        class="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+        placeholder="API key"
+        value={key()}
+        onInput={(e) => setKey(e.currentTarget.value)}
+      />
+      <Show when={error()}>
+        <ErrorText>{error()}</ErrorText>
+      </Show>
+      <div class="mt-3 flex justify-end gap-2">
+        <Button onClick={props.onClose}>Cancel</Button>
+        <Button variant="primary" onClick={save} disabled={saving()}>
+          {saving() ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </Modal>
+  );
+};
 
 // FallbackPickList renders the ranked manual pick list the backend returns when
 // nothing auto-qualified. Each row labels why it wasn't auto-picked and offers
@@ -500,44 +624,75 @@ const Hero: Component<{
 // resources re-run when props.mode changes, so switching tabs refetches. It
 // owns the single grab dialog for its titles.
 const TitleDiscover: Component<{ mode: "movies" | "series" }> = (props) => {
-  const [trending] = createResource(
+  const [trending, { refetch: refetchTrending }] = createResource(
     () => props.mode,
     (m) => fetchDiscover(m, "trending"),
   );
-  const [popular] = createResource(
+  const [popular, { refetch: refetchPopular }] = createResource(
     () => props.mode,
     (m) => fetchDiscover(m, "popular"),
   );
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
+  const [dismissedSetup, setDismissedSetup] = createSignal(false);
+  const configureFor = () =>
+    notConfiguredService(trending.error ?? popular.error);
 
   return (
     <div>
-      <Show when={trending.error || popular.error}>
-        <ErrorText>
-          {((trending.error ?? popular.error) as Error)?.message}
-        </ErrorText>
+      <Show
+        when={trending.error || popular.error}
+      >
+        <Show
+          when={!dismissedSetup() && configureFor()}
+          fallback={
+            <ErrorText>
+              {((trending.error ?? popular.error) as Error)?.message}
+            </ErrorText>
+          }
+        >
+          {(service) => (
+            <ConfigureConnectionModal
+              service={service()}
+              onClose={() => setDismissedSetup(true)}
+              onSaved={() => {
+                setDismissedSetup(true);
+                refetchTrending();
+                refetchPopular();
+              }}
+            />
+          )}
+        </Show>
       </Show>
-      {/* The top trending title deliberately appears BOTH as the hero banner
-          and as the first card of the "Trending this week" row below — the
-          Seerr/Netflix-style featured-item-also-in-its-row treatment, not a
-          bug (Discover.test.tsx locks this). Don't skip index 0 in the row. */}
-      <Show when={!trending.loading}>
-        <Hero item={trending()?.[0]} mode={props.mode} onGrab={setGrabTarget} />
+      {/* Guards every trending()/popular() read below behind "no error" —
+          Solid throws synchronously when a resource accessor is read while
+          its resource is in an error state (e.g. TMDB not configured yet),
+          which without this guard escaped as an uncaught exception and left
+          the view stuck showing "Loading…" forever instead of the ErrorText
+          above ever getting a chance to be the only thing rendered. */}
+      <Show when={!trending.error && !popular.error}>
+        {/* The top trending title deliberately appears BOTH as the hero
+            banner and as the first card of the "Trending this week" row
+            below — the Seerr/Netflix-style featured-item-also-in-its-row
+            treatment, not a bug (Discover.test.tsx locks this). Don't skip
+            index 0 in the row. */}
+        <Show when={!trending.loading}>
+          <Hero item={trending()?.[0]} mode={props.mode} onGrab={setGrabTarget} />
+        </Show>
+        <Row
+          title="Trending this week"
+          mode={props.mode}
+          items={trending()}
+          loading={trending.loading}
+          onGrab={setGrabTarget}
+        />
+        <Row
+          title="Popular"
+          mode={props.mode}
+          items={popular()}
+          loading={popular.loading}
+          onGrab={setGrabTarget}
+        />
       </Show>
-      <Row
-        title="Trending this week"
-        mode={props.mode}
-        items={trending()}
-        loading={trending.loading}
-        onGrab={setGrabTarget}
-      />
-      <Row
-        title="Popular"
-        mode={props.mode}
-        items={popular()}
-        loading={popular.loading}
-        onGrab={setGrabTarget}
-      />
       <Show when={grabTarget()}>
         {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
       </Show>
@@ -604,8 +759,11 @@ const AdultCard: Component<{
 const AdultDiscover: Component = () => {
   const [submitted, setSubmitted] = createSignal("");
   const [draft, setDraft] = createSignal("");
-  const [scenes] = createResource(submitted, (q) => fetchAdultDiscover(q));
+  const [scenes, { refetch: refetchScenes }] = createResource(submitted, (q) =>
+    fetchAdultDiscover(q),
+  );
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
+  const [dismissedSetup, setDismissedSetup] = createSignal(false);
 
   return (
     <div>
@@ -624,18 +782,36 @@ const AdultDiscover: Component = () => {
         />
       </form>
       <Show when={scenes.error}>
-        <ErrorText>{(scenes.error as Error)?.message}</ErrorText>
-      </Show>
-      <Show when={!scenes.loading} fallback={<Muted>Loading…</Muted>}>
         <Show
-          when={scenes() && scenes()!.length > 0}
-          fallback={<Muted>No scenes found.</Muted>}
+          when={!dismissedSetup() && notConfiguredService(scenes.error)}
+          fallback={<ErrorText>{(scenes.error as Error)?.message}</ErrorText>}
         >
-          <div class="flex flex-wrap gap-3">
-            <For each={scenes()}>
-              {(item) => <AdultCard item={item} onGrab={setGrabTarget} />}
-            </For>
-          </div>
+          {(service) => (
+            <ConfigureConnectionModal
+              service={service()}
+              onClose={() => setDismissedSetup(true)}
+              onSaved={() => {
+                setDismissedSetup(true);
+                refetchScenes();
+              }}
+            />
+          )}
+        </Show>
+      </Show>
+      {/* Same accessor-in-error-state guard as TitleDiscover above — reading
+          scenes() while it's errored throws synchronously in Solid. */}
+      <Show when={!scenes.error}>
+        <Show when={!scenes.loading} fallback={<Muted>Loading…</Muted>}>
+          <Show
+            when={scenes() && scenes()!.length > 0}
+            fallback={<Muted>No scenes found.</Muted>}
+          >
+            <div class="flex flex-wrap gap-3">
+              <For each={scenes()}>
+                {(item) => <AdultCard item={item} onGrab={setGrabTarget} />}
+              </For>
+            </div>
+          </Show>
         </Show>
       </Show>
       <Show when={grabTarget()}>

@@ -140,6 +140,52 @@ describe("Purge — Movies (scan → propose → apply one, with confirm guard)"
   });
 });
 
+describe("Purge — Apply double-click guard (in-flight busy state)", () => {
+  it("fires exactly one apply request when the same row's Apply button is double-clicked while the first request is still pending", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    let resolveApply: (() => void) | undefined;
+    const applyGate = new Promise<void>((resolve) => {
+      resolveApply = resolve;
+    });
+    const calls = stubFetch(async (url, init) => {
+      const al = emptyAllowlist(url);
+      if (al) return al;
+      if (url.includes("/api/modes/movies/purge/proposals"))
+        return jsonResponse([proposal({ id: 7, title: "Delete Me" })]);
+      if (
+        url.includes("/api/proposals/7/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      ) {
+        await applyGate; // held open until the test resolves it
+        return noContent();
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Purge />);
+    await screen.findByText("Delete Me");
+
+    // Two rapid clicks on the SAME row's Apply button before the first
+    // request resolves — only one apply call should ever fire, and the
+    // button should reflect the pending state in between.
+    fireEvent.click(screen.getByText("Apply (Delete)"));
+    expect(await screen.findByText("Deleting…")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Deleting…"));
+
+    resolveApply?.();
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    expect(applyCalls(calls)[0]!.url).toContain("/api/proposals/7/apply");
+    // The confirm guard is only consulted once too — the second click never
+    // reached it, since the in-flight check short-circuits first.
+    expect(window.confirm).toHaveBeenCalledOnce();
+    // Once the request settles, the row's busy flag clears and the button
+    // reverts to its normal label (this stub's GET still returns the same
+    // pending row, so the label — not the row's presence — is what proves
+    // the busy state cleared rather than being stuck permanently).
+    expect(await screen.findByText("Apply (Delete)")).toBeInTheDocument();
+  });
+});
+
 describe("Purge — Dismiss (single row)", () => {
   it("dismisses exactly one proposal", async () => {
     const calls = stubFetch((url, init) => {

@@ -82,6 +82,13 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
   const [scanning, setScanning] = createSignal(false);
   const [actionError, setActionError] = createSignal("");
   const [newTag, setNewTag] = createSignal("");
+  // applyingIds tracks which proposal rows have an Apply (Delete) in flight —
+  // per-row, not global, so unrelated rows stay usable. Guards the one
+  // destructive path here against a double-click firing two DELETE requests
+  // for the same row (Dismiss is non-destructive and left as-is).
+  const [applyingIds, setApplyingIds] = createSignal<ReadonlySet<number>>(
+    new Set(),
+  );
 
   // Switching modes clears the stale add-input and action error — the old
   // frontend rebuilt the whole view on a mode change, which had this effect.
@@ -124,10 +131,22 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
   // apply guards the destructive delete behind a confirm, matching the old
   // frontend. jsdom's window.confirm returns false by default, so tests must
   // stub it — that is deliberate: the guard is real behavior worth testing.
+  // The applyingIds check is a synchronous re-entrancy guard: a second click
+  // on the same row while the first request is still pending returns early
+  // before any fetch fires, so a double-click never issues two Apply calls.
   const apply = (p: Proposal) => {
+    const id = Number(p.id);
+    if (applyingIds().has(id)) return;
     const label = p.title || p.sourceName || "";
     if (!window.confirm(`Delete "${label}" from ${props.mode}?`)) return;
-    void act(() => applyProposal(Number(p.id)));
+    setApplyingIds((prev) => new Set(prev).add(id));
+    void act(() => applyProposal(id)).finally(() => {
+      setApplyingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    });
   };
 
   // allowlist mutations refresh only the allowlist resource; each acts on one
@@ -250,9 +269,12 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
                             <div class="flex flex-wrap gap-1">
                               <Button
                                 class="!bg-danger !text-accent-fg"
+                                disabled={applyingIds().has(Number(p.id))}
                                 onClick={() => apply(p)}
                               >
-                                Apply (Delete)
+                                {applyingIds().has(Number(p.id))
+                                  ? "Deleting…"
+                                  : "Apply (Delete)"}
                               </Button>
                               <Button
                                 onClick={() =>

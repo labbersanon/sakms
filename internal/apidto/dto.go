@@ -549,3 +549,189 @@ type TrackedItem struct {
 	Title string   `json:"title"`
 	Tags  []string `json:"tags"`
 }
+
+// --- Stage 4: Settings + Advanced Settings ---------------------------------
+//
+// The DTOs backing the ported Settings view (Connections, API Access, Auth
+// mode, AI provider/model, per-mode library/quality/naming/kids, plus the new
+// Advanced Settings section: phash-threshold, match-confidence-threshold,
+// identify-enabled, recheck-interval). Each mirrors the exact wire shape of the
+// matching handler in internal/api (settings.go, library.go, recheck.go,
+// rename.go, connections.go, netscan.go) so a future handler swap onto these
+// types is a substitution, not a wire-format change (see this package's doc /
+// Guardrail #4's "the DTO set grows per stage").
+//
+// AuthModeResponse/Request, OIDCStatusResponse/OIDCConfigRequest,
+// APIKeyStatusResponse/APIKeyRegenerateResponse, ConnectionSummary/
+// ConnectionUpsertRequest, and DismissSetupRequest already exist above (auth
+// boot + the three-state secret reference) and are reused by Settings as-is.
+
+// ConnectionTestRequest is POST /api/connections/test's body — enough to
+// construct a client and make one real, read-only call (Settings' "Test"
+// button). Nothing is persisted, so APIKey here is a PLAIN string (not the
+// three-state *string of ConnectionUpsertRequest): a test always sends exactly
+// what's currently typed. Mirrors internal/api.ConnectionTestRequest.
+type ConnectionTestRequest struct {
+	Service  string `json:"service"`
+	URL      string `json:"url"`
+	Username string `json:"username,omitempty"`
+	APIKey   string `json:"apiKey,omitempty"`
+}
+
+// ConnectionTestResult is POST /api/connections/test's response. A false OK
+// with a populated Error is the normal "wrong URL / wrong key" shape, not a
+// server-side failure. Mirrors internal/api.ConnectionTestResult.
+type ConnectionTestResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// AIProviderResponse / AIProviderRequest back GET/PUT /api/settings/ai-provider
+// — which AI backend every AI-assisted feature uses. Provider is one of
+// "ollama", "openai", "gemini", "anthropic".
+type AIProviderResponse struct {
+	Provider string `json:"provider"`
+}
+
+type AIProviderRequest struct {
+	Provider string `json:"provider"`
+}
+
+// AIModelResponse / AIModelRequest back GET/PUT /api/settings/ai-model — the
+// model name the configured provider should use (empty string = unset).
+type AIModelResponse struct {
+	Model string `json:"model"`
+}
+
+type AIModelRequest struct {
+	Model string `json:"model"`
+}
+
+// QualityPrefsResponse / QualityPrefsRequest back
+// GET/PUT /api/modes/{mode}/quality-prefs (Movies/Series only — Adult has no
+// Search workflow). Tier is one of "low", "medium", "high", "lossless";
+// MaxResolution is one of 480/720/1080/2160, or 0 for "no cap".
+type QualityPrefsResponse struct {
+	Tier          string `json:"tier"`
+	MaxResolution int    `json:"maxResolution"`
+}
+
+type QualityPrefsRequest struct {
+	Tier          string `json:"tier"`
+	MaxResolution int    `json:"maxResolution"`
+}
+
+// NamingPresetResponse / NamingPresetRequest back
+// GET/PUT /api/modes/{mode}/naming-preset (Movies/Series only). Preset is one
+// of "jellyfin" (default) or "legacy".
+type NamingPresetResponse struct {
+	Preset string `json:"preset"`
+}
+
+type NamingPresetRequest struct {
+	Preset string `json:"preset"`
+}
+
+// LibraryRootFolderResponse / LibraryRootFolderRequest back
+// GET/PUT /api/modes/{mode}/library/root-folder — the free-typed root folder
+// SAK scans/imports into for a mode. The Settings UI exposes this for
+// Movies/Series only (matching the old renderLibrarySettings), even though the
+// backend key now exists for Adult too.
+type LibraryRootFolderResponse struct {
+	Path string `json:"path"`
+}
+
+type LibraryRootFolderRequest struct {
+	Path string `json:"path"`
+}
+
+// KidsRootPathResponse / KidsRootPathRequest back
+// GET/PUT /api/modes/{mode}/rename/kids-root-path (Movies/Series only — the
+// endpoint 400s for other modes). Empty Path turns Kids classification off.
+type KidsRootPathResponse struct {
+	Path string `json:"path"`
+}
+
+type KidsRootPathRequest struct {
+	Path string `json:"path"`
+}
+
+// PHashThresholdResponse / PHashThresholdRequest back
+// GET/PUT /api/modes/{mode}/phash-threshold — the Dedup perceptual-hash
+// similarity cut (per-frame average Hamming bits). Valid range 0–64; the
+// frontend mirrors that bound before submitting (backend re-validates).
+type PHashThresholdResponse struct {
+	Threshold int `json:"threshold"`
+}
+
+type PHashThresholdRequest struct {
+	Threshold int `json:"threshold"`
+}
+
+// ConfidenceThresholdResponse / ConfidenceThresholdRequest back
+// GET/PUT /api/modes/{mode}/match-confidence-threshold — the Rename
+// match-confidence cut (a 0–100 percentage). The frontend mirrors that bound
+// before submitting (backend re-validates).
+type ConfidenceThresholdResponse struct {
+	Threshold int `json:"threshold"`
+}
+
+type ConfidenceThresholdRequest struct {
+	Threshold int `json:"threshold"`
+}
+
+// IdentifyEnabledResponse / IdentifyEnabledRequest back
+// GET/PUT /api/modes/{mode}/identify-enabled — Adult's phash-first
+// identification toggle (default true). ADULT-ONLY: the endpoint 400s for any
+// other mode, so the Settings UI only renders this control in the Adult
+// context.
+type IdentifyEnabledResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+type IdentifyEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// RecheckIntervalResponse / RecheckIntervalRequest back
+// GET/PUT /api/settings/recheck-interval — the background recheck cadence in
+// whole seconds. GLOBAL (not per-mode). 0 = off (the opt-in default); a
+// negative value is rejected, so the frontend mirrors that >= 0 bound.
+type RecheckIntervalResponse struct {
+	IntervalSeconds int `json:"intervalSeconds"`
+}
+
+type RecheckIntervalRequest struct {
+	IntervalSeconds int `json:"intervalSeconds"`
+}
+
+// NetscanFinding is one entry from the LAN-discovery probe endpoints
+// (GET /api/netscan/known, POST /api/netscan/host) — an unauthenticated,
+// spoofable HINT to verify, never a confirmed fact. Mirrors
+// internal/netscan.Finding. Service is one of "prowlarr" | "qbittorrent" |
+// "nzbget" | "jellyfin".
+type NetscanFinding struct {
+	Service string `json:"service"`
+	URL     string `json:"url"`
+	Label   string `json:"label"`
+}
+
+// NetscanHostRequest is POST /api/netscan/host's body — probe one
+// operator-supplied host/LAN IP across the known services' default ports (the
+// server refuses any non-private host).
+type NetscanHostRequest struct {
+	Host string `json:"host"`
+}
+
+// NetscanProwlarrKeyRequest / NetscanProwlarrKeyResponse back
+// POST /api/netscan/prowlarr-key — the one explicit action that reads a
+// Prowlarr instance's live API key from its unauthenticated /initialize.json.
+// A fetched key must be treated as touched by the connection form (see
+// src/api/settings.ts), or the three-state upsert would drop it as "untouched".
+type NetscanProwlarrKeyRequest struct {
+	URL string `json:"url"`
+}
+
+type NetscanProwlarrKeyResponse struct {
+	APIKey string `json:"apiKey"`
+}

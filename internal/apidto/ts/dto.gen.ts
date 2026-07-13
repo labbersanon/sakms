@@ -512,3 +512,177 @@ export interface TrackedItem {
   title: string;
   tags: string[];
 }
+/**
+ * ConnectionTestRequest is POST /api/connections/test's body — enough to
+ * construct a client and make one real, read-only call (Settings' "Test"
+ * button). Nothing is persisted, so APIKey here is a PLAIN string (not the
+ * three-state *string of ConnectionUpsertRequest): a test always sends exactly
+ * what's currently typed. Mirrors internal/api.ConnectionTestRequest.
+ */
+export interface ConnectionTestRequest {
+  service: string;
+  url: string;
+  username?: string;
+  apiKey?: string;
+}
+/**
+ * ConnectionTestResult is POST /api/connections/test's response. A false OK
+ * with a populated Error is the normal "wrong URL / wrong key" shape, not a
+ * server-side failure. Mirrors internal/api.ConnectionTestResult.
+ */
+export interface ConnectionTestResult {
+  ok: boolean;
+  error?: string;
+}
+/**
+ * AIProviderResponse / AIProviderRequest back GET/PUT /api/settings/ai-provider
+ * — which AI backend every AI-assisted feature uses. Provider is one of
+ * "ollama", "openai", "gemini", "anthropic".
+ */
+export interface AIProviderResponse {
+  provider: string;
+}
+export interface AIProviderRequest {
+  provider: string;
+}
+/**
+ * AIModelResponse / AIModelRequest back GET/PUT /api/settings/ai-model — the
+ * model name the configured provider should use (empty string = unset).
+ */
+export interface AIModelResponse {
+  model: string;
+}
+export interface AIModelRequest {
+  model: string;
+}
+/**
+ * QualityPrefsResponse / QualityPrefsRequest back
+ * GET/PUT /api/modes/{mode}/quality-prefs (Movies/Series only — Adult has no
+ * Search workflow). Tier is one of "low", "medium", "high", "lossless";
+ * MaxResolution is one of 480/720/1080/2160, or 0 for "no cap".
+ */
+export interface QualityPrefsResponse {
+  tier: string;
+  maxResolution: number /* int */;
+}
+export interface QualityPrefsRequest {
+  tier: string;
+  maxResolution: number /* int */;
+}
+/**
+ * NamingPresetResponse / NamingPresetRequest back
+ * GET/PUT /api/modes/{mode}/naming-preset (Movies/Series only). Preset is one
+ * of "jellyfin" (default) or "legacy".
+ */
+export interface NamingPresetResponse {
+  preset: string;
+}
+export interface NamingPresetRequest {
+  preset: string;
+}
+/**
+ * LibraryRootFolderResponse / LibraryRootFolderRequest back
+ * GET/PUT /api/modes/{mode}/library/root-folder — the free-typed root folder
+ * SAK scans/imports into for a mode. The Settings UI exposes this for
+ * Movies/Series only (matching the old renderLibrarySettings), even though the
+ * backend key now exists for Adult too.
+ */
+export interface LibraryRootFolderResponse {
+  path: string;
+}
+export interface LibraryRootFolderRequest {
+  path: string;
+}
+/**
+ * KidsRootPathResponse / KidsRootPathRequest back
+ * GET/PUT /api/modes/{mode}/rename/kids-root-path (Movies/Series only — the
+ * endpoint 400s for other modes). Empty Path turns Kids classification off.
+ */
+export interface KidsRootPathResponse {
+  path: string;
+}
+export interface KidsRootPathRequest {
+  path: string;
+}
+/**
+ * PHashThresholdResponse / PHashThresholdRequest back
+ * GET/PUT /api/modes/{mode}/phash-threshold — the Dedup perceptual-hash
+ * similarity cut (per-frame average Hamming bits). Valid range 0–64; the
+ * frontend mirrors that bound before submitting (backend re-validates).
+ */
+export interface PHashThresholdResponse {
+  threshold: number /* int */;
+}
+export interface PHashThresholdRequest {
+  threshold: number /* int */;
+}
+/**
+ * ConfidenceThresholdResponse / ConfidenceThresholdRequest back
+ * GET/PUT /api/modes/{mode}/match-confidence-threshold — the Rename
+ * match-confidence cut (a 0–100 percentage). The frontend mirrors that bound
+ * before submitting (backend re-validates).
+ */
+export interface ConfidenceThresholdResponse {
+  threshold: number /* int */;
+}
+export interface ConfidenceThresholdRequest {
+  threshold: number /* int */;
+}
+/**
+ * IdentifyEnabledResponse / IdentifyEnabledRequest back
+ * GET/PUT /api/modes/{mode}/identify-enabled — Adult's phash-first
+ * identification toggle (default true). ADULT-ONLY: the endpoint 400s for any
+ * other mode, so the Settings UI only renders this control in the Adult
+ * context.
+ */
+export interface IdentifyEnabledResponse {
+  enabled: boolean;
+}
+export interface IdentifyEnabledRequest {
+  enabled: boolean;
+}
+/**
+ * RecheckIntervalResponse / RecheckIntervalRequest back
+ * GET/PUT /api/settings/recheck-interval — the background recheck cadence in
+ * whole seconds. GLOBAL (not per-mode). 0 = off (the opt-in default); a
+ * negative value is rejected, so the frontend mirrors that >= 0 bound.
+ */
+export interface RecheckIntervalResponse {
+  intervalSeconds: number /* int */;
+}
+export interface RecheckIntervalRequest {
+  intervalSeconds: number /* int */;
+}
+/**
+ * NetscanFinding is one entry from the LAN-discovery probe endpoints
+ * (GET /api/netscan/known, POST /api/netscan/host) — an unauthenticated,
+ * spoofable HINT to verify, never a confirmed fact. Mirrors
+ * internal/netscan.Finding. Service is one of "prowlarr" | "qbittorrent" |
+ * "nzbget" | "jellyfin".
+ */
+export interface NetscanFinding {
+  service: string;
+  url: string;
+  label: string;
+}
+/**
+ * NetscanHostRequest is POST /api/netscan/host's body — probe one
+ * operator-supplied host/LAN IP across the known services' default ports (the
+ * server refuses any non-private host).
+ */
+export interface NetscanHostRequest {
+  host: string;
+}
+/**
+ * NetscanProwlarrKeyRequest / NetscanProwlarrKeyResponse back
+ * POST /api/netscan/prowlarr-key — the one explicit action that reads a
+ * Prowlarr instance's live API key from its unauthenticated /initialize.json.
+ * A fetched key must be treated as touched by the connection form (see
+ * src/api/settings.ts), or the three-state upsert would drop it as "untouched".
+ */
+export interface NetscanProwlarrKeyRequest {
+  url: string;
+}
+export interface NetscanProwlarrKeyResponse {
+  apiKey: string;
+}

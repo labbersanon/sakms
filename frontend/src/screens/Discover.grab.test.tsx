@@ -154,6 +154,124 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
   });
 });
 
+describe("Discover auto-grab — error handling (regression: dialog must not get stuck on error)", () => {
+  const plainTextError = (msg: string): Response =>
+    new Response(msg, {
+      status: 400,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+
+  it("a non-JSON 400 (matching the real Go http.Error body) surfaces as a message, not a permanent loading state", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
+      if (url.includes("/api/modes/movies/autograb"))
+        return plainTextError("some other backend failure\n");
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
+
+    expect(await screen.findByText("some other backend failure")).toBeInTheDocument();
+    expect(screen.queryByText(/Searching and scoring/)).not.toBeInTheDocument();
+  });
+
+  it("a prowlarr-not-configured failure shows the Prowlarr setup prompt instead of a bare error", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
+      if (url.includes("/api/modes/movies/autograb"))
+        return plainTextError("prowlarr isn't configured yet — add it in Settings first\n");
+      if (url.includes("/api/netscan/known")) return jsonResponse([]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
+
+    expect(await screen.findByText(/Prowlarr isn't configured yet/)).toBeInTheDocument();
+    expect(await screen.findByText("Save & retry")).toBeInTheDocument();
+    expect(screen.queryByText(/Searching and scoring/)).not.toBeInTheDocument();
+  });
+
+  it("a discovered LAN Prowlarr is offered as a confirm-first hint, not auto-filled", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
+      if (url.includes("/api/modes/movies/autograb"))
+        return plainTextError("prowlarr isn't configured yet — add it in Settings first\n");
+      if (url.includes("/api/netscan/known"))
+        return jsonResponse([{ service: "prowlarr", url: "http://10.1.10.3:9696" }]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
+
+    expect(
+      await screen.findByText(/Possible Prowlarr at http:\/\/10\.1\.10\.3:9696/),
+    ).toBeInTheDocument();
+    // Confirm-first: the URL field must NOT be pre-filled until "Use this URL" is clicked.
+    expect(screen.getByPlaceholderText("https://prowlarr.example.com")).toHaveValue("");
+    fireEvent.click(screen.getByText("Use this URL"));
+    expect(screen.getByPlaceholderText("https://prowlarr.example.com")).toHaveValue(
+      "http://10.1.10.3:9696",
+    );
+  });
+
+  it("a qbittorrent-not-configured failure (found once a release is picked) prompts for URL + username + password, not just a key", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
+      if (url.includes("/api/modes/movies/autograb"))
+        return plainTextError("qbittorrent isn't configured yet — add it in Settings first\n");
+      if (url.includes("/api/netscan/known")) return jsonResponse([]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
+
+    expect(await screen.findByText(/qBittorrent isn't configured yet/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("https://qbittorrent.example.com")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("username")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("password")).toBeInTheDocument();
+    // Prowlarr-only affordances must not appear for a download-client prompt.
+    expect(screen.queryByText("Fetch API key")).not.toBeInTheDocument();
+    expect(screen.queryByText(/wiki\.servarr\.com/)).not.toBeInTheDocument();
+  });
+
+  it("an nzbget-not-configured failure prompts for URL + username + password", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
+      if (url.includes("/api/modes/movies/autograb"))
+        return plainTextError("nzbget isn't configured yet — add it in Settings first\n");
+      if (url.includes("/api/netscan/known")) return jsonResponse([]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
+
+    expect(await screen.findByText(/NZBGet isn't configured yet/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("https://nzbget.example.com")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("username")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("password")).toBeInTheDocument();
+  });
+});
+
 describe("Discover auto-grab — Series (per-item picker gates the grab)", () => {
   it("a series card on the combined page reveals its picker first, then grabs the chosen episode", async () => {
     // Only the Trending Shows row has a card → the single "Grab" is the series

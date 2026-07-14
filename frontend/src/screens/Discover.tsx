@@ -65,7 +65,12 @@ import {
   ScreenTabs,
   yearOf,
 } from "../components/ui";
-import { buildConnectionUpsertBody, upsertConnection } from "../api/settings";
+import {
+  buildConnectionUpsertBody,
+  fetchNetscanKnown,
+  fetchProwlarrKey,
+  upsertConnection,
+} from "../api/settings";
 import { Carousel } from "../components/Carousel";
 import {
   type Slider,
@@ -317,15 +322,225 @@ const FallbackPickList: Component<{
   </div>
 );
 
+// MISSING_GRAB_SERVICE maps each backend "X isn't configured yet" error
+// auto-grab can hit to its setup form's shape — Prowlarr fails first
+// (autoGrabHandler's own check, internal/api/autograb.go) needing releases
+// to search for; qBittorrent/NZBGet fail later (dispatchToDownloadClient,
+// internal/api/search.go) once a release is picked and needs to actually be
+// sent somewhere. Prowlarr is a self-hosted single-key service (URL +
+// optional API key, like TMDB/TPDB's NOT_CONFIGURED_SERVICES pattern above,
+// just not a fixed URL); qBittorrent/NZBGet authenticate with
+// username+password instead (SERVICES_WITH_USERNAME's convention, Settings'
+// own ConnectionRow).
+const MISSING_GRAB_SERVICE: Record<
+  "prowlarr" | "qbittorrent" | "nzbget",
+  { label: string; needsUsername: boolean; wikiUrl?: string }
+> = {
+  prowlarr: {
+    label: "Prowlarr",
+    needsUsername: false,
+    wikiUrl: "https://wiki.servarr.com/en/prowlarr",
+  },
+  qbittorrent: { label: "qBittorrent", needsUsername: true },
+  nzbget: { label: "NZBGet", needsUsername: true },
+};
+
+// missingGrabService detects which (if any) of auto-grab's three optional
+// dependencies a failure is reporting missing, by matching the backend's
+// fixed error string — returns undefined for any other error (a real
+// network/indexer failure, a 500, etc.), which GrabError falls back to a
+// bare ErrorText for instead of assuming it's a "go configure this" case.
+function missingGrabService(
+  err: unknown,
+): keyof typeof MISSING_GRAB_SERVICE | undefined {
+  const msg = (err as Error)?.message ?? "";
+  if (!/isn't configured yet/i.test(msg)) return undefined;
+  if (/\bprowlarr\b/i.test(msg)) return "prowlarr";
+  if (/\bqbittorrent\b/i.test(msg)) return "qbittorrent";
+  if (/\bnzbget\b/i.test(msg)) return "nzbget";
+  return undefined;
+}
+
+// GrabError renders a GrabDialog's failure state. A missing-service failure
+// (see MISSING_GRAB_SERVICE) gets a same-dialog setup prompt instead of a
+// bare message, reusing the same upsertConnection/buildConnectionUpsertBody
+// Settings' own form calls. onConfigured re-runs the auto-grab immediately
+// after saving so the operator doesn't have to close this dialog and click
+// Grab again.
+const GrabError: Component<{ error: Error; onConfigured: () => void }> = (
+  props,
+) => {
+  const service = () => missingGrabService(props.error);
+  const info = () => {
+    const s = service();
+    return s ? MISSING_GRAB_SERVICE[s] : undefined;
+  };
+
+  const [url, setUrl] = createSignal("");
+  const [username, setUsername] = createSignal("");
+  const [key, setKey] = createSignal("");
+  const [saving, setSaving] = createSignal(false);
+  const [saveError, setSaveError] = createSignal("");
+  const [hint, setHint] = createSignal("");
+
+  // LAN auto-discovery — same "suggest, never silently apply" convention
+  // Settings' ConnectionRow already uses for netscan findings (see its
+  // useURL/fetchKey): a match is shown as a clickable hint the operator must
+  // confirm, not filled into the URL field automatically.
+  const [findings] = createResource(fetchNetscanKnown);
+  const finding = () => findings()?.find((f) => f.service === service());
+
+  const useFoundURL = () => {
+    const found = finding();
+    if (!found) return;
+    setUrl(found.url);
+    setHint("URL pre-filled — verify it's really yours, then Save.");
+  };
+  const useFoundKey = async () => {
+    const found = finding();
+    if (!found || service() !== "prowlarr") return;
+    setHint("fetching key…");
+    try {
+      const k = await fetchProwlarrKey(found.url);
+      setKey(k);
+      setHint(`API key retrieved from ${found.url} — verify before saving.`);
+    } catch (e) {
+      setSaveError((e as Error).message);
+    }
+  };
+
+  const save = async () => {
+    const i = info();
+    setSaveError("");
+    if (!url().trim()) {
+      setSaveError(`Enter ${i?.label ?? "its"} URL first.`);
+      return;
+    }
+    setSaving(true);
+    try {
+      await upsertConnection(
+        service()!,
+        buildConnectionUpsertBody({
+          url: url(),
+          username: username(),
+          needsUsername: i?.needsUsername ?? false,
+          keyTouched: true,
+          keyValue: key(),
+          hasExistingKey: false,
+        }),
+      );
+      props.onConfigured();
+    } catch (e) {
+      setSaveError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Show
+      when={info()}
+      fallback={<ErrorText>{props.error?.message}</ErrorText>}
+    >
+      {(i) => (
+        <>
+          <p class="mb-1 text-sm text-muted">
+            {i().label} isn't configured yet — auto-grab needs it to{" "}
+            {service() === "prowlarr"
+              ? "search for releases"
+              : "send the picked release to be downloaded"}
+            . Enter its details below to enable it now, or add it later in
+            Settings.
+          </p>
+          <Show when={i().wikiUrl}>
+            {(wikiUrl) => (
+              <a
+                href={wikiUrl()}
+                target="_blank"
+                rel="noreferrer"
+                class="mb-3 block text-sm text-accent underline"
+              >
+                {wikiUrl().replace(/^https?:\/\//, "")}
+              </a>
+            )}
+          </Show>
+          <input
+            type="text"
+            class="mb-2 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            placeholder={`https://${service()}.example.com`}
+            value={url()}
+            onInput={(e) => setUrl(e.currentTarget.value)}
+          />
+          <Show when={i().needsUsername}>
+            <input
+              type="text"
+              class="mb-2 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+              placeholder="username"
+              value={username()}
+              onInput={(e) => setUsername(e.currentTarget.value)}
+            />
+          </Show>
+          <input
+            type="password"
+            class="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            placeholder={i().needsUsername ? "password" : "API key (if needed)"}
+            value={key()}
+            onInput={(e) => setKey(e.currentTarget.value)}
+          />
+          <Show when={finding()}>
+            {(found) => (
+              <div class="mt-2 rounded border border-dashed border-border p-2 text-xs text-muted">
+                <div>
+                  Possible {i().label} at {found().url} — a hint only, verify
+                  it's yours.
+                </div>
+                <div class="mt-1 flex gap-2">
+                  <Button onClick={useFoundURL}>Use this URL</Button>
+                  <Show when={service() === "prowlarr"}>
+                    <Button onClick={() => void useFoundKey()}>
+                      Fetch API key
+                    </Button>
+                  </Show>
+                </div>
+              </div>
+            )}
+          </Show>
+          <Show when={hint()}>
+            <p class="mt-2 text-xs text-muted">{hint()}</p>
+          </Show>
+          <Show when={saveError()}>
+            <ErrorText>{saveError()}</ErrorText>
+          </Show>
+          <div class="mt-3 flex justify-end">
+            <Button variant="primary" onClick={save} disabled={saving()}>
+              {saving() ? "Saving…" : "Save & retry"}
+            </Button>
+          </div>
+        </>
+      )}
+    </Show>
+  );
+};
+
 // GrabDialog fires the auto-grab for a target on mount, then shows the outcome:
 // a success line when the backend grabbed the top qualifier, or the manual pick
 // list when it fell back. The manual pick reuses the existing /search/grab
 // endpoint (auto-grab resolves the root folder server-side; the fallback path
 // must fetch it explicitly).
+//
+// IMPORTANT: the error and success branches below are mutually exclusive
+// nested Shows, not siblings — reading a Solid resource's accessor (result())
+// after its fetcher has thrown RE-THROWS that error (by design, for
+// ErrorBoundary integration). A prior version had `<Show when={result.error}>`
+// and `<Show when={result()}>` as SIBLINGS, so the second Show's `when` still
+// evaluated result() on every render even while erroring — throwing mid-render
+// and leaving the dialog stuck on the loading fallback forever (the update that
+// would have shown the error never completed). Nesting the success Show inside
+// `when={!result.error}` is what actually prevents that read.
 const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> = (
   props,
 ) => {
-  const [result] = createResource(
+  const [result, { refetch }] = createResource(
     () => props.target,
     (t) => autoGrab(t.mode, t.request),
   );
@@ -368,9 +583,12 @@ const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> = (
         when={!result.loading}
         fallback={<Muted>Searching and scoring releases…</Muted>}
       >
-        <Show when={result.error}>
-          <ErrorText>{(result.error as Error)?.message}</ErrorText>
-        </Show>
+        <Show
+          when={!result.error}
+          fallback={
+            <GrabError error={result.error as Error} onConfigured={refetch} />
+          }
+        >
         <Show when={result()}>
           {(r) => (
             <Switch>
@@ -400,6 +618,7 @@ const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> = (
               </Match>
             </Switch>
           )}
+        </Show>
         </Show>
       </Show>
     </Modal>

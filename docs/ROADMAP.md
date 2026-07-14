@@ -305,6 +305,29 @@ rest or skip-and-continue, and how that's surfaced in the UI), and an
 explicit update to `CLAUDE.md`'s stated principle once built (not a silent
 reversal).
 
+### Unified downloader
+Consolidate qBittorrent and NZBGet the same way Radarr/Sonarr/Whisparr were
+already displaced (see `CLAUDE.md`'s Mission) — SAK owns the actual
+torrent/usenet download itself instead of depending on an external client
+for that one step. Today `internal/qbittorrent`/`internal/nzbget` are thin
+clients against a separately-run app the operator must install, configure
+(URL + username/password), and keep online; `dispatchToDownloadClient`
+(`internal/api/search.go`) picks one based on the release's protocol
+(torrent vs. Usenet) purely because two different external apps speak two
+different protocols — not because SAK actually needs two of anything.
+A real design needs: a torrent engine (embedding one, e.g. a Go BitTorrent
+library, vs. shelling out) and a Usenet/NZB downloader (connection pooling,
+`yenc` decode, par2 repair — a bigger lift than torrent), a unified
+queue/status model replacing today's per-client polling
+(`internal/qbittorrent`/`internal/nzbget`'s own status calls), and a
+decision on whether both protocols are worth owning at once or whether one
+ships first. Flagged 2026-07-14 while building auto-grab's "service isn't
+configured" setup prompts (Discover's `GrabError` — see CHANGELOG) made the
+two-separate-external-apps friction concrete: an operator hits this dance
+twice (Prowlarr for search, then qBittorrent *or* NZBGet for the actual
+download) before a single one-click grab can complete end-to-end. Not
+started — no design, no client package, no schema.
+
 ### Cheap, independent wins
 - **Clearer mount-disconnect error messaging** — shipped 2026-07-11, see
   "Recently shipped" below.

@@ -260,6 +260,16 @@ const ConnectionRow: Component<{
           value={url()}
           onInput={(e) => setUrl(e.currentTarget.value)}
         />
+        <Show when={props.service === "prowlarr"}>
+          <a
+            href="https://wiki.servarr.com/en/prowlarr"
+            target="_blank"
+            rel="noreferrer"
+            class="mt-1 block text-xs text-accent underline"
+          >
+            wiki.servarr.com/en/prowlarr
+          </a>
+        </Show>
         <Show when={props.finding || allowHostProbe}>
           <div class="mt-1 rounded border border-dashed border-border p-2 text-xs text-muted">
             <Show when={props.finding}>

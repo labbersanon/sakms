@@ -244,7 +244,10 @@ func TestResolveSliderHandler_MixedConcatenatesMovieAndTV(t *testing.T) {
 }
 
 // TestResolveSliderHandler_StudioRejectsTVTarget proves a misconfigured
-// studio+tv slider errors instead of silently returning nothing.
+// studio+tv slider is reported as a 400 (a permanent per-slider config
+// problem the admin fixes by editing the slider), not a 502 (which would
+// wrongly suggest a transient TMDB outage worth retrying) — see
+// errSliderMisconfigured's doc comment.
 func TestResolveSliderHandler_StudioRejectsTVTarget(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore := testStores(t)
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
@@ -263,8 +266,8 @@ func TestResolveSliderHandler_StudioRejectsTVTarget(t *testing.T) {
 		t.Fatalf("GET failed: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected 502 for a studio+tv misconfiguration, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a studio+tv misconfiguration, got %d", resp.StatusCode)
 	}
 }
 

@@ -222,7 +222,16 @@ func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store,
 
 		items, err := resolveSlider(ctx, sess.TMDB, *sl, page)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			if errors.Is(err, errSliderMisconfigured) {
+				// A bad filter_value/target combination is a permanent
+				// per-slider config problem (fix by editing the slider), not
+				// a transient upstream failure — 400, not 502, so the
+				// frontend can tell "edit this slider" from "TMDB is down,
+				// retry."
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			} else {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+			}
 			return
 		}
 
@@ -274,7 +283,7 @@ func resolveSlider(ctx context.Context, client *tmdb.Client, sl discoversliders.
 			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.DiscoverTVByKeyword(ctx, id, page) })
 	case discoversliders.FilterStudio:
 		if sl.Target == discoversliders.TargetTV {
-			return nil, fmt.Errorf("slider %d: studio filter is movie-only, not valid for a tv-target slider", sl.ID)
+			return nil, fmt.Errorf("%w: slider %d: studio filter is movie-only, not valid for a tv-target slider", errSliderMisconfigured, sl.ID)
 		}
 		id, err := sliderFilterValueInt(sl)
 		if err != nil {
@@ -283,7 +292,7 @@ func resolveSlider(ctx context.Context, client *tmdb.Client, sl discoversliders.
 		return client.DiscoverMoviesByStudio(ctx, id, page)
 	case discoversliders.FilterNetwork:
 		if sl.Target == discoversliders.TargetMovie {
-			return nil, fmt.Errorf("slider %d: network filter is series-only, not valid for a movie-target slider", sl.ID)
+			return nil, fmt.Errorf("%w: slider %d: network filter is series-only, not valid for a movie-target slider", errSliderMisconfigured, sl.ID)
 		}
 		id, err := sliderFilterValueInt(sl)
 		if err != nil {
@@ -291,20 +300,27 @@ func resolveSlider(ctx context.Context, client *tmdb.Client, sl discoversliders.
 		}
 		return client.DiscoverTVByNetwork(ctx, id, page)
 	default:
-		return nil, fmt.Errorf("slider %d: unrecognized filter type %q", sl.ID, sl.FilterType)
+		return nil, fmt.Errorf("%w: slider %d: unrecognized filter type %q", errSliderMisconfigured, sl.ID, sl.FilterType)
 	}
 }
+
+// errSliderMisconfigured marks a resolveSlider error as a permanent,
+// per-slider configuration problem (bad filter_type/target pairing, a
+// non-numeric filter_value) rather than a transient TMDB call failure —
+// resolveSliderHandler maps it to 400 instead of 502, so the frontend can
+// tell "edit this slider" from "TMDB is down, retry."
+var errSliderMisconfigured = errors.New("slider misconfigured")
 
 // sliderFilterValueInt parses sl.FilterValue (a stringified TMDB id) as an
 // int — every non-fixed-feed FilterType stores one (see
 // discoversliders.Store's validate). A parse failure means the stored value
 // predates some future non-numeric FilterValue convention or was corrupted;
-// either way it's not a transient TMDB error, so it's reported as such
-// rather than silently returning zero results.
+// either way it's a config problem, not a transient TMDB error (see
+// errSliderMisconfigured).
 func sliderFilterValueInt(sl discoversliders.Slider) (int, error) {
 	id, err := strconv.Atoi(sl.FilterValue)
 	if err != nil {
-		return 0, fmt.Errorf("slider %d: filter_value %q is not a valid TMDB id", sl.ID, sl.FilterValue)
+		return 0, fmt.Errorf("%w: slider %d: filter_value %q is not a valid TMDB id", errSliderMisconfigured, sl.ID, sl.FilterValue)
 	}
 	return id, nil
 }

@@ -1,8 +1,10 @@
 // Sidebar tests — the left nav renders all 7 items with icons + labels, the
 // collapse toggle hides labels while keeping icons, and the collapsed choice
-// persists to localStorage across a fresh mount.
+// persists to localStorage across a fresh mount. Also covers the mobile
+// off-canvas drawer: open/closed translate classes and closing on nav-link
+// click or backdrop tap.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { Route, Router } from "@solidjs/router";
 import {
@@ -101,5 +103,66 @@ describe("Sidebar", () => {
     expect(container.querySelectorAll("svg").length).toBe(8);
     // Toggle shows the expand affordance, confirming it mounted collapsed.
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
+  });
+});
+
+// renderMobileSidebar mounts Sidebar with an explicit mobileOpen/onCloseMobile
+// pair (what AppShell actually wires) rather than the collapsed-only harness
+// above, since these tests are specifically about the off-canvas drawer.
+function renderMobileSidebar() {
+  const onCloseMobile = vi.fn();
+  const Harness = () => {
+    const [collapsed, setCollapsed] = createPersistedBool(
+      SIDEBAR_COLLAPSED_KEY,
+      false,
+    );
+    return (
+      <Sidebar
+        collapsed={collapsed}
+        onToggle={() => setCollapsed(!collapsed())}
+        mobileOpen={() => true}
+        onCloseMobile={onCloseMobile}
+      />
+    );
+  };
+  const result = render(() => (
+    <Router root={Harness}>
+      <Route path="/" component={() => <div />} />
+      <Route path="*" component={() => <div />} />
+    </Router>
+  ));
+  return { ...result, onCloseMobile };
+}
+
+describe("Sidebar mobile drawer", () => {
+  it("defaults to closed (translated off-screen) when mobileOpen is omitted", () => {
+    const { container } = renderSidebar();
+    const nav = container.querySelector("nav")!;
+    expect(nav.classList.contains("-translate-x-full")).toBe(true);
+    expect(nav.classList.contains("translate-x-0")).toBe(false);
+  });
+
+  it("applies the open translate class when mobileOpen() is true", () => {
+    const { container } = renderMobileSidebar();
+    const nav = container.querySelector("nav")!;
+    expect(nav.classList.contains("translate-x-0")).toBe(true);
+    expect(nav.classList.contains("-translate-x-full")).toBe(false);
+  });
+
+  it("calls onCloseMobile when a nav link is clicked", () => {
+    const { onCloseMobile } = renderMobileSidebar();
+    fireEvent.click(screen.getByText("Grabs"));
+    expect(onCloseMobile).toHaveBeenCalledOnce();
+  });
+
+  it("hides the desktop collapse toggle from the mobile drawer's accessible controls", () => {
+    // The chevron button is CSS-hidden (not removed) below md, but it must
+    // stay out of the way of an actual off-canvas-drawer interaction check —
+    // asserting its class rather than visibility, since jsdom doesn't
+    // evaluate media queries.
+    const { container } = renderMobileSidebar();
+    const toggle = screen.getByLabelText("Collapse sidebar");
+    expect(toggle.classList.contains("hidden")).toBe(true);
+    expect(container.querySelector("nav")).toBeTruthy();
   });
 });

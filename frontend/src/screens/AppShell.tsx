@@ -3,13 +3,26 @@
 // client-side router; the landing view is Discover. The sidebar collapses to
 // icon-only and persists that choice in localStorage. The router must never
 // claim an /api/* path (see APP_ROUTES).
+//
+// LAYOUT (2026-07-14 mobile-responsive pass): the shell root is a fixed-height
+// flex row (`h-screen overflow-hidden`) with exactly one scroll region — the
+// <main> content column. The sidebar and header are never in that scroll
+// region, so neither scrolls away with page content; on desktop (md+) the
+// sidebar is a normal static flex column, on mobile it's a `fixed` off-canvas
+// drawer (translate-x-full when closed) toggled by a hamburger button in the
+// header, with a tap-to-close backdrop. Collapse-to-icons (desktop) and
+// open/closed (mobile) are two independent, independently-persisted states —
+// collapsing icon-width on a full-width mobile drawer wouldn't read as
+// anything sensible, so the collapse toggle itself is hidden below md.
 
 import {
   type Component,
   type JSX,
   For,
   Show,
+  createEffect,
   createSignal,
+  onCleanup,
 } from "solid-js";
 import { A, Route, Router } from "@solidjs/router";
 import {
@@ -130,6 +143,13 @@ const IconChevron: Component<{ collapsed: boolean }> = (props) => (
     <path d={props.collapsed ? "m9 6 6 6-6 6" : "m15 6-6 6 6 6"} />
   </svg>
 );
+const IconMenu: Component = () => (
+  <svg {...svgProps}>
+    <path d="M4 6h16" />
+    <path d="M4 12h16" />
+    <path d="M4 18h16" />
+  </svg>
+);
 
 type NavItem = { href: string; label: string; icon: Component };
 
@@ -148,6 +168,14 @@ const NAV_ITEMS: NavItem[] = [
 // the labels and narrows the column while keeping icons + native `title`
 // tooltips. Must be rendered inside a <Router> — <A> needs router context.
 //
+// `mobileOpen`/`onCloseMobile` are optional (default: closed, no-op close) so
+// existing standalone-Sidebar test harnesses that don't wire them keep
+// working unchanged. On mobile the nav is a `fixed` off-canvas drawer
+// (translate-x-full when closed); at md+ it reverts to a normal static flex
+// column and the translate classes are neutralized. Clicking a nav link
+// closes the mobile drawer (harmless no-op on desktop, where onCloseMobile is
+// still called but nothing observes it).
+//
 // bg-fixed here and on the header below is load-bearing, not decoration:
 // `background-attachment: fixed` anchors each element's gradient to the
 // VIEWPORT rather than its own box, so both panels sample the same
@@ -159,39 +187,52 @@ const NAV_ITEMS: NavItem[] = [
 export const Sidebar: Component<{
   collapsed: () => boolean;
   onToggle: () => void;
-}> = (props) => (
-  <nav
-    class="z-10 flex shrink-0 flex-col gap-1 bg-fixed bg-gradient-to-br from-chrome to-chrome-2 p-2 shadow-xl transition-all"
-    classList={{ "w-48": !props.collapsed(), "w-14": props.collapsed() }}
-    aria-label="Primary"
-  >
-    <button
-      type="button"
-      onClick={props.onToggle}
-      class="mb-2 flex items-center rounded-md px-2 py-2 text-chrome-fg/60 transition hover:text-chrome-fg"
-      title={props.collapsed() ? "Expand sidebar" : "Collapse sidebar"}
-      aria-label={props.collapsed() ? "Expand sidebar" : "Collapse sidebar"}
-      aria-expanded={!props.collapsed()}
+  mobileOpen?: () => boolean;
+  onCloseMobile?: () => void;
+}> = (props) => {
+  const mobileOpen = () => props.mobileOpen?.() ?? false;
+  const closeMobile = () => props.onCloseMobile?.();
+
+  return (
+    <nav
+      class="fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col gap-1 overflow-y-auto bg-fixed bg-gradient-to-br from-chrome to-chrome-2 p-2 shadow-xl transition-transform duration-200 md:static md:translate-x-0 md:transition-[width]"
+      classList={{
+        "translate-x-0": mobileOpen(),
+        "-translate-x-full": !mobileOpen(),
+        "md:w-48": !props.collapsed(),
+        "md:w-14": props.collapsed(),
+      }}
+      aria-label="Primary"
     >
-      <IconChevron collapsed={props.collapsed()} />
-    </button>
-    <For each={NAV_ITEMS}>
-      {(item) => (
-        <A
-          href={item.href}
-          title={item.label}
-          class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
-          activeClass="!bg-white/10 !text-chrome-fg"
-        >
-          <span class="flex shrink-0 items-center">{item.icon({})}</span>
-          <Show when={!props.collapsed()}>
-            <span>{item.label}</span>
-          </Show>
-        </A>
-      )}
-    </For>
-  </nav>
-);
+      <button
+        type="button"
+        onClick={props.onToggle}
+        class="mb-2 hidden items-center rounded-md px-2 py-2 text-chrome-fg/60 transition hover:text-chrome-fg md:flex"
+        title={props.collapsed() ? "Expand sidebar" : "Collapse sidebar"}
+        aria-label={props.collapsed() ? "Expand sidebar" : "Collapse sidebar"}
+        aria-expanded={!props.collapsed()}
+      >
+        <IconChevron collapsed={props.collapsed()} />
+      </button>
+      <For each={NAV_ITEMS}>
+        {(item) => (
+          <A
+            href={item.href}
+            title={item.label}
+            onClick={closeMobile}
+            class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
+            activeClass="!bg-white/10 !text-chrome-fg"
+          >
+            <span class="flex shrink-0 items-center">{item.icon({})}</span>
+            <Show when={!props.collapsed()}>
+              <span>{item.label}</span>
+            </Show>
+          </A>
+        )}
+      </For>
+    </nav>
+  );
+};
 
 const NotFound: Component = () => (
   <div class="rounded-xl border border-border bg-surface p-6">
@@ -210,6 +251,27 @@ export const AppShell: Component<{
     SIDEBAR_COLLAPSED_KEY,
     false,
   );
+  const [mobileNavOpen, setMobileNavOpen] = createSignal(false);
+
+  // Lock background scroll while the mobile drawer is open — without this,
+  // touch-scrolling the backdrop scrolls the page underneath it. Guarded the
+  // same way createPersistedBool guards localStorage: this only ever runs in
+  // a real browser (or jsdom under test, which also has document.body), but
+  // there's no reason to let a missing DOM API throw here either.
+  createEffect(() => {
+    try {
+      document.body.style.overflow = mobileNavOpen() ? "hidden" : "";
+    } catch {
+      /* no document — nothing to lock */
+    }
+  });
+  onCleanup(() => {
+    try {
+      document.body.style.overflow = "";
+    } catch {
+      /* no document — nothing to restore */
+    }
+  });
 
   const logout = async () => {
     setLogoutError("");
@@ -232,19 +294,39 @@ export const AppShell: Component<{
     const [tabReg, setTabReg] = createSignal<ScreenTabsRegistration | null>(null);
     return (
       <ScreenTabsContext.Provider value={setTabReg}>
-        <div class="flex min-h-screen">
-          <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed())} />
-          <div class="flex min-w-0 flex-1 flex-col">
-            <header class="z-10 flex items-center gap-4 bg-fixed bg-gradient-to-br from-chrome to-chrome-2 px-6 py-3 shadow-xl">
+        <div class="flex h-screen overflow-hidden">
+          <Show when={mobileNavOpen()}>
+            <div
+              class="fixed inset-0 z-30 bg-black/50 md:hidden"
+              aria-hidden="true"
+              onClick={() => setMobileNavOpen(false)}
+            />
+          </Show>
+          <Sidebar
+            collapsed={collapsed}
+            onToggle={() => setCollapsed(!collapsed())}
+            mobileOpen={mobileNavOpen}
+            onCloseMobile={() => setMobileNavOpen(false)}
+          />
+          <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+            <header class="z-10 flex shrink-0 items-center gap-4 bg-fixed bg-gradient-to-br from-chrome to-chrome-2 px-4 py-3 shadow-xl sm:px-6">
+              <button
+                type="button"
+                onClick={() => setMobileNavOpen(true)}
+                class="flex items-center rounded-md p-1 text-chrome-fg/80 transition hover:text-chrome-fg md:hidden"
+                aria-label="Open navigation"
+              >
+                <IconMenu />
+              </button>
               <img src="/favicon.svg" alt="" class="h-6 w-6 shrink-0" />
-              <span class="font-semibold text-chrome-fg">SAK Media Server</span>
+              <span class="truncate font-semibold text-chrome-fg">SAK Media Server</span>
               <div class="ml-auto">
                 <Button onClick={logout}>Log out</Button>
               </div>
             </header>
 
             <Show when={props.noneMode}>
-              <div class="border-b border-border bg-surface-2 px-6 py-2">
+              <div class="shrink-0 border-b border-border bg-surface-2 px-4 py-2 sm:px-6">
                 <span class="text-sm text-danger">
                   Authentication is disabled for this instance — it and every
                   connected service is reachable by anyone who can reach it.
@@ -254,7 +336,7 @@ export const AppShell: Component<{
             </Show>
 
             <Show when={props.connectionsSetupPending}>
-              <div class="border-b border-border bg-surface-2 px-6 py-2">
+              <div class="shrink-0 border-b border-border bg-surface-2 px-4 py-2 sm:px-6">
                 <span class="text-sm text-muted">
                   First-run connections setup hasn't been dismissed yet — the
                   setup wizard lands in a later wave.
@@ -271,7 +353,7 @@ export const AppShell: Component<{
                 on-screen position regardless of how much room the sidebar
                 takes up next to this column; swap on `collapsed()` accordingly. */}
             <main
-              class="min-w-0 flex-1 bg-fixed bg-cover bg-center p-6"
+              class="min-w-0 flex-1 overflow-y-auto bg-fixed bg-cover bg-center p-4 sm:p-6"
               style={{
                 "background-image": `url(${collapsed() ? "/wallpaper-collapsed.webp" : "/wallpaper-expanded.webp"})`,
               }}

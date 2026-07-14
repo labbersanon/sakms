@@ -343,6 +343,28 @@ describe("Discover — Adult tab (row-based browse)", () => {
     ).toBe(true);
   });
 
+  it("never shows Show more on Highest Rated, even with a full page of items", async () => {
+    // Highest Rated is a same-page rating re-sort, not a true global ranking —
+    // paginating it would append an independently-resorted page 2 after page 1,
+    // producing a visibly non-monotonic rating order under that label. Give it
+    // items (unlike the append test above, which relies on it being empty) to
+    // prove the missing "Show more" is a deliberate singlePage guard, not an
+    // incidental effect of having nothing to show.
+    stubFetch((url) => {
+      if (url.includes("/api/modes/adult/discover") && url.includes("category=top-rated"))
+        return jsonResponse([scene({ id: "t1", title: "Top Rated Scene" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+
+    expect(await screen.findByText("Top Rated Scene")).toBeInTheDocument();
+    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
+  });
+
   it("renders Studios/Performers as text tiles when they have no art", async () => {
     const { container } = (() => {
       stubFetch((url) => {

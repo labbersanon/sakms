@@ -565,6 +565,13 @@ function PaginatedStrip<T>(props: {
   onError: (err: unknown) => void;
   containerClass?: string;
   children: (item: T) => JSX.Element;
+  // singlePage suppresses "Show more" even when more data may exist — for
+  // rows whose ordering is only meaningful within one fetched page (e.g.
+  // Adult's "Highest Rated," a same-page rating re-sort with no true
+  // server-side popularity sort behind it: paginating would append an
+  // independently-resorted page 2 after page 1, producing a visibly
+  // non-monotonic rating order under a "Highest Rated" label).
+  singlePage?: boolean;
 }): JSX.Element {
   const [items, setItems] = createSignal<T[]>([]);
   const [page, setPage] = createSignal(0);
@@ -610,7 +617,7 @@ function PaginatedStrip<T>(props: {
       >
         <div class={props.containerClass ?? "flex items-stretch gap-3 overflow-x-auto pb-2"}>
           <For each={items()}>{(item) => props.children(item)}</For>
-          <Show when={!exhausted()}>
+          <Show when={!exhausted() && !props.singlePage}>
             <div class="flex w-28 shrink-0 items-center justify-center">
               <Button
                 class="!py-1 text-xs"
@@ -981,12 +988,14 @@ const EntityCard: Component<{
 };
 
 // ADULT_SCENE_ROWS is the fixed pair of ordered TPDB scene feeds the Adult
-// browse stacks: Recently Released (TPDB's real recency sort) and Highest Rated
-// (a page-local rating re-sort, honestly NOT a global popularity ranking — see
-// internal/api/adultdiscover.go). Each paginates independently.
-const ADULT_SCENE_ROWS: { title: string; category: AdultCategory }[] = [
+// browse stacks: Recently Released (TPDB's real recency sort, pages normally)
+// and Highest Rated (a page-local rating re-sort, honestly NOT a global
+// popularity ranking — see internal/api/adultdiscover.go). Highest Rated is
+// singlePage: "Show more" would append an independently-resorted page 2 after
+// page 1, producing a visibly non-monotonic rating order under that label.
+const ADULT_SCENE_ROWS: { title: string; category: AdultCategory; singlePage?: boolean }[] = [
   { title: "Recently Released", category: "recent" },
-  { title: "Highest Rated", category: "top-rated" },
+  { title: "Highest Rated", category: "top-rated", singlePage: true },
 ];
 
 // AdultDrill is the active drill-down target: which entity kind, its opaque TPDB
@@ -1095,6 +1104,7 @@ const AdultDiscover: Component = () => {
                         fetchAdultDiscoverCategory(row.category, page)
                       }
                       onError={setSetupError}
+                      singlePage={row.singlePage}
                     >
                       {(item) => (
                         <AdultCard item={item} onGrab={setGrabTarget} />

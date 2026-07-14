@@ -167,6 +167,27 @@ func TestBrowsePerformers_PaginatesWithoutSearchTerm(t *testing.T) {
 	}
 }
 
+// TestBrowsePerformers_ToleratesNumericID guards flexID's reuse on
+// rawPerformer.ID: a regression that narrowed it back to a plain string would
+// pass every other performer test (all use quoted-string ids) while still
+// crashing on the exact bug class TPDB already shipped once for scenes.
+func TestBrowsePerformers_ToleratesNumericID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":42,"name":"Numeric ID Performer"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].ID != "42" {
+		t.Fatalf("got %+v", out)
+	}
+}
+
 func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/sites" {
@@ -195,6 +216,25 @@ func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 	}
 	if out[0].Image != "http://cdn/logo.png" {
 		t.Errorf("expected Image to prefer logo, got %q", out[0].Image)
+	}
+}
+
+// TestBrowseSites_ToleratesNumericID is TestBrowsePerformers_ToleratesNumericID's
+// sibling for rawSiteEntry.ID — same regression-guard rationale.
+func TestBrowseSites_ToleratesNumericID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":7,"name":"Numeric ID Site"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowseSites(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].ID != "7" {
+		t.Fatalf("got %+v", out)
 	}
 }
 

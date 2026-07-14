@@ -162,9 +162,46 @@ export const SetupWizard: Component<{ onSetupComplete: () => void }> = (
     }
   };
 
-  const copyKey = () => {
+  const [copyStatus, setCopyStatus] = createSignal<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  let copyStatusTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const copyKey = async () => {
     const key = reveal()?.apiKey;
-    if (key && navigator.clipboard) navigator.clipboard.writeText(key).catch(() => {});
+    if (!key) return;
+    clearTimeout(copyStatusTimer);
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard API unavailable");
+      await navigator.clipboard.writeText(key);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+    copyStatusTimer = setTimeout(() => setCopyStatus("idle"), 2000);
+  };
+
+  const copyLabel = () => {
+    switch (copyStatus()) {
+      case "copied":
+        return "Copied!";
+      case "failed":
+        return "Couldn't copy — select the field instead";
+      default:
+        return "Copy";
+    }
+  };
+
+  const downloadKey = () => {
+    const key = reveal()?.apiKey;
+    if (!key) return;
+    const blob = new Blob([key + "\n"], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "sakms-break-glass-api-key.txt";
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -304,7 +341,8 @@ export const SetupWizard: Component<{ onSetupComplete: () => void }> = (
                   value={data().apiKey}
                 />
                 <div class="mt-2 flex items-center gap-2">
-                  <Button onClick={copyKey}>Copy</Button>
+                  <Button onClick={copyKey}>{copyLabel()}</Button>
+                  <Button onClick={downloadKey}>Download as text file</Button>
                 </div>
                 <ErrorText>
                   Shown once — if SSO login ever fails, send this as an X-Api-Key

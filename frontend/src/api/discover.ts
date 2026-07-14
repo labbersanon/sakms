@@ -8,9 +8,22 @@
 // DTOs (@dto), never hand-duplicated (plan Guardrail #4).
 
 import { api } from "./client";
-import type { AdultDiscoverItem, DiscoverItem, PosterResponse } from "@dto";
+import type {
+  AdultDiscoverItem,
+  DiscoverItem,
+  PerformerSummary,
+  PosterResponse,
+  StudioSummary,
+} from "@dto";
 
-export type { AdultDiscoverItem, DiscoverItem };
+export type { AdultDiscoverItem, DiscoverItem, PerformerSummary, StudioSummary };
+
+// AdultCategory selects which ordered TPDB scene feed a row renders — the two
+// the Adult discoverHandler accepts alongside its plain browse: "recent" (TPDB's
+// server-side recently_released sort) and "top-rated" (one browse page re-sorted
+// by rating descending server-side, an honestly page-local ordering, not a true
+// global popularity ranking — see internal/api/adultdiscover.go).
+export type AdultCategory = "recent" | "top-rated";
 
 // Mode is the three top-level libraries. Movies/Series share the TMDB
 // title-shaped Discover path; Adult is scene-shaped (TPDB).
@@ -94,11 +107,63 @@ export function fetchTmdbSearch(
 }
 
 // fetchAdultDiscover returns one page of TPDB's scene catalog (plain browse),
-// or a title search when query is non-empty.
+// or a title search when query is non-empty. This is the search path only now —
+// the Adult browse screen's ordered rows use fetchAdultDiscoverCategory below.
 export function fetchAdultDiscover(query?: string): Promise<AdultDiscoverItem[]> {
   const q = query?.trim();
   const path = q
     ? `/api/modes/adult/discover?q=${encodeURIComponent(q)}`
     : `/api/modes/adult/discover`;
   return api<AdultDiscoverItem[]>(path);
+}
+
+// fetchAdultDiscoverCategory returns one page of an ordered TPDB scene feed for
+// Adult Discover's category rows (Recently Released / Highest Rated), for the
+// given 1-based page. Like fetchDiscover's "Show more", page 1 and page 2 return
+// different scenes (the backend threads ?page through to TPDB's browse).
+export function fetchAdultDiscoverCategory(
+  category: AdultCategory,
+  page = 1,
+): Promise<AdultDiscoverItem[]> {
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/discover?category=${category}&page=${page}`,
+  );
+}
+
+// fetchAdultStudios returns one page of TPDB's studio (site) catalog for the
+// Studios browse row. Each card's opaque id doubles as the {id} path segment of
+// fetchAdultStudioScenes below.
+export function fetchAdultStudios(page = 1): Promise<StudioSummary[]> {
+  return api<StudioSummary[]>(`/api/modes/adult/studios?page=${page}`);
+}
+
+// fetchAdultPerformers returns one page of TPDB's performer catalog for the
+// Performers browse row. Each card's opaque id doubles as the {id} path segment
+// of fetchAdultPerformerScenes below.
+export function fetchAdultPerformers(page = 1): Promise<PerformerSummary[]> {
+  return api<PerformerSummary[]>(`/api/modes/adult/performers?page=${page}`);
+}
+
+// fetchAdultStudioScenes is the studio drill-down: one page of just the scenes
+// for a studio id (a StudioSummary.id, passed verbatim as an opaque string).
+// Returns the same scene shape as fetchAdultDiscover.
+export function fetchAdultStudioScenes(
+  id: string,
+  page = 1,
+): Promise<AdultDiscoverItem[]> {
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/studios/${encodeURIComponent(id)}/scenes?page=${page}`,
+  );
+}
+
+// fetchAdultPerformerScenes is the performer drill-down: one page of just the
+// scenes for a performer id (a PerformerSummary.id, passed verbatim as an opaque
+// string). Returns the same scene shape as fetchAdultDiscover.
+export function fetchAdultPerformerScenes(
+  id: string,
+  page = 1,
+): Promise<AdultDiscoverItem[]> {
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/performers/${encodeURIComponent(id)}/scenes?page=${page}`,
+  );
 }

@@ -27,6 +27,20 @@ import (
 // long-lived *trakt.Client/*trakt.Session — client_id/secret can change at
 // any time via traktSaveCredentialsHandler, and a stale cached Client would
 // silently keep using the old pair.
+//
+// Route shape (authoritative contract, adopted from worker-5's already-
+// tested frontend — supersedes an earlier draft that incorrectly merged
+// device-poll and general-status into one endpoint):
+//
+//	GET  /api/trakt/status          -> traktStatusHandler
+//	PUT  /api/trakt/credentials     -> traktSaveCredentialsHandler
+//	POST /api/trakt/device/start    -> traktDeviceStartHandler
+//	POST /api/trakt/device/poll     -> traktDevicePollHandler
+//	POST /api/trakt/disconnect      -> traktDisconnectHandler
+//	GET  /api/trakt/watchlist       -> traktWatchlistHandler
+//
+// plus TestConnection's "trakt" case (testTrakt), unrelated to this route
+// table since it's dispatched from the existing /api/connections/test route.
 
 // testTrakt is TestConnection's "trakt" case content — mirrors
 // testTMDB/testOllama/etc.'s shape exactly (same ConnectionTestResult
@@ -45,7 +59,7 @@ func testTrakt(ctx context.Context, httpClient *http.Client, baseURL, clientID s
 	return ConnectionTestResult{OK: true}
 }
 
-// traktCredentialsRequest is PUT /api/connections/trakt's body — same
+// traktCredentialsRequest is PUT /api/trakt/credentials's body — same
 // three-state ClientSecret convention as upsertConnectionRequest.APIKey in
 // handler.go (nil = preserve stored secret, "" = clear, non-empty = set).
 type traktCredentialsRequest struct {
@@ -75,53 +89,69 @@ func traktSaveCredentialsHandler(store *trakt.Store) http.HandlerFunc {
 	}
 }
 
-// traktConnectionSummary is GET /api/connections/trakt's response — safe to
-// expose in full: ClientID is not secret (Trakt sends it as a plain header
-// on every request), but ClientSecret/AccessToken/RefreshToken never appear
-// here, only HasClientSecret. Mirrors connections.Summary's
-// never-round-trip-the-real-secret convention.
-type traktConnectionSummary struct {
-	Configured      bool   `json:"configured"`
-	Linked          bool   `json:"linked"`
-	ClientID        string `json:"clientId,omitempty"`
-	HasClientSecret bool   `json:"hasClientSecret"`
-	TokenExpiresAt  string `json:"tokenExpiresAt,omitempty"`
+// traktStatus is GET /api/trakt/status's response — the general "is Trakt
+// usable right now" summary consumed both by Settings (to render
+// configured/linked state) and by the Discover watchlist row (to decide
+// whether to render at all). Deliberately minimal per the authoritative
+// contract (team-lead, adopting worker-5's already-tested frontend shape):
+// no ClientID/HasClientSecret here — this is a general-purpose status
+// check, not a Settings-only detail view. Never exposes the real secret or
+// tokens, only whether they're set.
+type traktStatus struct {
+	Configured     bool   `json:"configured"`
+	Linked         bool   `json:"linked"`
+	TokenExpiresAt string `json:"tokenExpiresAt,omitempty"`
 }
 
-// traktConnectionSummaryHandler returns the current Trakt connection state
-// for Settings to render (configured/linked/expiry), never the real
-// secret or tokens. An unconfigured connection is not an error — it
-// returns the zero-value summary (Configured: false).
-func traktConnectionSummaryHandler(store *trakt.Store) http.HandlerFunc {
+// traktStatusHandler returns the current Trakt connection state. An
+// unconfigured connection is not an error — it returns the zero-value
+// status (Configured: false).
+func traktStatusHandler(store *trakt.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := store.Get(r.Context())
 		w.Header().Set("Content-Type", "application/json")
 		if errors.Is(err, trakt.ErrNotConfigured) {
-			json.NewEncoder(w).Encode(traktConnectionSummary{})
+			json.NewEncoder(w).Encode(traktStatus{})
 			return
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		summary := traktConnectionSummary{
-			Configured:      true,
-			Linked:          conn.Tokens.Linked(),
-			ClientID:        conn.ClientID,
-			HasClientSecret: conn.ClientSecret != "",
+		status := traktStatus{
+			Configured: true,
+			Linked:     conn.Tokens.Linked(),
 		}
 		if !conn.ExpiresAt.IsZero() {
-			summary.TokenExpiresAt = conn.ExpiresAt.UTC().Format(time.RFC3339)
+			status.TokenExpiresAt = conn.ExpiresAt.UTC().Format(time.RFC3339)
 		}
-		json.NewEncoder(w).Encode(summary)
+		json.NewEncoder(w).Encode(status)
+	}
+}
+
+// traktDisconnectHandler unlinks the Trakt account (clears tokens) while
+// leaving the operator-entered app credentials in place, so re-linking
+// doesn't require re-entering client_id/secret — a normal "disconnect
+// account" action, distinct from forgetting the app entirely (that would be
+// store.Delete, not exposed here; not part of this contract).
+func traktDisconnectHandler(store *trakt.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := store.ClearTokens(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
 // traktDeviceFlow holds the one in-flight device-code authorization (if
-// any) between a start call and however many status polls the frontend
-// makes — necessary because the device flow is inherently two-step
-// (RequestDeviceCode, then repeated PollDeviceToken) and the frontend
-// can't be trusted/expected to hold the device_code itself across polls.
+// any) between a start call and however many POST /api/trakt/device/poll
+// calls the frontend makes on a client-side timer — necessary because the
+// device flow is inherently two-step (RequestDeviceCode, then repeated
+// PollDeviceToken) and the frontend can't be trusted/expected to hold the
+// device_code itself across polls. Deliberately separate from
+// traktStatusHandler above (that's the general "is Trakt usable" check used
+// everywhere; this is Connect-flow-only, in-progress-authorization state).
 // A single mutex-guarded field is correct, not a premature simplification,
 // because this project is single-operator/single-connection throughout
 // (CLAUDE.md) — there is never more than one Trakt account being linked at
@@ -137,10 +167,10 @@ func newTraktDeviceFlow() *traktDeviceFlow {
 	return &traktDeviceFlow{}
 }
 
-// errNoTraktDeviceFlow is returned by traktDeviceFlow.status when the
-// frontend polls status before ever calling start (or after the server
-// restarted and lost the in-memory pending code) — the frontend's response
-// should prompt the operator to start over.
+// errNoTraktDeviceFlow is returned by traktDeviceFlow.poll when the
+// frontend polls before ever calling start (or after the server restarted
+// and lost the in-memory pending code) — the frontend's response should
+// prompt the operator to start over.
 var errNoTraktDeviceFlow = errors.New("trakt: no device authorization in progress; start one first")
 
 func (f *traktDeviceFlow) start(ctx context.Context, client *trakt.Client) (*trakt.DeviceCode, error) {
@@ -154,7 +184,7 @@ func (f *traktDeviceFlow) start(ctx context.Context, client *trakt.Client) (*tra
 	return dc, nil
 }
 
-// traktDeviceStatus is one of the four values traktDeviceStatusHandler's
+// traktDeviceStatus is one of the four values traktDevicePollHandler's
 // JSON response reports.
 type traktDeviceStatus string
 
@@ -165,16 +195,16 @@ const (
 	traktDeviceStatusDenied  traktDeviceStatus = "denied"
 )
 
-// status makes exactly one PollDeviceToken attempt against whatever device
+// poll makes exactly one PollDeviceToken attempt against whatever device
 // code is currently pending (never loops/sleeps itself — this handler is
-// non-blocking by design per task #9, so polling cadence is the frontend's
-// job, e.g. an interval timer calling the status route every few seconds).
-// On success, tokens are saved via store and the pending code is cleared.
-// On a terminal outcome (expired/denied), the pending code is cleared too,
-// so a subsequent poll correctly reports errNoTraktDeviceFlow instead of
-// re-polling a dead code. Pending/slow-down leaves the code in place for
-// the next poll.
-func (f *traktDeviceFlow) status(ctx context.Context, client *trakt.Client, store *trakt.Store) (traktDeviceStatus, error) {
+// non-blocking by design, so polling cadence is the frontend's job: an
+// interval timer respecting the start response's interval/expiresIn calling
+// POST /api/trakt/device/poll repeatedly). On success, tokens are saved via
+// store and the pending code is cleared. On a terminal outcome
+// (expired/denied), the pending code is cleared too, so a subsequent poll
+// correctly reports errNoTraktDeviceFlow instead of re-polling a dead code.
+// Pending/slow-down leaves the code in place for the next poll.
+func (f *traktDeviceFlow) poll(ctx context.Context, client *trakt.Client, store *trakt.Store) (traktDeviceStatus, error) {
 	f.mu.Lock()
 	dc := f.device
 	f.mu.Unlock()
@@ -221,11 +251,11 @@ func traktClientFromStore(ctx context.Context, store *trakt.Store, httpClient *h
 	return trakt.New(trakt.Config{BaseURL: baseURL, ClientID: conn.ClientID, ClientSecret: conn.ClientSecret}, httpClient), nil
 }
 
-// traktDeviceStartResponse is POST /api/connections/trakt/device's response
-// — everything the frontend needs to show the operator (a code to enter and
-// a URL to visit) and to know how often to poll status. DeviceCode itself
-// (the secret the server polls with) is deliberately NOT included — the
-// frontend never needs it, since status polling is server-side.
+// traktDeviceStartResponse is POST /api/trakt/device/start's response —
+// everything the frontend needs to show the operator (a code to enter and
+// a URL to visit) and to know how often to call POST /api/trakt/device/poll.
+// DeviceCode itself (the secret the server polls with) is deliberately NOT
+// included — the frontend never needs it, since polling is server-side.
 type traktDeviceStartResponse struct {
 	UserCode        string `json:"userCode"`
 	VerificationURL string `json:"verificationUrl"`
@@ -263,15 +293,19 @@ func traktDeviceStartHandler(store *trakt.Store, flow *traktDeviceFlow, httpClie
 	}
 }
 
-// traktDeviceStatusResponse is GET /api/connections/trakt/device's response.
-type traktDeviceStatusResponse struct {
+// traktDevicePollResponse is POST /api/trakt/device/poll's response.
+type traktDevicePollResponse struct {
 	Status string `json:"status"` // "pending" | "linked" | "expired" | "denied"
 }
 
-// traktDeviceStatusHandler makes one poll attempt and reports the outcome.
+// traktDevicePollHandler makes one poll attempt and reports the outcome.
 // Returns 409 Conflict if no flow is in progress (start wasn't called, or
-// the pending code was already resolved/cleared by an earlier poll).
-func traktDeviceStatusHandler(store *trakt.Store, flow *traktDeviceFlow, httpClient *http.Client, baseURL string) http.HandlerFunc {
+// the pending code was already resolved/cleared by an earlier poll). This
+// is intentionally a separate endpoint from traktStatusHandler (GET
+// /api/trakt/status) — one drives the Connect-flow UI's polling loop, the
+// other answers "is Trakt usable right now" everywhere else; conflating them
+// was an earlier draft's mistake, corrected per the authoritative contract.
+func traktDevicePollHandler(store *trakt.Store, flow *traktDeviceFlow, httpClient *http.Client, baseURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		client, err := traktClientFromStore(ctx, store, httpClient, baseURL)
@@ -283,7 +317,7 @@ func traktDeviceStatusHandler(store *trakt.Store, flow *traktDeviceFlow, httpCli
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		status, err := flow.status(ctx, client, store)
+		status, err := flow.poll(ctx, client, store)
 		if errors.Is(err, errNoTraktDeviceFlow) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
@@ -293,37 +327,33 @@ func traktDeviceStatusHandler(store *trakt.Store, flow *traktDeviceFlow, httpCli
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(traktDeviceStatusResponse{Status: string(status)})
+		json.NewEncoder(w).Encode(traktDevicePollResponse{Status: string(status)})
 	}
 }
 
-// traktWatchlistItem mirrors apidto.DiscoverItem's wire shape field-for-field
-// so the frontend can render Trakt watchlist entries through the same card
-// component as a regular Discover row. PosterPath/Overview/VoteAverage are
-// always blank/zero — Trakt's watchlist only returns title/year/TMDB id, no
-// artwork/overview/rating (see internal/trakt.WatchlistItem) — enriching
-// these via a per-item TMDB details call is a deliberate non-goal here (an
-// N-item watchlist would mean N extra TMDB calls per page load); task #5/#8
-// should decide whether that enrichment belongs client-side, server-side, or
-// not at all. ReleaseDate is only ever "YYYY-01-01" (year-only, Trakt
-// doesn't give an exact date) when Year is known, else blank.
+// traktWatchlistItem is one entry of GET /api/trakt/watchlist's response —
+// a near-direct mirror of internal/trakt.WatchlistItem's fields (Type is
+// Trakt's own "movie"/"show" value, unconverted; TMDBID becomes tmdbId).
+// Per the authoritative contract this is deliberately NOT DiscoverItem's
+// shape — no posterPath/overview/voteAverage — since Trakt's watchlist API
+// doesn't provide artwork/overview/rating at all; any enrichment against
+// TMDB using tmdbId is left to the frontend/task #5, not done here (an
+// N-item watchlist would mean N extra TMDB calls per page load if done
+// server-side).
 type traktWatchlistItem struct {
-	ID          int     `json:"id"`
-	Title       string  `json:"title"`
-	PosterPath  string  `json:"posterPath"`
-	Overview    string  `json:"overview"`
-	ReleaseDate string  `json:"releaseDate"`
-	VoteAverage float64 `json:"voteAverage"`
-	MediaType   string  `json:"mediaType"`
+	Type   string `json:"type"` // "movie" or "show"
+	Title  string `json:"title"`
+	Year   int    `json:"year,omitempty"`
+	TMDBID int    `json:"tmdbId"`
 }
 
-// traktWatchlistHandler returns the linked account's watchlist, mapped to
-// DiscoverItem's shape. Not configured or not yet linked both degrade to an
-// empty list (not an error) — the watchlist row simply has nothing to show
-// until Settings' connection summary reports Configured/Linked; a 4xx here
-// would just be extra error-handling the frontend doesn't need for a
-// read-only row. Any other failure (e.g. Trakt itself erroring) is a real
-// 502, since that's an actual fetch failure worth surfacing.
+// traktWatchlistHandler returns the linked account's watchlist. Not
+// configured or not yet linked both degrade to an empty list (not an
+// error) — the watchlist row simply has nothing to show until GET
+// /api/trakt/status reports configured/linked; a 4xx here would just be
+// extra error-handling the frontend doesn't need for a read-only row. Any
+// other failure (e.g. Trakt itself erroring) is a real 502, since that's an
+// actual fetch failure worth surfacing.
 func traktWatchlistHandler(store *trakt.Store, httpClient *http.Client, baseURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -349,15 +379,7 @@ func traktWatchlistHandler(store *trakt.Store, httpClient *http.Client, baseURL 
 		}
 		out := make([]traktWatchlistItem, len(items))
 		for i, it := range items {
-			mediaType := "movie"
-			if it.Type == "show" {
-				mediaType = "tv"
-			}
-			releaseDate := ""
-			if it.Year > 0 {
-				releaseDate = fmt.Sprintf("%04d-01-01", it.Year)
-			}
-			out[i] = traktWatchlistItem{ID: it.TMDBID, Title: it.Title, ReleaseDate: releaseDate, MediaType: mediaType}
+			out[i] = traktWatchlistItem{Type: it.Type, Title: it.Title, Year: it.Year, TMDBID: it.TMDBID}
 		}
 		json.NewEncoder(w).Encode(out)
 	}

@@ -262,7 +262,20 @@ export const AppShell: Component<{
               </div>
             </Show>
 
-            <main class="min-w-0 flex-1 p-6">
+            {/* bg-fixed anchors the wallpaper to the viewport, not this box, so
+                it doesn't scroll with the content beneath it — same technique
+                as the sidebar/header gradient above, just applied to a
+                background-image instead of a gradient. The two source images
+                are pre-composed per sidebar width (collapsed-56 / expanded-192)
+                so the ticket art's decorative elements land in the same
+                on-screen position regardless of how much room the sidebar
+                takes up next to this column; swap on `collapsed()` accordingly. */}
+            <main
+              class="min-w-0 flex-1 bg-fixed bg-cover bg-center p-6"
+              style={{
+                "background-image": `url(${collapsed() ? "/wallpaper-collapsed.webp" : "/wallpaper-expanded.webp"})`,
+              }}
+            >
               {logoutError() && <ErrorText>{logoutError()}</ErrorText>}
               <Show when={tabReg()}>
                 {(reg) => (

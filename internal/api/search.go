@@ -41,15 +41,29 @@ type searchResult struct {
 	Score       int    `json:"score"`
 }
 
-// categoriesForSearch restricts a search to m's Newznab category —
-// the 2000-range for Movies, the 5000-range for TV. Covers both single
-// episodes and season packs — Newznab doesn't split those into separate
-// categories.
+// categoriesForSearch restricts a search to m's Newznab category — the
+// 2000-range for Movies, the 5000-range for TV, the 6000-range (XXX) for
+// Adult (adultAutoGrabCategory, defined in autograb.go and shared here
+// rather than a second local constant). Covers both single episodes and
+// season packs — Newznab doesn't split those into separate categories.
+//
+// FIXED 2026-07-15: this previously had no mode.Adult case at all and fell
+// through to the Movies default (2000) — so the manual Search screen was
+// silently searching Adult under the Movies category the whole time. Found
+// while investigating a real "Adult posters/downloads broken" report;
+// unrelated to that report's root causes (see internal/imageproxy and the
+// detail-popup's discoverAvailabilityHandler, which already used the correct
+// category via the separate adultAutoGrabCategory constant — this bug was
+// scoped to the manual Search screen only).
 func categoriesForSearch(m mode.Mode) []int {
-	if m == mode.Series {
+	switch m {
+	case mode.Series:
 		return []int{5000}
+	case mode.Adult:
+		return []int{adultAutoGrabCategory}
+	default: // Movies
+		return []int{2000}
 	}
-	return []int{2000}
 }
 
 // episodeSearchQuery builds a Series search term for a specific season (and

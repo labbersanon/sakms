@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -21,10 +22,12 @@ import (
 )
 
 // adultAutoGrabCategory is the XXX (6000-range) Newznab category Adult
-// releases live in — the same value availability.CheckAdultScene probes.
-// Deliberately NOT categoriesForSearch(adult), which still returns 2000
-// (the Movies category) for legacy reasons; auto-grabbing Adult against 2000
-// would search the wrong catalog entirely.
+// releases live in — the same value availability.CheckAdultScene probes, and
+// (since 2026-07-15) the same value categoriesForSearch(mode.Adult) now
+// returns too — categoriesForSearch previously had no Adult case and
+// silently fell through to the Movies category (2000), a real confirmed bug
+// in the manual Search screen, now fixed to share this constant instead of
+// hand-rolling its own 6000.
 const adultAutoGrabCategory = 6000
 
 // autoGrabHandler is Discover's one-click unattended auto-grab (Stage 2). It
@@ -143,6 +146,17 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req ap
 	switch m {
 	case mode.Adult:
 		query := strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
+		// Diagnostic logging (2026-07-15, mirrors the project's existing
+		// "add tracing before fixing" precedent): a real "Adult downloads
+		// never resolve" report found Prowlarr returning 0 raw releases for
+		// every scene tried, with adult indexers confirmed configured — so
+		// the remaining suspect is this query itself (studio+full scene
+		// title concatenated verbatim, which may be far more verbose than
+		// how adult trackers actually name releases). Logging the exact
+		// query text and category to compare against what a manual search
+		// on the same indexers actually matches, before changing this
+		// query-construction logic on a guess.
+		log.Printf("autoGrabSearch: mode=adult query=%q category=%d studio=%q title=%q", query, adultAutoGrabCategory, req.Studio, req.Title)
 		releases, err := sess.Prowlarr.Search(ctx, query, []int{adultAutoGrabCategory})
 		return releases, float64(req.DurationSeconds), err
 	case mode.Series:

@@ -25,6 +25,28 @@ func fakeProwlarr(t *testing.T, body string) *httptest.Server {
 	return srv
 }
 
+// TestCategoriesForSearch_AllThreeModes is a regression test for a real bug:
+// categoriesForSearch had no mode.Adult case at all and fell through to the
+// Movies default (2000) — so the manual Search screen silently searched
+// Adult under the wrong Newznab category the whole time. Found while
+// investigating a separate "Adult posters/downloads broken" report.
+func TestCategoriesForSearch_AllThreeModes(t *testing.T) {
+	cases := []struct {
+		mode mode.Mode
+		want []int
+	}{
+		{mode.Movies, []int{2000}},
+		{mode.Series, []int{5000}},
+		{mode.Adult, []int{adultAutoGrabCategory}},
+	}
+	for _, tc := range cases {
+		got := categoriesForSearch(tc.mode)
+		if len(got) != len(tc.want) || got[0] != tc.want[0] {
+			t.Errorf("categoriesForSearch(%s) = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
 func TestSearchHandler_ScoresAndSortsResults(t *testing.T) {
 	fake := fakeProwlarr(t, `[
 		{"guid":"1","title":"Some.Movie.2023.480p.HDTV.x264-GROUP","indexer":"I","protocol":"torrent","size":1,"seeders":1,"downloadUrl":"http://x/1","publishDate":"2023-01-01"},

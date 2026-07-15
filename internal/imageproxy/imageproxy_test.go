@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,42 +13,79 @@ import (
 	"time"
 )
 
-// TestValidate_Allowlist mirrors internal/netscan's SSRF test rigor, inverted:
-// real TMDB/TPDB image URLs must pass; arbitrary, internal, look-alike, and
-// non-https URLs must be rejected — and rejected with the right error class
-// (ErrInvalidURL for malformed/non-https, ErrHostNotAllowed for a valid https
-// URL pointing at a disallowed host) so the handler can map them to the right
-// status code.
-func TestValidate_Allowlist(t *testing.T) {
+// TestIsBlockedIP covers the address-classification core of the SSRF guard —
+// all literal IPs so no DNS is touched, mirroring internal/netscan's own
+// TestValidatePrivateHost convention exactly (see that test's doc comment).
+func TestIsBlockedIP(t *testing.T) {
+	cases := []struct {
+		ip      string
+		blocked bool
+	}{
+		{"192.168.1.5", true},
+		{"10.0.0.5", true},
+		{"172.16.4.4", true},
+		{"127.0.0.1", true},
+		{"169.254.10.10", true},   // link-local unicast — cloud metadata range
+		{"169.254.169.254", true}, // the cloud metadata endpoint itself
+		{"0.0.0.0", true},         // unspecified
+		{"::1", true},
+		{"fc00::1", true}, // ULA
+		{"::", true},      // unspecified, IPv6
+		{"8.8.8.8", false},
+		{"1.1.1.1", false},
+		{"93.184.216.34", false}, // example.com's public IP
+	}
+	for _, c := range cases {
+		ip := net.ParseIP(c.ip)
+		if ip == nil {
+			t.Fatalf("net.ParseIP(%q) failed", c.ip)
+		}
+		if got := isBlockedIP(ip); got != c.blocked {
+			t.Errorf("isBlockedIP(%s) = %v, want %v", c.ip, got, c.blocked)
+		}
+	}
+}
+
+// TestValidateHostNotPrivate_LiteralIPs proves the resolve-then-check wrapper
+// correctly short-circuits for an IP literal (no DNS lookup needed) — the
+// dominant case for the cases TestIsBlockedIP already covers exhaustively.
+func TestValidateHostNotPrivate_LiteralIPs(t *testing.T) {
+	if err := validateHostNotPrivate(context.Background(), "8.8.8.8"); err != nil {
+		t.Errorf("public IP literal rejected: %v", err)
+	}
+	if err := validateHostNotPrivate(context.Background(), "127.0.0.1"); err == nil {
+		t.Error("loopback IP literal accepted, want rejected")
+	}
+	if err := validateHostNotPrivate(context.Background(), "10.1.10.3"); !errors.Is(err, ErrHostNotAllowed) {
+		t.Errorf("private IP literal's error = %v, want wrapping ErrHostNotAllowed", err)
+	}
+}
+
+// TestValidate_SchemeAndSyntax covers Validate's local, DNS-free checks
+// (scheme/parse/empty-host) — the parts that stay pure regardless of the
+// resolve-then-check host guard. Uses IP-literal hosts throughout so no test
+// in this file touches real DNS (matching internal/netscan's convention);
+// TestIsBlockedIP/TestValidateHostNotPrivate_LiteralIPs cover the resolve
+// step directly, and the Fetch tests below cover it end-to-end via
+// newTestProxy's allowPrivateHosts escape hatch.
+func TestValidate_SchemeAndSyntax(t *testing.T) {
 	cases := []struct {
 		name    string
 		raw     string
 		wantErr error // nil = accept; otherwise the sentinel it must wrap
 	}{
-		// --- accept: real allowlisted image URLs ---
-		{"tmdb poster", "https://image.tmdb.org/t/p/w342/abc123.jpg", nil},
-		{"tmdb original with query", "https://image.tmdb.org/t/p/original/x.jpg?v=2", nil},
-		{"tpdb metadataapi cdn", "https://cdn.metadataapi.net/scenes/poster.jpg", nil},
-		{"tpdb thumbs subdomain", "https://thumbs.metadataapi.net/s/1/2.jpg?w=300&h=200", nil},
-		{"tpdb theporndb domain apex", "https://theporndb.net/img/a.jpg", nil},
-		{"tpdb theporndb cdn subdomain", "https://cdn.theporndb.net/img/a.jpg", nil},
+		{"public ip https", "https://93.184.216.34/x.jpg", nil},
+		{"public ip with query", "https://93.184.216.34/x.jpg?v=2", nil},
 
-		// --- reject: wrong host (valid https) -> ErrHostNotAllowed ---
-		{"arbitrary host", "https://evil.example.com/x.jpg", ErrHostNotAllowed},
-		{"tmdb suffix bypass", "https://image.tmdb.org.evil.com/x.jpg", ErrHostNotAllowed},
-		{"tpdb suffix bypass", "https://evilmetadataapi.net/x.jpg", ErrHostNotAllowed},
-		{"tpdb domain as substring", "https://metadataapi.net.evil.com/x.jpg", ErrHostNotAllowed},
+		{"loopback ip", "https://127.0.0.1/x.jpg", ErrHostNotAllowed},
+		{"private ip", "https://10.1.10.3/secret", ErrHostNotAllowed},
 		{"cloud metadata endpoint", "https://169.254.169.254/latest/meta-data/", ErrHostNotAllowed},
-		{"internal ip", "https://10.1.10.3/secret", ErrHostNotAllowed},
-		{"bare localhost", "https://localhost/x", ErrHostNotAllowed},
-		{"tmdb non-image host", "https://www.themoviedb.org/x.jpg", ErrHostNotAllowed},
 
-		// --- reject: malformed / wrong scheme -> ErrInvalidURL ---
-		{"http not https", "http://image.tmdb.org/t/p/w342/x.jpg", ErrInvalidURL},
+		{"http not https", "http://93.184.216.34/x.jpg", ErrInvalidURL},
 		{"file scheme", "file:///etc/passwd", ErrInvalidURL},
-		{"gopher scheme", "gopher://image.tmdb.org/x", ErrInvalidURL},
+		{"gopher scheme", "gopher://93.184.216.34/x", ErrInvalidURL},
 		{"data uri", "data:image/png;base64,AAAA", ErrInvalidURL},
-		{"scheme-relative", "//image.tmdb.org/x.jpg", ErrInvalidURL},
+		{"scheme-relative", "//93.184.216.34/x.jpg", ErrInvalidURL},
 		{"empty", "", ErrInvalidURL},
 		{"whitespace only", "   ", ErrInvalidURL},
 		{"garbage", "://::::", ErrInvalidURL},
@@ -55,7 +93,7 @@ func TestValidate_Allowlist(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			u, err := Validate(tc.raw)
+			u, err := Validate(context.Background(), tc.raw)
 			if tc.wantErr == nil {
 				if err != nil {
 					t.Fatalf("Validate(%q) = error %v, want accept", tc.raw, err)
@@ -75,16 +113,18 @@ func TestValidate_Allowlist(t *testing.T) {
 	}
 }
 
-// hostRuleFor builds an exact allowlist rule for the httptest server's host so
-// Fetch tests can point at a fake upstream (the production allowlist rejects
-// 127.0.0.1). Uses the unexported test constructor by design.
-func hostRuleFor(t *testing.T, serverURL string) []hostRule {
+// allowPrivateHostFor builds the test-only private-host exemption for the
+// httptest server's own host, so Fetch tests can point at a fake upstream
+// (the production guardrail rejects 127.0.0.1, which is exactly what
+// httptest.NewTLSServer listens on). Uses the unexported test constructor by
+// design.
+func allowPrivateHostFor(t *testing.T, serverURL string) map[string]bool {
 	t.Helper()
 	u, err := url.Parse(serverURL)
 	if err != nil {
 		t.Fatalf("parsing test server url: %v", err)
 	}
-	return []hostRule{exactHost(u.Hostname())}
+	return map[string]bool{strings.ToLower(u.Hostname()): true}
 }
 
 // TestFetch_StreamsFromUpstream proves a validated URL is fetched server-side
@@ -97,7 +137,7 @@ func TestFetch_StreamsFromUpstream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, srv.URL))
 	img, err := p.Fetch(context.Background(), srv.URL+"/poster.png")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -124,7 +164,7 @@ func TestFetch_CacheHit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, srv.URL))
 	u := srv.URL + "/same.jpg?w=342"
 
 	first, err := p.Fetch(context.Background(), u)
@@ -150,8 +190,11 @@ func TestFetch_CacheHit(t *testing.T) {
 	}
 }
 
-// TestFetch_RejectsBeforeUpstream proves an off-allowlist URL never triggers an
-// outbound request — the SSRF gate runs before any I/O.
+// TestFetch_RejectsBeforeUpstream proves a private-address URL never triggers
+// an outbound request — the SSRF gate runs before any I/O. Uses an IP literal
+// (no DNS) so this test never touches the network for its own rejected URL —
+// only the exempted httptest server (an unrelated host) is ever contacted,
+// and hits stays 0 either way.
 func TestFetch_RejectsBeforeUpstream(t *testing.T) {
 	var hits int
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,11 +202,11 @@ func TestFetch_RejectsBeforeUpstream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Allowlist only the test server's host; ask for a different host.
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
-	_, err := p.Fetch(context.Background(), "https://evil.example.com/x.jpg")
+	// Exempt only the test server's own host; ask for a different, private one.
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, srv.URL))
+	_, err := p.Fetch(context.Background(), "https://10.1.10.3/x.jpg")
 	if !errors.Is(err, ErrHostNotAllowed) {
-		t.Fatalf("Fetch off-allowlist = %v, want ErrHostNotAllowed", err)
+		t.Fatalf("Fetch of a private address = %v, want ErrHostNotAllowed", err)
 	}
 	if hits != 0 {
 		t.Fatalf("upstream was contacted %d times for a rejected URL, want 0", hits)
@@ -182,7 +225,7 @@ func TestFetch_RejectsNonImageContent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, srv.URL))
 	u := srv.URL + "/x.jpg"
 	if _, err := p.Fetch(context.Background(), u); err == nil {
 		t.Fatal("Fetch of non-image content succeeded, want error")
@@ -211,7 +254,7 @@ func TestFetch_DoesNotCacheErrorStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, srv.URL))
 	u := srv.URL + "/flaky.png"
 	if _, err := p.Fetch(context.Background(), u); err == nil {
 		t.Fatal("first Fetch (500) succeeded, want error")
@@ -229,33 +272,33 @@ func TestFetch_DoesNotCacheErrorStatus(t *testing.T) {
 }
 
 // TestFetch_RefusesOffAllowlistRedirect proves the SSRF gate is enforced on
-// redirects, not just the initial URL: an allowlisted upstream that 3xx-es to an
-// off-allowlist (e.g. internal) address must not be followed server-side. This
-// is the redirect-SSRF fix — net/http's default client would blindly follow it.
+// redirects, not just the initial URL: an exempted upstream that 3xx-es to a
+// private-address target must not be followed server-side. This is the
+// redirect-SSRF fix — net/http's default client would blindly follow it.
 func TestFetch_RefusesOffAllowlistRedirect(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Redirect to a host NOT on the allowlist (an internal-style address).
-		// The guard must refuse this next hop before any request is made to it.
-		http.Redirect(w, r, "https://evil.example.com/internal/x.jpg", http.StatusFound)
+		// Redirect to a private address. The guard must refuse this next hop
+		// before any request is made to it.
+		http.Redirect(w, r, "https://10.1.10.3/internal/x.jpg", http.StatusFound)
 	}))
 	defer srv.Close()
 
-	// Allowlist only the test server's host; the redirect target is off-list.
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
+	// Exempt only the test server's own host; the redirect target is private.
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, srv.URL))
 	_, err := p.Fetch(context.Background(), srv.URL+"/poster.jpg")
 	if err == nil {
-		t.Fatal("Fetch followed an off-allowlist redirect, want error")
+		t.Fatal("Fetch followed a redirect to a private address, want error")
 	}
-	// The refusal must surface as an allowlist violation (wrapping the same
-	// sentinel the initial-URL check uses), not a generic transport error.
+	// The refusal must surface as the same sentinel the initial-URL check
+	// uses, not a generic transport error.
 	if !errors.Is(err, ErrHostNotAllowed) {
 		t.Fatalf("Fetch redirect refusal = %v, want wrapping ErrHostNotAllowed", err)
 	}
 }
 
 // TestFetch_FollowsAllowlistedRedirect proves the guard is not over-broad:
-// a redirect whose target is itself on the allowlist is still followed, so
-// legitimate CDN redirects (e.g. between allowlisted TPDB hosts) keep working.
+// a redirect whose target is itself allowed is still followed, so legitimate
+// CDN redirects (e.g. between two hosts a studio/CDN uses) keep working.
 func TestFetch_FollowsAllowlistedRedirect(t *testing.T) {
 	const wantBody = "\x89PNGREDIRECTEDIMAGE"
 	// Final destination: serves the actual image bytes.
@@ -271,13 +314,13 @@ func TestFetch_FollowsAllowlistedRedirect(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	// Both servers listen on 127.0.0.1 (different ports); hostRule matches on
-	// Hostname() with the port stripped, so a single 127.0.0.1 rule allowlists
-	// both hops. Use a client that trusts both self-signed certs.
+	// Both servers listen on 127.0.0.1 (different ports); allowPrivateHostFor
+	// keys on Hostname() with the port stripped, so a single 127.0.0.1 entry
+	// exempts both hops. Use a client that trusts both self-signed certs.
 	client := &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}}
-	p := newTestProxy(client, newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, origin.URL))
+	p := newTestProxy(client, newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, origin.URL))
 
 	img, err := p.Fetch(context.Background(), origin.URL+"/poster.png")
 	if err != nil {
@@ -306,7 +349,7 @@ func TestCache_TTLExpiry(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, time.Minute), hostRuleFor(t, srv.URL))
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, time.Minute), allowPrivateHostFor(t, srv.URL))
 	u := srv.URL + "/ttl.png"
 
 	if _, err := p.Fetch(context.Background(), u); err != nil {
@@ -363,7 +406,7 @@ func TestFetch_OverSizeCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), hostRuleFor(t, srv.URL))
+	p := newTestProxy(srv.Client(), newCache(defaultCacheCap, defaultCacheTTL), allowPrivateHostFor(t, srv.URL))
 	_, err := p.Fetch(context.Background(), srv.URL+"/huge.png")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("Fetch of over-cap image = %v, want size-cap error", err)

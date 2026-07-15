@@ -381,3 +381,143 @@ func TestRunCycle_UnconfirmedStudioAndPerformerGuessesAreSkipped(t *testing.T) {
 		t.Errorf("expected only the confirmed performer to be cached (Garbage Fragment must be skipped), got %+v", performers)
 	}
 }
+
+// TestMatchRelease_SceneMatchWithNoConfirmedRelease_IsNotCached is the
+// regression test for a real gap found live in production, 2026-07-15: a
+// release can genuinely fuzzy-match a real TPDB scene (IdentifyDetailed
+// succeeds) while that scene's CANONICAL title+studio finds zero results on
+// a live, literal Prowlarr search — e.g. a studio whose content is only
+// ever released as multi-scene compilation packs, never as the single scene
+// TPDB catalogs separately. Caching that scene produced a Discover card
+// Grab could never fulfill. confirmAvailable must run the same search a
+// later Grab click would run and skip caching when it finds nothing.
+func TestMatchRelease_SceneMatchWithNoConfirmedRelease_IsNotCached(t *testing.T) {
+	connStore, settingsStore, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	tpdb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("q")
+		switch r.URL.Path {
+		case "/sites":
+			if q == "Some Studio" {
+				fmt.Fprint(w, `{"data":[{"_id":1,"name":"Some Studio","logo":"https://cdn.theporndb.net/logo.png"}]}`)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		case "/scenes":
+			if q == "Some Scene Title" {
+				fmt.Fprint(w, `{"data":[{"_id":"scene1","title":"Some Scene Title","site":{"name":"Some Studio"},"date":"2020-01-01"}]}`)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
+	}))
+	t.Cleanup(tpdb.Close)
+	if err := connStore.Upsert(ctx, "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("configuring tpdb: %v", err)
+	}
+
+	ollama := fakeOllama(t, `{"studio":"Some Studio","title":"Some Scene Title","performers":[]}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	// Prowlarr: the bare-browse "newest releases" call (query="") returns
+	// one raw release — that's how IdentifyDetailed gets a title to parse
+	// at all. The confirmAvailable search (a real, non-empty normalized
+	// query) returns EMPTY — the exact asymmetry this fix closes.
+	var prowlarrQueries []string
+	prowlarrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		prowlarrQueries = append(prowlarrQueries, q)
+		w.Header().Set("Content-Type", "application/json")
+		if q == "" {
+			fmt.Fprint(w, `[{"guid":"g1","title":"Raw.Release.Title.That.Fuzzy.Matched","protocol":"torrent","seeders":5}]`)
+			return
+		}
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(prowlarrSrv.Close)
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
+		t.Fatalf("configuring prowlarr: %v", err)
+	}
+
+	runCycle(ctx, prowlarrSrv.Client(), connStore, settingsStore, releaseStore)
+
+	scenes, err := releaseStore.List(ctx, RowScene, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scenes) != 0 {
+		t.Errorf("expected no scene cached (canonical title found nothing on the confirmation search), got %+v", scenes)
+	}
+
+	confirmSearchHappened := false
+	for _, q := range prowlarrQueries {
+		if q != "" {
+			confirmSearchHappened = true
+		}
+	}
+	if !confirmSearchHappened {
+		t.Error("expected a second, normalized-query confirmation search to have actually been made")
+	}
+}
+
+// TestMatchRelease_SceneMatchWithConfirmedRelease_IsCached is the positive
+// counterpart to the test above — when the canonical title+studio search
+// DOES find a release, the scene is cached normally.
+func TestMatchRelease_SceneMatchWithConfirmedRelease_IsCached(t *testing.T) {
+	connStore, settingsStore, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	tpdb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("q")
+		switch r.URL.Path {
+		case "/sites":
+			if q == "Some Studio" {
+				fmt.Fprint(w, `{"data":[{"_id":1,"name":"Some Studio","logo":"https://cdn.theporndb.net/logo.png"}]}`)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		case "/scenes":
+			if q == "Some Scene Title" {
+				fmt.Fprint(w, `{"data":[{"_id":"scene1","title":"Some Scene Title","site":{"name":"Some Studio"},"date":"2020-01-01","duration":1800}]}`)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
+	}))
+	t.Cleanup(tpdb.Close)
+	if err := connStore.Upsert(ctx, "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("configuring tpdb: %v", err)
+	}
+
+	ollama := fakeOllama(t, `{"studio":"Some Studio","title":"Some Scene Title","performers":[]}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	prowlarrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Both the bare browse AND the confirmation search return a real
+		// release here — the confirmation search doesn't need to find the
+		// SAME release, just something.
+		fmt.Fprint(w, `[{"guid":"g1","title":"Some.Studio.Some.Scene.Title.XXX.1080p","protocol":"torrent","seeders":5}]`)
+	}))
+	t.Cleanup(prowlarrSrv.Close)
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
+		t.Fatalf("configuring prowlarr: %v", err)
+	}
+
+	runCycle(ctx, prowlarrSrv.Client(), connStore, settingsStore, releaseStore)
+
+	scenes, err := releaseStore.List(ctx, RowScene, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scenes) != 1 || scenes[0].EntityTitle != "Some Scene Title" {
+		t.Errorf("expected the confirmed scene to be cached, got %+v", scenes)
+	}
+}

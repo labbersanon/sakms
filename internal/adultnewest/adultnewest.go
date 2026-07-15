@@ -19,6 +19,18 @@
 // request time. See scan.go for the job itself; this file is persistence +
 // validation only for the row-config half, mirroring discoversliders.Store's
 // own shape.
+//
+// Caching an entity requires more than "the identify pipeline matched it"
+// (see scan.go's confirmAvailable, added after a live gap found in
+// production 2026-07-15): dedup is by ENTITY, not by the specific release
+// that triggered the match, so the original release's identity is never
+// retained. A later Grab click has no choice but to re-search Prowlarr from
+// scratch using the matched entity's CANONICAL title+studio — a stricter,
+// different query than the raw release title the AI-assisted fuzzy pipeline
+// actually matched against. Scene/Movie entities are therefore only cached
+// once a live confirmation search (the same one a later Grab would run)
+// proves it finds something — otherwise the pipeline would confidently
+// display a card Grab can never fulfill.
 package adultnewest
 
 import (

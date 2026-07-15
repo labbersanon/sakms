@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -195,7 +196,7 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 			continue
 		}
 		processed++
-		if err := processRelease(ctx, sess.Identify, releaseStore, r); err != nil {
+		if err := processRelease(ctx, sess.Identify, sess.Prowlarr, releaseStore, r); err != nil {
 			log.Printf("adultnewest: processing release %q: %v", r.Title, err)
 		}
 		// Marked seen regardless of match outcome (including a processing
@@ -213,8 +214,8 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 // it never appears on Discover, only through the existing manual Search
 // screen (see this package's doc comment and the operator's explicit
 // instruction this feature was scoped against).
-func processRelease(ctx context.Context, id *identify.Identifier, releaseStore *ReleaseStore, r prowlarr.Release) error {
-	matches, err := matchRelease(ctx, id, r)
+func processRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *prowlarr.Client, releaseStore *ReleaseStore, r prowlarr.Release) error {
+	matches, err := matchRelease(ctx, id, prowlarrClient, r)
 	if err != nil {
 		return err
 	}
@@ -237,7 +238,27 @@ func processRelease(ctx context.Context, id *identify.Identifier, releaseStore *
 // itself succeeded, since a release's studio/performer identity can be
 // confidently derived even when the specific scene isn't in any configured
 // database yet.
-func matchRelease(ctx context.Context, id *identify.Identifier, r prowlarr.Release) ([]MatchedRelease, error) {
+//
+// Scene/Movie rows additionally require confirmAvailable to pass before
+// being cached — found live in production, 2026-07-15: this pipeline
+// deliberately dedups by ENTITY, not by the specific release that triggered
+// the match (see the migration's doc comment — several releases can
+// resolve to the same scene), which means the ORIGINAL raw release's
+// identity is never retained. A later Grab click has no choice but to
+// re-search Prowlarr from scratch using the matched entity's CANONICAL
+// title+studio — a fundamentally different, much stricter query than the
+// raw release title IdentifyDetailed's AI-assisted fuzzy pipeline actually
+// matched against. A canonical TPDB title can legitimately find zero raw
+// Prowlarr results even when the release that triggered the match is real
+// (confirmed live: a studio whose content is only ever released as
+// multi-scene compilation packs, never as the single scene TPDB catalogs
+// separately). Running the SAME search a later Grab would run, right now,
+// closes that gap — if it fails here, it would fail at Grab time too, so
+// don't cache a card Grab can never fulfill. Studio/Performer rows are
+// deliberately NOT gated this way: EntityCard has no Grab button for this
+// pipeline's matched entities, so there's no "will Grab find something"
+// expectation to protect there.
+func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *prowlarr.Client, r prowlarr.Release) ([]MatchedRelease, error) {
 	detail, err := id.IdentifyDetailed(ctx, r.Title, "")
 	if err != nil {
 		return nil, err
@@ -251,7 +272,9 @@ func matchRelease(ctx context.Context, id *identify.Identifier, r prowlarr.Relea
 		if detail.Scene.Type == "movie" {
 			rowType = RowMovie
 		}
-		out = append(out, toMatchedRelease(rowType, *detail.Scene))
+		if confirmAvailable(ctx, prowlarrClient, detail.Scene.Studio, detail.Scene.Title) {
+			out = append(out, toMatchedRelease(rowType, *detail.Scene))
+		}
 	default:
 		// No scene match — try TPDB's movie catalog directly before giving
 		// up on a title/movie identity entirely. This is a lighter-weight
@@ -260,7 +283,9 @@ func matchRelease(ctx context.Context, id *identify.Identifier, r prowlarr.Relea
 		// that's an acceptable, honestly-scoped difference from the scene
 		// path's full pipeline.
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, r.Title); err == nil && movie != nil {
-			out = append(out, toMatchedRelease(RowMovie, *movie))
+			if confirmAvailable(ctx, prowlarrClient, movie.Studio, movie.Title) {
+				out = append(out, toMatchedRelease(RowMovie, *movie))
+			}
 		}
 	}
 
@@ -316,6 +341,45 @@ func matchRelease(ctx context.Context, id *identify.Identifier, r prowlarr.Relea
 	}
 
 	return out, nil
+}
+
+// adultQueryApostrophe/adultQueryNonAlnum/normalizeAdultQuery are an
+// independent local copy of internal/api/autograb.go's identically-named
+// normalizeAdultQuery — same convention as adultCategory's copies across
+// this package/internal/api/internal/availability (each package's own
+// comment explains why: avoiding an import coupling for one small shared
+// constant/function). Kept byte-for-byte identical on purpose: this
+// package's confirmAvailable search MUST normalize the same way
+// autoGrabSearch does, or the two searches aren't really asking the same
+// question (see confirmAvailable's doc comment) — if autograb.go's version
+// ever changes, mirror the change here too.
+var adultQueryApostrophe = regexp.MustCompile(`['’]`)
+var adultQueryNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9\s]+`)
+
+func normalizeAdultQuery(s string) string {
+	s = adultQueryApostrophe.ReplaceAllString(s, "")
+	s = adultQueryNonAlnum.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// confirmAvailable runs the SAME search a later Grab click would run
+// (internal/api/autograb.go's autoGrabSearch: normalized studio+title query
+// against Prowlarr's Adult category) and reports whether it finds at least
+// one raw release — the same permissive "available" bar
+// internal/availability.CheckAdultScene uses elsewhere in this codebase
+// (any release at all, no seeder/bitrate filtering; DetailPopup's manual
+// fallback pick list already handles "found something, but nothing
+// auto-qualifies"). Best-effort: a search error reports unavailable rather
+// than propagating, since "couldn't confirm" and "confirmed unavailable"
+// should both mean "don't cache this" — see matchRelease's doc comment for
+// why this check exists at all.
+func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, studio, title string) bool {
+	query := normalizeAdultQuery(strings.TrimSpace(studio + " " + title))
+	releases, err := prowlarrClient.Search(ctx, query, []int{adultCategory})
+	if err != nil {
+		return false
+	}
+	return len(releases) > 0
 }
 
 // toMatchedRelease maps a MatchResult onto the cache row shape, splitting

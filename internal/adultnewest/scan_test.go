@@ -3,6 +3,7 @@ package adultnewest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -64,6 +65,40 @@ func fakeOllama(t *testing.T, content string) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{"message": map[string]any{"content": content}}
 		json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fakeTPDB serves ThePornDB's REST API for exactly the confirmations named
+// in sites/performers (keyed by exact search term) — /scenes and /movies
+// always return empty (out of scope for this test, keeps the scene/movie
+// path from interfering), /sites and /performers return a match with a
+// real-looking image URL only for a name present in the map, empty
+// otherwise. Used to prove StudioImage/PerformerImage's "only cache a
+// confirmed entity" behavior against something other than a live network
+// call.
+func fakeTPDB(t *testing.T, sites, performers map[string]bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("q")
+		switch r.URL.Path {
+		case "/sites":
+			if sites[q] {
+				fmt.Fprintf(w, `{"data":[{"_id":1,"name":%q,"logo":"https://cdn.theporndb.net/sites/fake-logo.png"}]}`, q)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		case "/performers":
+			if performers[q] {
+				fmt.Fprintf(w, `{"data":[{"_id":1,"name":%q,"image":"https://cdn.theporndb.net/performer/fake.jpg"}]}`, q)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -282,5 +317,54 @@ func TestRunCycle_SeenReleaseIsNotReprocessed(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Errorf("expected no cache rows, got %+v", list)
+	}
+}
+
+// TestRunCycle_UnconfirmedStudioAndPerformerGuessesAreSkipped is the
+// regression test for a real bug caught live in production during this
+// feature's own deploy verification: a real scan produced Studio/Performer
+// cards for "And", "Clouds", and a full raw scene title mis-parsed as a
+// "studio" — none of them real entities, all AI extraction artifacts that
+// verifyStudio/verifyPerformers fell back to returning uncorrected (a
+// pre-existing, deliberate choice there — see StudioName/PerformerImage's
+// doc comments) because nothing in any configured database confirmed them.
+// Only a name StudioImage/PerformerImage can actually confirm (i.e. finds a
+// real image for) should ever become a cached Studio/Performer row.
+func TestRunCycle_UnconfirmedStudioAndPerformerGuessesAreSkipped(t *testing.T) {
+	connStore, settingsStore, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	tpdb := fakeTPDB(t,
+		map[string]bool{"Real Studio": true},
+		map[string]bool{"Real Performer": true},
+	)
+	if err := connStore.Upsert(ctx, "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("configuring tpdb: %v", err)
+	}
+
+	ollama := fakeOllama(t, `{"studio":"Real Studio","title":"Some Scene Title","performers":["Real Performer","Garbage Fragment"]}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	prow := fakeProwlarr(t, `[{"guid":"g-mixed","title":"Real.Studio.Some.Scene.Title.Real.Performer.And.Garbage.Fragment.XXX","protocol":"torrent","seeders":5}]`)
+	if err := connStore.Upsert(ctx, "prowlarr", prow.URL, "key"); err != nil {
+		t.Fatalf("configuring prowlarr: %v", err)
+	}
+
+	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore)
+
+	studios, err := releaseStore.List(ctx, RowStudio, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(studios) != 1 || studios[0].EntityTitle != "Real Studio" {
+		t.Errorf("expected only the confirmed studio to be cached, got %+v", studios)
+	}
+
+	performers, err := releaseStore.List(ctx, RowPerformer, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(performers) != 1 || performers[0].EntityTitle != "Real Performer" {
+		t.Errorf("expected only the confirmed performer to be cached (Garbage Fragment must be skipped), got %+v", performers)
 	}
 }

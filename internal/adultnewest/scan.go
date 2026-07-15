@@ -264,27 +264,48 @@ func matchRelease(ctx context.Context, id *identify.Identifier, r prowlarr.Relea
 		}
 	}
 
+	// Studio/Performer rows are only cached when StudioImage/PerformerImage
+	// actually confirms the name against a real StashDB/FansDB/TPDB entity
+	// (source != ""). This was found live, during this feature's own deploy
+	// verification: verifyStudio/verifyPerformers (identify/entityverify.go)
+	// fall back to the AI's raw/cleaned guess when nothing matches — a
+	// deliberate choice there, since that fallback value was only ever used
+	// to build a scene-search term before this feature existed (a wrong
+	// guess just made that one search slightly less precise, no visible
+	// harm). Using the same fallback to create a user-visible Discover CARD
+	// is a different bar: a live scan produced cards for "And", "Clouds",
+	// and a full raw scene title mis-parsed as a "studio" — all guesses the
+	// AI invented with no real entity behind them, easy to tell apart from
+	// genuine matches because none of them resolved to any image anywhere.
+	// Skipping the unconfirmed case is the same "decline rather than
+	// fabricate" principle rejectNonStudioGuess already applies one layer
+	// down — applied here too, one layer up.
 	if detail.StudioName != "" {
 		image, source := id.StudioImage(ctx, detail.StudioName)
-		out = append(out, MatchedRelease{
-			RowType: RowStudio,
-			// TPDB/StashDB/FansDB catalog ids aren't available from
-			// verifyStudio's corrected-name-only result, so the corrected
-			// name itself is used as the entity id — stable enough for
-			// display/dedup purposes even though it isn't a real opaque
-			// catalog id (see StudioImage's doc comment for the same
-			// name-only lookup convention).
-			EntityID:     detail.StudioName,
-			EntitySource: source,
-			EntityTitle:  detail.StudioName,
-			EntityImage:  image,
-		})
+		if source != "" {
+			out = append(out, MatchedRelease{
+				RowType: RowStudio,
+				// TPDB/StashDB/FansDB catalog ids aren't available from
+				// verifyStudio's corrected-name-only result, so the
+				// corrected name itself is used as the entity id — stable
+				// enough for display/dedup purposes even though it isn't a
+				// real opaque catalog id (see StudioImage's doc comment for
+				// the same name-only lookup convention).
+				EntityID:     detail.StudioName,
+				EntitySource: source,
+				EntityTitle:  detail.StudioName,
+				EntityImage:  image,
+			})
+		}
 	}
 	for _, performer := range detail.Performers {
 		if performer == "" {
 			continue
 		}
 		image, source := id.PerformerImage(ctx, performer)
+		if source == "" {
+			continue
+		}
 		out = append(out, MatchedRelease{
 			RowType:      RowPerformer,
 			EntityID:     performer,

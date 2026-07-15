@@ -104,7 +104,15 @@ func (s *ReleaseStore) MarkSeen(ctx context.Context, releaseGUID string) error {
 // entity_id) is silently ignored rather than updated: the release that first
 // surfaced an entity wins that cache row.
 func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
-	genresJSON, err := json.Marshal(m.Genres)
+	genres := m.Genres
+	if genres == nil {
+		// json.Marshal(nil slice) encodes "null", not "[]" — the column's
+		// own DEFAULT is "[]", and every reader (List/DistinctGenres) is
+		// written assuming a decodable array; keep every row consistent
+		// rather than special-casing a "null" value at every read site.
+		genres = []string{}
+	}
+	genresJSON, err := json.Marshal(genres)
 	if err != nil {
 		return fmt.Errorf("encoding genres for entity %q: %w", m.EntityID, err)
 	}

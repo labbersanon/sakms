@@ -64,7 +64,12 @@ func newResult(releases []prowlarr.Release) Result {
 // It fetches the movie's details for its IMDB id — which /movie/{id} carries
 // natively at the top level (no separate external_ids round-trip, unlike TV) —
 // then runs one id-scoped Prowlarr search over the Movies category. IMDBID is
-// passed straight through: SearchByID strips the "tt" prefix itself.
+// passed straight through: SearchByID strips the "tt" prefix itself. The same
+// details call also supplies Query (the title) — see SearchByIDParams' own
+// doc for why id params alone aren't a reliable filter for every indexer;
+// this was a real, confirmed bug (id-only requests returning a broad,
+// unrelated "recent releases" dump instead of nothing), not a defensive
+// guess.
 //
 // A nil tmdbClient or prowlarrClient yields a clear "not configured" error
 // rather than a panic, matching the tolerant-nil convention every mode.Session
@@ -84,6 +89,7 @@ func CheckMovie(ctx context.Context, tmdbClient *tmdb.Client, prowlarrClient *pr
 	}
 
 	releases, err := prowlarrClient.SearchByID(ctx, prowlarr.SearchByIDParams{
+		Query:      details.Title,
 		TMDBID:     tmdbID,
 		IMDBID:     details.IMDBID,
 		Categories: []int{moviesCategory},
@@ -102,8 +108,13 @@ func CheckMovie(ctx context.Context, tmdbClient *tmdb.Client, prowlarrClient *pr
 // The load-bearing id here is the TVDB id: TMDB's /tv/{id} has NO top-level
 // imdb_id (see tmdb.TVDetails' doc), and /tv/{id}/external_ids yields only a
 // tvdb_id — so ExternalIDs is the one call that produces a usable structured id
-// for the tvsearch. TVDetails is intentionally NOT fetched: it would be a
-// call-and-discard round-trip (it carries nothing the query needs).
+// for the tvsearch. TVDetails IS also fetched now, purely for its Title —
+// SearchByIDParams' Query field needs it (see that field's doc for why: id
+// params alone weren't a reliable filter for every indexer, a real confirmed
+// bug). A TVDetails failure is NOT fatal to the probe — Query is a
+// compatibility improvement, not a hard requirement the way the tvdb id is —
+// it just degrades to an empty Query rather than erroring the whole check
+// over a supplementary title lookup.
 //
 // If ExternalIDs returns 0 (TMDB has no TVDB id on file for this show) and no
 // season/episode was given, the probe would degenerate into an id-less search;
@@ -128,7 +139,13 @@ func CheckSeries(ctx context.Context, tmdbClient *tmdb.Client, prowlarrClient *p
 		return newResult(nil), nil
 	}
 
+	var query string
+	if details, err := tmdbClient.TVDetails(ctx, tmdbID); err == nil {
+		query = details.Title
+	}
+
 	releases, err := prowlarrClient.SearchByID(ctx, prowlarr.SearchByIDParams{
+		Query:      query,
 		TVDBID:     tvdbID,
 		Season:     season,
 		Episode:    episode,

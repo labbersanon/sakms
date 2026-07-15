@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,14 +125,18 @@ func TestCheckMovie(t *testing.T) {
 // TestCheckMovie_PassesIMDBID proves the movie's IMDB id flows from
 // MovieDetails into the Prowlarr query (the whole point of the details lookup:
 // a precise id-scoped probe), with the "tt" prefix stripped by SearchByID.
+// Also proves the same MovieDetails call's Title travels as query= — the
+// regression case for a real "nothing is being found to grab" bug (id
+// params alone weren't a reliable filter for every indexer).
 func TestCheckMovie_PassesIMDBID(t *testing.T) {
-	var gotIMDB, gotTMDB, gotType, gotCats string
+	var gotIMDB, gotTMDB, gotType, gotCats, gotQuery string
 	tmdbClient := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(movieDetails)) })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotIMDB = r.URL.Query().Get("imdbid")
 		gotTMDB = r.URL.Query().Get("tmdbid")
 		gotType = r.URL.Query().Get("type")
 		gotCats = r.URL.Query().Get("categories")
+		gotQuery = r.URL.Query().Get("query")
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(oneRelease))
 	}))
@@ -152,6 +157,9 @@ func TestCheckMovie_PassesIMDBID(t *testing.T) {
 	}
 	if gotCats != "2000" {
 		t.Errorf("expected categories=2000, got %q", gotCats)
+	}
+	if gotQuery != "Some Movie" { // movieDetails' "title" field, see the const above
+		t.Errorf("expected the MovieDetails title to travel alongside the id params as query=, got %q", gotQuery)
 	}
 }
 
@@ -384,5 +392,69 @@ func TestCheckSeries_PassesTVDBIDAndSeasonEpisode(t *testing.T) {
 	}
 	if gotCats != "5000" {
 		t.Errorf("expected categories=5000, got %q", gotCats)
+	}
+}
+
+// TestCheckSeries_PassesQueryTitle is the regression test for a real
+// "nothing is being found to grab" bug: id params alone (tvdbid/season/ep)
+// weren't reliably honored as a precise filter by every indexer. TVDetails
+// is now ALSO fetched (previously skipped as "carries nothing the query
+// needs" — that assumption was the bug) purely for its Title, which must
+// travel into the Prowlarr query alongside the id params.
+func TestCheckSeries_PassesQueryTitle(t *testing.T) {
+	var gotQuery, gotTVDB string
+	// Path-branching fake: /external_ids and the bare /tv/{id} (TVDetails)
+	// must return DIFFERENT bodies, unlike this file's other fakeTMDB uses —
+	// otherwise this test couldn't distinguish "title really came from
+	// TVDetails" from "title happened to be empty either way".
+	tmdbClient := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/external_ids") {
+			w.Write([]byte(externalIDs))
+			return
+		}
+		w.Write([]byte(`{"id":100,"name":"Some Show"}`))
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		gotTVDB = r.URL.Query().Get("tvdbid")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(oneRelease))
+	}))
+	t.Cleanup(srv.Close)
+	prowlarrClient := prowlarr.New(prowlarr.Config{BaseURL: srv.URL, APIKey: "k"}, srv.Client())
+
+	if _, err := CheckSeries(context.Background(), tmdbClient, prowlarrClient, 100, 3, 5); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotQuery != "Some Show" {
+		t.Errorf("expected the TVDetails title to travel alongside the id params as query=, got %q", gotQuery)
+	}
+	if gotTVDB != "789" {
+		t.Errorf("expected tvdbid=789 to still be present alongside query, got %q", gotTVDB)
+	}
+}
+
+// TestCheckSeries_TVDetailsFailureDegradesGracefully proves a TVDetails
+// error doesn't fail the whole probe — Query is a compatibility
+// improvement, not a hard requirement the way the tvdb id is, so a failed
+// title lookup degrades to an empty Query rather than an error.
+func TestCheckSeries_TVDetailsFailureDegradesGracefully(t *testing.T) {
+	tmdbClient := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/external_ids") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(externalIDs))
+			return
+		}
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	prowlarrClient := fakeProwlarr(t, oneRelease, false)
+
+	result, err := CheckSeries(context.Background(), tmdbClient, prowlarrClient, 100, 3, 5)
+	if err != nil {
+		t.Fatalf("expected a TVDetails failure to degrade gracefully, not error the whole probe: %v", err)
+	}
+	if !result.Available {
+		t.Errorf("expected the probe to still complete and find the release despite the TVDetails failure, got %+v", result)
 	}
 }

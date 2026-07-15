@@ -288,3 +288,75 @@ func TestPurgeStale_RemovesOldEntitiesAndSeenReleases_KeepsRecent(t *testing.T) 
 		t.Errorf("expected recent-guid to survive the purge")
 	}
 }
+
+func TestListZeroDurationTPDBScenes_OnlyReturnsTPDBSceneOrMovieRowsAtZero(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	cases := []MatchedRelease{
+		{RowType: RowScene, EntityID: "s1", EntitySource: "tpdb", EntityTitle: "Zero TPDB Scene", EntityDurationSeconds: 0},
+		{RowType: RowMovie, EntityID: "m1", EntitySource: "tpdb", EntityTitle: "Zero TPDB Movie", EntityDurationSeconds: 0},
+		{RowType: RowScene, EntityID: "s2", EntitySource: "tpdb", EntityTitle: "Nonzero TPDB Scene", EntityDurationSeconds: 1800},
+		{RowType: RowScene, EntityID: "s3", EntitySource: "stashdb", EntityTitle: "Zero StashDB Scene", EntityDurationSeconds: 0},
+		{RowType: RowStudio, EntityID: "Some Studio", EntitySource: "tpdb", EntityTitle: "Some Studio", EntityDurationSeconds: 0},
+	}
+	for _, m := range cases {
+		if err := s.Insert(ctx, m); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	got, err := s.ListZeroDurationTPDBScenes(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 zero-duration tpdb scene/movie rows, got %d: %+v", len(got), got)
+	}
+	titles := map[string]bool{}
+	for _, m := range got {
+		titles[m.EntityTitle] = true
+	}
+	if !titles["Zero TPDB Scene"] || !titles["Zero TPDB Movie"] {
+		t.Errorf("expected both the zero-duration tpdb scene and movie, got %+v", got)
+	}
+}
+
+func TestUpdateDuration_OverwritesEntityDurationInPlace(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	if err := s.Insert(ctx, MatchedRelease{RowType: RowScene, EntityID: "scene-1", EntitySource: "tpdb", EntityTitle: "Scene One", EntityDurationSeconds: 0}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	zero, err := s.ListZeroDurationTPDBScenes(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(zero) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(zero))
+	}
+	id := zero[0].ID
+
+	if err := s.UpdateDuration(ctx, id, 1863); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	list, err := s.List(ctx, RowScene, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].EntityDurationSeconds != 1863 {
+		t.Errorf("expected updated duration to round-trip through List, got %+v", list)
+	}
+}
+
+func TestUpdateDuration_NonExistentIDIsNotAnError(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	if err := s.UpdateDuration(ctx, 99999, 1863); err != nil {
+		t.Errorf("expected no error for a non-existent id, matching this package's Delete-style convention, got %v", err)
+	}
+}

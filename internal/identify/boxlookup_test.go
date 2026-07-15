@@ -150,6 +150,62 @@ func TestSearchTPDB_NoStudioGate(t *testing.T) {
 	}
 }
 
+func TestSearchTPDB_ZeroDurationFallsBackToByIDRefetch(t *testing.T) {
+	// Regression: TPDB's search endpoint sometimes returns duration:0 for a
+	// scene that genuinely has a real duration on file (found live
+	// 2026-07-15 — 46 of 51 cached scenes had entity_duration_seconds=0
+	// despite TPDB's own site showing a real duration). SearchTPDB must
+	// confirm via GET /scenes/{id} rather than trusting the search result.
+	byIDCalls := 0
+	b := newBoxSearcherWithFakes(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/scenes/11034171" {
+			byIDCalls++
+			_, _ = w.Write([]byte(`{"data":{"_id":"11034171","title":"Matching Title Words","date":"2024-01-01","site":{"name":"Some Site"},"duration":1863}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"_id":"11034171","title":"Matching Title Words","date":"2024-01-01","site":{"name":"Some Site"},"duration":0}]}`))
+	})
+
+	got, err := b.SearchTPDB(context.Background(), "Matching Title Words", "Some Site")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected a match")
+	}
+	if got.RuntimeSeconds != 1863 {
+		t.Errorf("RuntimeSeconds = %d, want 1863 (from the by-id re-fetch)", got.RuntimeSeconds)
+	}
+	if byIDCalls != 1 {
+		t.Errorf("expected exactly 1 by-id re-fetch call, got %d", byIDCalls)
+	}
+}
+
+func TestSearchTPDB_NonZeroDurationSkipsByIDRefetch(t *testing.T) {
+	byIDCalls := 0
+	b := newBoxSearcherWithFakes(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/scenes/11034171" {
+			byIDCalls++
+			_, _ = w.Write([]byte(`{"data":{"_id":"11034171","title":"Matching Title Words","date":"2024-01-01","site":{"name":"Some Site"},"duration":9999}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"_id":"11034171","title":"Matching Title Words","date":"2024-01-01","site":{"name":"Some Site"},"duration":1863}]}`))
+	})
+
+	got, err := b.SearchTPDB(context.Background(), "Matching Title Words", "Some Site")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || got.RuntimeSeconds != 1863 {
+		t.Fatalf("expected the search result's own duration (1863) to be trusted, got %+v", got)
+	}
+	if byIDCalls != 0 {
+		t.Errorf("expected no by-id re-fetch when search duration is already non-zero, got %d calls", byIDCalls)
+	}
+}
+
 func TestSceneByID_NotFound(t *testing.T) {
 	b := newBoxSearcherWithFakes(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

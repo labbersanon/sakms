@@ -367,11 +367,10 @@ type sceneResponse struct {
 }
 
 // GetSceneByID fetches one scene directly by its TPDB id — an exact,
-// no-fuzzy-matching lookup, unlike SearchByTitle/BrowseScenes. TEMPORARY:
-// reintroduced 2026-07-15 for a live diagnostic (see
-// internal/api/tpdb_diag.go) comparing this endpoint's duration field
-// against SearchByTitle's for a scene known to have duration=0 as cached —
-// remove alongside that diagnostic once the real fix location is decided.
+// no-fuzzy-matching lookup, unlike SearchByTitle/BrowseScenes. Used by
+// identify.BoxSearcher.resolveTPDBDuration as a confirming re-fetch when a
+// search result's duration comes back suspiciously 0 (found live
+// 2026-07-15 — see that function's doc comment).
 func (c *Client) GetSceneByID(ctx context.Context, id string) (*Scene, error) {
 	var sr sceneResponse
 	if err := c.doGet(ctx, "/scenes/"+url.PathEscape(id), url.Values{}, &sr); err != nil {

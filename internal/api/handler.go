@@ -183,9 +183,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/modes/adult/newest-rows/reorder", reorderAdultNewestRowsHandler(adultNewestRowStore))
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/{id}/resolve", resolveAdultNewestRowHandler(adultNewestRowStore, adultNewestReleaseStore))
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/genres", adultNewestGenresHandler(adultNewestReleaseStore))
-	// TEMPORARY diagnostic route — see tpdb_diag.go's package doc. Remove
-	// both this line and that file once the duration=0 investigation ends.
-	mux.HandleFunc("GET /api/modes/adult/tpdb-diag", tpdbDiagHandler(httpClient, connStore, settingsStore))
+	// TEMPORARY one-off migration route — see adult_duration_backfill.go's
+	// package doc. Remove both this line and that file once the duration
+	// backfill has run successfully against production.
+	mux.HandleFunc("POST /api/modes/adult/newest-rows/backfill-durations", backfillAdultDurationsHandler(httpClient, connStore, settingsStore, adultNewestReleaseStore))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
 	// (see images.go / internal/imageproxy). Read-only, auth-gated like every

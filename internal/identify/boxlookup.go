@@ -81,6 +81,30 @@ func (b *BoxSearcher) SearchStashBox(ctx context.Context, box, title, studio str
 	})
 }
 
+// resolveTPDBDuration returns duration if it's already non-zero, otherwise
+// falls back to a confirming GET /scenes/{id} re-fetch. Found live
+// (2026-07-15): TPDB's search/list endpoint (GET /scenes?q=) sometimes
+// returns duration:0 for a scene that genuinely has a real duration on
+// file — confirmed by comparing SearchByTitle's response against
+// GetSceneByID's for the same known-affected scene, both hitting real
+// production TPDB credentials; GetSceneByID reliably had it. Root cause on
+// TPDB's side isn't confirmed (a live diagnostic showed both endpoints
+// correct hours later, consistent with transient flakiness rather than a
+// permanent shape difference) — this fallback is correct either way, since
+// it only pays the extra round-trip when the cheap path already came back
+// suspicious (0). Silently keeps 0 if the re-fetch also comes back empty or
+// errors — best-effort, matches this file's other TPDB calls.
+func (b *BoxSearcher) resolveTPDBDuration(ctx context.Context, id string, duration int) int {
+	if duration > 0 {
+		return duration
+	}
+	full, err := b.tpdb.GetSceneByID(ctx, id)
+	if err != nil || full == nil {
+		return duration
+	}
+	return full.Duration
+}
+
 // SearchTPDB searches ThePornDB by title text (REST). studio (if given)
 // narrows server-side via the "site" param; there is no client-side studio
 // gate here, unlike SearchStashBox.
@@ -103,7 +127,8 @@ func (b *BoxSearcher) SearchTPDB(ctx context.Context, title, studio string) (*Ma
 				return &MatchResult{
 					Title: m.Title, Studio: m.Site, Date: m.Date,
 					Type: "scene", Source: "tpdb_text", SceneID: m.ID, Box: "tpdb",
-					Image: m.Image, Tags: strings.Join(tagNames, ","), RuntimeSeconds: m.Duration,
+					Image: m.Image, Tags: strings.Join(tagNames, ","),
+					RuntimeSeconds: b.resolveTPDBDuration(ctx, m.ID, m.Duration),
 				}, nil
 			}
 		}
@@ -137,7 +162,8 @@ func (b *BoxSearcher) SearchTPDBMovies(ctx context.Context, title string) (*Matc
 				return &MatchResult{
 					Title: m.Title, Studio: m.Site, Date: m.Date,
 					Type: "movie", Source: "tpdb_text", SceneID: m.ID, Box: "tpdb",
-					Image: m.Image, Tags: strings.Join(tagNames, ","), RuntimeSeconds: m.Duration,
+					Image: m.Image, Tags: strings.Join(tagNames, ","),
+					RuntimeSeconds: b.resolveTPDBDuration(ctx, m.ID, m.Duration),
 				}, nil
 			}
 		}
@@ -145,15 +171,21 @@ func (b *BoxSearcher) SearchTPDBMovies(ctx context.Context, title string) (*Matc
 	})
 }
 
-// GetSceneByIDDiag is a TEMPORARY passthrough to tpdbrest.Client.GetSceneByID
-// for internal/api/tpdb_diag.go's one-off live diagnostic (2026-07-15) — b.tpdb
-// is unexported, so the diagnostic handler (a different package) needs this to
-// reach it. Remove alongside tpdb_diag.go.
-func (b *BoxSearcher) GetSceneByIDDiag(ctx context.Context, id string) (*tpdbrest.Scene, error) {
+// RefreshSceneDuration is a one-off migration helper for
+// internal/adultnewest's duration backfill (2026-07-15, same shape as the
+// poster backfill that preceded it) — re-fetches a TPDB scene/movie's
+// CURRENT duration by id for already-cached entities stuck at 0 from before
+// resolveTPDBDuration existed. Not cached (unlike the other BoxSearcher
+// methods) — a one-off backfill runs each id exactly once.
+func (b *BoxSearcher) RefreshSceneDuration(ctx context.Context, id string) (int, error) {
 	if b.tpdb == nil {
-		return nil, nil
+		return 0, nil
 	}
-	return b.tpdb.GetSceneByID(ctx, id)
+	scene, err := b.tpdb.GetSceneByID(ctx, id)
+	if err != nil || scene == nil {
+		return 0, err
+	}
+	return scene.Duration, nil
 }
 
 // SceneByID looks up a scene directly by its stash-box UUID (StashDB/FansDB).

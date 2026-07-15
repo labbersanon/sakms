@@ -251,3 +251,50 @@ func (s *ReleaseStore) PurgeStale(ctx context.Context, before time.Time) (int64,
 	}
 	return res.RowsAffected()
 }
+
+// ListZeroDurationTPDBScenes returns every cached tpdb-sourced Scene/Movie
+// entity whose entity_duration_seconds is still 0 — used by the one-off
+// duration backfill (2026-07-15, see identify.BoxSearcher.RefreshSceneDuration's
+// doc comment): entities cached before resolveTPDBDuration existed never got
+// the confirming by-id re-fetch that would have corrected a search-endpoint
+// duration:0 response.
+func (s *ReleaseStore) ListZeroDurationTPDBScenes(ctx context.Context) ([]MatchedRelease, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, genres, first_seen_at
+		FROM adult_newest_releases
+		WHERE entity_source = 'tpdb' AND row_type IN ('scene', 'movie') AND entity_duration_seconds = 0
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing zero-duration tpdb entities: %w", err)
+	}
+	defer rows.Close()
+
+	out := []MatchedRelease{}
+	for rows.Next() {
+		var m MatchedRelease
+		var rowTypeStr, genresJSON string
+		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio, &m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &genresJSON, &m.FirstSeenAt); err != nil {
+			return nil, fmt.Errorf("scanning matched entity: %w", err)
+		}
+		m.RowType = RowType(rowTypeStr)
+		if err := json.Unmarshal([]byte(genresJSON), &m.Genres); err != nil {
+			return nil, fmt.Errorf("decoding genres for entity %d: %w", m.ID, err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// UpdateDuration overwrites one cached entity's duration in place — the
+// same kind of one-off exception to this package's otherwise-immutable
+// "cached once, never updated" convention as the poster backfill's
+// UpdateImage was, scoped specifically to the duration backfill this method
+// exists for. Updating an id that doesn't exist is not an error, matching
+// this package's Delete-style convention elsewhere.
+func (s *ReleaseStore) UpdateDuration(ctx context.Context, id int, seconds int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE adult_newest_releases SET entity_duration_seconds = ? WHERE id = ?`, seconds, id)
+	if err != nil {
+		return fmt.Errorf("updating duration for entity %d: %w", id, err)
+	}
+	return nil
+}

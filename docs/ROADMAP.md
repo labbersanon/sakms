@@ -328,6 +328,36 @@ twice (Prowlarr for search, then qBittorrent *or* NZBGet for the actual
 download) before a single one-click grab can complete end-to-end. Not
 started — no design, no client package, no schema.
 
+### Mainstream Discover: trailer link + hide not-yet-released movies
+Two additions, deferred 2026-07-15 in favor of live Adult Discover bugs.
+(1) A "Watch Trailer" link in the detail popup (Movies/Series only, not
+Adult), opening the title's YouTube trailer in a new tab — needs a new
+`internal/tmdb.TrailerURL(ctx, mt, tmdbID)` method (`/movie|tv/{id}/videos`,
+prefer `official==true`, filter `site=="YouTube" && type=="Trailer"`), a
+narrow `TrailerResponse` DTO, and a one-off popup-scoped
+`GET /api/modes/{mode}/discover/trailer?tmdbId=N` handler (same trigger
+shape as the existing `discoverAvailabilityHandler` — fires once per popup
+open, not a bulk fetch). Renders next to the existing "More on TMDB →" link
+in `DetailPopup.tsx`. (2) Hide movies from Trending Movies and Popular
+Movies (not Upcoming Movies, not Series) that have no US digital/physical
+release yet — needs `internal/tmdb.HasUSRelease(ctx, tmdbID)`
+(`/movie/{id}/release_dates`, type 4=Digital/5=Physical dated today or
+earlier; type 3-only or no US entry = still theater-only, filter it out),
+wired into `discoverHandler`'s trending/popular dispatch. Real design
+constraint already scoped: no bulk release-dates endpoint exists, so this
+is one extra TMDB call per item — needs bounded-concurrent fetching
+(`golang.org/x/sync/errgroup`, already an indirect `go.mod` dependency,
+`SetLimit(5)`), and a real edge case to handle (not just note): if an
+entire TMDB page's movies all filter out, `Mainstream.tsx`'s `PaginatedRow`
+would mark the row falsely exhausted (it exhausts on the first empty
+batch) — the handler needs to retry the next TMDB page (bounded, e.g. 3
+extra attempts) before returning empty. Neither TMDB videos nor
+release-date-type data exists anywhere in this codebase today — confirmed
+by direct code research, not assumed. No caching for either, consistent
+with the rest of Discover (`discoverHandler`/sliders resolve live already).
+Not started — full implementation plan was written and researched
+end-to-end this session but not yet built.
+
 ### Cheap, independent wins
 - **Clearer mount-disconnect error messaging** — shipped 2026-07-11, see
   "Recently shipped" below.

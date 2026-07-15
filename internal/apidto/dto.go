@@ -997,14 +997,20 @@ type AdultNewestRowReorderRequest struct {
 // Image/Source) so AdultCard/EntityCard/DetailPopup need no changes to
 // render it — see this feature's plan, Stage 3.
 type AdultNewestReleaseItem struct {
-	ID      string   `json:"id"`
-	Title   string   `json:"title"`
-	Studio  string   `json:"studio"`
-	Date    string   `json:"date"`
-	Image   string   `json:"image"`
-	Source  string   `json:"source"`
-	RowType string   `json:"rowType"`
-	Genres  []string `json:"genres,omitempty"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Studio  string `json:"studio"`
+	Date    string `json:"date"`
+	Image   string `json:"image"`
+	Source  string `json:"source"`
+	RowType string `json:"rowType"`
+	// DurationSeconds is the matched entity's runtime, 0 if unknown — see
+	// adultnewest.MatchedRelease.EntityDurationSeconds's doc comment. Added
+	// specifically so the frontend can build a real grab request instead of
+	// hardcoding 0 (a live bug: Adult's auto-grab scorer never re-fetches a
+	// real runtime, so a 0 here silently fails to auto-qualify anything).
+	DurationSeconds int      `json:"durationSeconds"`
+	Genres          []string `json:"genres,omitempty"`
 }
 
 // --- Trakt (mainstream-discover-seerr): watchlist connection + OAuth device flow -

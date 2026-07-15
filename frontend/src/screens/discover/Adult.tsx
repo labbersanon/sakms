@@ -1,14 +1,14 @@
-// AdultDiscover — the scene-shaped browse and its cards: a search bar over two
-// ordered scene rows (Recently Released — merged/deduped across TPDB+StashDB,
-// Highest Rated — TPDB-only), a TPDB Studios row, and a TPDB Performers row,
-// plus optional StashDB/FansDB scene/Studios/Performers rows shown only when
-// that connection is configured (see the ADULT_SCENE_ROWS and
-// configuredServices doc comments below). Searching swaps the rows for a plain
-// result grid; clicking a TPDB Studio/Performer card drills down into a
-// paginated grid of just that entity's scenes (the optional sources' Studios/
-// Performers cards are non-interactive — no stash-box scenes-by-entity
-// drill-down endpoint exists yet, see EntityCard). Extracted from the original
-// single-file Discover.tsx.
+// AdultDiscover — the scene-shaped browse and its cards: a search bar over
+// the Prowlarr-matched "newest rows" (see fetchAdultNewestRows), a TPDB
+// Studios row, and a TPDB Performers row, plus optional StashDB/FansDB
+// scene/Studios/Performers rows shown only when that connection is
+// configured (see the STASH_BOX_ROWS and configuredServices doc comments
+// below). Searching swaps the rows for a plain result grid; clicking a TPDB
+// Studio/Performer card drills down into a paginated grid of just that
+// entity's scenes (the optional sources' Studios/Performers cards are
+// non-interactive — no stash-box scenes-by-entity drill-down endpoint
+// exists yet, see EntityCard). Extracted from the original single-file
+// Discover.tsx.
 
 import {
   type Component,
@@ -23,8 +23,6 @@ import {
   type StashBox,
   type StudioSummary,
   fetchAdultDiscover,
-  fetchAdultDiscoverCategory,
-  fetchAdultDiscoverMergedRecent,
   fetchAdultPerformerScenes,
   fetchAdultPerformers,
   fetchAdultStudioScenes,
@@ -68,16 +66,19 @@ const sourceLabel = (source: string): string => {
 
 // toAdultDiscoverItem adapts an AdultNewestReleaseItem (the admin newest-rows
 // pipeline's cached match) into the AdultDiscoverItem shape AdultCard/DetailPopup
-// already render — the two differ only in the three fields the newest-rows DTO
-// omits (durationSeconds/rating/slug). durationSeconds: 0 is the codebase's
-// "runtime unknown" convention (see tpdbrest.Scene.Duration), not a real
-// zero-length claim; rating: 0 renders no ★; slug: "" makes DetailPopup's TPDB
-// external link fall through to undefined rather than a guaranteed-broken URL.
+// already render — the two differ only in two fields the newest-rows DTO
+// doesn't carry (rating/slug; durationSeconds IS real now, threaded through
+// from identify.MatchResult.RuntimeSeconds — see adultnewest.MatchedRelease.
+// EntityDurationSeconds's doc comment for the live bug this fixes: a
+// hardcoded 0 here silently failed to auto-qualify anything against Adult's
+// bitrate-quality-floor scorer, since that scorer never re-fetches a real
+// runtime the way Movies/Series do). rating: 0 renders no ★; slug: "" makes
+// DetailPopup's TPDB external link fall through to undefined rather than a
+// guaranteed-broken URL.
 const toAdultDiscoverItem = (
   item: AdultNewestReleaseItem,
 ): AdultDiscoverItem => ({
   ...item,
-  durationSeconds: 0,
   rating: 0,
   slug: "",
 });
@@ -208,40 +209,21 @@ const EntityCard: Component<{
   );
 };
 
-// ADULT_SCENE_ROWS is the fixed pair of ordered scene feeds the Adult browse
-// stacks: Recently Released (the merged, deduped TPDB+StashDB feed —
-// fetchAdultDiscoverMergedRecent, TPDB-only when StashDB isn't configured, see
-// internal/api/adultdiscover_stashbox.go) and Highest Rated (TPDB's page-local
-// rating re-sort, honestly NOT a global popularity ranking — see
-// internal/api/adultdiscover.go; deliberately left TPDB-only, per the decision
-// to keep Trending/Rated ranking un-merged since there's no shared ranking
-// metric across sources). Highest Rated is singlePage: "Show more" would
-// append an independently-resorted page 2 after page 1, producing a visibly
-// non-monotonic rating order under that label.
-const ADULT_SCENE_ROWS: {
-  title: string;
-  load: (page: number) => Promise<AdultDiscoverItem[]>;
-  singlePage?: boolean;
-}[] = [
-  { title: "Recently Released", load: (page) => fetchAdultDiscoverMergedRecent(page) },
-  {
-    title: "Highest Rated",
-    load: (page) => fetchAdultDiscoverCategory("top-rated", page),
-    singlePage: true,
-  },
-];
-
 // STASH_BOX_ROWS drives the optional StashDB/FansDB row sections — one entry
 // per box, each gated behind configuredServices().has(box) so it renders
 // nothing at all (not even PaginatedStrip's "Nothing here yet" fallback)
 // when that connection isn't configured. sceneRows lists which scene feeds
-// that box gets (StashDB: Trending only, since its Recently Released scenes
-// are already folded into ADULT_SCENE_ROWS' merged/deduped row above — see
-// that row's doc comment; FansDB: both, since nothing merges FansDB into the
-// TPDB feed). Studios/Performers are fixed per box (every box gets both).
-// This table is the collapsed form of what was 7 near-identical hand-written
-// PaginatedStrip blocks — same fetchStashBox* calls, same card components,
-// just data-driven the same way ADULT_SCENE_ROWS already is.
+// that box gets (StashDB: Trending only; FansDB: both — nothing merges
+// FansDB into the TPDB feed). Studios/Performers are fixed per box (every
+// box gets both). This table is the collapsed form of what was several
+// near-identical hand-written PaginatedStrip blocks — same fetchStashBox*
+// calls, same card components, just data-driven.
+//
+// The old fixed "Recently Released"/"Highest Rated" TPDB catalog-browse rows
+// (fetchAdultDiscoverMergedRecent/fetchAdultDiscoverCategory) were removed
+// 2026-07-15 — stale/redundant once the Prowlarr-matched "newest rows"
+// (fetchAdultNewestRows, above the Studios/Performers browse rows below)
+// shipped as the confirmed-downloadable alternative.
 const STASH_BOX_ROWS: {
   box: StashBox;
   label: string;
@@ -435,25 +417,6 @@ export const AdultDiscover: Component = () => {
                           <EntityCard name={item.title} image={item.image} />
                         )
                       }
-                    </PaginatedStrip>
-                  )}
-                </For>
-                <For each={ADULT_SCENE_ROWS}>
-                  {(row) => (
-                    <PaginatedStrip
-                      title={row.title}
-                      reloadToken={reloadToken}
-                      load={row.load}
-                      onError={setSetupError}
-                      singlePage={row.singlePage}
-                    >
-                      {(item) => (
-                        <AdultCard
-                          item={item}
-                          onGrab={setGrabTarget}
-                          onDetail={setDetailTarget}
-                        />
-                      )}
                     </PaginatedStrip>
                   )}
                 </For>

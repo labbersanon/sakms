@@ -949,6 +949,14 @@ export interface AdultNewestReleaseItem {
   image: string;
   source: string;
   rowType: string;
+  /**
+   * DurationSeconds is the matched entity's runtime, 0 if unknown — see
+   * adultnewest.MatchedRelease.EntityDurationSeconds's doc comment. Added
+   * specifically so the frontend can build a real grab request instead of
+   * hardcoding 0 (a live bug: Adult's auto-grab scorer never re-fetches a
+   * real runtime, so a 0 here silently fails to auto-qualify anything).
+   */
+  durationSeconds: number /* int */;
   genres?: string[];
 }
 /**

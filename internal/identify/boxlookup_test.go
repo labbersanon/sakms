@@ -179,3 +179,42 @@ func TestSceneByID_Found(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// TestMatchResult_RuntimeSecondsThreadedThrough is the regression test for a
+// live bug: MatchResult.RuntimeSeconds wasn't populated by ANY lookup path
+// until this fix, so every Adult grab request built from a cached match had
+// no real runtime — Adult's bitrate-quality-floor scorer never re-fetches
+// one itself (unlike Movies/Series), so every candidate silently landed in
+// the manual fallback pick list. Covers both the stash-box and TPDB text
+// search paths — SceneByID/SearchTPDBMovies share the same decode plumbing,
+// not independently re-tested here.
+func TestMatchResult_RuntimeSecondsThreadedThrough(t *testing.T) {
+	b := newBoxSearcherWithFakes(t,
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"1","title":"Some Scene","release_date":"2020-01-01","studio":{"name":"Vixen","parent":null},"duration":1800}
+			]}}}`))
+		},
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"Some Scene","date":"2020-01-01","site":{"name":"Vixen"},"duration":2400}]}`))
+		},
+	)
+
+	stashGot, err := b.SearchStashBox(context.Background(), "stashdb", "Some Scene", "Vixen")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stashGot == nil || stashGot.RuntimeSeconds != 1800 {
+		t.Fatalf("SearchStashBox: got %+v, want RuntimeSeconds=1800", stashGot)
+	}
+
+	tpdbGot, err := b.SearchTPDB(context.Background(), "Some Scene", "Vixen")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tpdbGot == nil || tpdbGot.RuntimeSeconds != 2400 {
+		t.Fatalf("SearchTPDB: got %+v, want RuntimeSeconds=2400", tpdbGot)
+	}
+}

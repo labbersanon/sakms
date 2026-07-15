@@ -25,12 +25,6 @@ export type {
   StudioSummary,
 };
 
-// AdultCategory selects which ordered TPDB scene feed a row renders — the two
-// the Adult discoverHandler accepts alongside its plain browse: "recent" (TPDB's
-// server-side recently_released sort) and "top-rated" (one browse page re-sorted
-// by rating descending server-side, an honestly page-local ordering, not a true
-// global popularity ranking — see internal/api/adultdiscover.go).
-export type AdultCategory = "recent" | "top-rated";
 
 // Mode is the three top-level libraries. Movies/Series share the TMDB
 // title-shaped Discover path; Adult is scene-shaped (TPDB).
@@ -120,8 +114,11 @@ export function fetchTmdbSearch(
 }
 
 // fetchAdultDiscover returns one page of TPDB's scene catalog (plain browse),
-// or a title search when query is non-empty. This is the search path only now —
-// the Adult browse screen's ordered rows use fetchAdultDiscoverCategory below.
+// or a title search when query is non-empty. This is the search path — Adult
+// Discover's browse rows come from fetchAdultNewestRows/fetchAdultStudios/
+// fetchAdultPerformers instead (the old fixed Recently Released/Highest Rated
+// category rows were removed 2026-07-15, stale/redundant once the
+// Prowlarr-matched newest rows shipped).
 export function fetchAdultDiscover(query?: string): Promise<AdultDiscoverItem[]> {
   const q = query?.trim();
   const path = q
@@ -130,37 +127,11 @@ export function fetchAdultDiscover(query?: string): Promise<AdultDiscoverItem[]>
   return api<AdultDiscoverItem[]>(path);
 }
 
-// fetchAdultDiscoverCategory returns one page of an ordered TPDB scene feed for
-// Adult Discover's category rows (Recently Released / Highest Rated), for the
-// given 1-based page. Like fetchDiscover's "Show more", page 1 and page 2 return
-// different scenes (the backend threads ?page through to TPDB's browse).
-export function fetchAdultDiscoverCategory(
-  category: AdultCategory,
-  page = 1,
-): Promise<AdultDiscoverItem[]> {
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/discover?category=${category}&page=${page}`,
-  );
-}
-
 // StashBox names the two OPTIONAL Adult Discover sources (StashDB, FansDB) —
 // stash-box-protocol catalogs shown only when that connection is configured
 // (unlike TPDB, the required core source). The backend returns [] (200) for an
 // unconfigured box, so the frontend hides the row rather than showing an error.
 export type StashBox = "stashdb" | "fansdb";
-
-// fetchAdultDiscoverMergedRecent returns one page of the merged, deduped
-// "Recently Released" feed: always TPDB, plus StashDB's exclusive scenes when
-// StashDB is configured (TPDB-only otherwise). Replaces the old
-// fetchAdultDiscoverCategory("recent", …) call for the Recently Released row —
-// see internal/api/adultdiscover_stashbox.go's merged handler.
-export function fetchAdultDiscoverMergedRecent(
-  page = 1,
-): Promise<AdultDiscoverItem[]> {
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/discover/recent-merged?page=${page}&perPage=20`,
-  );
-}
 
 // fetchStashBoxScenes returns one page of an optional stash-box source's scene
 // feed — kind "recent" (date-sorted) or "trending" (stash-box's server-side

@@ -27,14 +27,15 @@ func TestInsertAndList_RoundTripsMatchedRelease(t *testing.T) {
 	ctx := context.Background()
 
 	m := MatchedRelease{
-		RowType:      RowScene,
-		EntityID:     "scene-123",
-		EntitySource: "tpdb",
-		EntityTitle:  "Some Scene",
-		EntityStudio: "Some Studio",
-		EntityImage:  "https://cdn.theporndb.net/scene.jpg",
-		EntityDate:   "2026-07-14",
-		Genres:       []string{"Anal Fetish", "MILF"},
+		RowType:               RowScene,
+		EntityID:              "scene-123",
+		EntitySource:          "tpdb",
+		EntityTitle:           "Some Scene",
+		EntityStudio:          "Some Studio",
+		EntityImage:           "https://cdn.theporndb.net/scene.jpg",
+		EntityDate:            "2026-07-14",
+		EntityDurationSeconds: 1800,
+		Genres:                []string{"Anal Fetish", "MILF"},
 	}
 	if err := s.Insert(ctx, m); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -50,6 +51,12 @@ func TestInsertAndList_RoundTripsMatchedRelease(t *testing.T) {
 	got := list[0]
 	if got.EntityTitle != "Some Scene" || got.EntitySource != "tpdb" || len(got.Genres) != 2 {
 		t.Errorf("unexpected round-tripped release: %+v", got)
+	}
+	// Regression: a matched entity with no duration silently broke Adult
+	// auto-grab (see scan.go's toMatchedRelease doc comment) — confirm the
+	// real value survives the cache round trip, not just genres/title/source.
+	if got.EntityDurationSeconds != 1800 {
+		t.Errorf("EntityDurationSeconds = %d, want 1800", got.EntityDurationSeconds)
 	}
 }
 

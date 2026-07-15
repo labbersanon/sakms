@@ -382,13 +382,9 @@ describe("Discover — Mainstream search (replaces rows, then restores)", () => 
 });
 
 describe("Discover — Adult tab (row-based browse)", () => {
-  it("renders the two scene rows, the Studios row, and the Performers row with proxied art", async () => {
+  it("renders the Studios row and the Performers row with proxied art", async () => {
     const { container } = (() => {
       stubFetch((url) => {
-        if (url.includes("/api/modes/adult/discover/recent-merged"))
-          return jsonResponse([scene({ id: "r1", title: "Recent Scene" })]);
-        if (url.includes("/api/modes/adult/discover") && url.includes("category=top-rated"))
-          return jsonResponse([scene({ id: "t1", title: "Top Scene" })]);
         if (url.includes("/api/modes/adult/studios"))
           return jsonResponse([studio({ id: "st1", name: "Vixen Studio" })]);
         if (url.includes("/api/modes/adult/performers"))
@@ -408,19 +404,13 @@ describe("Discover — Adult tab (row-based browse)", () => {
 
     fireEvent.click(await screen.findByText("Adult"));
 
-    // All four row headers.
-    expect(await screen.findByText("Recently Released")).toBeInTheDocument();
-    expect(screen.getByText("Highest Rated")).toBeInTheDocument();
-    expect(screen.getByText("Studios")).toBeInTheDocument();
+    expect(await screen.findByText("Studios")).toBeInTheDocument();
     expect(screen.getByText("Performers")).toBeInTheDocument();
 
-    // A card from each row.
-    expect(await screen.findByText("Recent Scene")).toBeInTheDocument();
-    expect(await screen.findByText("Top Scene")).toBeInTheDocument();
     expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
     expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
 
-    // Every image (scene thumbs + the studio logo) flows through the proxy;
+    // Every image (the studio logo + performer art) flows through the proxy;
     // never hot-linked from TPDB's CDN.
     const imgs = Array.from(container.querySelectorAll("img"));
     expect(imgs.length).toBeGreaterThan(0);
@@ -431,13 +421,21 @@ describe("Discover — Adult tab (row-based browse)", () => {
     }
   });
 
-  it("appends the next page to a scene row on Show more (append, not replace)", async () => {
+  it("appends the next page to an admin newest row on Show more (append, not replace)", async () => {
     const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/recent-merged")) {
+      if (url.includes("/newest-rows/1/resolve")) {
         if (url.includes("page=2"))
-          return jsonResponse([scene({ id: "r2", title: "Recent Page Two" })]);
-        return jsonResponse([scene({ id: "r1", title: "Recent Page One" })]);
+          return jsonResponse([
+            { id: "r2", title: "Newest Page Two", studio: "Vixen", date: "2026-01-01", image: "https://cdn.theporndb.net/scenes/two.jpg", source: "tpdb", rowType: "scene" },
+          ]);
+        return jsonResponse([
+          { id: "r1", title: "Newest Page One", studio: "Vixen", date: "2026-01-01", image: "https://cdn.theporndb.net/scenes/one.jpg", source: "tpdb", rowType: "scene" },
+        ]);
       }
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -446,40 +444,17 @@ describe("Discover — Adult tab (row-based browse)", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
 
-    // Only the Recently Released row has items → exactly one "Show more".
-    expect(await screen.findByText("Recent Page One")).toBeInTheDocument();
+    // Only the Newest Scenes row has items → exactly one "Show more".
+    expect(await screen.findByText("Newest Page One")).toBeInTheDocument();
     fireEvent.click(await screen.findByText("Show more"));
 
-    expect(await screen.findByText("Recent Page Two")).toBeInTheDocument();
-    expect(screen.getByText("Recent Page One")).toBeInTheDocument();
+    expect(await screen.findByText("Newest Page Two")).toBeInTheDocument();
+    expect(screen.getByText("Newest Page One")).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/discover/recent-merged") &&
-        String(u).includes("page=2"),
+        String(u).includes("/newest-rows/1/resolve") && String(u).includes("page=2"),
       ),
     ).toBe(true);
-  });
-
-  it("never shows Show more on Highest Rated, even with a full page of items", async () => {
-    // Highest Rated is a same-page rating re-sort, not a true global ranking —
-    // paginating it would append an independently-resorted page 2 after page 1,
-    // producing a visibly non-monotonic rating order under that label. Give it
-    // items (unlike the append test above, which relies on it being empty) to
-    // prove the missing "Show more" is a deliberate singlePage guard, not an
-    // incidental effect of having nothing to show.
-    stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover") && url.includes("category=top-rated"))
-        return jsonResponse([scene({ id: "t1", title: "Top Rated Scene" })]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    expect(await screen.findByText("Top Rated Scene")).toBeInTheDocument();
-    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
   });
 
   it("renders Studios/Performers as text tiles when they have no art", async () => {
@@ -525,7 +500,6 @@ describe("Discover — Adult tab (row-based browse)", () => {
     expect(await screen.findByText("Studio Only Scene")).toBeInTheDocument();
     expect(screen.getByText("Back to browse")).toBeInTheDocument();
     // The rows are gone while drilled in.
-    expect(screen.queryByText("Recently Released")).not.toBeInTheDocument();
     expect(screen.queryByText("Performers")).not.toBeInTheDocument();
     // The drill-down endpoint was actually hit with the opaque studio id.
     expect(
@@ -536,7 +510,7 @@ describe("Discover — Adult tab (row-based browse)", () => {
 
     // Back to browse restores the rows and drops the drill-down.
     fireEvent.click(screen.getByText("Back to browse"));
-    expect(await screen.findByText("Recently Released")).toBeInTheDocument();
+    expect(await screen.findByText("Performers")).toBeInTheDocument();
     expect(await screen.findByText("Drill Studio")).toBeInTheDocument();
     expect(screen.queryByText("Studio Only Scene")).not.toBeInTheDocument();
   });
@@ -594,7 +568,7 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     fireEvent.click(await screen.findByText("Adult"));
 
     // The always-present TPDB rows still render...
-    expect(await screen.findByText("Recently Released")).toBeInTheDocument();
+    expect(await screen.findByText("Studios")).toBeInTheDocument();
     // ...but no StashDB/FansDB row header ever appears, not even with an empty
     // "Nothing here yet" placeholder.
     expect(screen.queryByText("StashDB Trending")).not.toBeInTheDocument();
@@ -664,42 +638,16 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     expect(screen.queryByText("StashDB Trending")).not.toBeInTheDocument();
   });
 
-  it("Recently Released fetches the merged recent-merged endpoint, not the old category=recent one", async () => {
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/recent-merged"))
-        return jsonResponse([scene({ id: "m1", title: "Merged Scene" })]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    expect(await screen.findByText("Merged Scene")).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/discover/recent-merged"),
-      ),
-    ).toBe(true);
-    expect(
-      fetchMock.mock.calls.some(([u]) => {
-        const url = String(u);
-        return (
-          url.includes("/api/modes/adult/discover") &&
-          url.includes("category=recent") &&
-          !url.includes("recent-merged")
-        );
-      }),
-    ).toBe(false);
-  });
-
   it("shows a StashDB/FansDB provenance label on a merged-in scene's subtitle, but not on a plain TPDB scene", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/recent-merged"))
+      if (url.includes("/newest-rows/1/resolve"))
         return jsonResponse([
-          scene({ id: "t1", title: "Plain TPDB Scene", studio: "Tushy", source: "tpdb" }),
-          scene({ id: "sb1", title: "Merged StashDB Scene", studio: "Blacked", source: "stashdb" }),
+          { id: "t1", title: "Plain TPDB Scene", studio: "Tushy", date: "2023-01-01", image: "https://cdn.theporndb.net/scenes/plain.jpg", source: "tpdb", rowType: "scene" },
+          { id: "sb1", title: "Merged StashDB Scene", studio: "Blacked", date: "2023-01-01", image: "https://cdn.theporndb.net/scenes/merged.jpg", source: "stashdb", rowType: "scene" },
+        ]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
         ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
@@ -799,11 +747,11 @@ describe("Discover — Adult admin newest rows", () => {
     expect(within(perfCard).queryByText("Grab")).not.toBeInTheDocument();
 
     // Newest rows lead the browse view — "Newest Scenes" precedes the fixed
-    // "Recently Released" scene row in DOM order.
+    // "Studios" catalog-browse row in DOM order.
     const newestHeader = screen.getByText("Newest Scenes");
-    const recentHeader = screen.getByText("Recently Released");
+    const studiosHeader = screen.getByText("Studios");
     expect(
-      newestHeader.compareDocumentPosition(recentHeader) &
+      newestHeader.compareDocumentPosition(studiosHeader) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
@@ -897,7 +845,13 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
 
   it("shows the TPDB pop-up (not TMDB's) when Adult's scene fetch reports tpdb not configured", async () => {
     stubFetchWithCalls((url) => {
-      if (url.includes("/api/modes/adult/discover")) return notConfigured("tpdb");
+      if (
+        url.includes("/api/modes/adult/discover") ||
+        url.includes("/api/modes/adult/studios") ||
+        url.includes("/api/modes/adult/performers") ||
+        url.includes("/newest-rows")
+      )
+        return notConfigured("tpdb");
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -1012,8 +966,14 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
 
   it("AdultCard shows a hover overlay (studio/date summary — scenes carry no overview field) and no longer carries the title= tooltip", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/recent-merged"))
-        return jsonResponse([scene({ id: "s1", title: "Hover Scene", studio: "Tushy", date: "2023-02-02" })]);
+      if (url.includes("/newest-rows/1/resolve"))
+        return jsonResponse([
+          { id: "s1", title: "Hover Scene", studio: "Tushy", date: "2023-02-02", image: "https://cdn.theporndb.net/scenes/hover.jpg", source: "tpdb", rowType: "scene" },
+        ]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
       const av = availabilityDefaults(url);
       if (av) return av;
       const d = mainstreamDefaults(url);
@@ -1034,8 +994,14 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
 
   it("clicking an AdultCard's body opens DetailPopup; the card's own Grab button still fires the unchanged quick-grab path", async () => {
     const calls = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/recent-merged"))
-        return jsonResponse([scene({ id: "s1", title: "Click Scene", studio: "Tushy" })]);
+      if (url.includes("/newest-rows/1/resolve"))
+        return jsonResponse([
+          { id: "s1", title: "Click Scene", studio: "Tushy", date: "2023-01-01", image: "https://cdn.theporndb.net/scenes/click.jpg", source: "tpdb", rowType: "scene" },
+        ]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
       if (url.includes("/api/modes/adult/autograb"))
         return jsonResponse({
           grabbed: true,

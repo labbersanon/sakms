@@ -174,14 +174,15 @@ func findAdultNewestRow(ctx context.Context, store *adultnewest.Store, id int) (
 // resolveAdultNewestRowHandler returns.
 func toDTOReleaseItem(m adultnewest.MatchedRelease) apidto.AdultNewestReleaseItem {
 	return apidto.AdultNewestReleaseItem{
-		ID:      m.EntityID,
-		Title:   m.EntityTitle,
-		Studio:  m.EntityStudio,
-		Date:    m.EntityDate,
-		Image:   m.EntityImage,
-		Source:  m.EntitySource,
-		RowType: string(m.RowType),
-		Genres:  m.Genres,
+		ID:              m.EntityID,
+		Title:           m.EntityTitle,
+		Studio:          m.EntityStudio,
+		Date:            m.EntityDate,
+		Image:           m.EntityImage,
+		Source:          m.EntitySource,
+		RowType:         string(m.RowType),
+		DurationSeconds: m.EntityDurationSeconds,
+		Genres:          m.Genres,
 	}
 }
 

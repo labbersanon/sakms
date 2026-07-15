@@ -172,6 +172,19 @@ func TestToMatchedRelease_SceneVsMovieTypeDispatch(t *testing.T) {
 	}
 }
 
+// TestToMatchedRelease_MapsRuntimeSeconds is the regression test for the
+// live "no available downloads" bug: RuntimeSeconds wasn't mapped onto
+// EntityDurationSeconds at all until this fix, so every cached entity
+// carried a 0 duration regardless of what the identify pipeline actually
+// found.
+func TestToMatchedRelease_MapsRuntimeSeconds(t *testing.T) {
+	m := identify.MatchResult{Title: "A Scene", RuntimeSeconds: 1800}
+	got := toMatchedRelease(RowScene, m)
+	if got.EntityDurationSeconds != 1800 {
+		t.Errorf("EntityDurationSeconds = %d, want 1800", got.EntityDurationSeconds)
+	}
+}
+
 func TestToMatchedRelease_SplitsCommaJoinedTags(t *testing.T) {
 	m := identify.MatchResult{Title: "T", Tags: "Anal Fetish,MILF,Goth"}
 	got := toMatchedRelease(RowScene, m)

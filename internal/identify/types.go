@@ -29,6 +29,17 @@ type MatchResult struct {
 	// struct's own doc comment) instead of introducing a shared-backing-array
 	// slice field. "" if none/unavailable.
 	Tags string
+	// RuntimeSeconds is the matched scene's runtime, when the lookup path that
+	// produced this result had one in hand (same "populated for free, no
+	// extra round trip" convention as Image/Tags above). 0 means unknown —
+	// callers computing an implied bitrate MUST treat 0 as "skip the check,"
+	// never as a real zero-length runtime (see tpdbrest.Scene.Duration's own
+	// doc comment for the same convention). Added after a live bug: Adult's
+	// auto-grab scorer (internal/autograb.GradeCandidate) never re-fetches a
+	// real runtime the way Movies/Series do, so a caller building a grab
+	// request from a match with RuntimeSeconds==0 will silently fail to
+	// auto-qualify anything.
+	RuntimeSeconds int
 }
 
 // WhisparrForeignID returns the normalized identifier Whisparr V3's

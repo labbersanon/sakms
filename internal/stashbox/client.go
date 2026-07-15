@@ -43,23 +43,28 @@ type Scene struct {
 	Title       string
 	ReleaseDate string
 	StudioName  string
-	// ImageURL and Tags are populated by both the browse path (QueryScenes,
-	// ImageURL only) and the title/id identification paths (SearchScene and
-	// FindScene, which request images/tags for display + matching). The
-	// fingerprint path (FindScenesByFingerprints) keeps a minimal hash-matching
-	// selection that omits them, so scenes it returns leave these zero-valued —
-	// that's expected, not a bug. (Tags is not requested by QueryScenes: the
+	// ImageURL, Tags, and Duration are populated by both the browse path
+	// (QueryScenes, ImageURL/Duration only) and the title/id identification
+	// paths (SearchScene and FindScene, which request images/tags/duration
+	// for display + matching). The fingerprint path
+	// (FindScenesByFingerprints) keeps a minimal hash-matching selection that
+	// omits them, so scenes it returns leave these zero-valued — that's
+	// expected, not a bug. (Tags is not requested by QueryScenes: the
 	// Discover browse rows it backs don't need tag names, only the
-	// identification/matching pipeline does.)
+	// identification/matching pipeline does.) Duration was added to
+	// SearchScene/FindScene's selections after a live bug: a caller
+	// (internal/adultnewest) building a grab request from a match with no
+	// runtime silently failed to auto-qualify anything against Adult's
+	// bitrate-quality-floor scorer, which never re-fetches a real runtime
+	// the way Movies/Series do.
 	ImageURL string
 	Tags     []string
-	// Duration and PHashes are populated ONLY by the browse path (QueryScenes),
-	// whose GraphQL selection requests duration/fingerprints. The identification
-	// paths don't request those fields, so they leave these zero-valued.
 	Duration int
 	// PHashes are the scene's fingerprint hashes whose algorithm is PHASH
 	// (MD5/OSHASH fingerprints are filtered out) — used by the merged-recent
-	// dedup to spot a stash-box scene TPDB already carries.
+	// dedup to spot a stash-box scene TPDB already carries. Populated ONLY by
+	// the browse path (QueryScenes); the identification paths don't request
+	// it (fingerprints aren't needed for display/matching there).
 	PHashes []string
 }
 
@@ -82,6 +87,7 @@ type rawScene struct {
 	Tags []struct {
 		Name string `json:"name"`
 	} `json:"tags"`
+	Duration int `json:"duration"`
 }
 
 func (s rawScene) toScene() Scene {
@@ -107,6 +113,7 @@ func (s rawScene) toScene() Scene {
 		StudioName:  studioName,
 		ImageURL:    imageURL,
 		Tags:        tags,
+		Duration:    s.Duration,
 	}
 }
 
@@ -307,7 +314,7 @@ func (c *Client) QueryScenes(ctx context.Context, sort SceneSort, page, perPage 
 }
 
 const searchSceneQuery = `query SearchScene($term: String!) {
-  searchScene(term: $term) { id title release_date studio { name parent { name } } tags { name } images { url } }
+  searchScene(term: $term) { id title release_date studio { name parent { name } } tags { name } images { url } duration }
 }`
 
 // SearchScene returns raw title-search candidates. Similarity/studio-overlap
@@ -327,7 +334,7 @@ func (c *Client) SearchScene(ctx context.Context, term string) ([]Scene, error) 
 }
 
 const findSceneQuery = `query FindScene($id: ID!) {
-  findScene(id: $id) { id title release_date studio { name parent { name } } tags { name } images { url } }
+  findScene(id: $id) { id title release_date studio { name parent { name } } tags { name } images { url } duration }
 }`
 
 // FindScene looks up a scene directly by its stash-box scene ID.

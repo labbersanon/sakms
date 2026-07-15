@@ -329,12 +329,24 @@ describe("Discover auto-grab — Series (per-item picker gates the grab)", () =>
 describe("Discover auto-grab — Adult (runtime-sourced)", () => {
   it("grabs a scene sourcing durationSeconds as the scorer runtime", async () => {
     const calls = stubFetch((url) => {
-      // The Adult browse now stacks two scene rows (Recently Released,
-      // Highest Rated). Return the scene from ONLY the recent-merged row so
-      // exactly one "Grab" button renders — the grab-flow assertions below are
-      // unchanged.
-      if (url.includes("/api/modes/adult/discover/recent-merged"))
-        return jsonResponse([scene({ id: "s1", title: "Scene One", studio: "Vixen", durationSeconds: 2400 })]);
+      // The admin "newest rows" (the default-leading Adult scene row today)
+      // are Prowlarr-matched cache entries with no real duration data — their
+      // AdultDiscoverItem adapter always sends durationSeconds: 0 by design
+      // (see toAdultDiscoverItem in Adult.tsx). To prove an AdultCard's grab
+      // request still correctly sources a REAL non-zero durationSeconds from
+      // an item that actually carries one, use the FansDB stash-box scene row
+      // instead — still native, unmodified AdultDiscoverItem data, and the
+      // only remaining always-rendered scene row that isn't run through that
+      // adapter (Studios/Performers render EntityCard, not AdultCard).
+      if (url.includes("/api/connections"))
+        return jsonResponse([
+          { service: "fansdb", url: "https://example.invalid", hasApiKey: true, updatedAt: "2024-01-01T00:00:00Z" },
+        ]);
+      if (url.includes("/api/modes/adult/discover/fansdb/recent"))
+        return jsonResponse([scene({ id: "s1", title: "Scene One", studio: "Vixen", durationSeconds: 2400, source: "fansdb" })]);
+      // No admin newest rows configured — keeps this test to exactly the one
+      // FansDB card, so "the" Grab button is unambiguous.
+      if (url.includes("/newest-rows")) return jsonResponse([]);
       if (url.includes("/api/modes/adult/autograb"))
         return jsonResponse({
           grabbed: true,

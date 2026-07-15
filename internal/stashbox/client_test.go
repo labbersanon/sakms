@@ -67,12 +67,12 @@ func TestScene_StudioFallsBackToParent(t *testing.T) {
 	}
 }
 
-func TestSearchScene_PopulatesTagsAndImage(t *testing.T) {
+func TestSearchScene_PopulatesTagsImageAndDuration(t *testing.T) {
 	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"searchScene":[{"id":"1","title":"T","release_date":"2024-01-01",` +
 			`"studio":{"name":"Vixen","parent":null},"tags":[{"name":"Blonde"},{"name":"Outdoor"}],` +
-			`"images":[{"url":"http://cdn/scene1.jpg"},{"url":"http://cdn/scene1-alt.jpg"}]}]}}`))
+			`"images":[{"url":"http://cdn/scene1.jpg"},{"url":"http://cdn/scene1-alt.jpg"}],"duration":1800}]}}`))
 	})
 	defer closeSrv()
 
@@ -89,13 +89,21 @@ func TestSearchScene_PopulatesTagsAndImage(t *testing.T) {
 	if len(out[0].Tags) != 2 || out[0].Tags[0] != "Blonde" || out[0].Tags[1] != "Outdoor" {
 		t.Errorf("Tags = %v, want [Blonde Outdoor]", out[0].Tags)
 	}
+	// Regression: SearchScene (the identification path) previously omitted
+	// duration from its GraphQL selection entirely — only QueryScenes (the
+	// browse path) requested it. A caller building a grab request from a
+	// SearchScene match with no duration silently failed to auto-qualify
+	// anything against Adult's bitrate-quality-floor scorer.
+	if out[0].Duration != 1800 {
+		t.Errorf("Duration = %d, want 1800", out[0].Duration)
+	}
 }
 
-func TestFindScene_PopulatesTagsAndImage(t *testing.T) {
+func TestFindScene_PopulatesTagsImageAndDuration(t *testing.T) {
 	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"findScene":{"id":"1","title":"T","release_date":"2020-01-01",` +
-			`"studio":{"name":"Tushy","parent":null},"tags":[{"name":"Anal"}],"images":[{"url":"http://cdn/f.jpg"}]}}}`))
+			`"studio":{"name":"Tushy","parent":null},"tags":[{"name":"Anal"}],"images":[{"url":"http://cdn/f.jpg"}],"duration":2400}}}`))
 	})
 	defer closeSrv()
 
@@ -111,6 +119,9 @@ func TestFindScene_PopulatesTagsAndImage(t *testing.T) {
 	}
 	if len(sc.Tags) != 1 || sc.Tags[0] != "Anal" {
 		t.Errorf("Tags = %v, want [Anal]", sc.Tags)
+	}
+	if sc.Duration != 2400 {
+		t.Errorf("Duration = %d, want 2400", sc.Duration)
 	}
 }
 

@@ -74,7 +74,7 @@ func (b *BoxSearcher) SearchStashBox(ctx context.Context, box, title, studio str
 			return &MatchResult{
 				Title: m.Title, Studio: m.StudioName, Date: m.ReleaseDate,
 				Type: "scene", Source: box + "_text", SceneID: m.ID, Box: box,
-				Image: m.ImageURL, Tags: strings.Join(m.Tags, ","),
+				Image: m.ImageURL, Tags: strings.Join(m.Tags, ","), RuntimeSeconds: m.Duration,
 			}, nil
 		}
 		return nil, nil
@@ -103,7 +103,7 @@ func (b *BoxSearcher) SearchTPDB(ctx context.Context, title, studio string) (*Ma
 				return &MatchResult{
 					Title: m.Title, Studio: m.Site, Date: m.Date,
 					Type: "scene", Source: "tpdb_text", SceneID: m.ID, Box: "tpdb",
-					Image: m.Image, Tags: strings.Join(tagNames, ","),
+					Image: m.Image, Tags: strings.Join(tagNames, ","), RuntimeSeconds: m.Duration,
 				}, nil
 			}
 		}
@@ -137,7 +137,7 @@ func (b *BoxSearcher) SearchTPDBMovies(ctx context.Context, title string) (*Matc
 				return &MatchResult{
 					Title: m.Title, Studio: m.Site, Date: m.Date,
 					Type: "movie", Source: "tpdb_text", SceneID: m.ID, Box: "tpdb",
-					Image: m.Image, Tags: strings.Join(tagNames, ","),
+					Image: m.Image, Tags: strings.Join(tagNames, ","), RuntimeSeconds: m.Duration,
 				}, nil
 			}
 		}
@@ -161,6 +161,6 @@ func (b *BoxSearcher) SceneByID(ctx context.Context, box, sceneID string) (*Matc
 	return &MatchResult{
 		Title: sc.Title, Studio: sc.StudioName, Date: sc.ReleaseDate,
 		Type: "scene", Source: box + "_id", SceneID: sc.ID, Box: box,
-		Image: sc.ImageURL, Tags: strings.Join(sc.Tags, ","),
+		Image: sc.ImageURL, Tags: strings.Join(sc.Tags, ","), RuntimeSeconds: sc.Duration,
 	}, nil
 }

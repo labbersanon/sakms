@@ -328,13 +328,14 @@ func toMatchedRelease(rowType RowType, m identify.MatchResult) MatchedRelease {
 		genres = strings.Split(m.Tags, ",")
 	}
 	return MatchedRelease{
-		RowType:      rowType,
-		EntityID:     m.SceneID,
-		EntitySource: m.Box,
-		EntityTitle:  m.Title,
-		EntityStudio: m.Studio,
-		EntityImage:  m.Image,
-		EntityDate:   m.Date,
-		Genres:       genres,
+		RowType:               rowType,
+		EntityID:              m.SceneID,
+		EntitySource:          m.Box,
+		EntityTitle:           m.Title,
+		EntityStudio:          m.Studio,
+		EntityImage:           m.Image,
+		EntityDate:            m.Date,
+		EntityDurationSeconds: m.RuntimeSeconds,
+		Genres:                genres,
 	}
 }

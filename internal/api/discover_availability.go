@@ -309,6 +309,7 @@ func selectAvailabilityCandidate(candidates []autograb.Candidate, releases []pro
 
 	sel := autograb.Select(subCandidates, tier, autograb.DefaultMinSeeders)
 	if sel.Fallback {
+		logAvailabilityRejections(tier, protocol, subReleases, sel.Grades)
 		return nil
 	}
 
@@ -318,5 +319,28 @@ func selectAvailabilityCandidate(candidates []autograb.Candidate, releases []pro
 		GUID: rel.GUID, Title: rel.Title, Indexer: rel.Indexer, Protocol: string(rel.Protocol),
 		Size: rel.Size, Seeders: rel.Seeders, DownloadURL: rel.DownloadURL, PublishDate: rel.PublishDate,
 		Score: grade.Score,
+	}
+}
+
+// logAvailabilityRejections explains why a (tier, protocol) cell had
+// candidates but none qualified — diagnostic logging added 2026-07-15 after
+// a real report where a scene found exactly 1 raw release from Prowlarr,
+// with a recognized resolution and known bitrate/runtime, yet the popup's
+// grid still showed 0/32 populated cells: autograb.Select was rejecting a
+// real candidate for a reason this handler previously never surfaced (below
+// the bitrate floor? too few seeders? mislabeled?). Logs each grade's Status
+// plus the numbers that drove it, so a miscalibrated threshold can be
+// confirmed from evidence rather than guessed at. Only called when
+// candidates existed but none qualified (sel.Fallback), so this never fires
+// for the overwhelmingly common "no release at all" case already covered by
+// the handler's own "Prowlarr returned N raw releases" log line.
+func logAvailabilityRejections(tier quality.Tier, protocol string, releases []prowlarr.Release, grades []autograb.Grade) {
+	for i, g := range grades {
+		title := ""
+		if i < len(releases) {
+			title = releases[i].Title
+		}
+		log.Printf("discover availability: rejected candidate tier=%s protocol=%s title=%q status=%s score=%.2fMbps floor=%.2fMbps impliedMbps=%.2f seeders=%d resolution=%d",
+			tier, protocol, title, g.Status, g.Score, g.FloorMbps, g.ImpliedMbps, g.Candidate.Seeders, g.Candidate.Resolution)
 	}
 }

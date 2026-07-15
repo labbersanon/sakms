@@ -30,6 +30,32 @@ import (
 // hand-rolling its own 6000.
 const adultAutoGrabCategory = 6000
 
+// adultQueryApostrophe/adultQueryNonAlnum back normalizeAdultQuery.
+// Apostrophes are dropped entirely (so "Don't" -> "Dont", matching how
+// scene-release naming conventions usually handle contractions) rather than
+// becoming a space, which would split one word into two ("Don t"). Every
+// other run of characters that isn't a letter, digit, or whitespace
+// (colons, commas, periods, asterisks, parens...) collapses to a single
+// space instead.
+var (
+	adultQueryApostrophe = regexp.MustCompile(`['’]`)
+	adultQueryNonAlnum   = regexp.MustCompile(`[^a-zA-Z0-9\s]+`)
+)
+
+// normalizeAdultQuery strips punctuation from a studio+title string before
+// it becomes a Prowlarr free-text query — see autoGrabSearch's Adult case
+// for why: a real production report found the raw, unnormalized text
+// (colons, commas, asterisks, apostrophes and all) almost never appears
+// verbatim in how trackers actually name Adult releases, so nearly every
+// search was returning 0 raw releases. Collapses repeated/leading/trailing
+// whitespace too (strings.Fields + Join), so an empty Studio or Title still
+// produces a clean single-spaced result.
+func normalizeAdultQuery(s string) string {
+	s = adultQueryApostrophe.ReplaceAllString(s, "")
+	s = adultQueryNonAlnum.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // autoGrabHandler is Discover's one-click unattended auto-grab (Stage 2). It
 // searches Prowlarr for the requested title/scene, grades every release with
 // internal/autograb's bitrate-quality-floor scorer, and either
@@ -145,18 +171,21 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
 	switch m {
 	case mode.Adult:
-		query := strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
+		rawQuery := strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
+		query := normalizeAdultQuery(rawQuery)
 		// Diagnostic logging (2026-07-15, mirrors the project's existing
 		// "add tracing before fixing" precedent): a real "Adult downloads
 		// never resolve" report found Prowlarr returning 0 raw releases for
-		// every scene tried, with adult indexers confirmed configured — so
-		// the remaining suspect is this query itself (studio+full scene
-		// title concatenated verbatim, which may be far more verbose than
-		// how adult trackers actually name releases). Logging the exact
-		// query text and category to compare against what a manual search
-		// on the same indexers actually matches, before changing this
-		// query-construction logic on a guess.
-		log.Printf("autoGrabSearch: mode=adult query=%q category=%d studio=%q title=%q", query, adultAutoGrabCategory, req.Studio, req.Title)
+		// nearly every scene tried, with adult indexers confirmed
+		// configured — live evidence showed the raw studio+title query
+		// (colons, commas, asterisks, apostrophes and all — e.g. "Private
+		// Classics Franky Knight: Curvy And Horny, Looking For A Stallion")
+		// almost never appears verbatim in how trackers actually name Adult
+		// releases. normalizeAdultQuery strips that punctuation before
+		// sending. Kept logging both the raw and normalized query so a
+		// still-empty result is easy to compare against a manual search on
+		// the same indexers.
+		log.Printf("autoGrabSearch: mode=adult rawQuery=%q query=%q category=%d studio=%q title=%q", rawQuery, query, adultAutoGrabCategory, req.Studio, req.Title)
 		releases, err := sess.Prowlarr.Search(ctx, query, []int{adultAutoGrabCategory})
 		return releases, float64(req.DurationSeconds), err
 	case mode.Series:

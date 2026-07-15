@@ -201,6 +201,41 @@ func TestDiscoverAvailabilityHandler_Adult_StudioTitleDuration_NoTMDBCall(t *tes
 	}
 }
 
+// TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized proves
+// the punctuation-stripping fix (normalizeAdultQuery) reaches the actual
+// Prowlarr request end-to-end through this handler, not just the unit-level
+// TestNormalizeAdultQuery — a real "Adult downloads never resolve" report
+// found the raw, unnormalized studio+title text almost never matching how
+// trackers name Adult releases.
+func TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized(t *testing.T) {
+	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore := testStores(t)
+	ctx := context.Background()
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarr.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore))
+	defer srv.Close()
+
+	reqURL := srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Private Classics") +
+		"&title=" + urlQueryEscape("Franky Knight: Curvy And Horny, Looking For A Stallion") + "&durationSeconds=1800"
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	want := "Private Classics Franky Knight Curvy And Horny Looking For A Stallion"
+	if got := lastQuery.Get("query"); got != want {
+		t.Errorf("query sent to Prowlarr = %q, want punctuation-stripped %q", got, want)
+	}
+}
+
 // urlQueryEscape is a tiny local alias so the test bodies above read cleanly
 // without repeating the net/url import qualifier inline.
 func urlQueryEscape(s string) string { return url.QueryEscape(s) }

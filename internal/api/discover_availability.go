@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -105,6 +106,8 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		log.Printf("discover availability: mode=%s title=%q tmdbId=%d — Prowlarr returned %d raw releases, runtimeSeconds=%.0f",
+			m, title, req.TMDBID, len(releases), runtimeSeconds)
 
 		// autoGrabSearch/seriesEpisodeRuntimeSeconds deliberately returns 0
 		// runtime for a Series whole-season request (EpisodeNumber == 0) —
@@ -139,11 +142,60 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		neutralizeSeasonPacks := m == mode.Series && req.EpisodeNumber > 0 && runtimeSeconds > 0
 		candidates := buildAutoGrabCandidates(filtered, runtimeSeconds, neutralizeSeasonPacks)
 
+		unrecognizedResolution := 0
+		unknownBitrate := 0
+		for _, c := range candidates {
+			if !isDiscoverAvailabilityResolution(c.Resolution) {
+				unrecognizedResolution++
+			}
+			if c.RuntimeSeconds <= 0 || c.SizeBytes <= 0 {
+				unknownBitrate++
+			}
+		}
+		if len(candidates) > 0 && (unrecognizedResolution > 0 || unknownBitrate > 0) {
+			log.Printf("discover availability: mode=%s title=%q — of %d filtered candidates, %d have an unrecognized resolution (land in no bucket) and %d have unknown bitrate (size or runtime missing, can never qualify at any tier)",
+				m, title, len(candidates), unrecognizedResolution, unknownBitrate)
+		}
+
 		preview := buildAvailabilityPreview(candidates, filtered)
+		log.Printf("discover availability: mode=%s title=%q — final grid has %d/32 populated cells", m, title, countPopulatedCells(preview))
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(preview)
 	}
+}
+
+// isDiscoverAvailabilityResolution reports whether resolution is one of the
+// 4 buckets the preview grid actually partitions on — anything else
+// (including release.Parse's 0 "unrecognized" value) lands in no bucket at
+// all, which reads as "unavailable" even though a real release was found.
+// Diagnostic-logging helper only (see the handler's unrecognizedResolution
+// counter above), not used by the actual grading path.
+func isDiscoverAvailabilityResolution(resolution int) bool {
+	for _, r := range discoverAvailabilityResolutions {
+		if resolution == r {
+			return true
+		}
+	}
+	return false
+}
+
+// countPopulatedCells counts non-nil Usenet/Torrent picks across the whole
+// 4x4x2 grid (max 32) — a quick, loggable summary of how empty or full the
+// final response actually is, without dumping the whole structure.
+func countPopulatedCells(preview apidto.AvailabilityPreview) int {
+	n := 0
+	for _, res := range []apidto.ResolutionAvailability{preview.Res2160, preview.Res1080, preview.Res720, preview.Res480} {
+		for _, tier := range []apidto.TierAvailability{res.Low, res.Medium, res.High, res.Lossless} {
+			if tier.Usenet != nil {
+				n++
+			}
+			if tier.Torrent != nil {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // seriesSeasonTotalRuntimeSeconds sums every episode's runtime for a whole

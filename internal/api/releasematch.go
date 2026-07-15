@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -170,7 +171,12 @@ func FilterReleases(ctx context.Context, releases []prowlarr.Release, targetTitl
 
 	matched := fastMatched
 	if len(matched) == 0 && aiClient != nil {
+		log.Printf("discover availability: FilterReleases(mode=%s, title=%q) — fast path matched 0/%d raw releases, escalating to AI", m, targetTitle, len(releases))
 		matched = aiEscalateTitleMatch(ctx, releases, targetTitle, m, aiClient)
+	} else if len(matched) == 0 {
+		log.Printf("discover availability: FilterReleases(mode=%s, title=%q) — fast path matched 0/%d raw releases, no AI client configured, giving up", m, targetTitle, len(releases))
+	} else {
+		log.Printf("discover availability: FilterReleases(mode=%s, title=%q) — fast path matched %d/%d raw releases", m, targetTitle, len(matched), len(releases))
 	}
 
 	out := make([]prowlarr.Release, 0, len(matched))
@@ -178,6 +184,9 @@ func FilterReleases(ctx context.Context, releases []prowlarr.Release, targetTitl
 		if !hasLanguageTag(rel.Title) {
 			out = append(out, rel)
 		}
+	}
+	if len(out) != len(matched) {
+		log.Printf("discover availability: FilterReleases(mode=%s, title=%q) — language filter dropped %d/%d matched releases", m, targetTitle, len(matched)-len(out), len(matched))
 	}
 	return out
 }
@@ -222,12 +231,20 @@ func aiEscalateTitleMatch(ctx context.Context, releases []prowlarr.Release, targ
 			defer func() { <-sem }()
 
 			cleaned, err := cleanReleaseTitle(ctx, rel.Title, m, aiClient)
-			if err != nil || cleaned == "" {
+			if err != nil {
+				log.Printf("discover availability: AI escalation error for release %q: %v", rel.Title, err)
 				return
 			}
-			if identify.TitleSimilarity(targetTitle, cleaned) >= titleSimilarityFloor {
+			if cleaned == "" {
+				log.Printf("discover availability: AI declined to guess a title for release %q", rel.Title)
+				return
+			}
+			sim := identify.TitleSimilarity(targetTitle, cleaned)
+			if sim >= titleSimilarityFloor {
 				matched[i] = true
 			}
+			log.Printf("discover availability: AI escalation for release %q — cleaned to %q, similarity to target %q = %.3f (floor %.2f), matched=%v",
+				rel.Title, cleaned, targetTitle, sim, titleSimilarityFloor, matched[i])
 		}(i, rel)
 	}
 	wg.Wait()
@@ -238,6 +255,8 @@ func aiEscalateTitleMatch(ctx context.Context, releases []prowlarr.Release, targ
 			out = append(out, rel)
 		}
 	}
+	log.Printf("discover availability: AI escalation for target %q checked %d candidates (of %d raw releases), matched %d",
+		targetTitle, len(candidates), len(releases), len(out))
 	return out
 }
 

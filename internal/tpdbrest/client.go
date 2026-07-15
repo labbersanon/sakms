@@ -359,6 +359,28 @@ func (c *Client) SearchByTitle(ctx context.Context, title, site string) ([]Scene
 	return c.get(ctx, params)
 }
 
+// sceneResponse is the single-object envelope GET /scenes/{identifier}
+// returns — confirmed in the live OpenAPI spec, a different shape from the
+// array-wrapped scenesResponse every browse/search endpoint returns.
+type sceneResponse struct {
+	Data rawScene `json:"data"`
+}
+
+// GetSceneByID fetches one scene directly by its TPDB id — an exact,
+// no-fuzzy-matching lookup, unlike SearchByTitle/BrowseScenes. TEMPORARY:
+// reintroduced 2026-07-15 for a live diagnostic (see
+// internal/api/tpdb_diag.go) comparing this endpoint's duration field
+// against SearchByTitle's for a scene known to have duration=0 as cached —
+// remove alongside that diagnostic once the real fix location is decided.
+func (c *Client) GetSceneByID(ctx context.Context, id string) (*Scene, error) {
+	var sr sceneResponse
+	if err := c.doGet(ctx, "/scenes/"+url.PathEscape(id), url.Values{}, &sr); err != nil {
+		return nil, err
+	}
+	scene := sr.Data.toScene()
+	return &scene, nil
+}
+
 // Performer mirrors a subset of ThePornDB's REST performer response shape.
 // Image is the single chosen image URL — see rawPerformer for how it's picked
 // from TPDB's several nullable image fields; may be empty (no art on file), so

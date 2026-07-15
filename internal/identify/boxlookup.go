@@ -145,6 +145,17 @@ func (b *BoxSearcher) SearchTPDBMovies(ctx context.Context, title string) (*Matc
 	})
 }
 
+// GetSceneByIDDiag is a TEMPORARY passthrough to tpdbrest.Client.GetSceneByID
+// for internal/api/tpdb_diag.go's one-off live diagnostic (2026-07-15) — b.tpdb
+// is unexported, so the diagnostic handler (a different package) needs this to
+// reach it. Remove alongside tpdb_diag.go.
+func (b *BoxSearcher) GetSceneByIDDiag(ctx context.Context, id string) (*tpdbrest.Scene, error) {
+	if b.tpdb == nil {
+		return nil, nil
+	}
+	return b.tpdb.GetSceneByID(ctx, id)
+}
+
 // SceneByID looks up a scene directly by its stash-box UUID (StashDB/FansDB).
 func (b *BoxSearcher) SceneByID(ctx context.Context, box, sceneID string) (*MatchResult, error) {
 	client := b.stashBoxes[box]

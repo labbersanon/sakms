@@ -359,6 +359,29 @@ func (c *Client) SearchByTitle(ctx context.Context, title, site string) ([]Scene
 	return c.get(ctx, params)
 }
 
+// sceneResponse is the single-object envelope GET /scenes/{identifier}
+// returns — confirmed in the live OpenAPI spec, a different shape from the
+// array-wrapped scenesResponse every browse/search endpoint returns.
+type sceneResponse struct {
+	Data rawScene `json:"data"`
+}
+
+// GetSceneByID fetches one scene directly by its TPDB id (the opaque id
+// string this client already returns from Scene.ID) — confirmed present in
+// TPDB's live OpenAPI spec (GET /scenes/{identifier}). Unlike
+// SearchByTitle/BrowseScenes, this needs no fuzzy matching: an id-based
+// lookup is exact. Added for internal/adultnewest's poster backfill (a
+// cached entity's TPDB id is already known; re-fetching by id gets the
+// current, corrected image fields directly, no re-search needed).
+func (c *Client) GetSceneByID(ctx context.Context, id string) (*Scene, error) {
+	var sr sceneResponse
+	if err := c.doGet(ctx, "/scenes/"+url.PathEscape(id), url.Values{}, &sr); err != nil {
+		return nil, err
+	}
+	scene := sr.Data.toScene()
+	return &scene, nil
+}
+
 // Performer mirrors a subset of ThePornDB's REST performer response shape.
 // Image is the single chosen image URL — see rawPerformer for how it's picked
 // from TPDB's several nullable image fields; may be empty (no art on file), so
@@ -453,6 +476,25 @@ func (c *Client) ScenesByPerformer(ctx context.Context, performerID string, page
 	return c.getScenes(ctx, "/performers/"+url.PathEscape(performerID)+"/scenes", params)
 }
 
+// performerResponse is the single-object envelope GET /performers/{identifier}
+// returns — confirmed in the live OpenAPI spec.
+type performerResponse struct {
+	Data rawPerformer `json:"data"`
+}
+
+// GetPerformerByID fetches one performer directly by TPDB id — confirmed
+// present in TPDB's live OpenAPI spec (GET /performers/{identifier}). See
+// GetSceneByID's doc comment for why an id-based lookup exists alongside
+// the search/browse methods.
+func (c *Client) GetPerformerByID(ctx context.Context, id string) (*Performer, error) {
+	var pr performerResponse
+	if err := c.doGet(ctx, "/performers/"+url.PathEscape(id), url.Values{}, &pr); err != nil {
+		return nil, err
+	}
+	p := pr.Data.toPerformer()
+	return &p, nil
+}
+
 // Site mirrors a subset of ThePornDB's REST site (studio) response shape.
 // Image is the single chosen image URL — see rawSiteEntry for how it's picked
 // from TPDB's several nullable image fields; may be empty, so consumers must
@@ -541,6 +583,25 @@ func (c *Client) ScenesBySite(ctx context.Context, siteID string, page, perPage 
 		"page":     {strconv.Itoa(page)},
 	}
 	return c.getScenes(ctx, "/sites/"+url.PathEscape(siteID)+"/scenes", params)
+}
+
+// siteResponse is the single-object envelope GET /sites/{identifier}
+// returns — confirmed in the live OpenAPI spec.
+type siteResponse struct {
+	Data rawSiteEntry `json:"data"`
+}
+
+// GetSiteByID fetches one site (studio) directly by TPDB id — confirmed
+// present in TPDB's live OpenAPI spec (GET /sites/{identifier}). See
+// GetSceneByID's doc comment for why an id-based lookup exists alongside
+// the search/browse methods.
+func (c *Client) GetSiteByID(ctx context.Context, id string) (*Site, error) {
+	var sr siteResponse
+	if err := c.doGet(ctx, "/sites/"+url.PathEscape(id), url.Values{}, &sr); err != nil {
+		return nil, err
+	}
+	site := sr.Data.toSite()
+	return &site, nil
 }
 
 // Movies share TPDB's Scene resource shape (confirmed via the live OpenAPI

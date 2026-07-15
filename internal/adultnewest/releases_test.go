@@ -288,3 +288,65 @@ func TestPurgeStale_RemovesOldEntitiesAndSeenReleases_KeepsRecent(t *testing.T) 
 		t.Errorf("expected recent-guid to survive the purge")
 	}
 }
+
+func TestListAll_ReturnsEveryRowRegardlessOfRowTypeOrGenre(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	if err := s.Insert(ctx, MatchedRelease{RowType: RowScene, EntityID: "scene-1", EntitySource: "tpdb", EntityTitle: "Scene One", Genres: []string{"Anal"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := s.Insert(ctx, MatchedRelease{RowType: RowStudio, EntityID: "Studio One", EntitySource: "stashdb", EntityTitle: "Studio One"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := s.Insert(ctx, MatchedRelease{RowType: RowPerformer, EntityID: "Performer One", EntitySource: "fansdb", EntityTitle: "Performer One"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	all, err := s.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 rows across all row types, got %d: %+v", len(all), all)
+	}
+}
+
+func TestUpdateImage_OverwritesEntityImageInPlace(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	if err := s.Insert(ctx, MatchedRelease{RowType: RowScene, EntityID: "scene-1", EntitySource: "tpdb", EntityTitle: "Scene One", EntityImage: "https://old.example/broken.jpg"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	all, err := s.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(all))
+	}
+	id := all[0].ID
+
+	if err := s.UpdateImage(ctx, id, "https://cdn.theporndb.net/scene/fixed/large.jpg"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	list, err := s.List(ctx, RowScene, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].EntityImage != "https://cdn.theporndb.net/scene/fixed/large.jpg" {
+		t.Errorf("expected updated image to round-trip through List, got %+v", list)
+	}
+}
+
+func TestUpdateImage_NonExistentIDIsNotAnError(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	if err := s.UpdateImage(ctx, 99999, "https://cdn.theporndb.net/whatever.jpg"); err != nil {
+		t.Errorf("expected no error for a non-existent id, matching this package's Delete-style convention, got %v", err)
+	}
+}

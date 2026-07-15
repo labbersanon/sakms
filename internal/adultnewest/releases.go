@@ -251,3 +251,48 @@ func (s *ReleaseStore) PurgeStale(ctx context.Context, before time.Time) (int64,
 	}
 	return res.RowsAffected()
 }
+
+// ListAll returns every cached matched entity, regardless of row_type or
+// genre — used by the one-off poster backfill (2026-07-15, see
+// internal/identify's RefreshTPDBSceneImage doc comment); List's
+// row-type-scoped pagination isn't the right shape for "walk every row
+// once."
+func (s *ReleaseStore) ListAll(ctx context.Context) ([]MatchedRelease, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, genres, first_seen_at
+		FROM adult_newest_releases
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing all matched entities: %w", err)
+	}
+	defer rows.Close()
+
+	out := []MatchedRelease{}
+	for rows.Next() {
+		var m MatchedRelease
+		var rowTypeStr, genresJSON string
+		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio, &m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &genresJSON, &m.FirstSeenAt); err != nil {
+			return nil, fmt.Errorf("scanning matched entity: %w", err)
+		}
+		m.RowType = RowType(rowTypeStr)
+		if err := json.Unmarshal([]byte(genresJSON), &m.Genres); err != nil {
+			return nil, fmt.Errorf("decoding genres for entity %d: %w", m.ID, err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// UpdateImage overwrites one cached entity's image URL in place — the one
+// exception to this package's otherwise-immutable "an entity is cached
+// once, never updated" convention (see MatchedRelease's doc comment),
+// scoped specifically to the one-off poster backfill this method exists
+// for. Updating an id that doesn't exist is not an error, matching this
+// package's Delete/UpdateResult-style convention elsewhere.
+func (s *ReleaseStore) UpdateImage(ctx context.Context, id int, image string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE adult_newest_releases SET entity_image = ? WHERE id = ?`, image, id)
+	if err != nil {
+		return fmt.Errorf("updating image for entity %d: %w", id, err)
+	}
+	return nil
+}

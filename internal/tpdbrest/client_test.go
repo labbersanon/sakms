@@ -691,3 +691,63 @@ func TestScene_ImagePrefersTPDBHostedFieldsOverStudioPassthrough(t *testing.T) {
 		t.Errorf("expected the raw image field as last-resort fallback, got %q", out[2].Image)
 	}
 }
+
+func TestGetSceneByID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/scenes/1935348" {
+			t.Errorf("expected path /scenes/1935348, got %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"_id":"1935348","title":"By ID","site":{"name":"Nubiles"},"background":{"large":"https://cdn.theporndb.net/x/large.jpg"}}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	got, err := c.GetSceneByID(context.Background(), "1935348")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || got.Title != "By ID" || got.Image != "https://cdn.theporndb.net/x/large.jpg" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestGetPerformerByID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/performers/p1" {
+			t.Errorf("expected path /performers/p1, got %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"_id":"p1","name":"Jane Doe","image":"https://cdn.theporndb.net/p.jpg"}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	got, err := c.GetPerformerByID(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || got.Name != "Jane Doe" || got.Image != "https://cdn.theporndb.net/p.jpg" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestGetSiteByID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sites/s1" {
+			t.Errorf("expected path /sites/s1, got %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"_id":"s1","name":"Tushy","logo":"https://cdn.theporndb.net/logo.png"}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	got, err := c.GetSiteByID(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || got.Name != "Tushy" || got.Image != "https://cdn.theporndb.net/logo.png" {
+		t.Fatalf("got %+v", got)
+	}
+}

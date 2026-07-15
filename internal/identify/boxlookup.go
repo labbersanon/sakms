@@ -145,6 +145,29 @@ func (b *BoxSearcher) SearchTPDBMovies(ctx context.Context, title string) (*Matc
 	})
 }
 
+// RefreshTPDBSceneImage re-fetches a TPDB scene or movie's CURRENT image by
+// id (movies share TPDB's Scene resource shape, see SearchTPDBMovies' doc
+// comment, so the same GetSceneByID call covers both). Unlike
+// SearchStashBox/SearchTPDB/SceneByID above, this is a one-off migration
+// helper for internal/adultnewest's poster backfill (2026-07-15) — existing
+// cached entities have entity_image values captured before
+// tpdbrest.Scene's image-preference fix (background.large/poster over the
+// unreliable raw studio-passthrough field), and re-matching isn't an
+// option (this pipeline never re-processes an already-cached entity), so a
+// direct id-based re-fetch is the only way to correct them. Not cached
+// (unlike the other BoxSearcher methods) — a one-off backfill runs each id
+// exactly once, so there's nothing to reuse a cache entry for.
+func (b *BoxSearcher) RefreshTPDBSceneImage(ctx context.Context, id string) (string, error) {
+	if b.tpdb == nil {
+		return "", nil
+	}
+	scene, err := b.tpdb.GetSceneByID(ctx, id)
+	if err != nil || scene == nil {
+		return "", err
+	}
+	return scene.Image, nil
+}
+
 // SceneByID looks up a scene directly by its stash-box UUID (StashDB/FansDB).
 func (b *BoxSearcher) SceneByID(ctx context.Context, box, sceneID string) (*MatchResult, error) {
 	client := b.stashBoxes[box]

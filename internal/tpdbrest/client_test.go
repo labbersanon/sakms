@@ -136,6 +136,27 @@ func TestGet_ParsesRating(t *testing.T) {
 	}
 }
 
+// TestGet_ParsesSlug proves the scene's "slug" field decodes into Scene.Slug
+// — the field the external "More on TPDB" link (Discover detail popup) uses
+// to build https://theporndb.net/scenes/{slug}, since TPDB's own scene pages
+// are slug-path, not the `_id`-path StashDB/FansDB use.
+func TestGet_ParsesSlug(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"Slugged Scene","slug":"evilangel-ivy-ireland-dp-dvp-threesome-1","date":"2024-01-01","site":{"name":"Some Site"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.SearchByHash(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Slug != "evilangel-ivy-ireland-dp-dvp-threesome-1" {
+		t.Fatalf("expected the parsed slug, got %+v", out)
+	}
+}
+
 func TestBrowsePerformers_PaginatesWithoutSearchTerm(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/performers" {

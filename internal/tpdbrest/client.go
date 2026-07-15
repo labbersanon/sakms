@@ -50,6 +50,20 @@ type Scene struct {
 	// stash-box scene whose pHash TPDB already carries. May be empty (a scene
 	// with no submitted fingerprints).
 	Hashes []string
+	// Slug is TPDB's URL-friendly scene identifier — unlike StashDB/FansDB
+	// (stash-box software, whose scene detail pages are UUID-path:
+	// stashdb.org/scenes/{uuid}), TPDB's own scene pages are slug-path:
+	// theporndb.net/scenes/{slug} (e.g. "evilangel-ivy-ireland-dp-dvp-
+	// threesome-1" — a real example URL, not a guess). The `_id` field
+	// (rawScene.ID above) does NOT work in that path position. Sourcing: the
+	// `slug` JSON field itself is modeled from goenvoy's TPDB REST client
+	// (pkg.go.dev/github.com/lusoris/goenvoy/metadata/adult/tpdb), the same
+	// corroborating source already used for Duration/Rating above (its other
+	// field names match this package's rawScene byte-for-byte); the URL
+	// PATH SHAPE it builds is directly confirmed by the real example URL.
+	// May be empty for an older/edge-case scene; treat that as "no confirmed
+	// external link," not a broken guessed URL.
+	Slug string
 }
 
 type rawSite struct {
@@ -125,6 +139,7 @@ func (f *flexID) UnmarshalJSON(b []byte) error {
 type rawScene struct {
 	ID       flexID         `json:"_id"`
 	Title    string         `json:"title"`
+	Slug     string         `json:"slug"`
 	Date     string         `json:"date"`
 	Site     *rawSite       `json:"site"`
 	Image    string         `json:"image"`
@@ -151,7 +166,7 @@ func (s rawScene) toScene() Scene {
 			phashes = append(phashes, h.Hash)
 		}
 	}
-	return Scene{ID: string(s.ID), Title: s.Title, Date: s.Date, Site: site, Image: s.Image, Duration: s.Duration, Rating: s.Rating, Hashes: phashes}
+	return Scene{ID: string(s.ID), Title: s.Title, Slug: s.Slug, Date: s.Date, Site: site, Image: s.Image, Duration: s.Duration, Rating: s.Rating, Hashes: phashes}
 }
 
 // firstNonEmpty returns the first non-empty string from vals, or "" if all are

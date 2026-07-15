@@ -36,6 +36,7 @@ const scene = (over: Partial<AdultDiscoverItem>): AdultDiscoverItem => ({
   durationSeconds: 1800,
   rating: 0,
   source: "tpdb",
+  slug: "tushy-a-scene-1",
   ...over,
 });
 

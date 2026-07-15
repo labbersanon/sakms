@@ -73,6 +73,7 @@ const adultScene = (over: Partial<AdultDiscoverItem> = {}): AdultDiscoverItem =>
   durationSeconds: 1800,
   rating: 4,
   source: "tpdb",
+  slug: "evilangel-a-scene-1",
   ...over,
 });
 
@@ -365,10 +366,18 @@ describe("DetailPopup — external database link (poster + \"More on …\")", ()
     expect(externalDetailURL(target)).toBe("https://www.themoviedb.org/tv/7");
   });
 
-  it("externalDetailURL maps each Adult source to its own site", () => {
+  // TPDB is slug-path (theporndb.net/scenes/{slug}), NOT id-path — confirmed
+  // against a real example URL
+  // (theporndb.net/scenes/evilangel-ivy-ireland-dp-dvp-threesome-1). An
+  // earlier version of this function used the scene's opaque `id` here,
+  // which is a real bug this test guards against regressing.
+  it("externalDetailURL maps each Adult source to its own site — TPDB by slug, stash-box by id", () => {
     expect(
-      externalDetailURL({ mode: "adult", item: adultScene({ id: "s1", source: "tpdb" }) }),
-    ).toBe("https://theporndb.net/scenes/s1");
+      externalDetailURL({
+        mode: "adult",
+        item: adultScene({ id: "s1", slug: "evilangel-ivy-ireland-dp-dvp-threesome-1", source: "tpdb" }),
+      }),
+    ).toBe("https://theporndb.net/scenes/evilangel-ivy-ireland-dp-dvp-threesome-1");
     expect(
       externalDetailURL({ mode: "adult", item: adultScene({ id: "s2", source: "stashdb" }) }),
     ).toBe("https://stashdb.org/scenes/s2");
@@ -378,6 +387,12 @@ describe("DetailPopup — external database link (poster + \"More on …\")", ()
     expect(sourceLabel({ mode: "adult", item: adultScene({ source: "stashdb" }) })).toBe(
       "StashDB",
     );
+  });
+
+  it("externalDetailURL returns undefined for a TPDB scene with no slug (older/edge-case scene)", () => {
+    expect(
+      externalDetailURL({ mode: "adult", item: adultScene({ source: "tpdb", slug: "" }) }),
+    ).toBeUndefined();
   });
 
   it("externalDetailURL returns undefined for an unrecognized Adult source", () => {

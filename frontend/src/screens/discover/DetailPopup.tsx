@@ -211,35 +211,49 @@ export function computeDefaults(
   return undefined;
 }
 
-// ADULT_SOURCE_URL maps an AdultDiscoverItem's `source` field ("tpdb",
-// "stashdb", "fansdb" — see adultdiscover.go/adultdiscover_stashbox.go, the
-// only three values ever stamped) to that source's own scene-detail page
-// base URL and a short display label for the "More on …" link.
-//
-// UNVERIFIED ASSUMPTION for the `/scenes/{id}` path shape (per this
-// project's honesty-about-unverified-assumptions convention): StashDB and
-// FansDB run the identical open-source stash-box software, so both using
-// `/scenes/{id}` is a reasonably confident inference — not confirmed live,
-// since both are JS-rendered SPAs that don't expose their route table to a
-// static fetch. TPDB's `/scenes/{id}` pattern is a lower-confidence guess at
-// the same shape. Verify by clicking through once this ships.
-const ADULT_SOURCE_URL: Record<string, { base: string; label: string }> = {
-  tpdb: { base: "https://theporndb.net/scenes/", label: "TPDB" },
-  stashdb: { base: "https://stashdb.org/scenes/", label: "StashDB" },
-  fansdb: { base: "https://fansdb.cc/scenes/", label: "FansDB" },
+// ADULT_SOURCE_LABEL names the site externalDetailURL points at for each
+// AdultDiscoverItem `source` value ("tpdb", "stashdb", "fansdb" — see
+// adultdiscover.go/adultdiscover_stashbox.go, the only three values ever
+// stamped), for the "More on …" link's text.
+const ADULT_SOURCE_LABEL: Record<string, string> = {
+  tpdb: "TPDB",
+  stashdb: "StashDB",
+  fansdb: "FansDB",
 };
 
 // externalDetailURL builds the link to this title's page on its source
 // database — TMDB for Movies/Series (DiscoverItem.id is TMDB's own numeric
 // id, already used as tmdbId in the grab call, so no backend change is
-// needed); one of TPDB/StashDB/FansDB for Adult, per the scene's own
-// `source` field (see ADULT_SOURCE_URL above). Returns undefined only if an
-// Adult scene's `source` is somehow none of the three known values.
+// needed); TPDB/StashDB/FansDB for Adult, per the scene's own `source` field.
+//
+// The three Adult sources are NOT the same URL shape:
+//   - TPDB: theporndb.net/scenes/{slug} — a URL-friendly slug
+//     (AdultDiscoverItem.Slug, see internal/tpdbrest.Scene.Slug's doc),
+//     confirmed against a real example URL
+//     (theporndb.net/scenes/evilangel-ivy-ireland-dp-dvp-threesome-1) — the
+//     scene's opaque `id` does NOT work in that path position, a real bug
+//     an earlier version of this function had. Returns undefined if Slug is
+//     empty (an older/edge-case scene) rather than a guaranteed-broken URL.
+//   - StashDB/FansDB: {site}/scenes/{id} — both run the identical
+//     open-source stash-box software, whose own scene detail pages are
+//     UUID-path (unlike TPDB). UNVERIFIED (per this project's honesty-about-
+//     unverified-assumptions convention): a reasonably confident inference
+//     from the shared codebase, not confirmed live — both are JS-rendered
+//     SPAs that don't expose their route table to a static fetch. Verify by
+//     clicking through once this ships.
 export function externalDetailURL(target: DetailTarget): string | undefined {
   if (target.mode === "adult") {
     const scene = target.item;
-    const src = ADULT_SOURCE_URL[scene.source];
-    return src ? `${src.base}${scene.id}` : undefined;
+    switch (scene.source) {
+      case "tpdb":
+        return scene.slug ? `https://theporndb.net/scenes/${scene.slug}` : undefined;
+      case "stashdb":
+        return `https://stashdb.org/scenes/${scene.id}`;
+      case "fansdb":
+        return `https://fansdb.cc/scenes/${scene.id}`;
+      default:
+        return undefined;
+    }
   }
   return `https://www.themoviedb.org/${target.mode === "movies" ? "movie" : "tv"}/${target.item.id}`;
 }
@@ -248,7 +262,7 @@ export function externalDetailURL(target: DetailTarget): string | undefined {
 // …" link's text.
 export function sourceLabel(target: DetailTarget): string {
   if (target.mode === "adult") {
-    return ADULT_SOURCE_URL[target.item.source]?.label ?? "source";
+    return ADULT_SOURCE_LABEL[target.item.source] ?? "source";
   }
   return "TMDB";
 }

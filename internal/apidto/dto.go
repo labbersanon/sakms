@@ -222,6 +222,12 @@ type DiscoverItem struct {
 // or "fansdb". TPDB's own rows and the merged "Recently Released" feed set it
 // so the card can show a provenance label; stash-box has no numeric rating, so
 // a "stashdb"/"fansdb" scene's Rating is always 0.
+//
+// Slug is TPDB's URL-friendly scene identifier, used by the Discover detail
+// popup's "More on TPDB" external link (theporndb.net/scenes/{slug}, NOT
+// {id} — see internal/tpdbrest.Scene.Slug for sourcing). Always empty for a
+// "stashdb"/"fansdb" scene: those sites' own detail pages are UUID-path
+// (stashdb.org/scenes/{id}), so the popup links via ID for them instead.
 type AdultDiscoverItem struct {
 	ID              string  `json:"id"`
 	Title           string  `json:"title"`
@@ -231,6 +237,7 @@ type AdultDiscoverItem struct {
 	DurationSeconds int     `json:"durationSeconds"`
 	Rating          float64 `json:"rating"`
 	Source          string  `json:"source"`
+	Slug            string  `json:"slug"`
 }
 
 // StudioSummary is one entry in Adult Discover's Studios row

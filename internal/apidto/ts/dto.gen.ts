@@ -230,6 +230,11 @@ export interface DiscoverItem {
  * or "fansdb". TPDB's own rows and the merged "Recently Released" feed set it
  * so the card can show a provenance label; stash-box has no numeric rating, so
  * a "stashdb"/"fansdb" scene's Rating is always 0.
+ * Slug is TPDB's URL-friendly scene identifier, used by the Discover detail
+ * popup's "More on TPDB" external link (theporndb.net/scenes/{slug}, NOT
+ * {id} — see internal/tpdbrest.Scene.Slug for sourcing). Always empty for a
+ * "stashdb"/"fansdb" scene: those sites' own detail pages are UUID-path
+ * (stashdb.org/scenes/{id}), so the popup links via ID for them instead.
  */
 export interface AdultDiscoverItem {
   id: string;
@@ -240,6 +245,7 @@ export interface AdultDiscoverItem {
   durationSeconds: number /* int */;
   rating: number /* float64 */;
   source: string;
+  slug: string;
 }
 /**
  * StudioSummary is one entry in Adult Discover's Studios row

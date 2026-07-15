@@ -183,8 +183,10 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 // autoGrabSearch runs the per-mode Prowlarr search and resolves the known
 // pre-grab runtime (seconds) the bitrate scorer needs. Movies/Series probe
 // id-scoped (mirroring availability.CheckMovie/CheckSeries); Adult uses a
-// studio+title free-text query over the XXX category (mirroring
-// availability.CheckAdultScene). Runtime: Movies from TMDB MovieDetails;
+// free-text query over the XXX category — the raw first-matched release
+// title when available (req.ReleaseTitle), else a studio+title
+// reconstruction (mirroring availability.CheckAdultScene). Runtime: Movies
+// from TMDB MovieDetails;
 // Adult from the request's DurationSeconds; Series from the picked episode's
 // TMDB runtime (seriesEpisodeRuntimeSeconds) for a single-episode grab, or 0
 // (unknown → manual pick list) for a whole-season grab, whose runtime is
@@ -193,21 +195,28 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
 	switch m {
 	case mode.Adult:
-		rawQuery := strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
-		query := normalizeAdultQuery(rawQuery)
-		// Diagnostic logging (2026-07-15, mirrors the project's existing
-		// "add tracing before fixing" precedent): a real "Adult downloads
-		// never resolve" report found Prowlarr returning 0 raw releases for
+		// Prefer the raw Prowlarr release title that first matched this
+		// entity (req.ReleaseTitle, see adultnewest.MatchedRelease.
+		// FirstSeenReleaseTitle's doc comment) — it's real indexer
+		// vocabulary that already matched once, unlike a query reconstructed
+		// from TPDB's own Studio+Title metadata, which includes tokens (e.g.
+		// TPDB's "S6:E10" episode notation) real release filenames never
+		// contain. Found live, 2026-07-15: a "Adult downloads never
+		// resolve" report traced to Prowlarr returning 0 raw releases for
 		// nearly every scene tried, with adult indexers confirmed
-		// configured — live evidence showed the raw studio+title query
-		// (colons, commas, asterisks, apostrophes and all — e.g. "Private
-		// Classics Franky Knight: Curvy And Horny, Looking For A Stallion")
-		// almost never appears verbatim in how trackers actually name Adult
-		// releases. normalizeAdultQuery strips that punctuation before
-		// sending. Kept logging both the raw and normalized query so a
-		// still-empty result is easy to compare against a manual search on
-		// the same indexers.
-		log.Printf("autoGrabSearch: mode=adult rawQuery=%q query=%q category=%d studio=%q title=%q", rawQuery, query, adultAutoGrabCategory, req.Studio, req.Title)
+		// configured — the studio+title query (colons, commas, asterisks,
+		// apostrophes and all — e.g. "Private Classics Franky Knight: Curvy
+		// And Horny, Looking For A Stallion") almost never appears verbatim
+		// in how trackers actually name Adult releases. Falls back to
+		// Studio+Title when ReleaseTitle is empty — entities matched before
+		// this field existed, or a plain TPDB/StashDB/FansDB catalog browse
+		// item with no associated Prowlarr release to remember.
+		rawQuery := strings.TrimSpace(req.ReleaseTitle)
+		if rawQuery == "" {
+			rawQuery = strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
+		}
+		query := normalizeAdultQuery(rawQuery)
+		log.Printf("autoGrabSearch: mode=adult rawQuery=%q query=%q category=%d studio=%q title=%q releaseTitle=%q", rawQuery, query, adultAutoGrabCategory, req.Studio, req.Title, req.ReleaseTitle)
 		releases, err := sess.Prowlarr.Search(ctx, query, []int{adultAutoGrabCategory})
 		return releases, float64(req.DurationSeconds), err
 	case mode.Series:

@@ -182,6 +182,7 @@ func toDTOReleaseItem(m adultnewest.MatchedRelease) apidto.AdultNewestReleaseIte
 		Source:          m.EntitySource,
 		RowType:         string(m.RowType),
 		DurationSeconds: m.EntityDurationSeconds,
+		ReleaseTitle:    m.FirstSeenReleaseTitle,
 		Genres:          m.Genres,
 	}
 }

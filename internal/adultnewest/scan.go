@@ -243,21 +243,24 @@ func processRelease(ctx context.Context, id *identify.Identifier, prowlarrClient
 // being cached — found live in production, 2026-07-15: this pipeline
 // deliberately dedups by ENTITY, not by the specific release that triggered
 // the match (see the migration's doc comment — several releases can
-// resolve to the same scene), which means the ORIGINAL raw release's
-// identity is never retained. A later Grab click has no choice but to
-// re-search Prowlarr from scratch using the matched entity's CANONICAL
-// title+studio — a fundamentally different, much stricter query than the
-// raw release title IdentifyDetailed's AI-assisted fuzzy pipeline actually
-// matched against. A canonical TPDB title can legitimately find zero raw
-// Prowlarr results even when the release that triggered the match is real
-// (confirmed live: a studio whose content is only ever released as
-// multi-scene compilation packs, never as the single scene TPDB catalogs
-// separately). Running the SAME search a later Grab would run, right now,
-// closes that gap — if it fails here, it would fail at Grab time too, so
-// don't cache a card Grab can never fulfill. Studio/Performer rows are
-// deliberately NOT gated this way: EntityCard has no Grab button for this
-// pipeline's matched entities, so there's no "will Grab find something"
-// expectation to protect there.
+// resolve to the same scene), so only the FIRST matching release's identity
+// is retained (MatchedRelease.FirstSeenReleaseTitle). Before that field
+// existed, a later Grab click had no choice but to re-search Prowlarr from
+// scratch using the matched entity's CANONICAL TPDB title+studio — a
+// fundamentally different, much stricter query than the raw release title
+// IdentifyDetailed's AI-assisted fuzzy pipeline actually matched against,
+// and one that could legitimately find zero raw Prowlarr results even when
+// the release that triggered the match was real (confirmed live: a studio
+// whose content is only ever released as multi-scene compilation packs,
+// never as the single scene TPDB catalogs separately). Now that the raw
+// release title itself is what both this check and the eventual Grab query
+// use, confirmAvailable mainly guards against edge cases (indexer content
+// churn between scan and Grab, encoding/category quirks) rather than a
+// query-shape mismatch — running the SAME search a later Grab would run,
+// right now, still means: if it fails here, don't cache a card Grab can
+// never fulfill. Studio/Performer rows are deliberately NOT gated this way:
+// EntityCard has no Grab button for this pipeline's matched entities, so
+// there's no "will Grab find something" expectation to protect there.
 func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *prowlarr.Client, r prowlarr.Release) ([]MatchedRelease, error) {
 	detail, err := id.IdentifyDetailed(ctx, r.Title, "")
 	if err != nil {
@@ -272,8 +275,8 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		if detail.Scene.Type == "movie" {
 			rowType = RowMovie
 		}
-		if confirmAvailable(ctx, prowlarrClient, detail.Scene.Studio, detail.Scene.Title) {
-			out = append(out, toMatchedRelease(rowType, *detail.Scene))
+		if confirmAvailable(ctx, prowlarrClient, r.Title) {
+			out = append(out, toMatchedRelease(rowType, *detail.Scene, r.Title))
 		}
 	default:
 		// No scene match — try TPDB's movie catalog directly before giving
@@ -283,8 +286,8 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		// that's an acceptable, honestly-scoped difference from the scene
 		// path's full pipeline.
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, r.Title); err == nil && movie != nil {
-			if confirmAvailable(ctx, prowlarrClient, movie.Studio, movie.Title) {
-				out = append(out, toMatchedRelease(RowMovie, *movie))
+			if confirmAvailable(ctx, prowlarrClient, r.Title) {
+				out = append(out, toMatchedRelease(RowMovie, *movie, r.Title))
 			}
 		}
 	}
@@ -363,9 +366,11 @@ func normalizeAdultQuery(s string) string {
 }
 
 // confirmAvailable runs the SAME search a later Grab click would run
-// (internal/api/autograb.go's autoGrabSearch: normalized studio+title query
-// against Prowlarr's Adult category) and reports whether it finds at least
-// one raw release — the same permissive "available" bar
+// (internal/api/autograb.go's autoGrabSearch: normalized releaseTitle query
+// against Prowlarr's Adult category — see MatchedRelease.FirstSeenReleaseTitle's
+// doc comment for why the raw release title, not reconstructed studio+title
+// metadata, is what both searches use) and reports whether it finds at
+// least one raw release — the same permissive "available" bar
 // internal/availability.CheckAdultScene uses elsewhere in this codebase
 // (any release at all, no seeder/bitrate filtering; DetailPopup's manual
 // fallback pick list already handles "found something, but nothing
@@ -373,8 +378,8 @@ func normalizeAdultQuery(s string) string {
 // than propagating, since "couldn't confirm" and "confirmed unavailable"
 // should both mean "don't cache this" — see matchRelease's doc comment for
 // why this check exists at all.
-func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, studio, title string) bool {
-	query := normalizeAdultQuery(strings.TrimSpace(studio + " " + title))
+func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, releaseTitle string) bool {
+	query := normalizeAdultQuery(strings.TrimSpace(releaseTitle))
 	releases, err := prowlarrClient.Search(ctx, query, []int{adultCategory})
 	if err != nil {
 		return false
@@ -386,7 +391,10 @@ func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, stud
 // MatchResult's comma-joined Tags string back into a slice (see
 // identify.MatchResult's doc comment for why it's stored as a single string
 // there — this is the one place that string gets parsed back apart).
-func toMatchedRelease(rowType RowType, m identify.MatchResult) MatchedRelease {
+// releaseTitle is the raw Prowlarr release title that triggered this match
+// (r.Title in matchRelease) — see MatchedRelease.FirstSeenReleaseTitle's doc
+// comment for why it's captured here rather than reconstructed later.
+func toMatchedRelease(rowType RowType, m identify.MatchResult, releaseTitle string) MatchedRelease {
 	var genres []string
 	if m.Tags != "" {
 		genres = strings.Split(m.Tags, ",")
@@ -400,6 +408,7 @@ func toMatchedRelease(rowType RowType, m identify.MatchResult) MatchedRelease {
 		EntityImage:           m.Image,
 		EntityDate:            m.Date,
 		EntityDurationSeconds: m.RuntimeSeconds,
+		FirstSeenReleaseTitle: releaseTitle,
 		Genres:                genres,
 	}
 }

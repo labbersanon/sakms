@@ -67,14 +67,18 @@ const sourceLabel = (source: string): string => {
 // toAdultDiscoverItem adapts an AdultNewestReleaseItem (the admin newest-rows
 // pipeline's cached match) into the AdultDiscoverItem shape AdultCard/DetailPopup
 // already render — the two differ only in two fields the newest-rows DTO
-// doesn't carry (rating/slug; durationSeconds IS real now, threaded through
-// from identify.MatchResult.RuntimeSeconds — see adultnewest.MatchedRelease.
-// EntityDurationSeconds's doc comment for the live bug this fixes: a
-// hardcoded 0 here silently failed to auto-qualify anything against Adult's
-// bitrate-quality-floor scorer, since that scorer never re-fetches a real
-// runtime the way Movies/Series do). rating: 0 renders no ★; slug: "" makes
-// DetailPopup's TPDB external link fall through to undefined rather than a
-// guaranteed-broken URL.
+// doesn't carry (rating/slug; durationSeconds and releaseTitle ARE real now,
+// threaded through from identify.MatchResult.RuntimeSeconds and
+// prowlarr.Release.Title respectively — see adultnewest.MatchedRelease.
+// EntityDurationSeconds/FirstSeenReleaseTitle's doc comments for the live
+// bugs this fixes: a hardcoded 0 duration silently failed to auto-qualify
+// anything against Adult's bitrate-quality-floor scorer, and a Grab-time
+// query reconstructed from studio+title could find zero raw Prowlarr
+// results even when a real release existed, since TPDB's own title text
+// includes tokens real indexer filenames never contain). rating: 0 renders
+// no ★; slug: "" makes DetailPopup's TPDB external link fall through to
+// undefined rather than a guaranteed-broken URL. releaseTitle passes through
+// unchanged via the spread below (already present on AdultNewestReleaseItem).
 const toAdultDiscoverItem = (
   item: AdultNewestReleaseItem,
 ): AdultDiscoverItem => ({
@@ -115,6 +119,7 @@ const AdultCard: Component<{
       request: {
         title: props.item.title,
         studio: props.item.studio,
+        releaseTitle: props.item.releaseTitle,
         durationSeconds: props.item.durationSeconds,
       },
     });

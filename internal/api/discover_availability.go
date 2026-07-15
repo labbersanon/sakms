@@ -92,6 +92,7 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		switch m {
 		case mode.Adult:
 			req.Studio = q.Get("studio")
+			req.ReleaseTitle = q.Get("releaseTitle")
 			req.DurationSeconds = queryInt(q, "durationSeconds", 0)
 		case mode.Series:
 			req.TMDBID = queryInt(q, "tmdbId", 0)

@@ -162,12 +162,12 @@ func TestLoadInterval_NonPositiveIsZero(t *testing.T) {
 
 func TestToMatchedRelease_SceneVsMovieTypeDispatch(t *testing.T) {
 	scene := identify.MatchResult{Title: "A Scene", Type: "scene", SceneID: "1", Box: "tpdb"}
-	if got := toMatchedRelease(RowScene, scene); got.RowType != RowScene {
+	if got := toMatchedRelease(RowScene, scene, "raw release title"); got.RowType != RowScene {
 		t.Errorf("expected RowScene, got %v", got.RowType)
 	}
 
 	movie := identify.MatchResult{Title: "A Movie", Type: "movie", SceneID: "2", Box: "tpdb"}
-	if got := toMatchedRelease(RowMovie, movie); got.RowType != RowMovie {
+	if got := toMatchedRelease(RowMovie, movie, "raw release title"); got.RowType != RowMovie {
 		t.Errorf("expected RowMovie, got %v", got.RowType)
 	}
 }
@@ -179,15 +179,30 @@ func TestToMatchedRelease_SceneVsMovieTypeDispatch(t *testing.T) {
 // found.
 func TestToMatchedRelease_MapsRuntimeSeconds(t *testing.T) {
 	m := identify.MatchResult{Title: "A Scene", RuntimeSeconds: 1800}
-	got := toMatchedRelease(RowScene, m)
+	got := toMatchedRelease(RowScene, m, "raw release title")
 	if got.EntityDurationSeconds != 1800 {
 		t.Errorf("EntityDurationSeconds = %d, want 1800", got.EntityDurationSeconds)
 	}
 }
 
+// TestToMatchedRelease_MapsFirstSeenReleaseTitle is the regression test for
+// the live "no available downloads" bug's second cause: a Grab-time search
+// reconstructed from TPDB's own studio+title metadata could legitimately
+// find zero raw Prowlarr results even when the release that triggered the
+// match was real, since TPDB's title text includes tokens (e.g. "S6:E10")
+// real indexer filenames never contain. Storing the raw release title that
+// actually matched, and reusing it as the Grab-time query, closes that gap.
+func TestToMatchedRelease_MapsFirstSeenReleaseTitle(t *testing.T) {
+	m := identify.MatchResult{Title: "A Scene"}
+	got := toMatchedRelease(RowScene, m, "Studio.23.04.22.Performer.Scene.Title.XXX.1080p-GROUP")
+	if got.FirstSeenReleaseTitle != "Studio.23.04.22.Performer.Scene.Title.XXX.1080p-GROUP" {
+		t.Errorf("FirstSeenReleaseTitle = %q, want the raw release title", got.FirstSeenReleaseTitle)
+	}
+}
+
 func TestToMatchedRelease_SplitsCommaJoinedTags(t *testing.T) {
 	m := identify.MatchResult{Title: "T", Tags: "Anal Fetish,MILF,Goth"}
-	got := toMatchedRelease(RowScene, m)
+	got := toMatchedRelease(RowScene, m, "raw release title")
 	want := []string{"Anal Fetish", "MILF", "Goth"}
 	if len(got.Genres) != len(want) {
 		t.Fatalf("expected %v, got %v", want, got.Genres)
@@ -202,7 +217,7 @@ func TestToMatchedRelease_SplitsCommaJoinedTags(t *testing.T) {
 
 func TestToMatchedRelease_EmptyTagsYieldsNilGenres(t *testing.T) {
 	m := identify.MatchResult{Title: "T"}
-	got := toMatchedRelease(RowScene, m)
+	got := toMatchedRelease(RowScene, m, "raw release title")
 	if len(got.Genres) != 0 {
 		t.Errorf("expected no genres, got %v", got.Genres)
 	}
@@ -519,5 +534,8 @@ func TestMatchRelease_SceneMatchWithConfirmedRelease_IsCached(t *testing.T) {
 	}
 	if len(scenes) != 1 || scenes[0].EntityTitle != "Some Scene Title" {
 		t.Errorf("expected the confirmed scene to be cached, got %+v", scenes)
+	}
+	if scenes[0].FirstSeenReleaseTitle != "Some.Studio.Some.Scene.Title.XXX.1080p" {
+		t.Errorf("FirstSeenReleaseTitle = %q, want the raw release title that triggered the match", scenes[0].FirstSeenReleaseTitle)
 	}
 }

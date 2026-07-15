@@ -236,6 +236,45 @@ func TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized(t *testi
 	}
 }
 
+// TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle
+// is the regression test for the "still no downloads after the duration
+// fix" report (2026-07-15): a query reconstructed from TPDB's own
+// studio+title metadata includes tokens (e.g. TPDB's "S6:E10" episode
+// notation) real indexer release filenames never contain, so it can find
+// zero raw releases even when the exact release that matched the entity is
+// still available. When releaseTitle is present, it must be used verbatim
+// (normalized) instead of studio+title.
+func TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle(t *testing.T) {
+	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore := testStores(t)
+	ctx := context.Background()
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarr.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore))
+	defer srv.Close()
+
+	reqURL := srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Step Siblings Caught") +
+		"&title=" + urlQueryEscape("June 2026 Flavor Of The Month Poppy Applegate - S6:E10") +
+		"&releaseTitle=" + urlQueryEscape("Step.Siblings.Caught.26.06.01.Poppy.Applegate.XXX.1080p-GROUP") +
+		"&durationSeconds=1863"
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	want := "Step Siblings Caught 26 06 01 Poppy Applegate XXX 1080p GROUP"
+	if got := lastQuery.Get("query"); got != want {
+		t.Errorf("query sent to Prowlarr = %q, want the normalized releaseTitle %q (studio+title must not be used when releaseTitle is present)", got, want)
+	}
+}
+
 // urlQueryEscape is a tiny local alias so the test bodies above read cleanly
 // without repeating the net/url import qualifier inline.
 func urlQueryEscape(s string) string { return url.QueryEscape(s) }

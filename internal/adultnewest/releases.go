@@ -35,6 +35,14 @@ type MatchedRelease struct {
 	// a grab request with a genuine duration — see the migration's doc
 	// comment for the live bug this fixes.
 	EntityDurationSeconds int
+	// FirstSeenReleaseTitle is the raw Prowlarr release title
+	// (prowlarr.Release.Title) that first matched this entity — reused as
+	// the Grab-time Prowlarr search query instead of reconstructing one from
+	// TPDB's own studio+title metadata, which includes tokens (e.g. TPDB's
+	// "S6:E10" episode notation) real indexer release filenames never
+	// contain. Empty for Studio/Performer rows (no associated Grab) and for
+	// entities matched before this field existed.
+	FirstSeenReleaseTitle string
 	Genres                []string
 	FirstSeenAt           string
 }
@@ -126,10 +134,10 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO adult_newest_releases
-			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, genres)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(row_type, entity_source, entity_id) DO NOTHING
-	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate, m.EntityDurationSeconds, string(genresJSON))
+	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate, m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON))
 	if err != nil {
 		return fmt.Errorf("inserting matched entity %q: %w", m.EntityID, err)
 	}
@@ -159,7 +167,7 @@ func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter st
 	offset := (page - 1) * perPage
 
 	query := `
-		SELECT id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, genres, first_seen_at
+		SELECT id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, first_seen_at
 		FROM adult_newest_releases
 		WHERE row_type = ?`
 	args := []any{string(rowType)}
@@ -180,7 +188,7 @@ func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter st
 	for rows.Next() {
 		var m MatchedRelease
 		var rowTypeStr, genresJSON string
-		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio, &m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &genresJSON, &m.FirstSeenAt); err != nil {
+		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio, &m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &m.FirstSeenReleaseTitle, &genresJSON, &m.FirstSeenAt); err != nil {
 			return nil, fmt.Errorf("scanning matched entity: %w", err)
 		}
 		m.RowType = RowType(rowTypeStr)

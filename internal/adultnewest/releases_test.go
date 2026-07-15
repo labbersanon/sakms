@@ -35,6 +35,7 @@ func TestInsertAndList_RoundTripsMatchedRelease(t *testing.T) {
 		EntityImage:           "https://cdn.theporndb.net/scene.jpg",
 		EntityDate:            "2026-07-14",
 		EntityDurationSeconds: 1800,
+		FirstSeenReleaseTitle: "Some.Studio.23.04.22.Performer.Some.Scene.XXX.1080p-GROUP",
 		Genres:                []string{"Anal Fetish", "MILF"},
 	}
 	if err := s.Insert(ctx, m); err != nil {
@@ -57,6 +58,9 @@ func TestInsertAndList_RoundTripsMatchedRelease(t *testing.T) {
 	// real value survives the cache round trip, not just genres/title/source.
 	if got.EntityDurationSeconds != 1800 {
 		t.Errorf("EntityDurationSeconds = %d, want 1800", got.EntityDurationSeconds)
+	}
+	if got.FirstSeenReleaseTitle != "Some.Studio.23.04.22.Performer.Some.Scene.XXX.1080p-GROUP" {
+		t.Errorf("FirstSeenReleaseTitle = %q, want the raw release title to survive the round trip", got.FirstSeenReleaseTitle)
 	}
 }
 

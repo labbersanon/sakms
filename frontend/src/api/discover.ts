@@ -215,14 +215,18 @@ export function fetchAdultPerformerScenes(
 // titles against — the Discover card already has it client-side, cheaper
 // than an extra TMDB call solely to recover it). Movies uses tmdbId; Series
 // additionally needs season/episode (episode 0 = season pack, matching
-// grabs.Grab.SeasonSpecified's convention); Adult uses studio +
-// durationSeconds instead of a TMDB id.
+// grabs.Grab.SeasonSpecified's convention); Adult uses studio + durationSeconds
+// instead of a TMDB id, plus releaseTitle (see AdultDiscoverItem.releaseTitle
+// — the raw Prowlarr release title the backend prefers as its search query
+// when present, since it's real indexer vocabulary that already matched once,
+// unlike a query reconstructed from title/studio).
 export interface AvailabilityPreviewParams {
   title: string;
   tmdbId?: number;
   season?: number;
   episode?: number;
   studio?: string;
+  releaseTitle?: string;
   durationSeconds?: number;
 }
 
@@ -243,6 +247,7 @@ export function fetchAvailabilityPreview(
   q.set("title", params.title);
   if (mode === "adult") {
     if (params.studio) q.set("studio", params.studio);
+    if (params.releaseTitle) q.set("releaseTitle", params.releaseTitle);
     if (params.durationSeconds != null) {
       q.set("durationSeconds", String(params.durationSeconds));
     }

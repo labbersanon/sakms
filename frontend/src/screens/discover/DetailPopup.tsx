@@ -299,6 +299,7 @@ export const DetailPopup: Component<{
         return fetchAvailabilityPreview("adult", {
           title: scene.title,
           studio: scene.studio,
+          releaseTitle: scene.releaseTitle,
           durationSeconds: scene.durationSeconds,
         });
       }

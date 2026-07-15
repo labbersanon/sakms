@@ -235,6 +235,12 @@ export interface DiscoverItem {
  * {id} — see internal/tpdbrest.Scene.Slug for sourcing). Always empty for a
  * "stashdb"/"fansdb" scene: those sites' own detail pages are UUID-path
  * (stashdb.org/scenes/{id}), so the popup links via ID for them instead.
+ * ReleaseTitle is only populated for a scene sourced from the newest-rows
+ * pipeline (see AdultNewestReleaseItem.ReleaseTitle) — the popup/Grab dialog
+ * thread it through as AutoGrabRequest.ReleaseTitle when present. Always ""
+ * for a plain TPDB/StashDB/FansDB catalog browse item (no associated
+ * Prowlarr release to remember), which falls back to the Studio+Title
+ * query, same as before this field existed.
  */
 export interface AdultDiscoverItem {
   id: string;
@@ -246,6 +252,7 @@ export interface AdultDiscoverItem {
   rating: number /* float64 */;
   source: string;
   slug: string;
+  releaseTitle?: string;
 }
 /**
  * StudioSummary is one entry in Adult Discover's Studios row
@@ -395,9 +402,13 @@ export interface Grab {
  *     behavior, not a bug). SeasonSpecified must be threaded through so a
  *     deliberate Season-0/Specials grab isn't misread as "no season picked"
  *     (see grabs.Grab.SeasonSpecified / checkImportHandler).
- *   - Adult:   Title + Studio (the free-text Prowlarr query, mirroring
- *     availability.CheckAdultScene) + DurationSeconds (TPDB's pre-grab
- *     runtime → the scorer's RuntimeSeconds; 0 = unknown, handled neutrally).
+ *   - Adult:   Title + Studio (the free-text Prowlarr query fallback) +
+ *     ReleaseTitle (preferred query when present — the raw Prowlarr release
+ *     title that first matched this entity, see
+ *     adultnewest.MatchedRelease.FirstSeenReleaseTitle's doc comment for why
+ *     it's more reliable than reconstructing a query from Title/Studio) +
+ *     DurationSeconds (TPDB's pre-grab runtime → the scorer's
+ *     RuntimeSeconds; 0 = unknown, handled neutrally).
  */
 export interface AutoGrabRequest {
   title: string;
@@ -407,6 +418,10 @@ export interface AutoGrabRequest {
   episodeNumber?: number /* int */;
   seasonSpecified?: boolean;
   durationSeconds?: number /* int */;
+  /**
+   * ReleaseTitle is Adult-only — see this struct's doc comment above.
+   */
+  releaseTitle?: string;
 }
 /**
  * AutoGrabCandidate is one graded release in an auto-grab manual-fallback list
@@ -957,6 +972,16 @@ export interface AdultNewestReleaseItem {
    * real runtime, so a 0 here silently fails to auto-qualify anything).
    */
   durationSeconds: number /* int */;
+  /**
+   * ReleaseTitle is the raw Prowlarr release title that first matched this
+   * entity — see adultnewest.MatchedRelease.FirstSeenReleaseTitle's doc
+   * comment. Used as the Grab-time Prowlarr search query in place of
+   * reconstructing one from Title/Studio, which included tokens (e.g.
+   * TPDB's "S6:E10" episode notation) real indexer filenames never
+   * contain. "" for Studio/Performer rows and for entities matched before
+   * this field existed.
+   */
+  releaseTitle?: string;
   genres?: string[];
 }
 /**

@@ -70,6 +70,31 @@ func TestFilterReleases_FastPathTitleAndLanguage(t *testing.T) {
 			release:     prowlarr.Release{GUID: "1", Title: "Show.Four.Five.Six.2020-GROUP"},
 			wantKept:    false,
 		},
+		{
+			// Regression for a real "nothing is being found to grab" report:
+			// identify.TitleSimilarity's containment shortcut requires >= 2
+			// overlapping tokens, which a single-word title can NEVER satisfy
+			// (inter can't exceed len(ta)=1) — Jaccard alone then gets
+			// diluted by the release title's quality/tag tokens, landing
+			// below titleSimilarityFloor even for an exact match. Covered by
+			// singleWordTitleMatches, not TitleSimilarity itself.
+			name:        "single-word title (Moana) matches via singleWordTitleMatches fallback",
+			targetTitle: "Moana",
+			release:     prowlarr.Release{GUID: "1", Title: "Moana.2016.1080p.BluRay.x264-GROUP"},
+			wantKept:    true,
+		},
+		{
+			name:        "single-word title (Moana) still rejects an unrelated release",
+			targetTitle: "Moana",
+			release:     prowlarr.Release{GUID: "1", Title: "Some.Other.Movie.2020.1080p.BluRay.x264-GROUP"},
+			wantKept:    false,
+		},
+		{
+			name:        "single-word title (Moana) still rejects on a language tag despite matching",
+			targetTitle: "Moana",
+			release:     prowlarr.Release{GUID: "1", Title: "Moana.2016.FRENCH.1080p.BluRay.x264-GROUP"},
+			wantKept:    false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +200,35 @@ func TestFilterReleases_AIEscalation_PerCandidateErrorSkipsOnlyThatCandidate(t *
 	got := FilterReleases(context.Background(), releases, "The Dark Knight", mode.Movies, ai)
 	if len(got) != 1 || got[0].GUID != "2" {
 		t.Fatalf("expected only the second (successfully-cleaned) candidate to survive, got %+v", got)
+	}
+}
+
+// TestSingleWordTitleMatches is a direct table-driven check of the
+// single-word fallback, independent of FilterReleases' full pipeline —
+// including the multi-word no-op case, so a change to this function can't
+// silently start affecting FilterReleases' existing ambiguous/partial-match
+// protection (which relies on singleWordTitleMatches returning false for
+// any target title with more than one word).
+func TestSingleWordTitleMatches(t *testing.T) {
+	cases := []struct {
+		name         string
+		targetTitle  string
+		releaseTitle string
+		want         bool
+	}{
+		{"exact single word", "Moana", "Moana.2016.1080p.BluRay.x264-GROUP", true},
+		{"case-insensitive", "moana", "MOANA.2016.1080p.BluRay.x264-GROUP", true},
+		{"unrelated release", "Moana", "Some.Other.Movie.2020.1080p-GROUP", false},
+		{"multi-word target never uses this fallback", "The Dark Knight", "The.Dark.Knight.2008-GROUP", false},
+		{"short real title (Up)", "Up", "Up.2009.1080p.BluRay.x264-GROUP", true},
+		{"substring but not a whole word must not match", "Up", "Update.2009.1080p-GROUP", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := singleWordTitleMatches(tc.targetTitle, tc.releaseTitle); got != tc.want {
+				t.Errorf("singleWordTitleMatches(%q, %q) = %v, want %v", tc.targetTitle, tc.releaseTitle, got, tc.want)
+			}
+		})
 	}
 }
 

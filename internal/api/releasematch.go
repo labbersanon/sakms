@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,6 +76,53 @@ func hasLanguageTag(title string) bool {
 	return languageTagPattern.MatchString(title)
 }
 
+// titleWordPattern splits a title into word tokens for singleWordTitleMatches
+// — deliberately a plain local regex rather than reusing
+// internal/identify's unexported tokenize, since that package's tokenizer
+// also does camelCase-boundary splitting this simpler check doesn't need.
+var titleWordPattern = regexp.MustCompile(`[\p{L}\p{N}_]+`)
+
+// singleWordTitleMatches is a narrow fallback for a real "nothing is being
+// found to grab" report (a search for "Moana" — a single-word title —
+// returned nothing at all, even for an exact-title release). The root
+// cause: identify.TitleSimilarity's containment shortcut requires >= 2
+// overlapping tokens by design (see its doc comment and
+// TestTitleSimilarity_SingleGenericWordDoesNotBypassPenalty), specifically
+// to stop a single GENERIC connector word (its own test uses "Scene") from
+// spuriously matching an unrelated title inside that package's real use
+// case: comparing an AI-guessed title against a raw, noisy filename stem,
+// where "Scene"/"Part"/"Vol"-type tokens are common structural artifacts.
+// A single-token target title can never satisfy "inter >= 2" no matter how
+// distinctive the word is, so "Moana" was structurally unmatchable via that
+// path — not a tuning issue, a hard ceiling.
+//
+// That guard is correct and stays untouched for identify.TitleSimilarity
+// itself. This function is a SEPARATE, narrower rule scoped only to this
+// package's actual context, which has a materially different risk profile:
+// targetTitle here is always a real, canonical, database-sourced title
+// (TMDB movie/show title, or a TPDB/StashDB scene title) that the operator
+// explicitly selected — never an AI guess or a raw filename fragment. A
+// movie/show/scene whose ENTIRE canonical title is a single, genuinely
+// generic word (the exact failure mode the shared guard defends against) is
+// vanishingly rare in that context, so a plain whole-word, case-insensitive
+// containment check is safe here without needing a stopword list.
+func singleWordTitleMatches(targetTitle, releaseTitle string) bool {
+	targetWords := titleWordPattern.FindAllString(targetTitle, -1)
+	if len(targetWords) != 1 {
+		return false
+	}
+	// Reuses titleWordPattern on both sides (rather than compiling a fresh
+	// per-call regex from the dynamic word) so this stays cheap when called
+	// once per raw release in FilterReleases' fast-path loop.
+	target := strings.ToLower(targetWords[0])
+	for _, w := range titleWordPattern.FindAllString(releaseTitle, -1) {
+		if strings.ToLower(w) == target {
+			return true
+		}
+	}
+	return false
+}
+
 // FilterReleases applies the Discover detail-popup plan's title-match +
 // language filter pass to raw Prowlarr releases before any tier/protocol
 // grading — the popup's search needs this because a raw title/ID-scoped
@@ -115,7 +163,7 @@ func hasLanguageTag(title string) bool {
 func FilterReleases(ctx context.Context, releases []prowlarr.Release, targetTitle string, m mode.Mode, aiClient identify.AIClient) []prowlarr.Release {
 	fastMatched := make([]prowlarr.Release, 0, len(releases))
 	for _, rel := range releases {
-		if identify.TitleSimilarity(targetTitle, rel.Title) >= titleSimilarityFloor {
+		if identify.TitleSimilarity(targetTitle, rel.Title) >= titleSimilarityFloor || singleWordTitleMatches(targetTitle, rel.Title) {
 			fastMatched = append(fastMatched, rel)
 		}
 	}

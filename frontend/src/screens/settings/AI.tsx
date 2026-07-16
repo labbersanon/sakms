@@ -38,9 +38,32 @@ import {
 import type { ConnectionSummary, NetscanFinding } from "../../api/settings";
 import { Button, Muted, inputClass, labelClass } from "../../components/ui";
 import { ConnectionMiniTable, ConnectionRow } from "./Connections";
-import { Card, SaveStatus, useSaveStatus } from "./shared";
+import {
+  Card,
+  SaveStatus,
+  SectionSave,
+  useSaveStatus,
+  useSectionSaveItem,
+} from "./shared";
 
-export const AISection: Component = () => {
+// AISection is a thin shell so the provider/model form + provider/Brave
+// connection rows all sit INSIDE one SectionSave (so their registrations see its
+// context), while the Entity Database card — with its own independent Sync
+// buttons — stays outside the batched Save.
+export const AISection: Component = () => (
+  <>
+    <SectionSave>
+      <AIProviderModelCard />
+    </SectionSave>
+    <EntityDatabaseCard />
+  </>
+);
+
+// AIProviderModelCard holds the batched AI fallback form and the provider/Brave
+// connection rows. It registers the form with the enclosing SectionSave and the
+// two ConnectionRows register themselves — each keeping its own three-state
+// secret gate; nothing is merged.
+const AIProviderModelCard: Component = () => {
   const [fallbackEnabled, { refetch: refetchFallback }] = createResource(
     fetchAIFallbackEnabled,
   );
@@ -50,10 +73,16 @@ export const AISection: Component = () => {
   const [enabled, setEnabled] = createSignal(false);
   const [prov, setProv] = createSignal("ollama");
   const [mdl, setMdl] = createSignal("");
+  // dirty flips true on any provider/model/toggle edit and resets on save or a
+  // fresh server load, so the AI tab's one Save button knows this form's state.
+  const [dirty, setDirty] = createSignal(false);
 
   createEffect(() => {
     const v = fallbackEnabled();
-    if (v !== undefined) setEnabled(v);
+    if (v !== undefined) {
+      setEnabled(v);
+      setDirty(false);
+    }
   });
   createEffect(() => {
     const p = provider();
@@ -71,11 +100,22 @@ export const AISection: Component = () => {
       await putAIProvider(prov());
       await putAIModel(mdl());
       void refetchFallback();
+      setDirty(false);
       status.saved();
     } catch (e) {
       status.failed(e);
+      throw e;
     }
   };
+  // The provider/model form folds into the AI tab's one Save button. The provider
+  // ConnectionRow and Brave ConnectionRow below register themselves separately
+  // (same SectionSave), each keeping its own three-state secret gate.
+  const batched = useSectionSaveItem({
+    id: "ai-form",
+    label: "AI settings",
+    dirty,
+    save,
+  });
 
   // Connection data owned here — same gate as the Connections table (mount
   // only after conns() resolves to avoid wiping stored secrets on a bare save).
@@ -95,13 +135,18 @@ export const AISection: Component = () => {
   return (
     <>
       <Card title="AI Fallback (optional)">
-        <form onSubmit={(e) => (e.preventDefault(), void save())}>
+        <form
+          onSubmit={(e) => (e.preventDefault(), void save().catch(() => {}))}
+        >
           <label class="mb-4 flex items-center gap-3">
             <input
               type="checkbox"
               class="h-4 w-4 rounded border-border accent-primary"
               checked={enabled()}
-              onChange={(e) => setEnabled(e.currentTarget.checked)}
+              onChange={(e) => {
+                setEnabled(e.currentTarget.checked);
+                setDirty(true);
+              }}
             />
             <span class="text-sm font-medium text-fg">
               Enable AI fallback (ParseFilename runs only when DB-first parsing
@@ -119,7 +164,10 @@ export const AISection: Component = () => {
                 class={`${inputClass} mt-1`}
                 aria-label="AI provider"
                 value={prov()}
-                onChange={(e) => setProv(e.currentTarget.value)}
+                onChange={(e) => {
+                  setProv(e.currentTarget.value);
+                  setDirty(true);
+                }}
                 disabled={!enabled()}
               >
                 <For each={AI_PROVIDERS}>
@@ -134,16 +182,23 @@ export const AISection: Component = () => {
                 class={`${inputClass} mt-1`}
                 placeholder="e.g. qwen2.5vl:7b, gpt-4o-mini, gemini-2.5-flash, claude-haiku-4-5"
                 value={mdl()}
-                onInput={(e) => setMdl(e.currentTarget.value)}
+                onInput={(e) => {
+                  setMdl(e.currentTarget.value);
+                  setDirty(true);
+                }}
                 disabled={!enabled()}
               />
             </label>
           </div>
 
           <div class="mt-3 flex items-center gap-2">
-            <Button variant="primary" type="submit">
-              Save
-            </Button>
+            {/* Own Save button only when standalone; inside the AI tab's
+                SectionSave the one section button commits this form too. */}
+            <Show when={!batched()}>
+              <Button variant="primary" type="submit">
+                Save
+              </Button>
+            </Show>
             <SaveStatus
               text={status.status().text}
               error={status.status().error}
@@ -193,8 +248,6 @@ export const AISection: Component = () => {
           </Show>
         </Card>
       </Show>
-
-      <EntityDatabaseCard />
     </>
   );
 };

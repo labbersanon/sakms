@@ -46,7 +46,13 @@ import {
   labelClass,
   Muted,
 } from "../../components/ui";
-import { Card, SaveStatus, useSaveStatus } from "./shared";
+import {
+  Card,
+  SaveStatus,
+  SectionSave,
+  useSaveStatus,
+  useSectionSaveItem,
+} from "./shared";
 
 // ConnectionRow is one service's controls: URL / Username (if needed) / key or
 // password, plus Test / Save / Delete and, when a netscan finding exists, the
@@ -69,6 +75,9 @@ export const ConnectionRow: Component<{
   const [username, setUsername] = createSignal(props.existing?.username ?? "");
   const [key, setKey] = createSignal("");
   const [keyTouched, setKeyTouched] = createSignal(false);
+  // dirty flips true on any operator edit and resets after a successful save, so
+  // the section's one Save button knows whether this row has pending changes.
+  const [dirty, setDirty] = createSignal(false);
   const status = useSaveStatus();
   const [hint, setHint] = createSignal("");
 
@@ -110,15 +119,32 @@ export const ConnectionRow: Component<{
     else status.failed(new Error(err || "connection failed"));
   };
 
+  // save sets its OWN inline status (per-row failure visibility) and rethrows on
+  // failure so the section batcher can report which rows failed. On success it
+  // clears the touched/key state so a subsequent untouched save omits apiKey
+  // again (the connection is now configured; the real key is never sent back).
   const save = async () => {
     try {
       await upsertBody();
       status.set("✓ saved");
+      setKey("");
+      setKeyTouched(false);
+      setDirty(false);
       props.onChanged();
     } catch (e) {
       status.failed(e);
+      throw e;
     }
   };
+  // batched is true when this row lives inside a SectionSave — then the row hides
+  // its own Save button and the section's one button drives it. Registration is a
+  // no-op standalone (returns false), so ConnectionRow still works on its own.
+  const batched = useSectionSaveItem({
+    id: `connection:${props.service}`,
+    label: props.service,
+    dirty,
+    save,
+  });
   // upsertBody is split out so the URL-required guard mirrors the backend
   // (url is required) with a clear inline message rather than a 400 round-trip.
   const upsertBody = async () => {
@@ -138,6 +164,7 @@ export const ConnectionRow: Component<{
 
   const useURL = (u: string) => {
     setUrl(u);
+    setDirty(true);
     setHint("URL pre-filled — verify it's really yours, then Save.");
   };
   const fetchKey = async (u: string) => {
@@ -146,6 +173,7 @@ export const ConnectionRow: Component<{
       const k = await fetchProwlarrKey(u);
       setKey(k);
       setKeyTouched(true); // survive the three-state gate (no DOM event to lean on)
+      setDirty(true);
       setHint(`API key retrieved from ${u} — verify before saving.`);
     } catch (e) {
       status.failed(e);
@@ -190,7 +218,10 @@ export const ConnectionRow: Component<{
           placeholder="https://..."
           aria-label={`${props.service} URL`}
           value={url()}
-          onInput={(e) => setUrl(e.currentTarget.value)}
+          onInput={(e) => {
+            setUrl(e.currentTarget.value);
+            setDirty(true);
+          }}
         />
         <Show when={props.service === "prowlarr"}>
           <a
@@ -273,7 +304,10 @@ export const ConnectionRow: Component<{
             placeholder="username"
             aria-label={`${props.service} username`}
             value={username()}
-            onInput={(e) => setUsername(e.currentTarget.value)}
+            onInput={(e) => {
+              setUsername(e.currentTarget.value);
+              setDirty(true);
+            }}
           />
         </Show>
       </td>
@@ -287,11 +321,14 @@ export const ConnectionRow: Component<{
           onInput={(e) => {
             setKey(e.currentTarget.value);
             setKeyTouched(true);
+            setDirty(true);
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              void save();
+              // Enter saves just this row; swallow so a rejection (surfaced
+              // inline already) doesn't become an unhandled promise rejection.
+              void save().catch(() => {});
             }
           }}
         />
@@ -301,13 +338,17 @@ export const ConnectionRow: Component<{
           <Button class="!px-2 !py-1 !text-xs" onClick={() => void test()}>
             Test
           </Button>
-          <Button
-            variant="primary"
-            class="!px-2 !py-1 !text-xs"
-            onClick={() => void save()}
-          >
-            Save
-          </Button>
+          {/* Own Save button only when standalone; inside a SectionSave the
+              section's one button drives this row. Test/Delete stay per-row. */}
+          <Show when={!batched()}>
+            <Button
+              variant="primary"
+              class="!px-2 !py-1 !text-xs"
+              onClick={() => void save().catch(() => {})}
+            >
+              Save
+            </Button>
+          </Show>
           <Button
             class="!px-2 !py-1 !text-xs"
             disabled={!props.existing}
@@ -361,9 +402,16 @@ const TraktConnectionSection: Component = () => {
   const [clientId, setClientId] = createSignal("");
   const [clientSecret, setClientSecret] = createSignal("");
   const [secretTouched, setSecretTouched] = createSignal(false);
+  // dirty flips true on any credential edit and resets when fresh server state
+  // arrives or a save succeeds — same role as ConnectionRow's dirty signal, so
+  // the Connections tab's one Save button can drive Trakt as one batched item.
+  const [dirty, setDirty] = createSignal(false);
   createEffect(() => {
     const s = status();
-    if (s?.clientId !== undefined) setClientId(s.clientId);
+    if (s?.clientId !== undefined) {
+      setClientId(s.clientId);
+      setDirty(false);
+    }
   });
   const saveStatus = useSaveStatus();
 
@@ -371,10 +419,15 @@ const TraktConnectionSection: Component = () => {
   const secretPlaceholder = () =>
     hasExistingSecret() ? "unchanged (configured)" : "client secret";
 
+  // saveCredentials keeps Trakt's OWN three-state secret gate
+  // (buildTraktCredentialsBody omits clientSecret when untouched) and its own
+  // inline status; it rethrows on failure — including the empty-clientId
+  // early-out — so the section batcher never reports a false "saved".
   const saveCredentials = async () => {
     if (!clientId().trim()) {
-      saveStatus.failed(new Error("client id is required"));
-      return;
+      const err = new Error("client id is required");
+      saveStatus.failed(err);
+      throw err;
     }
     try {
       await saveTraktCredentials(
@@ -386,12 +439,23 @@ const TraktConnectionSection: Component = () => {
       );
       setClientSecret("");
       setSecretTouched(false);
+      setDirty(false);
       saveStatus.saved();
       await refetch();
     } catch (e) {
       saveStatus.failed(e);
+      throw e;
     }
   };
+  // Trakt folds into the Connections tab's one Save button as one batched item
+  // (its own save function, never a merged payload). Connect/Disconnect and the
+  // device-code OAuth flow below stay independent immediate actions.
+  const batched = useSectionSaveItem({
+    id: "trakt",
+    label: "Trakt",
+    dirty,
+    save: saveCredentials,
+  });
 
   // --- Device-code OAuth flow ---
   const [device, setDevice] = createSignal<TraktDeviceStartResponse | null>(
@@ -481,7 +545,9 @@ const TraktConnectionSection: Component = () => {
 
       <form
         class="mb-3"
-        onSubmit={(e) => (e.preventDefault(), void saveCredentials())}
+        onSubmit={(e) => (
+          e.preventDefault(), void saveCredentials().catch(() => {})
+        )}
       >
         <label class="mb-2 block">
           <span class={labelClass}>Client ID</span>
@@ -490,7 +556,10 @@ const TraktConnectionSection: Component = () => {
             class={`${inputClass} mt-1`}
             aria-label="Trakt client ID"
             value={clientId()}
-            onInput={(e) => setClientId(e.currentTarget.value)}
+            onInput={(e) => {
+              setClientId(e.currentTarget.value);
+              setDirty(true);
+            }}
           />
         </label>
         <label class="mb-2 block">
@@ -504,13 +573,18 @@ const TraktConnectionSection: Component = () => {
             onInput={(e) => {
               setClientSecret(e.currentTarget.value);
               setSecretTouched(true);
+              setDirty(true);
             }}
           />
         </label>
         <div class="flex items-center gap-2">
-          <Button variant="primary" type="submit">
-            Save credentials
-          </Button>
+          {/* Own Save button only when standalone; inside the Connections tab's
+              SectionSave the one section button commits Trakt too. */}
+          <Show when={!batched()}>
+            <Button variant="primary" type="submit">
+              Save credentials
+            </Button>
+          </Show>
           <SaveStatus
             text={saveStatus.status().text}
             error={saveStatus.status().error}
@@ -644,9 +718,13 @@ const ConnectionsTable: Component = () => {
   );
 };
 
+// One Save button for the whole Connections tab: it commits every dirty
+// ConnectionRow plus the Trakt form in a single click, each still built by its
+// own per-row logic. Per-row Test/Delete and Trakt's Connect/Disconnect stay
+// independent immediate actions.
 export const ConnectionsSection: Component = () => (
-  <div>
+  <SectionSave>
     <ConnectionsTable />
     <TraktConnectionSection />
-  </div>
+  </SectionSave>
 );

@@ -41,6 +41,7 @@ import {
   QualityPrefsSection,
 } from "./Library";
 import { AdvancedSection } from "./Advanced";
+import { SectionSave } from "./shared";
 import { SliderAdminSection } from "../SliderAdmin";
 import { AdultRowAdminSection } from "../AdultRowAdmin";
 
@@ -98,21 +99,27 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
 
       <Show when={section() === "library"}>
         <ModeSelector mode={mode} onSelect={setMode} />
-        <LibraryRootFolderSection mode={mode} />
-        <QualityPrefsSection mode={mode} />
-        <Show
-          when={mode() !== "adult"}
-          fallback={
-            <Muted>
-              Adult has no naming preferences (it uses a fixed naming scheme)
-              and no kids classification. Adult's identify toggle lives in the
-              Advanced tab.
-            </Muted>
-          }
-        >
-          <NamingPresetSection mode={mode} />
-          <KidsRootPathSection mode={mode} />
-        </Show>
+        {/* One Save button for the active mode's Library panels (root folder +
+            quality prefs + naming preset + kids root). Switching mode reseeds
+            each panel and clears its dirty flag, so the button reflects only the
+            currently-shown mode. */}
+        <SectionSave>
+          <LibraryRootFolderSection mode={mode} />
+          <QualityPrefsSection mode={mode} />
+          <Show
+            when={mode() !== "adult"}
+            fallback={
+              <Muted>
+                Adult has no naming preferences (it uses a fixed naming scheme)
+                and no kids classification. Adult's identify toggle lives in the
+                Advanced tab.
+              </Muted>
+            }
+          >
+            <NamingPresetSection mode={mode} />
+            <KidsRootPathSection mode={mode} />
+          </Show>
+        </SectionSave>
       </Show>
 
       <Show when={section() === "advanced"}>

@@ -9,6 +9,7 @@ import {
   createSignal,
   on,
   For,
+  Show,
 } from "solid-js";
 import type { Mode } from "../../api/discover";
 import {
@@ -26,7 +27,13 @@ import {
 } from "../../api/settings";
 import { Button, Muted, PillSelector, inputClass, labelClass } from "../../components/ui";
 import { FolderPicker } from "../../components/FolderPicker";
-import { Card, MODE_LABELS, SaveStatus, useSaveStatus } from "./shared";
+import {
+  Card,
+  MODE_LABELS,
+  SaveStatus,
+  useSaveStatus,
+  useSectionSaveItem,
+} from "./shared";
 
 // ---- Per-mode: library root folder ----------------------------------------
 
@@ -35,36 +42,54 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
 ) => {
   const [current] = createResource(props.mode, fetchLibraryRootFolder);
   const [path, setPath] = createSignal("");
+  const [dirty, setDirty] = createSignal(false);
   createEffect(
     on(current, (p) => {
-      if (p !== undefined) setPath(p ?? "");
+      if (p !== undefined) {
+        setPath(p ?? "");
+        setDirty(false);
+      }
     }),
   );
   const status = useSaveStatus();
   const save = async () => {
     try {
       await putLibraryRootFolder(props.mode(), path());
+      setDirty(false);
       status.saved();
     } catch (e) {
       status.failed(e);
+      throw e;
     }
   };
+  const setPathDirty = (p: string) => {
+    setPath(p);
+    setDirty(true);
+  };
+  const batched = useSectionSaveItem({
+    id: "library-root",
+    label: "root folder",
+    dirty,
+    save,
+  });
   return (
     <Card title={`${MODE_LABELS[props.mode()]} library`}>
-      <form onSubmit={(e) => (e.preventDefault(), void save())}>
+      <form onSubmit={(e) => (e.preventDefault(), void save().catch(() => {}))}>
         <label class="block">
           <span class={labelClass}>Root folder</span>
           <FolderPicker
             value={path}
-            onChange={setPath}
+            onChange={setPathDirty}
             ariaLabel="Library root folder"
             placeholder={`/path/to/${MODE_LABELS[props.mode()]}`}
           />
         </label>
         <div class="mt-3 flex items-center gap-2">
-          <Button variant="primary" type="submit">
-            Save
-          </Button>
+          <Show when={!batched()}>
+            <Button variant="primary" type="submit">
+              Save
+            </Button>
+          </Show>
           <SaveStatus
             text={status.status().text}
             error={status.status().error}
@@ -114,12 +139,14 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   const [tier, setTier] = createSignal("high");
   const [maxRes, setMaxRes] = createSignal(0);
   const [protocol, setProtocol] = createSignal("");
+  const [dirty, setDirty] = createSignal(false);
   createEffect(
     on(prefs, (p) => {
       if (p) {
         setTier(p.tier);
         setMaxRes(p.maxResolution);
         setProtocol(p.protocol);
+        setDirty(false);
       }
     }),
   );
@@ -131,11 +158,19 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         maxResolution: maxRes(),
         protocol: protocol(),
       });
+      setDirty(false);
       status.saved();
     } catch (e) {
       status.failed(e);
+      throw e;
     }
   };
+  const batched = useSectionSaveItem({
+    id: "library-quality",
+    label: "quality preferences",
+    dirty,
+    save,
+  });
   return (
     <Card title={`Search quality preferences (${MODE_LABELS[props.mode()]})`}>
       <PillSelector
@@ -143,26 +178,37 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         options={QUALITY_TIERS}
         optionLabels={QUALITY_TIER_LABELS}
         selected={tier()}
-        onSelect={setTier}
+        onSelect={(v) => {
+          setTier(v);
+          setDirty(true);
+        }}
       />
       <PillSelector
         label="Maximum resolution"
         options={RESOLUTION_OPTIONS}
         optionLabels={RESOLUTION_LABELS}
         selected={String(maxRes())}
-        onSelect={(r) => setMaxRes(Number(r))}
+        onSelect={(r) => {
+          setMaxRes(Number(r));
+          setDirty(true);
+        }}
       />
       <PillSelector
         label="Protocol"
         options={PROTOCOL_OPTIONS}
         optionLabels={PROTOCOL_LABELS}
         selected={protocol()}
-        onSelect={setProtocol}
+        onSelect={(v) => {
+          setProtocol(v);
+          setDirty(true);
+        }}
       />
       <div class="mt-3 flex items-center gap-2">
-        <Button variant="primary" onClick={() => void save()}>
-          Save
-        </Button>
+        <Show when={!batched()}>
+          <Button variant="primary" onClick={() => void save().catch(() => {})}>
+            Save
+          </Button>
+        </Show>
         <SaveStatus text={status.status().text} error={status.status().error} />
       </div>
       <Muted class="mt-2">
@@ -182,29 +228,44 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
 export const NamingPresetSection: Component<{ mode: () => Mode }> = (props) => {
   const [current] = createResource(props.mode, fetchNamingPreset);
   const [preset, setPreset] = createSignal("jellyfin");
+  const [dirty, setDirty] = createSignal(false);
   createEffect(
     on(current, (p) => {
-      if (p) setPreset(p);
+      if (p) {
+        setPreset(p);
+        setDirty(false);
+      }
     }),
   );
   const status = useSaveStatus();
   const save = async () => {
     try {
       await putNamingPreset(props.mode(), preset());
+      setDirty(false);
       status.saved();
     } catch (e) {
       status.failed(e);
+      throw e;
     }
   };
+  const batched = useSectionSaveItem({
+    id: "library-naming",
+    label: "naming preset",
+    dirty,
+    save,
+  });
   return (
     <Card title={`File/folder naming (${MODE_LABELS[props.mode()]})`}>
-      <form onSubmit={(e) => (e.preventDefault(), void save())}>
+      <form onSubmit={(e) => (e.preventDefault(), void save().catch(() => {}))}>
         <label class="block">
           <span class={labelClass}>Naming convention</span>
           <select
             class={`${inputClass} mt-1`}
             value={preset()}
-            onChange={(e) => setPreset(e.currentTarget.value)}
+            onChange={(e) => {
+              setPreset(e.currentTarget.value);
+              setDirty(true);
+            }}
           >
             <For each={NAMING_PRESETS}>
               {(p) => <option value={p.value}>{p.label}</option>}
@@ -212,9 +273,11 @@ export const NamingPresetSection: Component<{ mode: () => Mode }> = (props) => {
           </select>
         </label>
         <div class="mt-3 flex items-center gap-2">
-          <Button variant="primary" type="submit">
-            Save
-          </Button>
+          <Show when={!batched()}>
+            <Button variant="primary" type="submit">
+              Save
+            </Button>
+          </Show>
           <SaveStatus
             text={status.status().text}
             error={status.status().error}
@@ -235,36 +298,54 @@ export const NamingPresetSection: Component<{ mode: () => Mode }> = (props) => {
 export const KidsRootPathSection: Component<{ mode: () => Mode }> = (props) => {
   const [current] = createResource(props.mode, fetchKidsRootPath);
   const [path, setPath] = createSignal("");
+  const [dirty, setDirty] = createSignal(false);
   createEffect(
     on(current, (p) => {
-      if (p !== undefined) setPath(p ?? "");
+      if (p !== undefined) {
+        setPath(p ?? "");
+        setDirty(false);
+      }
     }),
   );
   const status = useSaveStatus();
   const save = async () => {
     try {
       await putKidsRootPath(props.mode(), path());
+      setDirty(false);
       status.saved();
     } catch (e) {
       status.failed(e);
+      throw e;
     }
   };
+  const setPathDirty = (p: string) => {
+    setPath(p);
+    setDirty(true);
+  };
+  const batched = useSectionSaveItem({
+    id: "library-kids",
+    label: "kids root path",
+    dirty,
+    save,
+  });
   return (
     <Card title={`Kids classification (${MODE_LABELS[props.mode()]})`}>
-      <form onSubmit={(e) => (e.preventDefault(), void save())}>
+      <form onSubmit={(e) => (e.preventDefault(), void save().catch(() => {}))}>
         <label class="block">
           <span class={labelClass}>Kids root folder path</span>
           <FolderPicker
             value={path}
-            onChange={setPath}
+            onChange={setPathDirty}
             ariaLabel="Kids root folder path"
             placeholder={`/path/to/${MODE_LABELS[props.mode()]} (Kids)`}
           />
         </label>
         <div class="mt-3 flex items-center gap-2">
-          <Button variant="primary" type="submit">
-            Save
-          </Button>
+          <Show when={!batched()}>
+            <Button variant="primary" type="submit">
+              Save
+            </Button>
+          </Show>
           <SaveStatus
             text={status.status().text}
             error={status.status().error}

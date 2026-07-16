@@ -49,6 +49,8 @@ function defaultGet(url: string): Response | undefined {
       redirectUrl: "",
       hasSecret: false,
     });
+  if (url.includes("/api/settings/ai-fallback-enabled"))
+    return jsonResponse({ enabled: true });
   if (url.includes("/api/settings/ai-provider"))
     return jsonResponse({ provider: "ollama" });
   if (url.includes("/api/settings/ai-model")) return jsonResponse({ model: "" });
@@ -116,6 +118,12 @@ const renderSettings = () => render(() => <Settings onReboot={() => {}} />);
 const goToSection = (
   name: "Connections" | "Auth" | "AI" | "Library" | "Advanced" | "Sliders",
 ) => fireEvent.click(screen.getByRole("button", { name }));
+
+// clickSectionSave clicks the one section-level Save button per tab. The batched-
+// save refactor consolidated the former per-row / per-card Save buttons into it;
+// each tab (Connections, AI, Library-per-mode, Advanced) now has exactly one.
+const clickSectionSave = () =>
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -213,8 +221,9 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     // The configured connection loads its URL; the key input is blank (the real
     // key is never sent to the client). Edit only the URL, then Save this row.
     fireEvent.input(urlInput, { target: { value: "http://prowlarr:9999" } });
-    const row = urlInput.closest("tr")!;
-    fireEvent.click(within(row).getByText("Save"));
+    // One section Save button commits the dirty row; only prowlarr was edited,
+    // so only its PUT fires — still built by that row's own body logic.
+    clickSectionSave();
 
     await waitFor(() =>
       expect(
@@ -249,8 +258,7 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     renderSettings();
     const keyInput = await screen.findByLabelText("prowlarr API key");
     fireEvent.input(keyInput, { target: { value: "sk-rotated" } });
-    const row = (keyInput as HTMLElement).closest("tr")!;
-    fireEvent.click(within(row).getByText("Save"));
+    clickSectionSave();
 
     await waitFor(() =>
       expect(calls.some((c) => c.method === "PUT")).toBe(true),
@@ -259,14 +267,71 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     expect(put.body).toEqual({ url: "http://prowlarr:9696", apiKey: "sk-rotated" });
   });
 
+  // The single most important batched-save test: the section's ONE Save button
+  // must fire one PUT per dirty row, each built by that row's OWN body logic —
+  // never a merged/shared payload. An untouched-key row must OMIT apiKey entirely
+  // (property absent, not ""), so its stored secret is preserved, even while a
+  // sibling row in the same batched Save sends a freshly-edited key.
+  it("batched Save fires one PUT per dirty row with each row's OWN body (untouched key omitted)", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([
+          {
+            service: "prowlarr",
+            url: "http://prowlarr:9696",
+            hasApiKey: true,
+            keySuffix: "abcd",
+            updatedAt: "2026-07-13T00:00:00Z",
+          },
+          {
+            service: "stash",
+            url: "http://stash:9999",
+            hasApiKey: true,
+            keySuffix: "wxyz",
+            updatedAt: "2026-07-13T00:00:00Z",
+          },
+        ]);
+      return undefined;
+    });
+
+    renderSettings();
+    // Edit ONLY prowlarr's URL (key untouched) and ONLY stash's key.
+    const prowlarrUrl = (await screen.findByLabelText(
+      "prowlarr URL",
+    )) as HTMLInputElement;
+    fireEvent.input(prowlarrUrl, { target: { value: "http://prowlarr:9999" } });
+    const stashKey = await screen.findByLabelText("stash API key");
+    fireEvent.input(stashKey, { target: { value: "sk-stash" } });
+
+    // ONE section Save commits both dirty rows in a single click.
+    clickSectionSave();
+    await waitFor(() =>
+      expect(
+        calls.filter(
+          (c) => c.method === "PUT" && c.url.includes("/api/connections/"),
+        ).length,
+      ).toBe(2),
+    );
+    const prowlarrPut = calls.find(
+      (c) => c.method === "PUT" && c.url.includes("/api/connections/prowlarr"),
+    )!;
+    const stashPut = calls.find(
+      (c) => c.method === "PUT" && c.url.includes("/api/connections/stash"),
+    )!;
+    // prowlarr: untouched key → apiKey ABSENT (stored secret preserved).
+    expect(prowlarrPut.body).not.toHaveProperty("apiKey");
+    expect(prowlarrPut.body).toEqual({ url: "http://prowlarr:9999" });
+    // stash: edited key → its own new key, its own url. Never merged with prowlarr.
+    expect(stashPut.body).toEqual({ url: "http://stash:9999", apiKey: "sk-stash" });
+  });
+
   it("Saves a fixed-URL row (tmdb) with no url — no client-side 'url is required' throw", async () => {
     const calls = stubFetch();
     renderSettings();
     // tmdb has no URL input; the operator only sets the API key.
     const keyInput = await screen.findByLabelText("tmdb API key");
     fireEvent.input(keyInput, { target: { value: "tmdb-key" } });
-    const row = (keyInput as HTMLElement).closest("tr")!;
-    fireEvent.click(within(row).getByText("Save"));
+    clickSectionSave();
 
     // The Save must reach the network (not throw "url is required" first).
     await waitFor(() =>
@@ -360,7 +425,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
     const row = urlInput.closest("tr")!;
     fireEvent.click(within(row).getByText("Use this URL"));
     expect(urlInput.value).toBe("http://prowlarr:9696");
-    fireEvent.click(within(row).getByText("Save"));
+    clickSectionSave();
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     const put = calls.find((c) => c.method === "PUT")!;
     expect(put.body).toEqual({ url: "http://prowlarr:9696", apiKey: "" });
@@ -394,7 +459,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
         (screen.getByLabelText("prowlarr API key") as HTMLInputElement).value,
       ).toBe("fetched-key"),
     );
-    fireEvent.click(within(row).getByText("Save"));
+    clickSectionSave();
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     const put = calls.find((c) => c.method === "PUT")!;
     // The fetched key survives the three-state gate because Fetch marks touched.
@@ -450,7 +515,7 @@ describe("Trakt connection section", () => {
     renderSettings();
     const clientIdInput = await screen.findByLabelText("Trakt client ID");
     fireEvent.input(clientIdInput, { target: { value: "my-client-id" } });
-    fireEvent.click(screen.getByText("Save credentials"));
+    clickSectionSave();
     await waitFor(() =>
       expect(
         calls.some(
@@ -473,7 +538,7 @@ describe("Trakt connection section", () => {
     fireEvent.input(screen.getByLabelText("Trakt client secret"), {
       target: { value: "my-secret" },
     });
-    fireEvent.click(screen.getByText("Save credentials"));
+    clickSectionSave();
     await waitFor(() =>
       expect(calls.some((c) => c.method === "PUT")).toBe(true),
     );
@@ -686,11 +751,16 @@ describe("AI provider/model", () => {
     const calls = stubFetch();
     renderSettings();
     goToSection("AI");
+    // Wait for the tab to finish loading before editing: the connection rows
+    // render only once the fallback-enabled + connections resources resolve, so
+    // their presence guarantees the form's seed-from-server effects already ran
+    // (otherwise a late resolve would reset the just-edited dirty flag).
+    await screen.findByLabelText("ollama URL");
     const modelInput = await screen.findByPlaceholderText(/qwen2.5vl/);
     fireEvent.input(modelInput, { target: { value: "gpt-4o-mini" } });
-    // The AI panel's Save is the first "Save" in a form with a Model field.
-    const modelRow = (modelInput as HTMLElement).closest("form")!;
-    fireEvent.click(within(modelRow).getByText("Save"));
+    // The AI tab's one section Save button commits the provider/model form
+    // (provider + model + fallback toggle) in a single click.
+    clickSectionSave();
     await waitFor(() =>
       expect(
         calls.some(
@@ -755,8 +825,7 @@ describe("Per-mode panels", () => {
     )) as HTMLInputElement;
     await waitFor(() => expect(input.value).toBe("/media/movies"));
     fireEvent.input(input, { target: { value: "/media/films" } });
-    const form = input.closest("form")!;
-    fireEvent.click(within(form).getByText("Save"));
+    clickSectionSave();
     await waitFor(() =>
       expect(
         calls.some(
@@ -825,8 +894,7 @@ describe("Advanced Settings", () => {
       "Background recheck interval (seconds) — global",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "3600" } });
-    const wrap = input.closest("div")!;
-    fireEvent.click(within(wrap).getByText("Save"));
+    clickSectionSave();
     await waitFor(() =>
       expect(
         calls.some(
@@ -851,8 +919,7 @@ describe("Advanced Settings", () => {
       "Background recheck interval (seconds) — global",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "-5" } });
-    const wrap = input.closest("div")!;
-    fireEvent.click(within(wrap).getByText("Save"));
+    clickSectionSave();
     await screen.findByText(/must be 0 or greater/i);
     expect(
       calls.some(
@@ -870,8 +937,7 @@ describe("Advanced Settings", () => {
       "Dedup phash similarity threshold (0–64)",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "99" } });
-    const wrap = input.closest("div")!;
-    fireEvent.click(within(wrap).getByText("Save"));
+    clickSectionSave();
     await screen.findByText(/must be between 0 and 64/i);
     expect(
       calls.some(
@@ -893,8 +959,7 @@ describe("Advanced Settings", () => {
     )) as HTMLInputElement;
     await waitFor(() => expect(input.value).toBe("8"));
     fireEvent.input(input, { target: { value: "12" } });
-    const wrap = input.closest("div")!;
-    fireEvent.click(within(wrap).getByText("Save"));
+    clickSectionSave();
     await waitFor(() =>
       expect(
         calls.some(
@@ -944,8 +1009,7 @@ describe("Advanced Settings", () => {
       "Adult phash-first identification enabled",
     )) as HTMLInputElement;
     fireEvent.change(toggle, { target: { checked: false } });
-    const wrap = toggle.closest("div")!;
-    fireEvent.click(within(wrap).getByText("Save"));
+    clickSectionSave();
     await waitFor(() =>
       expect(
         calls.some(

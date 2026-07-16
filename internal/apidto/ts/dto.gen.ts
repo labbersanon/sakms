@@ -515,6 +515,16 @@ export interface AvailabilityCandidate {
   score: number /* float64 */;
 }
 /**
+ * TrailerResponse is GET /api/modes/{mode}/discover/trailer's result — the
+ * Discover detail popup's "Watch Trailer" link target. URL is "" when TMDB
+ * has no matching YouTube trailer on file for this title (see
+ * tmdb.Client.TrailerURL) — the frontend simply omits the link in that case,
+ * never treating an empty result as an error.
+ */
+export interface TrailerResponse {
+  url: string;
+}
+/**
  * Candidate is one file in a Dedup proposal's duplicate group — the shape the
  * Dedup view (frontend/src/screens/Dedup.tsx) renders one table row from. A
  * CURATED subset of internal/proposals.Candidate: only the fields the view

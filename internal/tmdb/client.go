@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/curtiswtaylorjr/sakms/internal/httpx"
 )
@@ -567,4 +568,117 @@ func (c *Client) DiscoverTVByKeyword(ctx context.Context, keywordID int, page in
 		return nil, err
 	}
 	return normalizeAll(resp.Results, TV), nil
+}
+
+type videoRaw struct {
+	Key      string `json:"key"`
+	Site     string `json:"site"`
+	Type     string `json:"type"`
+	Official bool   `json:"official"`
+}
+
+type videosResponse struct {
+	Results []videoRaw `json:"results"`
+}
+
+// youtubeURL builds a watchable YouTube URL from a TMDB video's `key` field
+// (YouTube's own video id) — the only site TrailerURL matches on, since it's
+// the one TMDB itself links to for a browser-viewable trailer.
+func youtubeURL(key string) string {
+	return "https://www.youtube.com/watch?v=" + key
+}
+
+// TrailerURL returns a watchable YouTube trailer URL for mt/tmdbID (hits
+// /movie|tv/{id}/videos), or "" if TMDB has none on file — not an error, the
+// Discover detail popup simply omits the "Watch Trailer" link in that case.
+// Preference order: an official YouTube "Trailer" first, then any YouTube
+// "Trailer", then any YouTube video at all (e.g. a Teaser) as a last resort.
+// UNVERIFIED ASSUMPTION (per this project's honesty-about-unverified-
+// assumptions convention): this shape is modeled from TMDB's public API
+// documentation only, not yet confirmed against a live call.
+func (c *Client) TrailerURL(ctx context.Context, mt MediaType, tmdbID int) (string, error) {
+	var resp videosResponse
+	if err := c.do(ctx, fmt.Sprintf("/%s/%d/videos", mt, tmdbID), nil, &resp); err != nil {
+		return "", err
+	}
+	var fallbackTrailer, fallbackAny string
+	for _, v := range resp.Results {
+		if v.Site != "YouTube" {
+			continue
+		}
+		if fallbackAny == "" {
+			fallbackAny = youtubeURL(v.Key)
+		}
+		if v.Type != "Trailer" {
+			continue
+		}
+		if v.Official {
+			return youtubeURL(v.Key), nil
+		}
+		if fallbackTrailer == "" {
+			fallbackTrailer = youtubeURL(v.Key)
+		}
+	}
+	if fallbackTrailer != "" {
+		return fallbackTrailer, nil
+	}
+	return fallbackAny, nil
+}
+
+type releaseDateEntry struct {
+	Type        int    `json:"type"`
+	ReleaseDate string `json:"release_date"`
+}
+
+type releaseDatesCountry struct {
+	ISO31661     string             `json:"iso_3166_1"`
+	ReleaseDates []releaseDateEntry `json:"release_dates"`
+}
+
+type releaseDatesResponse struct {
+	Results []releaseDatesCountry `json:"results"`
+}
+
+// TMDB's release_dates "type" enum (documented: 1 Premiere, 2 Theatrical
+// limited, 3 Theatrical, 4 Digital, 5 Physical, 6 TV) — HasUSRelease only
+// counts type 4/5 as "actually acquirable," not a theatrical-only release.
+const (
+	releaseTypeDigital  = 4
+	releaseTypePhysical = 5
+)
+
+// HasUSRelease reports whether TMDB's /movie/{id}/release_dates lists a US
+// digital or physical release dated today or earlier — i.e. whether this
+// movie is actually acquirable yet, as opposed to theatrical-only or still
+// upcoming. Movies only: TMDB's TV catalog has no equivalent release_dates
+// concept. A movie with no US entry at all, or only earlier-stage entries
+// (premiere/theatrical), returns false — the same title as "not yet
+// released" for this check's purpose. UNVERIFIED ASSUMPTION (per this
+// project's honesty-about-unverified-assumptions convention): modeled from
+// TMDB's public API documentation only, not yet confirmed against a live
+// call.
+func (c *Client) HasUSRelease(ctx context.Context, tmdbID int) (bool, error) {
+	var resp releaseDatesResponse
+	if err := c.do(ctx, fmt.Sprintf("/movie/%d/release_dates", tmdbID), nil, &resp); err != nil {
+		return false, err
+	}
+	now := time.Now()
+	for _, country := range resp.Results {
+		if country.ISO31661 != "US" {
+			continue
+		}
+		for _, rd := range country.ReleaseDates {
+			if rd.Type != releaseTypeDigital && rd.Type != releaseTypePhysical {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339, rd.ReleaseDate)
+			if err != nil {
+				continue
+			}
+			if !t.After(now) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }

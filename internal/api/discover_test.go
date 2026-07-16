@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
@@ -41,8 +42,20 @@ func fakeTMDBServer(t *testing.T) *httptest.Server {
 func TestDiscoverHandler_MoviesUsesMovieMediaType(t *testing.T) {
 	var gotPath string
 	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
+		// Trending/Popular Movies now also filters through HasUSRelease (see
+		// filterReleasedMovies) — this handler must serve a qualifying US
+		// release for /movie/1/release_dates or the fixture's one item would
+		// filter out, breaking this test's unrelated media-type assertion.
+		// gotPath is only recorded for the trending call itself, matching the
+		// established sequential happens-before pattern this test already
+		// relies on (see TestDiscoverHandler_PageParamForwarded's identical
+		// convention).
+		if strings.Contains(r.URL.Path, "/release_dates") {
+			w.Write([]byte(`{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2020-01-01T00:00:00.000Z"}]}]}`))
+			return
+		}
+		gotPath = r.URL.Path
 		w.Write([]byte(`{"results":[{"id":1,"title":"Some Movie","poster_path":"/x.jpg","vote_average":7.5}]}`))
 	})
 
@@ -140,8 +153,17 @@ func TestDiscoverHandler_TMDBNotConfigured(t *testing.T) {
 func TestDiscoverHandler_PageParamForwarded(t *testing.T) {
 	var gotPage string
 	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
-		gotPage = r.URL.Query().Get("page")
 		w.Header().Set("Content-Type", "application/json")
+		// See TestDiscoverHandler_MoviesUsesMovieMediaType's comment: Movies
+		// trending/popular now also calls /movie/{id}/release_dates per item,
+		// which carries no ?page param at all — that must not be allowed to
+		// overwrite gotPage after the real trending/popular call already set
+		// it.
+		if strings.Contains(r.URL.Path, "/release_dates") {
+			w.Write([]byte(`{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2020-01-01T00:00:00.000Z"}]}]}`))
+			return
+		}
+		gotPage = r.URL.Query().Get("page")
 		w.Write([]byte(`{"results":[{"id":1,"title":"Some Movie"}]}`))
 	})
 
@@ -549,6 +571,443 @@ func TestDiscoverKeywordsHandler_SearchesTMDB(t *testing.T) {
 	}
 	if len(keywords) != 1 || keywords[0].Name != "heist" {
 		t.Errorf("unexpected keywords: %+v", keywords)
+	}
+}
+
+// usReleaseFixture is a valid /movie/{id}/release_dates response with a past
+// US digital release — HasUSRelease returns true for it.
+const usReleaseFixture = `{"results": [{"iso_3166_1": "US", "release_dates": [{"type": 4, "release_date": "2020-01-01T00:00:00.000Z"}]}]}`
+
+// noUSReleaseFixture has no US entry at all — HasUSRelease returns false.
+const noUSReleaseFixture = `{"results": [{"iso_3166_1": "GB", "release_dates": [{"type": 3, "release_date": "2020-01-01T00:00:00.000Z"}]}]}`
+
+// TestDiscoverHandler_FiltersUnreleasedMoviesFromTrending proves Movies
+// trending/popular now filters out titles with no US release yet — of two
+// TMDB items returned, only the one with a qualifying release_dates entry
+// survives.
+func TestDiscoverHandler_FiltersUnreleasedMoviesFromTrending(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/trending/movie/week", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":1,"title":"Released Movie"},{"id":2,"title":"Unreleased Movie"}]}`))
+	})
+	mux.HandleFunc("/movie/1/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(usReleaseFixture))
+	})
+	mux.HandleFunc("/movie/2/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(noUSReleaseFixture))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", srv.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer apiSrv.Close()
+
+	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Released Movie" {
+		t.Errorf("expected only the released movie to survive, got %+v", items)
+	}
+}
+
+// TestDiscoverHandler_UpcomingMoviesNotFiltered proves the Upcoming category
+// is deliberately exempt from the release-date filter — showing not-yet-
+// released titles is that row's entire purpose.
+func TestDiscoverHandler_UpcomingMoviesNotFiltered(t *testing.T) {
+	var releaseDatesHit bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/movie/upcoming", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":3,"title":"Future Movie"}]}`))
+	})
+	mux.HandleFunc("/movie/3/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		releaseDatesHit = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(noUSReleaseFixture))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", srv.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer apiSrv.Close()
+
+	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover?category=upcoming")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Future Movie" {
+		t.Errorf("expected the unreleased movie to survive Upcoming unfiltered, got %+v", items)
+	}
+	if releaseDatesHit {
+		t.Error("expected the release-date filter to never run for category=upcoming")
+	}
+}
+
+// TestDiscoverHandler_SeriesNeverFiltered proves the release-date filter is
+// Movies-only — Series items pass through untouched, and release_dates is
+// never even called (there is no TV equivalent endpoint).
+func TestDiscoverHandler_SeriesNeverFiltered(t *testing.T) {
+	var releaseDatesHit bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tv/popular", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":4,"name":"Some Show"}]}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "release_dates") {
+			releaseDatesHit = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(noUSReleaseFixture))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", srv.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer apiSrv.Close()
+
+	resp, err := http.Get(apiSrv.URL + "/api/modes/series/discover?category=popular")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Some Show" {
+		t.Errorf("expected the series item to pass through unfiltered, got %+v", items)
+	}
+	if releaseDatesHit {
+		t.Error("expected release_dates to never be called for Series")
+	}
+}
+
+// TestDiscoverHandler_RetriesNextPageWhenWholePageFilteredOut proves
+// filterReleasedMovies' bounded retry: page 1 has one movie and it's
+// unreleased (filters to empty), so the handler transparently tries page 2,
+// which has a released movie — the frontend's "Show more" must not falsely
+// see this as an exhausted row.
+func TestDiscoverHandler_RetriesNextPageWhenWholePageFilteredOut(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/trending/movie/week", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			w.Write([]byte(`{"results":[{"id":20,"title":"Released On Page 2"}]}`))
+			return
+		}
+		w.Write([]byte(`{"results":[{"id":10,"title":"Unreleased On Page 1"}]}`))
+	})
+	mux.HandleFunc("/movie/10/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(noUSReleaseFixture))
+	})
+	mux.HandleFunc("/movie/20/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(usReleaseFixture))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", srv.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer apiSrv.Close()
+
+	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Released On Page 2" {
+		t.Errorf("expected the retry to surface page 2's released movie, got %+v", items)
+	}
+}
+
+// TestDiscoverHandler_GivesUpAfterMaxRetries proves the retry loop is
+// bounded — if every page within the retry budget is fully unreleased, the
+// handler returns an empty (not error) result rather than looping forever.
+func TestDiscoverHandler_GivesUpAfterMaxRetries(t *testing.T) {
+	var pagesFetched int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/movie/popular", func(w http.ResponseWriter, r *http.Request) {
+		pagesFetched++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":30,"title":"Always Unreleased"}]}`))
+	})
+	mux.HandleFunc("/movie/30/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(noUSReleaseFixture))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", srv.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer apiSrv.Close()
+
+	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover?category=popular")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 (empty result), got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected an empty result after exhausting retries, got %+v", items)
+	}
+	// 1 initial fetch + maxUnreleasedFilterRetries retries.
+	if pagesFetched != 1+maxUnreleasedFilterRetries {
+		t.Errorf("expected %d page fetches, got %d", 1+maxUnreleasedFilterRetries, pagesFetched)
+	}
+}
+
+// TestDiscoverHandler_FailsOpenOnPerItemReleaseDatesError proves
+// filterByUSRelease's fail-open behavior: a transient error on one item's
+// /movie/{id}/release_dates call must not blank the whole row — the failing
+// item is kept (not dropped), and the request still succeeds with 200.
+func TestDiscoverHandler_FailsOpenOnPerItemReleaseDatesError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/trending/movie/week", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":1,"title":"Released Movie"},{"id":2,"title":"Flaky Lookup Movie"}]}`))
+	})
+	mux.HandleFunc("/movie/1/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(usReleaseFixture))
+	})
+	mux.HandleFunc("/movie/2/release_dates", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream hiccup", http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", srv.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer apiSrv.Close()
+
+	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 despite one item's release_dates erroring (fail-open), got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected both items to survive (the erroring one kept, not dropped), got %+v", items)
+	}
+}
+
+// TestDiscoverTrailerHandler_ReturnsURL proves the trailer endpoint proxies
+// TMDB's /movie/{id}/videos into {url: "..."}.
+func TestDiscoverTrailerHandler_ReturnsURL(t *testing.T) {
+	var gotPath string
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"key":"abc123","site":"YouTube","type":"Trailer","official":true}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/trailer?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if gotPath != "/movie/42/videos" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got["url"] != "https://www.youtube.com/watch?v=abc123" {
+		t.Errorf("unexpected url: %+v", got)
+	}
+}
+
+// TestDiscoverTrailerHandler_SeriesUsesTVPath proves Series dispatches to
+// /tv/{id}/videos, not /movie/{id}/videos.
+func TestDiscoverTrailerHandler_SeriesUsesTVPath(t *testing.T) {
+	var gotPath string
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/discover/trailer?tmdbId=7")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if gotPath != "/tv/7/videos" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got["url"] != "" {
+		t.Errorf("expected empty url when TMDB has no trailer, got %+v", got)
+	}
+}
+
+// TestDiscoverTrailerHandler_RejectsAdult proves Adult mode is a 400 —
+// Adult has no TMDB id to resolve a trailer from.
+func TestDiscoverTrailerHandler_RejectsAdult(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/trailer?tmdbId=1")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for adult mode, got %d", resp.StatusCode)
+	}
+}
+
+// TestDiscoverTrailerHandler_RequiresTmdbID proves a missing/invalid tmdbId
+// is a 400, not a zero-id upstream lookup.
+func TestDiscoverTrailerHandler_RequiresTmdbID(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/trailer")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 without a tmdbId param, got %d", resp.StatusCode)
+	}
+}
+
+// TestDiscoverTrailerHandler_RejectsNonPositiveTmdbID proves tmdbId=0 and
+// negative values are also a 400, not a doomed upstream lookup — the
+// page-param convention discoverHandler already uses (page must be > 0).
+func TestDiscoverTrailerHandler_RejectsNonPositiveTmdbID(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer srv.Close()
+
+	for _, id := range []string{"0", "-5"} {
+		resp, err := http.Get(srv.URL + "/api/modes/movies/discover/trailer?tmdbId=" + id)
+		if err != nil {
+			t.Fatalf("GET failed: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("tmdbId=%s: expected 400, got %d", id, resp.StatusCode)
+		}
+	}
+}
+
+// TestDiscoverTrailerHandler_TMDBNotConfigured proves the endpoint 400s when
+// tmdb isn't configured, matching every other Discover handler's convention.
+func TestDiscoverTrailerHandler_TMDBNotConfigured(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/trailer?tmdbId=1")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 when tmdb isn't configured, got %d", resp.StatusCode)
 	}
 }
 

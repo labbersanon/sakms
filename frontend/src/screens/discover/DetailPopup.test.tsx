@@ -425,6 +425,72 @@ describe("DetailPopup — external database link (poster + \"More on …\")", ()
   });
 });
 
+describe("DetailPopup — Watch Trailer link", () => {
+  const stubWithTrailer = (trailerUrl: string) =>
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: trailerUrl });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+  it("renders a Watch Trailer link for Movies when TMDB has one on file", async () => {
+    const calls = stubWithTrailer("https://www.youtube.com/watch?v=abc123");
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    const trailerLink = await screen.findByText("Watch Trailer →");
+    expect(trailerLink.closest("a")).toHaveAttribute(
+      "href",
+      "https://www.youtube.com/watch?v=abc123",
+    );
+    const trailerCall = calls.find((c) => c.url.includes("/discover/trailer"));
+    expect(trailerCall?.url).toBe("/api/modes/movies/discover/trailer?tmdbId=42");
+  });
+
+  it("omits the Watch Trailer link when TMDB has none on file", async () => {
+    stubWithTrailer("");
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await screen.findByText(/More on TMDB/);
+    expect(screen.queryByText("Watch Trailer →")).not.toBeInTheDocument();
+  });
+
+  it("never fetches a trailer for Adult — Adult has no TMDB id to resolve one from", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = { mode: "adult", item: adultScene() };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+    await screen.findByRole("button", { name: "Grab" });
+
+    expect(calls.some((c) => c.url.includes("/discover/trailer"))).toBe(false);
+    expect(screen.queryByText("Watch Trailer →")).not.toBeInTheDocument();
+  });
+
+  it("fetches the Series trailer via the series mode path", async () => {
+    const calls = stubWithTrailer("https://www.youtube.com/watch?v=series1");
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({ id: 7, mediaType: "tv" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    fireEvent.input(screen.getByLabelText("Season"), { target: { value: "1" } });
+    fireEvent.click(screen.getByText("Go"));
+
+    await screen.findByText("Watch Trailer →");
+    const trailerCall = calls.find((c) => c.url.includes("/discover/trailer"));
+    expect(trailerCall?.url).toBe("/api/modes/series/discover/trailer?tmdbId=7");
+  });
+});
+
 describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shape)", () => {
   it("resolves the root folder, then calls manualGrab with the selected candidate's fields", async () => {
     const preview = emptyPreview();

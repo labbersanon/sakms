@@ -365,6 +365,47 @@ backend at all removed the motivation for shipping one bundled. See
 2026-07-16 — flagged as a gap during the same audit, along with the two
 entries above).
 
+### Mainstream Discover: trailer link + hide not-yet-released movies — shipped 2026-07-16
+First item off the "least complex to most complex" backlog ordering. Two
+additions. (1) A "Watch Trailer" link in the detail popup (Movies/Series
+only, not Adult), opening the title's YouTube trailer in a new tab —
+`internal/tmdb.TrailerURL(ctx, mt, tmdbID)` (`/movie|tv/{id}/videos`,
+prefers `official==true` YouTube Trailer, falls back to any YouTube
+Trailer then any YouTube video at all), a `TrailerResponse` DTO, and
+`GET /api/modes/{mode}/discover/trailer?tmdbId=N` (`internal/api/
+discover_trailer.go`, same one-shot-per-popup-open trigger shape as
+`discoverAvailabilityHandler`; 400 for Adult and for `tmdbId<=0`). Renders
+next to the existing "More on TMDB →" link in `DetailPopup.tsx`. (2) Hides
+movies from Trending Movies and Popular Movies (not Upcoming Movies, not
+Series) with no US digital/physical release yet —
+`internal/tmdb.HasUSRelease(ctx, tmdbID)` (`/movie/{id}/release_dates`,
+type 4/Digital or 5/Physical dated today-or-earlier counts as released),
+wired into `discoverHandler`'s trending/popular dispatch via
+`filterReleasedMovies`/`filterByUSRelease` (bounded-concurrent,
+`golang.org/x/sync/errgroup` `SetLimit(5)`, now promoted from an indirect
+to a direct `go.mod` dependency). Two real edge cases handled, not just
+noted: (a) if an entire fetched TMDB page filters to empty, the handler
+retries up to 3 more consecutive TMDB pages before giving up — otherwise
+`Mainstream.tsx`'s `PaginatedRow` would mark the row falsely exhausted on
+its `batch.length === 0` check; (b) `filterByUSRelease` fails OPEN on a
+per-item `HasUSRelease` error (logs and keeps the item) rather than
+blanking the whole row over one transient TMDB hiccup — found and fixed
+during this change's own pre-merge code review, matching the
+never-an-error posture `fetchTitlePoster`/`posterHandler` already use.
+Accepted, documented limitation: since the frontend's own page counter
+doesn't track which raw TMDB page a retry burst actually consumed, a
+retry that skips past a PARTIALLY-filtered page can make its survivors
+render twice on a later "Show more" click (cosmetic only — Solid's
+`<For>` keys by object reference, no crash) in the narrow case where a
+partial-filter page sits immediately next to a fully-empty one being
+retried past; a full fix would need a bigger wire-contract change
+(returning which raw page was consumed), judged out of scope for this
+pass. Both new TMDB methods are flagged "UNVERIFIED ASSUMPTION" per this
+project's honesty convention — neither endpoint had been called live by
+this codebase before. Independently code-reviewed pre-merge (0 CRITICAL,
+0 HIGH; the 2 MEDIUM findings — fail-open filtering and an error-path
+test gap — were fixed before merge; 3 LOW findings addressed or accepted).
+
 ---
 
 ## Backlog (not yet started, roughly in discussion order)
@@ -414,36 +455,6 @@ two-separate-external-apps friction concrete: an operator hits this dance
 twice (Prowlarr for search, then qBittorrent *or* NZBGet for the actual
 download) before a single one-click grab can complete end-to-end. Not
 started — no design, no client package, no schema.
-
-### Mainstream Discover: trailer link + hide not-yet-released movies
-Two additions, deferred 2026-07-15 in favor of live Adult Discover bugs.
-(1) A "Watch Trailer" link in the detail popup (Movies/Series only, not
-Adult), opening the title's YouTube trailer in a new tab — needs a new
-`internal/tmdb.TrailerURL(ctx, mt, tmdbID)` method (`/movie|tv/{id}/videos`,
-prefer `official==true`, filter `site=="YouTube" && type=="Trailer"`), a
-narrow `TrailerResponse` DTO, and a one-off popup-scoped
-`GET /api/modes/{mode}/discover/trailer?tmdbId=N` handler (same trigger
-shape as the existing `discoverAvailabilityHandler` — fires once per popup
-open, not a bulk fetch). Renders next to the existing "More on TMDB →" link
-in `DetailPopup.tsx`. (2) Hide movies from Trending Movies and Popular
-Movies (not Upcoming Movies, not Series) that have no US digital/physical
-release yet — needs `internal/tmdb.HasUSRelease(ctx, tmdbID)`
-(`/movie/{id}/release_dates`, type 4=Digital/5=Physical dated today or
-earlier; type 3-only or no US entry = still theater-only, filter it out),
-wired into `discoverHandler`'s trending/popular dispatch. Real design
-constraint already scoped: no bulk release-dates endpoint exists, so this
-is one extra TMDB call per item — needs bounded-concurrent fetching
-(`golang.org/x/sync/errgroup`, already an indirect `go.mod` dependency,
-`SetLimit(5)`), and a real edge case to handle (not just note): if an
-entire TMDB page's movies all filter out, `Mainstream.tsx`'s `PaginatedRow`
-would mark the row falsely exhausted (it exhausts on the first empty
-batch) — the handler needs to retry the next TMDB page (bounded, e.g. 3
-extra attempts) before returning empty. Neither TMDB videos nor
-release-date-type data exists anywhere in this codebase today — confirmed
-by direct code research, not assumed. No caching for either, consistent
-with the rest of Discover (`discoverHandler`/sliders resolve live already).
-Not started — full implementation plan was written and researched
-end-to-end this session but not yet built.
 
 ### Cheap, independent wins
 - **Clearer mount-disconnect error messaging** — shipped 2026-07-11, see

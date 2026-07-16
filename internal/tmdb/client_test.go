@@ -663,3 +663,158 @@ func TestKnownStudiosAndNetworks_NotEmpty(t *testing.T) {
 		t.Error("expected a non-empty KnownNetworks seed list")
 	}
 }
+
+func TestTrailerURL_PrefersOfficialYouTubeTrailer(t *testing.T) {
+	var gotPath string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"key": "teaser1", "site": "YouTube", "type": "Teaser", "official": true},
+			{"key": "unofficial1", "site": "YouTube", "type": "Trailer", "official": false},
+			{"key": "official1", "site": "YouTube", "type": "Trailer", "official": true},
+			{"key": "vimeo1", "site": "Vimeo", "type": "Trailer", "official": true}
+		]}`))
+	})
+
+	url, err := c.TrailerURL(context.Background(), Movie, 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/movie/42/videos" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if url != "https://www.youtube.com/watch?v=official1" {
+		t.Errorf("expected the official YouTube trailer, got %q", url)
+	}
+}
+
+func TestTrailerURL_TVUsesTVPath(t *testing.T) {
+	var gotPath string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [{"key": "abc", "site": "YouTube", "type": "Trailer", "official": true}]}`))
+	})
+
+	url, err := c.TrailerURL(context.Background(), TV, 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/tv/7/videos" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if url != "https://www.youtube.com/watch?v=abc" {
+		t.Errorf("unexpected url: %q", url)
+	}
+}
+
+func TestTrailerURL_FallsBackToUnofficialThenAnyYouTubeVideo(t *testing.T) {
+	// No official Trailer exists — falls back to the unofficial Trailer over
+	// the Teaser, since Trailer beats Teaser regardless of official status.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"key": "teaser1", "site": "YouTube", "type": "Teaser", "official": true},
+			{"key": "unofficial1", "site": "YouTube", "type": "Trailer", "official": false}
+		]}`))
+	})
+	url, err := c.TrailerURL(context.Background(), Movie, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if url != "https://www.youtube.com/watch?v=unofficial1" {
+		t.Errorf("expected the unofficial trailer as fallback, got %q", url)
+	}
+}
+
+func TestTrailerURL_NoYouTubeVideoReturnsEmptyNotError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [{"key": "x", "site": "Vimeo", "type": "Trailer", "official": true}]}`))
+	})
+	url, err := c.TrailerURL(context.Background(), Movie, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if url != "" {
+		t.Errorf("expected empty url when TMDB has no YouTube video on file, got %q", url)
+	}
+}
+
+func TestHasUSRelease_TrueForPastUSDigitalRelease(t *testing.T) {
+	var gotPath string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "GB", "release_dates": [{"type": 3, "release_date": "2020-01-01T00:00:00.000Z"}]},
+			{"iso_3166_1": "US", "release_dates": [
+				{"type": 3, "release_date": "2020-01-01T00:00:00.000Z"},
+				{"type": 4, "release_date": "2020-02-01T00:00:00.000Z"}
+			]}
+		]}`))
+	})
+
+	has, err := c.HasUSRelease(context.Background(), 99)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/movie/99/release_dates" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if !has {
+		t.Error("expected true for a past US digital release")
+	}
+}
+
+func TestHasUSRelease_FalseForTheatricalOnly(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [{"type": 3, "release_date": "2020-01-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	has, err := c.HasUSRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if has {
+		t.Error("expected false — theatrical-only is not yet acquirable")
+	}
+}
+
+func TestHasUSRelease_FalseForFutureDigitalRelease(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [{"type": 4, "release_date": "2099-01-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	has, err := c.HasUSRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if has {
+		t.Error("expected false — the digital release date is in the future")
+	}
+}
+
+func TestHasUSRelease_FalseWithNoUSEntry(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "GB", "release_dates": [{"type": 4, "release_date": "2020-01-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	has, err := c.HasUSRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if has {
+		t.Error("expected false — no US entry at all")
+	}
+}

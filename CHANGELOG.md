@@ -2747,3 +2747,100 @@ once fixed.
 Verified via `go build`/`go vet`/full `go test ./...` and frontend `pnpm
 build`/`pnpm test` (268 tests, up from 263) all clean across both commits.
 Merged, pushed, auto-deployed each time, health checks passed.
+
+## 2026-07-16 — Mainstream Discover: "Watch Trailer" link + hide not-yet-released movies from Trending/Popular
+
+First item off `docs/ROADMAP.md`'s backlog, taken in explicit
+least-complex-to-most-complex order. Built in a dedicated worktree
+(`mainstream-trailer-release-filter`).
+
+**Watch Trailer link** (Movies/Series only, not Adult): new
+`internal/tmdb.Client.TrailerURL(ctx, mt, tmdbID)` hits
+`/movie|tv/{id}/videos`, preferring an official YouTube "Trailer", falling
+back to any YouTube "Trailer", then any YouTube video at all (e.g. a
+Teaser) as a last resort; returns `""` (never an error) when TMDB has
+nothing on file. New `apidto.TrailerResponse{URL string}` DTO, regenerated
+into `dto.gen.ts`. New `GET /api/modes/{mode}/discover/trailer?tmdbId=N`
+(`internal/api/discover_trailer.go`), registered alongside the existing
+`discover/availability` route — same one-shot-per-popup-open trigger
+shape as `discoverAvailabilityHandler` (fires once per explicit detail-
+popup click, never a bulk/per-card fetch); 400 for Adult (no TMDB id to
+resolve one from) and for `tmdbId <= 0`. Frontend: `fetchTrailer` in
+`src/api/discover.ts`; `DetailPopup.tsx` fetches it via its own
+`createResource` (keyed on mode+tmdbId, skipped entirely for Adult) and
+renders a "Watch Trailer →" link next to the existing "More on TMDB →"
+link when present.
+
+**Hide not-yet-released movies from Trending/Popular** (Movies only —
+never Series, never the Upcoming category, which exists specifically to
+show unreleased titles): new `internal/tmdb.Client.HasUSRelease(ctx,
+tmdbID)` hits `/movie/{id}/release_dates`; a US entry with a release-type
+4 (Digital) or 5 (Physical) dated today or earlier counts as "actually
+acquirable" — type 3-only (theatrical) or no US entry at all does not.
+Both new TMDB methods are flagged "UNVERIFIED ASSUMPTION" in their doc
+comments per this project's honesty convention — neither endpoint had
+been called live by this codebase before this change. Wired into
+`discoverHandler`'s trending/popular dispatch (`internal/api/
+discover.go`) via two new helpers: `filterByUSRelease` (bounded-
+concurrent per-item checks, `golang.org/x/sync/errgroup` `SetLimit(5)`,
+now promoted from an indirect to a direct `go.mod` dependency) and
+`filterReleasedMovies`, which wraps it with a bounded retry.
+
+Two real edge cases were handled, not just noted in the plan:
+
+1. **Whole-page-filtered-to-empty retry.** If every movie on a fetched
+   TMDB page turns out to be unreleased, the raw batch filters down to
+   zero survivors — returning that as-is would make `Mainstream.tsx`'s
+   `PaginatedRow` mark the row falsely exhausted (it exhausts on the
+   first empty batch, `batch.length === 0`). `filterReleasedMovies`
+   instead fetches up to 3 more consecutive TMDB pages internally before
+   giving up and returning empty. Confirmed via code research that every
+   built-in Trending/Popular/Upcoming Movies row goes through
+   `PaginatedRow`'s simple `=== 0` exhaustion check, not `shared.tsx`'s
+   `PaginatedStrip` (which uses a `batch.length < perPage` heuristic
+   instead — filtering routinely returns fewer-than-a-full-page results
+   even when more pages exist, so rerouting a filtered category through
+   that component later would falsely exhaust it after page 1; a comment
+   now documents this coupling directly in `discover.go`).
+2. **Fail-open on a per-item lookup error.** Found during this change's
+   own pre-merge code review: the first implementation failed the whole
+   request (502) the moment any single item's `/release_dates` call
+   errored — with up to 20 per-item calls per page (more during a retry
+   burst), one transient TMDB hiccup would have blanked the entire
+   Trending/Popular Movies row for every viewer. Fixed before merge:
+   `filterByUSRelease` now logs a per-item error and keeps that item
+   rather than aborting the group, matching the never-an-error posture
+   this same page's other per-item TMDB lookups already use
+   (`fetchTitlePoster`/`posterHandler`). Pinned by a new test
+   (`TestDiscoverHandler_FailsOpenOnPerItemReleaseDatesError`) so a
+   future refactor can't silently flip this back to fail-closed.
+
+**Accepted, documented limitation** (not fixed, judged genuinely
+out of scope for this pass): the frontend's own "Show more" page counter
+increments by one per click, independent of how many raw TMDB pages a
+single retry burst actually consumed server-side. If a retry advances
+past a PARTIALLY-filtered page (some movies kept, some removed) to
+resolve an earlier logical page, the frontend's next request re-fetches
+that same raw TMDB page from scratch — its survivors could then render a
+second time. Cosmetic only (Solid's `<For>` keys by object reference, no
+crash, no duplicate-key warning — confirmed by the reviewer), and only
+reachable when a partial-filter page sits immediately adjacent to a
+fully-empty one being retried past. A full fix would need a bigger
+wire-contract change (returning which raw TMDB page was actually
+consumed) than this "quickest item first" pass warranted.
+
+Independently code-reviewed pre-merge
+(`oh-my-claudecode:code-reviewer`, fresh context): 0 CRITICAL, 0 HIGH.
+2 MEDIUM findings (the fail-open fix above, and the missing error-path
+test) fixed before merge. 3 LOW findings: `tmdbId<=0` now also rejected
+with 400 (previously only non-integer values were, matching the existing
+`page` param convention); the `PaginatedRow`-vs-`PaginatedStrip` coupling
+now has an explicit code comment; TMDB release-type 6 (TV, sometimes used
+for streaming-premiere movies) being filtered out despite being watchable
+is accepted as a known, narrow accuracy edge for this pass.
+
+Verified via `go build`/`go vet`/`go test -race ./internal/tmdb/...
+./internal/api/...` (33 Discover-related tests, all passing including
+under the race detector) plus full repo `go build ./...`/`go test ./...`,
+and frontend `pnpm typecheck`/`pnpm test` (272 tests, up from 268)/`pnpm
+build`, all clean. Merged, pushed, auto-deployed, health checks passed.

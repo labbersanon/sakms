@@ -33,7 +33,7 @@ export const MODE_LABELS: Record<Mode, string> = {
 export const Card: Component<{ title: string; children: JSX.Element }> = (
   props,
 ) => (
-  <div class="mb-4 rounded-xl border border-border bg-surface p-4">
+  <div class="mb-4 overflow-hidden rounded-xl border border-border bg-surface p-4">
     <h3 class="mb-2 px-2 text-sm font-semibold text-fg">{props.title}</h3>
     {props.children}
   </div>

@@ -181,7 +181,7 @@ export const DurationSetting: Component<{
               aria-pressed={unit() === u}
               class={`rounded border px-2 py-1 text-xs ${
                 unit() === u
-                  ? "border-primary bg-primary text-white"
+                  ? "border-accent bg-accent text-accent-fg"
                   : "border-border text-fg"
               }`}
               onClick={() => changeUnit(u)}
@@ -198,7 +198,7 @@ export const DurationSetting: Component<{
           max={UNIT_MAX[unit()]}
           value={amount()}
           aria-label={`${props.label} slider (${UNIT_LABELS[unit()]})`}
-          class="h-2 flex-1 accent-primary"
+          class="h-2 flex-1 accent-accent"
           onInput={(e) => setClampedAmount(e, Number(e.currentTarget.value))}
         />
         <input

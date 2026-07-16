@@ -128,6 +128,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// note). Graded 32 ways (4 resolutions x 4 tiers x 2 protocols) via
 	// internal/autograb — see discover_availability.go.
 	mux.HandleFunc("GET /api/modes/{mode}/discover/availability", discoverAvailabilityHandler(httpClient, connStore, settingsStore))
+	// Discover detail popup's "Watch Trailer" link — one-shot per popup open,
+	// Movies/Series only. See discover_trailer.go.
+	mux.HandleFunc("GET /api/modes/{mode}/discover/trailer", discoverTrailerHandler(httpClient, connStore, settingsStore))
 	// Adult Discover is TPDB-backed (browse + search-by-term), not TMDB — the
 	// concrete path wins over the {mode} wildcard above for Adult (see
 	// adultDiscoverHandler).

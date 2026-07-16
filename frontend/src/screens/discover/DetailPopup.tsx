@@ -35,6 +35,7 @@ import {
   type AdultDiscoverItem,
   type DiscoverItem,
   fetchAvailabilityPreview,
+  fetchTrailer,
   proxyImage,
   tmdbPoster,
 } from "../../api/discover";
@@ -292,6 +293,18 @@ export const DetailPopup: Component<{
     }
   });
 
+  // trailer resolves this title's YouTube trailer URL once per title —
+  // Movies/Series only, skipped entirely for Adult (no TMDB id to resolve
+  // one from). "" (no trailer on file) is a normal, non-error outcome; the
+  // link below simply doesn't render.
+  const [trailer] = createResource(
+    () =>
+      mode() !== "adult"
+        ? { m: mode() as "movies" | "series", tmdbId: (item() as DiscoverItem).id }
+        : null,
+    ({ m, tmdbId }) => fetchTrailer(m, tmdbId).catch(() => ""),
+  );
+
   const [preview] = createResource(
     () => (ready() ? { m: mode(), i: item(), se: seasonEpisode() } : null),
     ({ m, i, se }) => {
@@ -472,14 +485,26 @@ export const DetailPopup: Component<{
               <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
             </Show>
             <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
-            <a
-              href={externalDetailURL(props.target)}
-              target="_blank"
-              rel="noreferrer"
-              class="mt-1 inline-block text-xs text-fg underline decoration-accent underline-offset-2"
-            >
-              More on {sourceLabel(props.target)} →
-            </a>
+            <div class="mt-1 flex items-center gap-3">
+              <a
+                href={externalDetailURL(props.target)}
+                target="_blank"
+                rel="noreferrer"
+                class="inline-block text-xs text-fg underline decoration-accent underline-offset-2"
+              >
+                More on {sourceLabel(props.target)} →
+              </a>
+              <Show when={trailer()}>
+                <a
+                  href={trailer()}
+                  target="_blank"
+                  rel="noreferrer"
+                  class="inline-block text-xs text-fg underline decoration-accent underline-offset-2"
+                >
+                  Watch Trailer →
+                </a>
+              </Show>
+            </div>
           </div>
         </div>
 

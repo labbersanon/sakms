@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/curtiswtaylorjr/sakms/internal/connections"
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
@@ -119,9 +123,117 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, sett
 			return
 		}
 
+		// Movies-only: hide titles with no US digital/physical release yet
+		// (see tmdb.Client.HasUSRelease). Series is excluded by the mt check
+		// (Adult never reaches this handler at all); Upcoming is deliberately
+		// exempt too, since showing not-yet-released titles is that row's
+		// entire purpose — only Trending/Popular claim to be "watch it now."
+		if mt == tmdb.Movie && (category == "trending" || category == "popular") {
+			fetchPage := func(p int) ([]tmdb.Item, error) {
+				if category == "trending" {
+					return sess.TMDB.Trending(ctx, mt, "week", p)
+				}
+				return sess.TMDB.Popular(ctx, mt, p)
+			}
+			items, err = filterReleasedMovies(ctx, sess, page, items, fetchPage)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(items)
 	}
+}
+
+// maxUnreleasedFilterRetries bounds how many extra TMDB pages
+// filterReleasedMovies fetches when an entire page's movies filter out to
+// empty — without this, a single page where every movie happens to be
+// unreleased (rare but real, since TMDB's trending/popular ordering is
+// popularity, not release status) would falsely report the row as exhausted
+// to the frontend's PaginatedRow on the very next "Show more" click.
+const maxUnreleasedFilterRetries = 3
+
+// filterReleasedMovies removes movies with no US release yet from items
+// (see tmdb.Client.HasUSRelease), checked with bounded concurrency. If every
+// item on the page filters out, it fetches up to maxUnreleasedFilterRetries
+// additional consecutive TMDB pages via fetchPage and returns the first
+// page whose survivors are non-empty. A genuinely empty raw fetch (TMDB has
+// no more pages) is returned as-is, with no retry — there's nothing to
+// filter. This empty-batch contract is exactly what PaginatedRow's
+// exhaustion check relies on (Mainstream.tsx: `if (batch.length === 0)
+// setExhausted(true)`) — every built-in Trending/Popular/Upcoming Movies row
+// routes through PaginatedRow, not shared.tsx's PaginatedStrip (which uses a
+// `batch.length < perPage` heuristic instead). Filtering routinely returns
+// FEWER than a full page even when more pages exist, so if a filtered
+// category is ever rerouted through PaginatedStrip, "Show more" would
+// falsely vanish after page 1 — don't make that change without also
+// updating this filter's page-fetching contract.
+//
+// ACCEPTED LIMITATION: the frontend's own page counter increments by one per
+// "Show more" click, independent of how many raw TMDB pages a single
+// response actually consumed internally here. If a retry advances past a
+// PARTIALLY-filtered page (some movies kept, some removed) to resolve an
+// earlier logical page, the frontend's next request re-fetches that same
+// raw TMDB page from scratch — its survivors would then appear a second
+// time (rendered twice, no crash — Carousel's <For> keys by object
+// reference, and PaginatedRow only ever appends). This only happens when a
+// partial-filter page sits immediately next to a fully-empty one being
+// retried past — a narrow edge case. A fully general fix would require
+// threading a "last raw TMDB page consumed" cursor back to the frontend, a
+// bigger wire-contract change out of scope for this pass.
+func filterReleasedMovies(ctx context.Context, sess *mode.Session, page int, items []tmdb.Item, fetchPage func(int) ([]tmdb.Item, error)) ([]tmdb.Item, error) {
+	filtered := filterByUSRelease(ctx, sess, items)
+	var err error
+	for attempt := page; len(filtered) == 0 && len(items) > 0 && attempt < page+maxUnreleasedFilterRetries; {
+		attempt++
+		items, err = fetchPage(attempt)
+		if err != nil {
+			return nil, err
+		}
+		if len(items) == 0 {
+			break
+		}
+		filtered = filterByUSRelease(ctx, sess, items)
+	}
+	return filtered, nil
+}
+
+// filterByUSRelease checks every item's US release status concurrently
+// (bounded to 5 in flight, to avoid firing dozens of simultaneous TMDB calls
+// for one page) and returns the survivors in their original order. Fails
+// OPEN on a per-item HasUSRelease error: logs it and keeps the item rather
+// than failing the whole page. One transient TMDB hiccup among up to 20
+// per-item calls (more during a retry burst) must not blank the entire
+// Trending/Popular Movies row for every viewer — the same never-an-error
+// posture this page's other per-item TMDB lookups already have (see
+// fetchTitlePoster/posterHandler).
+func filterByUSRelease(ctx context.Context, sess *mode.Session, items []tmdb.Item) []tmdb.Item {
+	keep := make([]bool, len(items))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
+	for i, item := range items {
+		i, item := i, item
+		g.Go(func() error {
+			ok, err := sess.TMDB.HasUSRelease(gctx, item.ID)
+			if err != nil {
+				log.Printf("discover: HasUSRelease failed for tmdbId=%d, keeping the item rather than filtering the row to empty: %v", item.ID, err)
+				keep[i] = true
+				return nil
+			}
+			keep[i] = ok
+			return nil
+		})
+	}
+	g.Wait() // every goroutine above always returns nil — see the fail-open note.
+	out := make([]tmdb.Item, 0, len(items))
+	for i, item := range items {
+		if keep[i] {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // discoverGenresHandler returns TMDB's fixed genre list for {mode}'s media

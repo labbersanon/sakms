@@ -15,6 +15,7 @@ import type {
   PerformerSummary,
   PosterResponse,
   StudioSummary,
+  TrailerResponse,
 } from "@dto";
 
 export type {
@@ -83,6 +84,19 @@ export function fetchDiscover(
   return api<DiscoverItem[]>(
     `/api/modes/${mode}/discover?category=${category}&page=${page}`,
   );
+}
+
+// fetchTrailer resolves one Movies/Series title's YouTube trailer URL (via
+// GET /api/modes/{mode}/discover/trailer) — DetailPopup's "Watch Trailer"
+// link. Returns "" (not an error) when TMDB has no matching trailer on file,
+// same never-an-error convention as fetchTitlePoster.
+export function fetchTrailer(
+  mode: Exclude<Mode, "adult">,
+  tmdbId: number,
+): Promise<string> {
+  return api<TrailerResponse>(
+    `/api/modes/${mode}/discover/trailer?tmdbId=${tmdbId}`,
+  ).then((r) => r.url);
 }
 
 // fetchTitlePoster lazily resolves one library card's TMDB poster path by

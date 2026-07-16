@@ -512,6 +512,15 @@ type AvailabilityCandidate struct {
 	Score       float64 `json:"score"`
 }
 
+// TrailerResponse is GET /api/modes/{mode}/discover/trailer's result — the
+// Discover detail popup's "Watch Trailer" link target. URL is "" when TMDB
+// has no matching YouTube trailer on file for this title (see
+// tmdb.Client.TrailerURL) — the frontend simply omits the link in that case,
+// never treating an empty result as an error.
+type TrailerResponse struct {
+	URL string `json:"url"`
+}
+
 // --- Review-queue proposals: Rename (Stage 3) -----------------------------
 //
 // The staged scan→propose→apply review queue backing the Rename workflow (and,

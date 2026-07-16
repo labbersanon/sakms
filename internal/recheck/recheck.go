@@ -112,7 +112,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 
 // TriggerOnce runs exactly one recheck pass over every watched pick RIGHT
 // NOW — the on-demand counterpart to Run's periodic loop, for an operator-
-// triggered "Scan now" action. since is time.Now(), not "now minus the
+// triggered "Refresh now" action. since is time.Now(), not "now minus the
 // configured interval": ListDue treats anything last checked before the
 // given cutoff as due, so passing the current instant means every entry
 // qualifies regardless of the interval setting or how recently each was last

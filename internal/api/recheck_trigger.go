@@ -9,7 +9,7 @@ import (
 )
 
 // NewRecheckTriggerMux is a small, separately-dependent mux for the recheck
-// feature's manual "Scan now" trigger — deliberately NOT folded into
+// feature's manual "Refresh now" trigger — deliberately NOT folded into
 // NewMux's giant parameter list, same reasoning as NewAPIKeyMux/
 // NewAuthModeMux/NewOIDCMux: a route needing a dependency shape the main mux
 // doesn't already carry gets its own small mux, rather than growing NewMux's

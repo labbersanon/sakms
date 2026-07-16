@@ -409,14 +409,14 @@ const IdentifyEnabledSetting: Component<{ mode: () => Mode }> = (props) => {
   );
 };
 
-// RecheckTriggerButton is the manual "Scan now" action for the monitored-
-// title scan — an immediate, always-available fire-and-forget POST, not a
-// tracked/dirty field, so it doesn't register with the enclosing
-// SectionSave (same as Entity Database's per-source "Sync now" buttons).
-// The request only confirms the scan STARTED (202 Accepted); there's no
-// count or last-run timestamp to poll afterward, unlike Entity Database's
-// sync status, since a monitored-title scan just flips flags on entries
-// nothing else in this screen surfaces.
+// RecheckTriggerButton is the manual "Refresh now" action for the
+// monitored-title refresh — an immediate, always-available fire-and-forget
+// POST, not a tracked/dirty field, so it doesn't register with the
+// enclosing SectionSave (same as Entity Database's per-source "Sync now"
+// buttons). The request only confirms the refresh STARTED (202 Accepted);
+// there's no count or last-run timestamp to poll afterward, unlike Entity
+// Database's sync status, since a monitored-title refresh just flips flags
+// on entries nothing else in this screen surfaces.
 const RecheckTriggerButton: Component = () => {
   const [state, setState] = createSignal<
     "idle" | "triggering" | "started" | "error"
@@ -442,11 +442,11 @@ const RecheckTriggerButton: Component = () => {
         onClick={() => void trigger()}
         disabled={state() === "triggering"}
       >
-        {state() === "triggering" ? "Starting…" : "Scan now"}
+        {state() === "triggering" ? "Starting…" : "Refresh now"}
       </Button>
       <Show when={state() === "started"}>
         <span class="text-xs text-muted">
-          Scan started — runs in the background.
+          Refresh started — runs in the background.
         </span>
       </Show>
       <Show when={state() === "error"}>
@@ -473,7 +473,7 @@ export const AdvancedSection: Component<{ mode: () => Mode }> = (props) => {
       <Card title={`Advanced Settings (${MODE_LABELS[props.mode()]})`}>
         <SectionSave>
         <DurationSetting
-          label="Monitored title scan interval — global"
+          label="Monitored title refresh interval — global"
           help="Re-checks availability for every monitored title on this cadence."
           value={() => recheck()}
           onSave={(v) => putRecheckInterval(v)}

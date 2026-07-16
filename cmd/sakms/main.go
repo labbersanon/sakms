@@ -177,7 +177,7 @@ func run() error {
 	oidcMux := api.NewOIDCMux(authStore, secretStore)
 	protectedOIDC := auth.Middleware(secretStore, authStore, oidcMux)
 
-	// Manual "Scan now" trigger for the recheck feature (see
+	// Manual "Refresh now" trigger for the recheck feature (see
 	// api.NewRecheckTriggerMux's doc comment) — its own small mux, same
 	// precedent as apikeyMux/authModeMux/oidcMux above, since it needs
 	// watchStore, a dependency NewMux doesn't otherwise carry.
@@ -199,7 +199,7 @@ func run() error {
 	top.Handle("/api/auth/", api.NewAuthMux(authStore, secretStore))
 	top.Handle("/api/apikey", protectedAPIKey)                        // exact match: GET status
 	top.Handle("/api/apikey/", protectedAPIKey)                       // subtree: POST .../regenerate
-	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger) // exact match: manual "Scan now"
+	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger) // exact match: manual "Refresh now"
 	top.Handle("/api/", protectedAPI)                                 // more general; still wins for everything else
 	// The frontend is mounted last and matches only what no /api/... route
 	// already claimed — Go's ServeMux picks the most specific pattern, so

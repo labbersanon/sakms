@@ -340,13 +340,15 @@ describe("AdultRowAdminSection — enabled toggle", () => {
 });
 
 describe("AdultRowAdminSection — scan interval", () => {
-  it("saving the scan interval PUTs the new value in seconds", async () => {
+  it("saving the scan interval (Days/Hours/Minutes picker) PUTs the new value in seconds", async () => {
     const calls = stubFetch();
     render(() => <AdultRowAdminSection />);
+    // Value 0 defaults the picker to the "Hours" unit; typing "1" there means
+    // 1 hour = 3600 seconds.
     const input = (await screen.findByLabelText(
-      "Background scan interval (seconds, 0 = off)",
+      "Background scan interval",
     )) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "3600" } });
+    fireEvent.input(input, { target: { value: "1" } });
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() =>
       expect(

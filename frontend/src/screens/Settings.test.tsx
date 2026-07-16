@@ -24,6 +24,7 @@ import {
   type ScreenTabsRegistration,
 } from "../components/ui";
 import { Settings } from "./Settings";
+import { secondsToUnitAmount } from "./settings/Advanced";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -62,6 +63,12 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/settings/ai-model")) return jsonResponse({ model: "" });
   if (url.includes("/api/settings/recheck-interval"))
     return jsonResponse({ intervalSeconds: 0 });
+  if (url.includes("/api/settings/entity-sync-interval"))
+    return jsonResponse({ intervalSeconds: 0 });
+  // EntityDatabaseSection (Advanced > Adult) mount GET — empty cache, no
+  // sources synced yet.
+  if (url.includes("/api/admin/entity-sync"))
+    return jsonResponse({ studioCount: 0, performerCount: 0, sources: [] });
   if (url.includes("/library/root-folder")) return jsonResponse({ path: "" });
   if (url.includes("/quality-prefs"))
     return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
@@ -1081,10 +1088,51 @@ describe("Library root-folder Test button", () => {
   });
 });
 
-// --- Advanced Settings -----------------------------------------------------
+// --- DurationSetting's pure conversion helper (exhaustive edge cases) ------
+
+describe("secondsToUnitAmount", () => {
+  it("0 (or unset) always shows as off", () => {
+    expect(secondsToUnitAmount(0)).toEqual({ unit: "hours", amount: 0 });
+  });
+
+  it("picks the exact-fit unit for values this picker itself produces", () => {
+    expect(secondsToUnitAmount(3600)).toEqual({ unit: "hours", amount: 1 });
+    expect(secondsToUnitAmount(86400)).toEqual({ unit: "days", amount: 1 });
+    expect(secondsToUnitAmount(60)).toEqual({ unit: "minutes", amount: 1 });
+    expect(secondsToUnitAmount(23 * 3600)).toEqual({
+      unit: "hours",
+      amount: 23,
+    });
+    expect(secondsToUnitAmount(30 * 86400)).toEqual({
+      unit: "days",
+      amount: 30,
+    });
+  });
+
+  it("a legacy odd-seconds value (pre-dating this picker) never collapses to 0/off", () => {
+    // 90s and 45s divide evenly into no unit — the old free-typed "seconds"
+    // NumberSetting could store either. Must round to a non-zero minutes
+    // amount, never silently read/save as "0 = off".
+    expect(secondsToUnitAmount(90)).toEqual({ unit: "minutes", amount: 2 });
+    expect(secondsToUnitAmount(45)).toEqual({ unit: "minutes", amount: 1 });
+  });
+
+  it("an odd value too large for minutes' bound escalates to hours, then days", () => {
+    // 59*60 + 30 = 3570s: not an exact minutes/hours/days fit, and rounding
+    // to minutes (60) exceeds the 59 max, so it must escalate to hours.
+    expect(secondsToUnitAmount(3570)).toEqual({ unit: "hours", amount: 1 });
+  });
+
+  it("a huge/legacy value beyond the 30-day bound clamps, without NaN or negative", () => {
+    const result = secondsToUnitAmount(Number.MAX_SAFE_INTEGER);
+    expect(result.unit).toBe("days");
+    expect(result.amount).toBe(30);
+    expect(Number.isNaN(result.amount)).toBe(false);
+  });
+});
 
 describe("Advanced Settings", () => {
-  it("recheck-interval saves to the GLOBAL /api/settings/recheck-interval", async () => {
+  it("recheck-interval (Days/Hours/Minutes picker) saves to the GLOBAL /api/settings/recheck-interval as seconds", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/settings/recheck-interval") && url.includes("/api"))
         return jsonResponse({ intervalSeconds: 0 });
@@ -1092,10 +1140,12 @@ describe("Advanced Settings", () => {
     });
     renderSettings();
     goToSection("Advanced");
+    // Value 0 defaults the picker to the "Hours" unit; typing "1" there means
+    // 1 hour = 3600 seconds.
     const input = (await screen.findByLabelText(
-      "Background recheck interval (seconds) — global",
+      "Background recheck interval — global",
     )) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "3600" } });
+    fireEvent.input(input, { target: { value: "1" } });
     clickSectionSave();
     await waitFor(() =>
       expect(
@@ -1113,22 +1163,34 @@ describe("Advanced Settings", () => {
     expect(put.body).toEqual({ intervalSeconds: 3600 });
   });
 
-  it("rejects a negative recheck-interval client-side (no PUT fired)", async () => {
-    const calls = stubFetch();
+  it("clamps a negative recheck-interval amount to 0 client-side (the picker can't submit out-of-range)", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/settings/recheck-interval") && url.includes("/api"))
+        return jsonResponse({ intervalSeconds: 0 });
+      return undefined;
+    });
     renderSettings();
     goToSection("Advanced");
     const input = (await screen.findByLabelText(
-      "Background recheck interval (seconds) — global",
+      "Background recheck interval — global",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "-5" } });
+    await waitFor(() => expect(input.value).toBe("0"));
     clickSectionSave();
-    await screen.findByText(/must be 0 or greater/i);
-    expect(
-      calls.some(
-        (c) =>
-          c.method === "PUT" && c.url.includes("/api/settings/recheck-interval"),
-      ),
-    ).toBe(false);
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/settings/recheck-interval"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) =>
+        c.method === "PUT" && c.url.includes("/api/settings/recheck-interval"),
+    )!;
+    expect(put.body).toEqual({ intervalSeconds: 0 });
   });
 
   it("phash-threshold rejects a value above 64 client-side (no PUT)", async () => {
@@ -1211,7 +1273,13 @@ describe("Advanced Settings", () => {
       "Adult phash-first identification enabled",
     )) as HTMLInputElement;
     fireEvent.change(toggle, { target: { checked: false } });
-    clickSectionSave();
+    // Adult mode also mounts the Entity Database section's OWN standalone
+    // Save button (its duration picker sits outside this tab's SectionSave,
+    // same as Adult newest rows' scan-interval card) — so "Save" is no
+    // longer unique on this tab in Adult mode. Scope to the Advanced
+    // SectionSave's own card instead of the shared clickSectionSave helper.
+    const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
+    fireEvent.click(within(advancedCard).getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(
         calls.some(
@@ -1241,7 +1309,7 @@ describe("Section tabs", () => {
     expect(screen.queryByPlaceholderText(/qwen2.5vl/)).toBeNull(); // AI
     expect(screen.queryByLabelText("Library root folder")).toBeNull(); // Library
     expect(
-      screen.queryByLabelText("Background recheck interval (seconds) — global"),
+      screen.queryByLabelText("Background recheck interval — global"),
     ).toBeNull(); // Advanced
   });
 
@@ -1309,7 +1377,7 @@ describe("Section tabs", () => {
     expect(screen.getByText("Adult")).toBeInTheDocument();
     // Advanced's global field is NOT on this tab.
     expect(
-      screen.queryByLabelText("Background recheck interval (seconds) — global"),
+      screen.queryByLabelText("Background recheck interval — global"),
     ).toBeNull();
   });
 
@@ -1319,7 +1387,7 @@ describe("Section tabs", () => {
     goToSection("Advanced");
     expect(
       await screen.findByLabelText(
-        "Background recheck interval (seconds) — global",
+        "Background recheck interval — global",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Library root folder")).toBeNull();

@@ -227,6 +227,13 @@ func run() error {
 	// this line, its NewMux params, and the two stores' construction above.
 	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, settingsStore, adultNewestReleaseStore, entityStore)
 
+	// Same deliberate, opt-in exception as recheck/adultnewest above: a
+	// background job that syncs all four entity-cache sources (Stash/TPDB/
+	// StashDB/FansDB) on one shared cadence, additive to the existing manual
+	// per-source "Sync now" buttons. Gated OFF by default (interval 0). To
+	// remove entirely: delete internal/parseentity/schedule.go and this line.
+	go parseentity.Run(ctx, parseentity.LoadInterval(ctx, settingsStore), connStore, settingsStore, entityStore)
+
 	select {
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {

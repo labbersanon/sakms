@@ -474,6 +474,23 @@ export function triggerEntitySync(source: EntitySyncSource): Promise<void> {
   return api<void>(`/api/admin/entity-sync/${source}`, { method: "POST" });
 }
 
+// Shared background sync cadence for all four entity sources combined, in
+// whole seconds (>= 0, backend-validated; 0 = off, the default — entity sync
+// was purely manual before this job existed). No generated DTO, same as
+// adult-newest-scan-interval below — the Go handler uses local structs.
+export function fetchEntitySyncInterval(): Promise<number> {
+  return api<{ intervalSeconds: number }>(
+    "/api/settings/entity-sync-interval",
+  ).then((r) => r.intervalSeconds);
+}
+
+export function putEntitySyncInterval(intervalSeconds: number): Promise<void> {
+  return api<void>("/api/settings/entity-sync-interval", {
+    method: "PUT",
+    body: JSON.stringify({ intervalSeconds }),
+  });
+}
+
 // Global background Adult "newest" scan cadence in whole seconds (>= 0,
 // backend-validated; 0 = off, opt-in). Same shape/semantics as recheck-interval
 // above, but this endpoint has no generated DTO (the Go handler uses local

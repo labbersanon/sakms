@@ -43,7 +43,7 @@ import {
   labelClass,
   useSaveStatus,
 } from "../components/ui";
-import { NumberSetting } from "./settings/Advanced";
+import { DurationSetting } from "./settings/Advanced";
 
 // AdultRowForm creates a new row (row prop undefined) or edits an existing one
 // (row prop present) — the same form either way, seeded from props.row at mount
@@ -302,11 +302,10 @@ export const AdultRowAdminSection: Component = () => {
   return (
     <>
       <Card title="Adult newest rows — background scan">
-        <NumberSetting
-          label="Background scan interval (seconds, 0 = off)"
-          help="How often Prowlarr's newest Adult releases are scanned and matched to TPDB/StashDB/FansDB entities to populate these rows. 0 turns the background scan job off (the opt-in default); any positive number of seconds enables it."
+        <DurationSetting
+          label="Background scan interval"
+          help="How often Prowlarr's newest Adult releases are scanned and matched to TPDB/StashDB/FansDB entities to populate these rows."
           value={() => scanInterval()}
-          min={0}
           onSave={(v) => putAdultNewestScanInterval(v)}
         />
       </Card>

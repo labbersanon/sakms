@@ -267,6 +267,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// Entity cache admin — counts, per-source sync state, on-demand sync triggers
 	mux.HandleFunc("GET /api/admin/entity-sync", entitySyncStatusHandler(entityStore))
 	mux.HandleFunc("POST /api/admin/entity-sync/{source}", triggerEntitySyncHandler(entityStore, connStore, settingsStore, httpClient))
+	// Shared background sync cadence for all four entity sources combined (see
+	// internal/parseentity's Run/LoadInterval) — 0/off by default, additive to
+	// the manual per-source triggers directly above.
+	mux.HandleFunc("GET /api/settings/entity-sync-interval", getEntitySyncIntervalHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/entity-sync-interval", putEntitySyncIntervalHandler(settingsStore))
 
 	// Interval for the opt-in background availability recheck job (see
 	// internal/recheck) — 0/off by default. Just a settings scalar here; the

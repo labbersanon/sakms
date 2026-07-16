@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/curtiswtaylorjr/sakms/internal/connections"
 	"github.com/curtiswtaylorjr/sakms/internal/parseentity"
@@ -126,5 +127,62 @@ func triggerEntitySyncHandler(store parseentity.EntityStore, connStore *connecti
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
+type entitySyncIntervalResponse struct {
+	IntervalSeconds int `json:"intervalSeconds"`
+}
+
+type entitySyncIntervalRequest struct {
+	IntervalSeconds int `json:"intervalSeconds"`
+}
+
+// getEntitySyncIntervalHandler returns the shared background sync cadence
+// (all four sources combined) in seconds, or 0 when unset — 0 is the normal
+// "off" default here (entity sync was purely manual before this job
+// existed), not an error. A stored-but-unparseable value degrades to 0 for
+// the same reason parseentity.LoadInterval does. Reads parseentity's own
+// exported key directly rather than mirroring it by value: unlike
+// internal/recheck (deliberately import-avoided so it stays independently
+// deletable), internal/api already hard-depends on internal/parseentity for
+// entity sync's other handlers above, so there is no import to avoid here.
+func getEntitySyncIntervalHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		secs := 0
+		v, err := settingsStore.Get(r.Context(), parseentity.IntervalSettingKey)
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
+			secs = n
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(entitySyncIntervalResponse{IntervalSeconds: secs})
+	}
+}
+
+// putEntitySyncIntervalHandler stores the shared entity-sync interval in
+// seconds. 0 disables the background job (the opt-in gate, and the default);
+// a negative value is rejected. A change takes effect on the running loop's
+// next tick if it's already enabled, or on next restart if it was off at
+// boot — same contract as putRecheckIntervalHandler.
+func putEntitySyncIntervalHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req entitySyncIntervalRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.IntervalSeconds < 0 {
+			http.Error(w, "intervalSeconds must be zero (off) or a positive number of seconds", http.StatusBadRequest)
+			return
+		}
+		if err := settingsStore.Set(r.Context(), parseentity.IntervalSettingKey, strconv.Itoa(req.IntervalSeconds)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

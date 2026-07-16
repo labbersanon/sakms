@@ -1,5 +1,5 @@
-// AI section — BYOAI fallback toggle + provider/model selection + entity cache
-// admin. Extracted from the original single-file Settings.tsx.
+// AI section — BYOAI fallback toggle + provider/model selection.
+// Extracted from the original single-file Settings.tsx.
 //
 // With DB-first filename parsing (internal/parseentity), the AI path is now an
 // optional fallback — off by default. The toggle at the top of the AI card
@@ -7,11 +7,10 @@
 // dimmed (so the operator can still pre-configure them) but the backend
 // buildAIClient returns nil and ParseFilename is never called.
 //
-// The "Entity Database" card (Phase 6) shows the parse_studios +
-// parse_performers cache counts, per-source last-synced state, and "Sync now"
-// buttons that POST /api/admin/entity-sync/{source} and fire an on-demand sync
-// in the background. The operator polls with the refresh button to see when
-// counts update.
+// The "Entity Database" card (parse_studios/parse_performers cache admin,
+// Phase 6) has MOVED to Settings → Advanced → Adult — it's a library-content
+// concern scoped to Adult, not an AI/connection one. See Advanced.tsx's
+// EntityDatabaseSection.
 
 import {
   type Component,
@@ -23,17 +22,14 @@ import {
 } from "solid-js";
 import {
   AI_PROVIDERS,
-  type EntitySyncSource,
   fetchAIFallbackEnabled,
   fetchAIModel,
   fetchAIProvider,
   fetchConnections,
-  fetchEntitySyncStatus,
   fetchNetscanKnown,
   putAIFallbackEnabled,
   putAIModel,
   putAIProvider,
-  triggerEntitySync,
 } from "../../api/settings";
 import type { ConnectionSummary, NetscanFinding } from "../../api/settings";
 import { Button, Muted, inputClass, labelClass } from "../../components/ui";
@@ -47,16 +43,13 @@ import {
 } from "./shared";
 
 // AISection is a thin shell so the provider/model form + provider/Brave
-// connection rows all sit INSIDE one SectionSave (so their registrations see its
-// context), while the Entity Database card — with its own independent Sync
-// buttons — stays outside the batched Save.
+// connection rows all sit INSIDE one SectionSave (so their registrations see
+// its context). The Entity Database card used to live here as a sibling,
+// outside the batched Save — it's moved to Advanced → Adult now (see above).
 export const AISection: Component = () => (
-  <>
-    <SectionSave>
-      <AIProviderModelCard />
-    </SectionSave>
-    <EntityDatabaseCard />
-  </>
+  <SectionSave>
+    <AIProviderModelCard />
+  </SectionSave>
 );
 
 // AIProviderModelCard holds the batched AI fallback form and the provider/Brave
@@ -249,90 +242,5 @@ const AIProviderModelCard: Component = () => {
         </Card>
       </Show>
     </>
-  );
-};
-
-// EntityDatabaseCard shows parse_studios / parse_performers counts and
-// per-source sync state with on-demand "Sync now" buttons.
-const EntityDatabaseCard: Component = () => {
-  const [status, { refetch }] = createResource(fetchEntitySyncStatus);
-  const [syncing, setSyncing] = createSignal<EntitySyncSource | null>(null);
-  const [syncError, setSyncError] = createSignal<string | null>(null);
-
-  const sync = async (source: EntitySyncSource) => {
-    setSyncing(source);
-    setSyncError(null);
-    try {
-      await triggerEntitySync(source);
-    } catch (e) {
-      setSyncError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSyncing(null);
-    }
-  };
-
-  const SOURCE_LABELS: Record<string, string> = {
-    stash: "Stash (local)",
-    tpdb: "ThePornDB",
-    stashdb: "StashDB",
-    fansdb: "FansDB",
-  };
-
-  return (
-    <Card title="Entity Database">
-      <Show when={status()} fallback={<Muted>Loading…</Muted>}>
-        {(s) => (
-          <>
-            <div class="mb-4 flex gap-6 text-sm text-fg">
-              <span>
-                <span class="font-semibold">{s().studioCount}</span> studios
-              </span>
-              <span>
-                <span class="font-semibold">{s().performerCount}</span>{" "}
-                performers
-              </span>
-            </div>
-
-            <div class="space-y-2">
-              <For each={s().sources}>
-                {(src) => (
-                  <div class="flex items-center justify-between gap-4 rounded border border-border px-3 py-2 text-sm">
-                    <div>
-                      <span class="font-medium text-fg">
-                        {SOURCE_LABELS[src.source] ?? src.source}
-                      </span>
-                      <span class="ml-3 text-muted">
-                        {src.syncedAt
-                          ? `Last synced ${src.syncedAt}`
-                          : "Never synced"}
-                      </span>
-                    </div>
-                    <Button
-                      variant="secondary"
-                      onClick={() =>
-                        void sync(src.source as EntitySyncSource)
-                      }
-                      disabled={syncing() !== null}
-                    >
-                      {syncing() === src.source ? "Syncing…" : "Sync now"}
-                    </Button>
-                  </div>
-                )}
-              </For>
-            </div>
-
-            <Show when={syncError()}>
-              <p class="mt-2 text-sm text-red-500">{syncError()}</p>
-            </Show>
-
-            <div class="mt-3">
-              <Button variant="secondary" onClick={() => void refetch()}>
-                Refresh counts
-              </Button>
-            </div>
-          </>
-        )}
-      </Show>
-    </Card>
   );
 };

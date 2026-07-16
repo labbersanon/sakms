@@ -28,11 +28,9 @@
 
 import {
   type Component,
-  createEffect,
   createResource,
   createSignal,
   For,
-  on,
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
@@ -55,6 +53,7 @@ import {
   StatusPill,
   yearOf,
 } from "../components/ui";
+import { useWorkflowActions } from "./workflowHooks";
 
 // shortHash renders the PHash column value — the full scheme-tagged hash is
 // too long to usefully show inline, so the cell shows a short prefix and the
@@ -173,56 +172,28 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     () => props.mode,
     (m) => fetchProposals(m),
   );
-  const [scanning, setScanning] = createSignal(false);
-  const [actionError, setActionError] = createSignal("");
   const [repickFor, setRepickFor] = createSignal<Proposal | null>(null);
 
   // Switching modes clears any open re-pick panel and stale action error — the
   // old frontend rebuilt the whole view on a mode change, which had this effect.
-  createEffect(
-    on(
-      () => props.mode,
-      () => {
-        setRepickFor(null);
-        setActionError("");
-      },
-      { defer: true },
-    ),
+  // scan does NOT close repickFor (scan and act have independent post-success
+  // resets); only act closes it.
+  const { actionError, setActionError, scanning, scan, act } = useWorkflowActions(
+    () => props.mode,
+    {
+      resetOnModeChange: () => setRepickFor(null),
+      scanFn: scanRename,
+      resetAfterAct: () => setRepickFor(null),
+      refetch,
+    },
   );
 
   const isTitleMode = () => props.mode === "movies" || props.mode === "series";
 
-  const scan = async () => {
-    setActionError("");
-    setScanning(true);
-    try {
-      await scanRename(props.mode);
-      await refetch();
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setScanning(false);
-    }
-  };
-
-  // act runs one proposal mutation then refreshes the queue, surfacing any
-  // error at the top. Every caller passes exactly one proposal id — the
-  // no-bulk invariant lives here structurally: there is no "act on many" path.
-  const act = async (fn: () => Promise<unknown>) => {
-    setActionError("");
-    try {
-      await fn();
-      setRepickFor(null);
-      await refetch();
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  };
-
   return (
     <div>
       <div class="flex items-center gap-3">
-        <Button variant="primary" onClick={scan} disabled={scanning()}>
+        <Button variant="primary" onClick={() => void scan(props.mode)} disabled={scanning()}>
           {scanning() ? "Scanning…" : "Scan"}
         </Button>
       </div>

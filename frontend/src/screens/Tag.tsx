@@ -26,11 +26,9 @@
 
 import {
   type Component,
-  createEffect,
   createResource,
   createSignal,
   For,
-  on,
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
@@ -48,6 +46,7 @@ import {
   Muted,
   inputClass,
 } from "../components/ui";
+import { useWorkflowActions } from "./workflowHooks";
 
 // TagView is one mode's tag editor. Keyed on props.mode so both resources
 // refetch when the shell switches tabs. vocab + tracked load in parallel.
@@ -60,22 +59,10 @@ const TagView: Component<{ mode: Mode }> = (props) => {
     () => props.mode,
     (m) => fetchTrackedItems(m),
   );
-  const [actionError, setActionError] = createSignal("");
   // draft maps a tracked item id → the text currently typed in its add-tag
   // input. Cleared on a successful add and on mode switch so a stale draft never
   // leaks onto another mode's rows.
   const [draft, setDraft] = createSignal<Record<number, string>>({});
-
-  createEffect(
-    on(
-      () => props.mode,
-      () => {
-        setActionError("");
-        setDraft({});
-      },
-      { defer: true },
-    ),
-  );
 
   const datalistId = () => `tag-vocab-${props.mode}`;
 
@@ -85,17 +72,16 @@ const TagView: Component<{ mode: Mode }> = (props) => {
     await Promise.all([refetchVocab(), refetchTracked()]);
   };
 
-  // act runs one tag mutation then refreshes. Each caller mutates exactly one
-  // (item, tag) pair — the no-bulk invariant lives here structurally.
-  const act = async (fn: () => Promise<unknown>) => {
-    setActionError("");
-    try {
-      await fn();
-      await refresh();
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  };
+  // Tag has no scan button — omit scanFn. act wraps the shared error-capture
+  // and mode-change cleanup; refetch calls refresh() which refetches both
+  // resources in parallel (vocab + tracked), matching the old renderTag behavior.
+  const { actionError, act } = useWorkflowActions(
+    () => props.mode,
+    {
+      resetOnModeChange: () => setDraft({}),
+      refetch: refresh,
+    },
+  );
 
   const submitAdd = (item: TrackedItem) => {
     const label = (draft()[item.id] ?? "").trim();

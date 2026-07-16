@@ -33,11 +33,9 @@
 
 import {
   type Component,
-  createEffect,
   createResource,
   createSignal,
   For,
-  on,
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
@@ -58,6 +56,7 @@ import {
   Muted,
   StatusPill,
 } from "../components/ui";
+import { useWorkflowActions } from "./workflowHooks";
 
 // winnerIndex returns the index of the group's flagged keeper, defaulting to 0
 // when none is flagged (mirrors the backend's own winnerIndex fallback).
@@ -78,50 +77,23 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
     () => props.mode,
     (m) => fetchDedupProposals(m),
   );
-  const [scanning, setScanning] = createSignal(false);
-  const [actionError, setActionError] = createSignal("");
   // keepSel maps a proposal id → the operator's chosen keep index. Absent means
   // "use the group's flagged winner" (the pre-checked radio). Cleared on refetch
   // and mode switch so a stale selection never leaks onto a re-scanned queue.
   const [keepSel, setKeepSel] = createSignal<Record<number, number>>({});
 
-  createEffect(
-    on(
-      () => props.mode,
-      () => {
-        setActionError("");
-        setKeepSel({});
-      },
-      { defer: true },
-    ),
+  // Both scan and act clear keepSel on success — stale radio selections must
+  // not survive a queue refresh or mode switch in either direction.
+  const { actionError, scanning, scan, act } = useWorkflowActions(
+    () => props.mode,
+    {
+      resetOnModeChange: () => setKeepSel({}),
+      scanFn: scanDedup,
+      resetAfterScan: () => setKeepSel({}),
+      resetAfterAct: () => setKeepSel({}),
+      refetch,
+    },
   );
-
-  const scan = async () => {
-    setActionError("");
-    setScanning(true);
-    try {
-      await scanDedup(props.mode);
-      setKeepSel({});
-      await refetch();
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setScanning(false);
-    }
-  };
-
-  // act runs one group mutation then refreshes the queue. Every caller resolves
-  // exactly one proposal id — the no-bulk invariant lives here structurally.
-  const act = async (fn: () => Promise<unknown>) => {
-    setActionError("");
-    try {
-      await fn();
-      setKeepSel({});
-      await refetch();
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  };
 
   // selectedKeep is the effective keep index for a group: the operator's radio
   // choice if made, else the group's flagged winner. Always a real number
@@ -134,7 +106,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   return (
     <div>
       <div class="flex items-center gap-3">
-        <Button variant="primary" onClick={scan} disabled={scanning()}>
+        <Button variant="primary" onClick={() => void scan(props.mode)} disabled={scanning()}>
           {scanning() ? "Scanning…" : "Scan"}
         </Button>
       </div>

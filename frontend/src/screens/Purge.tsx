@@ -20,11 +20,9 @@
 
 import {
   type Component,
-  createEffect,
   createResource,
   createSignal,
   For,
-  on,
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
@@ -46,6 +44,7 @@ import {
   Muted,
   StatusPill,
 } from "../components/ui";
+import { useWorkflowActions } from "./workflowHooks";
 
 // PurgeView is one mode's allowlist editor + delete-review queue. Keyed on
 // props.mode so both resources refetch when the shell switches tabs.
@@ -58,8 +57,6 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
     () => props.mode,
     (m) => fetchAllowlist(m),
   );
-  const [scanning, setScanning] = createSignal(false);
-  const [actionError, setActionError] = createSignal("");
   const [newTag, setNewTag] = createSignal("");
   // applyingIds tracks which proposal rows have an Apply (Delete) in flight —
   // per-row, not global, so unrelated rows stay usable. Guards the one
@@ -71,41 +68,14 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
 
   // Switching modes clears the stale add-input and action error — the old
   // frontend rebuilt the whole view on a mode change, which had this effect.
-  createEffect(
-    on(
-      () => props.mode,
-      () => {
-        setNewTag("");
-        setActionError("");
-      },
-      { defer: true },
-    ),
+  const { actionError, setActionError, scanning, scan, act } = useWorkflowActions(
+    () => props.mode,
+    {
+      resetOnModeChange: () => setNewTag(""),
+      scanFn: scanPurge,
+      refetch: refetchProposals,
+    },
   );
-
-  const scan = async () => {
-    setActionError("");
-    setScanning(true);
-    try {
-      await scanPurge(props.mode);
-      await refetchProposals();
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setScanning(false);
-    }
-  };
-
-  // act runs one proposal mutation then refreshes the queue. Every caller passes
-  // exactly one proposal id — the no-bulk invariant lives here structurally.
-  const act = async (fn: () => Promise<unknown>) => {
-    setActionError("");
-    try {
-      await fn();
-      await refetchProposals();
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  };
 
   // apply guards the destructive delete behind a confirm, matching the old
   // frontend. jsdom's window.confirm returns false by default, so tests must
@@ -155,7 +125,7 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
   return (
     <div>
       <div class="flex items-center gap-3">
-        <Button variant="primary" onClick={scan} disabled={scanning()}>
+        <Button variant="primary" onClick={() => void scan(props.mode)} disabled={scanning()}>
           {scanning() ? "Scanning…" : "Scan"}
         </Button>
       </div>

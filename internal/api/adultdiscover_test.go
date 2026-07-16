@@ -64,6 +64,43 @@ func TestAdultDiscoverHandler_Browse(t *testing.T) {
 	}
 }
 
+// TestAdultDiscoverHandler_MapsTagsAndPerformers proves a TPDB scene's tags
+// and performers arrays map onto the wire adultScene's Genres/Performers
+// fields — backing the Discover detail popup's tags/performers list.
+func TestAdultDiscoverHandler_MapsTagsAndPerformers(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"_id":"s1","title":"A Scene","date":"2024-01-01","site":{"name":"Tushy"},"tags":[{"id":1,"name":"Anal"},{"id":2,"name":"Blonde"}],"performers":[{"name":"Jane Doe"},{"name":"John Roe"}]}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/adult/discover")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var items []adultScene
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if len(items[0].Genres) != 2 || items[0].Genres[0] != "Anal" || items[0].Genres[1] != "Blonde" {
+		t.Errorf("unexpected genres: %+v", items[0].Genres)
+	}
+	if len(items[0].Performers) != 2 || items[0].Performers[0] != "Jane Doe" || items[0].Performers[1] != "John Roe" {
+		t.Errorf("unexpected performers: %+v", items[0].Performers)
+	}
+}
+
 // TestAdultDiscoverHandler_SearchByTerm proves the q param routes to
 // SearchByTitle (the search-by-term entry point) rather than the browse path —
 // the "browse + search-by-term for v1" the plan requires.

@@ -399,6 +399,10 @@ func toMatchedRelease(rowType RowType, m identify.MatchResult, releaseTitle stri
 	if m.Tags != "" {
 		genres = strings.Split(m.Tags, ",")
 	}
+	var performers []string
+	if m.Performers != "" {
+		performers = strings.Split(m.Performers, ",")
+	}
 	return MatchedRelease{
 		RowType:               rowType,
 		EntityID:              m.SceneID,
@@ -410,5 +414,6 @@ func toMatchedRelease(rowType RowType, m identify.MatchResult, releaseTitle stri
 		EntityDurationSeconds: m.RuntimeSeconds,
 		FirstSeenReleaseTitle: releaseTitle,
 		Genres:                genres,
+		Performers:            performers,
 	}
 }

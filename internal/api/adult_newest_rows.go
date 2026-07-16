@@ -184,6 +184,7 @@ func toDTOReleaseItem(m adultnewest.MatchedRelease) apidto.AdultNewestReleaseIte
 		DurationSeconds: m.EntityDurationSeconds,
 		ReleaseTitle:    m.FirstSeenReleaseTitle,
 		Genres:          m.Genres,
+		Performers:      m.Performers,
 	}
 }
 

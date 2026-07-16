@@ -223,6 +223,29 @@ func TestToMatchedRelease_EmptyTagsYieldsNilGenres(t *testing.T) {
 	}
 }
 
+func TestToMatchedRelease_SplitsCommaJoinedPerformers(t *testing.T) {
+	m := identify.MatchResult{Title: "T", Performers: "Jane Doe,John Roe"}
+	got := toMatchedRelease(RowScene, m, "raw release title")
+	want := []string{"Jane Doe", "John Roe"}
+	if len(got.Performers) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got.Performers)
+	}
+	for i, p := range want {
+		if got.Performers[i] != p {
+			t.Errorf("expected performers %v, got %v", want, got.Performers)
+			break
+		}
+	}
+}
+
+func TestToMatchedRelease_EmptyPerformersYieldsNilPerformers(t *testing.T) {
+	m := identify.MatchResult{Title: "T"}
+	got := toMatchedRelease(RowScene, m, "raw release title")
+	if len(got.Performers) != 0 {
+		t.Errorf("expected no performers, got %v", got.Performers)
+	}
+}
+
 // TestRunCycle_NoProwlarrConfigured_SkipsCleanly mirrors runCycle's own
 // documented fault-isolation contract: with nothing configured at all, the
 // cycle must return without error and without writing anything.

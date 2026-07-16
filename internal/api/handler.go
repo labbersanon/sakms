@@ -183,6 +183,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/modes/adult/newest-rows/reorder", reorderAdultNewestRowsHandler(adultNewestRowStore))
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/{id}/resolve", resolveAdultNewestRowHandler(adultNewestRowStore, adultNewestReleaseStore))
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/genres", adultNewestGenresHandler(adultNewestReleaseStore))
+	// TEMPORARY — one-off performers backfill for pre-existing cached TPDB
+	// entities (migration 0027 added the column; see this handler's own doc
+	// comment for the full run-once-then-remove precedent).
+	mux.HandleFunc("POST /api/modes/adult/newest-rows/backfill-performers", backfillAdultPerformersHandler(httpClient, connStore, adultNewestReleaseStore))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
 	// (see images.go / internal/imageproxy). Read-only, auth-gated like every

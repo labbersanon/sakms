@@ -27,6 +27,7 @@ import {
   createEffect,
   createResource,
   createSignal,
+  For,
   Show,
 } from "solid-js";
 import type { AvailabilityCandidate, AvailabilityPreview } from "@dto";
@@ -386,6 +387,16 @@ export const DetailPopup: Component<{
     mode() === "adult"
       ? (item() as AdultDiscoverItem).rating
       : (item() as DiscoverItem).voteAverage;
+  // sceneGenres/scenePerformers back the Adult-only tags/performers list
+  // below — both are omitempty on AdultDiscoverItem (empty for a StashDB/
+  // FansDB scene, or a TPDB scene TPDB itself has none on file for), so
+  // these default to [] rather than leaving the render Show with undefined.
+  const sceneGenres = () =>
+    mode() === "adult" ? ((item() as AdultDiscoverItem).genres ?? []) : [];
+  const scenePerformers = () =>
+    mode() === "adult"
+      ? ((item() as AdultDiscoverItem).performers ?? [])
+      : [];
 
   const [grabbing, setGrabbing] = createSignal(false);
   const [grabError, setGrabError] = createSignal("");
@@ -471,6 +482,24 @@ export const DetailPopup: Component<{
             </a>
           </div>
         </div>
+
+        <Show when={mode() === "adult" && sceneGenres().length}>
+          <div class="mt-2 flex flex-wrap gap-1">
+            <For each={sceneGenres()}>
+              {(g) => (
+                <span class="inline-block rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
+                  {g}
+                </span>
+              )}
+            </For>
+          </div>
+        </Show>
+        <Show when={mode() === "adult" && scenePerformers().length}>
+          <div class="mt-2 text-xs text-muted">
+            <span class="font-medium text-fg">Performers: </span>
+            {scenePerformers().join(", ")}
+          </div>
+        </Show>
 
         <Show
           when={!preview.loading}

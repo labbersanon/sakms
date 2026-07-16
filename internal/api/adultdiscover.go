@@ -48,16 +48,24 @@ import (
 // stash-box ("stashdb"/"fansdb") scene: those sites' own detail pages are
 // UUID-path (stashdb.org/scenes/{id}), so the popup links via ID for them
 // instead and never reads Slug in that branch.
+// Genres/Performers back the Discover detail popup's tags/performers list —
+// populated for TPDB-sourced scenes (tpdbrest.Scene.Tags/Performers, both
+// confirmed present on SceneResource in TPDB's live OpenAPI schema); left
+// unset ("omitempty") for stash-box ("stashdb"/"fansdb") scenes constructed
+// elsewhere (adultdiscover_stashbox.go) — that schema's shape isn't verified
+// against a live instance yet.
 type adultScene struct {
-	ID              string  `json:"id"`
-	Title           string  `json:"title"`
-	Studio          string  `json:"studio"`
-	Date            string  `json:"date"`
-	Image           string  `json:"image"`
-	DurationSeconds int     `json:"durationSeconds"`
-	Rating          float64 `json:"rating"`
-	Source          string  `json:"source"`
-	Slug            string  `json:"slug"`
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Studio          string   `json:"studio"`
+	Date            string   `json:"date"`
+	Image           string   `json:"image"`
+	DurationSeconds int      `json:"durationSeconds"`
+	Rating          float64  `json:"rating"`
+	Source          string   `json:"source"`
+	Slug            string   `json:"slug"`
+	Genres          []string `json:"genres,omitempty"`
+	Performers      []string `json:"performers,omitempty"`
 }
 
 // adultStudio mirrors apidto.StudioSummary — one TPDB site (studio) reduced to
@@ -117,7 +125,11 @@ func adultPagination(r *http.Request) (page, perPage int) {
 // the same conversion applied per-item while it accumulates a merged slice
 // rather than encoding scenes straight off a single tpdbrest call.
 func tpdbSceneToAdultScene(s tpdbrest.Scene) adultScene {
-	return adultScene{ID: s.ID, Title: s.Title, Studio: s.Site, Date: s.Date, Image: s.Image, DurationSeconds: s.Duration, Rating: s.Rating, Source: "tpdb", Slug: s.Slug}
+	tagNames := make([]string, len(s.Tags))
+	for i, t := range s.Tags {
+		tagNames[i] = t.Name
+	}
+	return adultScene{ID: s.ID, Title: s.Title, Studio: s.Site, Date: s.Date, Image: s.Image, DurationSeconds: s.Duration, Rating: s.Rating, Source: "tpdb", Slug: s.Slug, Genres: tagNames, Performers: s.Performers}
 }
 
 // writeAdultScenes converts a tpdbrest scene slice into the adultScene wire

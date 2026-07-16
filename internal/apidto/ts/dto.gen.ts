@@ -241,6 +241,14 @@ export interface DiscoverItem {
  * for a plain TPDB/StashDB/FansDB catalog browse item (no associated
  * Prowlarr release to remember), which falls back to the Studio+Title
  * query, same as before this field existed.
+ * Genres/Performers back the Discover detail popup's tags/performers list.
+ * Populated for TPDB-sourced items (catalog browse and newest-rows alike —
+ * see internal/tpdbrest.Scene.Tags/Performers and
+ * adultnewest.MatchedRelease.Genres/Performers for sourcing); empty for a
+ * StashDB/FansDB item (that schema's shape hasn't been verified against a
+ * live instance yet — see CLAUDE.md's "honesty about unverified
+ * assumptions"). Both omitempty since most callers (any pre-existing cached
+ * entity, any stash-box item) legitimately have neither.
  */
 export interface AdultDiscoverItem {
   id: string;
@@ -253,6 +261,8 @@ export interface AdultDiscoverItem {
   source: string;
   slug: string;
   releaseTitle?: string;
+  genres?: string[];
+  performers?: string[];
 }
 /**
  * StudioSummary is one entry in Adult Discover's Studios row
@@ -983,6 +993,7 @@ export interface AdultNewestReleaseItem {
    */
   releaseTitle?: string;
   genres?: string[];
+  performers?: string[];
 }
 /**
  * TraktStatusResponse is GET /api/trakt/status's response — the general

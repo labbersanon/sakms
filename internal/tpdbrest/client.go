@@ -77,6 +77,14 @@ type Scene struct {
 	// verify against a live /movies response the first time this is exercised for
 	// real.
 	Type string
+	// Performers is TPDB's per-scene "performers" array reduced to just each
+	// performer's display name — confirmed present on SceneResource in TPDB's
+	// live OpenAPI schema (fetched from https://api.theporndb.net/openapi.json)
+	// this session, 2026-07-15, typed as an array of PerformerResource. Only the
+	// name is consumed (id/image/etc. aren't needed for a plain name list). May
+	// be empty (a scene with no performers on file, or a solo/POV scene TPDB
+	// hasn't tagged).
+	Performers []string
 }
 
 // Tag mirrors one entry of TPDB's per-scene "tags" array (a TagResource) — only
@@ -188,11 +196,21 @@ type rawScene struct {
 	Background struct {
 		Large string `json:"large"`
 	} `json:"background"`
-	Duration int            `json:"duration"`
-	Rating   float64        `json:"rating"`
-	Hashes   []rawSceneHash `json:"hashes"`
-	Type     string         `json:"type"`
-	Tags     []rawTag       `json:"tags"`
+	Duration   int                 `json:"duration"`
+	Rating     float64             `json:"rating"`
+	Hashes     []rawSceneHash      `json:"hashes"`
+	Type       string              `json:"type"`
+	Tags       []rawTag            `json:"tags"`
+	Performers []rawScenePerformer `json:"performers"`
+}
+
+// rawScenePerformer mirrors one entry of a TPDB scene's "performers" array — a
+// PerformerResource, confirmed present on SceneResource in TPDB's live OpenAPI
+// schema (https://api.theporndb.net/openapi.json). Only name is consumed; this
+// client's own Performer type (id/image) is for the standalone performer
+// browse/search endpoints, not for a scene's embedded performer list.
+type rawScenePerformer struct {
+	Name string `json:"name"`
 }
 
 // rawTag mirrors one entry of a TPDB scene's "tags" array — a TagResource,
@@ -227,11 +245,17 @@ func (s rawScene) toScene() Scene {
 	for _, t := range s.Tags {
 		tags = append(tags, Tag{ID: t.ID, UUID: t.UUID, Name: t.Name})
 	}
+	var performers []string
+	for _, p := range s.Performers {
+		if p.Name != "" {
+			performers = append(performers, p.Name)
+		}
+	}
 	// Prefer TPDB's own re-hosted, reliable images over the studio-passthrough
 	// fields — see rawScene's doc comment for the live evidence behind this
 	// order.
 	image := firstNonEmpty(s.Background.Large, s.Poster, s.Image)
-	return Scene{ID: string(s.ID), Title: s.Title, Slug: s.Slug, Date: s.Date, Site: site, Image: image, Duration: s.Duration, Rating: s.Rating, Hashes: phashes, Tags: tags, Type: s.Type}
+	return Scene{ID: string(s.ID), Title: s.Title, Slug: s.Slug, Date: s.Date, Site: site, Image: image, Duration: s.Duration, Rating: s.Rating, Hashes: phashes, Tags: tags, Type: s.Type, Performers: performers}
 }
 
 // firstNonEmpty returns the first non-empty string from vals, or "" if all are

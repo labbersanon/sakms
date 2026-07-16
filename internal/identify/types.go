@@ -29,6 +29,17 @@ type MatchResult struct {
 	// struct's own doc comment) instead of introducing a shared-backing-array
 	// slice field. "" if none/unavailable.
 	Tags string
+	// Performers is the matched scene's own performer names, comma-joined for
+	// the same reason Tags is (see above) — sourced from the matched box
+	// scene's own performer list (TPDB's SceneResource.performers[].name,
+	// confirmed present in TPDB's live OpenAPI schema), not from any AI/
+	// filename-parse guess, so it's authoritative the same way Tags is.
+	// Currently only populated by the TPDB text-search paths (SearchTPDB/
+	// SearchTPDBMovies) — SearchStashBox/SceneByID (StashDB/FansDB) leave
+	// this "" for now; stash-box's performers shape hasn't been verified
+	// against a live instance yet (see CLAUDE.md's "honesty about unverified
+	// assumptions"). "" if none/unavailable.
+	Performers string
 	// RuntimeSeconds is the matched scene's runtime, when the lookup path that
 	// produced this result had one in hand (same "populated for free, no
 	// extra round trip" convention as Image/Tags above). 0 means unknown —

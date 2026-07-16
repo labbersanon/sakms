@@ -150,6 +150,28 @@ func TestSearchTPDB_NoStudioGate(t *testing.T) {
 	}
 }
 
+// TestSearchTPDB_PopulatesPerformersFromOwnSceneData proves MatchResult.
+// Performers is sourced from the matched TPDB scene's own performer list
+// (comma-joined), the same authoritative-sourcing convention as Tags — not
+// left empty and not sourced from anywhere else.
+func TestSearchTPDB_PopulatesPerformersFromOwnSceneData(t *testing.T) {
+	b := newBoxSearcherWithFakes(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"Matching Title Words","date":"2024-01-01","site":{"name":"Some Site"},"performers":[{"name":"Jane Doe"},{"name":"John Roe"}]}]}`))
+	})
+
+	got, err := b.SearchTPDB(context.Background(), "Matching Title Words", "Some Site")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected a match")
+	}
+	if got.Performers != "Jane Doe,John Roe" {
+		t.Errorf("Performers = %q, want %q", got.Performers, "Jane Doe,John Roe")
+	}
+}
+
 func TestSearchTPDB_ZeroDurationFallsBackToByIDRefetch(t *testing.T) {
 	// Regression: TPDB's search endpoint sometimes returns duration:0 for a
 	// scene that genuinely has a real duration on file (found live

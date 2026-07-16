@@ -128,6 +128,7 @@ func (b *BoxSearcher) SearchTPDB(ctx context.Context, title, studio string) (*Ma
 					Title: m.Title, Studio: m.Site, Date: m.Date,
 					Type: "scene", Source: "tpdb_text", SceneID: m.ID, Box: "tpdb",
 					Image: m.Image, Tags: strings.Join(tagNames, ","),
+					Performers:     strings.Join(m.Performers, ","),
 					RuntimeSeconds: b.resolveTPDBDuration(ctx, m.ID, m.Duration),
 				}, nil
 			}
@@ -163,6 +164,7 @@ func (b *BoxSearcher) SearchTPDBMovies(ctx context.Context, title string) (*Matc
 					Title: m.Title, Studio: m.Site, Date: m.Date,
 					Type: "movie", Source: "tpdb_text", SceneID: m.ID, Box: "tpdb",
 					Image: m.Image, Tags: strings.Join(tagNames, ","),
+					Performers:     strings.Join(m.Performers, ","),
 					RuntimeSeconds: b.resolveTPDBDuration(ctx, m.ID, m.Duration),
 				}, nil
 			}

@@ -462,3 +462,35 @@ describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shap
     });
   });
 });
+
+describe("DetailPopup — Adult tags/performers", () => {
+  const stubAdultFetches = () =>
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+  it("renders genres and performers when the item has them", async () => {
+    stubAdultFetches();
+    const target: DetailTarget = {
+      mode: "adult",
+      item: adultScene({ genres: ["Anal", "Blonde"], performers: ["Jane Doe", "John Roe"] }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    expect(await screen.findByText("Anal")).toBeInTheDocument();
+    expect(screen.getByText("Blonde")).toBeInTheDocument();
+    expect(screen.getByText("Jane Doe, John Roe")).toBeInTheDocument();
+  });
+
+  it("renders neither section when the item has no genres/performers", async () => {
+    stubAdultFetches();
+    const target: DetailTarget = { mode: "adult", item: adultScene() };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(screen.queryByText(/Performers:/)).not.toBeInTheDocument();
+  });
+});

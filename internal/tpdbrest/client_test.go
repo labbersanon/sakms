@@ -480,6 +480,30 @@ func TestGet_ParsesTags(t *testing.T) {
 	}
 }
 
+// TestGet_ParsesPerformers proves a scene's "performers" array
+// (PerformerResource objects) decodes into Scene.Performers as a plain name
+// list — only the name is consumed, id/image/etc. are ignored.
+func TestGet_ParsesPerformers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"Cast Scene","date":"2024-01-01","site":{"name":"Some Site"},"performers":[{"_id":"p1","name":"Jane Doe","image":"https://example.com/jane.jpg"},{"_id":"p2","name":"John Roe"}]}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.SearchByHash(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(out))
+	}
+	performers := out[0].Performers
+	if len(performers) != 2 || performers[0] != "Jane Doe" || performers[1] != "John Roe" {
+		t.Fatalf("unexpected performers: %+v", performers)
+	}
+}
+
 // TestSearchMovies_UsesMoviesEndpoint proves SearchMovies hits GET /movies with
 // q + per_page=5 (mirroring SearchByTitle's shape) and decodes the shared
 // SceneResource envelope, including the "type":"Movie" discriminator, into

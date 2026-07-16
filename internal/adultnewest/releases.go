@@ -44,7 +44,14 @@ type MatchedRelease struct {
 	// entities matched before this field existed.
 	FirstSeenReleaseTitle string
 	Genres                []string
-	FirstSeenAt           string
+	// Performers is the matched entity's own performer names — see
+	// identify.MatchResult.Performers' doc comment for sourcing (the box
+	// scene's own performer list, not an AI filename-parse guess). Same
+	// JSON-array-encoded TEXT column convention as Genres. Empty for
+	// Studio/Performer rows and for entities matched before this field
+	// existed.
+	Performers  []string
+	FirstSeenAt string
 }
 
 // ReleaseStore persists matched-entity cache rows plus the separate
@@ -132,12 +139,20 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 	if err != nil {
 		return fmt.Errorf("encoding genres for entity %q: %w", m.EntityID, err)
 	}
+	performers := m.Performers
+	if performers == nil {
+		performers = []string{} // same "never store JSON null" convention as genres above
+	}
+	performersJSON, err := json.Marshal(performers)
+	if err != nil {
+		return fmt.Errorf("encoding performers for entity %q: %w", m.EntityID, err)
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO adult_newest_releases
-			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, performers)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(row_type, entity_source, entity_id) DO NOTHING
-	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate, m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON))
+	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate, m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON), string(performersJSON))
 	if err != nil {
 		return fmt.Errorf("inserting matched entity %q: %w", m.EntityID, err)
 	}
@@ -167,7 +182,7 @@ func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter st
 	offset := (page - 1) * perPage
 
 	query := `
-		SELECT id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, first_seen_at
+		SELECT id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, performers, first_seen_at
 		FROM adult_newest_releases
 		WHERE row_type = ?`
 	args := []any{string(rowType)}
@@ -187,13 +202,16 @@ func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter st
 	out := []MatchedRelease{}
 	for rows.Next() {
 		var m MatchedRelease
-		var rowTypeStr, genresJSON string
-		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio, &m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &m.FirstSeenReleaseTitle, &genresJSON, &m.FirstSeenAt); err != nil {
+		var rowTypeStr, genresJSON, performersJSON string
+		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio, &m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &m.FirstSeenReleaseTitle, &genresJSON, &performersJSON, &m.FirstSeenAt); err != nil {
 			return nil, fmt.Errorf("scanning matched entity: %w", err)
 		}
 		m.RowType = RowType(rowTypeStr)
 		if err := json.Unmarshal([]byte(genresJSON), &m.Genres); err != nil {
 			return nil, fmt.Errorf("decoding genres for entity %d: %w", m.ID, err)
+		}
+		if err := json.Unmarshal([]byte(performersJSON), &m.Performers); err != nil {
+			return nil, fmt.Errorf("decoding performers for entity %d: %w", m.ID, err)
 		}
 		out = append(out, m)
 	}
@@ -258,4 +276,62 @@ func (s *ReleaseStore) PurgeStale(ctx context.Context, before time.Time) (int64,
 		return 0, fmt.Errorf("purging stale matched entities: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// TEMPORARY — supports the one-off performers backfill
+// (internal/api/adult_newest_performers_backfill.go), same "build once,
+// remove once done" precedent as internal/sonarrimport/whisparrimport. Both
+// this method and ListTPDBSceneAndMovie below are deleted once the backfill
+// has been run successfully against production.
+
+// ListTPDBSceneAndMovie returns every cached Scene/Movie row sourced from
+// TPDB (entity_source == "tpdb") — the population the performers backfill
+// walks, since only TPDB scenes currently carry a Performers list to
+// re-fetch (see identify.MatchResult.Performers' doc comment).
+func (s *ReleaseStore) ListTPDBSceneAndMovie(ctx context.Context) ([]MatchedRelease, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, row_type, entity_id, entity_source, entity_title, performers
+		FROM adult_newest_releases
+		WHERE entity_source = 'tpdb' AND row_type IN ('scene', 'movie')
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing tpdb scene/movie entities: %w", err)
+	}
+	defer rows.Close()
+
+	out := []MatchedRelease{}
+	for rows.Next() {
+		var m MatchedRelease
+		var rowTypeStr, performersJSON string
+		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &performersJSON); err != nil {
+			return nil, fmt.Errorf("scanning tpdb scene/movie entity: %w", err)
+		}
+		m.RowType = RowType(rowTypeStr)
+		if err := json.Unmarshal([]byte(performersJSON), &m.Performers); err != nil {
+			return nil, fmt.Errorf("decoding performers for entity %d: %w", m.ID, err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// UpdatePerformers overwrites one cached entity's performers list — a no-op
+// (not an error) if the (rowType, entitySource, entityID) triple no longer
+// exists, matching this package's Delete-style convention.
+func (s *ReleaseStore) UpdatePerformers(ctx context.Context, rowType RowType, entitySource, entityID string, performers []string) error {
+	if performers == nil {
+		performers = []string{}
+	}
+	performersJSON, err := json.Marshal(performers)
+	if err != nil {
+		return fmt.Errorf("encoding performers for entity %q: %w", entityID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE adult_newest_releases SET performers = ?
+		WHERE row_type = ? AND entity_source = ? AND entity_id = ?
+	`, string(performersJSON), string(rowType), entitySource, entityID)
+	if err != nil {
+		return fmt.Errorf("updating performers for entity %q: %w", entityID, err)
+	}
+	return nil
 }

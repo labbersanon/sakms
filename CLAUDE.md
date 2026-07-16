@@ -304,11 +304,6 @@ above, so don't drop them for convenience:
     (it still backs the separate, pre-existing `internal/recheck` background
     watch feature, unrelated to Discover) — only the Discover-facing HTTP
     handler was removed.
-  - A known, harmless leftover from before this fix: `internal/apidto/dto.go`
-    still defines an unused `AvailabilityResponse` type (dead even before
-    this fix — the old handler used `availability.Result` directly). Left
-    alone since removing it means regenerating `ts/dto.gen.ts`; fine to clean
-    up in a future pass.
   - **Clarification, not a reversal (2026-07-14):** the Discover detail
     popup's `GET /api/modes/{mode}/discover/availability`
     (`internal/api/discover_availability.go`) does call Prowlarr, but this

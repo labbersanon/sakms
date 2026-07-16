@@ -296,16 +296,6 @@ type PosterResponse struct {
 	PosterPath string `json:"posterPath"`
 }
 
-// AvailabilityResponse is GET /api/modes/{mode}/availability's response —
-// backs a Discover card's availability badge (Stage 1 scope: "poster cards
-// with availability badges" per the plan). CheckedAt is an RFC3339Nano
-// timestamp of when the probe ran.
-type AvailabilityResponse struct {
-	Available    bool   `json:"available"`
-	ReleaseCount int    `json:"releaseCount"`
-	CheckedAt    string `json:"checkedAt"`
-}
-
 // --- Connections (reference implementation of the three-state secret rule) -
 
 // ConnectionSummary is one entry of GET /api/connections's response — what's

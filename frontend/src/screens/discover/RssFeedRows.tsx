@@ -23,7 +23,7 @@ import { RssFeedCard } from "./RssFeedCard";
 // manualGrab needs — a feed belongs to exactly one target, no per-item
 // ambiguity the way a "mixed" slider has (see rssfeeds.Target's doc comment:
 // no multi-mode/"mixed" feeds).
-export function rssFeedTargetMode(
+function rssFeedTargetMode(
   target: RssFeedTarget,
 ): "movies" | "series" | "adult" {
   if (target === "movie") return "movies";

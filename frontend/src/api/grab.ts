@@ -39,7 +39,7 @@ export function libraryRootFolder(mode: string): Promise<string> {
 
 // ManualGrabBody is the identity + chosen release the fallback pick list
 // sends to /api/modes/{mode}/search/grab — exactly one release per submit.
-export interface ManualGrabBody {
+interface ManualGrabBody {
   title: string;
   tmdbId?: number;
   seasonNumber?: number;

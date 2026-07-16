@@ -66,18 +66,6 @@ func categoriesForSearch(m mode.Mode) []int {
 	}
 }
 
-// episodeSearchQuery builds a Series search term for a specific season (and
-// optionally episode) — "Show Name S03" for a season-pack search, "Show
-// Name S03E05" for one episode. Used by the frontend's season/episode
-// picker; a plain free-text search (typing the show's name alone) is still
-// available and doesn't go through this helper.
-func episodeSearchQuery(title string, seasonNumber, episodeNumber int) string {
-	if episodeNumber > 0 {
-		return fmt.Sprintf("%s S%02dE%02d", title, seasonNumber, episodeNumber)
-	}
-	return fmt.Sprintf("%s S%02d", title, seasonNumber)
-}
-
 // searchHandler queries Prowlarr for {mode} and scores every result against
 // that mode's configured quality-prefs (tier + max resolution, defaulting
 // to quality.Default/no cap when unset) — a read-only proxy+transform,

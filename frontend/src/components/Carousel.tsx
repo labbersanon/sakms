@@ -2,9 +2,7 @@
 // the independently-paginated "Show more" button rows Discover used before.
 // Generic over the item type so any card component (PosterCard, LibraryCard,
 // AdultCard, future genre/studio/network cards) can render inside it without
-// this component knowing anything about Movies/Series/Adult. Not wired into
-// Discover.tsx yet — that happens in a later task once the new backend
-// category endpoints exist.
+// this component knowing anything about Movies/Series/Adult.
 //
 // Scroll + arrows: the row itself is a native `overflow-x-auto` flex strip, so
 // touch/trackpad scrolling always works, arrows or not — the arrow buttons are

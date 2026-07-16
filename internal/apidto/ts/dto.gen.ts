@@ -305,17 +305,6 @@ export interface PosterResponse {
   posterPath: string;
 }
 /**
- * AvailabilityResponse is GET /api/modes/{mode}/availability's response —
- * backs a Discover card's availability badge (Stage 1 scope: "poster cards
- * with availability badges" per the plan). CheckedAt is an RFC3339Nano
- * timestamp of when the probe ran.
- */
-export interface AvailabilityResponse {
-  available: boolean;
-  releaseCount: number /* int */;
-  checkedAt: string;
-}
-/**
  * ConnectionSummary is one entry of GET /api/connections's response — what's
  * safe to expose about a configured connection: never the secret itself,
  * only whether one is set and its last 4 characters (masked display).

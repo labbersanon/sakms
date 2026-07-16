@@ -234,15 +234,6 @@ func newGuardedClient(base *http.Client, allowPrivateHosts map[string]bool) *htt
 	return guarded
 }
 
-// newTestProxy builds a Proxy whose test-only private-host exemption and
-// cache are caller-supplied — used only by this package's tests to point
-// Fetch at an httptest upstream (the production guardrail rejects
-// 127.0.0.1). Kept unexported so no test-only bypass leaks into the
-// production API surface.
-func newTestProxy(client *http.Client, c *cache, allowPrivateHosts map[string]bool) *Proxy {
-	return &Proxy{client: newGuardedClient(client, allowPrivateHosts), cache: c, allowPrivateHosts: allowPrivateHosts}
-}
-
 // Fetch validates raw against the SSRF guardrail, returns a cached copy if
 // one is live, otherwise fetches the upstream image verbatim (query string
 // included — TPDB/imgix art often carries sizing params), caches it, and

@@ -220,7 +220,7 @@ export function fetchAdultPerformerScenes(
 // — the raw Prowlarr release title the backend prefers as its search query
 // when present, since it's real indexer vocabulary that already matched once,
 // unlike a query reconstructed from title/studio).
-export interface AvailabilityPreviewParams {
+interface AvailabilityPreviewParams {
   title: string;
   tmdbId?: number;
   season?: number;

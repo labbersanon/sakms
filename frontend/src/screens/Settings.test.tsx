@@ -111,6 +111,10 @@ const stubFetch = (override?: Override) => {
       const d = defaultGet(url);
       if (d) return d;
     }
+    // Auto-test-all fires POST /api/connections/{svc}/test-stored on mount for
+    // every configured connection; default it to a clean pass so tests that
+    // don't care about the tint stay green. New tests override per-service.
+    if (url.includes("/test-stored")) return jsonResponse({ ok: true });
     // default for mutations (PUT/POST/DELETE) is a clean 204.
     return noContent();
   });
@@ -478,6 +482,144 @@ describe("Connections — netscan LAN-discovery hints", () => {
       url: "http://prowlarr:9696",
       apiKey: "fetched-key",
     });
+  });
+});
+
+// --- Connections auto-test-all + red-tint (section 2b) ----------------------
+//
+// On mount (and after every save) every CONFIGURED connection is tested against
+// the stored-connection endpoint; a failing result red-tints that row's inputs.
+// A manual per-row Test drives the SAME shared tint. The tint is asserted via
+// className (jsdom can't see rendered color, and a mis-specified Tailwind class
+// would silently no-op), so `border-danger` present/absent is the real check.
+
+const oneConn = (over: Record<string, unknown> = {}) => ({
+  service: "prowlarr",
+  url: "http://prowlarr:9696",
+  hasApiKey: true,
+  keySuffix: "abcd",
+  updatedAt: "2026-07-13T00:00:00Z",
+  ...over,
+});
+
+describe("Connections — auto-test-all on mount + red-tint", () => {
+  it("(a) red-tints a configured connection whose stored test fails, with no click", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([oneConn()]);
+      if (url.includes("/api/connections/prowlarr/test-stored"))
+        return jsonResponse({ ok: false, error: "connection test failed" });
+      return undefined;
+    });
+    renderSettings();
+    const keyInput = (await screen.findByLabelText(
+      "prowlarr API key",
+    )) as HTMLInputElement;
+    // Tint appears purely from the mount-time auto-test — no operator action.
+    await waitFor(() => expect(keyInput.className).toContain("border-danger"));
+    // The URL input is tinted too (prowlarr is not a fixed-URL service).
+    expect(
+      (screen.getByLabelText("prowlarr URL") as HTMLInputElement).className,
+    ).toContain("border-danger");
+  });
+
+  it("(a2) leaves a passing configured connection untinted", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([oneConn()]);
+      if (url.includes("/api/connections/prowlarr/test-stored"))
+        return jsonResponse({ ok: true });
+      return undefined;
+    });
+    renderSettings();
+    const keyInput = (await screen.findByLabelText(
+      "prowlarr API key",
+    )) as HTMLInputElement;
+    // Give the mount auto-test time to resolve, then assert no tint.
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.includes("/prowlarr/test-stored")),
+      ).toBe(true),
+    );
+    expect(keyInput.className).not.toContain("border-danger");
+  });
+
+  it("(b) never tests or tints a connection with no stored key", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([oneConn({ hasApiKey: false, keySuffix: "" })]);
+      return undefined;
+    });
+    renderSettings();
+    const keyInput = (await screen.findByLabelText(
+      "prowlarr API key",
+    )) as HTMLInputElement;
+    // The row mounts only after conns() resolves (so the effect has run); a
+    // keyless service is skipped entirely — no test-stored call, no tint.
+    expect(keyInput.className).not.toContain("border-danger");
+    expect(calls.some((c) => c.url.includes("/test-stored"))).toBe(false);
+  });
+
+  it("(c) a manual Test failure red-tints, and a passing manual Test clears it", async () => {
+    const manualResults = [
+      { ok: false, error: "connection failed" },
+      { ok: true },
+    ];
+    let i = 0;
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([oneConn()]);
+      // Stored test passes at mount so the row starts untinted.
+      if (url.includes("/test-stored")) return jsonResponse({ ok: true });
+      // Manual test toggles fail → pass across the two clicks.
+      if (url.endsWith("/api/connections/test") && init?.method === "POST") {
+        const r = manualResults[Math.min(i, manualResults.length - 1)];
+        i += 1;
+        return jsonResponse(r);
+      }
+      return undefined;
+    });
+    renderSettings();
+    const keyInput = (await screen.findByLabelText(
+      "prowlarr API key",
+    )) as HTMLInputElement;
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.includes("/prowlarr/test-stored")),
+      ).toBe(true),
+    );
+    expect(keyInput.className).not.toContain("border-danger");
+    const row = keyInput.closest("tr")!;
+    // Manual Test #1 fails → tint.
+    fireEvent.click(within(row).getByText("Test"));
+    await waitFor(() => expect(keyInput.className).toContain("border-danger"));
+    // Manual Test #2 passes → tint clears.
+    fireEvent.click(within(row).getByText("Test"));
+    await waitFor(() =>
+      expect(keyInput.className).not.toContain("border-danger"),
+    );
+  });
+
+  it("(e) re-runs the auto-test after a batched Save (fires per conns() re-resolution)", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([oneConn()]);
+      if (url.includes("/test-stored")) return jsonResponse({ ok: true });
+      return undefined;
+    });
+    renderSettings();
+    const urlInput = (await screen.findByLabelText(
+      "prowlarr URL",
+    )) as HTMLInputElement;
+    const countStored = () =>
+      calls.filter((c) => c.url.includes("/prowlarr/test-stored")).length;
+    await waitFor(() => expect(countStored()).toBeGreaterThanOrEqual(1));
+    const before = countStored();
+    // Edit + batched Save → onChanged → refetch → conns() re-resolves → the
+    // auto-test effect runs again (proving it's hooked off conns(), not mount).
+    fireEvent.input(urlInput, { target: { value: "http://prowlarr:9999" } });
+    clickSectionSave();
+    await waitFor(() => expect(countStored()).toBeGreaterThan(before));
   });
 });
 
@@ -887,6 +1029,50 @@ describe("Per-mode panels", () => {
     expect(screen.queryByLabelText("Kids root folder path")).toBeNull();
     expect(screen.getByText(/Search quality preferences/)).toBeInTheDocument();
     expect(screen.queryByText(/File\/folder naming/)).toBeNull();
+  });
+});
+
+// --- Library root-folder path test (section 2b) ----------------------------
+
+describe("Library root-folder Test button", () => {
+  it("(d) tests the current typed path, red-tints on failure, and clears on a pass", async () => {
+    const results = [
+      { ok: false, error: "path does not exist" },
+      { ok: true },
+    ];
+    let i = 0;
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/library/root-folder/test") && init?.method === "POST") {
+        const r = results[Math.min(i, results.length - 1)];
+        i += 1;
+        return jsonResponse(r);
+      }
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Library");
+    const input = (await screen.findByLabelText(
+      "Library root folder",
+    )) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "/media/movies" } });
+
+    // Test #1 fails → red-tint AND the endpoint's human-readable error shows
+    // (this endpoint's errors are safe to surface, unlike the connection test).
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() => expect(input.className).toContain("border-danger"));
+    expect(await screen.findByText("path does not exist")).toBeInTheDocument();
+    const testCall = calls.find(
+      (c) =>
+        c.method === "POST" &&
+        c.url.includes("/api/modes/movies/library/root-folder/test"),
+    )!;
+    expect(testCall.body).toEqual({ path: "/media/movies" });
+
+    // Test #2 passes → tint clears.
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() =>
+      expect(input.className).not.toContain("border-danger"),
+    );
   });
 });
 

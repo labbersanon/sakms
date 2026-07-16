@@ -171,6 +171,22 @@ export function testConnection(
   });
 }
 
+// testConnectionStored tests the SAVED connection for a service (no request
+// body) — distinct from testConnection above, which tests the in-progress,
+// possibly-unsaved field values. On failure the backend returns the fixed
+// string "connection test failed" (never the raw downstream error, to avoid
+// leaking the stored URL/key), so callers must treat `ok` as a boolean signal
+// only and not surface `error` to the operator. 404 (no saved connection)
+// throws.
+export function testConnectionStored(
+  service: string,
+): Promise<ConnectionTestResult> {
+  return api<ConnectionTestResult>(
+    `/api/connections/${service}/test-stored`,
+    { method: "POST" },
+  );
+}
+
 // --- Netscan (LAN-discovery hints; relocated into the Settings connections
 // table from the old setup wizard — the task's buildNetscanHint equivalent) ---
 
@@ -288,6 +304,22 @@ export function putLibraryRootFolder(mode: Mode, path: string): Promise<void> {
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+// testLibraryRootFolder checks whether a free-typed path is usable as a root
+// folder (exists, is a directory, is writable) WITHOUT saving it. Unlike
+// testConnectionStored, this endpoint's `error` is a safe, human-readable
+// string ("path does not exist", "path is not writable", …) — fine to show the
+// operator directly. `{mode}` is accepted but ignored server-side (any path is
+// tested as-is, with no browsable-roots confinement).
+export function testLibraryRootFolder(
+  mode: Mode,
+  path: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return api<{ ok: boolean; error?: string }>(
+    `/api/modes/${mode}/library/root-folder/test`,
+    { method: "POST", body: JSON.stringify({ path }) },
+  );
 }
 
 export function fetchQualityPrefs(mode: Mode): Promise<QualityPrefsResponse> {

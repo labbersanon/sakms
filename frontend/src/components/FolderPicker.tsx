@@ -30,6 +30,10 @@ export const FolderPicker: Component<{
   onChange: (path: string) => void;
   ariaLabel?: string;
   placeholder?: string;
+  // invalid, when it returns true, red-tints the input — used by the Library
+  // root-folder field to reflect a failed path test. Optional; other callers
+  // (e.g. the kids-path field) omit it and render normally.
+  invalid?: () => boolean;
 }> = (props) => {
   const [entries, setEntries] = createSignal<BrowseEntry[]>([]);
   const [open, setOpen] = createSignal(false);
@@ -90,7 +94,7 @@ export const FolderPicker: Component<{
     <div class="relative" ref={containerRef}>
       <input
         type="text"
-        class={`${inputClass} mt-1`}
+        class={`${inputClass} mt-1 ${props.invalid?.() ? "border-danger bg-danger/10" : ""}`}
         placeholder={props.placeholder}
         aria-label={props.ariaLabel}
         value={props.value()}

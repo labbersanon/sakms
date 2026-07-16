@@ -24,6 +24,7 @@ import {
   putLibraryRootFolder,
   putNamingPreset,
   putQualityPrefs,
+  testLibraryRootFolder,
 } from "../../api/settings";
 import { Button, Muted, PillSelector, inputClass, labelClass } from "../../components/ui";
 import { FolderPicker } from "../../components/FolderPicker";
@@ -62,9 +63,33 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
       throw e;
     }
   };
+  // testFailed red-tints the path input after a failed path test; cleared on a
+  // passing test or once the operator edits the path (the old result no longer
+  // applies to the new value).
+  const [testFailed, setTestFailed] = createSignal(false);
+  const testStatus = useSaveStatus();
+  const testPath = async () => {
+    testStatus.set("testing…");
+    try {
+      const r = await testLibraryRootFolder(props.mode(), path());
+      if (r.ok) {
+        setTestFailed(false);
+        testStatus.set("✓ ok");
+      } else {
+        setTestFailed(true);
+        // This endpoint's errors ARE safe to show directly (path does not
+        // exist / not a directory / not writable / …), unlike the stored
+        // connection test's fixed generic string.
+        testStatus.failed(new Error(r.error || "path test failed"));
+      }
+    } catch (e) {
+      testStatus.failed(e);
+    }
+  };
   const setPathDirty = (p: string) => {
     setPath(p);
     setDirty(true);
+    setTestFailed(false);
   };
   const batched = useSectionSaveItem({
     id: "library-root",
@@ -82,6 +107,7 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
             onChange={setPathDirty}
             ariaLabel="Library root folder"
             placeholder={`/path/to/${MODE_LABELS[props.mode()]}`}
+            invalid={testFailed}
           />
         </label>
         <div class="mt-3 flex items-center gap-2">
@@ -90,9 +116,14 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
               Save
             </Button>
           </Show>
+          <Button onClick={() => void testPath()}>Test</Button>
           <SaveStatus
             text={status.status().text}
             error={status.status().error}
+          />
+          <SaveStatus
+            text={testStatus.status().text}
+            error={testStatus.status().error}
           />
         </div>
       </form>

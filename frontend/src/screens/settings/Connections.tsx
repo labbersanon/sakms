@@ -13,6 +13,7 @@ import {
   createResource,
   createSignal,
   For,
+  on,
   onCleanup,
   Show,
 } from "solid-js";
@@ -27,6 +28,7 @@ import {
   fetchProwlarrKey,
   probeNetscanHost,
   testConnection,
+  testConnectionStored,
   upsertConnection,
 } from "../../api/settings";
 import type { ConnectionSummary, NetscanFinding } from "../../api/settings";
@@ -65,7 +67,16 @@ export const ConnectionRow: Component<{
   existing: ConnectionSummary | undefined;
   finding: NetscanFinding | undefined;
   onChanged: () => void;
+  // failing/onManualTestResult drive the shared red-tint state owned by the
+  // parent table (auto-test-all + manual Test converge on one map). Optional so
+  // the AI tab's ConnectionRows, which have no auto-test, keep compiling and
+  // behave exactly as before.
+  failing?: () => boolean;
+  onManualTestResult?: (ok: boolean) => void;
 }> = (props) => {
+  // isFailing is the local red-tint accessor: true when the parent marked this
+  // service's saved-connection test (or last manual Test) as failing.
+  const isFailing = () => props.failing?.() ?? false;
   const needsUsername = SERVICES_WITH_USERNAME.includes(props.service);
   // needsFixedUrl services have a hardcoded server-side base URL — the row shows
   // no URL input, and save/test skip the "url is required" guard for them.
@@ -117,6 +128,10 @@ export const ConnectionRow: Component<{
   const setStatusFromTest = (ok: boolean, err?: string) => {
     if (ok) status.set("✓ ok");
     else status.failed(new Error(err || "connection failed"));
+    // Feed the outcome into the parent's shared failing-map so a manual Test
+    // updates the SAME red-tint the auto-test-all populates (and a passing
+    // manual Test clears it).
+    props.onManualTestResult?.(ok);
   };
 
   // save sets its OWN inline status (per-row failure visibility) and rethrows on
@@ -214,7 +229,7 @@ export const ConnectionRow: Component<{
         <Show when={!needsFixedUrl}>
         <input
           type="text"
-          class={`${inputClass} !w-72`}
+          class={`${inputClass} !w-72 ${isFailing() ? "border-danger bg-danger/10" : ""}`}
           placeholder="https://..."
           aria-label={`${props.service} URL`}
           value={url()}
@@ -314,7 +329,7 @@ export const ConnectionRow: Component<{
       <td class="px-2 py-2">
         <input
           type="password"
-          class={`${inputClass} !w-64`}
+          class={`${inputClass} !w-64 ${isFailing() ? "border-danger bg-danger/10" : ""}`}
           placeholder={keyPlaceholder()}
           aria-label={`${props.service} API key`}
           value={key()}
@@ -664,6 +679,33 @@ const TraktConnectionSection: Component = () => {
 const ConnectionsTable: Component = () => {
   const [conns, { refetch }] = createResource(fetchConnections);
   const [findings] = createResource(fetchNetscanKnown);
+  // failing maps service → true when its saved connection failed its most recent
+  // test (auto-test-all below, or a manual per-row Test). One source of truth in
+  // the parent so both paths drive the same red-tint.
+  const [failing, setFailing] = createSignal<Record<string, boolean>>({});
+
+  // Auto-test every configured connection whenever the list (re)resolves — on
+  // first load AND after any save (a successful ConnectionRow.save calls
+  // onChanged → refetch → conns() re-resolves → this re-runs). Tests fire
+  // concurrently (fire-and-forget per service, not awaited in sequence). Only
+  // services with a stored key are tested; the rest have nothing to test and are
+  // left unmarked. A thrown/transport error leaves the prior value rather than
+  // tinting, so a backend hiccup doesn't red-tint every row at once — the
+  // endpoint is a boolean signal, not an exception channel.
+  createEffect(
+    on(conns, (list) => {
+      if (!list) return;
+      for (const c of list) {
+        if (!c.hasApiKey) continue;
+        void testConnectionStored(c.service)
+          .then((r) =>
+            setFailing((prev) => ({ ...prev, [c.service]: !r.ok })),
+          )
+          .catch(() => {});
+      }
+    }),
+  );
+
   const byService = () => {
     const m: Record<string, ConnectionSummary> = {};
     for (const c of conns() ?? []) m[c.service] = c;
@@ -707,6 +749,10 @@ const ConnectionsTable: Component = () => {
                     existing={byService()[service]}
                     finding={findingByService()[service]}
                     onChanged={() => void refetch()}
+                    failing={() => failing()[service] === true}
+                    onManualTestResult={(ok) =>
+                      setFailing((prev) => ({ ...prev, [service]: !ok }))
+                    }
                   />
                 )}
               </For>

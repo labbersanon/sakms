@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/curtiswtaylorjr/sakms/internal/settings"
 	"github.com/curtiswtaylorjr/sakms/internal/sysinfo"
 )
 
@@ -21,7 +25,11 @@ import (
 // tickInterval is variadic purely so tests can inject a short interval; a
 // production call (handler.go) passes only sampleFn and gets the 2s default,
 // keeping the registration a clean one-arg call.
-func sysinfoStreamHandler(sampleFn func() (sysinfo.RawSample, error), tickInterval ...time.Duration) http.HandlerFunc {
+func sysinfoStreamHandler(
+	sampleFn func([]sysinfo.MountSpec) (sysinfo.RawSample, error),
+	mountsFn func(context.Context) []sysinfo.MountSpec,
+	tickInterval ...time.Duration,
+) http.HandlerFunc {
 	interval := 2 * time.Second
 	if len(tickInterval) > 0 && tickInterval[0] > 0 {
 		interval = tickInterval[0]
@@ -37,7 +45,7 @@ func sysinfoStreamHandler(sampleFn func() (sysinfo.RawSample, error), tickInterv
 		w.Header().Set("Connection", "keep-alive")
 
 		ctx := r.Context()
-		prev, err := sampleFn()
+		prev, err := sampleFn(mountsFn(ctx))
 		if err != nil {
 			fmt.Fprintf(w, "event: sampleError\ndata: %s\n\n", err.Error())
 			flusher.Flush()
@@ -52,7 +60,7 @@ func sysinfoStreamHandler(sampleFn func() (sysinfo.RawSample, error), tickInterv
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				curr, err := sampleFn()
+				curr, err := sampleFn(mountsFn(ctx))
 				if err != nil {
 					fmt.Fprintf(w, "event: sampleError\ndata: %s\n\n", err.Error())
 					flusher.Flush()
@@ -66,4 +74,29 @@ func sysinfoStreamHandler(sampleFn func() (sysinfo.RawSample, error), tickInterv
 			}
 		}
 	}
+}
+
+// buildMountsFromSettings resolves the storage mounts the dashboard measures:
+// the fixed "/data" App data volume plus each mode's configured library root
+// folder. A mode whose root folder is unset (settings.ErrNotFound) or errors
+// is reported with an empty Path, which sampleFromPaths renders as
+// Configured: false rather than dropping it — the card still shows, marked
+// "Not configured". Resolved on every tick so a root-folder settings change
+// takes effect live without reconnecting.
+func buildMountsFromSettings(ctx context.Context, s *settings.Store) []sysinfo.MountSpec {
+	mounts := []sysinfo.MountSpec{{Name: "App data", Path: "/data"}}
+	for _, m := range []mode.Mode{mode.Movies, mode.Series, mode.Adult} {
+		key, ok := libraryRootFolderKey(m)
+		if !ok {
+			continue
+		}
+		path, err := s.Get(ctx, key)
+		if err != nil {
+			path = "" // ErrNotFound or any other error → not configured
+		}
+		label := string(m)                             // "movies"
+		label = strings.ToUpper(label[:1]) + label[1:] // "Movies", "Series", "Adult"
+		mounts = append(mounts, sysinfo.MountSpec{Name: label, Path: path})
+	}
+	return mounts
 }

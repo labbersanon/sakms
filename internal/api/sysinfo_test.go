@@ -63,7 +63,7 @@ func waitForFlushes(t *testing.T, rec *flushRecorder, n int, within time.Duratio
 func TestSysinfoStream_WritesEvents(t *testing.T) {
 	var calls int
 	var mu sync.Mutex
-	sampleFn := func() (sysinfo.RawSample, error) {
+	sampleFn := func(_ []sysinfo.MountSpec) (sysinfo.RawSample, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -82,8 +82,11 @@ func TestSysinfoStream_WritesEvents(t *testing.T) {
 			ServerDisks:         []sysinfo.DiskRaw{{Name: "sda", RBytes: n * 4096, WBytes: n * 8192}},
 		}, nil
 	}
+	mockMounts := func(_ context.Context) []sysinfo.MountSpec {
+		return []sysinfo.MountSpec{{Name: "App data", Path: t.TempDir()}}
+	}
 
-	handler := sysinfoStreamHandler(sampleFn, 5*time.Millisecond)
+	handler := sysinfoStreamHandler(sampleFn, mockMounts, 5*time.Millisecond)
 
 	rec := newFlushRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -129,7 +132,7 @@ func TestSysinfoStream_WritesEvents(t *testing.T) {
 func TestSysinfoStream_SampleError_WritesErrorEvent(t *testing.T) {
 	var calls int
 	var mu sync.Mutex
-	sampleFn := func() (sysinfo.RawSample, error) {
+	sampleFn := func(_ []sysinfo.MountSpec) (sysinfo.RawSample, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -138,8 +141,11 @@ func TestSysinfoStream_SampleError_WritesErrorEvent(t *testing.T) {
 		}
 		return sysinfo.RawSample{CapturedAt: time.Now()}, nil
 	}
+	mockMounts := func(_ context.Context) []sysinfo.MountSpec {
+		return []sysinfo.MountSpec{{Name: "App data", Path: t.TempDir()}}
+	}
 
-	handler := sysinfoStreamHandler(sampleFn, 5*time.Millisecond)
+	handler := sysinfoStreamHandler(sampleFn, mockMounts, 5*time.Millisecond)
 
 	rec := newFlushRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -167,10 +173,13 @@ func TestSysinfoStream_SampleError_WritesErrorEvent(t *testing.T) {
 // TestSysinfoStream_FirstSampleError_ClosesWithErrorEvent covers the connect-
 // time sample failure path (the handler emits one error event and returns).
 func TestSysinfoStream_FirstSampleError_ClosesWithErrorEvent(t *testing.T) {
-	sampleFn := func() (sysinfo.RawSample, error) {
+	sampleFn := func(_ []sysinfo.MountSpec) (sysinfo.RawSample, error) {
 		return sysinfo.RawSample{}, errSampleBoom
 	}
-	handler := sysinfoStreamHandler(sampleFn, 5*time.Millisecond)
+	mockMounts := func(_ context.Context) []sysinfo.MountSpec {
+		return []sysinfo.MountSpec{{Name: "App data", Path: t.TempDir()}}
+	}
+	handler := sysinfoStreamHandler(sampleFn, mockMounts, 5*time.Millisecond)
 
 	rec := newFlushRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/sysinfo/stream", nil)

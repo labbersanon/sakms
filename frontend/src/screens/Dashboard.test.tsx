@@ -60,8 +60,14 @@ const snapshot = (over: Partial<SysinfoSnapshot> = {}): SysinfoSnapshot => ({
   containerDiskReadBps: 1024, // 1 KB/s
   containerDiskWriteBps: 0,
   serverDisks: [{ name: "sda", readBps: 3 * 1024 * 1024, writeBps: 0 }],
-  storageTotalBytes: 100 * 1024 * 1024 * 1024, // 100 GB
-  storageAvailBytes: 40 * 1024 * 1024 * 1024, // 40 GB avail → 60 GB used
+  storageMounts: [
+    {
+      name: "App data",
+      totalBytes: 10737418240, // 10 GB
+      availBytes: 5368709120, // 5 GB avail → 5 GB used
+      configured: true,
+    },
+  ],
   ...over,
 });
 
@@ -91,8 +97,9 @@ describe("Dashboard view", () => {
     expect(screen.getByText(/↑ 500 KB\/s/)).toBeInTheDocument();
     // Server disk row.
     expect(screen.getByText("sda")).toBeInTheDocument();
-    // Storage (data volume): 60 GB used of 100 GB.
-    expect(screen.getByText(/60\.0 GB used of 100\.0 GB/)).toBeInTheDocument();
+    // App data storage mount: 5 GB used of 10 GB.
+    expect(screen.getByText("App data")).toBeInTheDocument();
+    expect(screen.getByText(/5\.0 GB used of 10\.0 GB/)).toBeInTheDocument();
   });
 
   it("shows a reconnecting notice on an EventSource error", async () => {

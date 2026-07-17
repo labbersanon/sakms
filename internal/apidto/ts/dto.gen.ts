@@ -1227,6 +1227,15 @@ export interface SysinfoServerDisk {
   writeBps: number /* float64 */;
 }
 /**
+ * SysinfoStorageMount is one named filesystem mount's usage reading.
+ */
+export interface SysinfoStorageMount {
+  name: string;
+  totalBytes: number /* int64 */;
+  availBytes: number /* int64 */;
+  configured: boolean;
+}
+/**
  * SysinfoSnapshot is one live-resource reading streamed by GET /api/admin/sysinfo/stream.
  */
 export interface SysinfoSnapshot {
@@ -1238,6 +1247,5 @@ export interface SysinfoSnapshot {
   containerDiskReadBps: number /* float64 */;
   containerDiskWriteBps: number /* float64 */;
   serverDisks: SysinfoServerDisk[];
-  storageTotalBytes: number /* int64 */;
-  storageAvailBytes: number /* int64 */;
+  storageMounts: SysinfoStorageMount[];
 }

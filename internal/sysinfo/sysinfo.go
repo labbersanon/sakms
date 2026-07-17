@@ -30,6 +30,21 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/apidto"
 )
 
+// MountSpec is a named filesystem path to measure via statfs.
+// An empty Path means the mount is not configured.
+type MountSpec struct {
+	Name string
+	Path string
+}
+
+// StorageEntry is one resolved statfs reading for a named mount.
+type StorageEntry struct {
+	Name       string
+	TotalBytes int64
+	AvailBytes int64
+	Configured bool // false when Path was empty or statfs failed
+}
+
 // RawSample is one reading of the cumulative counters. Rates are derived later
 // by ComputeRates from two of these; a single RawSample on its own is not
 // directly meaningful for anything but memory (which is already a level, not a
@@ -44,8 +59,7 @@ type RawSample struct {
 	ContainerDiskRBytes int64 // sum rbytes from /sys/fs/cgroup/io.stat
 	ContainerDiskWBytes int64 // sum wbytes from /sys/fs/cgroup/io.stat
 	ServerDisks         []DiskRaw
-	StorageTotalBytes   int64 // total bytes of the container's data mount (statfs)
-	StorageAvailBytes   int64 // available bytes of the container's data mount (statfs)
+	StorageMounts       []StorageEntry // one statfs reading per named mount
 }
 
 // DiskRaw is one physical disk's cumulative read/write bytes from
@@ -60,31 +74,25 @@ type DiskRaw struct {
 // sampleFromPaths can be pointed at temp fixtures in tests; production always
 // uses defaultPaths.
 type sysinfoPathConfig struct {
-	cpuStat     string
-	memCurrent  string
-	memMax      string
-	netDev      string
-	ioStat      string
-	diskstats   string
-	storagePath string
+	cpuStat    string
+	memCurrent string
+	memMax     string
+	netDev     string
+	ioStat     string
+	diskstats  string
 }
 
 // defaultPaths are the real cgroups v2 / proc locations.
 // UNVERIFIED ASSUMPTION: cgroups v2 unified hierarchy at /sys/fs/cgroup with
 // the container's own leaf files at the mount root (see package doc).
 var defaultPaths = sysinfoPathConfig{
-	cpuStat:     "/sys/fs/cgroup/cpu.stat",
-	memCurrent:  "/sys/fs/cgroup/memory.current",
-	memMax:      "/sys/fs/cgroup/memory.max",
-	netDev:      "/proc/net/dev",
-	ioStat:      "/sys/fs/cgroup/io.stat",
-	diskstats:   "/proc/diskstats",
-	storagePath: storagePath,
+	cpuStat:    "/sys/fs/cgroup/cpu.stat",
+	memCurrent: "/sys/fs/cgroup/memory.current",
+	memMax:     "/sys/fs/cgroup/memory.max",
+	netDev:     "/proc/net/dev",
+	ioStat:     "/sys/fs/cgroup/io.stat",
+	diskstats:  "/proc/diskstats",
 }
-
-// storagePath is the container's persistent data mount point.
-// UNVERIFIED ASSUMPTION: the container's data volume is mounted at /data.
-const storagePath = "/data"
 
 // physicalDiskRe matches whole physical block-device names in /proc/diskstats,
 // anchored end-to-end so partitions are excluded: it matches e.g. sda, nvme0n1,
@@ -98,15 +106,15 @@ const bytesPerSector = 512
 
 // Sample reads the current raw cumulative values from the real cgroup/proc
 // files. Returns an error if any required file is unreadable or unparseable.
-func Sample() (RawSample, error) {
-	return sampleFromPaths(defaultPaths)
+func Sample(mounts []MountSpec) (RawSample, error) {
+	return sampleFromPaths(defaultPaths, mounts)
 }
 
 // sampleFromPaths is the testable core: it reads every counter from the given
 // paths so tests can point it at temp fixtures. Any single unreadable/
 // unparseable required file fails the whole sample — a partial sample would
 // silently under-report a rate.
-func sampleFromPaths(paths sysinfoPathConfig) (RawSample, error) {
+func sampleFromPaths(paths sysinfoPathConfig, mounts []MountSpec) (RawSample, error) {
 	s := RawSample{CapturedAt: time.Now()}
 
 	cpu, err := readCPUUsageMicros(paths.cpuStat)
@@ -147,12 +155,20 @@ func sampleFromPaths(paths sysinfoPathConfig) (RawSample, error) {
 	}
 	s.ServerDisks = disks
 
-	storageTotal, storageAvail, err := readStorageUsage(paths.storagePath)
-	if err != nil {
-		return RawSample{}, err
+	entries := make([]StorageEntry, 0, len(mounts))
+	for _, m := range mounts {
+		if m.Path == "" {
+			entries = append(entries, StorageEntry{Name: m.Name, Configured: false})
+			continue
+		}
+		total, avail, err := readStorageUsage(m.Path)
+		if err != nil {
+			entries = append(entries, StorageEntry{Name: m.Name, Configured: false})
+			continue
+		}
+		entries = append(entries, StorageEntry{Name: m.Name, TotalBytes: total, AvailBytes: avail, Configured: true})
 	}
-	s.StorageTotalBytes = storageTotal
-	s.StorageAvailBytes = storageAvail
+	s.StorageMounts = entries
 
 	return s, nil
 }
@@ -356,6 +372,16 @@ func ComputeRates(prev, curr RawSample) apidto.SysinfoSnapshot {
 		cpuPercent = 100
 	}
 
+	mounts := make([]apidto.SysinfoStorageMount, len(curr.StorageMounts))
+	for i, e := range curr.StorageMounts {
+		mounts[i] = apidto.SysinfoStorageMount{
+			Name:       e.Name,
+			TotalBytes: e.TotalBytes,
+			AvailBytes: e.AvailBytes,
+			Configured: e.Configured,
+		}
+	}
+
 	snap := apidto.SysinfoSnapshot{
 		CPUPercent:            cpuPercent,
 		MemUsedBytes:          curr.MemUsedBytes,
@@ -364,8 +390,7 @@ func ComputeRates(prev, curr RawSample) apidto.SysinfoSnapshot {
 		NetTxBPS:              perSecond(prev.NetTxBytes, curr.NetTxBytes, elapsed),
 		ContainerDiskReadBPS:  perSecond(prev.ContainerDiskRBytes, curr.ContainerDiskRBytes, elapsed),
 		ContainerDiskWriteBPS: perSecond(prev.ContainerDiskWBytes, curr.ContainerDiskWBytes, elapsed),
-		StorageTotalBytes:     curr.StorageTotalBytes,
-		StorageAvailBytes:     curr.StorageAvailBytes,
+		StorageMounts:         mounts,
 	}
 
 	prevByName := make(map[string]DiskRaw, len(prev.ServerDisks))

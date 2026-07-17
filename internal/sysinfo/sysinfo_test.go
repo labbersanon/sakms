@@ -24,13 +24,12 @@ func fixturePaths(t *testing.T, cpuStat, memCurrent, memMax, netDev, ioStat, dis
 	t.Helper()
 	dir := t.TempDir()
 	return sysinfoPathConfig{
-		cpuStat:     writeFile(t, dir, "cpu.stat", cpuStat),
-		memCurrent:  writeFile(t, dir, "memory.current", memCurrent),
-		memMax:      writeFile(t, dir, "memory.max", memMax),
-		netDev:      writeFile(t, dir, "net_dev", netDev),
-		ioStat:      writeFile(t, dir, "io.stat", ioStat),
-		diskstats:   writeFile(t, dir, "diskstats", diskstats),
-		storagePath: dir, // the temp dir itself is a stat-able filesystem path
+		cpuStat:    writeFile(t, dir, "cpu.stat", cpuStat),
+		memCurrent: writeFile(t, dir, "memory.current", memCurrent),
+		memMax:     writeFile(t, dir, "memory.max", memMax),
+		netDev:     writeFile(t, dir, "net_dev", netDev),
+		ioStat:     writeFile(t, dir, "io.stat", ioStat),
+		diskstats:  writeFile(t, dir, "diskstats", diskstats),
 	}
 }
 
@@ -54,7 +53,7 @@ const (
 
 func TestSampleCPU(t *testing.T) {
 	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDevFixture, ioStatFixture, diskstatsFixture)
-	s, err := sampleFromPaths(paths)
+	s, err := sampleFromPaths(paths, nil)
 	if err != nil {
 		t.Fatalf("sampleFromPaths: %v", err)
 	}
@@ -65,7 +64,7 @@ func TestSampleCPU(t *testing.T) {
 
 func TestSampleMem_WithLimit(t *testing.T) {
 	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDevFixture, ioStatFixture, diskstatsFixture)
-	s, err := sampleFromPaths(paths)
+	s, err := sampleFromPaths(paths, nil)
 	if err != nil {
 		t.Fatalf("sampleFromPaths: %v", err)
 	}
@@ -79,7 +78,7 @@ func TestSampleMem_WithLimit(t *testing.T) {
 
 func TestSampleMem_Unlimited(t *testing.T) {
 	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, "max\n", netDevFixture, ioStatFixture, diskstatsFixture)
-	s, err := sampleFromPaths(paths)
+	s, err := sampleFromPaths(paths, nil)
 	if err != nil {
 		t.Fatalf("sampleFromPaths: %v", err)
 	}
@@ -90,7 +89,7 @@ func TestSampleMem_Unlimited(t *testing.T) {
 
 func TestSampleNet(t *testing.T) {
 	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDevFixture, ioStatFixture, diskstatsFixture)
-	s, err := sampleFromPaths(paths)
+	s, err := sampleFromPaths(paths, nil)
 	if err != nil {
 		t.Fatalf("sampleFromPaths: %v", err)
 	}
@@ -110,7 +109,7 @@ func TestSampleNet_ColonAbutsValue(t *testing.T) {
 		" face |bytes ...|bytes ...\n" +
 		"eth0:99999999999 20 0 0 0 0 0 0 12345 30 0 0 0 0 0 0\n"
 	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDev, ioStatFixture, diskstatsFixture)
-	s, err := sampleFromPaths(paths)
+	s, err := sampleFromPaths(paths, nil)
 	if err != nil {
 		t.Fatalf("sampleFromPaths: %v", err)
 	}
@@ -124,7 +123,7 @@ func TestSampleNet_ColonAbutsValue(t *testing.T) {
 
 func TestSampleDisk_Container(t *testing.T) {
 	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDevFixture, ioStatFixture, diskstatsFixture)
-	s, err := sampleFromPaths(paths)
+	s, err := sampleFromPaths(paths, nil)
 	if err != nil {
 		t.Fatalf("sampleFromPaths: %v", err)
 	}
@@ -139,7 +138,7 @@ func TestSampleDisk_Container(t *testing.T) {
 
 func TestSampleDisk_Server(t *testing.T) {
 	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDevFixture, ioStatFixture, diskstatsFixture)
-	s, err := sampleFromPaths(paths)
+	s, err := sampleFromPaths(paths, nil)
 	if err != nil {
 		t.Fatalf("sampleFromPaths: %v", err)
 	}
@@ -184,23 +183,51 @@ func TestSampleDisk_Server(t *testing.T) {
 	}
 }
 
-// TestSampleStorage verifies readStorageUsage returns sane totals against a
-// real, stat-able filesystem path (the test's own temp dir).
+// TestSampleStorage verifies a configured mount (a real, stat-able filesystem
+// path — the test's own temp dir) yields a Configured entry with sane totals.
 func TestSampleStorage(t *testing.T) {
+	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDevFixture, ioStatFixture, diskstatsFixture)
 	dir := t.TempDir()
 	writeFile(t, dir, "dummy", "x") // ensure the fs is populated/stat-able
-	total, avail, err := readStorageUsage(dir)
+	s, err := sampleFromPaths(paths, []MountSpec{{Name: "tmp", Path: dir}})
 	if err != nil {
-		t.Fatalf("readStorageUsage: %v", err)
+		t.Fatalf("sampleFromPaths: %v", err)
 	}
-	if total <= 0 {
-		t.Errorf("totalBytes = %d, want > 0", total)
+	if len(s.StorageMounts) != 1 {
+		t.Fatalf("StorageMounts len = %d, want 1", len(s.StorageMounts))
 	}
-	if avail <= 0 {
-		t.Errorf("availBytes = %d, want > 0", avail)
+	m := s.StorageMounts[0]
+	if !m.Configured {
+		t.Errorf("StorageMounts[0].Configured = false, want true")
 	}
-	if avail > total {
-		t.Errorf("availBytes (%d) must be <= totalBytes (%d)", avail, total)
+	if m.TotalBytes <= 0 {
+		t.Errorf("TotalBytes = %d, want > 0", m.TotalBytes)
+	}
+	if m.AvailBytes <= 0 {
+		t.Errorf("AvailBytes = %d, want > 0", m.AvailBytes)
+	}
+	if m.AvailBytes > m.TotalBytes {
+		t.Errorf("AvailBytes (%d) must be <= TotalBytes (%d)", m.AvailBytes, m.TotalBytes)
+	}
+}
+
+// TestSampleStorage_Unconfigured verifies an empty-Path mount is reported as
+// present but not configured, rather than dropped.
+func TestSampleStorage_Unconfigured(t *testing.T) {
+	paths := fixturePaths(t, cpuStatFixture, memCurrentFixture, memMaxFixture, netDevFixture, ioStatFixture, diskstatsFixture)
+	s, err := sampleFromPaths(paths, []MountSpec{{Name: "foo", Path: ""}})
+	if err != nil {
+		t.Fatalf("sampleFromPaths: %v", err)
+	}
+	if len(s.StorageMounts) != 1 {
+		t.Fatalf("StorageMounts len = %d, want 1", len(s.StorageMounts))
+	}
+	m := s.StorageMounts[0]
+	if m.Configured {
+		t.Errorf("StorageMounts[0].Configured = true, want false (empty path)")
+	}
+	if m.Name != "foo" {
+		t.Errorf("StorageMounts[0].Name = %q, want %q", m.Name, "foo")
 	}
 }
 
@@ -230,8 +257,10 @@ func TestComputeRates(t *testing.T) {
 		ContainerDiskRBytes: 2000, // 1000 B/s
 		ContainerDiskWBytes: 6000, // 3000 B/s
 		ServerDisks:         []DiskRaw{{Name: "sda", RBytes: 1024, WBytes: 2048}},
-		StorageTotalBytes:   1 << 40, // point-in-time level, passed through as-is
-		StorageAvailBytes:   1 << 39,
+		StorageMounts: []StorageEntry{
+			{Name: "App data", TotalBytes: 1 << 40, AvailBytes: 1 << 39, Configured: true},
+			{Name: "Movies", Configured: false},
+		},
 	}
 	snap := ComputeRates(prev, curr)
 
@@ -263,12 +292,16 @@ func TestComputeRates(t *testing.T) {
 	if snap.ServerDisks[0].WriteBPS != 1024 { // 2048 B / 2s
 		t.Errorf("sda WriteBPS = %f, want 1024", snap.ServerDisks[0].WriteBPS)
 	}
-	// Storage is point-in-time, passed through from curr unchanged (not a rate).
-	if snap.StorageTotalBytes != curr.StorageTotalBytes {
-		t.Errorf("StorageTotalBytes = %d, want %d (passthrough from curr)", snap.StorageTotalBytes, curr.StorageTotalBytes)
+	// Storage mounts are point-in-time, passed through from curr unchanged (not
+	// a rate). Length and per-entry fields must match the input.
+	if len(snap.StorageMounts) != len(curr.StorageMounts) {
+		t.Fatalf("StorageMounts len = %d, want %d", len(snap.StorageMounts), len(curr.StorageMounts))
 	}
-	if snap.StorageAvailBytes != curr.StorageAvailBytes {
-		t.Errorf("StorageAvailBytes = %d, want %d (passthrough from curr)", snap.StorageAvailBytes, curr.StorageAvailBytes)
+	for i, e := range curr.StorageMounts {
+		got := snap.StorageMounts[i]
+		if got.Name != e.Name || got.TotalBytes != e.TotalBytes || got.AvailBytes != e.AvailBytes || got.Configured != e.Configured {
+			t.Errorf("StorageMounts[%d] = %+v, want %+v (passthrough from curr)", i, got, e)
+		}
 	}
 }
 

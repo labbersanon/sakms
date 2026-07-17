@@ -81,7 +81,7 @@ export const ConnectionRow: Component<{
   // needsFixedUrl services have a hardcoded server-side base URL — the row shows
   // no URL input, and save/test skip the "url is required" guard for them.
   const needsFixedUrl = SERVICES_WITH_FIXED_URL.includes(props.service);
-  const allowHostProbe = props.service === "jellyfin";
+  const allowHostProbe = props.service === "jellyfin" || props.service === "stash";
   const [url, setUrl] = createSignal(props.existing?.url ?? "");
   const [username, setUsername] = createSignal(props.existing?.username ?? "");
   const [key, setKey] = createSignal("");
@@ -344,6 +344,11 @@ export const ConnectionRow: Component<{
             }
           }}
         />
+        <Show when={props.service === "stash"}>
+          <div class="mt-1 text-xs text-muted">
+            Get your key: Stash → Settings → Security
+          </div>
+        </Show>
       </td>
       <td class="px-2 py-2">
         <div class="flex gap-1">

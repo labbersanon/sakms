@@ -48,7 +48,7 @@ const probeTimeout = 2 * time.Second
 // network. It never includes credentials (see the package doc for why, even
 // for Prowlarr).
 type Finding struct {
-	Service string `json:"service"` // "prowlarr" | "qbittorrent" | "nzbget" | "jellyfin"
+	Service string `json:"service"` // "prowlarr" | "qbittorrent" | "nzbget" | "jellyfin" | "stash"
 	URL     string `json:"url"`
 	Label   string `json:"label"` // e.g. "possible Prowlarr instance" — for UI display
 }
@@ -69,6 +69,7 @@ var knownServices = []knownService{
 	{name: "qbittorrent", port: 8080},
 	{name: "nzbget", port: 6789},
 	{name: "jellyfin", port: 8096},
+	{name: "stash", port: 9999},
 }
 
 // ProbeKnownHosts tries each known service at its conventional container
@@ -155,6 +156,8 @@ func probeService(ctx context.Context, httpClient *http.Client, name, baseURL st
 		return probeNZBGet(ctx, httpClient, baseURL)
 	case "jellyfin":
 		return probeJellyfin(ctx, httpClient, baseURL)
+	case "stash":
+		return probeStash(ctx, httpClient, baseURL)
 	}
 	return Finding{}, false
 }
@@ -285,6 +288,47 @@ func probeJellyfin(ctx context.Context, httpClient *http.Client, baseURL string)
 		return Finding{}, false
 	}
 	return Finding{Service: "jellyfin", URL: baseURL, Label: "possible Jellyfin instance"}, true
+}
+
+// probeStash confirms a Stash instance via its /graphql endpoint. Stash's
+// GraphQL always responds with a JSON envelope — even when authentication is
+// required the response is a valid {"errors":[...]} object, not HTML. The
+// combination of a JSON Content-Type header and a body that opens with '{'
+// is sufficient to distinguish Stash from arbitrary HTTP servers on port 9999.
+// The API key is never available unauthenticated; this probe only confirms the
+// URL — the operator must retrieve their API key from Stash → Settings →
+// Security.
+func probeStash(ctx context.Context, httpClient *http.Client, baseURL string) (Finding, bool) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	body := strings.NewReader(`{"query":"{__typename}"}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/graphql", body)
+	if err != nil {
+		return Finding{}, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return Finding{}, false
+	}
+	defer func() {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, httpx.MaxResponseBodySize))
+		resp.Body.Close()
+	}()
+
+	if !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		return Finding{}, false
+	}
+	peek, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if err != nil {
+		return Finding{}, false
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(peek)), "{") {
+		return Finding{}, false
+	}
+	return Finding{Service: "stash", URL: baseURL, Label: "possible Stash instance"}, true
 }
 
 // FetchProwlarrAPIKey re-fetches a Prowlarr instance's /initialize.json fresh

@@ -42,6 +42,11 @@ func probeServer(t *testing.T, service string) *httptest.Server {
 		case service == "jellyfin" && r.URL.Path == "/System/Info/Public":
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(jellyfinPublicInfoJSON))
+		case service == "stash" && r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			// Stash returns JSON even when the API key is required.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"errors":[{"message":"API key required"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -156,6 +161,34 @@ func TestProbeJellyfin_ConfirmsIdentity(t *testing.T) {
 	}
 	if f.Service != "jellyfin" {
 		t.Errorf("unexpected finding: %+v", f)
+	}
+}
+
+// TestProbeStash_ConfirmsIdentityOnAuthError proves probeStash confirms even
+// when Stash requires an API key — the auth error is still valid JSON, which
+// is sufficient to identify the instance.
+func TestProbeStash_ConfirmsIdentityOnAuthError(t *testing.T) {
+	srv := probeServer(t, "stash")
+	f, ok := probeStash(context.Background(), testHTTPClient(), srv.URL)
+	if !ok {
+		t.Fatal("expected stash to be confirmed even when auth is required")
+	}
+	if f.Service != "stash" || f.URL != srv.URL {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if !strings.Contains(strings.ToLower(f.Label), "stash") {
+		t.Errorf("label %q should mention stash", f.Label)
+	}
+}
+
+func TestProbeStash_RejectsNonJSONResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<html>not stash</html>"))
+	}))
+	defer srv.Close()
+	if _, ok := probeStash(context.Background(), testHTTPClient(), srv.URL); ok {
+		t.Fatal("a non-JSON response should not confirm Stash")
 	}
 }
 

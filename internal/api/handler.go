@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -273,7 +274,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/admin/entity-sync/{source}", triggerEntitySyncHandler(entityStore, connStore, settingsStore, httpClient))
 	// Live container/host resource metrics streamed as server-sent events for
 	// the System Dashboard (internal/sysinfo reads cgroups v2 + /proc).
-	mux.HandleFunc("GET /api/admin/sysinfo/stream", sysinfoStreamHandler(sysinfo.Sample))
+	mux.HandleFunc("GET /api/admin/sysinfo/stream", sysinfoStreamHandler(
+		sysinfo.Sample,
+		func(ctx context.Context) []sysinfo.MountSpec {
+			return buildMountsFromSettings(ctx, settingsStore)
+		},
+	))
 	// Shared background sync cadence for all four entity sources combined (see
 	// internal/parseentity's Run/LoadInterval) — 0/off by default, additive to
 	// the manual per-source triggers directly above.

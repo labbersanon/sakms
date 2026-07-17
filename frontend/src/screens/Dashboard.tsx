@@ -138,22 +138,31 @@ export const Dashboard: Component = () => {
               </div>
             </Card>
 
-            <Card title="Storage (data volume)">
-              <div class="mb-2 text-sm text-fg">
-                {formatGB(s().storageTotalBytes - s().storageAvailBytes)} used
-                {" of "}
-                {formatGB(s().storageTotalBytes)}
-              </div>
-              <Bar
-                percent={
-                  s().storageTotalBytes > 0
-                    ? ((s().storageTotalBytes - s().storageAvailBytes) /
-                        s().storageTotalBytes) *
-                      100
-                    : 0
-                }
-              />
-            </Card>
+            <For each={s().storageMounts}>
+              {(mount) => (
+                <Card title={mount.name}>
+                  <Show
+                    when={mount.configured}
+                    fallback={<Muted>Not configured</Muted>}
+                  >
+                    <div class="mb-2 text-sm text-fg">
+                      {formatGB(mount.totalBytes - mount.availBytes)} used
+                      {" of "}
+                      {formatGB(mount.totalBytes)}
+                    </div>
+                    <Bar
+                      percent={
+                        mount.totalBytes > 0
+                          ? ((mount.totalBytes - mount.availBytes) /
+                              mount.totalBytes) *
+                            100
+                          : 0
+                      }
+                    />
+                  </Show>
+                </Card>
+              )}
+            </For>
 
             <div class="md:col-span-2">
               <Card title="Server disks">

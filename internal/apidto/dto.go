@@ -1282,16 +1282,23 @@ type SysinfoServerDisk struct {
 	WriteBPS float64 `json:"writeBps"`
 }
 
+// SysinfoStorageMount is one named filesystem mount's usage reading.
+type SysinfoStorageMount struct {
+	Name       string `json:"name"`
+	TotalBytes int64  `json:"totalBytes"`
+	AvailBytes int64  `json:"availBytes"`
+	Configured bool   `json:"configured"`
+}
+
 // SysinfoSnapshot is one live-resource reading streamed by GET /api/admin/sysinfo/stream.
 type SysinfoSnapshot struct {
-	CPUPercent            float64             `json:"cpuPercent"`
-	MemUsedBytes          int64               `json:"memUsedBytes"`
-	MemLimitBytes         int64               `json:"memLimitBytes"`
-	NetRxBPS              float64             `json:"netRxBps"`
-	NetTxBPS              float64             `json:"netTxBps"`
-	ContainerDiskReadBPS  float64             `json:"containerDiskReadBps"`
-	ContainerDiskWriteBPS float64             `json:"containerDiskWriteBps"`
-	ServerDisks           []SysinfoServerDisk `json:"serverDisks"`
-	StorageTotalBytes     int64               `json:"storageTotalBytes"`
-	StorageAvailBytes     int64               `json:"storageAvailBytes"`
+	CPUPercent            float64               `json:"cpuPercent"`
+	MemUsedBytes          int64                 `json:"memUsedBytes"`
+	MemLimitBytes         int64                 `json:"memLimitBytes"`
+	NetRxBPS              float64               `json:"netRxBps"`
+	NetTxBPS              float64               `json:"netTxBps"`
+	ContainerDiskReadBPS  float64               `json:"containerDiskReadBps"`
+	ContainerDiskWriteBPS float64               `json:"containerDiskWriteBps"`
+	ServerDisks           []SysinfoServerDisk   `json:"serverDisks"`
+	StorageMounts         []SysinfoStorageMount `json:"storageMounts"`
 }

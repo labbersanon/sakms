@@ -1,3 +1,5 @@
+github.com/NVIDIA/go-nvml v0.13.3-1 h1:P76U2h88OZSiMtdhRsJjSF5DXyXUqHIXKeDicVAaae0=
+github.com/NVIDIA/go-nvml v0.13.3-1/go.mod h1:ahi2psRYoa+wYUBIrZPRO+wJs9lcvMhxSSkjjvsJJNQ=
 github.com/ajdnik/imghash v1.1.0 h1:lZ6tfgjQ7YPD7T+PuAQJGNG7rPVVuvyZLnCYNf92Pa4=
 github.com/ajdnik/imghash v1.1.0/go.mod h1:OBLk0QTEXmvKaW5k2folD1i9oEdgF9JsNaaTN/di44U=
 github.com/coreos/go-oidc/v3 v3.20.0 h1:EtE0WIBHk03N+DqGkY4+UONzzZHk7amKt6IyNd7OsZE=

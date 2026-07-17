@@ -3,6 +3,7 @@ module github.com/curtiswtaylorjr/sakms
 go 1.25.7
 
 require (
+	github.com/NVIDIA/go-nvml v0.13.3-1
 	github.com/ajdnik/imghash v1.1.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/corona10/goimagehash v1.1.0

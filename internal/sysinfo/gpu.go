@@ -15,11 +15,14 @@ package sysinfo
 // so a wrong guess degrades gracefully rather than crashing the stream.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/NVIDIA/go-nvml/pkg/nvml"
 )
 
 // GPURaw is one GPU's point-in-time reading. UtilPercent is -1 when
@@ -76,6 +79,76 @@ func readGPUs(drmBasePath string) []GPURaw {
 		default:
 			// Unreadable or unrecognized vendor: not a GPU we can classify,
 			// so emit nothing rather than a blank entry.
+		}
+	}
+
+	gpus = enrichNVIDIAWithNVML(gpus)
+	return gpus
+}
+
+// nvmlInit is the function used to initialize NVML. Overridden in tests.
+var nvmlInit = nvml.Init
+
+// enrichNVIDIAWithNVML upgrades the metrics of NVIDIA sysfs entries (those left
+// at UtilPercent == -1 by readNVIDIAGPU) using NVML when the driver is
+// reachable. Every step is soft: an unreachable driver, a failed count, or a
+// per-device query error leaves the sysfs entries untouched rather than
+// aborting — a GPU read failure must never blank out the rest of the sample.
+func enrichNVIDIAWithNVML(gpus []GPURaw) []GPURaw {
+	if ret := nvmlInit(); ret != nvml.SUCCESS {
+		return gpus // driver unavailable or not exposed to container — graceful
+	}
+	defer nvml.Shutdown()
+
+	count, ret := nvml.DeviceGetCount()
+	if ret != nvml.SUCCESS {
+		return gpus
+	}
+
+	// Build name-keyed index of NVIDIA sysfs entries (util=-1) for matching
+	byName := make(map[string]int) // GPU name → gpus slice index
+	for i, g := range gpus {
+		if g.UtilPercent == -1 {
+			byName[g.Name] = i
+		}
+	}
+
+	matched := make(map[int]bool)
+	for i := 0; i < count; i++ {
+		device, ret := nvml.DeviceGetHandleByIndex(i)
+		if ret != nvml.SUCCESS {
+			continue
+		}
+		name, ret := nvml.DeviceGetName(device)
+		if ret != nvml.SUCCESS {
+			name = fmt.Sprintf("NVIDIA GPU %d", i)
+		}
+
+		utilPct := -1
+		if util, ret := nvml.DeviceGetUtilizationRates(device); ret == nvml.SUCCESS {
+			utilPct = int(util.Gpu)
+		}
+
+		var vramUsed, vramTotal int64
+		if mem, ret := nvml.DeviceGetMemoryInfo(device); ret == nvml.SUCCESS {
+			vramUsed = int64(mem.Used)
+			vramTotal = int64(mem.Total)
+		}
+
+		var power int64
+		if p, ret := nvml.DeviceGetPowerUsage(device); ret == nvml.SUCCESS {
+			power = int64(p) * 1000 // milliwatts → microwatts
+		}
+
+		g := GPURaw{Name: name, UtilPercent: utilPct,
+			VRAMUsedBytes: vramUsed, VRAMTotalBytes: vramTotal,
+			PowerMicrowatts: power}
+
+		if idx, ok := byName[name]; ok && !matched[idx] {
+			gpus[idx] = g // update existing sysfs entry
+			matched[idx] = true
+		} else {
+			gpus = append(gpus, g) // NVML-only discovery (rare)
 		}
 	}
 	return gpus

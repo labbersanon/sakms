@@ -601,41 +601,35 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		return 0, changes, fmt.Errorf("recording series %q: %w", p.Title, err)
 	}
 
-	title, airDate := "", ""
-	if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, p.EpisodeNumber); err == nil {
-		title, airDate = existing.Title, existing.AirDate
-	} else if !errors.Is(err, library.ErrNotFound) {
-		return 0, changes, fmt.Errorf("checking existing episode metadata: %w", err)
-	}
-
-	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
-		SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: p.EpisodeNumber,
-		Title: title, AirDate: airDate, FilePath: moved,
-	})
-	if err != nil {
-		return 0, changes, fmt.Errorf("recording episode: %w", err)
-	}
-
 	// Logical episode-splitting: the file was relocated exactly ONCE above
-	// (allEpisodeNumbers), so every bundled extra episode number gets its
-	// own Episode row pointing at that SAME moved path — never a second
-	// relocate. Each one gets the same existing-metadata-preserve dance the
-	// primary episode just got above (GetEpisode before UpsertEpisode), or
-	// a prior TMDB-seeded title/air-date for that exact episode would be
-	// silently blanked out.
-	for _, extraEpisodeNumber := range p.ExtraEpisodeNumbers {
-		extraTitle, extraAirDate := "", ""
-		if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, extraEpisodeNumber); err == nil {
-			extraTitle, extraAirDate = existing.Title, existing.AirDate
+	// (allEpisodeNumbers), so every bundled number (primary plus every
+	// extra) gets its own Episode row pointing at that SAME moved path —
+	// never a second relocate. Each row's existing title/air-date is looked
+	// up and preserved BEFORE the write (a prior TMDB-seeded value must
+	// never be silently blanked just because this Apply call only supplied
+	// a file path). The writes themselves go through UpsertEpisodes in ONE
+	// transaction: without that, a failure partway through (e.g. episode 2's
+	// write failing after episode 1's already committed) would leave the
+	// relocated file "known" — masked from ever being reported as an orphan
+	// again by a later Scan — with episode 2's row still missing and
+	// unrecoverable. Atomic writes mean a partial failure commits nothing,
+	// so a re-Scan can still discover and correctly resolve the file.
+	toUpsert := make([]library.Episode, 0, 1+len(p.ExtraEpisodeNumbers))
+	for _, episodeNumber := range allEpisodeNumbers {
+		epTitle, epAirDate := "", ""
+		if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, episodeNumber); err == nil {
+			epTitle, epAirDate = existing.Title, existing.AirDate
 		} else if !errors.Is(err, library.ErrNotFound) {
-			return ep.ID, changes, fmt.Errorf("checking existing metadata for bundled episode %d: %w", extraEpisodeNumber, err)
+			return 0, changes, fmt.Errorf("checking existing metadata for episode %d: %w", episodeNumber, err)
 		}
-		if _, err := libStore.UpsertEpisode(ctx, library.Episode{
-			SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: extraEpisodeNumber,
-			Title: extraTitle, AirDate: extraAirDate, FilePath: moved,
-		}); err != nil {
-			return ep.ID, changes, fmt.Errorf("recording bundled episode %d: %w", extraEpisodeNumber, err)
-		}
+		toUpsert = append(toUpsert, library.Episode{
+			SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: episodeNumber,
+			Title: epTitle, AirDate: epAirDate, FilePath: moved,
+		})
 	}
-	return ep.ID, changes, nil
+	upserted, err := libStore.UpsertEpisodes(ctx, toUpsert)
+	if err != nil {
+		return 0, changes, fmt.Errorf("recording episode(s): %w", err)
+	}
+	return upserted[0].ID, changes, nil
 }

@@ -97,6 +97,57 @@ func TestUpsertEpisode_TracksMissingAndFound(t *testing.T) {
 	}
 }
 
+// TestUpsertEpisodes_AtomicBatch proves the logical-episode-splitting batch
+// write: multiple Episode rows (e.g. a "S01E01-E02" file's primary + extra
+// bundled number) upsert together, all pointing at the same shared file
+// path, and a re-upsert of the same batch updates in place rather than
+// duplicating — the same idempotent shape UpsertEpisode already has, just
+// batched.
+func TestUpsertEpisodes_AtomicBatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 400, Title: "Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sharedPath := "/tv/Show/Season 01/Show S01E01-E02.mkv"
+	upserted, err := s.UpsertEpisodes(ctx, []Episode{
+		{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, Title: "Part One", FilePath: sharedPath},
+		{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, Title: "Part Two", FilePath: sharedPath},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(upserted) != 2 || upserted[0].ID == 0 || upserted[1].ID == 0 {
+		t.Fatalf("expected 2 upserted rows with nonzero ids, got %+v", upserted)
+	}
+
+	all, err := s.ListEpisodes(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 2 || all[0].FilePath != sharedPath || all[1].FilePath != sharedPath {
+		t.Fatalf("expected 2 episodes sharing one file path, got %+v", all)
+	}
+
+	// Re-upserting the same batch updates in place — no duplicate rows.
+	if _, err := s.UpsertEpisodes(ctx, []Episode{
+		{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, Title: "Part One", FilePath: sharedPath},
+		{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, Title: "Part Two", FilePath: sharedPath},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	all, err = s.ListEpisodes(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected still exactly 2 episodes after re-upserting the same batch, got %d", len(all))
+	}
+}
+
 func TestDeleteSeries_RemovesEpisodesAndTags(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

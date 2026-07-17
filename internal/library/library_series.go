@@ -166,6 +166,53 @@ func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) 
 	return ep, nil
 }
 
+// UpsertEpisodes is UpsertEpisode's atomic-batch sibling: every row in eps
+// is upserted within ONE transaction, so a failure partway through rolls
+// back everything already written. This matters specifically for a
+// logical-episode-split file (rename.ApplyLibrarySeries): the file is
+// relocated exactly once, then one Episode row is upserted per bundled
+// number. Without a shared transaction, a failure on episode 2's upsert
+// (after episode 1's already committed) would leave the relocated file
+// "known" — ScanRootFolder masks any already-tracked FilePath from ever
+// being reported as an orphan again — with episode 2's row still missing
+// and unrecoverable by a later re-Scan. Wrapping every number's upsert in
+// one transaction means a partial failure leaves nothing committed, so a
+// re-Scan can still discover and correctly resolve the file. eps[0] is
+// expected to be the primary episode's row when this is used for that
+// purpose, but the function itself is order-agnostic.
+func (s *Store) UpsertEpisodes(ctx context.Context, eps []Episode) ([]Episode, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("upserting episodes: %w", err)
+	}
+	defer tx.Rollback()
+
+	out := make([]Episode, len(eps))
+	for i, ep := range eps {
+		row := tx.QueryRowContext(ctx, `
+			INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
+				title = excluded.title,
+				air_date = excluded.air_date,
+				file_path = excluded.file_path,
+				phash = excluded.phash,
+				phash_file_size = excluded.phash_file_size,
+				phash_file_mtime = excluded.phash_file_mtime,
+				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			RETURNING id, created_at, updated_at
+		`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime)
+		if err := row.Scan(&ep.ID, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("upserting episode s%de%d for series %d: %w", ep.SeasonNumber, ep.EpisodeNumber, ep.SeriesID, err)
+		}
+		out[i] = ep
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing episode upserts: %w", err)
+	}
+	return out, nil
+}
+
 // UpdateEpisodePHash writes a freshly-computed perceptual hash and its
 // file-identity key (size + mtime) onto an existing tracked episode, without
 // rewriting the rest of the row — the targeted write Dedup's Scan uses to

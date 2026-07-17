@@ -98,7 +98,7 @@ func TestApplyBatch_PartialFailure_SkipsAndContinues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyBatchRequest{Items: []applyBatchItem{
@@ -191,7 +191,7 @@ func TestApplyBatch_CombinedNotify_OneCallBothItemsChanges(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyBatchRequest{Items: []applyBatchItem{
@@ -286,7 +286,7 @@ func TestApplyBatch_CommittedItemErrors_ChangesStillInCombinedNotify(t *testing.
 	// its file has already moved.
 	failStore := markAppliedFailStore{Store: propStore, failID: saved[1].ID}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(testHTTPClient(), connStore, settingsStore, failStore, libStore))
+	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(testHTTPClient(), connStore, settingsStore, failStore, libStore, nil))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

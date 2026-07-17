@@ -1273,3 +1273,37 @@ export interface SysinfoSnapshot {
   storageMounts: SysinfoStorageMount[];
   gpus: SysinfoGPU[];
 }
+/**
+ * WebhookSummary is one outbound webhook subscription as returned by the API.
+ * The signing secret is never included — secretSet indicates whether one is stored.
+ */
+export interface WebhookSummary {
+  id: number /* int64 */;
+  url: string;
+  secretSet: boolean;
+  events: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+/**
+ * WebhookCreateRequest is the body for POST /api/webhooks.
+ * Secret is the plaintext signing secret; omit or set "" for no signing.
+ */
+export interface WebhookCreateRequest {
+  url: string;
+  secret: string;
+  events: string[];
+  enabled: boolean;
+}
+/**
+ * WebhookUpdateRequest is the body for PUT /api/webhooks/{id}.
+ * Secret follows three-state semantics: null/absent = preserve existing,
+ * "" = clear, non-empty = update.
+ */
+export interface WebhookUpdateRequest {
+  url: string;
+  secret?: string;
+  events: string[];
+  enabled: boolean;
+}

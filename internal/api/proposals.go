@@ -17,6 +17,7 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/purge"
 	"github.com/curtiswtaylorjr/sakms/internal/rename"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/curtiswtaylorjr/sakms/internal/webhooks"
 )
 
 // listProposalsHandler returns {mode}'s review queue for wf, most recently
@@ -72,7 +73,7 @@ type proposalApplyStore interface {
 // runs — the URL doesn't need to say which, since a proposal ID alone is
 // already unambiguous. No mode touches a *arr app anymore; every Apply is
 // library-backed (see applyByWorkflow).
-func applyProposalHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store) http.HandlerFunc {
+func applyProposalHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
 		if !ok {
@@ -121,6 +122,13 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 			return
 		}
 
+		if whStore != nil {
+			whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
+				"mode": string(p.Mode), "workflow": string(p.Workflow),
+				"title": p.Title, "tmdbId": p.TMDBID,
+			})
+		}
+
 		updated, err := propStore.Get(ctx, id)
 		if err != nil {
 			proposalNotFoundOr500(w, err)
@@ -128,6 +136,20 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(updated)
+	}
+}
+
+// workflowEvent maps a proposal workflow to the corresponding webhook event name.
+func workflowEvent(wf proposals.Workflow) string {
+	switch wf {
+	case proposals.Rename:
+		return webhooks.EventRenameApplied
+	case proposals.Purge:
+		return webhooks.EventPurgeApplied
+	case proposals.Dedup:
+		return webhooks.EventDedupApplied
+	default:
+		return string(wf) + ".applied"
 	}
 }
 
@@ -300,7 +322,7 @@ type applyBatchResponse struct {
 // it matches today's one-at-a-time mental model and avoids reasoning about
 // concurrent filesystem mutations across items that may touch overlapping
 // paths (e.g. the same series folder). See .omc/plans/bulk-apply.md.
-func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store) http.HandlerFunc {
+func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -368,6 +390,12 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, se
 				continue
 			}
 			results = append(results, applyBatchResultItem{ID: item.ID, OK: true, Proposal: updated})
+			if whStore != nil {
+				whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
+					"mode": string(p.Mode), "workflow": string(p.Workflow),
+					"title": p.Title, "tmdbId": p.TMDBID,
+				})
+			}
 		}
 
 		// Fire one NotifyPlayers call per mode so each mode's changes reach

@@ -26,11 +26,12 @@ import (
 // are keyed on (box, sceneId) and have no TMDB identity — the Tag picker, this
 // type's original caller, ignores them for every mode.
 type libraryTrackedItem struct {
-	ID     int64    `json:"id"`
-	Title  string   `json:"title"`
-	Tags   []string `json:"tags"`
-	TMDBID int      `json:"tmdbId,omitempty"`
-	Year   int      `json:"year,omitempty"`
+	ID             int64    `json:"id"`
+	Title          string   `json:"title"`
+	Tags           []string `json:"tags"`
+	TMDBID         int      `json:"tmdbId,omitempty"`
+	Year           int      `json:"year,omitempty"`
+	CollectionName string   `json:"collectionName,omitempty"`
 }
 
 // listTrackedHandler returns every item {mode} currently tracks — straight
@@ -59,7 +60,7 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year}
+				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year, CollectionName: item.CollectionName}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)

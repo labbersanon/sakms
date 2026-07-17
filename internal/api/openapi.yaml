@@ -1,0 +1,713 @@
+openapi: "3.1.0"
+info:
+  title: SAK Media Server API
+  version: "1.0"
+  description: |
+    REST API for SAK (tidyarr) — a self-hosted media-library consolidation
+    server. The same endpoints the SolidJS frontend uses are the extensibility
+    surface for scripts and external tools.
+
+    **Authentication:** Every `/api/` route requires either a valid session
+    cookie (obtained via the login flow) or a valid `X-Api-Key` header. The
+    API key is logged once on first boot (or when regenerated in Settings →
+    Auth) and can also be set via the `SAKMS_API_KEY` environment variable.
+
+servers:
+  - url: /
+
+security:
+  - cookieAuth: []
+  - apiKeyHeader: []
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sak_session
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+
+  schemas:
+    WebhookSummary:
+      type: object
+      description: One outbound webhook subscription as returned by the API. The signing secret is never included — secretSet indicates whether one is stored.
+      required: [id, url, secretSet, events, enabled, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        url:
+          type: string
+          format: uri
+        secretSet:
+          type: boolean
+          description: True when a signing secret is stored (never returned in plaintext).
+        events:
+          type: array
+          items:
+            type: string
+            enum: [rename.applied, purge.applied, dedup.applied, grab.completed]
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WebhookCreateRequest:
+      type: object
+      required: [url, events, enabled]
+      properties:
+        url:
+          type: string
+          format: uri
+        secret:
+          type: string
+          description: Plaintext signing secret. Omit or set to "" for no signing.
+        events:
+          type: array
+          items:
+            type: string
+            enum: [rename.applied, purge.applied, dedup.applied, grab.completed]
+        enabled:
+          type: boolean
+
+    WebhookUpdateRequest:
+      type: object
+      required: [url, events, enabled]
+      properties:
+        url:
+          type: string
+          format: uri
+        secret:
+          type: string
+          nullable: true
+          description: |
+            Three-state secret semantics:
+            - Absent/null: preserve the existing secret.
+            - "": clear the secret (no more signing).
+            - Non-empty string: update to this new secret.
+        events:
+          type: array
+          items:
+            type: string
+            enum: [rename.applied, purge.applied, dedup.applied, grab.completed]
+        enabled:
+          type: boolean
+
+    WebhookEvent:
+      type: object
+      description: Payload POSTed to a subscribed webhook endpoint.
+      required: [event, timestamp, data]
+      properties:
+        event:
+          type: string
+          enum: [rename.applied, purge.applied, dedup.applied, grab.completed, webhook.test]
+        timestamp:
+          type: string
+          format: date-time
+        data:
+          description: Event-specific payload object. Shape depends on the event type.
+
+    ConnectionSummary:
+      type: object
+      required: [service, url]
+      properties:
+        service:
+          type: string
+        url:
+          type: string
+        username:
+          type: string
+        apiKeySet:
+          type: boolean
+
+    Proposal:
+      type: object
+      description: One pending Rename/Purge/Dedup proposal in the review queue.
+      required: [id, mode, workflow, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+        mode:
+          type: string
+          enum: [movies, series, adult]
+        workflow:
+          type: string
+          enum: [rename, purge, dedup]
+        status:
+          type: string
+          enum: [pending, applied, dismissed, unmatched]
+        reason:
+          type: string
+        sourcePath:
+          type: string
+        destPath:
+          type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+paths:
+  # ── Webhooks ─────────────────────────────────────────────────────────────
+
+  /api/webhooks:
+    get:
+      summary: List webhook subscriptions
+      operationId: listWebhooks
+      tags: [Webhooks]
+      responses:
+        "200":
+          description: All stored webhook subscriptions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WebhookSummary"
+        "401":
+          description: Unauthorized
+
+    post:
+      summary: Create a webhook subscription
+      operationId: createWebhook
+      tags: [Webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookCreateRequest"
+      responses:
+        "201":
+          description: Created subscription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSummary"
+        "400":
+          description: Validation error (missing URL, unknown event name).
+        "401":
+          description: Unauthorized
+
+  /api/webhooks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+
+    put:
+      summary: Update a webhook subscription
+      operationId: updateWebhook
+      tags: [Webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookUpdateRequest"
+      responses:
+        "204":
+          description: Updated.
+        "400":
+          description: Validation error.
+        "401":
+          description: Unauthorized
+        "404":
+          description: No webhook with that id.
+
+    delete:
+      summary: Delete a webhook subscription
+      operationId: deleteWebhook
+      tags: [Webhooks]
+      responses:
+        "204":
+          description: Deleted.
+        "401":
+          description: Unauthorized
+        "404":
+          description: No webhook with that id.
+
+  /api/webhooks/{id}/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      summary: Fire a test delivery to a webhook endpoint
+      operationId: testWebhook
+      tags: [Webhooks]
+      description: |
+        Fires a `webhook.test` event to the subscribed endpoint regardless of
+        the webhook's enabled state. Use this to verify the URL is reachable
+        and the signing secret (if any) is correctly configured on the receiver.
+      responses:
+        "204":
+          description: Test delivery queued (fire-and-forget — does not wait for delivery).
+        "401":
+          description: Unauthorized
+
+  # ── Connections ───────────────────────────────────────────────────────────
+
+  /api/connections:
+    get:
+      summary: List configured connections
+      operationId: listConnections
+      tags: [Connections]
+      responses:
+        "200":
+          description: All stored connection summaries (secrets never included).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConnectionSummary"
+
+  /api/connections/{service}:
+    parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [prowlarr, qbittorrent, nzbget, jellyfin, stash, ollama, tpdb, stashdb, fansdb]
+    put:
+      summary: Create or update a connection
+      operationId: upsertConnection
+      tags: [Connections]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                username:
+                  type: string
+                apiKey:
+                  type: string
+                  nullable: true
+                  description: Three-state — null/absent preserves stored key, "" clears, non-empty updates.
+      responses:
+        "204":
+          description: Saved.
+    delete:
+      summary: Remove a connection
+      operationId: deleteConnection
+      tags: [Connections]
+      responses:
+        "204":
+          description: Deleted.
+
+  /api/connections/test:
+    post:
+      summary: Test a connection without saving it
+      operationId: testConnection
+      tags: [Connections]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [service, url]
+              properties:
+                service:
+                  type: string
+                url:
+                  type: string
+                  format: uri
+                username:
+                  type: string
+                apiKey:
+                  type: string
+      responses:
+        "200":
+          description: Test result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  error:
+                    type: string
+
+  # ── Rename workflow ───────────────────────────────────────────────────────
+
+  /api/modes/{mode}/rename/scan:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    post:
+      summary: Scan for rename proposals
+      operationId: renameScan
+      tags: [Rename]
+      responses:
+        "200":
+          description: Scan queued; proposals appear in the review queue.
+
+  /api/modes/{mode}/rename/proposals:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    get:
+      summary: List rename proposals
+      operationId: listRenameProposals
+      tags: [Rename]
+      responses:
+        "200":
+          description: All rename proposals for this mode (Pending, Applied, Dismissed, Unmatched).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Proposal"
+
+  # ── Purge workflow ────────────────────────────────────────────────────────
+
+  /api/modes/{mode}/purge/scan:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    post:
+      summary: Scan for purge proposals (files not in the library)
+      operationId: purgeScan
+      tags: [Purge]
+      responses:
+        "200":
+          description: Scan queued.
+
+  /api/modes/{mode}/purge/proposals:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    get:
+      summary: List purge proposals
+      operationId: listPurgeProposals
+      tags: [Purge]
+      responses:
+        "200":
+          description: All purge proposals for this mode.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Proposal"
+
+  # ── Dedup workflow ────────────────────────────────────────────────────────
+
+  /api/modes/{mode}/dedup/scan:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    post:
+      summary: Scan for duplicate proposals
+      operationId: dedupScan
+      tags: [Dedup]
+      responses:
+        "200":
+          description: Scan queued.
+
+  /api/modes/{mode}/dedup/proposals:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    get:
+      summary: List dedup proposals (duplicate groups)
+      operationId: listDedupProposals
+      tags: [Dedup]
+      responses:
+        "200":
+          description: All dedup proposals for this mode.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Proposal"
+
+  # ── Proposal actions ──────────────────────────────────────────────────────
+
+  /api/proposals/{id}/apply:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      summary: Apply a single proposal
+      operationId: applyProposal
+      tags: [Proposals]
+      description: |
+        Applies the proposal — moves/deletes the file(s), marks the proposal
+        Applied in the review queue, updates the library record, and notifies
+        downstream players. Fires the appropriate webhook event on success.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keepIndex:
+                  type: integer
+                  nullable: true
+                  description: Dedup only — which candidate to keep (null = auto-select quality winner).
+                keepAll:
+                  type: boolean
+                  description: Dedup only — dismiss the duplicate group without deleting anything.
+      responses:
+        "200":
+          description: Applied.
+        "400":
+          description: Proposal not in Pending state or validation error.
+        "404":
+          description: Proposal not found.
+
+  /api/proposals/apply-batch:
+    post:
+      summary: Apply multiple proposals in one request
+      operationId: applyBatch
+      tags: [Proposals]
+      description: |
+        Applies each listed proposal sequentially with skip-and-continue
+        semantics — one failure never blocks the rest. Returns per-item ok/error
+        results. Fires one combined player-notify for the batch on completion.
+        One webhook event is fired per successfully applied item.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id:
+                        type: integer
+                        format: int64
+                      keepIndex:
+                        type: integer
+                        nullable: true
+                      keepAll:
+                        type: boolean
+      responses:
+        "200":
+          description: Batch result — one entry per requested item.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                          format: int64
+                        ok:
+                          type: boolean
+                        error:
+                          type: string
+
+  /api/proposals/{id}/dismiss:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      summary: Dismiss a proposal
+      operationId: dismissProposal
+      tags: [Proposals]
+      responses:
+        "200":
+          description: Dismissed.
+
+  /api/proposals/{id}/repick:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      summary: Re-run matching for a proposal (retry Unmatched)
+      operationId: repickProposal
+      tags: [Proposals]
+      responses:
+        "200":
+          description: Repicked.
+
+  # ── Search & Grab ─────────────────────────────────────────────────────────
+
+  /api/modes/{mode}/search:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    get:
+      summary: Search Prowlarr for releases
+      operationId: search
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ranked list of releases.
+
+  /api/modes/{mode}/search/grab:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    post:
+      summary: Send a release to the download client
+      operationId: grab
+      tags: [Search]
+      description: |
+        Dispatches the release to qBittorrent (torrent) or NZBGet (usenet),
+        records the grab, and fires the `grab.completed` webhook event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [downloadUrl, protocol, rootFolderPath]
+              properties:
+                downloadUrl:
+                  type: string
+                protocol:
+                  type: string
+                  enum: [torrent, usenet]
+                title:
+                  type: string
+                tmdbId:
+                  type: integer
+                rootFolderPath:
+                  type: string
+      responses:
+        "200":
+          description: Grab recorded.
+        "400":
+          description: Missing required fields or download client not configured.
+        "502":
+          description: Download client returned an error.
+
+  /api/modes/{mode}/grabs:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [movies, series, adult]
+    get:
+      summary: List recorded grabs
+      operationId: listGrabs
+      tags: [Search]
+      responses:
+        "200":
+          description: All grabs for this mode, newest first.
+
+  # ── OpenAPI spec ──────────────────────────────────────────────────────────
+
+  /api/openapi.yaml:
+    get:
+      summary: This OpenAPI specification
+      operationId: getOpenAPISpec
+      tags: [Meta]
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1 YAML document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+tags:
+  - name: Webhooks
+    description: Outbound webhook subscription management. SAK fires a signed HTTP POST to subscribed endpoints after Rename/Purge/Dedup apply events and successful grabs.
+  - name: Connections
+    description: External service connections (Prowlarr, qBittorrent, NZBGet, Jellyfin, Stash, Ollama, TPDB, StashDB, FansDB).
+  - name: Rename
+    description: Rename workflow — scan the library root folder for files that need renaming, review proposals, apply.
+  - name: Purge
+    description: Purge workflow — scan for files in the root folder that are not tracked in the library, review proposals, delete.
+  - name: Dedup
+    description: Dedup workflow — find duplicate files by perceptual hash, review groups, keep one copy.
+  - name: Proposals
+    description: Shared apply/dismiss/repick actions for all three workflow proposal queues.
+  - name: Search
+    description: Prowlarr-backed release search and one-click grab to download client.
+  - name: Meta
+    description: Meta endpoints (this spec, health check).

@@ -35,6 +35,7 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/trakt"
 	"github.com/curtiswtaylorjr/sakms/internal/videophash"
 	"github.com/curtiswtaylorjr/sakms/internal/web"
+	"github.com/curtiswtaylorjr/sakms/internal/webhooks"
 )
 
 // outboundTimeout bounds every call SAK makes to a configured service
@@ -104,6 +105,9 @@ func run() error {
 	// entityStore is the DB-first entity cache for Adult filename parsing. It
 	// wraps the same sqlDB as every other store — no second connection needed.
 	entityStore := parseentity.NewSQLiteStore(sqlDB)
+	// webhookStore persists outbound webhook subscriptions — uses the same
+	// secretStore as connStore/traktStore to encrypt signing secrets at rest.
+	webhookStore := webhooks.New(sqlDB, secretStore)
 	// secretStore doubles as authStore's OIDC-client-secret decryptor, and
 	// the outbound HTTP client is the same outboundTimeout-bounded one every
 	// other external client in this program uses — it bounds OIDC discovery,
@@ -147,7 +151,7 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, hasher, videoHasher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, entityStore)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, hasher, videoHasher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, entityStore, webhookStore)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
 
 	// API-key management (status + regenerate) is session-protected like
@@ -197,6 +201,7 @@ func run() error {
 	// login/callback subpaths stay public (they must run before a session
 	// exists).
 	top.Handle("/api/auth/", api.NewAuthMux(authStore, secretStore))
+	top.HandleFunc("GET /api/openapi.yaml", api.OpenapiHandler())
 	top.Handle("/api/apikey", protectedAPIKey)                        // exact match: GET status
 	top.Handle("/api/apikey/", protectedAPIKey)                       // subtree: POST .../regenerate
 	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger) // exact match: manual "Refresh now"

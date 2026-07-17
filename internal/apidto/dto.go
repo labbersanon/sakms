@@ -1324,3 +1324,42 @@ type SysinfoSnapshot struct {
 	StorageMounts         []SysinfoStorageMount `json:"storageMounts"`
 	GPUs                  []SysinfoGPU          `json:"gpus"`
 }
+
+// WebhookSummary is one outbound webhook subscription as returned by the API.
+// The signing secret is never included — secretSet indicates whether one is stored.
+type WebhookSummary struct {
+	ID        int64    `json:"id"`
+	URL       string   `json:"url"`
+	SecretSet bool     `json:"secretSet"`
+	Events    []string `json:"events"`
+	Enabled   bool     `json:"enabled"`
+	CreatedAt string   `json:"createdAt"`
+	UpdatedAt string   `json:"updatedAt"`
+}
+
+// WebhookCreateRequest is the body for POST /api/webhooks.
+// Secret is the plaintext signing secret; omit or set "" for no signing.
+type WebhookCreateRequest struct {
+	URL     string   `json:"url"`
+	Secret  string   `json:"secret"`
+	Events  []string `json:"events"`
+	Enabled bool     `json:"enabled"`
+}
+
+// WebhookUpdateRequest is the body for PUT /api/webhooks/{id}.
+// Secret follows three-state semantics: null/absent = preserve existing,
+// "" = clear, non-empty = update.
+type WebhookUpdateRequest struct {
+	URL     string   `json:"url"`
+	Secret  *string  `json:"secret"`
+	Events  []string `json:"events"`
+	Enabled bool     `json:"enabled"`
+}
+
+// AllWebhookEvents is the canonical list of event names for webhook subscriptions.
+var AllWebhookEvents = []string{
+	"rename.applied",
+	"purge.applied",
+	"dedup.applied",
+	"grab.completed",
+}

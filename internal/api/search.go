@@ -24,6 +24,7 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/release"
 	"github.com/curtiswtaylorjr/sakms/internal/rename"
 	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/curtiswtaylorjr/sakms/internal/webhooks"
 )
 
 // searchResult is one scored release Prowlarr found, for a human to pick
@@ -167,7 +168,7 @@ type grabRequest struct {
 // internal/grabs for status tracking. This is the one mutating action in the
 // search workflow — Search itself never does — matching every other
 // workflow's "Scan never mutates, exactly one human-approved action does" rule.
-func grabHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, grabsStore *grabs.Store) http.HandlerFunc {
+func grabHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, grabsStore *grabs.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -204,6 +205,10 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, settings
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		whStore.Dispatch(webhooks.EventGrabCompleted, map[string]any{
+			"mode": string(m), "title": req.Title, "tmdbId": req.TMDBID,
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(created)

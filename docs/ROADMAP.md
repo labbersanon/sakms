@@ -169,6 +169,47 @@ organizational authority.
 
 ## Recently shipped (outside this backlog)
 
+### Bulk apply — shipped 2026-07-17
+Third item off the "least complex to most complex" backlog ordering — a
+deliberate, documented reversal of the "one item at a time" rule (see
+`CLAUDE.md`'s amended "Staged-for-approval" convention). Each of the three
+workflow review queues (Rename, Dedup, Purge) now carries an opt-in,
+same-screen multi-select: the operator checks one or more already-reviewed
+Pending rows/groups on a single workflow+mode screen and clicks "Apply
+Selected," which POSTs one `POST /api/proposals/apply-batch` request.
+
+Backend (`internal/api/proposals.go` + `internal/api/apply_batch_test.go`):
+skip-and-continue semantics — each item gets its own `applyByWorkflow` call,
+one failure never blocks the rest, every id gets an individual `ok/error`
+result in the response body (always 200). Sequential execution by design
+(avoids concurrent filesystem races on overlapping paths). `applyByWorkflow`
+refactored to return `([]PathChange, error)` so the caller accumulates
+committed mutations for a single per-mode `NotifyPlayers` call after the
+loop — grouping changes by mode so each mode's changes reach the correct
+mode-scoped players, not the last-built session. New
+`applyBatchRequest`/`applyBatchResponse`/`applyBatchResultItem` DTOs
+(`internal/apidto`). `apply_batch_test.go` covers partial-failure
+skip-and-continue, combined notify, and the committed-file/failed-DB-write
+partial-success rule (via a `markAppliedFailStore` test seam that can't be
+induced with a real store).
+
+Frontend: `useBulkSelection` hook (`workflowHooks.ts`) — `selectedIds`
+signal, toggle, toggleAll, clear (cleared on mode-switch/scan/act).
+`BatchResultSummary` shared component (`ui.tsx`) renders "N applied, M
+failed" with per-failed-item title + error. Rename/Purge gain a checkbox
+column + Select All header + "Apply Selected (N)" button; Dedup gains a
+per-card checkbox + "Apply Selected (N)" button that sends each card's
+existing `keepSel` keepIndex (winner-fallback for unselected cards, exactly
+matching single-item Apply). Purge's button is labeled "Delete Selected (N)"
+with the same `window.confirm` guard as single-item Purge. Old "no bulk
+affordance" tests updated to positive assertions; new tests cover selection,
+the apply-batch endpoint call, and partial-failure summary display.
+
+`CLAUDE.md` and `SEERR_SCOPE.md` record the principle change as an explicit,
+dated reversal with a cross-reference, not a silent edit. `.gitignore` gained
+an unanchored `.omc/` line so subdirectory OMC agent state is never swept
+into a commit.
+
 ### Clearer mount-disconnect error messaging — shipped 2026-07-11
 `library.ScanRootFolder`'s single error-return point (all four Rename/Dedup
 Scan call sites share it) now classifies the underlying OS error: a missing
@@ -491,24 +532,13 @@ CHANGELOG.md's "transactional multi-episode upserts" entry.
 The sidebar/SPA *shell* already shipped 2026-07-13 (see "Recently shipped"
 above) — this entry previously described the whole redesign, shell
 included, as not-yet-started, which was stale; corrected 2026-07-16 (same
-audit as the Whisparr-elimination fix above). What's genuinely still
-backlog is the mockup-driven *content* the shell was meant to eventually
-host: bulk apply's multi-select tables, the system dashboard, and
-Collections/structured tagging UI — see "UI mockup reference" below for
-the visual direction on all three, and their own backlog entries further
-down for scope detail. Scope decision (2026-07-10, still holds): build
-each wrapping SAK's *existing* data and workflows — do not treat the
-mockups as a literal feature spec.
-
-### Bulk apply
-A deliberate, considered reversal of "no apply-everything path anywhere, by
-design." Needs its own design pass: partial-failure handling per workflow
-(Rename/Dedup/Purge already have different single-item failure shapes —
-see `applyByWorkflow`'s doc comment in `internal/api/proposals.go` — a
-batch version needs to decide per-workflow whether one failure blocks the
-rest or skip-and-continue, and how that's surfaced in the UI), and an
-explicit update to `CLAUDE.md`'s stated principle once built (not a silent
-reversal).
+audit as the Whisparr-elimination fix above). Bulk apply's multi-select
+tables shipped 2026-07-17 (see "Recently shipped" below). What's genuinely
+still backlog is: the system dashboard and Collections/structured tagging
+UI — see "UI mockup reference" below for the visual direction on both, and
+their own backlog entries further down for scope detail. Scope decision
+(2026-07-10, still holds): build each wrapping SAK's *existing* data and
+workflows — do not treat the mockups as a literal feature spec.
 
 ### Unified downloader
 Consolidate qBittorrent and NZBGet the same way Radarr/Sonarr/Whisparr were

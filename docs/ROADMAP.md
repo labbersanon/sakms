@@ -169,6 +169,16 @@ organizational authority.
 
 ## Recently shipped (outside this backlog)
 
+### Collections — shipped (pre-2026-07-17; discovered complete during audit)
+`library_collections` table (migration `0031`), `UpsertCollection` +
+`SetItemCollection` on library.Store, `enrichMovieCollection` called
+post-Apply in `internal/api/proposals.go` to fetch `belongs_to_collection`
+from TMDB and record it on the newly-tracked movie row, `GET
+/api/modes/movies/collections` endpoint (`internal/api/collections.go`),
+`CollectionName` returned in the tracked-items API, and a `/collections`
+route with `Collections.tsx` screen in the sidebar. All complete before
+this session — entry was stale.
+
 ### Local .nfo preference for Movies/Series Rename — shipped 2026-07-17
 `internal/nfo` reads Kodi/Jellyfin `.nfo` sidecar files and provides an
 authoritative TMDB ID when present, skipping the fuzzy filename search and
@@ -719,18 +729,16 @@ started — no design, no client package, no schema.
   third-party mirror or scraping), judged not worth the complexity.
 - **Local `.nfo` preference** — shipped 2026-07-17, see "Recently shipped"
   below. Artwork reuse (local poster/fanart) remains open if it comes up.
-- **Collections** — TMDB has a native `belongs_to_collection` field on
-  movie details, the natural seed. Movies-only (Series has no TMDB
-  equivalent — same asymmetry pattern as Kids-root-path). Needs a new
-  `collections` table + item→collection FK + whatever UI surfaces it.
+- **Collections** — shipped (date unclear; already complete when audited
+  2026-07-17). See "Recently shipped" below.
 - **Structured Genre/Actor tagging** — shipped 2026-07-17, see "Recently shipped" below.
 
 ### Automation
 - **Watch folders (inotify)** — shipped 2026-07-17, see "Recently shipped" below.
-- **Background task queue** — the exact "scheduler infrastructure" CLAUDE.md
-  says doesn't exist, by design. Only build this if/when watch-folders
-  actually need it (so Scan doesn't block an HTTP handler) — no current
-  operation is slow enough to need it independently as of 2026-07-10.
+- **Background task queue** — not needed. Watch folders run `RunWatchFolders`
+  as a goroutine from `main.go` (confirmed 2026-07-17 during audit) — Scan
+  never blocks an HTTP handler. No current operation needs a queue. Revisit
+  only if a genuinely slow, user-triggered operation appears.
 - **Webhooks + real API docs** — the REST API already *is* the
   extensibility surface (the frontend uses the same endpoints a script
   would). Missing pieces: formal API docs (OpenAPI) and outbound webhooks

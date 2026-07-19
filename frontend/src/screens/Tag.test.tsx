@@ -13,7 +13,7 @@
 // refetch-after-mutation.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { TagEntry, TrackedItem } from "@dto";
 import { Tag } from "./Tag";
 
@@ -54,8 +54,15 @@ const item = (over: Partial<TrackedItem>): TrackedItem => ({
 });
 
 afterEach(() => {
+  // Unmount SolidJS components FIRST so pending createResource re-fetches
+  // (queued as microtasks by reactive mutations) don't fire after the fetch
+  // stub is removed — otherwise they'd hit real undici with a relative URL.
+  cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  // Grid-view tests persist view mode to localStorage; clear it so later tests
+  // don't inherit the grid preference and render unexpectedly in grid mode.
+  try { localStorage.clear(); } catch { /* jsdom may not support this */ }
 });
 
 describe("Tag — Movies (generic item-tag routes)", () => {
@@ -302,6 +309,201 @@ describe("Tag — endpoint SHAPE differs between Movies/Series and Adult", () =>
     expect(
       vocabGets.some((c) => c.url.match(/\/api\/modes\/adult\/tags(\?|$)/)),
     ).toBe(false);
+  });
+});
+
+describe("Tag — grid view (Movies/Series only)", () => {
+  // Baseline handler for a single tracked movie with metadata.
+  const makeHandler = (overrides: {
+    extraItems?: ReturnType<typeof item>[];
+    onPost?: (url: string) => Response;
+    onDelete?: (url: string) => Response;
+  } = {}) => {
+    const base: ReturnType<typeof item>[] = [
+      item({
+        id: 10,
+        title: "Inception",
+        tmdbId: 27205,
+        year: 2010,
+        genres: ["Sci-Fi", "Action"],
+        cast: ["Leonardo DiCaprio", "Tom Hardy"],
+        tags: ["hd"],
+      }),
+      ...(overrides.extraItems ?? []),
+    ];
+    return (url: string, init?: RequestInit): Response => {
+      if (url.includes("/api/modes/movies/tags")) return jsonResponse(vocab(["hd"]));
+      if (url.includes("/api/modes/movies/tracked")) return jsonResponse(base);
+      if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/series/tracked")) return jsonResponse([]);
+      if (url.includes("/api/modes/adult/scenes/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/adult/tracked")) return jsonResponse([]);
+      // poster endpoint — return empty path (no real poster in tests)
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && overrides.onPost) return overrides.onPost(url);
+      if (method === "DELETE" && overrides.onDelete) return overrides.onDelete(url);
+      throw new Error("unexpected fetch: " + url);
+    };
+  };
+
+  it("shows Grid and Table toggle for Movies but not for Adult", async () => {
+    stubFetch(makeHandler());
+    render(() => <Tag />);
+    // Toggle is rendered immediately for Movies (outside the loading gate).
+    expect(screen.getByText("Grid")).toBeInTheDocument();
+    expect(screen.getByText("Table")).toBeInTheDocument();
+    // Switch to Adult — toggle disappears.
+    fireEvent.click(await screen.findByText("Adult"));
+    await waitFor(() => expect(screen.queryByText("Grid")).toBeNull());
+  });
+
+  it("renders poster cards in grid view and opens detail panel on click", async () => {
+    stubFetch(makeHandler());
+    render(() => <Tag />);
+    fireEvent.click(screen.getByText("Grid"));
+
+    // Card is a button with aria-label = title.
+    const card = await screen.findByRole("button", { name: "Inception" });
+    expect(card).toBeInTheDocument();
+
+    // Click opens the detail panel.
+    fireEvent.click(card);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+    );
+    // Panel shows genres and cast section headers.
+    expect(screen.getByText("Genres")).toBeInTheDocument();
+    expect(screen.getByText("Cast")).toBeInTheDocument();
+    // Cast member names visible.
+    expect(screen.getByText("Leonardo DiCaprio")).toBeInTheDocument();
+    expect(screen.getByText("Tom Hardy")).toBeInTheDocument();
+  });
+
+  it("adds a tag from the detail panel via the GENERIC /items/{id}/tags route", async () => {
+    let added = false;
+    const calls = stubFetch(
+      makeHandler({
+        onPost: (url) => {
+          if (url.includes("/api/modes/movies/items/10/tags")) {
+            added = true;
+            return noContent();
+          }
+          throw new Error("unexpected POST: " + url);
+        },
+      }),
+    );
+    // Patch tracked to reflect the add after POST.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        calls.push({ url, method, body: init?.body ? JSON.parse(init.body as string) : undefined });
+        if (url.includes("/api/modes/movies/tags")) return jsonResponse(vocab(["hd"]));
+        if (url.includes("/api/modes/movies/tracked"))
+          return jsonResponse([
+            item({ id: 10, title: "Inception", tmdbId: 27205, tags: added ? ["hd", "fresh"] : ["hd"] }),
+          ]);
+        if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+        if (method === "POST" && url.includes("/api/modes/movies/items/10/tags")) {
+          added = true;
+          return noContent();
+        }
+        throw new Error("unexpected fetch: " + url);
+      }),
+    );
+
+    render(() => <Tag />);
+    fireEvent.click(screen.getByText("Grid"));
+    await screen.findByRole("button", { name: "Inception" });
+    fireEvent.click(screen.getByRole("button", { name: "Inception" }));
+
+    const addInput = await screen.findByLabelText("Add tag to Inception");
+    fireEvent.input(addInput, { target: { value: "fresh" } });
+    fireEvent.click(screen.getByText("Add"));
+
+    await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
+    const post = calls.find((c) => c.method === "POST")!;
+    expect(post.url).toContain("/api/modes/movies/items/10/tags");
+    expect(post.url).not.toContain("/scenes/");
+    expect(post.body).toEqual({ label: "fresh" });
+  });
+
+  it("removes a tag from the detail panel", async () => {
+    const calls = stubFetch(
+      makeHandler({
+        onDelete: (url) => {
+          if (url.includes("/api/modes/movies/items/10/tags/hd")) return noContent();
+          throw new Error("unexpected DELETE: " + url);
+        },
+      }),
+    );
+
+    render(() => <Tag />);
+    fireEvent.click(screen.getByText("Grid"));
+    await screen.findByRole("button", { name: "Inception" });
+    fireEvent.click(screen.getByRole("button", { name: "Inception" }));
+
+    // Panel's Remove button for the "hd" tag.
+    await waitFor(() =>
+      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByLabelText("Remove hd"));
+
+    await waitFor(() => expect(calls.some((c) => c.method === "DELETE")).toBe(true));
+    const del = calls.find((c) => c.method === "DELETE")!;
+    expect(del.url).toContain("/api/modes/movies/items/10/tags/hd");
+    expect(del.url).not.toContain("/scenes/");
+  });
+
+  it("search input filters visible cards by title", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([
+          item({ id: 1, title: "Inception", tmdbId: 1 }),
+          item({ id: 2, title: "Interstellar", tmdbId: 2 }),
+          item({ id: 3, title: "The Matrix", tmdbId: 3 }),
+        ]);
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Tag />);
+    fireEvent.click(screen.getByText("Grid"));
+
+    expect(await screen.findByRole("button", { name: "Inception" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Interstellar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "The Matrix" })).toBeInTheDocument();
+
+    fireEvent.input(screen.getByPlaceholderText("Search titles…"), {
+      target: { value: "inter" },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Inception" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Interstellar" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "The Matrix" })).toBeNull();
+    });
+  });
+
+  it("mode switch clears the detail panel selection", async () => {
+    stubFetch(makeHandler());
+    render(() => <Tag />);
+    fireEvent.click(screen.getByText("Grid"));
+    await screen.findByRole("button", { name: "Inception" });
+    fireEvent.click(screen.getByRole("button", { name: "Inception" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+    );
+
+    // Switch to Series — selection clears, panel closes.
+    fireEvent.click(screen.getByText("Series"));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Close detail panel")).toBeNull(),
+    );
   });
 });
 

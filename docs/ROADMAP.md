@@ -736,29 +736,24 @@ Evaluated and rejected: **gonzbee** (github.com/DanielMorsing/gonzbee) — has
 the right building blocks but is a CLI tool, not a library. No programmatic
 API surface. 21 stars, 2 forks, essentially unmaintained.
 
-Viable library candidates identified:
+No maintained Go NZB library exists. Every candidate evaluated is abandoned
+(2015–2016 vintage, single-digit stars): `strider-/go-usenet` (last commit
+2015), `gjrtimmer/nzb` (2016), `matthiassb/go-usenet` (2016), gonzbee (dead
+CLI). `andrewstuart/yenc` has a 2024 touch but is a single-file yEnc decoder,
+not a downloader stack.
 
-- **`strider-/go-usenet`** — the most complete lower-level stack: NNTP dial
-  (with TLS), authentication, yEnc binary decode, NZB parsing → download
-  queue, par2 stats/verification. Best single-package candidate for a native
-  implementation.
-- **`gjrtimmer/nzb`** — robust NZB XML parsing with automatic Article ID
-  escaped-character fixing (a real source of `430 Article not found` errors),
-  JSON save/load for state, par2 file-set handling. Recent activity.
-  Complementary to `strider-/go-usenet` or usable standalone if the NNTP
-  layer is built separately.
-- **`matthiassb/go-usenet`** — fork of gonzbee, full download workflow
-  reference (NZB parse → article fetch → par2). Less frequently updated but
-  useful as a reference implementation to read, not necessarily to depend on.
-- **`andrewstuart/yenc`** — dedicated yEnc encode/decode, if a standalone
-  layer is preferred over the yEnc bundled in `strider-/go-usenet`.
-- **`mrobinsn/go-newznab`** — Newznab indexer API client. Not needed for
-  downloads (Prowlarr already handles indexer search) but relevant if SAK
-  ever wants to talk to Newznab indexers directly without Prowlarr.
+Real options:
 
-Likely stack: `gjrtimmer/nzb` for parsing + `strider-/go-usenet` for
-NNTP/yEnc/par2, wired into a `internal/nzbdownloader` package mirroring the
-`internal/aria2` + `internal/downloader` pattern. No design started yet.
+1. **Keep NZBGet as an external process** — not the consolidation goal, but
+   NZBGet is actively maintained and works today. Lowest effort.
+2. **Build natively** — NNTP client (small; `net/textproto` is stdlib), yEnc
+   decoder (small; simple spec), NZB XML parser (trivial), par2 repair (hard,
+   or embed `par2cmdline` binary same pattern as aria2c). A few weeks of work
+   with no library to lean on.
+3. **Defer** — Usenet usage is declining; torrent-first is likely the right
+   sequencing.
+
+No design started. Decision needed before any implementation begins.
 
 ### Cheap, independent wins
 - **Clearer mount-disconnect error messaging** — shipped 2026-07-11, see

@@ -50,6 +50,7 @@ import { AdvancedSection } from "./Advanced";
 import { SectionSave } from "./shared";
 import { UISection } from "./UI";
 import { WebhooksSection } from "./Webhooks";
+import { NodesSection } from "./Nodes";
 
 // SECTION_TABS is the section-level tab set (distinct from the Movies/Series/
 // Adult mode selector). Connections is first so it is the default tab — that
@@ -61,6 +62,7 @@ const SECTION_TABS: TabDef[] = [
   { id: "ui", label: "UI" },
   { id: "auth", label: "Auth" },
   { id: "webhooks", label: "Webhooks" },
+  { id: "nodes", label: "Nodes" },
   { id: "advanced", label: "Advanced" },
 ];
 
@@ -129,6 +131,10 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
 
       <Show when={section() === "webhooks"}>
         <WebhooksSection />
+      </Show>
+
+      <Show when={section() === "nodes"}>
+        <NodesSection />
       </Show>
 
       <Show when={section() === "advanced"}>

@@ -46,6 +46,7 @@ import type {
   NetscanHostRequest,
   NetscanProwlarrKeyRequest,
   NetscanProwlarrKeyResponse,
+  NodesResponse,
   OIDCConfigRequest,
   OIDCStatusResponse,
   PHashThresholdRequest,
@@ -542,4 +543,10 @@ export function putWatchFoldersEnabled(enabled: boolean): Promise<void> {
     method: "PUT",
     body: JSON.stringify({ enabled }),
   });
+}
+
+// --- Worker nodes ----------------------------------------------------------
+
+export function fetchNodes(): Promise<NodesResponse> {
+  return api<NodesResponse>("/api/nodes");
 }

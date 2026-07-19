@@ -27,6 +27,7 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/library"
 	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/curtiswtaylorjr/sakms/internal/nodes"
 	"github.com/curtiswtaylorjr/sakms/internal/parseentity"
 	"github.com/curtiswtaylorjr/sakms/internal/phash"
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
@@ -81,6 +82,9 @@ func run() error {
 	// Rename's phash-first identification — a SEPARATE algorithm from `hasher`
 	// (internal/phash, Movies/Series Dedup); the two are not interchangeable.
 	videoHasher := videophash.New()
+	nodeReg := nodes.New()
+	phashDispatcher := nodes.NewDispatcher(nodeReg, nodes.JobTypePhash, hasher, 3*time.Minute)
+	videoDispatcher := nodes.NewDispatcher(nodeReg, nodes.JobTypeVideoPhash, videoHasher, 3*time.Minute)
 	settingsStore := settings.New(sqlDB)
 	grabsStore := grabs.New(sqlDB)
 	libStore := library.New(sqlDB)
@@ -173,7 +177,7 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, hasher, videoHasher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, nodeReg)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
 
 	// API-key management (status + regenerate) is session-protected like
@@ -293,7 +297,7 @@ func run() error {
 	// and triggers a Rename Scan automatically (never auto-Apply). Gated OFF
 	// by default (WatchFoldersEnabledKey = false). To remove entirely: delete
 	// internal/api/watchfolders.go and this line.
-	go api.RunWatchFolders(ctx, &http.Client{Timeout: outboundTimeout}, connStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
+	go api.RunWatchFolders(ctx, &http.Client{Timeout: outboundTimeout}, connStore, settingsStore, propStore, libStore, videoDispatcher, prober, entityStore)
 
 	select {
 	case err := <-errCh:

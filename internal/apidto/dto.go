@@ -1401,3 +1401,27 @@ type DownloaderConfig struct {
 	MaxConcurrent  int    `json:"maxConcurrent"`
 	MaxConnections int    `json:"maxConnections"`
 }
+
+// --- Worker nodes (worker-node feature) -------------------------------------
+//
+// GET /api/nodes returns the server's live view of connected worker nodes for
+// the Settings → Nodes tab. Status is derived server-side from heartbeat
+// freshness ("online" when within 90s, "offline" otherwise) so the client
+// never has to replicate that threshold. Capabilities is the hwaccel string
+// reported by the node at connect time (e.g. ["cuda"]). LastHeartbeat is
+// RFC3339.
+
+// NodeInfo is one connected (or recently disconnected) worker node as
+// returned by GET /api/nodes.
+type NodeInfo struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Status        string   `json:"status"`        // "online" | "offline"
+	Capabilities  []string `json:"capabilities"`  // hwaccels, e.g. ["cuda"]
+	LastHeartbeat string   `json:"lastHeartbeat"` // RFC3339
+}
+
+// NodesResponse is GET /api/nodes's response.
+type NodesResponse struct {
+	Nodes []NodeInfo `json:"nodes"`
+}

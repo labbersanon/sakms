@@ -1349,3 +1349,20 @@ export interface DownloaderConfig {
   maxConcurrent: number /* int */;
   maxConnections: number /* int */;
 }
+/**
+ * NodeInfo is one connected (or recently disconnected) worker node as
+ * returned by GET /api/nodes.
+ */
+export interface NodeInfo {
+  id: string;
+  name: string;
+  status: string; // "online" | "offline"
+  capabilities: string[]; // hwaccels, e.g. ["cuda"]
+  lastHeartbeat: string; // RFC3339
+}
+/**
+ * NodesResponse is GET /api/nodes's response.
+ */
+export interface NodesResponse {
+  nodes: NodeInfo[];
+}

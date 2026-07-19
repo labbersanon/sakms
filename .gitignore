@@ -22,7 +22,10 @@
 /internal/downloader/assets/aria2c
 
 /sakms
+/sakms-node
 /bin/
 
 /.omc/
 .omc/
+/.claude/
+.claude/

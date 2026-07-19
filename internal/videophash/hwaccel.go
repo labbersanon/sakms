@@ -28,6 +28,11 @@ func probeHWAccel(ctx context.Context) string {
 	return parseHWAccels(string(out))
 }
 
+// ProbeHWAccel runs ffmpeg -hwaccels once and returns the highest-priority
+// hardware decode method available ("cuda", "vaapi", or "" for CPU-only).
+// Exported so cmd/sakms-node can log and report the detected method.
+func ProbeHWAccel(ctx context.Context) string { return probeHWAccel(ctx) }
+
 // parseHWAccels parses ffmpeg's -hwaccels output and returns the first match
 // from the preference list cuda > vaapi, or "" if neither is present.
 func parseHWAccels(text string) string {

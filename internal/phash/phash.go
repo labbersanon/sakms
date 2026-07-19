@@ -18,9 +18,6 @@ import (
 	"fmt"
 	"image"
 	_ "image/png" // registers the PNG decoder image.Decode uses on runner output
-	"os/exec"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -37,9 +34,13 @@ type Hasher struct {
 	timeout time.Duration
 }
 
-// New returns a Hasher backed by the real ffmpeg binary.
+// New returns a Hasher backed by the real ffmpeg binary. Hardware acceleration
+// is detected once at construction time (cuda > vaapi) and used for each frame
+// decode with a transparent CPU fallback on any driver error. Frame extractions
+// run concurrently (up to 4 at once) regardless of hardware availability.
 func New() *Hasher {
-	return &Hasher{run: runFFmpeg, frames: Frames, timeout: 2 * time.Minute}
+	hw := probeHWAccel(context.Background())
+	return &Hasher{run: newRunner(hw), frames: Frames, timeout: 2 * time.Minute}
 }
 
 // Hash samples h.frames interior frames of the video at path, perceptually
@@ -79,70 +80,4 @@ func (h *Hasher) Hash(ctx context.Context, path string) (string, error) {
 		composite = append(composite, fh...)
 	}
 	return encode(Scheme, composite), nil
-}
-
-// runFFmpeg is the real runner: it probes the video's duration once, then
-// pulls `frames` evenly-spaced interior still frames — deliberately avoiding
-// the exact head/tail where intros, black frames, and credits collide across
-// unrelated films — as PNG bytes via ffmpeg. Deterministic: fixed seeks and a
-// fixed downscale mean the same file hashes identically twice. Both ffmpeg and
-// ffprobe are provided by the image's ffmpeg package (already a proven
-// dependency for ffprobe metadata reads); this is ffmpeg's first
-// frame-decode use in SAK.
-func runFFmpeg(ctx context.Context, path string, frames int) ([][]byte, error) {
-	duration, err := ffprobeDuration(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	if duration <= 0 {
-		return nil, fmt.Errorf("phash: %s reports no positive duration", path)
-	}
-
-	out := make([][]byte, 0, frames)
-	for i := 1; i <= frames; i++ {
-		t := duration * float64(i) / float64(frames+1)
-		png, err := ffmpegFrame(ctx, path, t)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, png)
-	}
-	return out, nil
-}
-
-func ffprobeDuration(ctx context.Context, path string) (float64, error) {
-	cmd := exec.CommandContext(ctx, "ffprobe",
-		"-v", "error",
-		"-show_entries", "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1",
-		path,
-	)
-	raw, err := cmd.Output()
-	if err != nil {
-		return 0, fmt.Errorf("phash: ffprobe duration of %s: %w", path, err)
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	d, err := strconv.ParseFloat(trimmed, 64)
-	if err != nil {
-		return 0, fmt.Errorf("phash: parsing duration %q of %s: %w", trimmed, path, err)
-	}
-	return d, nil
-}
-
-func ffmpegFrame(ctx context.Context, path string, t float64) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-ss", strconv.FormatFloat(t, 'f', 3, 64),
-		"-i", path,
-		"-frames:v", "1",
-		"-vf", "scale=32:32",
-		"-f", "image2",
-		"-vcodec", "png",
-		"-",
-	)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("phash: extracting frame at %.3fs from %s: %w", t, path, err)
-	}
-	return buf.Bytes(), nil
 }

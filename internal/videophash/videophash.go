@@ -83,9 +83,14 @@ type Hasher struct {
 	timeout time.Duration
 }
 
-// New returns a Hasher backed by the real ffmpeg/ffprobe binaries.
+// New returns a Hasher backed by the real ffmpeg/ffprobe binaries. Hardware
+// acceleration is detected once at construction time (cuda > vaapi) and used
+// for each frame decode with a transparent CPU fallback on any driver error.
+// Frame extractions run concurrently (up to 4 at once) regardless of hardware
+// availability.
 func New() *Hasher {
-	return &Hasher{probe: runFFprobeDuration, run: runFFmpegFrames, timeout: 2 * time.Minute}
+	hw := probeHWAccel(context.Background())
+	return &Hasher{probe: runFFprobeDuration, run: newRunner(hw), timeout: 2 * time.Minute}
 }
 
 // Hash computes the StashDB-compatible perceptual hash of the video at path and

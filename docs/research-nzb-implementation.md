@@ -366,16 +366,194 @@ for standard NZB downloading.)
 
 ---
 
+## Tensai75/nntp (github.com/Tensai75/nntp) — BSD-style, use as NNTP client layer
+
+Go NNTP client. Zero stars, last push 2026-05-01, zero dependencies, Go 1.16.
+**BSD-style license** (file header: "Copyright 2009 The Go Authors … BSD-style
+license"). GitHub reports NOASSERTION because there is no `LICENSE` file, but
+the source header is unambiguous.
+
+This is essentially the old `code.google.com/p/nntp` package — the NNTP client
+that was once part of the extended Go standard library — with minor additions.
+Tensai75 has kept it updated. The code is well-known and well-tested.
+
+### What it provides
+
+Single `*Conn` type wrapping a `net.Conn` + `*bufio.Reader`. All NNTP commands
+SAK needs for downloading are present:
+
+| Method | Notes |
+|---|---|
+| `Dial(network, addr)` | Plain TCP connection |
+| `DialTLS(network, addr, config)` | TLS connection |
+| `Authenticate(user, pass)` | AUTHINFO USER/PASS sequence |
+| `ModeReader()` | Switches mode-switching servers to reader mode |
+| `Group(name)` | `GROUP` command — returns number/low/high |
+| `Body(id)` → `io.Reader` | `BODY <msg-id>` — most efficient for yEnc download |
+| `Article(id)` → `*Article` | `ARTICLE` — headers + body |
+| `Head(id)` → `*Article` | `HEAD` — headers only |
+| `Overview(begin, end)` | `OVER/XOVER` with fallback — article metadata range |
+| `Stat(id)` | Existence check, no data transfer |
+| `Quit()` | Closes connection |
+
+`Body()` is what SAK needs: issue `BODY <message-id>`, get back an `io.Reader`
+that dot-unstuffs and terminates on `.CRLF`, pipe directly into `rapidyenc.NewDecoder`.
+
+### What it lacks (write on top)
+
+- **Connection pool:** single `*Conn`, no concurrency. Write a pool using a
+  buffered channel (go-pugleaf's `BackendConn + Pool` pattern, section above)
+  wrapping `Tensai75/nntp.Conn`.
+- **Automatic reconnect:** broken connections must be detected and discarded;
+  never `Put()` a failed conn back. Already the natural pattern with a channel pool.
+- **Error sentinels:** `Conn.cmd()` returns `Error{Code, Msg}` on bad response
+  codes. Wrap 430 → `ErrArticleNotFound`, 451 → `ErrArticleRemoved`.
+
+### Usage pattern
+
+```go
+import "github.com/Tensai75/nntp"
+
+c, err := nntp.DialTLS("tcp", "news.example.com:563", nil)
+if err != nil { ... }
+if err := c.Authenticate(user, pass); err != nil { ... }
+c.ModeReader() // ignore error — not all servers need it
+
+body, err := c.Body("<" + messageID + ">")
+// body is io.Reader — pipe directly to rapidyenc.NewDecoder(body)
+```
+
+### vs. building from scratch
+
+Using `Tensai75/nntp` instead of `net/textproto` from scratch saves ~200 lines
+of protocol parsing (response code parsing, dot-unstuffing, header key/value
+folding). The pool + error-sentinel layer must be written either way. For SAK,
+**use this library as the NNTP wire layer and write only the pool on top.**
+
+---
+
+## go-newsgroups/par2 (github.com/go-newsgroups/par2) — BSD-3-Clause, use directly
+
+Pure-Go PAR2: parse + verify + repair, all `CGO_ENABLED=0`. 0 stars, last push
+**2026-07-11** (actively maintained). BSD-3-Clause, Go 1.26.4. One dependency:
+`github.com/go-erasure/reedsolomon` (GF(2^16) math — no CGO).
+
+**This replaces both `par2cron` (parse/verify) AND the `par2cmdline` binary
+embed (repair).** No external binary needed for any part of the PAR2 pipeline.
+
+### API
+
+```go
+// Parse one or more .par2 blobs (concatenated packets from possibly multiple
+// .par2 files — pass all of them as separate args or a single concatenated blob).
+rs, err := par2.Parse(blob1, blob2, ...)
+// rs.Files     []FileSpec      — recovery-set files, in Main-packet order
+// rs.Recovery  []RecoverySlice — available recovery slices
+// rs.SliceSize uint64
+
+// Hash-based verification (MD5+CRC32 per slice — independent of Reed-Solomon).
+files := map[string][]byte{
+    "archive.nfo": nfoBytes,
+    "archive.rar": rarBytes,
+    // missing files are simply absent from the map
+}
+result, err := rs.Verify(files)
+// result.Complete   bool   — all files present and correct
+// result.Repairable bool   — missing/damaged slices <= available recovery slices
+// result.Files      []FileStatus
+
+// Reed-Solomon repair over GF(2^16).
+if !result.Complete && result.Repairable {
+    repaired, err := rs.Repair(files)
+    // repaired: map[filename][]byte — only the reconstructed files
+    for name, data := range repaired {
+        os.WriteFile(name, data, 0o644)
+    }
+}
+```
+
+### Key types
+
+```go
+type FileSpec struct {
+    ID      [16]byte
+    Name    string
+    Length  uint64
+    FullMD5 [16]byte
+    Slices  []SliceChecksum // per-slice MD5+CRC32 from IFSC packet
+}
+
+type VerifyResult struct {
+    Complete   bool
+    Files      []FileStatus
+    Repairable bool
+}
+
+type FileStatus struct {
+    Name          string
+    Present       bool
+    Damaged       bool
+    MissingSlices []int // global slice indices
+}
+
+// Errors:
+var ErrNoMainPacket  = errors.New("par2: no main packet found")
+var ErrNotRepairable = errors.New("par2: not enough recovery slices to repair")
+```
+
+### Repair implementation
+
+`Repair()` calls `Verify()` internally to identify missing/damaged slices, then
+solves a u×u system (u = number of missing slices) via Gauss-Jordan elimination
+over GF(2^16). This is the Vandermonde RS scheme from the PAR2 spec. The
+coefficient matrix is built from the recovery slice exponents.
+
+### Important caveat — interoperability not yet validated
+
+The library is validated by self-consistent round-trip (`Create → damage →
+Repair` → bytes match originals), but **byte-exact interoperability with
+recovery data produced by `par2cmdline` or QuickPar has NOT been tested against
+those tools.** Real-oracle validation is on the project's planned follow-up list.
+
+For SAK this means: a par2 repair path built on this library should be treated
+as best-effort until someone validates it against a real NZB download's `.par2`
+files. The verify path (hash-based MD5+CRC32) is spec-correct and safe; the
+repair path carries a small unknown risk on real-world data until tested.
+
+Mitigation strategy: keep the repair step optional and not a hard gate for the
+initial implementation. If repair fails (`ErrNotRepairable` or produces an
+output that still fails `Verify`), report the failure clearly rather than
+silently accepting corrupt output.
+
+### vs. par2cron + par2cmdline binary embed
+
+| | par2cron + par2cmdline embed | go-newsgroups/par2 |
+|---|---|---|
+| Parse/verify | MIT, borrow `internal/par2` + `internal/verify` | ✓ included |
+| Repair | embed `par2cmdline` binary (~2 MB), platform-specific | ✓ pure Go, no binary |
+| CGO | none needed | none needed |
+| License | MIT + GPL (par2cmdline) | BSD-3-Clause throughout |
+| Interoperability | proven (par2cmdline is the reference) | unvalidated on real files |
+| `//go:embed` binary | required | not required |
+
+**Recommendation:** use `go-newsgroups/par2` as the primary path; its elimination
+of the binary embed is a meaningful simplification. The interop caveat is a
+known gap to validate before calling native PAR2 repair production-ready.
+
+---
+
 ## Revised native implementation stack
 
 | Layer | Approach | Source |
 |---|---|---|
-| NNTP client + pool | Build from scratch using `net/textproto` | Reference: go-pugleaf `internal/nntp` (GPL — read, don't copy) |
+| NNTP client | `github.com/Tensai75/nntp` (wire layer) + write connection pool on top | BSD-style (Go Authors); pool pattern from go-pugleaf (GPL — read, don't copy) |
 | NZB XML parsing | `encoding/xml` stdlib | Trivial; no library needed |
-| **yEnc decoding** | **rapidyenc** | **MIT, `CGO_ENABLED=0` safe, borrow directly** |
-| PAR2 parse + verify | Borrow from par2cron `internal/par2` + `internal/verify` | MIT — copy directly |
-| PAR2 repair | Embed `par2cmdline` binary | Same `//go:embed` + `cmd/download-par2cmdline` pattern as aria2c |
+| **yEnc decoding** | **rapidyenc** | **MIT, `CGO_ENABLED=0` safe, use directly** |
+| **PAR2 parse + verify + repair** | **go-newsgroups/par2** | **BSD-3-Clause, pure Go, no binary embed; interop caveat — see section above** |
 | X-DNZB-* headers | Read from HTTP response when fetching NZB URL | See nzbunity section above |
+
+*Previous stack used par2cron (MIT) + par2cmdline binary embed. Replaced by
+go-newsgroups/par2, eliminating the binary embed entirely.*
 
 ---
 
@@ -385,3 +563,5 @@ for standard NZB downloading.)
   Native is weeks of work even with the above references.
 - Multi-server support from day one, or single-server first?
 - par2 repair: optional (skip if no .par2 files) or always-required gate?
+- go-newsgroups/par2 real-oracle validation: test against a real Usenet download's
+  .par2 files before treating repair as production-ready.

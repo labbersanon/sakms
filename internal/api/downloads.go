@@ -51,9 +51,7 @@ func toDTODownload(d downloader.Download) apidto.Download {
 	}
 }
 
-// toUsenetDTODownload maps a usenet.Download to the wire DTO. Mirrors
-// toDTODownload — both types carry the same logical fields even though they
-// are distinct Go types.
+// toUsenetDTODownload maps a usenet.Download to the wire DTO. Mirrors toDTODownload.
 func toUsenetDTODownload(d usenet.Download) apidto.Download {
 	name := d.Filename
 	if name != "" {
@@ -172,82 +170,53 @@ func writeSSEData(w http.ResponseWriter, flusher http.Flusher, v any) {
 	flusher.Flush()
 }
 
-// cancelDownloadHandler cancels and removes a download. Routes usenet GIDs
-// (prefix "nzb-") to the usenet engine; all others to the torrent engine.
+// routeGIDAction routes a single-GID download action to the correct engine by
+// GID prefix ("nzb-" → usenet; anything else → torrent). Returns true on
+// success, false (with the error already written) on failure.
+func routeGIDAction(w http.ResponseWriter, r *http.Request, dl *downloader.Manager, nzb *usenet.Manager, dlFn, nzbFn func(string) error) bool {
+	gid := r.PathValue("gid")
+	var err error
+	if strings.HasPrefix(gid, "nzb-") {
+		if nzb == nil {
+			http.Error(w, "the usenet engine isn't running", http.StatusServiceUnavailable)
+			return false
+		}
+		err = nzbFn(gid)
+	} else {
+		if dl == nil {
+			http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
+			return false
+		}
+		err = dlFn(gid)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return false
+	}
+	return true
+}
+
 func cancelDownloadHandler(dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		gid := r.PathValue("gid")
-		var err error
-		if strings.HasPrefix(gid, "nzb-") {
-			if nzb == nil {
-				http.Error(w, "the usenet engine isn't running", http.StatusServiceUnavailable)
-				return
-			}
-			err = nzb.Cancel(gid)
-		} else {
-			if dl == nil {
-				http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
-				return
-			}
-			err = dl.Cancel(gid)
+		if routeGIDAction(w, r, dl, nzb, dl.Cancel, nzb.Cancel) {
+			w.WriteHeader(http.StatusNoContent)
 		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-// pauseDownloadHandler pauses an active download. Routes by GID prefix.
 func pauseDownloadHandler(dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		gid := r.PathValue("gid")
-		var err error
-		if strings.HasPrefix(gid, "nzb-") {
-			if nzb == nil {
-				http.Error(w, "the usenet engine isn't running", http.StatusServiceUnavailable)
-				return
-			}
-			err = nzb.Pause(gid)
-		} else {
-			if dl == nil {
-				http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
-				return
-			}
-			err = dl.Pause(gid)
+		if routeGIDAction(w, r, dl, nzb, dl.Pause, nzb.Pause) {
+			w.WriteHeader(http.StatusNoContent)
 		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-// resumeDownloadHandler unpauses a paused download. Routes by GID prefix.
 func resumeDownloadHandler(dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		gid := r.PathValue("gid")
-		var err error
-		if strings.HasPrefix(gid, "nzb-") {
-			if nzb == nil {
-				http.Error(w, "the usenet engine isn't running", http.StatusServiceUnavailable)
-				return
-			}
-			err = nzb.Resume(gid)
-		} else {
-			if dl == nil {
-				http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
-				return
-			}
-			err = dl.Resume(gid)
+		if routeGIDAction(w, r, dl, nzb, dl.Resume, nzb.Resume) {
+			w.WriteHeader(http.StatusNoContent)
 		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

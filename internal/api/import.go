@@ -20,13 +20,13 @@ import (
 )
 
 // DownloadCompleteImporter returns the downloader Manager's onComplete
-// callback: when aria2 finishes a download (identified by GID), it finds the
-// owning grab, runs the shared import core (relocate + library upsert),
-// notifies the mode's downstream player, runs the advisory post-grab runtime
-// review, and flips the grab to Imported. Built in cmd/sakms and handed to
-// downloader.Manager.SetOnComplete — it's the automatic counterpart to the
-// manual check-import handler, so a grab typically imports itself the instant
-// aria2 completes.
+// callback: when the torrent engine finishes a download (identified by GID),
+// it finds the owning grab, runs the shared import core (relocate + library
+// upsert), notifies the mode's downstream player, runs the advisory post-grab
+// runtime review, and flips the grab to Imported. Built in cmd/sakms and
+// handed to downloader.Manager.SetOnComplete — it's the automatic counterpart
+// to the manual check-import handler, so a grab typically imports itself the
+// instant the torrent engine completes.
 //
 // Every failure path is log-only: this runs in the Manager's background
 // goroutine with no HTTP response to write, and a completed download that

@@ -362,9 +362,8 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 }
 
 // buildUsenetManager reads the "nntp" connection from connStore and constructs
-// a usenet.Manager. Returns (nil, nil) when no NNTP server has been configured
-// — usenet grabbing stays unavailable until the operator adds one via
-// PUT /api/connections/nntp. Same lifecycle pattern as buildDownloader.
+// a usenet.Manager. Returns (nil, nil) when no NNTP server has been configured.
+// Same lifecycle pattern as buildDownloader.
 func buildUsenetManager(ctx context.Context, dataDir string, connStore *connections.Store, settingsStore *settings.Store, httpClient *http.Client) (*usenet.Manager, error) {
 	c, err := connStore.Get(ctx, "nntp")
 	if err != nil {

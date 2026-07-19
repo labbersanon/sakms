@@ -683,28 +683,66 @@ further down for scope detail. Scope decision (2026-07-10, still holds):
 build each wrapping SAK's *existing* data and workflows — do not treat the
 mockups as a literal feature spec.
 
-### Unified downloader
-Consolidate qBittorrent and NZBGet the same way Radarr/Sonarr/Whisparr were
-already displaced (see `CLAUDE.md`'s Mission) — SAK owns the actual
-torrent/usenet download itself instead of depending on an external client
-for that one step. Today `internal/qbittorrent`/`internal/nzbget` are thin
-clients against a separately-run app the operator must install, configure
-(URL + username/password), and keep online; `dispatchToDownloadClient`
-(`internal/api/search.go`) picks one based on the release's protocol
-(torrent vs. Usenet) purely because two different external apps speak two
-different protocols — not because SAK actually needs two of anything.
-A real design needs: a torrent engine (embedding one, e.g. a Go BitTorrent
-library, vs. shelling out) and a Usenet/NZB downloader (connection pooling,
-`yenc` decode, par2 repair — a bigger lift than torrent), a unified
-queue/status model replacing today's per-client polling
-(`internal/qbittorrent`/`internal/nzbget`'s own status calls), and a
-decision on whether both protocols are worth owning at once or whether one
-ships first. Flagged 2026-07-14 while building auto-grab's "service isn't
-configured" setup prompts (Discover's `GrabError` — see CHANGELOG) made the
-two-separate-external-apps friction concrete: an operator hits this dance
-twice (Prowlarr for search, then qBittorrent *or* NZBGet for the actual
-download) before a single one-click grab can complete end-to-end. Not
-started — no design, no client package, no schema.
+### Unified downloader — torrent shipped; torrent engine migration + Usenet still open
+
+**Shipped 2026-07-18 (torrent only, commits `c3a3526`+`5eeae1f`):** SAK now
+owns torrent downloads directly — no external qBittorrent required. An aria2c
+static binary is bundled in the Go binary at build time (`//go:embed
+assets/aria2c`, fetched by `cmd/download-aria2c` from abcfy2/aria2-static-build
+v1.37.0). `internal/aria2` is a JSON-RPC client; `internal/downloader.Manager`
+manages the subprocess lifecycle (spawn, restart-on-exit with exponential
+backoff, log forwarding), polls aria2 every 750 ms, and fans out live
+download-queue snapshots to an SSE hub (`GET /api/downloads/stream`). The
+Downloads screen (`frontend/src/screens/Downloads.tsx`) shows per-download
+filename, progress bar, speed, ETA, status badge, and Pause/Resume/Cancel
+buttons. On GID completion, `DownloadCompleteImporter` runs the same
+staging→library move as the old NZBGet/qBittorrent import path. NZB/Usenet
+grabs return an explicit `400` ("usenet/NZB downloads aren't supported by the
+aria2 backend yet") rather than silently failing.
+
+**Still open — two independent follow-ons:**
+
+**1. Replace aria2c subprocess with anacrolix/torrent (in-process engine)**
+
+The aria2c approach works but carries real costs compared to a pure-Go
+in-process library:
+
+| Dimension | aria2c subprocess (current) | anacrolix/torrent |
+|---|---|---|
+| Binary bundling | `cmd/download-aria2c` + `//go:embed` + Docker fetch step | Just `go get` — none of that |
+| Process management | ~200 lines spawn/restart/backoff/log-forwarding | In-process — zero |
+| Progress model | 750 ms polling over JSON-RPC | `t.SubscribePieceStateChanges()` — event-driven |
+| Platform support | Linux/amd64 only (hard error on other arches) | Any Go platform |
+| RPC secret | Auto-generated, stored in `internal/secrets` | None — no auth surface |
+| Per-file progress | Not native; aria2 reports file list at completion | `t.Files()[i].BytesCompleted()` real-time |
+
+anacrolix/torrent (github.com/anacrolix/torrent): pure Go, MPL-2.0,
+production-grade since 2014 (used by Gopeed, bitmagnet, Erigon). 6k stars.
+Supports DHT, PEX, uTP, WebTorrent, WebSeeds, BitTorrent v2, rate limiting,
+multiple storage backends. The refactor scope: delete `cmd/download-aria2c`,
+`internal/downloader/embed.go`, `internal/aria2`; replace
+`internal/downloader`'s subprocess+poll loop with an in-process client +
+piece-change-driven SSE hub; `internal/api/downloads.go` minor updates (GID
+becomes `*torrent.Torrent` handle). The SSE fan-out shape stays identical.
+
+**2. Usenet/NZB native support**
+
+The NZB path still returns 400. A real Usenet implementation needs: NNTP
+connection pooling (multi-server, TLS), yEnc segment decoding, par2 repair
+(optional but expected). This is a meaningfully bigger lift than the torrent
+side — par2 repair alone is non-trivial.
+
+Candidate evaluated and rejected: **gonzbee** (github.com/DanielMorsing/gonzbee)
+— has the right building blocks (NNTP, NZB parser, yEnc, par2) but is a CLI
+tool, not a library. No programmatic API surface. 21 stars, 2 forks,
+essentially unmaintained. Forking and rewiring its internals would be more work
+than writing clean packages against spec. Not the right path.
+
+Actual path: either find a maintained Go NNTP/yEnc/par2 library combination, or
+build the pieces natively (NNTP client + yEnc decoder are small; par2 repair is
+the real cost). Decide whether to build against a third-party par2 binary (same
+pattern as the current aria2c embed) or implement repair natively. No design
+started yet.
 
 ### Cheap, independent wins
 - **Clearer mount-disconnect error messaging** — shipped 2026-07-11, see

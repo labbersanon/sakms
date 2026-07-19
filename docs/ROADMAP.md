@@ -165,13 +165,18 @@ false-positive risk for Movies). `PHashSimilarity float64` on
 header. Commit `50dd970`.
 
 **Still open (next slices):**
-- **GPU frame decoding.** CPU baseline shipped; GPU (QuickSync/NVENC) as an
-  opt-in speedup for frame decoding is still just a decided-in-principle idea.
 - **PDQ is still pending an imghash tagged release.** The algorithm is isolated
   behind `internal/phash/algo.go` as a one-file swap point, but imghash's
   latest tag (v1.1.0) has no PDQ — it lives only on the unreleased `main`
   branch, and pinning a deletion-gating signal to untagged upstream was
   rejected. Swap PHash→PDQ once imghash tags a release containing it.
+
+**Shipped 2026-07-19: GPU frame decoding.** Concurrent frame extraction
+(errgroup, limit 4) replaces the sequential N-subprocess loop in both
+`internal/phash` and `internal/videophash`. Hardware acceleration (cuda >
+vaapi) is probed once at `New()` time via `ffmpeg -hwaccels`; each decode
+retries CPU transparently on driver error. The injected runner seam is
+unchanged — unit tests are unaffected. Commit `29a56f3`.
 
 ---
 

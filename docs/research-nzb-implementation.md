@@ -280,12 +280,89 @@ to the binary. The repair arithmetic (GF(2^16)) is not implemented in Go.
 
 ---
 
+## rapidyenc (github.com/mnightingale/rapidyenc) — MIT, use directly
+
+High-performance Go yEnc decoder/encoder. 7 stars, last push 2026-07-11.
+**MIT license. Works with `CGO_ENABLED=0`.** This is the yEnc layer for SAK.
+
+### CGO situation — not a problem
+
+The library has three decode implementations selected by build tags:
+
+| Build tag | Implementation |
+|---|---|
+| CGO enabled | C library via cgo (fastest — AVX2/SIMD) |
+| `!cgo && goexperiment.simd && amd64` | Experimental Go SIMD (AVX2 port) |
+| `!cgo && !(goexperiment.simd && amd64)` | Pure Go generic scalar |
+
+SAK builds with `CGO_ENABLED=0` and no `GOEXPERIMENT` — it gets the pure Go
+generic scalar path automatically. The build compiles clean, zero config needed.
+The SIMD path can be unlocked later if throughput becomes a bottleneck.
+
+### API
+
+```go
+// Streaming decode from an NNTP body reader (handles dot-unstuffing + ".\r\n")
+dec := rapidyenc.NewDecoder(r)
+response, err := dec.Next()
+// response.Data: decoded bytes
+// response.Metadata: Meta{FileName, FileSize, PartNumber, TotalParts, Offset, PartSize}
+// Errors: ErrDataMissing, ErrDataCorruption, ErrCrcMismatch
+
+// When the NNTP status line (e.g. "222 Body follows") is already consumed:
+dec := rapidyenc.NewDecoder(r, rapidyenc.WithStatusLineAlreadyRead())
+
+// Memory pool for concurrent downloading (reduces GC pressure):
+dec := rapidyenc.NewDecoder(r, rapidyenc.WithDataFunc(func() []byte {
+    return pool.Get().([]byte)
+}))
+```
+
+### Meta struct
+
+```go
+type Meta struct {
+    FileName   string
+    FileSize   int64   // total file size across all parts
+    PartNumber int64
+    TotalParts int64
+    Offset     int64   // byte offset within file (for io.WriterAt reassembly)
+    PartSize   int64   // size of this part's decoded data
+}
+```
+
+`Offset` + `PartSize` is exactly what's needed to write each decoded article
+segment to the right position in a pre-allocated file via `io.WriterAt` — no
+in-memory assembly of parts.
+
+### Error handling
+
+```go
+var (
+    ErrDataMissing    = errors.New("no binary data")        // article had no yEnc body
+    ErrDataCorruption = errors.New("data corruption detected") // truncated before =yend
+    ErrCrcMismatch    = errors.New("crc32 mismatch")        // corruption detected
+)
+```
+
+CRC mismatch means the segment is corrupt — try a fallback server or mark as
+failed. `ErrDataMissing` means the article was text-only or not yEnc-encoded.
+
+### Dependencies
+
+`golang.org/x/sync` and `testify` only. No native/platform libs in the pure-Go
+path — the pre-compiled `.a` blobs are only linked when CGO is enabled.
+
+---
+
 ## go-yEnc-FPE (pkg.go.dev/github.com/Tensai75/go-yEnc-FPE) — NOT USEFUL
 
 **Not a yEnc decoder.** It is an AES-FF1 Format-Preserving Encryption library
 for already-encoded yEnc blocks — it encrypts/decrypts yEnc structure while
 preserving format compatibility. No yEnc encode or decode is performed. Zero
-relevance for NZB downloading.
+relevance for NZB downloading. (The `yenc-encryption-standards` repo from the
+same author is the spec document for this encryption scheme — equally irrelevant
+for standard NZB downloading.)
 
 ---
 
@@ -295,7 +372,7 @@ relevance for NZB downloading.
 |---|---|---|
 | NNTP client + pool | Build from scratch using `net/textproto` | Reference: go-pugleaf `internal/nntp` (GPL — read, don't copy) |
 | NZB XML parsing | `encoding/xml` stdlib | Trivial; no library needed |
-| yEnc decoding | Build from scratch | Spec: https://www.yenc.org/yenc-draft.1.3.txt — small, well-defined |
+| **yEnc decoding** | **rapidyenc** | **MIT, `CGO_ENABLED=0` safe, borrow directly** |
 | PAR2 parse + verify | Borrow from par2cron `internal/par2` + `internal/verify` | MIT — copy directly |
 | PAR2 repair | Embed `par2cmdline` binary | Same `//go:embed` + `cmd/download-par2cmdline` pattern as aria2c |
 | X-DNZB-* headers | Read from HTTP response when fetching NZB URL | See nzbunity section above |

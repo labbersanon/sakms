@@ -37,6 +37,10 @@ COPY . .
 # cutover removed the old tracked static/index.html), so the embed content
 # comes only from here; without this COPY, //go:embed static fails cleanly.
 COPY --from=frontend /src/internal/web/static ./internal/web/static
+# Fetch the static aria2c binary so //go:embed assets/aria2c resolves.
+# Docker equivalent of `make aria2c`; network is available during build.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go run ./cmd/download-aria2c
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -o /out/sakms ./cmd/sakms

@@ -9,15 +9,16 @@ import (
 	"testing"
 )
 
-// TestUpsertConnection_SucceedsWithoutURL confirms any service can be saved
-// with no `url` in the request body — URL is never required.
-func TestUpsertConnection_SucceedsWithoutURL(t *testing.T) {
+// TestUpsertConnection_FixedURLServicesRequireNoURL confirms that fixed-URL
+// services (tmdb, tvdb, stashdb, fansdb, tpdb) can be saved without a url
+// field — their base URL is a hardcoded package constant, not operator-supplied.
+func TestUpsertConnection_FixedURLServicesRequireNoURL(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil))
 	defer srv.Close()
 
 	key := "some-api-key"
-	for _, service := range []string{"tmdb", "stashdb", "fansdb", "tpdb", "prowlarr", "radarr"} {
+	for service := range fixedURLServices {
 		body, _ := json.Marshal(upsertConnectionRequest{APIKey: &key})
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/connections/"+service, bytes.NewReader(body))
 		resp, err := http.DefaultClient.Do(req)
@@ -26,7 +27,29 @@ func TestUpsertConnection_SucceedsWithoutURL(t *testing.T) {
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusNoContent {
-			t.Errorf("expected 204 saving %s without a url, got %d", service, resp.StatusCode)
+			t.Errorf("expected 204 saving fixed-URL service %s without a url, got %d", service, resp.StatusCode)
+		}
+	}
+}
+
+// TestUpsertConnection_NonFixedURLServiceRequiresURL confirms that services
+// with operator-supplied URLs (e.g. prowlarr) return 400 when saved without one.
+func TestUpsertConnection_NonFixedURLServiceRequiresURL(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil))
+	defer srv.Close()
+
+	key := "some-api-key"
+	for _, service := range []string{"prowlarr", "qbittorrent", "jellyfin", "stash", "ollama"} {
+		body, _ := json.Marshal(upsertConnectionRequest{APIKey: &key})
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/connections/"+service, bytes.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT %s failed: %v", service, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 saving %s without a url, got %d", service, resp.StatusCode)
 		}
 	}
 }

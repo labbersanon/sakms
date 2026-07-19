@@ -125,10 +125,19 @@ func deleteWebhookHandler(whStore *webhooks.Store) http.HandlerFunc {
 
 func testWebhookHandler(whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Fire a test event to the subscribed events of the given webhook, or
-		// all event types if none are configured, so the operator can verify
-		// delivery. The test does not require the webhook to be enabled.
-		whStore.Dispatch("webhook.test", map[string]string{"message": "SAK webhook test"})
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := whStore.SendTest(r.Context(), id, map[string]string{"message": "SAK webhook test"}); err != nil {
+			if errors.Is(err, webhooks.ErrNotFound) {
+				http.Error(w, "not found", http.StatusNotFound)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

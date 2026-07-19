@@ -2,148 +2,24 @@ package downloader
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/curtiswtaylorjr/sakms/internal/aria2"
 )
 
-// fakeAria2 is a minimal JSON-RPC server that returns a scripted tellActive/
-// tellStopped result, so the Manager's poll loop and onComplete callback can
-// be driven without a real aria2c subprocess.
-type fakeAria2 struct {
-	mu      sync.Mutex
-	stopped []map[string]any // what tellStopped returns
-	active  []map[string]any // what tellActive returns
-}
-
-func (f *fakeAria2) setActive(a []map[string]any)  { f.mu.Lock(); f.active = a; f.mu.Unlock() }
-func (f *fakeAria2) setStopped(s []map[string]any) { f.mu.Lock(); f.stopped = s; f.mu.Unlock() }
-
-func (f *fakeAria2) handler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string `json:"method"`
-		}
-		json.NewDecoder(r.Body).Decode(&req)
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		var result any
-		switch req.Method {
-		case "aria2.tellActive":
-			result = f.active
-		case "aria2.tellStopped":
-			result = f.stopped
-		case "aria2.tellWaiting":
-			result = []map[string]any{}
-		default:
-			result = "ok"
-		}
-		raw, _ := json.Marshal(result)
-		json.NewEncoder(w).Encode(map[string]any{"result": json.RawMessage(raw)})
-	}
-}
-
-// newTestManager builds a Manager whose RPC client points at srv (never
-// launching a real subprocess — Start is not called in these tests; the poll
-// loop is driven directly).
-func newTestManager(t *testing.T, srvURL string, onComplete func(string, []string)) *Manager {
-	t.Helper()
-	m := &Manager{
-		rpc:         aria2.New(aria2.Config{Endpoint: srvURL}, http.DefaultClient),
-		http:        http.DefaultClient,
-		onComplete:  onComplete,
-		subscribers: map[int]chan []aria2.Download{},
-		lastByGID:   map[string]seen{},
-	}
-	return m
-}
-
-func TestManager_OnCompleteFiresOncePerCompletion(t *testing.T) {
-	fake := &fakeAria2{}
-	srv := httptest.NewServer(fake.handler())
-	defer srv.Close()
-
-	var mu sync.Mutex
-	var completedGIDs []string
-	var completedFiles [][]string
-	done := make(chan struct{}, 1)
-	m := newTestManager(t, srv.URL, func(gid string, files []string) {
-		mu.Lock()
-		completedGIDs = append(completedGIDs, gid)
-		completedFiles = append(completedFiles, files)
-		mu.Unlock()
-		select {
-		case done <- struct{}{}:
-		default:
-		}
+// TestManager_Subscribe_FanoutsOnSeededState verifies that a subscriber
+// receives a snapshot as soon as the poll loop detects state that differs from
+// its empty initial baseline.
+func TestManager_Subscribe_FanoutsOnSeededState(t *testing.T) {
+	m := NewForTesting("")
+	m.SeedState(Download{
+		GID:    "g1",
+		Status: "active",
+		Files:  []string{"/staging/a.mkv"},
 	})
 
-	// Start active, then complete: the item first appears active, then moves
-	// to stopped as "complete" — onComplete should fire exactly once.
-	fake.setActive([]map[string]any{{
-		"gid": "abc", "status": "active", "totalLength": "100", "completedLength": "50",
-		"files": []map[string]any{{"path": "/staging/movie.mkv"}},
-	}})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go m.pollLoop(ctx)
-
-	// Let a couple of active polls happen (no completion yet).
-	time.Sleep(2 * pollInterval)
-	mu.Lock()
-	if len(completedGIDs) != 0 {
-		mu.Unlock()
-		t.Fatalf("onComplete fired before completion: %v", completedGIDs)
-	}
-	mu.Unlock()
-
-	// Now the download completes: gone from active, present in stopped as complete.
-	fake.setActive(nil)
-	fake.setStopped([]map[string]any{{
-		"gid": "abc", "status": "complete", "totalLength": "100", "completedLength": "100",
-		"files": []map[string]any{{"path": "/staging/movie.mkv"}},
-	}})
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("onComplete never fired after completion")
-	}
-
-	// Poll several more times — it must NOT fire again for the same GID.
-	time.Sleep(3 * pollInterval)
-	mu.Lock()
-	defer mu.Unlock()
-	if len(completedGIDs) != 1 {
-		t.Fatalf("onComplete fired %d times, want exactly 1: %v", len(completedGIDs), completedGIDs)
-	}
-	if completedGIDs[0] != "abc" {
-		t.Errorf("completed gid = %q, want abc", completedGIDs[0])
-	}
-	if len(completedFiles[0]) != 1 || completedFiles[0][0] != "/staging/movie.mkv" {
-		t.Errorf("completed files = %v", completedFiles[0])
-	}
-}
-
-func TestManager_SubscribeReceivesSnapshotOnChange(t *testing.T) {
-	fake := &fakeAria2{}
-	srv := httptest.NewServer(fake.handler())
-	defer srv.Close()
-
-	m := newTestManager(t, srv.URL, nil)
 	ch, cancel := m.Subscribe()
 	defer cancel()
-
-	fake.setActive([]map[string]any{{
-		"gid": "g1", "status": "active", "totalLength": "100", "completedLength": "10",
-		"files": []map[string]any{{"path": "/staging/a.mkv"}},
-	}})
 
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -152,19 +28,19 @@ func TestManager_SubscribeReceivesSnapshotOnChange(t *testing.T) {
 	select {
 	case snap := <-ch:
 		if len(snap) != 1 || snap[0].GID != "g1" {
-			t.Fatalf("snapshot = %v, want one download g1", snap)
+			t.Fatalf("snapshot = %v, want one download with GID g1", snap)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("subscriber never received a snapshot")
 	}
 }
 
-func TestManager_UnsubscribeClosesChannel(t *testing.T) {
-	m := newTestManager(t, "http://unused", nil)
+// TestManager_Unsubscribe_ClosesChannel verifies that calling the cancel func
+// returned by Subscribe closes the channel.
+func TestManager_Unsubscribe_ClosesChannel(t *testing.T) {
+	m := NewForTesting("")
 	ch, cancel := m.Subscribe()
 	cancel()
-	// A cancelled subscription's channel must be closed (receive returns
-	// zero-value, ok=false).
 	select {
 	case _, ok := <-ch:
 		if ok {
@@ -172,5 +48,63 @@ func TestManager_UnsubscribeClosesChannel(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("channel not closed after unsubscribe")
+	}
+}
+
+// TestManager_SetOnComplete_CallbackFires verifies that SetOnComplete wires
+// the callback and that it is invoked with the expected arguments.
+func TestManager_SetOnComplete_CallbackFires(t *testing.T) {
+	m := NewForTesting("")
+
+	var mu sync.Mutex
+	var completedGIDs []string
+	var completedFiles [][]string
+	m.SetOnComplete(func(gid string, files []string) {
+		mu.Lock()
+		completedGIDs = append(completedGIDs, gid)
+		completedFiles = append(completedFiles, files)
+		mu.Unlock()
+	})
+
+	// Call directly — package-internal access; this is the same call path
+	// watchTorrent uses when a real download finishes.
+	m.onComplete("test-gid", []string{"/staging/movie.mkv"})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(completedGIDs) != 1 || completedGIDs[0] != "test-gid" {
+		t.Fatalf("completedGIDs = %v, want [test-gid]", completedGIDs)
+	}
+	if len(completedFiles[0]) != 1 || completedFiles[0][0] != "/staging/movie.mkv" {
+		t.Fatalf("completedFiles[0] = %v, want [/staging/movie.mkv]", completedFiles[0])
+	}
+}
+
+// TestManager_SeedState_VisibleViaListAndFind verifies that seeded entries are
+// immediately readable via List and FindByGID.
+func TestManager_SeedState_VisibleViaListAndFind(t *testing.T) {
+	m := NewForTesting("")
+	m.SeedState(Download{
+		GID:             "abc",
+		Status:          "active",
+		TotalLength:     1000,
+		CompletedLength: 400,
+		Files:           []string{"/staging/show.mkv"},
+	})
+
+	list := m.List()
+	if len(list) != 1 || list[0].GID != "abc" {
+		t.Fatalf("List: got %v", list)
+	}
+
+	d, err := m.FindByGID("abc")
+	if err != nil {
+		t.Fatalf("FindByGID: %v", err)
+	}
+	if d == nil {
+		t.Fatal("FindByGID: got nil, want entry")
+	}
+	if d.Status != "active" || d.TotalLength != 1000 || d.CompletedLength != 400 {
+		t.Fatalf("FindByGID: got %+v", d)
 	}
 }

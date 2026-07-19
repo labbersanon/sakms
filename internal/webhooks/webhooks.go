@@ -347,6 +347,39 @@ func (s *Store) Dispatch(event string, data any) {
 	}
 }
 
+// SendTest delivers a test payload directly to the webhook with the given id,
+// regardless of its enabled flag or subscribed events. Returns ErrNotFound if
+// no webhook has that id.
+func (s *Store) SendTest(ctx context.Context, id int64, data any) error {
+	row := s.db.QueryRowContext(ctx, `SELECT url, secret_enc FROM webhooks WHERE id=?`, id)
+	var url, secretEnc string
+	if err := row.Scan(&url, &secretEnc); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	secret := ""
+	if secretEnc != "" {
+		decrypted, err := s.secrets.Decrypt(secretEnc)
+		if err != nil {
+			log.Printf("webhooks: failed to decrypt secret for id %d during test: %v", id, err)
+		} else {
+			secret = decrypted
+		}
+	}
+	payload, err := json.Marshal(Event{
+		Event:     "webhook.test",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Data:      data,
+	})
+	if err != nil {
+		return fmt.Errorf("marshalling test payload: %w", err)
+	}
+	go deliver(url, secret, payload)
+	return nil
+}
+
 func deliver(url, secret string, payload []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

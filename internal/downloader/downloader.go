@@ -506,6 +506,9 @@ func (m *Manager) pollSnapshot() []Download {
 				alive = false
 			default:
 			}
+			// TOCTOU note: there's a narrow window between this alive check and the Stats/
+			// BytesCompleted calls below. anacrolix/torrent's methods return zero values
+			// after Drop() rather than panicking, so this race is benign in practice.
 			if alive {
 				completed := e.t.BytesCompleted()
 				var total int64

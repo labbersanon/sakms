@@ -122,12 +122,10 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 			return
 		}
 
-		if whStore != nil {
-			whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
-				"mode": string(p.Mode), "workflow": string(p.Workflow),
-				"title": p.Title, "tmdbId": p.TMDBID,
-			})
-		}
+		whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
+			"mode": string(p.Mode), "workflow": string(p.Workflow),
+			"title": p.Title, "tmdbId": p.TMDBID,
+		})
 
 		updated, err := propStore.Get(ctx, id)
 		if err != nil {
@@ -400,12 +398,10 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, se
 				continue
 			}
 			results = append(results, applyBatchResultItem{ID: item.ID, OK: true, Proposal: updated})
-			if whStore != nil {
-				whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
-					"mode": string(p.Mode), "workflow": string(p.Workflow),
-					"title": p.Title, "tmdbId": p.TMDBID,
-				})
-			}
+			whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
+				"mode": string(p.Mode), "workflow": string(p.Workflow),
+				"title": p.Title, "tmdbId": p.TMDBID,
+			})
 		}
 
 		// Fire one NotifyPlayers call per mode so each mode's changes reach

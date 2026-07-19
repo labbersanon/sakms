@@ -494,7 +494,7 @@ export const DetailPopup: Component<{
               >
                 More on {sourceLabel(props.target)} →
               </a>
-              <Show when={trailer()}>
+              <Show when={trailer()?.startsWith("https://") || trailer()?.startsWith("http://")}>
                 <a
                   href={trailer()}
                   target="_blank"

@@ -6,6 +6,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -149,7 +152,8 @@ func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *htt
 			// the full path of the created file/dir; we need the parent dir
 			// (which is the root we're watching).
 			for path, m := range pathToMode {
-				if len(event.Name) >= len(path) && event.Name[:len(path)] == path {
+				cleanPath := filepath.Clean(path)
+				if event.Name == cleanPath || strings.HasPrefix(event.Name, cleanPath+string(os.PathSeparator)) {
 					triggerScan(m)
 					break
 				}

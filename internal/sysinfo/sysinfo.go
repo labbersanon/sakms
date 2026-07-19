@@ -360,6 +360,33 @@ func readDiskstats(path string) ([]DiskRaw, error) {
 	return disks, nil
 }
 
+// effectiveCPUCount returns the number of CPU cores available to this process,
+// reading the cgroup v2 cpu.max quota when running in a CPU-limited container.
+// Falls back to runtime.NumCPU() when the file is absent, unreadable, or the
+// quota is "max" (unlimited). This corrects the case where runtime.NumCPU()
+// returns the host's full core count inside a container with a CPU quota set —
+// without this, reported CPU% reads artificially low in a limited container.
+func effectiveCPUCount() float64 {
+	data, err := os.ReadFile("/sys/fs/cgroup/cpu.max")
+	if err != nil {
+		return float64(runtime.NumCPU())
+	}
+	fields := strings.Fields(strings.TrimSpace(string(data)))
+	if len(fields) != 2 || fields[0] == "max" {
+		return float64(runtime.NumCPU())
+	}
+	quota, err1 := strconv.ParseFloat(fields[0], 64)
+	period, err2 := strconv.ParseFloat(fields[1], 64)
+	if err1 != nil || err2 != nil || period == 0 {
+		return float64(runtime.NumCPU())
+	}
+	cores := quota / period
+	if cores < 1 {
+		cores = 1
+	}
+	return cores
+}
+
 // ComputeRates computes per-second rates from two consecutive samples.
 // CPU %: (delta_usage_usec / elapsed_sec / 1_000_000 / numCPU) * 100, clamped
 // to [0,100]. bytes/sec fields are delta/elapsed. If elapsed <= 0 a 1s
@@ -372,10 +399,10 @@ func ComputeRates(prev, curr RawSample) apidto.SysinfoSnapshot {
 		elapsed = 1
 	}
 
-	numCPU := runtime.NumCPU()
+	numCPU := effectiveCPUCount()
 	// Convert to float BEFORE dividing — an int delta / int numCPU would
 	// truncate to zero for any sub-100%-per-core reading.
-	cpuPercent := float64(curr.CPUUsageMicros-prev.CPUUsageMicros) / elapsed / 1_000_000 / float64(numCPU) * 100
+	cpuPercent := float64(curr.CPUUsageMicros-prev.CPUUsageMicros) / elapsed / 1_000_000 / numCPU * 100
 	if cpuPercent < 0 {
 		cpuPercent = 0
 	}

@@ -358,7 +358,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			return
 		}
 
-		dlItem, err := findDownloadByGID(ctx, dl, g.DownloadGID)
+		dlItem, err := dl.FindByGID(g.DownloadGID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -404,12 +404,6 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(updated)
 	}
-}
-
-// findDownloadByGID looks up one download by GID. Returns (nil, nil) when the
-// engine has no such GID.
-func findDownloadByGID(_ context.Context, dl *downloader.Manager, gid string) (*downloader.Download, error) {
-	return dl.FindByGID(gid)
 }
 
 // classifyDownloadState maps the download engine's status vocabulary to grabs'

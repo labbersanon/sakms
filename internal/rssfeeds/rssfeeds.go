@@ -152,12 +152,20 @@ func (s *Store) Update(ctx context.Context, id int, title, feedURL string, targe
 	return f, nil
 }
 
-// Delete removes the feed with the given id. Deleting an id that doesn't
-// exist is not an error — the end state is the same, matching
-// discoversliders.Store.Delete's convention.
+// Delete removes the feed with the given id. Returns ErrNotFound when id has
+// no stored feed — matches webhooks.Store.Delete's convention, which lets the
+// HTTP handler return a 404 for a missing resource rather than a silent 204.
 func (s *Store) Delete(ctx context.Context, id int) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM rss_feeds WHERE id = ?`, id); err != nil {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM rss_feeds WHERE id = ?`, id)
+	if err != nil {
 		return fmt.Errorf("deleting rss feed %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

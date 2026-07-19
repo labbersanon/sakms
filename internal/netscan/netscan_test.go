@@ -164,8 +164,9 @@ func TestProbeJellyfin_ConfirmsIdentity(t *testing.T) {
 }
 
 // TestProbeStash_ConfirmsIdentityOnAuthError proves probeStash confirms even
-// when Stash requires an API key — the auth error is still valid JSON, which
-// is sufficient to identify the instance.
+// when Stash requires an API key — Stash identity is confirmed via the
+// Www-Authenticate: FormBased header, not the response body — a 401 with
+// this header is the fingerprint.
 func TestProbeStash_ConfirmsIdentityOnAuthError(t *testing.T) {
 	srv := probeServer(t, "stash")
 	f, ok := probeStash(context.Background(), testHTTPClient(), srv.URL)

@@ -226,7 +226,7 @@ func filterByUSRelease(ctx context.Context, sess *mode.Session, items []tmdb.Ite
 			return nil
 		})
 	}
-	g.Wait() // every goroutine above always returns nil — see the fail-open note.
+	_ = g.Wait() // every goroutine above always returns nil — see the fail-open note.
 	out := make([]tmdb.Item, 0, len(items))
 	for i, item := range items {
 		if keep[i] {

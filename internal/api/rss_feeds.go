@@ -120,8 +120,8 @@ func updateRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 	}
 }
 
-// deleteRssFeedHandler is DELETE /api/discover/rss-feeds/{id}. Deleting an id
-// that doesn't exist is not an error (Store.Delete's convention).
+// deleteRssFeedHandler is DELETE /api/discover/rss-feeds/{id}. Returns 404
+// when the id has no stored feed (Store.Delete returns ErrNotFound).
 func deleteRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -130,7 +130,7 @@ func deleteRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 			return
 		}
 		if err := store.Delete(r.Context(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			rssFeedStoreError(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -52,7 +51,6 @@ func discoverTrailerHandler(httpClient *http.Client, connStore *connections.Stor
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(apidto.TrailerResponse{URL: trailerURL})
+		writeJSON(w, apidto.TrailerResponse{URL: trailerURL})
 	}
 }

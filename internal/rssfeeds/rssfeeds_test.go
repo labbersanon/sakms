@@ -176,10 +176,10 @@ func TestDelete_RemovesFeed(t *testing.T) {
 	}
 }
 
-func TestDelete_NonExistentIDIsNotAnError(t *testing.T) {
+func TestDelete_NonExistentIDReturnsErrNotFound(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.Delete(context.Background(), 999); err != nil {
-		t.Fatalf("unexpected error deleting a feed that never existed: %v", err)
+	if err := s.Delete(context.Background(), 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound deleting a feed that never existed, got %v", err)
 	}
 }
 

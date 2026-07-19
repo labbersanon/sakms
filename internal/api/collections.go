@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/curtiswtaylorjr/sakms/internal/library"
@@ -37,7 +36,6 @@ func collectionsHandler(libStore *library.Store) http.HandlerFunc {
 				Count:            cs.Count,
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(out)
+		writeJSON(w, out)
 	}
 }

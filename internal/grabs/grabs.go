@@ -223,6 +223,11 @@ func (s *Store) SetDownloadStatus(ctx context.Context, id int64, downloadStatus,
 // finished aria2 download belongs to. Returns ErrNotFound when no grab holds
 // that GID (e.g. a download aria2 knows about that SAK didn't initiate).
 func (s *Store) GetByDownloadGID(ctx context.Context, gid string) (*Grab, error) {
+	// download_gid defaults to '' for every grab not routed through aria2;
+	// an empty GID would match the first such row arbitrarily.
+	if gid == "" {
+		return nil, ErrNotFound
+	}
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason, created_at, updated_at

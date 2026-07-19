@@ -235,7 +235,7 @@ func (s *Store) List(ctx context.Context, m mode.Mode, wf Workflow) ([]Proposal,
 		       foreign_id, item_type, candidates_json, studio, scene_date,
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
-		       created_at, COALESCE(applied_at, ''), extra_episode_numbers,
+		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]')
 		FROM proposals WHERE mode = ? AND workflow = ? ORDER BY id DESC
 	`, string(m), string(wf))
@@ -267,7 +267,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Proposal, error) {
 		       foreign_id, item_type, candidates_json, studio, scene_date,
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
-		       created_at, COALESCE(applied_at, ''), extra_episode_numbers,
+		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]')
 		FROM proposals WHERE id = ?
 	`, id)

@@ -512,6 +512,10 @@ func verifyAndRepair(dir string, files []string) ([]string, error) {
 		return files, fmt.Errorf("par2: parse: %w", err)
 	}
 
+	// Known limitation: all data files are loaded into memory for par2 verify/repair.
+	// For multi-GB releases this is a large allocation. Par2 repair is best-effort and
+	// non-fatal on failure, so an OOM here degrades gracefully. A future improvement
+	// would use the par2 library's streaming/file-handle API if available.
 	fileMap := make(map[string][]byte, len(dataPaths))
 	for _, p := range dataPaths {
 		data, err := os.ReadFile(p)

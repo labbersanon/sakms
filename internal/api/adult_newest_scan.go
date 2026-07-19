@@ -49,8 +49,7 @@ func getAdultNewestScanIntervalHandler(settingsStore *settings.Store) http.Handl
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(adultNewestScanIntervalResponse{IntervalSeconds: secs})
+		writeJSON(w, adultNewestScanIntervalResponse{IntervalSeconds: secs})
 	}
 }
 

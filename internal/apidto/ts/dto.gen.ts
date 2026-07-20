@@ -1361,8 +1361,40 @@ export interface NodeInfo {
   lastHeartbeat: string; // RFC3339
 }
 /**
+ * PendingNodeInfo is a node waiting for operator approval in GET /api/nodes.
+ */
+export interface PendingNodeInfo {
+  id: string;
+  name: string;
+  pairingCode: string;
+  requestedAt: string; // RFC3339
+}
+/**
+ * PathMapping translates one server-side path prefix to its local equivalent
+ * on the worker node.
+ */
+export interface PathMapping {
+  server: string;
+  local: string;
+}
+/**
+ * NodeSettingsRequest is the body for PUT /api/nodes/{id}/settings.
+ */
+export interface NodeSettingsRequest {
+  pathMap: PathMapping[];
+  maxJobs: number /* int */;
+}
+/**
+ * ApproveNodeRequest is the body for POST /api/nodes/{id}/approve.
+ */
+export interface ApproveNodeRequest {
+  pathMap: PathMapping[];
+  maxJobs: number /* int */;
+}
+/**
  * NodesResponse is GET /api/nodes's response.
  */
 export interface NodesResponse {
   nodes: NodeInfo[];
+  pending: PendingNodeInfo[];
 }

@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/curtiswtaylorjr/sakms/internal/nodekeys"
 	"github.com/curtiswtaylorjr/sakms/internal/nodes"
 )
 
 // nodeStreamHandler handles GET /api/nodes/stream. It registers the connecting
 // node in the Registry, emits a ConnectAck as a named "ack" SSE event, then
-// streams Job frames until the client disconnects.
+// streams Job frames until the client disconnects. Operator-pushed NodeSettings
+// are forwarded as named "settings" SSE events on the same stream.
 func nodeStreamHandler(reg *nodes.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -37,7 +39,7 @@ func nodeStreamHandler(reg *nodes.Registry) http.HandlerFunc {
 			}
 		}
 
-		id, jobs, disconnect := reg.Connect(name, capabilities)
+		id, jobs, settings, disconnect := reg.Connect(name, capabilities)
 		defer disconnect()
 
 		log.Printf("nodes: connected %s (capabilities=%v)", name, capabilities)
@@ -64,6 +66,17 @@ func nodeStreamHandler(reg *nodes.Registry) http.HandlerFunc {
 			select {
 			case <-ctx.Done():
 				return
+			case s, ok := <-settings:
+				if !ok {
+					return
+				}
+				settingsData, err := json.Marshal(s)
+				if err != nil {
+					log.Printf("nodes: marshal settings: %v", err)
+					continue
+				}
+				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", nodes.EventSettings, settingsData)
+				flusher.Flush()
 			case job, ok := <-jobs:
 				if !ok {
 					return
@@ -109,10 +122,9 @@ func nodeJobResultHandler(reg *nodes.Registry) http.HandlerFunc {
 	}
 }
 
-// listNodesHandler handles GET /api/nodes. Returns the Registry's live node
-// snapshot mapped to the apidto shape, with Status derived from heartbeat
-// freshness.
-func listNodesHandler(reg *nodes.Registry) http.HandlerFunc {
+// listNodesHandler handles GET /api/nodes. Returns connected nodes plus any
+// pending-pairing nodes, all mapped to the apidto shape.
+func listNodesHandler(reg *nodes.Registry, pairingReg *nodes.PairingRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := reg.ListNodes()
 		dtoNodes := make([]apidto.NodeInfo, 0, len(raw))
@@ -133,6 +145,108 @@ func listNodesHandler(reg *nodes.Registry) http.HandlerFunc {
 				LastHeartbeat: n.LastHeartbeat.Format(time.RFC3339),
 			})
 		}
-		writeJSON(w, apidto.NodesResponse{Nodes: dtoNodes})
+
+		pending := pairingReg.ListPending()
+		dtoPending := make([]apidto.PendingNodeInfo, 0, len(pending))
+		for _, pn := range pending {
+			dtoPending = append(dtoPending, apidto.PendingNodeInfo{
+				ID:          pn.ID,
+				Name:        pn.Name,
+				PairingCode: pn.PairingCode,
+				RequestedAt: pn.RequestedAt.Format(time.RFC3339),
+			})
+		}
+
+		writeJSON(w, apidto.NodesResponse{Nodes: dtoNodes, Pending: dtoPending})
+	}
+}
+
+// approveNodeHandler handles POST /api/nodes/{id}/approve. Generates a unique
+// bearer key for the pending node, pushes the key + settings via the pre-auth
+// SSE stream, and removes the node from the pending registry.
+func approveNodeHandler(pairingReg *nodes.PairingRegistry, nodeKeyStore *nodekeys.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pendingID := r.PathValue("id")
+
+		name, ok := pairingReg.Name(pendingID)
+		if !ok {
+			http.Error(w, "pending node not found", http.StatusNotFound)
+			return
+		}
+
+		var body apidto.ApproveNodeRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		keyID, rawKey, err := nodeKeyStore.Create(r.Context(), name)
+		if err != nil {
+			log.Printf("nodes/approve: create key: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		pathMap := make([]nodes.PathMapping, len(body.PathMap))
+		for i, pm := range body.PathMap {
+			pathMap[i] = nodes.PathMapping{Server: pm.Server, Local: pm.Local}
+		}
+
+		cfg := nodes.PairConfig{
+			APIKey: rawKey,
+			Settings: nodes.NodeSettings{
+				PathMap: pathMap,
+				MaxJobs: body.MaxJobs,
+			},
+		}
+
+		if !pairingReg.Approve(pendingID, cfg) {
+			// Node disconnected in the window between Name() and Approve().
+			// Revoke the key we just created so it cannot be used.
+			if err := nodeKeyStore.Revoke(r.Context(), keyID); err != nil {
+				log.Printf("nodes/approve: revoke orphaned key %s: %v", keyID, err)
+			}
+			http.Error(w, "pending node not found", http.StatusNotFound)
+			return
+		}
+
+		writeJSON(w, map[string]string{"status": "approved"})
+	}
+}
+
+// rejectPendingHandler handles DELETE /api/nodes/{id}/pending. Signals the
+// pending node's SSE stream to close and removes it from the registry.
+func rejectPendingHandler(pairingReg *nodes.PairingRegistry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !pairingReg.Reject(r.PathValue("id")) {
+			http.Error(w, "pending node not found", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// updateNodeSettingsHandler handles PUT /api/nodes/{id}/settings. Pushes
+// updated path mappings and concurrency cap to an already-connected node over
+// its existing authenticated SSE stream.
+func updateNodeSettingsHandler(reg *nodes.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		nodeID := r.PathValue("id")
+		var body apidto.NodeSettingsRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		pathMap := make([]nodes.PathMapping, len(body.PathMap))
+		for i, pm := range body.PathMap {
+			pathMap[i] = nodes.PathMapping{Server: pm.Server, Local: pm.Local}
+		}
+
+		if !reg.SendSettings(nodeID, nodes.NodeSettings{PathMap: pathMap, MaxJobs: body.MaxJobs}) {
+			http.Error(w, "node not connected", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

@@ -21,7 +21,7 @@ func drainOneJob(t *testing.T, jobs <-chan Job) Job {
 
 func TestDispatchThenResultHappyPath(t *testing.T) {
 	r := New()
-	_, jobs, disconnect := r.Connect("node-a", []string{"cuda"})
+	_, jobs, _, disconnect := r.Connect("node-a", []string{"cuda"})
 	defer disconnect()
 
 	job := Job{ID: "j1", Type: JobTypePhash, ServerPath: "/srv/x.mkv"}
@@ -60,7 +60,7 @@ func TestDispatchNoNodeFallback(t *testing.T) {
 
 func TestDispatchIneligibleNodeSkipped(t *testing.T) {
 	r := New()
-	nodeID, _, disconnect := r.Connect("node-a", nil)
+	nodeID, _, _, disconnect := r.Connect("node-a", nil)
 	defer disconnect()
 
 	// Drive the circuit breaker to threshold.
@@ -96,7 +96,7 @@ func TestReportResultUnknownJobIDNoOp(t *testing.T) {
 
 func TestLateResultAfterFallbackNoOp(t *testing.T) {
 	r := New()
-	_, jobs, disconnect := r.Connect("node-a", nil)
+	_, jobs, _, disconnect := r.Connect("node-a", nil)
 	defer disconnect()
 
 	job := Job{ID: "j1", Type: JobTypePhash}
@@ -124,7 +124,7 @@ func TestLateResultAfterFallbackNoOp(t *testing.T) {
 
 func TestHeartbeatDrivenOnlineOffline(t *testing.T) {
 	r := New()
-	id, _, disconnect := r.Connect("node-a", nil)
+	id, _, _, disconnect := r.Connect("node-a", nil)
 	defer disconnect()
 
 	nodesList := r.ListNodes()
@@ -160,7 +160,7 @@ func TestHeartbeatUnknownIDNoOp(t *testing.T) {
 
 func TestDisconnectMidJobFallback(t *testing.T) {
 	r := New()
-	_, jobs, disconnect := r.Connect("node-a", nil)
+	_, jobs, _, disconnect := r.Connect("node-a", nil)
 
 	job := Job{ID: "j1", Type: JobTypePhash}
 	_, result, ok := r.Dispatch(job)
@@ -186,7 +186,7 @@ func TestDisconnectMidJobFallback(t *testing.T) {
 
 func TestConcurrentDispatches(t *testing.T) {
 	r := New()
-	_, jobs, disconnect := r.Connect("node-a", nil)
+	_, jobs, _, disconnect := r.Connect("node-a", nil)
 	defer disconnect()
 
 	const n = 4

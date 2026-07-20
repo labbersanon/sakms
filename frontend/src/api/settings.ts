@@ -25,6 +25,7 @@ import type {
   AIProviderResponse,
   APIKeyRegenerateResponse,
   APIKeyStatusResponse,
+  ApproveNodeRequest,
   AuthModeRequest,
   AuthModeResponse,
   BrowseResponse,
@@ -46,6 +47,7 @@ import type {
   NetscanHostRequest,
   NetscanProwlarrKeyRequest,
   NetscanProwlarrKeyResponse,
+  NodeSettingsRequest,
   NodesResponse,
   OIDCConfigRequest,
   OIDCStatusResponse,
@@ -549,4 +551,24 @@ export function putWatchFoldersEnabled(enabled: boolean): Promise<void> {
 
 export function fetchNodes(): Promise<NodesResponse> {
   return api<NodesResponse>("/api/nodes");
+}
+
+export function approveNode(id: string, body: ApproveNodeRequest): Promise<void> {
+  return api<void>(`/api/nodes/${id}/approve`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function rejectPending(id: string): Promise<void> {
+  return api<void>(`/api/nodes/${id}/pending`, {
+    method: "DELETE",
+  });
+}
+
+export function updateNodeSettings(id: string, body: NodeSettingsRequest): Promise<void> {
+  return api<void>(`/api/nodes/${id}/settings`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
 }

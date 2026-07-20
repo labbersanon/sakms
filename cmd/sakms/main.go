@@ -27,6 +27,7 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/library"
 	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/curtiswtaylorjr/sakms/internal/nodekeys"
 	"github.com/curtiswtaylorjr/sakms/internal/nodes"
 	"github.com/curtiswtaylorjr/sakms/internal/parseentity"
 	"github.com/curtiswtaylorjr/sakms/internal/phash"
@@ -83,6 +84,8 @@ func run() error {
 	// (internal/phash, Movies/Series Dedup); the two are not interchangeable.
 	videoHasher := videophash.New()
 	nodeReg := nodes.New()
+	pairingReg := nodes.NewPairingRegistry()
+	nodeKeyStore := nodekeys.New(sqlDB)
 	phashDispatcher := nodes.NewDispatcher(nodeReg, nodes.JobTypePhash, hasher, 3*time.Minute)
 	videoDispatcher := nodes.NewDispatcher(nodeReg, nodes.JobTypeVideoPhash, videoHasher, 3*time.Minute)
 	settingsStore := settings.New(sqlDB)
@@ -177,8 +180,12 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, nodeReg)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
+
+	// Node mux: per-handler auth (bearer for node agents, master key/session
+	// for operators). Mounted without a top-level auth.Middleware wrapper.
+	nodesMux := api.NewNodesMux(nodeReg, pairingReg, nodeKeyStore, secretStore, authStore)
 
 	// API-key management (status + regenerate) is session-protected like
 	// the rest of /api/..., but deliberately NOT part of NewMux (see
@@ -230,8 +237,10 @@ func run() error {
 	top.HandleFunc("GET /api/openapi.yaml", api.OpenapiHandler())
 	top.Handle("/api/apikey", protectedAPIKey)                        // exact match: GET status
 	top.Handle("/api/apikey/", protectedAPIKey)                       // subtree: POST .../regenerate
-	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger) // exact match: manual "Refresh now"
-	top.Handle("/api/", protectedAPI)                                 // more general; still wins for everything else
+	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)             // exact match: manual "Refresh now"
+	top.Handle("GET /api/nodes/pair", api.PairStreamHandler(pairingReg))          // no auth: pre-pairing SSE
+	top.Handle("/api/nodes/", nodesMux)                                            // per-handler auth inside
+	top.Handle("/api/", protectedAPI)                                              // more general; still wins for everything else
 	// The frontend is mounted last and matches only what no /api/... route
 	// already claimed — Go's ServeMux picks the most specific pattern, so
 	// this never shadows a real API route. It's deliberately NOT behind

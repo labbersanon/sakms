@@ -1421,7 +1421,35 @@ type NodeInfo struct {
 	LastHeartbeat string   `json:"lastHeartbeat"` // RFC3339
 }
 
+// PendingNodeInfo is a node waiting for operator approval in GET /api/nodes.
+type PendingNodeInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	PairingCode string `json:"pairingCode"`
+	RequestedAt string `json:"requestedAt"` // RFC3339
+}
+
+// PathMapping translates one server-side path prefix to its local equivalent
+// on the worker node.
+type PathMapping struct {
+	Server string `json:"server"`
+	Local  string `json:"local"`
+}
+
+// NodeSettingsRequest is the body for PUT /api/nodes/{id}/settings.
+type NodeSettingsRequest struct {
+	PathMap []PathMapping `json:"pathMap"`
+	MaxJobs int           `json:"maxJobs"`
+}
+
+// ApproveNodeRequest is the body for POST /api/nodes/{id}/approve.
+type ApproveNodeRequest struct {
+	PathMap []PathMapping `json:"pathMap"`
+	MaxJobs int           `json:"maxJobs"`
+}
+
 // NodesResponse is GET /api/nodes's response.
 type NodesResponse struct {
-	Nodes []NodeInfo `json:"nodes"`
+	Nodes   []NodeInfo        `json:"nodes"`
+	Pending []PendingNodeInfo `json:"pending"`
 }

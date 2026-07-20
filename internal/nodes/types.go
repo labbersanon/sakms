@@ -9,6 +9,45 @@ package nodes
 
 import "time"
 
+// SSE event name constants for the pre-auth pairing stream and the
+// authenticated job stream.
+const (
+	EventPending  = "pending"  // server → node: pairing code assigned
+	EventConfig   = "config"   // server → node: approved; carries apiKey + settings
+	EventSettings = "settings" // server → node: operator updated path mappings / maxJobs
+)
+
+// PathMapping translates one server-side path prefix to its local equivalent
+// on the worker node's filesystem.
+type PathMapping struct {
+	Server string `json:"server"`
+	Local  string `json:"local"`
+}
+
+// NodeSettings is the operator-controlled configuration pushed to a node at
+// approval time and on any subsequent settings update.
+type NodeSettings struct {
+	PathMap []PathMapping `json:"pathMap"`
+	MaxJobs int           `json:"maxJobs"` // 0 = unlimited
+}
+
+// PairConfig is the payload carried in the SSE "config" event that closes the
+// pre-auth pairing stream. The node persists APIKey to disk and reconnects on
+// the authenticated stream.
+type PairConfig struct {
+	APIKey   string       `json:"apiKey"`
+	Settings NodeSettings `json:"settings"`
+}
+
+// PendingNodeInfo is the server's external view of one unconfirmed node,
+// returned by ListPending for the Settings → Nodes UI.
+type PendingNodeInfo struct {
+	ID          string
+	Name        string
+	PairingCode string
+	RequestedAt time.Time
+}
+
 // JobType enumerates the kinds of work dispatched to a node. Extensible: v1
 // carries phash and videophash; thumbnail/transcode slot in later without
 // touching the dispatch/registry/transport core.

@@ -27,10 +27,13 @@ const (
 // connectedNode is the Registry's live view of one connected node. jobs is the
 // channel the SSE handler ranges over; a live jobs channel is the node's
 // dispatch eligibility, while lastHeartbeat drives display status separately.
+// settings carries operator-pushed NodeSettings updates (buffer 1; non-blocking
+// send, latest wins).
 type connectedNode struct {
 	name                string
 	capabilities        []string
 	jobs                chan Job
+	settings            chan NodeSettings
 	lastHeartbeat       time.Time
 	consecutiveTimeouts int
 	dispatchIneligible  bool
@@ -54,17 +57,20 @@ func New() *Registry {
 
 // Connect assigns a fresh ephemeral id, registers the node's buffered job
 // channel plus metadata, and returns the id, the outbound job channel the SSE
-// handler ranges over, and a disconnect func the handler defers. The SSE
-// handler must emit ConnectAck{NodeID: id} as the first event before ranging.
-func (r *Registry) Connect(name string, capabilities []string) (id string, jobs <-chan Job, disconnect func()) {
+// handler ranges over, a settings channel for operator-pushed config updates,
+// and a disconnect func the handler defers. The SSE handler must emit
+// ConnectAck{NodeID: id} as the first event before ranging.
+func (r *Registry) Connect(name string, capabilities []string) (id string, jobs <-chan Job, settings <-chan NodeSettings, disconnect func()) {
 	id = rand.Text()
-	ch := make(chan Job, jobsBuffer)
+	jobsCh := make(chan Job, jobsBuffer)
+	settingsCh := make(chan NodeSettings, 1)
 
 	r.mu.Lock()
 	r.nodes[id] = &connectedNode{
 		name:          name,
 		capabilities:  capabilities,
-		jobs:          ch,
+		jobs:          jobsCh,
+		settings:      settingsCh,
 		lastHeartbeat: time.Now(),
 	}
 	r.mu.Unlock()
@@ -78,10 +84,32 @@ func (r *Registry) Connect(name string, capabilities []string) (id string, jobs 
 				return
 			}
 			delete(r.nodes, id)
-			close(ch)
+			close(jobsCh)
+			close(settingsCh)
 		})
 	}
-	return id, ch, disconnect
+	return id, jobsCh, settingsCh, disconnect
+}
+
+// SendSettings pushes an updated NodeSettings to the connected node identified
+// by nodeID via its SSE stream. Returns false when the node is not connected or
+// its settings channel is already full (the node will receive updated settings
+// on its next reconnect instead).
+func (r *Registry) SendSettings(nodeID string, s NodeSettings) bool {
+	r.mu.Lock()
+	n, ok := r.nodes[nodeID]
+	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	select {
+	case n.settings <- s:
+		r.mu.Unlock()
+		return true
+	default:
+		r.mu.Unlock()
+		return false
+	}
 }
 
 // Heartbeat updates LastHeartbeat for a node id (display liveness only).

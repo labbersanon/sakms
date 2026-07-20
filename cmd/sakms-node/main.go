@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -26,6 +27,11 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/phash"
 	"github.com/curtiswtaylorjr/sakms/internal/videophash"
 )
+
+// errUnauthorized is returned by connect when the server responds 401 so the
+// caller can distinguish an auth failure (needs re-pairing) from a transient
+// network error (needs backoff and reconnect).
+var errUnauthorized = errors.New("unauthorized (401)")
 
 // hasher is the interface satisfied by both *phash.Hasher and
 // *videophash.Hasher.
@@ -45,38 +51,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Probe hardware acceleration and log the result. Both phash and videophash
-	// run the identical ffmpeg -hwaccels probe; calling once is sufficient.
+	// Probe hardware acceleration once; both hashers use the same probe.
 	hw := phash.ProbeHWAccel(ctx)
 	log.Printf("sakms-node: hwaccel detected: %q", hw)
 
 	phashHasher := phash.New()
 	videoHasher := videophash.New()
 
-	// postClient is used for heartbeat and result POSTs — a normal timeout is
-	// fine for these short-lived requests.
 	postClient := &http.Client{Timeout: 30 * time.Second}
 
-	run(ctx, cfg, hw, phashHasher, videoHasher, postClient)
-	log.Printf("sakms-node: shut down")
-}
+	statusSrv := newStatusServer(cfg)
+	go statusSrv.ListenAndServe(ctx)
 
-// run is the outer reconnect loop. It connects to the SSE stream, reads the
-// ConnectAck to obtain the node's server-assigned id, starts the heartbeat
-// goroutine bound to this connection's context, then runs the job loop. On
-// disconnect it backs off and reconnects until ctx is cancelled.
-func run(
-	ctx context.Context,
-	cfg *NodeConfig,
-	hw string,
-	phashHasher, videoHasher hasher,
-	postClient *http.Client,
-) {
-	// wg tracks all in-flight job goroutines across reconnects so we wait for
-	// them to finish before returning.
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
+	// Outer state machine: pairing ↔ authenticated.
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
 
@@ -85,10 +72,46 @@ func run(
 			return
 		}
 
-		err := connect(ctx, cfg, hw, phashHasher, videoHasher, postClient, &wg)
+		// Pairing mode: connect unauthenticated and wait for operator approval.
+		if cfg.APIKey == "" {
+			statusSrv.update(statePending, "", "")
+			if err := pair(ctx, cfg, *configPath, statusSrv); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("sakms-node: pairing failed: %v — retrying in %s", err, backoff)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+			backoff = time.Second
+		}
+
+		// Authenticated mode: reconnect loop.
+		statusSrv.update(stateConnected, "", "")
+		err := run(ctx, cfg, *configPath, hw, phashHasher, videoHasher, postClient, statusSrv)
 		if ctx.Err() != nil {
 			return
 		}
+
+		if errors.Is(err, errUnauthorized) {
+			log.Printf("sakms-node: 401 — clearing API key, entering pairing mode")
+			cfg.APIKey = ""
+			if saveErr := cfg.save(*configPath); saveErr != nil {
+				log.Printf("sakms-node: saving config after 401: %v", saveErr)
+			}
+			statusSrv.update(stateDisconnected, "", "")
+			backoff = time.Second
+			continue
+		}
+
 		if err != nil {
 			log.Printf("sakms-node: disconnected: %v — reconnecting in %s", err, backoff)
 			backoff *= 2
@@ -96,7 +119,6 @@ func run(
 				backoff = maxBackoff
 			}
 		} else {
-			// Clean stream end: reset backoff so the next reconnect is fast.
 			log.Printf("sakms-node: stream ended — reconnecting")
 			backoff = time.Second
 		}
@@ -109,18 +131,67 @@ func run(
 	}
 }
 
-// connect opens one SSE stream session: it dials the server, reads ConnectAck,
-// starts the heartbeat goroutine for this connection, and runs the job-read
-// loop. Returns when the stream ends or ctx is cancelled.
-func connect(
+// run is the authenticated reconnect loop. It calls connect repeatedly until
+// ctx is cancelled, a 401 is received (errUnauthorized), or ctx is cancelled.
+// Network errors trigger backoff and retry; errUnauthorized propagates immediately.
+func run(
 	ctx context.Context,
 	cfg *NodeConfig,
+	configPath string,
 	hw string,
 	phashHasher, videoHasher hasher,
 	postClient *http.Client,
+	statusSrv *statusServer,
+) error {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		err := connect(ctx, cfg, configPath, hw, phashHasher, videoHasher, postClient, statusSrv, &wg)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if errors.Is(err, errUnauthorized) {
+			return errUnauthorized
+		}
+		if err != nil {
+			log.Printf("sakms-node: stream error: %v — reconnecting in %s", err, backoff)
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		} else {
+			log.Printf("sakms-node: stream ended — reconnecting")
+			backoff = time.Second
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+	}
+}
+
+// connect opens one authenticated SSE stream session: dials, reads ConnectAck,
+// starts the heartbeat goroutine, and runs the job/settings dispatch loop.
+func connect(
+	ctx context.Context,
+	cfg *NodeConfig,
+	configPath string,
+	hw string,
+	phashHasher, videoHasher hasher,
+	postClient *http.Client,
+	statusSrv *statusServer,
 	wg *sync.WaitGroup,
 ) error {
-	// Build the stream URL with URL-encoded query parameters.
 	streamURL, err := url.Parse(cfg.ServerURL + "/api/nodes/stream")
 	if err != nil {
 		return fmt.Errorf("parsing server URL: %w", err)
@@ -132,15 +203,13 @@ func connect(
 	}
 	streamURL.RawQuery = q.Encode()
 
-	// The stream client must have Timeout: 0 — a non-zero client timeout
-	// would kill the long-lived SSE connection.
-	streamClient := &http.Client{Timeout: 0}
+	streamClient := &http.Client{Timeout: 0} // long-lived SSE; no client timeout
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL.String(), nil)
 	if err != nil {
 		return fmt.Errorf("building stream request: %w", err)
 	}
-	req.Header.Set("X-Api-Key", cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
@@ -150,34 +219,43 @@ func connect(
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return errUnauthorized
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("stream returned status %d", resp.StatusCode)
 	}
 
-	// connCtx is created before readSSE so the SSE-reading goroutine inside
-	// readSSE is bound to this connection's cancellation, not the process-level
-	// ctx. Without this, the goroutine would leak until process exit on every
-	// reconnect (connCancel fires but the goroutine still holds ctx, which is
-	// only cancelled on SIGTERM).
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
 
-	// Parse SSE frames from the response body.
-	nodeID, jobCh, err := readSSE(connCtx, resp)
+	nodeID, jobCh, settingsCh, err := readSSE(connCtx, resp)
 	if err != nil {
 		return err
 	}
 
 	log.Printf("sakms-node: connected as %s (id=%s)", cfg.NodeName, nodeID)
+	statusSrv.update(stateConnected, "", nodeID)
 
 	go heartbeat(connCtx, nodeID, cfg, postClient)
 
-	// Job loop: each job runs in its own goroutine so the read loop stays
-	// responsive to disconnect detection.
 	for {
 		select {
 		case <-connCtx.Done():
 			return nil
+		case s, ok := <-settingsCh:
+			if !ok {
+				return nil
+			}
+			cfg.PathMap = make([]PathMapEntry, len(s.PathMap))
+			for i, pm := range s.PathMap {
+				cfg.PathMap[i] = PathMapEntry{Server: pm.Server, Local: pm.Local}
+			}
+			cfg.MaxJobs = s.MaxJobs
+			if saveErr := cfg.save(configPath); saveErr != nil {
+				log.Printf("sakms-node: saving updated settings: %v", saveErr)
+			}
+			log.Printf("sakms-node: settings updated (maxJobs=%d, paths=%d)", s.MaxJobs, len(s.PathMap))
 		case job, ok := <-jobCh:
 			if !ok {
 				return nil
@@ -185,11 +263,6 @@ func connect(
 			wg.Add(1)
 			go func(j nodes.Job) {
 				defer wg.Done()
-				// Use context.Background() so in-flight hashes survive both
-				// stream reconnects and shutdown. Hash already wraps its own
-				// internal 2-min timeout, so there is no hang risk. A late
-				// result posted after the server fell back is a safe no-op
-				// (pending-channel invariant in the registry).
 				result := executeJob(context.Background(), cfg, j, phashHasher, videoHasher)
 				postResult(postClient, cfg, result)
 			}(job)
@@ -203,19 +276,20 @@ type sseFrame struct {
 	data  string
 }
 
-// readSSE reads from resp until it finds the "ack" frame, extracts the
-// nodeID from it, then returns the nodeID and a channel of subsequent Job
-// frames. The channel is closed when the stream ends or ctx is cancelled.
-func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-chan nodes.Job, err error) {
+// readSSE reads from resp until it finds the "ack" frame, extracts the nodeID
+// from it, then returns the nodeID plus channels for subsequent Job and
+// NodeSettings frames. Both channels are closed when the stream ends or ctx is
+// cancelled.
+func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-chan nodes.Job, settings <-chan nodes.NodeSettings, err error) {
 	scanner := bufio.NewScanner(resp.Body)
 	jobCh := make(chan nodes.Job, 16)
+	settingsCh := make(chan nodes.NodeSettings, 4)
 
 	// Read frames until we get the ack.
 	var cur sseFrame
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
-			// Empty line: end of frame.
 			if cur.event == "ack" && cur.data != "" {
 				var ack nodes.ConnectAck
 				if e := json.Unmarshal([]byte(cur.data), &ack); e == nil && ack.NodeID != "" {
@@ -231,17 +305,17 @@ func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-ch
 		} else if after, ok := strings.CutPrefix(line, "data:"); ok {
 			cur.data = strings.TrimSpace(after)
 		}
-		// Ignore other SSE fields (id:, retry:, comments).
 	}
 
 	if nodeID == "" {
 		close(jobCh)
-		return "", nil, fmt.Errorf("stream ended before ack")
+		close(settingsCh)
+		return "", nil, nil, fmt.Errorf("stream ended before ack")
 	}
 
-	// Continue reading job frames in a goroutine.
 	go func() {
 		defer close(jobCh)
+		defer close(settingsCh)
 		var cur sseFrame
 		for scanner.Scan() {
 			select {
@@ -251,14 +325,26 @@ func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-ch
 			}
 			line := scanner.Text()
 			if line == "" {
-				// End of frame: attempt to decode as a Job.
-				if cur.data != "" {
-					var job nodes.Job
-					if e := json.Unmarshal([]byte(cur.data), &job); e == nil && job.ID != "" {
-						select {
-						case jobCh <- job:
-						case <-ctx.Done():
-							return
+				switch cur.event {
+				case "", "job": // unnamed frames are jobs
+					if cur.data != "" {
+						var job nodes.Job
+						if e := json.Unmarshal([]byte(cur.data), &job); e == nil && job.ID != "" {
+							select {
+							case jobCh <- job:
+							case <-ctx.Done():
+								return
+							}
+						}
+					}
+				case nodes.EventSettings:
+					if cur.data != "" {
+						var s nodes.NodeSettings
+						if e := json.Unmarshal([]byte(cur.data), &s); e == nil {
+							select {
+							case settingsCh <- s:
+							default: // non-blocking: latest settings win
+							}
 						}
 					}
 				}
@@ -273,11 +359,11 @@ func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-ch
 		}
 	}()
 
-	return nodeID, jobCh, nil
+	return nodeID, jobCh, settingsCh, nil
 }
 
 // heartbeat POSTs to /api/nodes/heartbeat every 30 seconds until ctx is
-// cancelled. Uses the nodeID assigned by the server for this connection.
+// cancelled.
 func heartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http.Client) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -293,7 +379,6 @@ func heartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http
 	}
 }
 
-// postHeartbeat sends one heartbeat POST.
 func postHeartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http.Client) error {
 	body, err := json.Marshal(map[string]string{"id": nodeID})
 	if err != nil {
@@ -306,7 +391,7 @@ func postHeartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Api-Key", cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -345,8 +430,6 @@ func postResult(client *http.Client, cfg *NodeConfig, result nodes.JobResult) {
 		log.Printf("sakms-node: marshalling result for job %s: %v", result.JobID, err)
 		return
 	}
-	// Use a background context so a cancelled per-connection context does not
-	// prevent the result from being delivered.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -357,7 +440,7 @@ func postResult(client *http.Client, cfg *NodeConfig, result nodes.JobResult) {
 		log.Printf("sakms-node: building result request for job %s: %v", result.JobID, err)
 		return
 	}
-	req.Header.Set("X-Api-Key", cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {

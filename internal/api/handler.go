@@ -15,7 +15,6 @@ import (
 	"github.com/curtiswtaylorjr/sakms/internal/grabs"
 	"github.com/curtiswtaylorjr/sakms/internal/library"
 	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/nodes"
 	"github.com/curtiswtaylorjr/sakms/internal/parseentity"
 	"github.com/curtiswtaylorjr/sakms/internal/proposals"
 	"github.com/curtiswtaylorjr/sakms/internal/rename"
@@ -60,7 +59,7 @@ import (
 // feed URL fetched and parsed server-side, a separate concept from
 // slidersStore (TMDB-backed) and adultNewestRowStore (Prowlarr-scan-cache-
 // backed) even though its CRUD+reorder shape mirrors both.
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, nodeReg *nodes.Registry) *http.ServeMux {
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,
@@ -331,15 +330,6 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/repick", repickProposalHandler(propStore))
-
-	// Worker node endpoints — SSE job stream, heartbeat, result delivery, and
-	// the read-only list for the Settings → Nodes tab. All routes land here
-	// inside NewMux, so they inherit the same X-Api-Key-or-session middleware
-	// wrapping the whole mux (main.go applies auth at mount time, not per-route).
-	mux.HandleFunc("GET /api/nodes/stream", nodeStreamHandler(nodeReg))
-	mux.HandleFunc("POST /api/nodes/heartbeat", nodeHeartbeatHandler(nodeReg))
-	mux.HandleFunc("POST /api/nodes/jobs/{id}/result", nodeJobResultHandler(nodeReg))
-	mux.HandleFunc("GET /api/nodes", listNodesHandler(nodeReg))
 
 	return mux
 }

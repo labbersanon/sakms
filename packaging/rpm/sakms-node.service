@@ -1,0 +1,17 @@
+[Unit]
+Description=sakms worker node daemon
+Documentation=https://github.com/curtiswtaylorjr/sakms
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/sakms-node -config /etc/sakms-node/config.json
+Restart=on-failure
+RestartSec=10
+ProtectSystem=full
+ReadWritePaths=/etc/sakms-node
+
+[Install]
+WantedBy=multi-user.target

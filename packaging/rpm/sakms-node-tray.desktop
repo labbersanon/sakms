@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=sakms-node tray
+Comment=System tray companion for sakms-node worker daemon
+Exec=/usr/bin/sakms-node-tray
+Icon=network-server
+Categories=Network;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

@@ -1,0 +1,60 @@
+name: COPR build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  copr:
+    name: Submit SRPM to COPR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Determine version
+        id: ver
+        # Use the short commit SHA as the version pre-release segment so every
+        # main-branch build produces a unique, monotonically-sortable package.
+        run: echo "version=0.0.1~git$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build source archive
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          ARCHIVE="sakms-${VERSION}.tar.gz"
+          git archive --prefix="sakms-${VERSION}/" HEAD | gzip > "$ARCHIVE"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install copr-cli + rpmbuild
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y rpm copr-cli
+
+      - name: Write copr-cli config
+        # COPR_TOKEN secret must be set in the repo: Settings → Secrets.
+        # Format: the full ~/.config/copr content (token + login + copr_url).
+        run: |
+          mkdir -p ~/.config
+          echo "${{ secrets.COPR_TOKEN }}" > ~/.config/copr
+
+      - name: Generate spec with version substituted
+        run: |
+          sed "s/%{version}/$VERSION/g" packaging/rpm/sakms-node.spec > sakms-node.spec
+
+      - name: Build SRPM
+        run: |
+          rpmbuild -bs \
+            --define "_sourcedir $PWD" \
+            --define "_srcrpmdir $PWD" \
+            --define "version $VERSION" \
+            sakms-node.spec
+
+      - name: Submit to COPR
+        run: |
+          SRPM=$(ls sakms-node-*.src.rpm | head -1)
+          copr-cli build labbersanon/sakms "$SRPM"

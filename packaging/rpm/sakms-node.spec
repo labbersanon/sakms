@@ -12,6 +12,9 @@ Source0:        sakms-%{version}.tar.gz
 # sakms-node and sakms-node-tray are pure Go (CGO_ENABLED=0);
 # no GL or C build requirements needed.
 BuildRequires:  golang >= 1.22
+# Provides %{_unitdir} for the systemd unit file in %files below — COPR's
+# minimal mock buildroot doesn't pull this in unless explicitly required.
+BuildRequires:  systemd-rpm-macros
 
 Requires(post): systemd
 Requires(preun): systemd

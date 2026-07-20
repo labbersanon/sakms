@@ -11,6 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history required: version is derived from the total commit
+          # count, which a shallow (default depth-1) clone can't compute.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -18,9 +22,14 @@ jobs:
 
       - name: Determine version
         id: ver
-        # Use the short commit SHA as the version pre-release segment so every
-        # main-branch build produces a unique, monotonically-sortable package.
-        run: echo "version=0.0.1~git$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        # A raw short SHA is NOT monotonically sortable under RPM's version
+        # comparison (it splits into alternating digit/alpha segments, so
+        # e.g. "54ca3c7" compares greater than "8f02b42" by pure coincidence
+        # of hex digits, regardless of which commit is actually newer).
+        # Prefix a strictly-increasing commit count so the leading numeric
+        # segment always orders correctly; the short SHA stays for
+        # human/debugging traceability only.
+        run: echo "version=0.0.1~$(git rev-list --count HEAD).git$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Vendor Go modules
         # COPR builds run in a network-isolated mock chroot, so the module

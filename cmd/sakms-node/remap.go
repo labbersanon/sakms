@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/labbersanon/sakms/internal/nodes"
+)
 
 // Remap returns the local path for a server path using the configured path
 // map. It matches the longest server prefix (to handle overlapping prefixes
@@ -45,4 +49,25 @@ func Remap(entries []PathMapEntry, serverPath string) string {
 		rest = strings.ReplaceAll(rest, "/", "\\")
 	}
 	return e.Local + rest
+}
+
+// mergePathMap overlays incoming entries onto existing by Server key (add or
+// replace) and returns the merged result — a key present in existing but NOT
+// in incoming is left untouched, unlike a wholesale replace. This is what
+// makes the server's "only push non-empty rows" reconnect guard actually
+// hold: an excluded key (an unconfigured/disabled library-path row) keeps
+// whatever this node already had for it, rather than being silently dropped.
+func mergePathMap(existing []PathMapEntry, incoming []nodes.PathMapping) []PathMapEntry {
+	merged := make(map[string]PathMapEntry, len(existing)+len(incoming))
+	for _, pm := range existing {
+		merged[pm.Server] = pm
+	}
+	for _, pm := range incoming {
+		merged[pm.Server] = PathMapEntry{Server: pm.Server, Local: pm.Local}
+	}
+	out := make([]PathMapEntry, 0, len(merged))
+	for _, pm := range merged {
+		out = append(out, pm)
+	}
+	return out
 }

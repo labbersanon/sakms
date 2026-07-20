@@ -29,6 +29,7 @@ import (
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/nodekeys"
 	"github.com/labbersanon/sakms/internal/nodes"
+	"github.com/labbersanon/sakms/internal/nodesettings"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/phash"
 	"github.com/labbersanon/sakms/internal/proposals"
@@ -86,6 +87,7 @@ func run() error {
 	nodeReg := nodes.New()
 	pairingReg := nodes.NewPairingRegistry()
 	nodeKeyStore := nodekeys.New(sqlDB)
+	nodeSettingsStore := nodesettings.New(sqlDB)
 	phashDispatcher := nodes.NewDispatcher(nodeReg, nodes.JobTypePhash, hasher, 3*time.Minute)
 	videoDispatcher := nodes.NewDispatcher(nodeReg, nodes.JobTypeVideoPhash, videoHasher, 3*time.Minute)
 	settingsStore := settings.New(sqlDB)
@@ -185,7 +187,7 @@ func run() error {
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
 	// for operators). Mounted without a top-level auth.Middleware wrapper.
-	nodesMux := api.NewNodesMux(nodeReg, pairingReg, nodeKeyStore, secretStore, authStore)
+	nodesMux := api.NewNodesMux(nodeReg, pairingReg, nodeKeyStore, secretStore, authStore, settingsStore, nodeSettingsStore)
 
 	// API-key management (status + regenerate) is session-protected like
 	// the rest of /api/..., but deliberately NOT part of NewMux (see
@@ -235,13 +237,13 @@ func run() error {
 	// exists).
 	top.Handle("/api/auth/", api.NewAuthMux(authStore, secretStore))
 	top.HandleFunc("GET /api/openapi.yaml", api.OpenapiHandler())
-	top.Handle("/api/apikey", protectedAPIKey)                        // exact match: GET status
-	top.Handle("/api/apikey/", protectedAPIKey)                       // subtree: POST .../regenerate
-	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)             // exact match: manual "Refresh now"
-	top.Handle("GET /api/nodes/pair", api.PairStreamHandler(pairingReg))          // no auth: pre-pairing SSE
-	top.Handle("/api/nodes", nodesMux)                                             // exact match: GET list (per-handler auth inside)
-	top.Handle("/api/nodes/", nodesMux)                                            // subtree: {id}/approve, /pending, /settings, etc.
-	top.Handle("/api/", protectedAPI)                                              // more general; still wins for everything else
+	top.Handle("/api/apikey", protectedAPIKey)                           // exact match: GET status
+	top.Handle("/api/apikey/", protectedAPIKey)                          // subtree: POST .../regenerate
+	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)    // exact match: manual "Refresh now"
+	top.Handle("GET /api/nodes/pair", api.PairStreamHandler(pairingReg)) // no auth: pre-pairing SSE
+	top.Handle("/api/nodes", nodesMux)                                   // exact match: GET list (per-handler auth inside)
+	top.Handle("/api/nodes/", nodesMux)                                  // subtree: {id}/approve, /pending, /settings, etc.
+	top.Handle("/api/", protectedAPI)                                    // more general; still wins for everything else
 	// The frontend is mounted last and matches only what no /api/... route
 	// already claimed — Go's ServeMux picks the most specific pattern, so
 	// this never shadows a real API route. It's deliberately NOT behind

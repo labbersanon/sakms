@@ -21,7 +21,7 @@ func drainOneJob(t *testing.T, jobs <-chan Job) Job {
 
 func TestDispatchThenResultHappyPath(t *testing.T) {
 	r := New()
-	_, jobs, _, disconnect := r.Connect("node-a", []string{"cuda"})
+	jobs, _, _, disconnect := r.Connect("node-a-id", "node-a", []string{"cuda"})
 	defer disconnect()
 
 	job := Job{ID: "j1", Type: JobTypePhash, ServerPath: "/srv/x.mkv"}
@@ -60,7 +60,8 @@ func TestDispatchNoNodeFallback(t *testing.T) {
 
 func TestDispatchIneligibleNodeSkipped(t *testing.T) {
 	r := New()
-	nodeID, _, _, disconnect := r.Connect("node-a", nil)
+	nodeID := "node-a-id"
+	_, _, _, disconnect := r.Connect(nodeID, "node-a", nil)
 	defer disconnect()
 
 	// Drive the circuit breaker to threshold.
@@ -96,7 +97,7 @@ func TestReportResultUnknownJobIDNoOp(t *testing.T) {
 
 func TestLateResultAfterFallbackNoOp(t *testing.T) {
 	r := New()
-	_, jobs, _, disconnect := r.Connect("node-a", nil)
+	jobs, _, _, disconnect := r.Connect("node-a-id", "node-a", nil)
 	defer disconnect()
 
 	job := Job{ID: "j1", Type: JobTypePhash}
@@ -124,7 +125,8 @@ func TestLateResultAfterFallbackNoOp(t *testing.T) {
 
 func TestHeartbeatDrivenOnlineOffline(t *testing.T) {
 	r := New()
-	id, _, _, disconnect := r.Connect("node-a", nil)
+	id := "node-a-id"
+	_, _, _, disconnect := r.Connect(id, "node-a", nil)
 	defer disconnect()
 
 	nodesList := r.ListNodes()
@@ -160,7 +162,7 @@ func TestHeartbeatUnknownIDNoOp(t *testing.T) {
 
 func TestDisconnectMidJobFallback(t *testing.T) {
 	r := New()
-	_, jobs, _, disconnect := r.Connect("node-a", nil)
+	jobs, _, _, disconnect := r.Connect("node-a-id", "node-a", nil)
 
 	job := Job{ID: "j1", Type: JobTypePhash}
 	_, result, ok := r.Dispatch(job)
@@ -184,9 +186,153 @@ func TestDisconnectMidJobFallback(t *testing.T) {
 	r.ClearPending("j1")
 }
 
+// TestStaleDisconnectDoesNotEvictNewerConnection confirms the identity guard
+// added when Connect switched from a fresh-per-call id to a durable, reused
+// id: a stale disconnect from an old connection must never remove a newer
+// connection's entry for the same id. Before this guard, a node reconnecting
+// under the same durable id while its old connection's disconnect was still
+// pending would have this exact race, since both closures captured the same
+// map key.
+func TestStaleDisconnectDoesNotEvictNewerConnection(t *testing.T) {
+	r := New()
+	const id = "node-a-id"
+
+	oldJobs, _, _, oldDisconnect := r.Connect(id, "node-a", nil)
+	_ = oldJobs
+
+	// Node reconnects under the same durable id before the old connection's
+	// disconnect has run (e.g. a brief overlap during a reconnect).
+	newJobs, _, _, newDisconnect := r.Connect(id, "node-a", nil)
+	defer newDisconnect()
+
+	// The stale old disconnect must be a no-op now — it must NOT evict the
+	// newer connection's entry.
+	oldDisconnect()
+
+	r.mu.Lock()
+	_, stillPresent := r.nodes[id]
+	r.mu.Unlock()
+	if !stillPresent {
+		t.Fatal("stale disconnect evicted the newer connection's entry")
+	}
+
+	// The newer connection's jobs channel must still be open and usable.
+	job := Job{ID: "j1", Type: JobTypePhash}
+	if _, _, ok := r.Dispatch(job); !ok {
+		t.Fatal("Dispatch failed after a stale disconnect wrongly closed the live node's channel")
+	}
+	drainOneJob(t, newJobs)
+	r.ClearPending("j1")
+}
+
+// TestRequestBrowse_HappyPath confirms the targeted lookup: RequestBrowse
+// reaches the one specific connected node by durable id and returns its
+// answer.
+func TestRequestBrowse_HappyPath(t *testing.T) {
+	r := New()
+	_, _, browse, disconnect := r.Connect("node-a-id", "node-a", nil)
+	defer disconnect()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case req := <-browse:
+			if req.Path != "/mnt/media" {
+				t.Errorf("node received path %q, want /mnt/media", req.Path)
+			}
+			r.ReportBrowseResult(BrowseResult{
+				RequestID: req.ID,
+				Entries:   []BrowseEntry{{Name: "movies", Path: "/mnt/media/movies"}},
+			})
+		case <-time.After(time.Second):
+			t.Error("node never received the browse request")
+		}
+	}()
+
+	result, err := r.RequestBrowse("node-a-id", "/mnt/media")
+	if err != nil {
+		t.Fatalf("RequestBrowse returned error: %v", err)
+	}
+	if len(result.Entries) != 1 || result.Entries[0].Name != "movies" {
+		t.Fatalf("got entries %+v, want one entry named movies", result.Entries)
+	}
+	<-done
+}
+
+// TestRequestBrowse_UnknownNodeID confirms an immediate, clear error for a
+// node ID that isn't connected — not a hang, not a panic.
+func TestRequestBrowse_UnknownNodeID(t *testing.T) {
+	r := New()
+	_, err := r.RequestBrowse("nonexistent-id", "/mnt/media")
+	if err == nil {
+		t.Fatal("expected an error for an unconnected node ID")
+	}
+}
+
+// TestRequestBrowse_TimeoutNoFallback confirms RequestBrowse has NO local
+// fallback (unlike Dispatch): when the node never answers, it returns an
+// honest timeout error rather than substituting a local result.
+func TestRequestBrowse_TimeoutNoFallback(t *testing.T) {
+	old := browseTimeout
+	browseTimeout = 20 * time.Millisecond
+	defer func() { browseTimeout = old }()
+
+	r := New()
+	_, _, browse, disconnect := r.Connect("node-a-id", "node-a", nil)
+	defer disconnect()
+
+	go func() { <-browse }() // node reads the request but never answers
+
+	_, err := r.RequestBrowse("node-a-id", "/mnt/media")
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil (RequestBrowse must not silently fall back to anything)")
+	}
+}
+
+// TestRequestBrowse_DoesNotShareStateWithJobDispatch confirms the isolated
+// lane's core property: a pending browse request does not touch the phash
+// pending map, and a phash Dispatch does not touch pendingBrowse.
+func TestRequestBrowse_DoesNotShareStateWithJobDispatch(t *testing.T) {
+	r := New()
+	jobs, _, browse, disconnect := r.Connect("node-a-id", "node-a", nil)
+	defer disconnect()
+
+	go func() {
+		req := <-browse
+		r.ReportBrowseResult(BrowseResult{RequestID: req.ID, Entries: []BrowseEntry{{Name: "x", Path: "/x"}}})
+	}()
+	if _, err := r.RequestBrowse("node-a-id", "/mnt/media"); err != nil {
+		t.Fatalf("RequestBrowse: %v", err)
+	}
+
+	r.mu.Lock()
+	jobPendingCount := len(r.pending)
+	r.mu.Unlock()
+	if jobPendingCount != 0 {
+		t.Fatalf("phash pending map has %d entries after a browse request, want 0 — browse and job dispatch must not share state", jobPendingCount)
+	}
+
+	// And the reverse: a normal job dispatch doesn't touch pendingBrowse.
+	job := Job{ID: "j1", Type: JobTypePhash}
+	if _, _, ok := r.Dispatch(job); !ok {
+		t.Fatal("Dispatch ok=false unexpectedly")
+	}
+	drainOneJob(t, jobs)
+	r.ReportResult(JobResult{JobID: "j1", Hash: "abc"})
+	r.ClearPending("j1")
+
+	r.mu.Lock()
+	browsePendingCount := len(r.pendingBrowse)
+	r.mu.Unlock()
+	if browsePendingCount != 0 {
+		t.Fatalf("pendingBrowse has %d entries after a job dispatch, want 0", browsePendingCount)
+	}
+}
+
 func TestConcurrentDispatches(t *testing.T) {
 	r := New()
-	_, jobs, _, disconnect := r.Connect("node-a", nil)
+	jobs, _, _, disconnect := r.Connect("node-a-id", "node-a", nil)
 	defer disconnect()
 
 	const n = 4

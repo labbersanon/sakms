@@ -13,6 +13,7 @@ import {
 } from "solid-js";
 import {
   approveNode,
+  fetchNodePathMappings,
   fetchNodes,
   rejectPending,
   updateNodeSettings,
@@ -26,7 +27,13 @@ import {
   labelClass,
   Muted,
 } from "../../components/ui";
-import type { NodeInfo, PathMapping, PendingNodeInfo } from "@dto";
+import { NodeFolderPicker } from "../../components/NodeFolderPicker";
+import type {
+  NodeInfo,
+  NodePathMappingEntry,
+  NodePathMappingInput,
+  PendingNodeInfo,
+} from "@dto";
 
 function formatHeartbeat(ts: string): string {
   const ms = Date.now() - new Date(ts).getTime();
@@ -40,69 +47,122 @@ function formatHeartbeat(ts: string): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
-// PathMapEditor is the shared server→local path mapping form used by both
-// the approve and edit-settings modals.
-const PathMapEditor: Component<{
-  rows: PathMapping[];
-  onChange: (rows: PathMapping[]) => void;
+// LIBRARY_PATH_LABELS gives each of the 5 fixed library-path keys a readable
+// row label. Order here is display order, top to bottom.
+const LIBRARY_PATH_LABELS: Record<string, string> = {
+  movies_library_root_folder: "Movies library root",
+  series_library_root_folder: "Series library root",
+  adult_library_root_folder: "Adult library root",
+  movies_kids_root_path: "Movies kids root",
+  series_kids_root_path: "Series kids root",
+};
+
+function pathMapInput(
+  nodePaths: Record<string, string>,
+): NodePathMappingInput[] {
+  return Object.entries(nodePaths).map(([key, nodePath]) => ({
+    key,
+    nodePath,
+  }));
+}
+
+// NodePathMappingRow renders one fixed row: a read-only label + the library
+// path's current server-side value (for context — Library settings owns
+// configuring it, not this form), and either a live node-browsable picker
+// (nodeId present — an already-approved, connected node) or a plain text
+// input (ApproveModal, before live browsing is available). A row whose
+// library path isn't configured yet renders disabled/grayed with a note,
+// rather than being hidden — the fixed-5-row structure always stays visible.
+const NodePathMappingRow: Component<{
+  entry: NodePathMappingEntry;
+  value: string;
+  onChange: (nodePath: string) => void;
+  nodeId?: string;
 }> = (props) => {
-  const update = (i: number, field: "server" | "local", value: string) => {
-    props.onChange(
-      props.rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)),
-    );
-  };
-  const remove = (i: number) => {
-    props.onChange(props.rows.filter((_, idx) => idx !== i));
-  };
-  const add = () => props.onChange([...props.rows, { server: "", local: "" }]);
+  const label = () => LIBRARY_PATH_LABELS[props.entry.key] ?? props.entry.key;
 
   return (
-    <div class="space-y-2">
-      <span class={labelClass}>Path mappings (server → node)</span>
-      <Show when={props.rows.length === 0}>
-        <Muted>No mappings — node and server share the same paths.</Muted>
-      </Show>
-      <For each={props.rows}>
-        {(row, i) => (
-          <div class="flex items-center gap-2">
-            <input
-              class={`${inputClass} flex-1 min-w-0`}
-              placeholder="/srv/media"
-              value={row.server}
-              onInput={(e) => update(i(), "server", e.currentTarget.value)}
-            />
-            <span class="shrink-0 text-xs text-muted">→</span>
-            <input
-              class={`${inputClass} flex-1 min-w-0`}
-              placeholder="/mnt/media"
-              value={row.local}
-              onInput={(e) => update(i(), "local", e.currentTarget.value)}
-            />
-            <button
-              type="button"
-              class="shrink-0 text-sm text-muted hover:text-fg"
-              onClick={() => remove(i())}
-              title="Remove mapping"
-            >
-              ×
-            </button>
-          </div>
+    <div class="space-y-1 border-b border-border py-2 last:border-b-0">
+      <div class="flex items-baseline justify-between gap-2">
+        <span class={labelClass}>{label()}</span>
+        <Show
+          when={props.entry.configured}
+          fallback={
+            <span class="text-xs text-muted">
+              configure this in Library settings first
+            </span>
+          }
+        >
+          <span
+            class="truncate text-xs text-muted"
+            title={props.entry.serverPath}
+          >
+            {props.entry.serverPath}
+          </span>
+        </Show>
+      </div>
+      <Show
+        when={props.nodeId}
+        fallback={
+          <input
+            class={inputClass}
+            placeholder="/mnt/media"
+            value={props.value}
+            disabled={!props.entry.configured}
+            onInput={(e) => props.onChange(e.currentTarget.value)}
+          />
+        }
+      >
+        {(nodeId) => (
+          <NodeFolderPicker
+            nodeId={nodeId()}
+            value={() => props.value}
+            onChange={props.onChange}
+            placeholder="/mnt/media"
+            disabled={!props.entry.configured}
+          />
         )}
-      </For>
-      <Button onClick={add}>+ Add mapping</Button>
+      </Show>
     </div>
   );
 };
 
-// ApproveModal collects path mappings and maxJobs then POSTs to approve the node.
-// The raw per-node API key is delivered directly to the node via the pairing
-// SSE stream — the operator never sees it.
+// useNodePathMappings loads the fixed 5-row list for a node id (works for a
+// not-yet-approved pending id too — see fetchNodePathMappings' doc comment)
+// and tracks the operator's in-progress NodePath edits keyed by library path
+// key, seeded from each row's persisted value.
+function useNodePathMappings(nodeId: () => string) {
+  const [rows] = createResource(nodeId, fetchNodePathMappings);
+  const [nodePaths, setNodePaths] = createSignal<Record<string, string>>({});
+
+  createEffect(() => {
+    const entries = rows()?.entries;
+    if (!entries) return;
+    const seeded: Record<string, string> = {};
+    for (const e of entries) seeded[e.key] = e.nodePath;
+    setNodePaths(seeded);
+  });
+
+  const setOne = (key: string, value: string) =>
+    setNodePaths((prev) => ({ ...prev, [key]: value }));
+
+  return { rows, nodePaths, setOne };
+}
+
+// ApproveModal collects path mappings and maxJobs then POSTs to approve the
+// node. The raw per-node API key is delivered directly to the node via the
+// pairing SSE stream — the operator never sees it. Node paths are plain text
+// here (no live browse yet — the node isn't approved/connected until this
+// submits), per the approved decision that live browsing is available only
+// after approval.
 const ApproveModal: Component<{
   pending: PendingNodeInfo;
   onClose: () => void;
   onDone: () => void;
 }> = (props) => {
-  const [pathMap, setPathMap] = createSignal<PathMapping[]>([]);
+  const { rows, nodePaths, setOne } = useNodePathMappings(
+    () => props.pending.id,
+  );
   const [maxJobs, setMaxJobs] = createSignal(0);
   const [saving, setSaving] = createSignal(false);
   const [err, setErr] = createSignal("");
@@ -112,7 +172,7 @@ const ApproveModal: Component<{
     setErr("");
     try {
       await approveNode(props.pending.id, {
-        pathMap: pathMap(),
+        pathMap: pathMapInput(nodePaths()),
         maxJobs: maxJobs(),
       });
       props.onDone();
@@ -133,7 +193,25 @@ const ApproveModal: Component<{
             {props.pending.pairingCode}
           </code>
         </p>
-        <PathMapEditor rows={pathMap()} onChange={setPathMap} />
+        <div>
+          <span class={labelClass}>Path mappings (library → node)</span>
+          <p class="mb-2 text-xs text-muted">
+            Live directory browsing is available after approval — type the
+            node-side path for now.
+          </p>
+          <Show when={rows.loading}>
+            <Muted>Loading library paths…</Muted>
+          </Show>
+          <For each={rows()?.entries}>
+            {(entry) => (
+              <NodePathMappingRow
+                entry={entry}
+                value={nodePaths()[entry.key] ?? ""}
+                onChange={(v) => setOne(entry.key, v)}
+              />
+            )}
+          </For>
+        </div>
         <div>
           <label class={labelClass}>
             Max concurrent jobs (0 = unlimited)
@@ -161,14 +239,18 @@ const ApproveModal: Component<{
 };
 
 // EditSettingsModal pushes new path mappings and maxJobs to an approved node
-// via the settings SSE event. Always starts from a blank form — current
-// settings live only in the node daemon's config file, not on the server.
+// via the settings SSE event. Loads the node's real persisted current values
+// (GET /api/nodes/{id}/path-mappings) instead of always starting blank, and
+// offers a live node-browsable picker per row since this node is already
+// approved and (usually) connected.
 const EditSettingsModal: Component<{
   node: NodeInfo;
   onClose: () => void;
   onDone: () => void;
 }> = (props) => {
-  const [pathMap, setPathMap] = createSignal<PathMapping[]>([]);
+  const { rows, nodePaths, setOne } = useNodePathMappings(
+    () => props.node.id,
+  );
   const [maxJobs, setMaxJobs] = createSignal(0);
   const [saving, setSaving] = createSignal(false);
   const [err, setErr] = createSignal("");
@@ -178,7 +260,7 @@ const EditSettingsModal: Component<{
     setErr("");
     try {
       await updateNodeSettings(props.node.id, {
-        pathMap: pathMap(),
+        pathMap: pathMapInput(nodePaths()),
         maxJobs: maxJobs(),
       });
       props.onDone();
@@ -196,7 +278,22 @@ const EditSettingsModal: Component<{
       onClose={props.onClose}
     >
       <div class="space-y-4">
-        <PathMapEditor rows={pathMap()} onChange={setPathMap} />
+        <div>
+          <span class={labelClass}>Path mappings (library → node)</span>
+          <Show when={rows.loading}>
+            <Muted>Loading library paths…</Muted>
+          </Show>
+          <For each={rows()?.entries}>
+            {(entry) => (
+              <NodePathMappingRow
+                entry={entry}
+                value={nodePaths()[entry.key] ?? ""}
+                onChange={(v) => setOne(entry.key, v)}
+                nodeId={props.node.id}
+              />
+            )}
+          </For>
+        </div>
         <div>
           <label class={labelClass}>
             Max concurrent jobs (0 = unlimited)

@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"crypto/rand"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -24,55 +25,82 @@ const (
 	jobsBuffer = 64
 )
 
+// browseTimeout bounds how long RequestBrowse waits for a node's answer. This
+// is an interactive, operator-initiated click (populating a directory
+// picker), not a batch phash job — it should read as near-instant on a
+// healthy connected node, so this is deliberately much shorter than the
+// phash Dispatchers' multi-minute timeouts (main.go), which exist for
+// genuinely long-running hash computation, not a directory listing.
+// A package-level var, not a const, so tests can temporarily shrink it
+// rather than block for the real 10s on a timeout test.
+var browseTimeout = 10 * time.Second
+
 // connectedNode is the Registry's live view of one connected node. jobs is the
 // channel the SSE handler ranges over; a live jobs channel is the node's
 // dispatch eligibility, while lastHeartbeat drives display status separately.
 // settings carries operator-pushed NodeSettings updates (buffer 1; non-blocking
-// send, latest wins).
+// send, latest wins). browse carries operator-initiated BrowseRequests —
+// deliberately its own channel, not multiplexed onto jobs, so an interactive
+// directory-browse click never shares state, buffering, or circuit-breaker
+// behavior with phash job dispatch (see BrowseRequest's doc comment).
 type connectedNode struct {
 	name                string
 	capabilities        []string
 	jobs                chan Job
 	settings            chan NodeSettings
+	browse              chan BrowseRequest
 	lastHeartbeat       time.Time
 	consecutiveTimeouts int
 	dispatchIneligible  bool
 }
 
 // Registry is the in-memory, mutex-guarded set of connected nodes plus the
-// pending result channels for in-flight jobs. Safe for concurrent use.
+// pending result channels for in-flight jobs and in-flight browse requests.
+// Safe for concurrent use.
 type Registry struct {
-	mu      sync.Mutex
-	nodes   map[string]*connectedNode // key = server-assigned id
-	pending map[string]chan JobResult // key = JobID; each channel buffered cap 1
+	mu            sync.Mutex
+	nodes         map[string]*connectedNode    // key = durable node id (from the node's bearer key)
+	pending       map[string]chan JobResult    // key = JobID; each channel buffered cap 1
+	pendingBrowse map[string]chan BrowseResult // key = BrowseRequest.ID; each channel buffered cap 1 — structurally identical to pending but kept separate, matching the browse channel's isolation from jobs
 }
 
 // New returns an empty Registry.
 func New() *Registry {
 	return &Registry{
-		nodes:   make(map[string]*connectedNode),
-		pending: make(map[string]chan JobResult),
+		nodes:         make(map[string]*connectedNode),
+		pending:       make(map[string]chan JobResult),
+		pendingBrowse: make(map[string]chan BrowseResult),
 	}
 }
 
-// Connect assigns a fresh ephemeral id, registers the node's buffered job
-// channel plus metadata, and returns the id, the outbound job channel the SSE
-// handler ranges over, a settings channel for operator-pushed config updates,
-// and a disconnect func the handler defers. The SSE handler must emit
+// Connect registers the node's buffered job channel plus metadata under id —
+// the durable node identity resolved from the validated bearer key, stable
+// across every reconnect for this node — and returns the outbound job channel
+// the SSE handler ranges over, a settings channel for operator-pushed config
+// updates, and a disconnect func the handler defers. The SSE handler must emit
 // ConnectAck{NodeID: id} as the first event before ranging.
-func (r *Registry) Connect(name string, capabilities []string) (id string, jobs <-chan Job, settings <-chan NodeSettings, disconnect func()) {
-	id = rand.Text()
+//
+// Because id is durable rather than freshly minted per call, a node that
+// reconnects before its prior connection's disconnect has run would otherwise
+// let the old connection's deferred disconnect race the new one and delete
+// the new entry. disconnect() guards against this by only ever removing the
+// exact *connectedNode this call created, never whatever is currently in the
+// map under id.
+func (r *Registry) Connect(id, name string, capabilities []string) (jobs <-chan Job, settings <-chan NodeSettings, browse <-chan BrowseRequest, disconnect func()) {
 	jobsCh := make(chan Job, jobsBuffer)
 	settingsCh := make(chan NodeSettings, 1)
-
-	r.mu.Lock()
-	r.nodes[id] = &connectedNode{
+	browseCh := make(chan BrowseRequest, 1)
+	self := &connectedNode{
 		name:          name,
 		capabilities:  capabilities,
 		jobs:          jobsCh,
 		settings:      settingsCh,
+		browse:        browseCh,
 		lastHeartbeat: time.Now(),
 	}
+
+	r.mu.Lock()
+	r.nodes[id] = self
 	r.mu.Unlock()
 
 	var once sync.Once
@@ -80,15 +108,16 @@ func (r *Registry) Connect(name string, capabilities []string) (id string, jobs 
 		once.Do(func() {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			if _, ok := r.nodes[id]; !ok {
+			if cur, ok := r.nodes[id]; !ok || cur != self {
 				return
 			}
 			delete(r.nodes, id)
 			close(jobsCh)
 			close(settingsCh)
+			close(browseCh)
 		})
 	}
-	return id, jobsCh, settingsCh, disconnect
+	return jobsCh, settingsCh, browseCh, disconnect
 }
 
 // SendSettings pushes an updated NodeSettings to the connected node identified
@@ -109,6 +138,68 @@ func (r *Registry) SendSettings(nodeID string, s NodeSettings) bool {
 	default:
 		r.mu.Unlock()
 		return false
+	}
+}
+
+// RequestBrowse asks one specific, already-connected node to list a
+// directory, and blocks until it answers or browseTimeout elapses.
+// Deliberately has NO local-fallback branch, unlike Dispatch: there is no
+// sensible "local" equivalent of listing a specific node's filesystem, so a
+// timeout or missing node is reported as an honest error to the caller
+// instead of silently substituting something else.
+func (r *Registry) RequestBrowse(nodeID, path string) (BrowseResult, error) {
+	r.mu.Lock()
+	n, ok := r.nodes[nodeID]
+	if !ok {
+		r.mu.Unlock()
+		return BrowseResult{}, fmt.Errorf("node %s not connected", nodeID)
+	}
+
+	reqID := rand.Text()
+	res := make(chan BrowseResult, 1)
+	r.pendingBrowse[reqID] = res
+
+	select {
+	case n.browse <- BrowseRequest{ID: reqID, Path: path}:
+		r.mu.Unlock()
+	default:
+		delete(r.pendingBrowse, reqID)
+		r.mu.Unlock()
+		return BrowseResult{}, fmt.Errorf("node %s already has a browse request in flight", nodeID)
+	}
+
+	defer func() {
+		r.mu.Lock()
+		delete(r.pendingBrowse, reqID)
+		r.mu.Unlock()
+	}()
+
+	select {
+	case result := <-res:
+		if result.Error != "" {
+			return BrowseResult{}, fmt.Errorf("node reported: %s", result.Error)
+		}
+		return result, nil
+	case <-time.After(browseTimeout):
+		return BrowseResult{}, fmt.Errorf("node %s did not respond within %s — is it still connected?", nodeID, browseTimeout)
+	}
+}
+
+// ReportBrowseResult delivers a node's BrowseResult to the waiting
+// RequestBrowse caller by RequestID via a non-blocking send into the cap-1
+// pendingBrowse channel. Safe no-op for an unknown or already-cleaned-up
+// RequestID — never panics, never blocks — mirroring ReportResult's
+// contract for the phash path.
+func (r *Registry) ReportBrowseResult(res BrowseResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ch, ok := r.pendingBrowse[res.RequestID]
+	if !ok {
+		return
+	}
+	select {
+	case ch <- res:
+	default:
 	}
 }
 

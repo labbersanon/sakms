@@ -44,27 +44,29 @@ func (s *Store) Create(ctx context.Context, name string) (id, rawKey string, err
 }
 
 // Validate does a constant-time scan of all stored hashes against rawKey.
-// Returns the node name and true on a match.
-func (s *Store) Validate(ctx context.Context, rawKey string) (name string, ok bool) {
+// Returns the durable node id, its name, and true on a match. The id is the
+// same durable identity minted once by Create and is stable across every
+// future reconnect for this node.
+func (s *Store) Validate(ctx context.Context, rawKey string) (id, name string, ok bool) {
 	if rawKey == "" {
-		return "", false
+		return "", "", false
 	}
 	presented := []byte(hashKey(rawKey))
-	rows, err := s.db.QueryContext(ctx, `SELECT key_hash, name FROM node_keys`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, key_hash, name FROM node_keys`)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var storedHash, nodeName string
-		if err := rows.Scan(&storedHash, &nodeName); err != nil {
+		var rowID, storedHash, nodeName string
+		if err := rows.Scan(&rowID, &storedHash, &nodeName); err != nil {
 			continue
 		}
 		if subtle.ConstantTimeCompare(presented, []byte(storedHash)) == 1 {
-			return nodeName, true
+			return rowID, nodeName, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // Revoke deletes the key record with the given id. A missing id is not an error.

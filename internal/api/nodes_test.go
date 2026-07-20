@@ -25,7 +25,8 @@ func testNodeMux(t *testing.T, reg *nodes.Registry) *http.ServeMux {
 func TestNodeHeartbeat_204(t *testing.T) {
 	reg := nodes.New()
 	// Connect a node so the id is known.
-	id, _, _, disconnect := reg.Connect("test-node", nil)
+	id := "test-node-id"
+	_, _, _, disconnect := reg.Connect(id, "test-node", nil)
 	defer disconnect()
 
 	srv := httptest.NewServer(testNodeMux(t, reg))
@@ -64,7 +65,7 @@ func TestNodeHeartbeat_UnknownID_NoError(t *testing.T) {
 func TestNodeJobResult_204(t *testing.T) {
 	reg := nodes.New()
 	// Connect a node and dispatch a job so there is a pending channel.
-	_, _, _, disconnect := reg.Connect("result-node", nil)
+	_, _, _, disconnect := reg.Connect("result-node-id", "result-node", nil)
 	defer disconnect()
 
 	job := nodes.Job{ID: "job-abc", Type: nodes.JobTypePhash, ServerPath: "/data/movie.mkv"}
@@ -139,7 +140,7 @@ func TestListNodes_EmptyRegistry(t *testing.T) {
 // capabilities, lastHeartbeat all present for a connected node.
 func TestListNodes_ConnectedNode(t *testing.T) {
 	reg := nodes.New()
-	_, _, _, disconnect := reg.Connect("render-box", []string{"cuda"})
+	_, _, _, disconnect := reg.Connect("render-box-id", "render-box", []string{"cuda"})
 	defer disconnect()
 
 	srv := httptest.NewServer(testNodeMux(t, reg))

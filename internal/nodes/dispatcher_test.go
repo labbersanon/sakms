@@ -23,7 +23,7 @@ func (f *fakeLocal) Hash(_ context.Context, _ string) (string, error) {
 
 func TestDispatcherDispatchesToNode(t *testing.T) {
 	r := New()
-	_, jobs, _, disconnect := r.Connect("node-a", nil)
+	jobs, _, _, disconnect := r.Connect("node-a-id", "node-a", nil)
 	defer disconnect()
 
 	local := &fakeLocal{hash: "local"}
@@ -72,7 +72,8 @@ func TestDispatcherFallsBackWhenNoNode(t *testing.T) {
 
 func TestDispatcherFallsBackOnTimeout(t *testing.T) {
 	r := New()
-	nodeID, jobs, _, disconnect := r.Connect("node-a", nil)
+	nodeID := "node-a-id"
+	jobs, _, _, disconnect := r.Connect(nodeID, "node-a", nil)
 	defer disconnect()
 
 	local := &fakeLocal{hash: "local"}
@@ -103,7 +104,8 @@ func TestDispatcherFallsBackOnTimeout(t *testing.T) {
 
 func TestDispatcherFallsBackOnNodeError(t *testing.T) {
 	r := New()
-	nodeID, jobs, _, disconnect := r.Connect("node-a", nil)
+	nodeID := "node-a-id"
+	jobs, _, _, disconnect := r.Connect(nodeID, "node-a", nil)
 	defer disconnect()
 
 	local := &fakeLocal{hash: "local"}
@@ -132,7 +134,8 @@ func TestDispatcherFallsBackOnNodeError(t *testing.T) {
 
 func TestDispatcherCtxCancelDoesNotPenalizeNode(t *testing.T) {
 	r := New()
-	nodeID, jobs, _, disconnect := r.Connect("node-a", nil)
+	nodeID := "node-a-id"
+	jobs, _, _, disconnect := r.Connect(nodeID, "node-a", nil)
 	defer disconnect()
 
 	local := &fakeLocal{hash: "local"}
@@ -166,7 +169,8 @@ func TestDispatcherCtxCancelDoesNotPenalizeNode(t *testing.T) {
 
 func TestDispatcherSuccessResetsCircuitBreaker(t *testing.T) {
 	r := New()
-	nodeID, jobs, _, disconnect := r.Connect("node-a", nil)
+	nodeID := "node-a-id"
+	jobs, _, _, disconnect := r.Connect(nodeID, "node-a", nil)
 	defer disconnect()
 
 	// Pre-load the breaker below threshold.

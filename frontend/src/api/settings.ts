@@ -47,6 +47,8 @@ import type {
   NetscanHostRequest,
   NetscanProwlarrKeyRequest,
   NetscanProwlarrKeyResponse,
+  NodeBrowseResponse,
+  NodePathMappingsResponse,
   NodeSettingsRequest,
   NodesResponse,
   OIDCConfigRequest,
@@ -640,4 +642,24 @@ export function updateNodeSettings(id: string, body: NodeSettingsRequest): Promi
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+// fetchNodePathMappings is read-only: it always returns the fixed 5 rows
+// (one per library root-folder setting), each with its current server-side
+// value (for the label) and this node's persisted NodePath, if any was ever
+// saved. Works for a not-yet-approved pending node's id too (nothing has been
+// persisted for it, so every NodePath comes back blank) — labels/Configured
+// come from Library settings, not from node approval/connection state.
+export function fetchNodePathMappings(id: string): Promise<NodePathMappingsResponse> {
+  return api<NodePathMappingsResponse>(`/api/nodes/${id}/path-mappings`);
+}
+
+// fetchNodeBrowse lists the subdirectories of a path on a specific connected
+// node's own filesystem (not the server's) — only usable for an already-
+// approved, currently-connected node. Throws with a clear message (surfaced
+// by the caller) when the node isn't connected or doesn't answer in time.
+export function fetchNodeBrowse(id: string, path: string): Promise<NodeBrowseResponse> {
+  return api<NodeBrowseResponse>(
+    `/api/nodes/${id}/browse?path=${encodeURIComponent(path)}`,
+  );
 }

@@ -12,9 +12,10 @@ import "time"
 // SSE event name constants for the pre-auth pairing stream and the
 // authenticated job stream.
 const (
-	EventPending  = "pending"  // server → node: pairing code assigned
-	EventConfig   = "config"   // server → node: approved; carries apiKey + settings
-	EventSettings = "settings" // server → node: operator updated path mappings / maxJobs
+	EventPending       = "pending"       // server → node: pairing code assigned
+	EventConfig        = "config"        // server → node: approved; carries apiKey + settings
+	EventSettings      = "settings"      // server → node: operator updated path mappings / maxJobs
+	EventBrowseRequest = "browseRequest" // server → node: operator wants a directory listing
 )
 
 // PathMapping translates one server-side path prefix to its local equivalent
@@ -88,4 +89,31 @@ type NodeInfo struct {
 // heartbeat and result POSTs.
 type ConnectAck struct {
 	NodeID string `json:"nodeId"`
+}
+
+// BrowseRequest is one directory-listing request pushed to a specific,
+// already-connected node — a deliberately isolated lane, not a Job: browsing
+// has no meaningful local fallback (there is nothing sensible to fall back
+// to when the operator wants to see THIS node's filesystem), so it does not
+// share state, circuit-breaker behavior, or wire shape with the phash
+// Job/JobResult path. ID correlates the eventual BrowseResult back to the
+// waiting RequestBrowse caller.
+type BrowseRequest struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+
+// BrowseResult is a node's POSTed answer for one BrowseRequest. Exactly one
+// of Entries/Error is meaningful, mirroring JobResult's Hash/Error
+// convention.
+type BrowseResult struct {
+	RequestID string        `json:"requestId"`
+	Entries   []BrowseEntry `json:"entries,omitempty"`
+	Error     string        `json:"error,omitempty"`
+}
+
+// BrowseEntry is one subdirectory a node reports back for a BrowseRequest.
+type BrowseEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }

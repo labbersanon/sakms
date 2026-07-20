@@ -1430,26 +1430,104 @@ type PendingNodeInfo struct {
 }
 
 // PathMapping translates one server-side path prefix to its local equivalent
-// on the worker node.
+// on the worker node. This is the wire shape pushed down to the node itself
+// (over the settings SSE event) — unchanged by the library-path-driven
+// mapping feature; only how the operator PRODUCES a []PathMapping changed
+// (see NodePathMappingInput below), not what the node receives.
 type PathMapping struct {
 	Server string `json:"server"`
 	Local  string `json:"local"`
 }
 
 // NodeSettingsRequest is the body for PUT /api/nodes/{id}/settings.
+// PathMap and MaxJobs travel together deliberately: cmd/sakms-node's
+// EventSettings handler assigns MaxJobs directly (a scalar, not a merge), so
+// splitting these into separate write endpoints would let a path-mapping-only
+// save silently reset MaxJobs to 0. There is no separate PUT
+// /api/nodes/{id}/path-mappings endpoint for this reason — see
+// GET /api/nodes/{id}/path-mappings below, which is read-only.
 type NodeSettingsRequest struct {
-	PathMap []PathMapping `json:"pathMap"`
-	MaxJobs int           `json:"maxJobs"`
+	PathMap []NodePathMappingInput `json:"pathMap"`
+	MaxJobs int                    `json:"maxJobs"`
 }
 
 // ApproveNodeRequest is the body for POST /api/nodes/{id}/approve.
 type ApproveNodeRequest struct {
-	PathMap []PathMapping `json:"pathMap"`
-	MaxJobs int           `json:"maxJobs"`
+	PathMap []NodePathMappingInput `json:"pathMap"`
+	MaxJobs int                    `json:"maxJobs"`
 }
 
 // NodesResponse is GET /api/nodes's response.
 type NodesResponse struct {
 	Nodes   []NodeInfo        `json:"nodes"`
 	Pending []PendingNodeInfo `json:"pending"`
+}
+
+// --- Library-path-driven node path mapping ---------------------------------
+//
+// Replaces the free-form, operator-typed PathMapping editor with a fixed set
+// of rows, one per configured library root-folder path. LibraryPathKey
+// values are the exact settings-store keys these paths are already stored
+// under (see internal/api/library.go's *LibraryRootFolderKey constants and
+// internal/mode.Mode.KidsRootPathKey) so no separate translation table is
+// needed between this feature and Library settings' own storage. Adult has
+// no kids-root setting, so there are 5 keys total, not 6.
+
+// LibraryPathKey identifies one of the 5 library root-folder-type settings a
+// node's path mapping can correspond to.
+type LibraryPathKey string
+
+const (
+	LibraryPathMoviesRoot LibraryPathKey = "movies_library_root_folder"
+	LibraryPathSeriesRoot LibraryPathKey = "series_library_root_folder"
+	LibraryPathAdultRoot  LibraryPathKey = "adult_library_root_folder"
+	LibraryPathMoviesKids LibraryPathKey = "movies_kids_root_path"
+	LibraryPathSeriesKids LibraryPathKey = "series_kids_root_path"
+)
+
+// NodePathMappingEntry is one row in a node's library-path-driven path
+// mapping. ServerPath is read fresh from Library settings every time (a
+// read-only label — Library settings, not this feature, owns configuring
+// it). NodePath is what's persisted for this node. Configured is false when
+// ServerPath is empty (the library path hasn't been set up yet) — the row
+// still renders, just disabled, rather than being omitted.
+type NodePathMappingEntry struct {
+	Key        LibraryPathKey `json:"key"`
+	ServerPath string         `json:"serverPath"`
+	NodePath   string         `json:"nodePath"`
+	Configured bool           `json:"configured"`
+}
+
+// NodePathMappingsResponse is GET /api/nodes/{id}/path-mappings's response —
+// read-only; see NodeSettingsRequest's doc comment for why there is no
+// corresponding write endpoint at this path.
+type NodePathMappingsResponse struct {
+	Entries []NodePathMappingEntry `json:"entries"`
+}
+
+// NodePathMappingInput is one entry in a save request (via
+// NodeSettingsRequest/ApproveNodeRequest's PathMap field). ServerPath is
+// never submitted — it's derived server-side from Library settings by Key,
+// never editable here.
+type NodePathMappingInput struct {
+	Key      LibraryPathKey `json:"key"`
+	NodePath string         `json:"nodePath"`
+}
+
+// NodeBrowseEntry is one directory GET /api/nodes/{id}/browse's response
+// lists — a subdirectory of the requested path on the NODE's filesystem, not
+// the server's. Deliberately a distinct type from BrowseEntry: the node has
+// no allowlist restriction the way the server's browse.go does (see
+// cmd/sakms-node's browse implementation), so sharing the type would risk
+// that validation difference leaking silently between the two.
+type NodeBrowseEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// NodeBrowseResponse is GET /api/nodes/{id}/browse's response. Path echoes
+// back the directory that was listed on the node.
+type NodeBrowseResponse struct {
+	Path    string            `json:"path"`
+	Entries []NodeBrowseEntry `json:"entries"`
 }

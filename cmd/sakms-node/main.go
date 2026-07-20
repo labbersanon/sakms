@@ -229,7 +229,7 @@ func connect(
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
 
-	nodeID, jobCh, settingsCh, err := readSSE(connCtx, resp)
+	nodeID, jobCh, settingsCh, browseCh, err := readSSE(connCtx, resp)
 	if err != nil {
 		return err
 	}
@@ -247,15 +247,22 @@ func connect(
 			if !ok {
 				return nil
 			}
-			cfg.PathMap = make([]PathMapEntry, len(s.PathMap))
-			for i, pm := range s.PathMap {
-				cfg.PathMap[i] = PathMapEntry{Server: pm.Server, Local: pm.Local}
-			}
+			cfg.PathMap = mergePathMap(cfg.PathMap, s.PathMap)
 			cfg.MaxJobs = s.MaxJobs
 			if saveErr := cfg.save(configPath); saveErr != nil {
 				log.Printf("sakms-node: saving updated settings: %v", saveErr)
 			}
-			log.Printf("sakms-node: settings updated (maxJobs=%d, paths=%d)", s.MaxJobs, len(s.PathMap))
+			log.Printf("sakms-node: settings updated (maxJobs=%d, paths=%d, merged total=%d)", s.MaxJobs, len(s.PathMap), len(cfg.PathMap))
+		case br, ok := <-browseCh:
+			if !ok {
+				return nil
+			}
+			wg.Add(1)
+			go func(req nodes.BrowseRequest) {
+				defer wg.Done()
+				result := executeBrowse(req)
+				postBrowseResult(postClient, cfg, result)
+			}(br)
 		case job, ok := <-jobCh:
 			if !ok {
 				return nil
@@ -277,13 +284,14 @@ type sseFrame struct {
 }
 
 // readSSE reads from resp until it finds the "ack" frame, extracts the nodeID
-// from it, then returns the nodeID plus channels for subsequent Job and
-// NodeSettings frames. Both channels are closed when the stream ends or ctx is
-// cancelled.
-func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-chan nodes.Job, settings <-chan nodes.NodeSettings, err error) {
+// from it, then returns the nodeID plus channels for subsequent Job,
+// NodeSettings, and BrowseRequest frames. All three channels are closed when
+// the stream ends or ctx is cancelled.
+func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-chan nodes.Job, settings <-chan nodes.NodeSettings, browse <-chan nodes.BrowseRequest, err error) {
 	scanner := bufio.NewScanner(resp.Body)
 	jobCh := make(chan nodes.Job, 16)
 	settingsCh := make(chan nodes.NodeSettings, 4)
+	browseCh := make(chan nodes.BrowseRequest, 4)
 
 	// Read frames until we get the ack.
 	var cur sseFrame
@@ -310,12 +318,14 @@ func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-ch
 	if nodeID == "" {
 		close(jobCh)
 		close(settingsCh)
-		return "", nil, nil, fmt.Errorf("stream ended before ack")
+		close(browseCh)
+		return "", nil, nil, nil, fmt.Errorf("stream ended before ack")
 	}
 
 	go func() {
 		defer close(jobCh)
 		defer close(settingsCh)
+		defer close(browseCh)
 		var cur sseFrame
 		for scanner.Scan() {
 			select {
@@ -347,6 +357,17 @@ func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-ch
 							}
 						}
 					}
+				case nodes.EventBrowseRequest:
+					if cur.data != "" {
+						var br nodes.BrowseRequest
+						if e := json.Unmarshal([]byte(cur.data), &br); e == nil && br.ID != "" {
+							select {
+							case browseCh <- br:
+							case <-ctx.Done():
+								return
+							}
+						}
+					}
 				}
 				cur = sseFrame{}
 				continue
@@ -359,7 +380,7 @@ func readSSE(ctx context.Context, resp *http.Response) (nodeID string, jobs <-ch
 		}
 	}()
 
-	return nodeID, jobCh, settingsCh, nil
+	return nodeID, jobCh, settingsCh, browseCh, nil
 }
 
 // heartbeat POSTs to /api/nodes/heartbeat every 30 seconds until ctx is
@@ -445,6 +466,47 @@ func postResult(client *http.Client, cfg *NodeConfig, result nodes.JobResult) {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("sakms-node: posting result for job %s: %v", result.JobID, err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// executeBrowse lists the requested directory on this node's own filesystem
+// and returns a BrowseResult. On any read error the result carries the error
+// string — mirroring executeJob's Hash/Error convention — so the server can
+// surface a clear message to the operator instead of hanging.
+func executeBrowse(req nodes.BrowseRequest) nodes.BrowseResult {
+	entries, err := browseDirectory(req.Path)
+	if err != nil {
+		return nodes.BrowseResult{RequestID: req.ID, Error: err.Error()}
+	}
+	return nodes.BrowseResult{RequestID: req.ID, Entries: entries}
+}
+
+// postBrowseResult POSTs a BrowseResult to the server. Logs on error but does
+// not retry — RequestBrowse's own bounded timeout server-side will surface a
+// clear error to the operator instead of waiting indefinitely.
+func postBrowseResult(client *http.Client, cfg *NodeConfig, result nodes.BrowseResult) {
+	body, err := json.Marshal(result)
+	if err != nil {
+		log.Printf("sakms-node: marshalling browse result for request %s: %v", result.RequestID, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		cfg.ServerURL+"/api/nodes/browse/"+result.RequestID+"/result",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		log.Printf("sakms-node: building browse result request for %s: %v", result.RequestID, err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("sakms-node: posting browse result for %s: %v", result.RequestID, err)
 		return
 	}
 	resp.Body.Close()

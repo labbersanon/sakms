@@ -18,14 +18,14 @@ import (
 func testNodeMux(t *testing.T, reg *nodes.Registry) *http.ServeMux {
 	t.Helper()
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, reg)
+	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil)
 }
 
 // TestNodeHeartbeat_204 posts a heartbeat and expects 204.
 func TestNodeHeartbeat_204(t *testing.T) {
 	reg := nodes.New()
 	// Connect a node so the id is known.
-	id, _, disconnect := reg.Connect("test-node", nil)
+	id, _, _, disconnect := reg.Connect("test-node", nil)
 	defer disconnect()
 
 	srv := httptest.NewServer(testNodeMux(t, reg))
@@ -64,7 +64,7 @@ func TestNodeHeartbeat_UnknownID_NoError(t *testing.T) {
 func TestNodeJobResult_204(t *testing.T) {
 	reg := nodes.New()
 	// Connect a node and dispatch a job so there is a pending channel.
-	_, _, disconnect := reg.Connect("result-node", nil)
+	_, _, _, disconnect := reg.Connect("result-node", nil)
 	defer disconnect()
 
 	job := nodes.Job{ID: "job-abc", Type: nodes.JobTypePhash, ServerPath: "/data/movie.mkv"}
@@ -139,7 +139,7 @@ func TestListNodes_EmptyRegistry(t *testing.T) {
 // capabilities, lastHeartbeat all present for a connected node.
 func TestListNodes_ConnectedNode(t *testing.T) {
 	reg := nodes.New()
-	_, _, disconnect := reg.Connect("render-box", []string{"cuda"})
+	_, _, _, disconnect := reg.Connect("render-box", []string{"cuda"})
 	defer disconnect()
 
 	srv := httptest.NewServer(testNodeMux(t, reg))

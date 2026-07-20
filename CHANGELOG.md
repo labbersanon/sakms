@@ -2995,3 +2995,101 @@ performed directly, not by an autonomous subagent — see the process note
 on the previous entry), pushed (`main` `3ea637d` → `15ba5e9`), deployed via
 `sakms-auto-update.service`, `deployed_sha` confirmed matching, container
 `Up`, health + auth-boot checks passed.
+
+## 2026-07-19 — AI connection settings simplification
+
+**Problem:** Settings → Connections → AI was confusing: the model field was
+a raw free-text input for every provider (no hint which model names were
+valid), and the base-URL field was user-editable for OpenAI/Gemini/
+Anthropic/Brave even though only one correct value exists per vendor —
+operators had to already know e.g. `https://api.openai.com/v1` by heart,
+with no link to go get an API key either.
+
+**Design process:** requirements gathered via `/deep-interview` (3 rounds,
+17% final ambiguity), then refined through `omc-plan` consensus
+(Planner → Architect → Critic, 3 revisions). The first draft would have
+duplicated an existing mechanism and shipped two real regressions (a broken
+fresh-save path for new cloud connections, and a broken Brave Test button)
+— both caught before implementation by the Architect/Critic review loop,
+not after. See `.omc/specs/deep-interview-ai-connection-settings-simplify.md`
+and `.omc/plans/ai-connection-settings-simplify.md` (ADR at the bottom) for
+the full requirements and design rationale.
+
+**Fix:** Reused the codebase's existing `SERVICES_WITH_FIXED_URL`/
+`fixedURLServices` mechanism (already serving tmdb/tvdb/stashdb/fansdb/
+tpdb) to add `openai`/`gemini`/`anthropic`/`brave` — their base URL is now
+a backend-enforced `DefaultBaseURL` var per client package
+(`internal/openai`, `internal/gemini` — `.../v1beta`, `internal/anthropic`
+— `.../v1`, `internal/bravesearch` — the full search endpoint), used by
+`buildAIClient`/`buildIdentifier` (`internal/mode/mode.go`) and `testBrave`
+(`internal/api/connections.go`) regardless of any stored connection URL. A
+previously-saved custom URL is never deleted, only surfaced as inert
+("previously configured, no longer used") rather than silently dropped.
+The free-text model field became a `<select>`: Ollama live-fetches its
+actual installed models from a new `GET /api/ollama/models` endpoint
+(`internal/api/ai_models.go`, backed by a new `ollama.Client.ListModels`);
+the three cloud providers get a curated list plus an "Other" manual
+override, with back-compat auto-selecting "Other" for any existing stored
+value not in the curated list. "Get API key" links were added per provider
+via an internal map inside the shared `ConnectionRow` (no new component
+props). Executed via `/team` (3 workers, staged plan/exec/verify/fix).
+
+**Bugs found and fixed during implementation, not by design review:**
+a Solid reactivity bug where the Ollama model `<select>`'s displayed value
+could silently desync from the actual saved-state signal once the async
+model list resolved after mount, causing a spurious "model is required"
+error on Save despite the UI looking correct (found via a real manual
+smoke-test pass against a live Ollama instance, not by static review) —
+fixed with a derived accessor that tracks the options list as a dependency,
+with a regression test that was verified to actually catch the original bug
+(reverted, confirmed red, restored, confirmed green) before being accepted.
+
+**Separately found, pre-existing, and NOT part of this change (flagged for
+separate follow-up, not fixed beyond what was needed to unblock this
+change's own tests):**
+1. `internal/api`'s entire test package failed to even compile on `main`
+   (~39 test files called `NewMux` with one too many trailing `nil` args,
+   plus a `Registry.Connect` 3-value destructure of a 4-return function in
+   `nodes_test.go`) — fixed mechanically as part of this change specifically
+   because it was blocking this change's own new tests from ever running;
+   confirmed pre-existing via `git stash -u` against unmodified `main`.
+2. A deeper, still-unfixed bug surfaced once the above got the package
+   compiling: `nodes_test.go`'s test mux is wired to the wrong constructor
+   for the node-pairing feature (`NewMux` instead of the real
+   `NewNodesMux`), so 7 node-pairing tests fail with 404 — unrelated to AI
+   connection settings, needs its own node-pairing test fixtures, left
+   alone.
+3. The frontend `vitest` suite has 12 pre-existing "unhandled error" warnings
+   from `Advanced.tsx:523` (a resource resolving null after test-teardown)
+   that make `npm test`'s exit code unreliable as a pass/fail signal even
+   though all individual tests pass — confirmed present on unmodified `main`
+   too, unrelated to this change.
+
+**Outcome:** `go build`/`go vet` clean; full `go test ./...` clean except
+the 7 disclosed pre-existing node-pairing failures above (no new
+failures); frontend `tsc --noEmit`/`vite build` clean, `vitest` 298/298
+passing (up from 297). Independently verified twice (once after initial
+implementation, found 2 real bugs and fixed both; once again after fixes,
+clean). One acceptance criterion — a live network smoke-test confirming
+the corrected Gemini/Anthropic base URLs actually resolve against the real
+vendor APIs — could not be completed in this session (no API keys
+available) and needs a manual pass with real credentials.
+
+**PROCESS NOTE:** this change was never committed or pushed by the session
+that built and verified it. A separate, concurrently-running session
+working through the `docs/ROADMAP.md` backlog in this same shared working
+directory (no worktree isolation between the two) committed and pushed its
+own unrelated work (`refactor: rename Go module path to
+github.com/labbersanon/sakms`, commit `50ba787`) while this change's
+files sat unstaged in the working tree — that commit's diff, and the
+resulting `sakms-auto-update.service` deploy, swept up and shipped this
+change along with the unrelated module-rename refactor, under a commit
+message that doesn't mention it at all. Discovered only when checking git/
+deploy state before reporting completion (see `feedback_reviewer_bash_bypass.md`
+in Claude's memory for the precedent that motivated checking). The code
+itself had already been independently verified sound before this was
+found, so — same call as the 2026-07-16 entry above — it was left in
+place rather than reverted; this entry exists to restore the commit-history
+traceability the mixed commit message doesn't provide. `deployed_sha`
+confirmed matching `50ba787`, container `Up`, health + auth-boot checks
+passed.

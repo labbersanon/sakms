@@ -997,6 +997,53 @@ describe("AI provider/model", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the Ollama model select in sync with the stored model once the live list resolves after mount (regression)", async () => {
+    // Reproduces the exact race that caused a real bug: the stored model
+    // ("modelB") resolves and settles BEFORE the live /api/tags-backed list
+    // does. ollamaOptions() re-renders its <option>s (unkeyed, since each
+    // call returns fresh objects) once the list finally arrives — a plain
+    // `value={mdl()}` binding never re-fires on that (only mdl() changing
+    // re-fires it), so the browser silently auto-selects the first newly
+    // inserted option ("modelA") instead of the stored one. Asserting the
+    // select's real DOM `.value`, not just that some option text renders, is
+    // the point — a rendered label doesn't prove it's actually selected.
+    let resolveModels!: (models: string[]) => void;
+    const modelsPromise = new Promise<string[]>((resolve) => {
+      resolveModels = resolve;
+    });
+    stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([
+          {
+            service: "ollama",
+            url: "http://ollama:11434",
+            hasApiKey: false,
+            keySuffix: "",
+            updatedAt: "2026-07-13T00:00:00Z",
+          },
+        ]);
+      if (url.includes("/api/settings/ai-model"))
+        return jsonResponse({ model: "modelB" });
+      if (url.includes("/api/ollama/models"))
+        return modelsPromise.then((models) => jsonResponse(models));
+      return undefined;
+    });
+    renderSettings();
+    goToSection("AI");
+    const modelSelect = (await screen.findByLabelText(
+      "Ollama model",
+    )) as HTMLSelectElement;
+    // The stored model has settled (mdl() === "modelB") and the live list is
+    // still loading — the select is disabled while ollamaModels.loading.
+    await waitFor(() => expect(modelSelect.disabled).toBe(true));
+    resolveModels(["modelA", "modelB"]);
+    await waitFor(() => expect(modelSelect.disabled).toBe(false));
+    await waitFor(() =>
+      expect(within(modelSelect).getByText("modelA")).toBeInTheDocument(),
+    );
+    expect(modelSelect.value).toBe("modelB");
+  });
+
   it("renders connection fields for the selected provider AND a separate always-visible Brave row", async () => {
     stubFetch();
     renderSettings();

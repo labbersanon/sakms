@@ -192,6 +192,22 @@ const AIProviderModelCard: Component = () => {
     if (p === "ollama") return [];
     return AI_PROVIDER_MODELS[p as keyof typeof AI_PROVIDER_MODELS] ?? [];
   };
+  // ollamaSelectValue is what the Ollama <select>'s value prop binds to,
+  // instead of a bare mdl(). A plain `value={mdl()}` only re-runs when mdl()
+  // itself changes — it never re-fires when ollamaOptions() changes on its
+  // own (e.g. the live /api/tags fetch resolving after mount, or <For>'s
+  // unkeyed option list fully rebuilding on any resource update). When that
+  // happens with no matching <option> yet selected, the browser silently
+  // auto-selects the first newly-inserted option — no change/input event
+  // fires, so mdl() stays stale while the UI shows a value, and Save then
+  // fails with "model is required" even though the dropdown looks filled in.
+  // Reading ollamaOptions() here makes it a tracked dependency too, so this
+  // re-runs (and reasserts the true mdl()) every time the option list
+  // changes, not just when mdl() does.
+  const ollamaSelectValue = () => {
+    ollamaOptions();
+    return mdl();
+  };
 
   return (
     <>
@@ -283,7 +299,7 @@ const AIProviderModelCard: Component = () => {
                 <select
                   class={`${inputClass} mt-1`}
                   aria-label="Ollama model"
-                  value={mdl()}
+                  value={ollamaSelectValue()}
                   onChange={(e) => {
                     setMdl(e.currentTarget.value);
                     setDirty(true);

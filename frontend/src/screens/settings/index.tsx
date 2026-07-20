@@ -61,7 +61,7 @@ const SECTION_TABS: TabDef[] = [
   { id: "library", label: "Library" },
   { id: "ui", label: "UI" },
   { id: "auth", label: "Auth" },
-  { id: "webhooks", label: "Webhooks" },
+  { id: "webhooks", label: "Notifications" },
   { id: "nodes", label: "Nodes" },
   { id: "advanced", label: "Advanced" },
 ];

@@ -20,16 +20,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/classify"
-	"github.com/curtiswtaylorjr/sakms/internal/config"
-	"github.com/curtiswtaylorjr/sakms/internal/identify"
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/naming"
-	"github.com/curtiswtaylorjr/sakms/internal/nfo"
-	"github.com/curtiswtaylorjr/sakms/internal/place"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
-	"github.com/curtiswtaylorjr/sakms/internal/searchterm"
+	"github.com/labbersanon/sakms/internal/classify"
+	"github.com/labbersanon/sakms/internal/config"
+	"github.com/labbersanon/sakms/internal/identify"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/naming"
+	"github.com/labbersanon/sakms/internal/nfo"
+	"github.com/labbersanon/sakms/internal/place"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/searchterm"
 )
 
 // yearFromReleaseDate parses the release year out of TMDB's normalized

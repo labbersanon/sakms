@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // discoverRowOrderSettingKey maps a Discover screen to its settings.Store

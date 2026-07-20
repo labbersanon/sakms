@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // This file holds the shared parsing/persistence logic behind every

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/autograb"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/autograb"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/quality"
 )
 
 // fakeTMDBMovieRuntime serves /movie/{id} with a real runtime — the autograb

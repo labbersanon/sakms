@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/apidto"
 )
 
 // browsableRoots are the only directory subtrees the Browse endpoint will

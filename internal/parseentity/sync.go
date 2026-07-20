@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
+	"github.com/labbersanon/sakms/internal/stashapi"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
 
 // defaultSyncPages is how many pages the initial (cold-start) sync fetches

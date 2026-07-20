@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 type Client struct {
@@ -112,6 +112,33 @@ func (c *Client) Ping(ctx context.Context) error {
 	}
 	var discard json.RawMessage
 	return httpx.DoJSON(c.http, req, httpx.MaxResponseBodySize, &discard)
+}
+
+type tagsResponse struct {
+	Models []struct {
+		Name string `json:"name"`
+	} `json:"models"`
+}
+
+// ListModels returns the names of every model currently installed on the
+// Ollama instance at c.baseURL, via the same /api/tags endpoint Ping already
+// uses — but decoded into real model names instead of discarded.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building ollama list-models request: %w", err)
+	}
+
+	var tr tagsResponse
+	if err := httpx.DoJSON(c.http, req, httpx.MaxResponseBodySize, &tr); err != nil {
+		return nil, err
+	}
+
+	names := make([]string, len(tr.Models))
+	for i, m := range tr.Models {
+		names[i] = m.Name
+	}
+	return names, nil
 }
 
 // NormalizeField cleans a value extracted from an Ollama JSON response.

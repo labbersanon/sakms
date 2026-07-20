@@ -26,7 +26,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // Config parameterizes the client for one qBittorrent instance.

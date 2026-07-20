@@ -12,8 +12,13 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
+
+// DefaultBaseURL is OpenAI's canonical chat completions API base. A var (not
+// const) so tests can override it to point at an httptest server, same as
+// tmdb.DefaultBaseURL/tvdb.DefaultBaseURL.
+var DefaultBaseURL = "https://api.openai.com/v1"
 
 // Client talks to OpenAI's /chat/completions endpoint. baseURL is caller-
 // provided (not hardcoded) so an OpenAI-compatible proxy or self-hosted

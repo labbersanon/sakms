@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/library"
 )
 
 // These are purely structural/shape checks — they confirm a path already

@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mediainfo"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // These mirror the Movies refinement tests (dedup_phash_refine_test.go) for the

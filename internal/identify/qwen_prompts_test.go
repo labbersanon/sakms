@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/ollama"
 )
 
 func fakeOllama(t *testing.T, handler func(prompt string) string) (*ollama.Client, func()) {

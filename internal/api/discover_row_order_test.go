@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/apidto"
 )
 
 // TestRowOrder_DefaultsToEmptyKeys proves a fresh install (nothing saved

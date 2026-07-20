@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/db"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // newTestWatchStore builds a WatchStore against a real, freshly migrated

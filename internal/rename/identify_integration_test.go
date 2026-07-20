@@ -30,10 +30,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/identify"
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/throttle"
-	"github.com/curtiswtaylorjr/sakms/internal/videophash"
+	"github.com/labbersanon/sakms/internal/identify"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/throttle"
+	"github.com/labbersanon/sakms/internal/videophash"
 )
 
 func TestLiveIdentify_SAKHashResolvesInStashDB(t *testing.T) {

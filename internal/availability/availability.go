@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // Newznab category codes, mirroring internal/api's categoriesForSearch — the

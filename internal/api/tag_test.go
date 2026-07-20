@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // TestTagWorkflow_Series_AddThenRemove_EndToEnd is Series' own libStore-

@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // DefaultBaseURL is ThePornDB's single canonical REST API base (no trailing

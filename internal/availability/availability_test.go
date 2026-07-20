@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // fakeTMDB serves /movie/{id}, /tv/{id}/external_ids etc. from a handler the

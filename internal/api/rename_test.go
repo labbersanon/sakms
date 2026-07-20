@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 // fakeTMDBSeriesRenameHandler serves TMDB's /search/tv and

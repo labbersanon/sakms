@@ -6,19 +6,19 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/bravesearch"
-	"github.com/curtiswtaylorjr/sakms/internal/jellyfin"
-	"github.com/curtiswtaylorjr/sakms/internal/nzbget"
-	"github.com/curtiswtaylorjr/sakms/internal/ollama"
-	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
-	"github.com/curtiswtaylorjr/sakms/internal/qbittorrent"
-	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
-	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
-	"github.com/curtiswtaylorjr/sakms/internal/trakt"
-	"github.com/curtiswtaylorjr/sakms/internal/tvdb"
-	"github.com/curtiswtaylorjr/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/jellyfin"
+	"github.com/labbersanon/sakms/internal/nzbget"
+	"github.com/labbersanon/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/qbittorrent"
+	"github.com/labbersanon/sakms/internal/stashapi"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tpdbrest"
+	"github.com/labbersanon/sakms/internal/trakt"
+	"github.com/labbersanon/sakms/internal/tvdb"
+	"github.com/labbersanon/sakms/internal/usenet"
 )
 
 // ConnectionTestRequest is enough to construct a client and make one real,
@@ -152,7 +152,8 @@ func testTPDB(ctx context.Context, httpClient *http.Client, req ConnectionTestRe
 // would be misleading (see the Settings design's cost-visibility note for
 // Brave specifically).
 func testBrave(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
-	c := bravesearch.New(req.URL, req.APIKey, httpClient)
+	// Fixed public search endpoint — hardcoded, never req.URL (no URL collected).
+	c := bravesearch.New(bravesearch.DefaultBaseURL, req.APIKey, httpClient)
 	if err := c.Ping(ctx); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}

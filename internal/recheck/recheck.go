@@ -31,12 +31,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/availability"
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/availability"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // IntervalSettingKey is the settings key holding the recheck cadence, in whole

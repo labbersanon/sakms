@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/downloader"
-	"github.com/curtiswtaylorjr/sakms/internal/grabs"
-	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/mediainfo"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // fixedProber is a dedup.Prober that returns the same probed duration for any

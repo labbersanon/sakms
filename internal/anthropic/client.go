@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // anthropicVersion is the Messages API version this client speaks — a
@@ -22,6 +22,12 @@ const anthropicVersion = "2023-06-01"
 // objects every prompt in this program asks for, nowhere near enough to run
 // away on cost for a single filename/title/classification call.
 const maxTokens = 1024
+
+// DefaultBaseURL is Anthropic's Messages API base. Must include the /v1 path
+// segment — ChatJSON appends /messages to it. A var (not const) so tests can
+// override it to point at an httptest server, same as
+// tmdb.DefaultBaseURL/tvdb.DefaultBaseURL.
+var DefaultBaseURL = "https://api.anthropic.com/v1"
 
 // Client talks to Anthropic's /v1/messages endpoint. baseURL is caller-
 // provided (typically https://api.anthropic.com/v1) so a proxied endpoint

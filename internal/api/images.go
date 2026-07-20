@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/imageproxy"
+	"github.com/labbersanon/sakms/internal/imageproxy"
 )
 
 // imageProxyHandler streams poster/thumbnail art from an allowlisted external

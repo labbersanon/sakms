@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // Protocol distinguishes a torrent release (grabbed via a torrent client)

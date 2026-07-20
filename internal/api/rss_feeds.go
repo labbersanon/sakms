@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/rssfeed"
-	"github.com/curtiswtaylorjr/sakms/internal/rssfeeds"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/rssfeed"
+	"github.com/labbersanon/sakms/internal/rssfeeds"
 )
 
 // maxResolvedRssFeedItems caps how many items GET

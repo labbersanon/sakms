@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 // TestSubmitDraftHandler_GivesUnmatchedProposalBackToTPDB proves the

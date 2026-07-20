@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // Config points at a Jellyfin instance.

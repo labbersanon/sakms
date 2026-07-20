@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/apidto"
 )
 
 // MountSpec is a named filesystem path to measure via statfs.

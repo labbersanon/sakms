@@ -42,14 +42,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/config"
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/phash"
-	"github.com/curtiswtaylorjr/sakms/internal/place"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
-	"github.com/curtiswtaylorjr/sakms/internal/searchterm"
+	"github.com/labbersanon/sakms/internal/config"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mediainfo"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/phash"
+	"github.com/labbersanon/sakms/internal/place"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/searchterm"
 )
 
 // Prober is the subset of *mediainfo.Prober Scan needs — an interface so

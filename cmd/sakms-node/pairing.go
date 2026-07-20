@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/nodes"
+	"github.com/labbersanon/sakms/internal/nodes"
 )
 
 // pair opens a pre-auth SSE connection to GET /api/nodes/pair, waits for the

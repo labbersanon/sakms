@@ -159,6 +159,56 @@ func TestPing_UnreachableOrNonOKStatus(t *testing.T) {
 	}
 }
 
+func TestListModels_ParsesNames(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" || r.Method != http.MethodGet {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"models":[{"name":"qwen2.5vl:7b"},{"name":"llama3.2:latest"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", &http.Client{Timeout: 5 * time.Second})
+	names, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"qwen2.5vl:7b", "llama3.2:latest"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
+		t.Errorf("got %v, want %v", names, want)
+	}
+}
+
+func TestListModels_EmptyList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"models":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", &http.Client{Timeout: 5 * time.Second})
+	names, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(names) != 0 {
+		t.Errorf("expected an empty slice, got %v", names)
+	}
+}
+
+func TestListModels_UnreachableOrNonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "", &http.Client{Timeout: 5 * time.Second})
+	if _, err := c.ListModels(context.Background()); err == nil {
+		t.Fatal("expected an error on non-200 status")
+	}
+}
+
 func TestChatJSON_ConcurrencyLimit(t *testing.T) {
 	var mu sync.Mutex
 	inFlight := 0

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // Watch is one flagged pick the recheck job keeps re-probing. Its identity

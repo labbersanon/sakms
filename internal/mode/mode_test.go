@@ -12,14 +12,47 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/db"
-	"github.com/curtiswtaylorjr/sakms/internal/jellyfin"
-	"github.com/curtiswtaylorjr/sakms/internal/secrets"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
-	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/anthropic"
+	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/gemini"
+	"github.com/labbersanon/sakms/internal/jellyfin"
+	"github.com/labbersanon/sakms/internal/openai"
+	"github.com/labbersanon/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/stashapi"
+	"github.com/labbersanon/sakms/internal/stashbox"
 )
+
+// overrideAIProviderBaseURL points a cloud AI provider's hardcoded
+// DefaultBaseURL package var at u for the duration of the test, restoring it
+// on cleanup. buildAIClient/buildIdentifier now ignore Connection.URL for
+// openai/gemini/anthropic/brave and read the package var instead, so a test
+// that stands up a fake server must redirect the var, not just store the
+// connection URL. No-op for ollama, which legitimately still uses
+// Connection.URL.
+func overrideAIProviderBaseURL(t *testing.T, provider, u string) {
+	t.Helper()
+	switch provider {
+	case AIProviderOpenAI:
+		prev := openai.DefaultBaseURL
+		openai.DefaultBaseURL = u
+		t.Cleanup(func() { openai.DefaultBaseURL = prev })
+	case AIProviderGemini:
+		prev := gemini.DefaultBaseURL
+		gemini.DefaultBaseURL = u
+		t.Cleanup(func() { gemini.DefaultBaseURL = prev })
+	case AIProviderAnthropic:
+		prev := anthropic.DefaultBaseURL
+		anthropic.DefaultBaseURL = u
+		t.Cleanup(func() { anthropic.DefaultBaseURL = prev })
+	case "brave":
+		prev := bravesearch.DefaultBaseURL
+		bravesearch.DefaultBaseURL = u
+		t.Cleanup(func() { bravesearch.DefaultBaseURL = prev })
+	}
+}
 
 // newTestStores opens one fresh db and returns a connections store and a
 // settings store backed by it, so a test can configure both the connections
@@ -519,6 +552,10 @@ func TestBuild_AIClient_UsesConfiguredProvider(t *testing.T) {
 		t.Run(c.provider, func(t *testing.T) {
 			srv := c.fake(t)
 			defer srv.Close()
+			// openai/gemini/anthropic now target a hardcoded DefaultBaseURL,
+			// not conn.URL — redirect the package var at the fake for cloud
+			// providers (no-op for ollama, which still uses conn.URL).
+			overrideAIProviderBaseURL(t, c.provider, srv.URL)
 
 			store, settingsStore := newTestStores(t)
 			ctx := context.Background()
@@ -553,6 +590,122 @@ func TestBuild_AIClient_UsesConfiguredProvider(t *testing.T) {
 				t.Errorf("got %+v", result)
 			}
 		})
+	}
+}
+
+// TestBuild_AIClient_CloudProvidersIgnoreStoredConnectionURL proves
+// buildAIClient targets each cloud provider's DefaultBaseURL regardless of
+// Connection.URL: the stored connection points at a bogus, unreachable host,
+// yet ChatJSON still succeeds by reaching the fake the package var was
+// redirected to. Acceptance criterion from the ai-connection-settings-simplify
+// plan: "verified by a test that stores a differing URL and asserts the
+// client still targets the constant."
+func TestBuild_AIClient_CloudProvidersIgnoreStoredConnectionURL(t *testing.T) {
+	cases := []struct {
+		provider string
+		fake     func(t *testing.T) *httptest.Server
+	}{
+		{AIProviderOpenAI, func(t *testing.T) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, map[string]any{"choices": []map[string]any{
+					{"message": map[string]any{"content": `{"title":"ok"}`}},
+				}})
+			}))
+		}},
+		{AIProviderGemini, func(t *testing.T) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, map[string]any{"candidates": []map[string]any{
+					{"content": map[string]any{"parts": []map[string]any{{"text": `{"title":"ok"}`}}}},
+				}})
+			}))
+		}},
+		{AIProviderAnthropic, func(t *testing.T) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeTestJSON(t, w, map[string]any{"content": []map[string]any{
+					{"type": "text", "text": `{"title":"ok"}`},
+				}})
+			}))
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.provider, func(t *testing.T) {
+			srv := c.fake(t)
+			defer srv.Close()
+			overrideAIProviderBaseURL(t, c.provider, srv.URL)
+
+			store, settingsStore := newTestStores(t)
+			ctx := context.Background()
+			if err := store.Upsert(ctx, "radarr", "http://radarr.local:7878", "radarr-key"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			// Deliberately bogus stored URL — must be ignored entirely.
+			if err := store.Upsert(ctx, c.provider, "http://wrong.invalid/nope", "test-key"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err := settingsStore.Set(ctx, AIProviderKey, c.provider); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err := settingsStore.Set(ctx, AIFallbackEnabledKey, "true"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err := settingsStore.Set(ctx, AIModelKey, "test-model"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Movies)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sess.MainstreamAI == nil {
+				t.Fatal("expected a non-nil MainstreamAI")
+			}
+			result, err := sess.MainstreamAI.ChatJSON(ctx, "prompt")
+			if err != nil {
+				t.Fatalf("expected the %s client to reach the fixed URL (bogus stored URL ignored), got: %v", c.provider, err)
+			}
+			if result["title"] != "ok" {
+				t.Errorf("got %+v", result)
+			}
+		})
+	}
+}
+
+// TestBuild_Brave_IgnoresStoredConnectionURL is the buildIdentifier
+// counterpart for Brave: a bogus stored "brave" connection URL is ignored in
+// favor of bravesearch.DefaultBaseURL.
+func TestBuild_Brave_IgnoresStoredConnectionURL(t *testing.T) {
+	var hit bool
+	braveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		writeTestJSON(t, w, map[string]any{"web": map[string]any{"results": []map[string]any{}}})
+	}))
+	defer braveSrv.Close()
+	overrideAIProviderBaseURL(t, "brave", braveSrv.URL)
+
+	store, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := store.Upsert(ctx, "whisparr", "http://whisparr.local:6969", "whisparr-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Deliberately bogus stored URL — must be ignored entirely.
+	if err := store.Upsert(ctx, "brave", "http://wrong.invalid/nope", "brave-key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Adult)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sess.Identify == nil || sess.Identify.Brave == nil {
+		t.Fatal("expected a non-nil Identify.Brave with a brave connection configured")
+	}
+
+	if _, err := sess.Identify.Brave.Search(ctx, "test", 1); err != nil {
+		t.Fatalf("expected Brave to reach the fixed URL (bogus stored URL ignored), got: %v", err)
+	}
+	if !hit {
+		t.Error("expected the fixed-URL fake to be hit, not the stored Connection.URL")
 	}
 }
 

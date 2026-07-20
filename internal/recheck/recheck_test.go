@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/db"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/secrets"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // newTestStores builds a WatchStore, a connections.Store, and a settings.Store

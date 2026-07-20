@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/downloader"
-	"github.com/curtiswtaylorjr/sakms/internal/grabs"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // TestDownloadContentPath covers the derivation aria2's real (files-populated)

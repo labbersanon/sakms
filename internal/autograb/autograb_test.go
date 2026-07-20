@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/quality"
 )
 
 // mbps builds a SizeBytes that yields the given raw implied bitrate (Mbps) for

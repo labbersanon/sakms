@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/db"
 )
 
 func newTestReleaseStore(t *testing.T) *ReleaseStore {

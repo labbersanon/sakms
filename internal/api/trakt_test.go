@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/db"
-	"github.com/curtiswtaylorjr/sakms/internal/secrets"
-	"github.com/curtiswtaylorjr/sakms/internal/trakt"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/trakt"
 )
 
 // newTraktTestStore builds a *trakt.Store against a real, freshly migrated

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 type Config struct {

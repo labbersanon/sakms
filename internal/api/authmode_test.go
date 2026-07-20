@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/auth"
 )
 
 func TestGetMode_ReturnsEffective(t *testing.T) {

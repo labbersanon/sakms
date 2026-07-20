@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/throttle"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/throttle"
 )
 
 // fakeFingerprintBox stands in for one stash-box's findScenesBySceneFingerprints

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // libraryTrackedItem is Movies' shape for the Tag workflow's item picker —

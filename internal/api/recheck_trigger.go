@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/recheck"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/recheck"
 )
 
 // NewRecheckTriggerMux is a small, separately-dependent mux for the recheck

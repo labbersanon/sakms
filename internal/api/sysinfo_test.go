@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/sysinfo"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/sysinfo"
 )
 
 // flushRecorder is an httptest.ResponseRecorder that also implements

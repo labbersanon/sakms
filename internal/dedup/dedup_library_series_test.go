@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mediainfo"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // fakeTMDBSeriesSearch stands in for TMDB's /search/tv endpoint — results

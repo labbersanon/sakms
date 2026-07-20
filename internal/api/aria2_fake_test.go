@@ -1,7 +1,7 @@
 package api
 
 import (
-	"github.com/curtiswtaylorjr/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/downloader"
 )
 
 // newTestDownloader builds a Manager in test mode. AddTorrent returns gid;

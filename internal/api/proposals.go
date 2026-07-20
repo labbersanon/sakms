@@ -9,15 +9,15 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/dedup"
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
-	"github.com/curtiswtaylorjr/sakms/internal/purge"
-	"github.com/curtiswtaylorjr/sakms/internal/rename"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
-	"github.com/curtiswtaylorjr/sakms/internal/webhooks"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/dedup"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/purge"
+	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/webhooks"
 )
 
 // listProposalsHandler returns {mode}'s review queue for wf, most recently

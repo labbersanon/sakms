@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/db"
 )
 
 // newTestStore builds a Store against a real, freshly migrated SQLite file —

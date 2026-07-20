@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/nodes"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/nodes"
 )
 
 // testNewMux returns a mux wired with a real nodes.Registry and all other

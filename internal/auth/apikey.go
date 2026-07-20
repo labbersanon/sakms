@@ -10,7 +10,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 const (

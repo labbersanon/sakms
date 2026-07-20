@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/ollama"
 )
 
 // ParsedFilename is the result of extracting metadata from a bare filename

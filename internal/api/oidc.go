@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/curtiswtaylorjr/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/auth"
 )
 
 // oidcFlowCookie carries the per-login CSRF/PKCE state across the redirect to

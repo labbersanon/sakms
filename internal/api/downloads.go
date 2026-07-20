@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/downloader"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
-	"github.com/curtiswtaylorjr/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/usenet"
 )
 
 // Settings keys for the unified downloader's operator-tunable knobs.

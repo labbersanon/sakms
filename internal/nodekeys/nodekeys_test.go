@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/db"
-	"github.com/curtiswtaylorjr/sakms/internal/nodekeys"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/nodekeys"
 )
 
 func newTestStore(t *testing.T) *nodekeys.Store {

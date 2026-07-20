@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/identify"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
-	"github.com/curtiswtaylorjr/sakms/internal/servarr"
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/identify"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/servarr"
+	"github.com/labbersanon/sakms/internal/stashbox"
 )
 
 func newTestSession(t *testing.T, app servarr.App, handler http.HandlerFunc) *mode.Session {

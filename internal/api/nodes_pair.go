@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/nodes"
+	"github.com/labbersanon/sakms/internal/nodes"
 )
 
 const sseKeepaliveInterval = 30 * time.Second

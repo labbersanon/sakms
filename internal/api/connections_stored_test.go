@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/connections"
 )
 
 // newStoredTestMux builds the real mux + stores and returns the server plus the

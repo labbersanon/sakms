@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // DefaultBaseURL is TheTVDB's v4 API endpoint. A var (not const) so tests can

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/config"
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/naming"
-	"github.com/curtiswtaylorjr/sakms/internal/place"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/config"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/naming"
+	"github.com/labbersanon/sakms/internal/place"
+	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 // ScanLibraryAdult is Rename's Adult-library scan — the library-backed path

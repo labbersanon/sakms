@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/prowlarr"
 )
 
 // fakeReleaseMatchAI is a minimal identify.AIClient fake — counts calls and

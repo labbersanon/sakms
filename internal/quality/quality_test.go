@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/release"
+	"github.com/labbersanon/sakms/internal/release"
 )
 
 func TestProfileFor_High_NoCap_MatchesDefaultProfile(t *testing.T) {

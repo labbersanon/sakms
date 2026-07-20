@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/auth"
 )
 
 // NewAuthModeMux returns the routes for reading and switching the active

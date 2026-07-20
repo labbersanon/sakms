@@ -29,7 +29,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // MediaType distinguishes TMDB's movie and TV catalogs, which use

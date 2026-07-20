@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mediainfo"
+	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 // perPathPHasher returns path-specific phash values for Dedup tests that need

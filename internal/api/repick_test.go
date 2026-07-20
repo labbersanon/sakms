@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // fakeTMDBRepickServer serves /search/movie and /movie/{id} — the latter is

@@ -32,8 +32,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/curtiswtaylorjr/sakms/internal/config"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/config"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // ErrNotFound is returned by Get/GetByTMDBID when no matching item exists.

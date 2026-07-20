@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/mediainfo"
+	"github.com/labbersanon/sakms/internal/mediainfo"
 )
 
 // sceneUUIDA is a stash-box scene UUID reused across the Adult dedup tests —

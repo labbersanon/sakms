@@ -8,12 +8,12 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/naming"
-	"github.com/curtiswtaylorjr/sakms/internal/phash"
-	"github.com/curtiswtaylorjr/sakms/internal/quality"
-	"github.com/curtiswtaylorjr/sakms/internal/rename"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/naming"
+	"github.com/labbersanon/sakms/internal/phash"
+	"github.com/labbersanon/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // moviesLibraryRootFolderKey, seriesLibraryRootFolderKey, and

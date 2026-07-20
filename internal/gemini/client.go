@@ -12,8 +12,14 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
+
+// DefaultBaseURL is Gemini's v1beta REST API base. Must include the /v1beta
+// path segment — ChatJSON appends /models/{model}:generateContent to it. A
+// var (not const) so tests can override it to point at an httptest server,
+// same as tmdb.DefaultBaseURL/tvdb.DefaultBaseURL.
+var DefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
 // Client talks to Gemini's v1beta generateContent REST endpoint. baseURL is
 // caller-provided (typically https://generativelanguage.googleapis.com/v1beta)

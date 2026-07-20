@@ -10,10 +10,10 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // mediaTypeForMode maps {mode} onto TMDB's media type, the same convention

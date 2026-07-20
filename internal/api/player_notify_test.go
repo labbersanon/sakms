@@ -14,9 +14,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 // jellyfinUpdate mirrors internal/jellyfin.MediaUpdate's JSON shape — tests

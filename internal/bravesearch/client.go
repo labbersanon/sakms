@@ -12,8 +12,16 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
+
+// DefaultBaseURL is Brave's complete web search endpoint — unlike the other
+// provider clients, bravesearch uses baseURL directly as the full request
+// URL (see Search below), not as a host with a path appended, so this must
+// be the entire endpoint, not just a host. A var (not const) so tests can
+// override it to point at an httptest server, same as
+// tmdb.DefaultBaseURL/tvdb.DefaultBaseURL.
+var DefaultBaseURL = "https://api.search.brave.com/res/v1/web/search"
 
 type Client struct {
 	baseURL string

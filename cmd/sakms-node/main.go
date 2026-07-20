@@ -23,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/nodes"
-	"github.com/curtiswtaylorjr/sakms/internal/phash"
-	"github.com/curtiswtaylorjr/sakms/internal/videophash"
+	"github.com/labbersanon/sakms/internal/nodes"
+	"github.com/labbersanon/sakms/internal/phash"
+	"github.com/labbersanon/sakms/internal/videophash"
 )
 
 // errUnauthorized is returned by connect when the server responds 401 so the

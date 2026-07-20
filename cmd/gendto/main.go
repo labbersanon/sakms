@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto/gen"
+	"github.com/labbersanon/sakms/internal/apidto/gen"
 )
 
 func main() {

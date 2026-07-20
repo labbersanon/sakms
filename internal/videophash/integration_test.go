@@ -33,7 +33,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
+	"github.com/labbersanon/sakms/internal/stashapi"
 )
 
 func genClip(t *testing.T, path, source string) {

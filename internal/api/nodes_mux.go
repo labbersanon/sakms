@@ -3,9 +3,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/auth"
-	"github.com/curtiswtaylorjr/sakms/internal/nodekeys"
-	"github.com/curtiswtaylorjr/sakms/internal/nodes"
+	"github.com/labbersanon/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/nodekeys"
+	"github.com/labbersanon/sakms/internal/nodes"
 )
 
 // NewNodesMux returns a ServeMux for all /api/nodes/* routes with per-handler

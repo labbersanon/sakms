@@ -183,12 +183,41 @@ func TestTestConnection_Brave_BadKey(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
+	// testBrave now targets the hardcoded bravesearch.DefaultBaseURL, not
+	// req.URL — point it at the fake so the search call lands here.
+	overrideFixedURL(t, "brave", srv.URL)
 
 	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
 		Service: "brave", URL: srv.URL, APIKey: "bad-key",
 	})
 	if result.OK {
 		t.Fatal("expected failure on 401")
+	}
+}
+
+// TestTestConnection_Brave_IgnoresReqURL proves testBrave targets
+// bravesearch.DefaultBaseURL regardless of req.URL — req.URL is set to a
+// bogus, unreachable host, yet the test still succeeds by reaching the fake
+// the package var was redirected to. Regression guard for Brave's Test
+// button continuing to work once its URL field is hidden in the UI.
+func TestTestConnection_Brave_IgnoresReqURL(t *testing.T) {
+	var hit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"web":{"results":[]}}`))
+	}))
+	defer srv.Close()
+	overrideFixedURL(t, "brave", srv.URL)
+
+	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
+		Service: "brave", URL: "http://wrong.invalid/nope", APIKey: "good-key",
+	})
+	if !result.OK || result.Error != "" {
+		t.Fatalf("expected success (fixed URL used, bogus req.URL ignored), got %+v", result)
+	}
+	if !hit {
+		t.Error("expected the fixed-URL fake to be hit, not req.URL")
 	}
 }
 

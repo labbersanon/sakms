@@ -77,10 +77,26 @@ export const SERVICES_WITH_USERNAME: string[] = ["nntp"];
 
 // SERVICES_WITH_FIXED_URL are fixed public APIs with one canonical address each,
 // hardcoded server-side as package constants (internal/tmdb, internal/stashbox,
-// internal/tpdbrest) — the operator never types a URL for them. Their rows show
-// only an API Key field, and the backend accepts an upsert with no `url` for
-// exactly these services (mirrors fixedURLServices in internal/api/handler.go).
-export const SERVICES_WITH_FIXED_URL = ["tmdb", "tvdb", "stashdb", "fansdb", "tpdb"];
+// internal/tpdbrest, internal/openai, internal/gemini, internal/anthropic,
+// internal/bravesearch) — the operator never types a URL for them. Their rows
+// show only an API Key field, and the backend accepts an upsert with no `url`
+// for exactly these services (mirrors fixedURLServices in
+// internal/api/handler.go). openai/gemini/anthropic/brave were added here
+// rather than given a bespoke prop — any URL previously stored for one of
+// these four is no longer read server-side (see ConnectionRow's "previously
+// configured, no longer used" note), as opposed to tmdb/tvdb/stashdb/fansdb/
+// tpdb, which never collected one in the first place.
+export const SERVICES_WITH_FIXED_URL = [
+  "tmdb",
+  "tvdb",
+  "stashdb",
+  "fansdb",
+  "tpdb",
+  "openai",
+  "gemini",
+  "anthropic",
+  "brave",
+];
 
 // SERVICES_WITH_HOST_LOOKUP are the services the netscan package can identify
 // on the LAN, enabling a "look up on a different host" input on their rows.
@@ -115,6 +131,47 @@ export const NAMING_PRESETS = [
   { value: "jellyfin", label: "Jellyfin/Emby standard (default)" },
   { value: "legacy", label: "Legacy (SAK's original convention)" },
 ];
+
+// AI_PROVIDER_MODELS is a curated, deliberately non-exhaustive list of common
+// current models per cloud provider — the model <select> in AI.tsx falls back
+// to an "Other" custom text entry for anything not listed here, so this never
+// needs to track every vendor release. Ollama has no entry: its model list is
+// live-fetched from the instance itself (see fetchOllamaModels below).
+export const AI_PROVIDER_MODELS: Record<
+  "openai" | "gemini" | "anthropic",
+  { value: string; label: string }[]
+> = {
+  openai: [
+    { value: "gpt-4o", label: "GPT-4o" },
+    { value: "gpt-4o-mini", label: "GPT-4o mini" },
+    { value: "gpt-4.1", label: "GPT-4.1" },
+    { value: "gpt-4.1-mini", label: "GPT-4.1 mini" },
+    { value: "o3", label: "o3" },
+    { value: "o3-mini", label: "o3-mini" },
+  ],
+  gemini: [
+    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+    { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+    { value: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
+  ],
+  anthropic: [
+    { value: "claude-opus-4-8", label: "Claude Opus 4.8" },
+    { value: "claude-sonnet-5", label: "Claude Sonnet 5" },
+    { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+  ],
+};
+
+// API_KEY_HELP_URLS points each API-key-bearing AI/search service at its
+// vendor's key-management page, for the "Get API key" link ConnectionRow
+// renders next to the key field (Connections.tsx, no new prop — it reads this
+// map directly keyed on props.service).
+export const API_KEY_HELP_URLS: Record<string, string> = {
+  openai: "https://platform.openai.com/api-keys",
+  gemini: "https://aistudio.google.com/app/apikey",
+  anthropic: "https://console.anthropic.com/settings/keys",
+  brave: "https://api.search.brave.com/app/keys",
+};
 
 // --- Connections -----------------------------------------------------------
 
@@ -297,6 +354,18 @@ export function putAIModel(model: string): Promise<void> {
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+// fetchOllamaModels lists the models actually installed on a given Ollama
+// instance (backend calls that instance's /api/tags), for the model <select>
+// in AI.tsx when the ollama provider is active. Callers should source `url`
+// from the SAVED ollama connection, not an in-progress edit (see plan ADR).
+// Rejects cleanly (via api()'s non-ok throw) on an unreachable/bad URL so
+// callers can render an inline error instead of a blank dropdown.
+export function fetchOllamaModels(url: string): Promise<string[]> {
+  return api<string[]>(
+    `/api/ollama/models?url=${encodeURIComponent(url)}`,
+  );
 }
 
 // --- Per-mode: library root folder / quality / naming / kids ----------------

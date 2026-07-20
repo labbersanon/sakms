@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/apidto"
 )
 
 // TestHandlerDTOMirrorNoDrift guards the seam TestNoDrift (internal/apidto/gen)

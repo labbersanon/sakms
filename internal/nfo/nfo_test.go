@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/nfo"
+	"github.com/labbersanon/sakms/internal/nfo"
 )
 
 func writeNFO(t *testing.T, dir, name, content string) string {

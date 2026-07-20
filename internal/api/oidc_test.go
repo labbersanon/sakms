@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/auth"
 )
 
 // --- Config mux (GET/PUT /api/auth/oidc) ---

@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/auth"
 )
 
 // NewAPIKeyMux returns the API-key management routes (status + regenerate).

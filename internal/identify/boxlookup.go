@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
 
 // fansiteHintRe: FansDB's text search is only worth consulting for fansite

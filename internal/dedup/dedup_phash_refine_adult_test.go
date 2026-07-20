@@ -3,8 +3,8 @@ package dedup
 import (
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/phash"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/phash"
+	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 // TestRefineByPHash_TrackedCandidateSelectedRegardlessOfPosition isolates

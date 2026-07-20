@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 func fakeTMDB(t *testing.T, handler http.HandlerFunc) *httptest.Server {

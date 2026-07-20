@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/ollama"
 )
 
 func fakeOllamaServer(t *testing.T, content string) *ollama.Client {

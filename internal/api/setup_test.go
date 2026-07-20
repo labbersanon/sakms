@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // TestSetupStatus_ReflectsRealConfiguredState exercises the real read model

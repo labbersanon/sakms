@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // oobRedirectURI is the standard OAuth2 "out-of-band" redirect URI apps

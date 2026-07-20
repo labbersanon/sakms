@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/secrets"
 )
 
 func testEncryptor(t *testing.T) *secrets.Store {

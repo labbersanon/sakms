@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/trakt"
+	"github.com/labbersanon/sakms/internal/trakt"
 )
 
 // This file is self-contained by design (task #9): every handler here is a

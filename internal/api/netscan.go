@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/netscan"
+	"github.com/labbersanon/sakms/internal/netscan"
 )
 
 // LAN service probing for the setup wizard — an authenticated-operator

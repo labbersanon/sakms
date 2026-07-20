@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/apidto"
 )
 
 // TestRssFeedCRUD_EndToEnd exercises create/list/update/delete against the

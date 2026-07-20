@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // TestSliderCRUD_EndToEnd exercises create/list/update/delete against the

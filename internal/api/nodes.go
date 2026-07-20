@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
-	"github.com/curtiswtaylorjr/sakms/internal/nodekeys"
-	"github.com/curtiswtaylorjr/sakms/internal/nodes"
+	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/nodekeys"
+	"github.com/labbersanon/sakms/internal/nodes"
 )
 
 // nodeStreamHandler handles GET /api/nodes/stream. It registers the connecting

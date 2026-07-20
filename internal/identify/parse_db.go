@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/curtiswtaylorjr/sakms/internal/parseentity"
+	"github.com/labbersanon/sakms/internal/parseentity"
 )
 
 // ParseFilenameDB is a deterministic, zero-AI filename parser that extracts

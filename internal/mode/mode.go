@@ -14,26 +14,26 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/anthropic"
-	"github.com/curtiswtaylorjr/sakms/internal/bravesearch"
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/downloader"
-	"github.com/curtiswtaylorjr/sakms/internal/gemini"
-	"github.com/curtiswtaylorjr/sakms/internal/identify"
-	"github.com/curtiswtaylorjr/sakms/internal/jellyfin"
-	"github.com/curtiswtaylorjr/sakms/internal/nzbget"
-	"github.com/curtiswtaylorjr/sakms/internal/ollama"
-	"github.com/curtiswtaylorjr/sakms/internal/openai"
-	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
-	"github.com/curtiswtaylorjr/sakms/internal/qbittorrent"
-	"github.com/curtiswtaylorjr/sakms/internal/servarr"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
-	"github.com/curtiswtaylorjr/sakms/internal/stashapi"
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/throttle"
-	"github.com/curtiswtaylorjr/sakms/internal/tmdb"
-	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
-	"github.com/curtiswtaylorjr/sakms/internal/tvdb"
+	"github.com/labbersanon/sakms/internal/anthropic"
+	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/gemini"
+	"github.com/labbersanon/sakms/internal/identify"
+	"github.com/labbersanon/sakms/internal/jellyfin"
+	"github.com/labbersanon/sakms/internal/nzbget"
+	"github.com/labbersanon/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/openai"
+	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/qbittorrent"
+	"github.com/labbersanon/sakms/internal/servarr"
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/stashapi"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/throttle"
+	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tpdbrest"
+	"github.com/labbersanon/sakms/internal/tvdb"
 )
 
 // Mode is one of SAK's three isolated library contexts. Never blended —
@@ -420,11 +420,14 @@ func buildAIClient(ctx context.Context, store *connections.Store, settingsStore 
 	case AIProviderOllama:
 		return ollama.New(conn.URL, model, httpClient), nil
 	case AIProviderOpenAI:
-		return openai.New(conn.URL, conn.APIKey, model, httpClient), nil
+		// OpenAI's base URL is fixed and public — hardcoded, never conn.URL.
+		return openai.New(openai.DefaultBaseURL, conn.APIKey, model, httpClient), nil
 	case AIProviderGemini:
-		return gemini.New(conn.URL, conn.APIKey, model, httpClient), nil
+		// Gemini's base URL is fixed and public — hardcoded, never conn.URL.
+		return gemini.New(gemini.DefaultBaseURL, conn.APIKey, model, httpClient), nil
 	case AIProviderAnthropic:
-		return anthropic.New(conn.URL, conn.APIKey, model, httpClient), nil
+		// Anthropic's base URL is fixed and public — hardcoded, never conn.URL.
+		return anthropic.New(anthropic.DefaultBaseURL, conn.APIKey, model, httpClient), nil
 	default:
 		return nil, fmt.Errorf("%s %q: expected one of %s, %s, %s, %s",
 			AIProviderKey, provider, AIProviderOllama, AIProviderOpenAI, AIProviderGemini, AIProviderAnthropic)
@@ -481,7 +484,8 @@ func buildIdentifier(ctx context.Context, store *connections.Store, settingsStor
 	if conn, err := optionalConn(ctx, store, "brave"); err != nil {
 		return nil, err
 	} else if conn != nil {
-		brave = bravesearch.New(conn.URL, conn.APIKey, httpClient)
+		// Brave's search endpoint is fixed and public — hardcoded, never conn.URL.
+		brave = bravesearch.New(bravesearch.DefaultBaseURL, conn.APIKey, httpClient)
 	}
 
 	return &identify.Identifier{

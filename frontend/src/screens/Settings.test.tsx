@@ -918,7 +918,21 @@ describe("Authentication mode", () => {
 
 describe("AI provider/model", () => {
   it("saves provider then model", async () => {
-    const calls = stubFetch();
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([
+          {
+            service: "ollama",
+            url: "http://ollama:11434",
+            hasApiKey: false,
+            keySuffix: "",
+            updatedAt: "2026-07-13T00:00:00Z",
+          },
+        ]);
+      if (url.includes("/api/ollama/models"))
+        return jsonResponse(["llama3", "qwen2.5vl:7b"]);
+      return undefined;
+    });
     renderSettings();
     goToSection("AI");
     // Wait for the tab to finish loading before editing: the connection rows
@@ -926,8 +940,15 @@ describe("AI provider/model", () => {
     // their presence guarantees the form's seed-from-server effects already ran
     // (otherwise a late resolve would reset the just-edited dirty flag).
     await screen.findByLabelText("ollama URL");
-    const modelInput = await screen.findByPlaceholderText(/qwen2.5vl/);
-    fireEvent.input(modelInput, { target: { value: "gpt-4o-mini" } });
+    const modelSelect = (await screen.findByLabelText(
+      "Ollama model",
+    )) as HTMLSelectElement;
+    // Wait for the live-fetched options (from the saved ollama connection URL
+    // above) to populate before picking one.
+    await waitFor(() =>
+      expect(within(modelSelect).getByText("qwen2.5vl:7b")).toBeInTheDocument(),
+    );
+    fireEvent.change(modelSelect, { target: { value: "qwen2.5vl:7b" } });
     // The AI tab's one section Save button commits the provider/model form
     // (provider + model + fallback toggle) in a single click.
     clickSectionSave();
@@ -945,7 +966,35 @@ describe("AI provider/model", () => {
     const modelPut = calls.find(
       (c) => c.method === "PUT" && c.url.includes("/api/settings/ai-model"),
     )!;
-    expect(modelPut.body).toEqual({ model: "gpt-4o-mini" });
+    expect(modelPut.body).toEqual({ model: "qwen2.5vl:7b" });
+  });
+
+  it("an unreachable Ollama instance shows an inline error instead of crashing the tab", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/connections") && !url.includes("/test"))
+        return jsonResponse([
+          {
+            service: "ollama",
+            url: "http://unreachable:11434",
+            hasApiKey: false,
+            keySuffix: "",
+            updatedAt: "2026-07-13T00:00:00Z",
+          },
+        ]);
+      if (url.includes("/api/ollama/models"))
+        return errorResponse(502, "couldn't reach ollama");
+      return undefined;
+    });
+    renderSettings();
+    goToSection("AI");
+    await screen.findByLabelText("ollama URL");
+    // The tab stays on screen — no uncaught render throw from reading the
+    // errored resource (see ollamaOptions' doc comment on why it guards on
+    // ollamaModels.error before calling the resource accessor).
+    expect(await screen.findByText(/Couldn't reach Ollama/)).toBeInTheDocument();
+    expect(
+      (await screen.findByLabelText("Ollama model")) as HTMLSelectElement,
+    ).toBeInTheDocument();
   });
 
   it("renders connection fields for the selected provider AND a separate always-visible Brave row", async () => {
@@ -958,8 +1007,11 @@ describe("AI provider/model", () => {
     expect(screen.queryByLabelText("openai URL")).toBeNull();
     expect(screen.queryByLabelText("gemini URL")).toBeNull();
     expect(screen.queryByLabelText("anthropic URL")).toBeNull();
-    // Brave is always visible, independent of the provider dropdown.
-    expect(screen.getByLabelText("brave URL")).toBeInTheDocument();
+    // Brave is always visible, independent of the provider dropdown — its URL
+    // field is hidden too (fixed-URL service), so its API Key field is the
+    // presence signal instead.
+    expect(screen.getByLabelText("brave API key")).toBeInTheDocument();
+    expect(screen.queryByLabelText("brave URL")).toBeNull();
   });
 
   it("switching the provider dropdown swaps which service's connection fields show", async () => {
@@ -971,11 +1023,16 @@ describe("AI provider/model", () => {
       "AI provider",
     )) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "anthropic" } });
-    // The provider row remounts against the newly-selected service...
-    expect(await screen.findByLabelText("anthropic URL")).toBeInTheDocument();
+    // The provider row remounts against the newly-selected service — its URL
+    // field stays hidden (fixed-URL service), so its API Key field is the
+    // presence signal instead.
+    expect(
+      await screen.findByLabelText("anthropic API key"),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("anthropic URL")).toBeNull();
     expect(screen.queryByLabelText("ollama URL")).toBeNull();
     // ...while Brave stays put regardless of the dropdown.
-    expect(screen.getByLabelText("brave URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("brave API key")).toBeInTheDocument();
   });
 });
 
@@ -1643,12 +1700,13 @@ describe("Section tabs", () => {
     stubFetch();
     renderSettings();
     goToSection("AI");
-    expect(await screen.findByPlaceholderText(/qwen2.5vl/)).toBeInTheDocument();
+    expect(await screen.findByLabelText("Ollama model")).toBeInTheDocument();
     expect(screen.queryByText("Switch to this mode")).toBeNull();
     // The connection sub-tables live on this tab now — the selected provider's
-    // fields (ollama by default) and the always-visible Brave row.
+    // fields (ollama by default) and the always-visible Brave row (its URL
+    // field hidden, fixed-URL service — API Key is the presence signal).
     expect(await screen.findByLabelText("ollama URL")).toBeInTheDocument();
-    expect(screen.getByLabelText("brave URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("brave API key")).toBeInTheDocument();
   });
 
   it("Library tab shows per-mode panels beside its own mode selector", async () => {

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/throttle"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/throttle"
 )
 
 func newIdentifierWithFakes(t *testing.T, stashboxHandler, tpdbHandler http.HandlerFunc) *Identifier {

@@ -6,24 +6,24 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/adultnewest"
-	"github.com/curtiswtaylorjr/sakms/internal/allowlist"
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/dedup"
-	"github.com/curtiswtaylorjr/sakms/internal/discoversliders"
-	"github.com/curtiswtaylorjr/sakms/internal/downloader"
-	"github.com/curtiswtaylorjr/sakms/internal/grabs"
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/parseentity"
-	"github.com/curtiswtaylorjr/sakms/internal/proposals"
-	"github.com/curtiswtaylorjr/sakms/internal/rename"
-	"github.com/curtiswtaylorjr/sakms/internal/rssfeeds"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
-	"github.com/curtiswtaylorjr/sakms/internal/sysinfo"
-	"github.com/curtiswtaylorjr/sakms/internal/trakt"
-	"github.com/curtiswtaylorjr/sakms/internal/usenet"
-	"github.com/curtiswtaylorjr/sakms/internal/webhooks"
+	"github.com/labbersanon/sakms/internal/adultnewest"
+	"github.com/labbersanon/sakms/internal/allowlist"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/dedup"
+	"github.com/labbersanon/sakms/internal/discoversliders"
+	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/parseentity"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/rssfeeds"
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/sysinfo"
+	"github.com/labbersanon/sakms/internal/trakt"
+	"github.com/labbersanon/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/webhooks"
 )
 
 // NewMux returns an http.ServeMux with SAK's API routes mounted.
@@ -81,6 +81,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/netscan/known", netscanKnownHandler(httpClient))
 	mux.HandleFunc("POST /api/netscan/host", netscanHostHandler(httpClient))
 	mux.HandleFunc("POST /api/netscan/prowlarr-key", netscanProwlarrKeyHandler(httpClient))
+
+	// Live-fetches the model names installed on an operator-supplied Ollama
+	// instance (see ai_models.go) — deliberately NOT /api/settings/ai-models,
+	// which would collide with the existing singular GET/PUT
+	// /api/settings/ai-model pair below.
+	mux.HandleFunc("GET /api/ollama/models", ollamaModelsHandler(httpClient))
 
 	mux.HandleFunc("GET /api/modes/{mode}/tracked", listTrackedHandler(httpClient, connStore, settingsStore, libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/collections", collectionsHandler(libStore))
@@ -412,11 +418,20 @@ type upsertConnectionRequest struct {
 }
 
 // fixedURLServices are the connections whose outbound base URL is a hardcoded
-// package constant (internal/tmdb, internal/tvdb, internal/stashbox, internal/tpdbrest), not a
+// package constant (internal/tmdb, internal/tvdb, internal/stashbox, internal/tpdbrest,
+// internal/openai, internal/gemini, internal/anthropic, internal/bravesearch), not a
 // user-supplied field — so the UI collects no URL for them and `url` is
 // optional in their upsert requests. Every other service still requires a URL.
+// tmdb/tvdb/stashdb/fansdb/tpdb never collected a URL in the first place;
+// openai/gemini/anthropic/brave are different — they used to accept a
+// user-supplied URL, and this map now means any previously-stored value for
+// them simply stops being read (see buildAIClient/buildIdentifier in
+// internal/mode/mode.go), not that they never had one.
 // Mirrors SERVICES_WITH_FIXED_URL in the frontend (frontend/src/api/settings.ts).
-var fixedURLServices = map[string]bool{"tmdb": true, "tvdb": true, "stashdb": true, "fansdb": true, "tpdb": true}
+var fixedURLServices = map[string]bool{
+	"tmdb": true, "tvdb": true, "stashdb": true, "fansdb": true, "tpdb": true,
+	"openai": true, "gemini": true, "anthropic": true, "brave": true,
+}
 
 func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

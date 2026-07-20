@@ -148,7 +148,7 @@ Chosen against the plan's explicit evaluation criteria:
    generators cannot.
 2. **Package-scoped** — tygo is pointed at exactly one Go import path
    (`internal/apidto/gen.SourcePackage`, currently
-   `github.com/curtiswtaylorjr/sakms/internal/apidto`) via its `Packages`
+   `github.com/labbersanon/sakms/internal/apidto`) via its `Packages`
    config list. It only ever sees what's in that package — never
    `internal/api`, never any other `internal/*` domain package — so the
    curation this package exists for actually holds at generation time, not

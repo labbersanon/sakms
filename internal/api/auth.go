@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/auth"
 )
 
 // NewAuthMux returns the handful of routes that must stay reachable without

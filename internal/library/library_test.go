@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/db"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // newTestStore builds a Store against a real, freshly migrated SQLite file —

@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/library"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 type collectionSummaryResponse struct {

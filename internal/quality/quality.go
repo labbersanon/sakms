@@ -11,7 +11,7 @@
 // resolution they're capped at, not necessarily a lower resolution.
 package quality
 
-import "github.com/curtiswtaylorjr/sakms/internal/release"
+import "github.com/labbersanon/sakms/internal/release"
 
 // Tier is a coarse, user-facing bitrate/compression preference.
 type Tier string

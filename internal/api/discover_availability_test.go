@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/apidto"
 )
 
 // fakeProwlarrRecording is fakeProwlarr's sibling: serves a static body but

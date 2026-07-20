@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // StashDBURL and FansDBURL are the two community stash-box instances' single

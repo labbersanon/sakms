@@ -13,8 +13,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/curtiswtaylorjr/sakms/internal/dbutil"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/dbutil"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // Workflow identifies which review workflow a proposal belongs to.

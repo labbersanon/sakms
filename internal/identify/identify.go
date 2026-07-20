@@ -8,9 +8,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/bravesearch"
-	"github.com/curtiswtaylorjr/sakms/internal/parseentity"
-	"github.com/curtiswtaylorjr/sakms/internal/throttle"
+	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/parseentity"
+	"github.com/labbersanon/sakms/internal/throttle"
 )
 
 type Identifier struct {

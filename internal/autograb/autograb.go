@@ -29,7 +29,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/curtiswtaylorjr/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/quality"
 )
 
 // Tunable defaults. These are the plan's proposed starting points, explicitly

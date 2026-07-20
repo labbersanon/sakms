@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/curtiswtaylorjr/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/rename"
 )
 
 func TestGetConfidenceThresholdHandler_DefaultsToDefault(t *testing.T) {

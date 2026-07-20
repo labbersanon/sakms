@@ -19,8 +19,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/curtiswtaylorjr/sakms/internal/dbutil"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/dbutil"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // ErrNotFound is returned by Get when no grab exists with the given ID.

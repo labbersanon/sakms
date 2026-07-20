@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/identify"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/identify"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/prowlarr"
 )
 
 // titleSimilarityFloor mirrors internal/identify.ExtractFromSearch's own

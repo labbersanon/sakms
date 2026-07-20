@@ -18,6 +18,7 @@ import {
   Show,
 } from "solid-js";
 import {
+  API_KEY_HELP_URLS,
   CONNECTION_SERVICES,
   SERVICES_WITH_FIXED_URL,
   SERVICES_WITH_HOST_LOOKUP,
@@ -317,6 +318,14 @@ export const ConnectionRow: Component<{
           </div>
         </Show>
         </Show>
+        <Show when={needsFixedUrl}>
+          <Show when={props.existing?.url}>
+            <div class="text-xs text-muted">
+              previously configured <code>{props.existing?.url}</code> — no
+              longer used
+            </div>
+          </Show>
+        </Show>
       </td>
       <td class="px-2 py-2">
         <Show when={needsUsername}>
@@ -354,6 +363,16 @@ export const ConnectionRow: Component<{
             }
           }}
         />
+        <Show when={API_KEY_HELP_URLS[props.service]}>
+          <a
+            href={API_KEY_HELP_URLS[props.service]}
+            target="_blank"
+            rel="noreferrer"
+            class="mt-1 block text-xs text-fg underline decoration-accent underline-offset-2"
+          >
+            Get API key →
+          </a>
+        </Show>
         <Show when={props.service === "stash"}>
           <div class="mt-1 text-xs text-muted">
             Get your key: Stash → Settings → Security

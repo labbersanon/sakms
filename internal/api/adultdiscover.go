@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
 
 // adultScene is the Discover response shape for one TPDB scene — a stable,

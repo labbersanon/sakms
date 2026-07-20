@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/stashbox"
-	"github.com/curtiswtaylorjr/sakms/internal/tpdbrest"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
 
 // optionalConnAPI is package api's copy of mode.go's optionalConn — the

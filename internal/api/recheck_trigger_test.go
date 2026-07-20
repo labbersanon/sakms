@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/db"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/recheck"
-	"github.com/curtiswtaylorjr/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/recheck"
+	"github.com/labbersanon/sakms/internal/secrets"
 )
 
 // newRecheckTriggerTestStores mirrors internal/recheck's own newTestStores

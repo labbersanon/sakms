@@ -20,8 +20,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/curtiswtaylorjr/sakms/internal/adultnewest"
-	"github.com/curtiswtaylorjr/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/adultnewest"
+	"github.com/labbersanon/sakms/internal/apidto"
 )
 
 // toDTOAdultNewestRow maps an internal adultnewest.Row onto the exported

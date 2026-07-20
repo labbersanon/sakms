@@ -34,7 +34,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/curtiswtaylorjr/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // probeTimeout bounds every individual probe. These services are LAN-local

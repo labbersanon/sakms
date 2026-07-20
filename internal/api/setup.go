@@ -6,10 +6,10 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/curtiswtaylorjr/sakms/internal/allowlist"
-	"github.com/curtiswtaylorjr/sakms/internal/connections"
-	"github.com/curtiswtaylorjr/sakms/internal/mode"
-	"github.com/curtiswtaylorjr/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/allowlist"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // setupWizardDismissedKey is the internal/settings key backing the wizard's

@@ -18,7 +18,7 @@ import (
 // never leaks an internal handler's unexported request struct or a raw
 // domain type (see internal/apidto's package doc for why that boundary
 // matters).
-const SourcePackage = "github.com/curtiswtaylorjr/sakms/internal/apidto"
+const SourcePackage = "github.com/labbersanon/sakms/internal/apidto"
 
 // Generate runs tygo against SourcePackage and writes the resulting
 // TypeScript to outputPath (a full file path, e.g. ending in ".ts").

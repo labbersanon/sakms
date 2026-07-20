@@ -19,14 +19,17 @@ import {
   createSignal,
   For,
   Show,
+  untrack,
 } from "solid-js";
 import {
+  AI_PROVIDER_MODELS,
   AI_PROVIDERS,
   fetchAIFallbackEnabled,
   fetchAIModel,
   fetchAIProvider,
   fetchConnections,
   fetchNetscanKnown,
+  fetchOllamaModels,
   putAIFallbackEnabled,
   putAIModel,
   putAIProvider,
@@ -66,6 +69,10 @@ const AIProviderModelCard: Component = () => {
   const [enabled, setEnabled] = createSignal(false);
   const [prov, setProv] = createSignal("ollama");
   const [mdl, setMdl] = createSignal("");
+  // useCustom is cloud-provider-only: true when the model <select> is showing
+  // the "Other (type manually)" option and its revealed text input, rather
+  // than one of AI_PROVIDER_MODELS' curated options.
+  const [useCustom, setUseCustom] = createSignal(false);
   // dirty flips true on any provider/model/toggle edit and resets on save or a
   // fresh server load, so the AI tab's one Save button knows this form's state.
   const [dirty, setDirty] = createSignal(false);
@@ -84,6 +91,22 @@ const AIProviderModelCard: Component = () => {
   createEffect(() => {
     const m = model();
     if (m !== undefined) setMdl(m);
+  });
+  // Recomputes useCustom whenever the provider changes or the stored model
+  // first resolves — never on every keystroke (mdl() is read untracked) so
+  // typing in the custom text box doesn't fight this effect. Covers both the
+  // initial "stored model not in the curated list" load case and switching
+  // providers, where the previous model almost never matches the new
+  // provider's curated list — mirrors the free-text field's old behavior of
+  // never clearing the model value out from under the operator.
+  createEffect(() => {
+    const p = prov();
+    const loaded = model();
+    if (p === "ollama" || loaded === undefined) return;
+    const curated =
+      AI_PROVIDER_MODELS[p as keyof typeof AI_PROVIDER_MODELS] ?? [];
+    const current = untrack(mdl);
+    setUseCustom(!curated.some((o) => o.value === current));
   });
 
   const status = useSaveStatus();
@@ -132,6 +155,44 @@ const AIProviderModelCard: Component = () => {
     return m;
   };
 
+  // ollamaModels live-fetches the model list from the SAVED Ollama connection
+  // URL (byService()["ollama"]?.url) whenever the provider is ollama — never
+  // the live in-progress URL being edited inside ConnectionRow below, which
+  // isn't reachable from here without an unplanned state-lift (see plan ADR).
+  // No source (undefined) when the provider isn't ollama, or no URL is saved
+  // yet, so the resource simply doesn't fetch in either case.
+  const [ollamaModels] = createResource(
+    () =>
+      prov() === "ollama"
+        ? byService()["ollama"]?.url || undefined
+        : undefined,
+    (url) => fetchOllamaModels(url),
+  );
+  // ollamaOptions appends the stored model as a selectable option, labeled
+  // "(not currently installed)", when it's reachable but no longer in the
+  // live /api/tags result — never drops it from the dropdown. Guards on
+  // ollamaModels.error (a safe property read) before calling ollamaModels()
+  // — Solid resources re-throw on invocation once the fetcher has errored,
+  // and calling it unguarded here would throw mid-render (the exact bug
+  // class documented in this project's CLAUDE.md re: GrabDialog).
+  const ollamaOptions = (): { value: string; label: string }[] => {
+    const list = ollamaModels.error ? [] : (ollamaModels() ?? []);
+    const opts = list.map((m) => ({ value: m, label: m }));
+    const current = mdl();
+    if (current && !list.includes(current)) {
+      opts.push({
+        value: current,
+        label: `${current} (not currently installed)`,
+      });
+    }
+    return opts;
+  };
+  const cloudModelOptions = (): { value: string; label: string }[] => {
+    const p = prov();
+    if (p === "ollama") return [];
+    return AI_PROVIDER_MODELS[p as keyof typeof AI_PROVIDER_MODELS] ?? [];
+  };
+
   return (
     <>
       <Card title="AI Fallback (optional)">
@@ -177,17 +238,73 @@ const AIProviderModelCard: Component = () => {
             </label>
             <label class="block">
               <span class={labelClass}>Model</span>
-              <input
-                type="text"
-                class={`${inputClass} mt-1`}
-                placeholder="e.g. qwen2.5vl:7b, gpt-4o-mini, gemini-2.5-flash, claude-haiku-4-5"
-                value={mdl()}
-                onInput={(e) => {
-                  setMdl(e.currentTarget.value);
-                  setDirty(true);
-                }}
-                disabled={!enabled()}
-              />
+              <Show
+                when={prov() === "ollama"}
+                fallback={
+                  <>
+                    <select
+                      class={`${inputClass} mt-1`}
+                      aria-label="AI model"
+                      value={useCustom() ? "__custom__" : mdl()}
+                      onChange={(e) => {
+                        const v = e.currentTarget.value;
+                        if (v === "__custom__") {
+                          setUseCustom(true);
+                        } else {
+                          setUseCustom(false);
+                          setMdl(v);
+                        }
+                        setDirty(true);
+                      }}
+                      disabled={!enabled()}
+                    >
+                      <For each={cloudModelOptions()}>
+                        {(o) => <option value={o.value}>{o.label}</option>}
+                      </For>
+                      <option value="__custom__">Other (type manually)</option>
+                    </select>
+                    <Show when={useCustom()}>
+                      <input
+                        type="text"
+                        class={`${inputClass} mt-1`}
+                        placeholder="e.g. gpt-4o-mini, gemini-2.5-flash, claude-haiku-4-5"
+                        aria-label="Custom AI model"
+                        value={mdl()}
+                        onInput={(e) => {
+                          setMdl(e.currentTarget.value);
+                          setDirty(true);
+                        }}
+                        disabled={!enabled()}
+                      />
+                    </Show>
+                  </>
+                }
+              >
+                <select
+                  class={`${inputClass} mt-1`}
+                  aria-label="Ollama model"
+                  value={mdl()}
+                  onChange={(e) => {
+                    setMdl(e.currentTarget.value);
+                    setDirty(true);
+                  }}
+                  disabled={!enabled() || ollamaModels.loading}
+                >
+                  <For each={ollamaOptions()}>
+                    {(o) => <option value={o.value}>{o.label}</option>}
+                  </For>
+                </select>
+                <Show when={ollamaModels.loading}>
+                  <Muted class="mt-1 text-xs">Loading models…</Muted>
+                </Show>
+                <Show when={ollamaModels.error}>
+                  <div class="mt-1 text-xs text-danger">
+                    Couldn't reach Ollama:{" "}
+                    {(ollamaModels.error as Error)?.message ??
+                      "unknown error"}
+                  </div>
+                </Show>
+              </Show>
             </label>
           </div>
 

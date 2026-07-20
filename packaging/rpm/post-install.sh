@@ -3,7 +3,8 @@
 # Writes /etc/sakms-node/config.json with an empty apiKey (triggers pairing
 # mode on first start), then enables and starts the systemd service.
 # Server URL is read from SAKMS_SERVER_URL env if set; otherwise the user
-# is prompted interactively.
+# is prompted interactively. Node name works the same way via SAKMS_NODE_NAME,
+# defaulting the prompt to the machine's hostname.
 
 set -euo pipefail
 
@@ -17,11 +18,19 @@ if [ ! -f "$CONFIG_FILE" ]; then
     else
         read -r -p "sakms server URL (e.g. https://sakms.example.com): " SERVER_URL
     fi
+    if [ -n "${SAKMS_NODE_NAME:-}" ]; then
+        NODE_NAME="$SAKMS_NODE_NAME"
+    else
+        DEFAULT_NODE_NAME="$(hostname)"
+        read -r -p "Node name [$DEFAULT_NODE_NAME]: " NODE_NAME
+        NODE_NAME="${NODE_NAME:-$DEFAULT_NODE_NAME}"
+    fi
     mkdir -p "$CONFIG_DIR"
     cat > "$CONFIG_FILE" <<JSON
 {
   "serverUrl": "$SERVER_URL",
-  "apiKey": ""
+  "apiKey": "",
+  "nodeName": "$NODE_NAME"
 }
 JSON
     chmod 600 "$CONFIG_FILE"

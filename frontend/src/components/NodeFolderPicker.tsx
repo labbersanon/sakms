@@ -31,13 +31,22 @@ export const NodeFolderPicker: Component<{
   const [err, setErr] = createSignal("");
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let containerRef: HTMLDivElement | undefined;
+  // fetchSeq guards against an out-of-order response: a slower listing for an
+  // earlier-typed path (e.g. "/a") can resolve AFTER a faster one for a
+  // later-typed path ("/a/b"), since these are real network round-trips to
+  // the node, not a local server call. Only the most-recently-ISSUED fetch's
+  // result is applied, regardless of resolution order.
+  let fetchSeq = 0;
 
   const doFetch = async (path: string) => {
+    const seq = ++fetchSeq;
     try {
       const r = await fetchNodeBrowse(props.nodeId, path);
+      if (seq !== fetchSeq) return;
       setEntries(r.entries ?? []);
       setErr("");
     } catch (e) {
+      if (seq !== fetchSeq) return;
       setEntries([]);
       setErr(String(e));
     }

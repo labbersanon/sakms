@@ -33,6 +33,18 @@ import (
 // yet leaving it alone on reconnect — the same wipe-by-omission bug class
 // this feature already fixed once for PathMap and once for MaxJobs. Blank
 // means "leave this key untouched," consistently, on every push path.
+//
+// Known consequence of that consistency, accepted by design rather than
+// fixed: there is currently no way to CLEAR a previously-pushed mapping by
+// blanking the field and saving — the node keeps its last real value
+// forever (mergePathMap never deletes, and nothing here ever sends an
+// explicit "remove this key" signal). GET /api/nodes/{id}/path-mappings can
+// therefore show a blank NodePath for a row the node is still actively
+// remapping with a stale value. Making blank mean "clear" instead would
+// reopen the exact save-vs-reconnect divergence bug this function was fixed
+// to close, so this is a real, known limitation rather than an oversight —
+// clearing a mapping would need a distinct wire signal, not an overload of
+// "blank."
 func resolvePathMap(ctx context.Context, settingsStore *settings.Store, in []apidto.NodePathMappingInput) []nodes.PathMapping {
 	out := make([]nodes.PathMapping, 0, len(in))
 	for _, pm := range in {
@@ -292,8 +304,12 @@ func nodePathMappingsHandler(settingsStore *settings.Store, nodeSettingsStore *n
 		for _, key := range libraryPathKeys {
 			serverPath, err := settingsStore.Get(r.Context(), string(key))
 			if err != nil && !errors.Is(err, settings.ErrNotFound) {
+				// A transient lookup error must still render this row (as
+				// unconfigured) rather than drop it — callers rely on
+				// exactly 5 rows always coming back, per this handler's own
+				// doc comment.
 				log.Printf("nodes/path-mappings: resolving library path %q: %v", key, err)
-				continue
+				serverPath = ""
 			}
 			entries = append(entries, apidto.NodePathMappingEntry{
 				Key:        key,

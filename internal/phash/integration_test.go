@@ -98,8 +98,16 @@ func TestPHash_RealFFmpegDeterminismAndSeparation(t *testing.T) {
 	// Measure first — print every pairwise distance before asserting anything.
 	dSame := compositeDistance(t, hashA1, hashA2)
 	dDiff := compositeDistance(t, hashA1, hashB)
-	compositeBits := 64 * Frames // PHash is 64 bits (8 bytes) per frame
-	t.Logf("scheme=%s frames=%d composite=%d bits (%d bytes)", Scheme, Frames, compositeBits, 8*Frames)
+	// Derive the composite width from the actual decoded bytes rather than a
+	// hardcoded per-frame bit literal, so this log stays correct regardless of
+	// the active per-frame hash width (64-bit PHash today, a wider hash later).
+	_, composite, err := decode(hashA1)
+	if err != nil {
+		t.Fatalf("decoding hashA1 for width report: %v", err)
+	}
+	compositeBytes := len(composite)
+	compositeBits := compositeBytes * 8
+	t.Logf("scheme=%s frames=%d composite=%d bits (%d bytes)", Scheme, Frames, compositeBits, compositeBytes)
 	t.Logf("Hamming(testsrc, testsrc  [same clip, twice]) = %d bits", dSame)
 	t.Logf("Hamming(testsrc, testsrc2 [different clips])   = %d bits", dDiff)
 	t.Logf("DefaultThreshold=%d per-frame → budget=%d bits over the composite",

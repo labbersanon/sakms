@@ -48,9 +48,11 @@ func decode(s string) (scheme string, composite []byte, err error) {
 // SimilarityScore returns the normalised similarity of a and b as a value in
 // [0.0, 1.0]: 1.0 means bit-for-bit identical, 0.0 means maximally dissimilar.
 // It returns (0, nil) — NOT an error — for scheme/length mismatches (same
-// stale-entry safety as SimilarityWithin). frames is the expected frame count
-// and is used only to bound the denominator; the composite byte length from the
-// decoded hash is the authoritative bit count.
+// stale-entry safety as SimilarityWithin). The composite byte length from the
+// decoded hash is the authoritative bit count (len(composite)*8), so the score
+// is correct regardless of per-frame hash width — 64-bit PHash or a wider hash.
+// frames is retained for signature/caller compatibility and no longer bounds
+// the denominator.
 func SimilarityScore(a, b string, frames int) (float64, error) {
 	schemeA, compositeA, err := decode(a)
 	if err != nil {
@@ -63,7 +65,7 @@ func SimilarityScore(a, b string, frames int) (float64, error) {
 	if schemeA != schemeB || len(compositeA) != len(compositeB) {
 		return 0, nil
 	}
-	totalBits := frames * 64
+	totalBits := len(compositeA) * 8
 	if totalBits <= 0 {
 		return 0, nil
 	}

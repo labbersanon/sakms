@@ -83,11 +83,13 @@ export const SERVICES_WITH_USERNAME: string[] = ["nntp"];
 // internal/bravesearch) — the operator never types a URL for them. Their rows
 // show only an API Key field, and the backend accepts an upsert with no `url`
 // for exactly these services (mirrors fixedURLServices in
-// internal/api/handler.go). openai/gemini/anthropic/brave were added here
-// rather than given a bespoke prop — any URL previously stored for one of
-// these four is no longer read server-side (see ConnectionRow's "previously
-// configured, no longer used" note), as opposed to tmdb/tvdb/stashdb/fansdb/
-// tpdb, which never collected one in the first place.
+// internal/api/handler.go). The backend reports the real in-use base URL for
+// each of these via ConnectionSummary.fixedUrl (sourced directly from the Go
+// package constants, so the frontend never hardcodes and drifts from them),
+// and ConnectionRow renders it in a disabled, read-only input. For
+// openai/gemini/anthropic/brave that URL supersedes any value the operator
+// stored back when it was user-supplied; tmdb/tvdb/stashdb/fansdb/tpdb never
+// collected one in the first place.
 export const SERVICES_WITH_FIXED_URL = [
   "tmdb",
   "tvdb",

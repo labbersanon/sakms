@@ -310,7 +310,9 @@ export interface PosterResponse {
  * only whether one is set and its last 4 characters (masked display).
  * Included here alongside ConnectionUpsertRequest even though the
  * Connections/Settings UI itself isn't built until Stage 4 — see
- * ConnectionUpsertRequest's doc comment for why.
+ * ConnectionUpsertRequest's doc comment for why. FixedURL carries the real
+ * package-constant base URL for fixed-URL services (empty for the rest), so
+ * the frontend can show it read-only instead of hardcoding those Go values.
  */
 export interface ConnectionSummary {
   service: string;
@@ -319,6 +321,7 @@ export interface ConnectionSummary {
   hasApiKey: boolean;
   keySuffix?: string;
   updatedAt: string;
+  fixedUrl?: string;
 }
 /**
  * ConnectionUpsertRequest is PUT /api/connections/{service}'s body —

@@ -53,6 +53,11 @@ type Summary struct {
 	HasAPIKey bool   `json:"hasApiKey"`
 	KeySuffix string `json:"keySuffix,omitempty"`
 	UpdatedAt string `json:"updatedAt"`
+	// FixedURL is the hardcoded package-constant base URL for services whose
+	// URL is not user-supplied (see fixedURLValues in internal/api/handler.go).
+	// Not scanned from the DB — left zero-value by List(), populated by the API
+	// layer before encoding so the UI can show the real in-use URL read-only.
+	FixedURL string `json:"fixedUrl,omitempty"`
 }
 
 // Upsert creates or replaces the connection for service, with no username —

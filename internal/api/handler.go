@@ -8,20 +8,28 @@ import (
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/allowlist"
+	"github.com/labbersanon/sakms/internal/anthropic"
+	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/gemini"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/openai"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/sysinfo"
+	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tpdbrest"
 	"github.com/labbersanon/sakms/internal/trakt"
+	"github.com/labbersanon/sakms/internal/tvdb"
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
@@ -399,9 +407,34 @@ func listConnectionsHandler(store *connections.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		list = withFixedURLs(list)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 	}
+}
+
+// withFixedURLs sets FixedURL on every fixed-URL-service entry already in
+// list, and appends a synthetic (URL-only) entry for any fixed-URL service
+// store.List didn't return at all — i.e. one the operator has never saved a
+// connection row for. Without this, a fixed-URL service's real URL would only
+// ever be visible once it already has a DB row, silently failing to show for
+// exactly the pre-configuration case an operator most wants to see it. A
+// synthetic entry has HasAPIKey false and no UpdatedAt, matching the zero
+// value store.List would produce for a never-configured service.
+func withFixedURLs(list []connections.Summary) []connections.Summary {
+	seen := make(map[string]bool, len(list))
+	for i := range list {
+		if url, ok := fixedURLValues[list[i].Service]; ok {
+			list[i].FixedURL = url
+		}
+		seen[list[i].Service] = true
+	}
+	for service, url := range fixedURLValues {
+		if !seen[service] {
+			list = append(list, connections.Summary{Service: service, FixedURL: url})
+		}
+	}
+	return list
 }
 
 type upsertConnectionRequest struct {
@@ -431,6 +464,22 @@ type upsertConnectionRequest struct {
 var fixedURLServices = map[string]bool{
 	"tmdb": true, "tvdb": true, "stashdb": true, "fansdb": true, "tpdb": true,
 	"openai": true, "gemini": true, "anthropic": true, "brave": true,
+}
+
+// fixedURLValues maps each fixedURLServices entry to the real base-URL constant
+// from its client package, so listConnectionsHandler can report the actual
+// in-use URL over the API instead of the frontend hardcoding (and drifting
+// from) these Go values. Keyed identically to fixedURLServices above.
+var fixedURLValues = map[string]string{
+	"tmdb":      tmdb.DefaultBaseURL,
+	"tvdb":      tvdb.DefaultBaseURL,
+	"stashdb":   stashbox.StashDBURL,
+	"fansdb":    stashbox.FansDBURL,
+	"tpdb":      tpdbrest.DefaultBaseURL,
+	"openai":    openai.DefaultBaseURL,
+	"gemini":    gemini.DefaultBaseURL,
+	"anthropic": anthropic.DefaultBaseURL,
+	"brave":     bravesearch.DefaultBaseURL,
 }
 
 func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {

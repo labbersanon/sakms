@@ -166,7 +166,9 @@ func TestConnectionsCRUD_EndToEnd(t *testing.T) {
 		t.Fatalf("expected 204 from PUT, got %d", resp.StatusCode)
 	}
 
-	// It shows up in the list, redacted.
+	// It shows up in the list, redacted, alongside a synthetic entry per
+	// fixedURLServices (see withFixedURLs) that isn't a real configured
+	// connection — filter those out before asserting on radarr specifically.
 	listResp, err := http.Get(srv.URL + "/api/connections")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
@@ -176,9 +178,11 @@ func TestConnectionsCRUD_EndToEnd(t *testing.T) {
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decoding list: %v", err)
 	}
-	if len(list) != 1 || list[0].Service != "radarr" || !list[0].HasAPIKey || list[0].KeySuffix != "1234" {
+	radarr, configured := findConfigured(list, "radarr")
+	if !configured || !radarr.HasAPIKey || radarr.KeySuffix != "1234" {
 		t.Fatalf("unexpected list: %+v", list)
 	}
+	assertOnlyFixedURLSynthetics(t, list, "radarr")
 
 	// Delete it.
 	delReq, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/connections/radarr", nil)
@@ -198,11 +202,43 @@ func TestConnectionsCRUD_EndToEnd(t *testing.T) {
 	defer afterResp.Body.Close()
 	var afterList []connections.Summary
 	json.NewDecoder(afterResp.Body).Decode(&afterList)
-	if len(afterList) != 0 {
-		t.Fatalf("expected no connections after delete, got %+v", afterList)
+	if _, configured := findConfigured(afterList, "radarr"); configured {
+		t.Fatalf("expected radarr gone after delete, got %+v", afterList)
 	}
+	assertOnlyFixedURLSynthetics(t, afterList)
 }
 
+// findConfigured returns the entry for service and whether it represents an
+// actually-configured connection (HasAPIKey or a stored URL) rather than one
+// of withFixedURLs' synthetic FixedURL-only placeholders.
+func findConfigured(list []connections.Summary, service string) (connections.Summary, bool) {
+	for _, s := range list {
+		if s.Service == service && (s.HasAPIKey || s.URL != "") {
+			return s, true
+		}
+	}
+	return connections.Summary{}, false
+}
+
+// assertOnlyFixedURLSynthetics checks that every entry in list besides the
+// given already-verified configured service names is one of withFixedURLs'
+// synthetic entries (FixedURL set, nothing else) — i.e. list contains no
+// unexpected configured connection.
+func assertOnlyFixedURLSynthetics(t *testing.T, list []connections.Summary, exceptConfigured ...string) {
+	t.Helper()
+	except := make(map[string]bool, len(exceptConfigured))
+	for _, s := range exceptConfigured {
+		except[s] = true
+	}
+	for _, s := range list {
+		if except[s.Service] {
+			continue
+		}
+		if s.FixedURL == "" || s.HasAPIKey || s.URL != "" {
+			t.Fatalf("unexpected non-synthetic entry in list: %+v", s)
+		}
+	}
+}
 
 // TestUpsertConnectionHandler_OmittedAPIKeyPreservesSecret locks the data-loss
 // fix: a PUT with apiKey absent from the JSON entirely (what the frontend sends

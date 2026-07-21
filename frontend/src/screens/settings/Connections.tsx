@@ -319,12 +319,13 @@ export const ConnectionRow: Component<{
         </Show>
         </Show>
         <Show when={needsFixedUrl}>
-          <Show when={props.existing?.url}>
-            <div class="text-xs text-muted">
-              previously configured <code>{props.existing?.url}</code> — no
-              longer used
-            </div>
-          </Show>
+          <input
+            type="text"
+            class={`${inputClass} !w-72 disabled:opacity-50 disabled:cursor-not-allowed`}
+            aria-label={`${props.service} fixed URL (read-only)`}
+            value={props.existing?.fixedUrl ?? ""}
+            disabled
+          />
         </Show>
       </td>
       <td class="px-2 py-2">

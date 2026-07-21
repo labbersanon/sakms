@@ -303,7 +303,9 @@ type PosterResponse struct {
 // only whether one is set and its last 4 characters (masked display).
 // Included here alongside ConnectionUpsertRequest even though the
 // Connections/Settings UI itself isn't built until Stage 4 — see
-// ConnectionUpsertRequest's doc comment for why.
+// ConnectionUpsertRequest's doc comment for why. FixedURL carries the real
+// package-constant base URL for fixed-URL services (empty for the rest), so
+// the frontend can show it read-only instead of hardcoding those Go values.
 type ConnectionSummary struct {
 	Service   string `json:"service"`
 	URL       string `json:"url"`
@@ -311,6 +313,7 @@ type ConnectionSummary struct {
 	HasAPIKey bool   `json:"hasApiKey"`
 	KeySuffix string `json:"keySuffix,omitempty"`
 	UpdatedAt string `json:"updatedAt"`
+	FixedURL  string `json:"fixedUrl,omitempty"`
 }
 
 // ConnectionUpsertRequest is PUT /api/connections/{service}'s body —

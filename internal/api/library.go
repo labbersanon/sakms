@@ -373,9 +373,10 @@ func putNamingPresetHandler(settingsStore *settings.Store) http.HandlerFunc {
 func phashThresholdKey(m mode.Mode) string { return string(m) + "_phash_dedup_threshold" }
 
 // phashModeDefault returns the factory-default per-frame Hamming threshold for
-// mode m. Movies uses 25 (≈60% similarity) — more permissive than Series
-// because there is no within-show shared-intro false-positive risk for Movies.
-// All other modes use phash.DefaultThreshold (10).
+// mode m. Movies uses phash.DefaultMoviesThreshold (64) — more permissive than
+// Series because there is no within-show shared-intro false-positive risk for
+// Movies. All other modes use phash.DefaultThreshold (40). Both are PDQ-scale
+// (0–256) calibrated values; see internal/phash/distance.go.
 func phashModeDefault(m mode.Mode) int {
 	if m == mode.Movies {
 		return phash.DefaultMoviesThreshold
@@ -623,7 +624,7 @@ func putIdentifyEnabledHandler(settingsStore *settings.Store) http.HandlerFunc {
 
 // getPHashThresholdHandler returns {mode}'s Dedup perceptual-hash similarity
 // threshold (per-frame average Hamming bits) — defaults to phashModeDefault(m)
-// when unset (25 for Movies, phash.DefaultThreshold for all other modes).
+// when unset (64 for Movies, phash.DefaultThreshold (40) for all other modes).
 func getPHashThresholdHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		threshold, err := resolvePHashThreshold(r.Context(), settingsStore, mode.Mode(r.PathValue("mode")))

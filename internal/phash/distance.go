@@ -6,21 +6,36 @@ import (
 	"strings"
 )
 
-// DefaultThreshold is the starting per-frame average Hamming distance under
-// which two composite hashes are treated as the same content. It is a
-// STARTING DEFAULT and an algorithm-sanity regression guard — NOT a
-// real-world-validated constant. It is exposed as a per-mode tunable
+// DefaultThreshold is the Series-mode per-frame Hamming distance (out of 256
+// PDQ bits per frame) under which two composite hashes are treated as the same
+// content. It is a STARTING DEFAULT and an algorithm-sanity regression guard —
+// NOT a real-world-validated constant. It is exposed as a per-mode tunable
 // (GET/PUT /api/modes/{mode}/phash-threshold); real-world confidence comes
 // from the build-tagged integration test and the manual live walkthrough
 // against actual movie files, not from this value being provably correct on
 // arbitrary movie frames (see calibrate_test.go's doc comment).
-const DefaultThreshold = 10
+//
+// Calibrated for PDQ (Stage 4): the calibrate_test harness measured a
+// perturbed-duplicate max of 12 and a distinct-content min of 98 per-frame
+// Hamming bits. 40 sits inside that [12, 98] gap with wide margin (28 bits
+// clear of the duplicate class, 58 clear of the distinct class), held at the
+// conservative Series hypothesis because Series carries a within-show
+// shared-intro/opening-credits false-positive risk that Movies does not, so it
+// stays the stricter (less permissive) of the two defaults.
+const DefaultThreshold = 40
 
 // DefaultMoviesThreshold is the factory default for Movies mode's phash-primary
-// Dedup scan. More permissive than DefaultThreshold (25 vs 10) because there
-// is no within-show shared-intro false-positive risk for Movies. Corresponds
-// to approximately 60% similarity over 5 × 64-bit frames.
-const DefaultMoviesThreshold = 25
+// Dedup scan. More permissive than DefaultThreshold (64 vs 40) because there
+// is no within-show shared-intro false-positive risk for Movies.
+//
+// Calibrated for PDQ (Stage 4): with the harness's distinct-content min at 98
+// per-frame Hamming bits, the naive linear-scale Movies point (100, from the
+// old 25/64) is REJECTED — 100 >= 98 would place the cut at or above where
+// genuinely distinct content begins, risking a destructive false merge. 64 is
+// the shipped value: more permissive than Series (40), yet still 34 bits clear
+// below the measured distinct-content floor and 52 bits above the
+// perturbed-duplicate max (12).
+const DefaultMoviesThreshold = 64
 
 // encode returns the DB/candidate-JSON storage form of a composite hash:
 // "<scheme>:<hex>", e.g. "pdq256/5f:1a2b...". The scheme tag makes a hash

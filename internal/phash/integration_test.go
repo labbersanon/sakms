@@ -8,7 +8,7 @@
 // (a) Hash runs end-to-end through real ffprobe+ffmpeg decode, (b) the SAME
 // clip hashes identically twice (determinism through real decode, not just
 // through canned bytes), and (c) two visibly-different clips produce a large
-// Hamming distance that the shipped DefaultThreshold (10) reports as NOT
+// Hamming distance that the shipped DefaultThreshold (40) reports as NOT
 // similar. It is build-tagged `integration` and t.Skip()s cleanly if ffmpeg
 // or ffprobe isn't on PATH, so a CI box without them stays green.
 //

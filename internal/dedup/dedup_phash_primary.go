@@ -252,7 +252,7 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 // ScanLibrarySeriesPHash is Dedup's phash-primary scan for Series mode — the
 // Movies sibling with two differences: (1) it loads tracked episodes (not items)
 // and resolves orphan entries through library.ResolveEpisodeVideoFiles, and
-// (2) it uses a stricter default threshold (10 Hamming bits/frame, same as
+// (2) it uses a stricter default threshold (40 Hamming bits/frame, same as
 // phash.DefaultThreshold) to reduce false positives from shared intros/credits
 // between genuinely different episodes of the same show.
 //

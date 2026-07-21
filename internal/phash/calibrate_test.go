@@ -12,16 +12,17 @@ import (
 
 // TestCalibration_DefaultThresholdSeparatesPerturbedFromDistinct is a
 // regression guard on ALGORITHM SANITY, not a real-world-validated claim that
-// DefaultThreshold (10) is the correct per-frame Hamming cut for actual movie
-// frames. It only proves that the shipped algorithm (imghash PHash over a
-// 32x32 downscale) distinguishes a synthetically PERTURBED copy of an image
+// the per-mode defaults (Series 40, Movies 64) are the correct per-frame
+// Hamming cuts for actual movie frames. It only proves that the shipped
+// algorithm (imghash PDQ, 256 bits/frame) distinguishes a synthetically
+// PERTURBED copy of an image
 // (JPEG re-encode / brightness shift — modelling "same content, different
 // release/codec/res") from a structurally DISTINCT generated image (modelling
 // a wrong-TMDB match, a different cut, or an extras file) with the default cut
 // sitting cleanly between the two classes, with margin on each side.
 //
-// Treat 10 as a STARTING DEFAULT, exposed as a per-mode tunable
-// (GET/PUT /api/modes/{mode}/phash-threshold), NOT a proven constant. Real
+// Treat the defaults as STARTING values, exposed as a per-mode tunable
+// (GET/PUT /api/modes/{mode}/phash-threshold), NOT proven constants. Real
 // content is not shipped in this repo (no copyrighted movie frames), so
 // real-world confidence comes from the build-tagged integration test and the
 // manual live walkthrough against actual files — never from this synthetic
@@ -74,23 +75,38 @@ func TestCalibration_DefaultThresholdSeparatesPerturbedFromDistinct(t *testing.T
 		}
 	}
 
-	t.Logf("perturbed-duplicate max per-frame Hamming = %d; distinct-content min = %d; default cut = %d",
-		dupMax, diffMin, DefaultThreshold)
+	t.Logf("perturbed-duplicate max per-frame Hamming = %d; distinct-content min = %d; Series cut = %d; Movies cut = %d",
+		dupMax, diffMin, DefaultThreshold, DefaultMoviesThreshold)
 
-	// Margins: the perturbed-duplicate max must sit clearly BELOW the cut and
-	// the distinct-content min clearly ABOVE it, so the default has headroom on
-	// both sides rather than grazing either class.
-	if dupMax > DefaultThreshold-2 {
-		t.Errorf("perturbed duplicates reach %d bits, too close to the default cut %d — margin eroded",
-			dupMax, DefaultThreshold)
+	// Margins: over PDQ's 256-bit-per-frame scale the measured separation is
+	// wide (harness: dupMax≈12, diffMin≈98). Each shipped per-mode default must
+	// sit inside the [dupMax, diffMin] gap with at least a guardBand of headroom
+	// on BOTH sides, so a future algorithm/parameter change that erodes the
+	// separation fails loudly here before it collapses in production. Both
+	// bounds are computed from the run's actual dupMax/diffMin (not hardcoded),
+	// keeping this a real regression guard rather than a snapshot of one run.
+	const guardBand = 10 // per-frame Hamming bits of required clearance each side
+	assertInGap := func(name string, cut int) {
+		if cut-dupMax < guardBand {
+			t.Errorf("%s cut %d is within %d bits of the perturbed-duplicate max %d — margin eroded (need >= %d clearance)",
+				name, cut, cut-dupMax, dupMax, guardBand)
+		}
+		if diffMin-cut < guardBand {
+			t.Errorf("%s cut %d is within %d bits of the distinct-content min %d — margin eroded (need >= %d clearance)",
+				name, cut, diffMin-cut, diffMin, guardBand)
+		}
+		if !(dupMax < cut && cut < diffMin) {
+			t.Fatalf("%s cut %d does not sit strictly between the duplicate max (%d) and distinct min (%d)",
+				name, cut, dupMax, diffMin)
+		}
 	}
-	if diffMin < DefaultThreshold+4 {
-		t.Errorf("distinct content gets as close as %d bits to a duplicate, too near the default cut %d — margin eroded",
-			diffMin, DefaultThreshold)
-	}
-	if !(dupMax < DefaultThreshold && DefaultThreshold < diffMin) {
-		t.Fatalf("default cut %d does not sit strictly between the duplicate max (%d) and distinct min (%d)",
-			DefaultThreshold, dupMax, diffMin)
+	assertInGap("Series (DefaultThreshold)", DefaultThreshold)
+	assertInGap("Movies (DefaultMoviesThreshold)", DefaultMoviesThreshold)
+
+	// Design intent: Movies is more permissive (higher cut) than Series.
+	if DefaultMoviesThreshold <= DefaultThreshold {
+		t.Errorf("Movies cut %d must be strictly more permissive than Series cut %d",
+			DefaultMoviesThreshold, DefaultThreshold)
 	}
 }
 

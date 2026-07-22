@@ -40,6 +40,10 @@ const (
 	// are typically 1–3; the pool is fixed because fyne.io/systray items are
 	// created once (menu order is fixed at creation) and reused via show/hide.
 	maxRootSlots = 12
+	// maxKeySlots caps the library-path-key rows in the path-mapping section.
+	// The catalog is a fixed, bounded set (~5 keys); the pool is oversized and
+	// fixed for the same reason as maxRootSlots (menu order fixed at creation).
+	maxKeySlots = 8
 )
 
 type statusResponse struct {
@@ -96,10 +100,26 @@ type trayUI struct {
 	mQuit    *systray.MenuItem
 	roots    []*rootSlot
 
+	// Path-mapping section (Stage 3). mPathHeader is a disabled label;
+	// mAddRootFirst appears only while the mediaRoot gate is closed and routes to
+	// the mediaRoots picker; mPathWarning is the persistent last-push-failed line.
+	mPathHeader   *systray.MenuItem
+	mAddRootFirst *systray.MenuItem
+	mPathWarning  *systray.MenuItem
+	keySlots      []*keySlot
+
 	mu           sync.Mutex
 	lastKey      string
 	lastCode     string
 	notifiedCode string // which pairing code we already notified about
+
+	// Path-mapping state (guarded by mu). mediaRootCount drives the UX gate;
+	// pmFetched/pmCatalog/pmAuthored/pmLastPushError hold the last GET /pathmap.
+	mediaRootCount  int
+	pmFetched       bool
+	pmCatalog       []string
+	pmAuthored      []authoredMapping
+	pmLastPushError string
 }
 
 // rootSlot is one reusable media-root menu row: a display-only parent item
@@ -133,6 +153,27 @@ func (t *trayUI) run() {
 	}
 
 	systray.AddSeparator()
+	t.mPathHeader = systray.AddMenuItem("Configure path mappings",
+		"Map each server library path key to a local folder on this node")
+	t.mPathHeader.Disable()
+	t.mPathHeader.Hide()
+	t.mAddRootFirst = systray.AddMenuItem("Add a media root first…",
+		"A media root must be configured before path mappings can be set")
+	t.mAddRootFirst.Hide()
+	for i := 0; i < maxKeySlots; i++ {
+		item := systray.AddMenuItem("", "")
+		item.Disable() // display-only; the Set/Remove sub-items are the actions
+		item.Hide()
+		set := item.AddSubMenuItem("Set folder…", "Pick a local folder for this library path key")
+		rm := item.AddSubMenuItem("Remove mapping", "Clear this key's local path mapping")
+		rm.Hide()
+		t.keySlots = append(t.keySlots, &keySlot{item: item, setItem: set, removeItem: rm})
+	}
+	t.mPathWarning = systray.AddMenuItem("", "Path-mapping push status")
+	t.mPathWarning.Disable()
+	t.mPathWarning.Hide()
+
+	systray.AddSeparator()
 	t.mWarning = systray.AddMenuItem("", "sakms-node warning")
 	t.mWarning.Disable()
 	t.mWarning.Hide()
@@ -160,13 +201,47 @@ func (t *trayUI) run() {
 		}()
 	}
 
+	// Path-mapping click handlers. Each runs in its own goroutine so a blocking
+	// picker or a stalled control-socket call never holds up the poll ticker.
+	go func() {
+		for range t.mAddRootFirst.ClickedCh {
+			t.handleAddRoot() // route the operator to the existing mediaRoots picker
+		}
+	}()
+	for i := range t.keySlots {
+		ks := t.keySlots[i]
+		go func() {
+			for range ks.setItem.ClickedCh {
+				t.handlePathMapSet(ks)
+			}
+		}()
+		go func() {
+			for range ks.removeItem.ClickedCh {
+				t.handlePathMapClear(ks)
+			}
+		}()
+	}
+
 	// Surface the group-membership relogin diagnostic early: if this desktop
 	// session can't reach the control socket because it predates the RPM adding
 	// the user to the shared group, connecting fails with EACCES.
 	go t.probeControlSocket()
 
 	t.poll()
+	// The initial pathmap fetch runs asynchronously: run() is the onReady callback
+	// and must return promptly (it already blocks up to httpTimeout on t.poll());
+	// a synchronous control-socket fetch could stack another controlTimeout on top.
+	go t.pollPathMap()
 
+	go t.loop()
+}
+
+// loop runs the poll ticker and the copy/quit click handlers. It must run in
+// its own goroutine so run() (the systray onReady callback) can return: the
+// fyne.io/systray library only signals initialMenuBuilt.Done() after onReady
+// returns, and GetLayout (the DBusMenu call that builds the popup on click)
+// blocks on that signal — never returning here deadlocks the menu.
+func (t *trayUI) loop() {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -174,6 +249,10 @@ func (t *trayUI) run() {
 		select {
 		case <-ticker.C:
 			t.poll()
+			// In its own goroutine: the control-socket fetch can stall up to
+			// controlTimeout, and this loop goroutine also services the quit/copy
+			// clicks — it must not block on the pathmap refresh.
+			go t.pollPathMap()
 		case <-t.mCopy.ClickedCh:
 			t.mu.Lock()
 			code := t.lastCode
@@ -254,6 +333,12 @@ func (t *trayUI) applyStatus(s *statusResponse, err error) {
 	}
 
 	t.renderRoots(scopes)
+
+	// The mediaRoots count (len of the per-root scopes) drives the path-mapping
+	// gate; re-render that section whenever status changes. The catalog/authored
+	// data itself comes from pollPathMap, not here.
+	t.mediaRootCount = len(scopes)
+	t.renderPathMap()
 
 	if warning != "" {
 		t.mWarning.SetTitle("⚠ " + warning)

@@ -78,7 +78,7 @@ func attachPHashesScene(ctx context.Context, hasher PHasher, libStore *library.S
 //
 // Both guards live inside this function, mirroring ScanLibrary's own two
 // in-function guards.
-func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
+func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
 	if sess.Identify == nil {
 		return nil, fmt.Errorf("adult identification isn't configured — add an Ollama connection and set the Ollama model in Settings, plus at least one of StashDB/FansDB/TPDB")
 	}
@@ -113,11 +113,26 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 	if err != nil {
 		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
 	}
+	// Progress unit: entries whose identify step has completed. Pre-filter to the
+	// non-sidecar set so Total is the exact number of identify calls that will
+	// fire; Current is emitted after each Identify whether or not it yields a
+	// usable identity (identify is the dominant cost), so Current reaches Total
+	// exactly.
+	var nonSidecar []library.UnmappedEntry
 	for _, entry := range entries {
 		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
 			continue
 		}
+		nonSidecar = append(nonSidecar, entry)
+	}
+	total := len(nonSidecar)
+	current := 0
+	for _, entry := range nonSidecar {
 		res, idErr := sess.Identify.Identify(ctx, entry.Name, filepath.Base(filepath.Dir(entry.Path)))
+		current++
+		if onProgress != nil {
+			onProgress(ProgressEvent{Current: current, Total: total, Name: entry.Name, Phase: "identifying"})
+		}
 		box, sceneID, itemType, title, studio, date, ok := adultSceneIdentity(res, idErr)
 		if !ok {
 			continue // web-only / no scene id / identify error — Rename's concern, not Dedup's

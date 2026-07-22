@@ -130,7 +130,7 @@ func minPairwiseSimilarity(group []pHashFileItem, frames int) float64 {
 //
 // perFrameThreshold is the Movies per-frame Hamming distance ceiling — default
 // 25 bits (~60% similarity), configurable via movies_phash_dedup_threshold.
-func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
+func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Movies library root folder configured yet — add one in Settings first")
 	}
@@ -150,11 +150,23 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
 	}
 
+	// Progress unit: files whose analyze (hash) step has completed. Total is an
+	// upper bound — len(tracked)+len(entries); Movies orphans are one file each,
+	// so a skipped sidecar/unprobeable entry can only make Current fall short of
+	// Total, never exceed it. The done event carries the authoritative final
+	// count (see the handler), so a short live Total is corrected on completion.
+	total := len(tracked) + len(entries)
+	current := 0
+
 	// Build the flat candidate list: tracked items then orphan entries.
 	var items []pHashFileItem
 	for i := range tracked {
 		t := &tracked[i]
 		h := loadOrComputeTrackedItemPHash(ctx, hasher, libStore, t)
+		current++
+		if onProgress != nil {
+			onProgress(ProgressEvent{Current: current, Total: total, Name: filepath.Base(t.FilePath), Phase: "hashing"})
+		}
 		items = append(items, pHashFileItem{
 			path:      t.FilePath,
 			label:     filepath.Base(t.FilePath),
@@ -176,6 +188,10 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		}
 		orphanPaths = append(orphanPaths, videoPath)
 		h := libStore.LoadOrComputeOrphanPHash(ctx, hasher, videoPath)
+		current++
+		if onProgress != nil {
+			onProgress(ProgressEvent{Current: current, Total: total, Name: entry.Name, Phase: "hashing"})
+		}
 		var tmdbID int
 		var title string
 		if sess.TMDB != nil {
@@ -257,7 +273,7 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 // between genuinely different episodes of the same show.
 //
 // perFrameThreshold is configurable via series_phash_dedup_threshold.
-func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
+func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Series library root folder configured yet — add one in Settings first")
 	}
@@ -290,10 +306,39 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
 	}
 
+	// Pre-resolve every orphan entry into ONE flat list of video paths BEFORE
+	// emitting any progress, so the denominator counts video files — the exact
+	// unit the emitting loops iterate. This is the fix for the >100% bug: a
+	// single season-pack entry expands to several files via
+	// ResolveEpisodeVideoFiles, so len(trackedEpisodes)+len(entries) is NOT a
+	// valid denominator (Current, which counts video files, could exceed it).
+	// ScanRootFolder-order + ResolveEpisodeVideoFiles-order are preserved, so
+	// orphanPaths is byte-identical to what the old inline loop produced; the
+	// item-building loop below consumes this same slice (no double resolve), and
+	// DeleteOrphanPHashesNotIn is fed from it unchanged.
+	var orphanPaths []string
+	for _, entry := range entries {
+		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
+			continue
+		}
+		videoFiles, err := library.ResolveEpisodeVideoFiles(entry.Path)
+		if err != nil {
+			continue
+		}
+		orphanPaths = append(orphanPaths, videoFiles...)
+	}
+
+	total := len(trackedEpisodes) + len(orphanPaths)
+	current := 0
+
 	var items []pHashFileItem
 	for i := range trackedEpisodes {
 		ep := &trackedEpisodes[i]
 		h := loadOrComputeTrackedEpisodePHash(ctx, hasher, libStore, ep)
+		current++
+		if onProgress != nil {
+			onProgress(ProgressEvent{Current: current, Total: total, Name: filepath.Base(ep.FilePath), Phase: "hashing"})
+		}
 		seriesTitle := ""
 		seriesTMDBID := 0
 		if s, ok := seriesByID[ep.SeriesID]; ok {
@@ -312,38 +357,31 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		})
 	}
 
-	var orphanPaths []string
-	for _, entry := range entries {
-		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
-			continue
+	for _, videoPath := range orphanPaths {
+		name := filepath.Base(videoPath)
+		h := libStore.LoadOrComputeOrphanPHash(ctx, hasher, videoPath)
+		current++
+		if onProgress != nil {
+			onProgress(ProgressEvent{Current: current, Total: total, Name: name, Phase: "hashing"})
 		}
-		videoFiles, err := library.ResolveEpisodeVideoFiles(entry.Path)
-		if err != nil {
-			continue
-		}
-		for _, videoPath := range videoFiles {
-			name := filepath.Base(videoPath)
-			orphanPaths = append(orphanPaths, videoPath)
-			h := libStore.LoadOrComputeOrphanPHash(ctx, hasher, videoPath)
-			season, episode, _ := library.ParseEpisodeFilename(name)
-			var tmdbID int
-			var title string
-			if sess.TMDB != nil {
-				if results, sErr := sess.TMDB.SearchTV(ctx, searchterm.FromName(library.StripEpisodeMarker(name))); sErr == nil && len(results) > 0 {
-					tmdbID = results[0].ID
-					title = results[0].Title
-				}
+		season, episode, _ := library.ParseEpisodeFilename(name)
+		var tmdbID int
+		var title string
+		if sess.TMDB != nil {
+			if results, sErr := sess.TMDB.SearchTV(ctx, searchterm.FromName(library.StripEpisodeMarker(name))); sErr == nil && len(results) > 0 {
+				tmdbID = results[0].ID
+				title = results[0].Title
 			}
-			items = append(items, pHashFileItem{
-				path:     videoPath,
-				label:    name,
-				tmdbID:   tmdbID,
-				season:   season,
-				episode:  episode,
-				title:    title,
-				phashVal: h,
-			})
 		}
+		items = append(items, pHashFileItem{
+			path:     videoPath,
+			label:    name,
+			tmdbID:   tmdbID,
+			season:   season,
+			episode:  episode,
+			title:    title,
+			phashVal: h,
+		})
 	}
 
 	_ = libStore.DeleteOrphanPHashesNotIn(ctx, orphanPaths)

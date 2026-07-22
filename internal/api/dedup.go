@@ -55,9 +55,9 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, set
 				return
 			}
 			if m == mode.Movies {
-				found, err = dedup.ScanLibraryPHash(ctx, sess, libStore, rootPath, prober, hasher, threshold)
+				found, err = dedup.ScanLibraryPHash(ctx, sess, libStore, rootPath, prober, hasher, threshold, nil)
 			} else {
-				found, err = dedup.ScanLibrarySeriesPHash(ctx, sess, libStore, rootPath, prober, hasher, threshold)
+				found, err = dedup.ScanLibrarySeriesPHash(ctx, sess, libStore, rootPath, prober, hasher, threshold, nil)
 			}
 		} else {
 			threshold, tErr := resolvePHashThreshold(ctx, settingsStore, m)
@@ -75,7 +75,7 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, set
 				http.Error(w, rpErr.Error(), http.StatusInternalServerError)
 				return
 			}
-			found, err = dedup.ScanLibraryAdult(ctx, sess, libStore, rootPath, prober, hasher, threshold)
+			found, err = dedup.ScanLibraryAdult(ctx, sess, libStore, rootPath, prober, hasher, threshold, nil)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

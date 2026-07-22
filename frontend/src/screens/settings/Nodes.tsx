@@ -27,6 +27,7 @@ import {
   inputClass,
   labelClass,
   Muted,
+  Switch,
 } from "../../components/ui";
 import type { NodeInfo, NodePathMappingEntry, PendingNodeInfo } from "@dto";
 
@@ -181,12 +182,12 @@ const ApproveModal: Component<{
 // settings" without touching the field must not silently reset an existing
 // non-zero concurrency cap to 0.
 //
-// The pause toggle (node-pause-dispatch plan, Stage 4) is a second,
-// independent control in this same modal: it preloads from
-// props.node.pauseDispatch and calls the dedicated updateNodePause as its own
-// immediate action, never as part of the maxJobs "Save settings" body. See
-// togglePause's own comment below for why the resulting immediate-apply vs.
-// Save-gated mismatch within one modal is deliberate.
+// The pause toggle (node-pause-dispatch plan, Stage 4) used to live here as a
+// second, independent control in this modal. It has since been relocated
+// (Stage 5) onto the node list row itself (NodeRow, below) as a switch, so an
+// operator can pause/resume a node without opening this modal at all. See
+// NodeRow's togglePause comment for the immediate-apply + rollback contract,
+// unchanged by the move — only its screen location changed.
 const EditSettingsModal: Component<{
   node: NodeInfo;
   onClose: () => void;
@@ -196,39 +197,6 @@ const EditSettingsModal: Component<{
   const [maxJobs, setMaxJobs] = createSignal(props.node.maxJobs);
   const [saving, setSaving] = createSignal(false);
   const [err, setErr] = createSignal("");
-
-  // paused mirrors props.node.pauseDispatch (the stored value GET /api/nodes
-  // already returns) — same preload discipline as maxJobs above, so opening
-  // this modal never shows a toggle that disagrees with the real server state.
-  const [paused, setPaused] = createSignal(props.node.pauseDispatch);
-  const [pauseSaving, setPauseSaving] = createSignal(false);
-  const [pauseErr, setPauseErr] = createSignal("");
-
-  // togglePause fires updateNodePause IMMEDIATELY on toggle — it is
-  // deliberately NOT gated behind "Save settings" below. This is intentional
-  // mixed UX within one modal, not an oversight: routing pause through its
-  // own call, separate from the maxJobs Save body, is what keeps pause off
-  // the NodeSettingsRequest entirely and makes the P2 footgun (pause and
-  // maxJobs sharing one write) structurally impossible on the client, the
-  // same way the server enforces it with a dedicated endpoint. Do not "fix"
-  // this into a single Save-gated control.
-  const togglePause = async (next: boolean) => {
-    setPaused(next);
-    setPauseSaving(true);
-    setPauseErr("");
-    try {
-      await updateNodePause(props.node.id, next);
-      props.onDone();
-    } catch (e) {
-      // Roll back the optimistic flip on failure so the toggle never claims
-      // a state the server never accepted (mirrors the node daemon's own
-      // failed-push rollback behavior in this plan).
-      setPaused(!next);
-      setPauseErr(String(e));
-    } finally {
-      setPauseSaving(false);
-    }
-  };
 
   const submit = async () => {
     setSaving(true);
@@ -265,25 +233,6 @@ const EditSettingsModal: Component<{
           <For each={rows()?.entries}>
             {(entry) => <NodePathMappingRow entry={entry} />}
           </For>
-        </div>
-        <div>
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              aria-label={`${props.node.name} dispatch paused`}
-              checked={paused()}
-              disabled={pauseSaving()}
-              onChange={(e) => void togglePause(e.currentTarget.checked)}
-            />
-            <span class="text-sm text-fg">Pause dispatch</span>
-          </label>
-          <Muted class="mt-1">
-            Applies immediately — takes this node out of job rotation without
-            unpairing it or touching its path mappings or max jobs.
-          </Muted>
-          <Show when={pauseErr()}>
-            <ErrorText>{pauseErr()}</ErrorText>
-          </Show>
         </div>
         <div>
           <label class={labelClass}>
@@ -343,15 +292,73 @@ const PendingRow: Component<{
   </div>
 );
 
-// NodeRow shows an approved node with online/offline status, a "Paused"
-// badge when props.node.pauseDispatch is true (reusing the same pill shape
-// as the online/offline status badge), and a settings button.
-const NodeRow: Component<{ node: NodeInfo; onEdit: () => void }> = (props) => {
+// NodeRow shows an approved node with online/offline status, a pause/resume
+// switch, and a settings button.
+//
+// The pause/resume control (node-pause-dispatch plan, Stage 4) used to be a
+// checkbox inside EditSettingsModal's settings modal. Relocated here (Stage
+// 5) as a switch sitting directly in the row, alongside the status badge, so
+// an operator can pause/resume a node without opening the modal at all.
+//
+// The former "Paused" text badge that used to sit next to the status pill is
+// REMOVED, not kept alongside the switch: the switch itself is now in the
+// row, and its own fill color (accent = dispatch enabled/running, muted =
+// paused) plus thumb position already encode exactly the boolean the badge
+// repeated in words. The switch is wired inverted from `paused` (checked =
+// !paused) specifically so "on"/accent lines up with this app's existing
+// color language for active/selected state (tabs, pills, primary buttons) —
+// a paused row reading as "on" would fight that convention. Keeping both the
+// switch and the old badge would show the same state twice in the same row;
+// dropping the badge trims that duplication rather than adding a second
+// component the operator has to reconcile against the switch.
+const NodeRow: Component<{
+  node: NodeInfo;
+  onEdit: () => void;
+  onDone: () => void;
+}> = (props) => {
   const online = () => props.node.status === "online";
   const caps = () =>
     props.node.capabilities.length > 0
       ? props.node.capabilities.join(", ")
       : "none";
+
+  // paused mirrors props.node.pauseDispatch (the stored value GET /api/nodes
+  // already returns) — same preload discipline maxJobs uses in
+  // EditSettingsModal, so the switch never shows a state that disagrees with
+  // the real server state on first render. <For>'s default keyed-by-
+  // reference reconciliation (NodesSection below) recreates this row — and so
+  // re-syncs this signal from a fresh prop — whenever `data()` refetches with
+  // a new node array, the same "fresh signal per mount" contract
+  // EditSettingsModal relied on for its own preload before this toggle lived
+  // here.
+  const [paused, setPaused] = createSignal(props.node.pauseDispatch);
+  const [pauseSaving, setPauseSaving] = createSignal(false);
+  const [pauseErr, setPauseErr] = createSignal("");
+
+  // togglePause fires updateNodePause IMMEDIATELY on toggle — relocated
+  // verbatim from EditSettingsModal (node-pause-dispatch plan, Stage 4/5).
+  // Routing pause through its own call, entirely separate from maxJobs' own
+  // Save-gated body over in EditSettingsModal, is what keeps pause off
+  // NodeSettingsRequest and makes the P2 footgun (pause and maxJobs sharing
+  // one write) structurally impossible on the client — do not fold this into
+  // updateNodeSettings or gate it behind any Save button.
+  const togglePause = async (next: boolean) => {
+    setPaused(next);
+    setPauseSaving(true);
+    setPauseErr("");
+    try {
+      await updateNodePause(props.node.id, next);
+      props.onDone();
+    } catch (e) {
+      // Roll back the optimistic flip on failure so the switch never claims
+      // a state the server never accepted (mirrors the node daemon's own
+      // failed-push rollback behavior in this plan).
+      setPaused(!next);
+      setPauseErr(String(e));
+    } finally {
+      setPauseSaving(false);
+    }
+  };
 
   return (
     <div class="border-b border-border py-3 last:border-b-0">
@@ -364,14 +371,18 @@ const NodeRow: Component<{ node: NodeInfo; onEdit: () => void }> = (props) => {
             capabilities: {caps()} · last heartbeat:{" "}
             {formatHeartbeat(props.node.lastHeartbeat)}
           </div>
+          <Show when={pauseErr()}>
+            <ErrorText>{pauseErr()}</ErrorText>
+          </Show>
         </div>
         <div class="flex shrink-0 items-center gap-2">
           <Button onClick={props.onEdit}>Settings</Button>
-          <Show when={props.node.pauseDispatch}>
-            <span class="rounded-full bg-warn/20 px-2 py-0.5 text-xs font-medium text-warn">
-              Paused
-            </span>
-          </Show>
+          <Switch
+            checked={!paused()}
+            disabled={pauseSaving()}
+            ariaLabel={`${props.node.name} dispatch enabled`}
+            onChange={(next) => void togglePause(!next)}
+          />
           <span
             class="rounded-full px-2 py-0.5 text-xs font-medium"
             classList={{
@@ -481,7 +492,11 @@ export const NodesSection: Component = () => {
         <Show when={(data()?.nodes.length ?? 0) > 0}>
           <For each={data()?.nodes}>
             {(node) => (
-              <NodeRow node={node} onEdit={() => setEditingNode(node)} />
+              <NodeRow
+                node={node}
+                onEdit={() => setEditingNode(node)}
+                onDone={() => refetch()}
+              />
             )}
           </For>
         </Show>

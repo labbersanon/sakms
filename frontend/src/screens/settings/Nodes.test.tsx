@@ -9,12 +9,16 @@
 // empty pathMap rather than any operator-edited value, and (5) ApproveModal
 // no longer collects or displays any path-mapping state at all.
 //
-// Also covers the node-pause-dispatch plan's Stage 4: the pause toggle in
-// EditSettingsModal fires updateNodePause immediately (not gated by "Save
-// settings"), the node list's "Paused" badge, and — most importantly — the
-// bidirectional separation between the pause toggle and the maxJobs save:
-// a MaxJobs save never calls the pause endpoint or sends `paused`, and a
-// pause toggle never calls the settings endpoint or sends `maxJobs`.
+// Also covers the node-pause-dispatch plan's Stage 4/5: the pause switch —
+// now a NodeRow list-row control (relocated out of EditSettingsModal, Stage
+// 5) — fires updateNodePause immediately (not gated by "Save settings" or
+// requiring the settings modal to be open at all), rolls back on failure,
+// and — most importantly — the bidirectional separation between the pause
+// toggle and the maxJobs save: a MaxJobs save never calls the pause endpoint
+// or sends `paused`, and a pause toggle never calls the settings endpoint or
+// sends `maxJobs`. The former "Paused" text badge was removed as redundant
+// once the switch itself sits in the row (see NodeRow's doc comment); there
+// is no longer a test for it.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
@@ -112,10 +116,10 @@ describe("EditSettingsModal", () => {
 
     await screen.findByText("/mnt/movies");
     // No editable control for path-mapping fields remains reachable — the
-    // only inputs left in the modal are the pause checkbox and the maxJobs
-    // number field.
+    // only input left in the modal is the maxJobs number field (the pause
+    // toggle moved out to the list row as a switch, Stage 5).
     expect(screen.queryByPlaceholderText("/mnt/media")).toBeNull();
-    expect(document.querySelectorAll("input")).toHaveLength(2);
+    expect(document.querySelectorAll("input")).toHaveLength(1);
   });
 
   it("renders an unconfigured library path's row with a configure-first note", async () => {
@@ -194,8 +198,8 @@ describe("EditSettingsModal", () => {
   });
 });
 
-describe("EditSettingsModal — pause dispatch toggle", () => {
-  it("preloads the pause checkbox from props.node.pauseDispatch", async () => {
+describe("NodeRow — pause dispatch switch", () => {
+  it("preloads the switch from props.node.pauseDispatch, with no settings modal open", async () => {
     stubFetch((url) => {
       if (url.includes("/api/nodes") && !url.includes("/path-mappings")) {
         return jsonResponse({
@@ -217,22 +221,22 @@ describe("EditSettingsModal — pause dispatch toggle", () => {
     });
     render(() => <NodesSection />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    const toggle = (await screen.findByLabelText(
-      "render-box dispatch paused",
-    )) as HTMLInputElement;
-    expect(toggle.checked).toBe(true);
+    // No click on "Settings" here — the switch is reachable straight off the
+    // list row now, without opening EditSettingsModal at all.
+    const toggle = await screen.findByLabelText("render-box dispatch enabled");
+    // pauseDispatch: true means the node IS paused, so the (inverted) switch
+    // renders unchecked — checked means dispatch enabled/running.
+    expect(toggle).toHaveAttribute("aria-checked", "false");
   });
 
-  it("toggling pause calls updateNodePause immediately, not gated by Save settings", async () => {
+  it("toggling the switch calls updateNodePause immediately, not gated by Save settings", async () => {
     const calls = stubFetch();
     render(() => <NodesSection />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    const toggle = (await screen.findByLabelText(
-      "render-box dispatch paused",
-    )) as HTMLInputElement;
-    expect(toggle.checked).toBe(false);
+    const toggle = await screen.findByLabelText("render-box dispatch enabled");
+    // pauseDispatch: false (default stub) means dispatch is enabled, so the
+    // inverted switch renders checked.
+    expect(toggle).toHaveAttribute("aria-checked", "true");
 
     fireEvent.click(toggle);
 
@@ -241,13 +245,14 @@ describe("EditSettingsModal — pause dispatch toggle", () => {
       expect(pause).toBeDefined();
       expect(pause!.method).toBe("PUT");
     });
-    // Never fired via "Save settings" — no click on that button happened here.
+    // Never fired via "Save settings" — no click on that button, or even on
+    // "Settings" to open the modal, happened here.
     expect(
       calls.some((c) => c.url.endsWith("/api/nodes/node-a/settings")),
     ).toBe(false);
   });
 
-  it("rolls back the checkbox when the pause PUT fails", async () => {
+  it("rolls back the switch when the pause PUT fails", async () => {
     const calls = stubFetch((url, init) => {
       if (
         url.endsWith("/api/nodes/node-a/pause") &&
@@ -259,11 +264,11 @@ describe("EditSettingsModal — pause dispatch toggle", () => {
     });
     render(() => <NodesSection />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    const toggle = (await screen.findByLabelText(
-      "render-box dispatch paused",
-    )) as HTMLInputElement;
-    expect(toggle.checked).toBe(false);
+    const toggle = await screen.findByLabelText("render-box dispatch enabled");
+    // pauseDispatch: false (default stub) means dispatch is enabled, so the
+    // inverted switch renders checked; the rollback restores this same
+    // checked state after the failed PUT.
+    expect(toggle).toHaveAttribute("aria-checked", "true");
 
     fireEvent.click(toggle);
 
@@ -272,7 +277,9 @@ describe("EditSettingsModal — pause dispatch toggle", () => {
         calls.some((c) => c.url.endsWith("/api/nodes/node-a/pause")),
       ).toBe(true);
     });
-    await waitFor(() => expect(toggle.checked).toBe(false));
+    await waitFor(() =>
+      expect(toggle).toHaveAttribute("aria-checked", "true"),
+    );
   });
 });
 
@@ -304,10 +311,7 @@ describe("Pause/MaxJobs request separation", () => {
     const calls = stubFetch();
     render(() => <NodesSection />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    const toggle = (await screen.findByLabelText(
-      "render-box dispatch paused",
-    )) as HTMLInputElement;
+    const toggle = await screen.findByLabelText("render-box dispatch enabled");
 
     fireEvent.click(toggle);
 
@@ -323,8 +327,8 @@ describe("Pause/MaxJobs request separation", () => {
   });
 });
 
-describe("NodeRow — Paused badge", () => {
-  it("shows a Paused badge when pauseDispatch is true, and none when false", async () => {
+describe("NodeRow — pause switch state (redundant 'Paused' badge removed)", () => {
+  it("reflects each node's own pauseDispatch independently via the switch, with no separate text badge", async () => {
     stubFetch((url) => {
       if (url.includes("/api/nodes") && !url.includes("/path-mappings")) {
         return jsonResponse({
@@ -355,10 +359,21 @@ describe("NodeRow — Paused badge", () => {
     });
     render(() => <NodesSection />);
 
-    await screen.findByText("paused-box");
-    await screen.findByText("running-box");
+    const pausedToggle = await screen.findByLabelText(
+      "paused-box dispatch enabled",
+    );
+    const runningToggle = await screen.findByLabelText(
+      "running-box dispatch enabled",
+    );
+    // Inverted: paused-box (pauseDispatch: true) renders unchecked, and
+    // running-box (pauseDispatch: false) renders checked.
+    expect(pausedToggle).toHaveAttribute("aria-checked", "false");
+    expect(runningToggle).toHaveAttribute("aria-checked", "true");
 
-    expect(screen.getAllByText("Paused")).toHaveLength(1);
+    // The old text badge is gone — the switch is the only paused/running
+    // indicator in the row now (see NodeRow's doc comment for why keeping
+    // both would be redundant).
+    expect(screen.queryByText("Paused")).toBeNull();
   });
 });
 

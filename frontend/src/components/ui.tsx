@@ -345,6 +345,43 @@ export const BatchResultSummary: Component<{
   );
 };
 
+// Switch is a pill-shaped, sliding-thumb toggle (iOS/Material style) — the
+// shared visual for any row-level immediate-apply boolean control. No
+// existing switch component predates this one: Advanced.tsx's toggle-shaped
+// settings are all plain checkboxes or range sliders, and nothing in
+// components/ was a switch either (checked when the Nodes list's pause/resume
+// control was relocated out of a modal checkbox onto the node row — see
+// Nodes.tsx). Added here, not screen-local, so the next row-level toggle
+// reuses it instead of inventing its own styling.
+export const Switch: Component<{
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  ariaLabel: string;
+}> = (props) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={props.checked}
+    aria-label={props.ariaLabel}
+    disabled={props.disabled}
+    onClick={() => props.onChange(!props.checked)}
+    class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50"
+    classList={{
+      "bg-accent": props.checked,
+      "bg-surface-2": !props.checked,
+    }}
+  >
+    <span
+      class="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform"
+      classList={{
+        "translate-x-[18px]": props.checked,
+        "translate-x-[2px]": !props.checked,
+      }}
+    />
+  </button>
+);
+
 // PillSelector is the labeled row of pill buttons shared by the Discover
 // detail popup's resolution/tier/protocol selectors and Settings' per-mode
 // quality-preference pickers — the same visual/interaction pattern

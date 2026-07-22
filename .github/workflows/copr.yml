@@ -66,6 +66,15 @@ jobs:
         run: |
           sed "s/%{version}/$VERSION/g" packaging/rpm/sakms-node.spec > sakms-node.spec
 
+      - name: Stage Source1 into _sourcedir
+        # rpmbuild -bs below sets --define "_sourcedir $PWD", so every
+        # Source<N> the spec references must exist in $PWD. Source0 (the
+        # tarball) is already built there by "Build source archive"; Source1
+        # (sakms-node.sysusers.conf) lives in packaging/rpm/ in the repo and
+        # was never copied here — without this step rpmbuild fails with
+        # "Bad file: .../sakms-node.sysusers.conf: No such file or directory".
+        run: cp packaging/rpm/sakms-node.sysusers.conf .
+
       - name: Build SRPM
         run: |
           rpmbuild -bs \

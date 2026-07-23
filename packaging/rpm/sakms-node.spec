@@ -256,6 +256,15 @@ install -dm700 %{buildroot}%{_sysconfdir}/sakms-node
 if [ -d %{_sysconfdir}/sakms-node ]; then
     chown -R sakms-node:sakms-node %{_sysconfdir}/sakms-node
 fi
+# Reload systemd's unit cache on EVERY install/upgrade ($1 == 1 or 2), not
+# just fresh installs -- an upgrading node's already-running systemd has the
+# OLD sakms-node.service cached (e.g. without Delegate=yes, see that unit
+# file's comment) until told to re-read it. The systemd-enable macro used
+# above only handles enable/preset on fresh install; it does not by itself
+# guarantee systemd has re-parsed a changed unit file on upgrade, so this is
+# called explicitly and unconditionally, same reasoning as the config-dir
+# re-own immediately above.
+systemctl daemon-reload || :
 # Run the interactive config writer + service enabler only on fresh installs.
 # No `|| true`: post-install.sh's own exit code must propagate so a genuine
 # failure (e.g. no SAKMS_SERVER_URL in a non-interactive install) surfaces as

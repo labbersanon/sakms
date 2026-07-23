@@ -53,6 +53,12 @@ type PathMappingEntry struct {
 type Settings struct {
 	PathMappings []PathMappingEntry
 	MaxJobs      int
+	// CPUCapPercent is the operator-owned max-CPU governor ("% of total CPU",
+	// 0 = unlimited). Like MaxJobs — and unlike PauseDispatch — it is operator-
+	// owned with no parallel-write conflict, so it rides the shared Set write
+	// path alongside MaxJobs rather than getting its own column-scoped method.
+	// Shares the node_max_jobs row with MaxJobs/PauseDispatch.
+	CPUCapPercent int
 	// PauseDispatch is the server-owned per-node dispatch-exclusion bit. It is
 	// read here (Get includes it) but written ONLY by the dedicated,
 	// column-scoped SetPauseDispatch — never by Set — so a MaxJobs/PathMap save
@@ -104,8 +110,9 @@ func (s *Store) Get(ctx context.Context, nodeID string) (settings Settings, ok b
 
 	var maxJobs sql.NullInt64
 	var pauseDispatch sql.NullInt64
-	row := s.db.QueryRowContext(ctx, `SELECT max_jobs, pause_dispatch FROM node_max_jobs WHERE node_id = ?`, nodeID)
-	switch err := row.Scan(&maxJobs, &pauseDispatch); {
+	var cpuCapPercent sql.NullInt64
+	row := s.db.QueryRowContext(ctx, `SELECT max_jobs, pause_dispatch, cpu_cap_percent FROM node_max_jobs WHERE node_id = ?`, nodeID)
+	switch err := row.Scan(&maxJobs, &pauseDispatch, &cpuCapPercent); {
 	case err == sql.ErrNoRows:
 		// No max_jobs row yet — fine on its own, doesn't change whether
 		// this Get found anything overall (path mappings may still exist).
@@ -114,6 +121,7 @@ func (s *Store) Get(ctx context.Context, nodeID string) (settings Settings, ok b
 	default:
 		settings.MaxJobs = int(maxJobs.Int64)
 		settings.PauseDispatch = pauseDispatch.Int64 != 0
+		settings.CPUCapPercent = int(cpuCapPercent.Int64)
 	}
 
 	found := len(settings.PathMappings) > 0 || maxJobs.Valid
@@ -152,10 +160,10 @@ func (s *Store) Set(ctx context.Context, nodeID string, settings Settings) error
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO node_max_jobs (node_id, max_jobs, updated_at)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT (node_id) DO UPDATE SET max_jobs = excluded.max_jobs, updated_at = excluded.updated_at`,
-		nodeID, settings.MaxJobs, now,
+		`INSERT INTO node_max_jobs (node_id, max_jobs, cpu_cap_percent, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT (node_id) DO UPDATE SET max_jobs = excluded.max_jobs, cpu_cap_percent = excluded.cpu_cap_percent, updated_at = excluded.updated_at`,
+		nodeID, settings.MaxJobs, settings.CPUCapPercent, now,
 	); err != nil {
 		return err
 	}

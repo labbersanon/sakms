@@ -148,7 +148,7 @@ func TestHeartbeatDrivenOnlineOffline(t *testing.T) {
 	}
 
 	// A fresh heartbeat brings it back online.
-	r.Heartbeat(id)
+	r.Heartbeat(id, "", 0, "")
 	nodesList = r.ListNodes()
 	if Offline(nodesList[0].LastHeartbeat) {
 		t.Fatal("heartbeated node still offline")
@@ -157,7 +157,51 @@ func TestHeartbeatDrivenOnlineOffline(t *testing.T) {
 
 func TestHeartbeatUnknownIDNoOp(t *testing.T) {
 	r := New()
-	r.Heartbeat("nope") // must not panic
+	r.Heartbeat("nope", "", 0, "") // must not panic
+}
+
+// TestHeartbeatStoresGovernorStatus verifies a heartbeat carrying the node's
+// live CPU governor status (enforcement + last-apply effective/error) is stored
+// and surfaced through ListNodes — the server-side half of the Stage 3b wiring.
+func TestHeartbeatStoresGovernorStatus(t *testing.T) {
+	r := New()
+	id := "gov-node-id"
+	_, _, _, disconnect := r.Connect(id, "gov-node", nil)
+	defer disconnect()
+
+	// Before any governor heartbeat, the fields are honestly zero-valued.
+	before := r.ListNodes()
+	if len(before) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(before))
+	}
+	if before[0].Enforcement != "" || before[0].CPUCapEffective != 0 || before[0].CPUCapApplyErr != "" {
+		t.Fatalf("expected zero-valued governor status before heartbeat, got %+v", before[0])
+	}
+
+	r.Heartbeat(id, "available", 50, "")
+
+	after := r.ListNodes()
+	if len(after) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(after))
+	}
+	n := after[0]
+	if n.Enforcement != "available" {
+		t.Errorf("Enforcement = %q, want %q", n.Enforcement, "available")
+	}
+	if n.CPUCapEffective != 50 {
+		t.Errorf("CPUCapEffective = %d, want 50", n.CPUCapEffective)
+	}
+	if n.CPUCapApplyErr != "" {
+		t.Errorf("CPUCapApplyErr = %q, want empty", n.CPUCapApplyErr)
+	}
+
+	// A later heartbeat reporting an apply error overwrites the prior status,
+	// including surfacing the error string.
+	r.Heartbeat(id, "available", 50, "writing cpu.max: permission denied")
+	n = r.ListNodes()[0]
+	if n.CPUCapApplyErr != "writing cpu.max: permission denied" {
+		t.Errorf("CPUCapApplyErr = %q, want the reported error", n.CPUCapApplyErr)
+	}
 }
 
 func TestDisconnectMidJobFallback(t *testing.T) {

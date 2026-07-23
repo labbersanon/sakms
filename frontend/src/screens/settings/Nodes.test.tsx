@@ -84,6 +84,13 @@ const stubFetch = (
             // that EditSettingsModal must preload rather than default to 0.
             maxJobs: 4,
             pauseDispatch: false,
+            // Non-zero on purpose too: the stored CPU cap the slider must
+            // preload (mirrors maxJobs). enforcement "" (not yet reported) +
+            // a zero-value apply result render NO enforcement note, keeping
+            // the unrelated modal tests free of warning text.
+            cpuCapPercent: 30,
+            enforcement: "",
+            cpuCapApply: { effectivePercent: 0 },
           },
         ],
         pending: [
@@ -115,11 +122,13 @@ describe("EditSettingsModal", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
 
     await screen.findByText("/mnt/movies");
-    // No editable control for path-mapping fields remains reachable — the
-    // only input left in the modal is the maxJobs number field (the pause
-    // toggle moved out to the list row as a switch, Stage 5).
+    // No editable control for path-mapping fields remains reachable. The only
+    // inputs left in the modal are the operator-owned knobs: the maxJobs
+    // number field plus the CPU-cap slider's range + numeric companion (the
+    // pause toggle moved out to the list row as a switch, Stage 5). None of
+    // them is a path-mapping edit control.
     expect(screen.queryByPlaceholderText("/mnt/media")).toBeNull();
-    expect(document.querySelectorAll("input")).toHaveLength(1);
+    expect(document.querySelectorAll("input")).toHaveLength(3);
   });
 
   it("renders an unconfigured library path's row with a configure-first note", async () => {
@@ -184,7 +193,9 @@ describe("EditSettingsModal", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
     await screen.findByText("/mnt/movies");
 
-    const input = screen.getByRole("spinbutton") as HTMLInputElement;
+    const input = screen.getByRole("spinbutton", {
+      name: "Max concurrent jobs",
+    }) as HTMLInputElement;
     expect(input.value).toBe("4");
 
     fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
@@ -195,6 +206,160 @@ describe("EditSettingsModal", () => {
       const body = save!.body as { pathMap: unknown[]; maxJobs: number };
       expect(body.maxJobs).toBe(4);
     });
+  });
+
+  // CG-S5 counterpart of the maxJobs regression above, for the CPU-cap slider:
+  // node-a's stub reports cpuCapPercent 30. The slider's numeric companion must
+  // preload that real stored value, and an untouched Save must round-trip 30
+  // back through the same batched updateNodeSettings call — never silently
+  // zeroing an existing cap the operator only opened the modal to glance at.
+  it("preloads the stored cpuCapPercent and round-trips it on an untouched save", async () => {
+    const calls = stubFetch();
+    render(() => <NodesSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    await screen.findByText("/mnt/movies");
+
+    const cpu = screen.getByRole("spinbutton", {
+      name: "Max CPU percent",
+    }) as HTMLInputElement;
+    expect(cpu.value).toBe("30");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => {
+      const save = calls.find((c) => c.url.endsWith("/api/nodes/node-a/settings"));
+      expect(save).toBeDefined();
+      const body = save!.body as { cpuCapPercent: number };
+      expect(body.cpuCapPercent).toBe(30);
+    });
+  });
+
+  // The exact required help-text framing (node-resource-governor plan Stage 5,
+  // Blocking-1): it must name the ~16-way shared-cap reality AND that "Max
+  // concurrent jobs" does not gate that concurrency, so an operator can't read
+  // the cap as per-job or think MaxJobs limits it.
+  it("shows the exact shared-cap help text (~16-way, MaxJobs does not gate)", async () => {
+    stubFetch();
+    render(() => <NodesSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    await screen.findByText("/mnt/movies");
+
+    expect(
+      screen.getByText(
+        /shared across all concurrent frame decodes \(currently up to ~16 at once\)/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/'Max concurrent jobs' does not yet limit this/),
+    ).toBeTruthy();
+  });
+});
+
+// The two enforcement-reporting states MUST render as visually and textually
+// distinct UI — a static "available" flag must never imply the cap is actually
+// in force when the last-apply result disagrees. Two separate tests, each
+// asserting its own message IS present AND the other's is ABSENT, so a single
+// collapsed generic message could not pass both.
+describe("EditSettingsModal — CPU cap enforcement reporting", () => {
+  const nodeWith = (over: Record<string, unknown>) =>
+    (url: string) => {
+      if (url.includes("/api/nodes") && !url.includes("/path-mappings")) {
+        return jsonResponse({
+          nodes: [
+            {
+              id: "node-a",
+              name: "render-box",
+              status: "online",
+              capabilities: [],
+              lastHeartbeat: new Date().toISOString(),
+              maxJobs: 4,
+              pauseDispatch: false,
+              cpuCapPercent: 50,
+              ...over,
+            },
+          ],
+          pending: [],
+        });
+      }
+      return undefined;
+    };
+
+  it("renders the 'unavailable' note distinctly, never the erroring state", async () => {
+    stubFetch(
+      nodeWith({ enforcement: "unavailable", cpuCapApply: { effectivePercent: 0 } }),
+    );
+    render(() => <NodesSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+
+    await screen.findByText("OS-level enforcement not available on this node");
+    // The available-but-erroring state must NOT also render — an unavailable
+    // node can never simultaneously read "not currently enforced".
+    expect(screen.queryByText(/not currently enforced/)).toBeNull();
+  });
+
+  it("renders the available-but-erroring state distinctly, never the unavailable note", async () => {
+    stubFetch(
+      nodeWith({
+        enforcement: "available",
+        cpuCapApply: { effectivePercent: 0, error: "cgroup cpu.max write failed" },
+      }),
+    );
+    render(() => <NodesSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+
+    await screen.findByText(
+      "not currently enforced: cgroup cpu.max write failed",
+    );
+    // The static-unavailable note must NOT render for a node that IS capable
+    // but whose last apply errored — the two states stay separate.
+    expect(
+      screen.queryByText("OS-level enforcement not available on this node"),
+    ).toBeNull();
+  });
+
+  it("renders an effective-vs-configured mismatch as not-enforced (no last-apply error needed)", async () => {
+    stubFetch(
+      nodeWith({
+        enforcement: "available",
+        cpuCapPercent: 50,
+        // No error, but the quota actually in force (0) disagrees with the
+        // configured 50% — still honestly "not currently enforced".
+        cpuCapApply: { effectivePercent: 0 },
+      }),
+    );
+    render(() => <NodesSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+
+    await screen.findByText(
+      "not currently enforced: configured 50%, effective 0%",
+    );
+    expect(
+      screen.queryByText("OS-level enforcement not available on this node"),
+    ).toBeNull();
+  });
+
+  it("renders NO enforcement note when healthy (available, effective matches configured)", async () => {
+    stubFetch(
+      nodeWith({
+        enforcement: "available",
+        cpuCapPercent: 50,
+        cpuCapApply: { effectivePercent: 50 },
+      }),
+    );
+    render(() => <NodesSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    await screen.findByText("/mnt/movies");
+
+    expect(screen.queryByText(/not currently enforced/)).toBeNull();
+    expect(
+      screen.queryByText("OS-level enforcement not available on this node"),
+    ).toBeNull();
   });
 });
 

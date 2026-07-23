@@ -13,6 +13,93 @@ briefly here.
 
 ## In progress
 
+### Node CPU governor — backend + node-side enforcement shipped; slider, server-side reporting, and production verification still open
+Real cgroup-v2 CPU ceiling for `cmd/sakms-node`'s worker daemon, so an
+operator can cap how much of a node's total CPU the phash/videophash ffmpeg
+fan-out is allowed to use — a genuine kernel-enforced hard limit, not a
+soft dispatch-time throttle. Full design/research record:
+`.omc/plans/node-resource-governor.md`.
+
+**Scope decided (2026-07-22, operator-confirmed) — CPU-only, no GPU
+governor of any kind. This is settled, not an open question; do not
+re-research or re-litigate GPU throttling feasibility for this workload.**
+GPU throttling was researched concretely against the actual hardware/
+workload (NVDEC hardware video **frame decode** on a consumer RTX 4070,
+proprietary NVIDIA driver — the node's *only* GPU use; the scale filter,
+PNG encode, and DCT all run on CPU) and every candidate mechanism was
+rejected:
+- **NVDEC fixed-function decode has no throttle mechanism at all.** It's
+  a fixed-function hardware block; the driver exposes no percentage,
+  rate-limit, or quota control for decode throughput. There is no lever
+  to turn.
+- **`nvidia-smi -pl` power-limit throttling is whole-GPU, not
+  per-process.** It requires root (a privilege regression on a daemon
+  just hardened to run non-root) and would throttle every GPU consumer
+  on the machine — the operator's own desktop compositor, browser,
+  games — not just the hasher. wade-pc, the box with the RTX 4070, is
+  the operator's own daily-driver desktop.
+- **NVIDIA MPS thread-percentage partitioning governs CUDA *compute* SM
+  allocation.** This workload has no CUDA compute kernel (decode-only),
+  so MPS has essentially no effect on it, on top of requiring a
+  system-wide architectural adoption to use at all.
+- No Linux DRM-cgroup path exists either (NVIDIA's proprietary driver
+  doesn't participate in the kernel DRM cgroup controller the way
+  amdgpu/i915 do), and MIG hardware partitioning is datacenter-only
+  (A100/H100) — not available on consumer GeForce.
+
+Full mechanism-by-mechanism writeup, kept as the durable rationale:
+`.omc/plans/node-resource-governor.md` § "GPU Feasibility Findings."
+
+**Shipped (backend + node daemon):** the per-node settings column/DTO/SSE
+wire path (`cpuCapPercent`, migration `0041_node_cpu_cap.sql`, mirrors the
+existing `MaxJobs`/`pause_dispatch` pattern exactly) and the node-side
+enforcement mechanism itself (`cmd/sakms-node/resourcegov.go`) — Option C
+from the plan: `Delegate=yes` on `sakms-node.service` plus a self-managed
+leaf cgroup whose `cpu.max` the **non-root** `sakms-node` daemon writes
+directly (no polkit, no D-Bus). The daemon moves its own PID into the leaf
+at startup, so every ffmpeg it forks inherits the cgroup automatically; a
+cap change is one `cpu.max` write, live, with no daemon restart. `0%` means
+unlimited, mirroring `MaxJobs`. An empirical spike on wade-pc confirmed an
+unprivileged `cpu.max` write in the delegated subtree both succeeds and
+actually throttles real CPU load — the mechanism is proven on this host,
+not merely assumed to work from systemd's design.
+
+**Still open (next slices) — none of this is operator-facing or deployed
+yet:**
+- **No slider exists.** The Nodes settings modal has only a one-line fix
+  so an untouched Save no longer zeroes a stored `cpuCapPercent` — there
+  is no `%` input in the UI. An operator cannot configure this today.
+- **Enforcement/last-apply status isn't reported back to the server
+  yet.** The node's own `GET /status` knows its enforcement state, but
+  nothing carries it over the existing heartbeat, so
+  `apidto.NodeInfo.Enforcement`/`CPUCapApply` are permanently zero-value
+  server-side. A slider can't honestly render an "unavailable" or "not
+  currently enforced: <reason>" state until this lands.
+- **No production-load measurement yet.** The mechanism is proven on a
+  spike load; the load-bearing E2E (cap at 50%/10%/0% against a real
+  high-file-count Adult videophash scan — the only path that reaches the
+  ~4-worker × 4-frame ≈16-way concurrent-ffmpeg steady state — measured
+  via `systemd-cgtop`/`cpu.stat`, plus a blast-radius check and a
+  live-adjust-mid-scan check) has not been run. That stage is also a
+  deploy gate requiring explicit operator go-ahead before pushing/
+  deploying.
+- Nothing described above as "shipped" is committed or deployed as of
+  this writing.
+
+**Known, separate gap this plan does NOT fix — `MaxJobs` still isn't
+enforced.** `cmd/sakms-node/main.go`'s dispatch loop spawns a goroutine
+per job; `cfg.MaxJobs` is read only to log it, never to actually bound
+concurrency. Real concurrency on a node is two hardcoded 4s an operator
+can't see from the UI — 4 concurrent Adult-scan workers server-side
+(`internal/rename/rename_adult_phash.go`'s `adultHashWorkers`) × 4
+concurrent frame extractions per job node-side
+(`internal/videophash/hwaccel.go`) — not whatever `MaxJobs` is set to.
+The CPU governor caps that whole ~16-way fan-out in aggregate (a real
+ceiling regardless of this gap), but it is not a substitute for fixing
+`MaxJobs` itself, and the two remain independent, currently-unreconciled
+limits on the same node. Fixing `MaxJobs` enforcement is its own,
+not-yet-scheduled follow-up — out of scope for the CPU governor work.
+
 ### phash-based Dedup — Movies/Series/Adult refinement shipped; phash-primary grouping still open
 The other half of "phash as the defacto standard across all media." Unlike
 Adult, there's no Stash instance for Movies/Series to lean on — SAK computes

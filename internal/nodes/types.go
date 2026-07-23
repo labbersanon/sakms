@@ -40,6 +40,14 @@ type PathMapping struct {
 type NodeSettings struct {
 	PathMap []PathMapping `json:"pathMap"`
 	MaxJobs int           `json:"maxJobs"` // 0 = unlimited
+	// CPUCapPercent is the operator-owned max-CPU governor ("% of total CPU",
+	// 0 = unlimited) pushed to the node so its Stage-3 daemon can enforce a real
+	// cgroup CPU ceiling. Like MaxJobs, every sender of a NodeSettings frame MUST
+	// populate this from the node's STORED cap, not a zero value — an omitted
+	// field marshals 0 and would silently clear the node's applied cap. The lone
+	// exception is the approval/pairing push, where a freshly-approved node has
+	// no persisted cap yet and the zero value 0 (unlimited) is correct.
+	CPUCapPercent int `json:"cpuCapPercent"` // 0 = unlimited
 	// PauseDispatch is the server-owned dispatch-exclusion bit echoed to the
 	// node for tray display only (the authoritative dispatch decision is the
 	// server-side connectedNode.paused, never this frame). Every sender of a
@@ -101,6 +109,16 @@ type NodeInfo struct {
 	Name          string    // node self-reported
 	Capabilities  []string  // hwaccels reported at connect, e.g. ["cuda"]
 	LastHeartbeat time.Time //
+	// Enforcement, CPUCapEffective, and CPUCapApplyErr carry the node's live CPU
+	// governor status, reported on each heartbeat (the node's own
+	// capState.snapshot()). Enforcement is the STATIC capability
+	// ("available"|"unavailable"|"" not yet reported); CPUCapEffective +
+	// CPUCapApplyErr are the LAST-APPLY result (quota actually in force + last
+	// error). Zero values honestly read as "nothing reported yet", never a
+	// fabricated success — an older node binary that omits them leaves them zero.
+	Enforcement     string
+	CPUCapEffective int
+	CPUCapApplyErr  string
 }
 
 // ConnectAck is the first SSE event the server sends on a new stream, before

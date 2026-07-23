@@ -44,6 +44,21 @@ type statusSnapshot struct {
 	// which change independently of the daemon's connection lifecycle. Empty
 	// when mediaRoots is unset (the grace period).
 	MediaRootScopes []mediaRootStatus `json:"mediaRootScopes,omitempty"`
+
+	// CPUCapPercent is the node's configured max-CPU governor ("% of total CPU",
+	// 0 = unlimited/unset), read fresh from cfg on each GET /status.
+	CPUCapPercent int `json:"cpuCapPercent"`
+	// Enforcement is the STATIC capability report (available|unavailable): whether
+	// a real cgroup CPU cap can work on this node at all. Deliberately DISTINCT
+	// from CPUCapApply — a mechanism being present at startup does not mean any
+	// specific apply succeeded, so this must never stand in for actual
+	// enforcement. Empty until the governor probe has run.
+	Enforcement string `json:"enforcement,omitempty"`
+	// CPUCapApply is the LAST-APPLY result: the quota actually in force right now
+	// plus any error from the most recent apply attempt — reality, not intent.
+	// Kept as two fields, never collapsed with Enforcement, so a forced apply
+	// failure surfaces as available + an error, never a silent success.
+	CPUCapApply cpuCapApplyResult `json:"cpuCapApply"`
 }
 
 // statusServer exposes GET /status on localhost:port so the tray app can poll
@@ -52,6 +67,12 @@ type statusServer struct {
 	mu   sync.RWMutex
 	snap statusSnapshot
 	cfg  *NodeConfig
+	// capState carries the CPU-governor reporting values (static enforcement +
+	// last-apply result). Attached once at startup via attachCapState, after the
+	// status server is constructed but before it serves the CPU-cap fields. nil
+	// until attached (e.g. in unit tests that only exercise the pre-existing
+	// fields), in which case the CPU-cap fields report their zero values.
+	capState *capState
 }
 
 func newStatusServer(cfg *NodeConfig) *statusServer {
@@ -78,6 +99,14 @@ func (s *statusServer) update(state nodeState, pairingCode, nodeID string) {
 	s.mu.Unlock()
 }
 
+// attachCapState wires the CPU-governor reporting holder into the status server.
+// Called once at startup, before ListenAndServe begins serving CPU-cap fields.
+func (s *statusServer) attachCapState(cs *capState) {
+	s.mu.Lock()
+	s.capState = cs
+	s.mu.Unlock()
+}
+
 // setWarning records the security-hardening addendum's most recent
 // Safeguard 2 notice (the mediaRoots grace-period warning, or a rejected
 // settings push's reason) for display via GET /status. Independent of
@@ -97,6 +126,7 @@ func (s *statusServer) ListenAndServe(ctx context.Context) {
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		snap := s.snap
+		cs := s.capState
 		s.mu.RUnlock()
 		// Computed at read time: the marker and /proc/self/mountinfo change
 		// independently of the daemon's connection lifecycle, so this must not
@@ -106,6 +136,16 @@ func (s *statusServer) ListenAndServe(ctx context.Context) {
 		// NON-AUTHORITATIVE observability only: this field and the apply marker it reflects are never a security-decision input — the marker is forgeable (unprivileged sakms-node owns /etc/sakms-node and can unlink/recreate the root-owned 0640 file), so real enforcement lives solely in mediaroots.go's withinMediaRoots/validateSettingsPush, which reads live config, never the marker.
 		_, mediaRoots := s.cfg.snapshot()
 		snap.MediaRootScopes = mediaRootScopes(mediaRoots)
+		// CPU governor: configured percent read fresh from cfg (mutated at
+		// runtime under the config lock), the static enforcement + last-apply
+		// result from the capState holder (populated by the async applier /
+		// startup re-apply). Kept as two DISTINCT reporting values so a
+		// forced/simulated apply failure surfaces as available + an error, never
+		// silent success.
+		snap.CPUCapPercent = s.cfg.cpuCapSnapshot()
+		if cs != nil {
+			snap.Enforcement, snap.CPUCapApply = cs.snapshot()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(snap) //nolint:errcheck
 	})

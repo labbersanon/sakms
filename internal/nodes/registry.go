@@ -60,6 +60,15 @@ type connectedNode struct {
 	// healthy and heartbeating, just deliberately taken out of new-job
 	// rotation. Both exclude the node from Dispatch selection.
 	paused bool
+	// enforcement, cpuCapEffective, and cpuCapApplyErr are the node's live CPU
+	// governor status, refreshed on every heartbeat (the node's own
+	// capState.snapshot()) under the same lock as lastHeartbeat — one heartbeat
+	// event, one atomic update. They start zero-valued and stay zero for a node
+	// whose (older) binary omits them from the heartbeat body, which honestly
+	// reads as "nothing reported yet" rather than a fabricated enforcement claim.
+	enforcement     string
+	cpuCapEffective int
+	cpuCapApplyErr  string
 }
 
 // Registry is the in-memory, mutex-guarded set of connected nodes plus the
@@ -211,13 +220,19 @@ func (r *Registry) ReportBrowseResult(res BrowseResult) {
 	}
 }
 
-// Heartbeat updates LastHeartbeat for a node id (display liveness only).
-// No-op for an unknown/expired id.
-func (r *Registry) Heartbeat(id string) {
+// Heartbeat updates LastHeartbeat for a node id (display liveness only) and,
+// under the same lock, refreshes the node's live CPU governor status
+// (enforcement + last-apply effective/error) the node reports on each beat.
+// One heartbeat event, one atomic update — the enforcement fields are never
+// updated on a separate path. No-op for an unknown/expired id.
+func (r *Registry) Heartbeat(id, enforcement string, cpuCapEffective int, cpuCapApplyErr string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[id]; ok {
 		n.lastHeartbeat = time.Now()
+		n.enforcement = enforcement
+		n.cpuCapEffective = cpuCapEffective
+		n.cpuCapApplyErr = cpuCapApplyErr
 	}
 }
 
@@ -357,10 +372,13 @@ func (r *Registry) ListNodes() []NodeInfo {
 	for id, n := range r.nodes {
 		caps := append([]string(nil), n.capabilities...)
 		out = append(out, NodeInfo{
-			ID:            id,
-			Name:          n.name,
-			Capabilities:  caps,
-			LastHeartbeat: n.lastHeartbeat,
+			ID:              id,
+			Name:            n.name,
+			Capabilities:    caps,
+			LastHeartbeat:   n.lastHeartbeat,
+			Enforcement:     n.enforcement,
+			CPUCapEffective: n.cpuCapEffective,
+			CPUCapApplyErr:  n.cpuCapApplyErr,
 		})
 	}
 	return out

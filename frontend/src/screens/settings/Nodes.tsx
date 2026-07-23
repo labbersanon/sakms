@@ -182,6 +182,15 @@ const ApproveModal: Component<{
 // settings" without touching the field must not silently reset an existing
 // non-zero concurrency cap to 0.
 //
+// cpuCapPercent (the max-CPU governor slider, node-resource-governor plan Stage
+// 5) is a second operator-owned knob riding the SAME batched updateNodeSettings
+// write as maxJobs (both operator-owned; pause has its own separate path). It
+// preloads from props.node.cpuCapPercent under the exact same anti-footgun
+// discipline as maxJobs above — an untouched Save must never zero an existing
+// cap. Its enforcement/last-apply reporting reads the STORED value
+// (props.node.cpuCapPercent + props.node.cpuCapApply), never the live slider
+// signal, so dragging the slider can't spuriously flip the "not enforced" note.
+//
 // The pause toggle (node-pause-dispatch plan, Stage 4) used to live here as a
 // second, independent control in this modal. It has since been relocated
 // (Stage 5) onto the node list row itself (NodeRow, below) as a switch, so an
@@ -195,8 +204,32 @@ const EditSettingsModal: Component<{
 }> = (props) => {
   const [rows] = createResource(() => props.node.id, fetchNodePathMappings);
   const [maxJobs, setMaxJobs] = createSignal(props.node.maxJobs);
+  const [cpuCapPercent, setCpuCapPercent] = createSignal(props.node.cpuCapPercent);
   const [saving, setSaving] = createSignal(false);
   const [err, setErr] = createSignal("");
+
+  // notEnforcedReason reports WHY a capable node's cap isn't actually in force
+  // right now, reading the STORED cap (props.node.cpuCapPercent) and the last
+  // apply result (props.node.cpuCapApply) — never the live slider signal. A
+  // non-empty last-apply error, or an effective quota that disagrees with the
+  // stored configured percentage, both mean "capable but not enforcing". Empty
+  // string means genuinely enforced (or nothing to enforce).
+  const notEnforcedReason = (): string => {
+    const apply = props.node.cpuCapApply;
+    if (!apply) return "";
+    if (apply.error) return apply.error;
+    if (apply.effectivePercent !== props.node.cpuCapPercent) {
+      return `configured ${props.node.cpuCapPercent}%, effective ${apply.effectivePercent}%`;
+    }
+    return "";
+  };
+  // The two reporting states are structurally mutually exclusive by the
+  // enforcement discriminator: "unavailable" can never also read "not enforced"
+  // (the erroring branch requires "available"), and "" (not yet reported)
+  // renders neither — the honest default.
+  const enforcementUnavailable = () => props.node.enforcement === "unavailable";
+  const enforcementErroring = () =>
+    props.node.enforcement === "available" && notEnforcedReason() !== "";
 
   const submit = async () => {
     setSaving(true);
@@ -205,6 +238,7 @@ const EditSettingsModal: Component<{
       await updateNodeSettings(props.node.id, {
         pathMap: [],
         maxJobs: maxJobs(),
+        cpuCapPercent: cpuCapPercent(),
       });
       props.onDone();
       props.onClose();
@@ -242,9 +276,49 @@ const EditSettingsModal: Component<{
             type="number"
             class={inputClass}
             min="0"
+            aria-label="Max concurrent jobs"
             value={maxJobs()}
             onInput={(e) => setMaxJobs(Number(e.currentTarget.value))}
           />
+        </div>
+        <div>
+          <label class={labelClass}>Max CPU % (0 = unlimited)</label>
+          <div class="mt-1 flex items-center gap-3">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={cpuCapPercent()}
+              aria-label="Max CPU percent slider"
+              class="h-2 flex-1 accent-accent"
+              onInput={(e) => setCpuCapPercent(Number(e.currentTarget.value))}
+            />
+            <input
+              type="number"
+              class={`${inputClass} !w-20`}
+              min={0}
+              max={100}
+              aria-label="Max CPU percent"
+              value={cpuCapPercent()}
+              onInput={(e) => setCpuCapPercent(Number(e.currentTarget.value))}
+            />
+            <span class="text-xs text-muted">%</span>
+          </div>
+          <Muted class="mt-1">
+            Max % of this node's total CPU for hashing, shared across all
+            concurrent frame decodes (currently up to ~16 at once). Note: 'Max
+            concurrent jobs' does not yet limit this. 0 = unlimited.
+          </Muted>
+          <Show when={enforcementUnavailable()}>
+            <Muted class="mt-1">
+              OS-level enforcement not available on this node
+            </Muted>
+          </Show>
+          <Show when={enforcementErroring()}>
+            <p class="mt-1 text-sm text-warn">
+              not currently enforced: {notEnforcedReason()}
+            </p>
+          </Show>
         </div>
         <Show when={err()}>
           <ErrorText>{err()}</ErrorText>

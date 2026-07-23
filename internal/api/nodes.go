@@ -99,7 +99,7 @@ func toApprovalPersistedSettings(in []apidto.NodePathMappingInput, maxJobs int) 
 // A row that fails verification is never persisted, not merely never
 // pushed — on any mismatch, this returns an error and an empty Settings,
 // never a partial result.
-func verifyAndBuildPersistedSettings(ctx context.Context, reg *nodes.Registry, settingsStore *settings.Store, nodeID string, in []apidto.NodePathMappingInput, maxJobs int) (nodesettings.Settings, error) {
+func verifyAndBuildPersistedSettings(ctx context.Context, reg *nodes.Registry, settingsStore *settings.Store, nodeID string, in []apidto.NodePathMappingInput, maxJobs, cpuCapPercent int) (nodesettings.Settings, error) {
 	entries := make([]nodesettings.PathMappingEntry, 0, len(in))
 	var mismatches []string
 	now := time.Now().UTC()
@@ -153,7 +153,10 @@ func verifyAndBuildPersistedSettings(ctx context.Context, reg *nodes.Registry, s
 	if len(mismatches) > 0 {
 		return nodesettings.Settings{}, &errMappingMismatch{msg: strings.Join(mismatches, "; ")}
 	}
-	return nodesettings.Settings{PathMappings: entries, MaxJobs: maxJobs}, nil
+	// CPUCapPercent (operator-owned, like MaxJobs) is threaded through from the
+	// caller's STORED value and re-persisted here — a node-authored path-map save
+	// must never zero the operator's cap via Set's unconditional column upsert.
+	return nodesettings.Settings{PathMappings: entries, MaxJobs: maxJobs, CPUCapPercent: cpuCapPercent}, nil
 }
 
 // pushPersistedNodeSettings looks up id's persisted settings and, if anything
@@ -192,7 +195,7 @@ func pushPersistedNodeSettings(ctx context.Context, reg *nodes.Registry, setting
 	// the main NodeSettings sender (reconnect re-push + the pause endpoint's own
 	// echo), so omitting it would clear the node's cached pause display on every
 	// reconnect (P7).
-	reg.SendSettings(nodeID, nodes.NodeSettings{PathMap: pathMap, MaxJobs: persisted.MaxJobs, PauseDispatch: persisted.PauseDispatch})
+	reg.SendSettings(nodeID, nodes.NodeSettings{PathMap: pathMap, MaxJobs: persisted.MaxJobs, CPUCapPercent: persisted.CPUCapPercent, PauseDispatch: persisted.PauseDispatch})
 	return nil
 }
 
@@ -333,17 +336,25 @@ func nodeStreamHandler(reg *nodes.Registry, settingsStore *settings.Store, nodeS
 }
 
 // nodeHeartbeatHandler handles POST /api/nodes/heartbeat. Updates the node's
-// last-seen timestamp for display-status purposes.
+// last-seen timestamp for display-status purposes and, in the same beat, the
+// node's live CPU governor status (enforcement + last-apply result the node
+// reports via its capState.snapshot()). The governor fields are optional on the
+// wire: an older node binary that only sends {"id":...} decodes them to their
+// zero values, which the Registry stores honestly as "nothing reported yet" —
+// never a fabricated enforcement/success.
 func nodeHeartbeatHandler(reg *nodes.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			ID string `json:"id"`
+			ID               string `json:"id"`
+			Enforcement      string `json:"enforcement,omitempty"`
+			EffectivePercent int    `json:"effectivePercent,omitempty"`
+			Error            string `json:"error,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		reg.Heartbeat(body.ID)
+		reg.Heartbeat(body.ID, body.Enforcement, body.EffectivePercent, body.Error)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -495,6 +506,18 @@ func listNodesHandler(reg *nodes.Registry, pairingReg *nodes.PairingRegistry, no
 				LastHeartbeat: n.LastHeartbeat.Format(time.RFC3339),
 				MaxJobs:       stored.MaxJobs,
 				PauseDispatch: stored.PauseDispatch,
+				// CPUCapPercent is the stored, operator-owned cap (preload).
+				CPUCapPercent: stored.CPUCapPercent,
+				// Enforcement + CPUCapApply are the node's LIVE governor status,
+				// carried back on every heartbeat (Stage 3b) and read here straight
+				// from ListNodes(). A node that has not yet reported (or an older
+				// binary that omits the fields) leaves them zero-valued, which reads
+				// honestly as "nothing enforced yet" — never a fabricated success.
+				Enforcement: n.Enforcement,
+				CPUCapApply: apidto.NodeCPUCapApply{
+					EffectivePercent: n.CPUCapEffective,
+					Error:            n.CPUCapApplyErr,
+				},
 			})
 		}
 
@@ -558,6 +581,10 @@ func approveNodeHandler(pairingReg *nodes.PairingRegistry, nodeKeyStore *nodekey
 			Settings: nodes.NodeSettings{
 				PathMap: pathMap,
 				MaxJobs: body.MaxJobs,
+				// CPUCapPercent (and PauseDispatch) are intentionally left at their
+				// zero value here: a freshly-approved node has no persisted cap yet,
+				// so 0 (unlimited) is correct — the documented approval/pairing
+				// exception to "always send the STORED value" (see NodeSettings doc).
 			},
 		}
 
@@ -660,6 +687,10 @@ func updateNodeSettingsNodeAuth(w http.ResponseWriter, r *http.Request, reg *nod
 		return
 	}
 	storedMaxJobs := stored.MaxJobs
+	// CPUCapPercent is operator-owned too (D3, same as MaxJobs): load the stored
+	// value and use it for BOTH persistence and the SSE push, so a node-authored
+	// path-map save can never zero the operator's cap in the DB or over the wire.
+	storedCPUCapPercent := stored.CPUCapPercent
 
 	// Partition the request (D7): a Clear=true entry deletes its row; a
 	// non-blank NodePath is a set (runs the verification gate); a blank
@@ -707,7 +738,7 @@ func updateNodeSettingsNodeAuth(w http.ResponseWriter, r *http.Request, reg *nod
 	// reader are independent, so this is not a deadlock). On any mismatch,
 	// nothing is persisted — the store is left exactly as it was.
 	if len(sets) > 0 {
-		toPersist, err := verifyAndBuildPersistedSettings(ctx, reg, settingsStore, nodeID, sets, storedMaxJobs)
+		toPersist, err := verifyAndBuildPersistedSettings(ctx, reg, settingsStore, nodeID, sets, storedMaxJobs, storedCPUCapPercent)
 		if err != nil {
 			var mismatch *errMappingMismatch
 			var unreachable *errNodeUnreachable
@@ -753,7 +784,7 @@ func updateNodeSettingsNodeAuth(w http.ResponseWriter, r *http.Request, reg *nod
 	// change on a paused node would emit a zero-value pause=false and silently
 	// clear the node's cached pause display. stored is the same row loaded above
 	// for storedMaxJobs, so no extra lookup is needed.
-	reg.SendSettings(nodeID, nodes.NodeSettings{PathMap: pathMap, MaxJobs: storedMaxJobs, PauseDispatch: stored.PauseDispatch})
+	reg.SendSettings(nodeID, nodes.NodeSettings{PathMap: pathMap, MaxJobs: storedMaxJobs, CPUCapPercent: storedCPUCapPercent, PauseDispatch: stored.PauseDispatch})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -772,7 +803,11 @@ func updateNodeSettingsOperatorAuth(w http.ResponseWriter, r *http.Request, reg 
 		return
 	}
 
-	if err := nodeSettingsStore.Set(ctx, nodeID, nodesettings.Settings{PathMappings: stored.PathMappings, MaxJobs: body.MaxJobs}); err != nil {
+	// CPUCapPercent, like MaxJobs, is operator-owned and written unconditionally
+	// from the body here (both are the fields operator auth is meant to write). The
+	// frontend preloads the stored value into NodeInfo.CPUCapPercent so an
+	// untouched Save re-sends the current cap rather than zeroing it.
+	if err := nodeSettingsStore.Set(ctx, nodeID, nodesettings.Settings{PathMappings: stored.PathMappings, MaxJobs: body.MaxJobs, CPUCapPercent: body.CPUCapPercent}); err != nil {
 		log.Printf("nodes/settings: persist settings for %s: %v", nodeID, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

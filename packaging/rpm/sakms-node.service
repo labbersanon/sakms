@@ -21,6 +21,17 @@ RestartSec=10
 ProtectSystem=full
 ReadWritePaths=/etc/sakms-node
 
+# CPU governor cgroup delegation (Option C, see cmd/sakms-node/resourcegov.go
+# and the node-resource-governor plan's Stage 3 Packaging bullet): without
+# Delegate=yes, systemd keeps this unit's cgroup subtree root-owned, so the
+# non-root sakms-node user above has no permission to create/manage its own
+# leaf cgroup or write cpu.max -- capabilityDetect() would report
+# "unavailable" and the cap could never actually enforce. Delegate=yes hands
+# ownership of this unit's cgroup subtree to sakms-node, which an empirical
+# spike (see CG-S1) already proved is sufficient for the daemon to create its
+# leaf cgroup and enforce the CPU cap without any additional privilege.
+Delegate=yes
+
 # mediaRoots local control socket (sakms-node-tray UI, see the ralplan
 # mediaRoots-UI plan's socket-perms/Option-A section): the daemon listens on
 # a unix socket at /run/sakms-node/control.sock. RuntimeDirectory gives it a

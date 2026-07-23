@@ -81,6 +81,21 @@ func main() {
 	// builds (see control_socket_stub.go).
 	go startControlSocket(ctx, cfg, *configPath, pusher, sess)
 
+	// CPU governor (node-resource-governor plan, Stage 3, Option C): set up the
+	// delegated leaf cgroup, probe the STATIC enforcement capability, start the
+	// async applier worker, and re-apply the persisted cap — all BEFORE the
+	// dispatch loop pulls its first job. The startup re-apply is INDEPENDENT of
+	// any server re-push (Critic MAJOR-2): a node that restarts while the server
+	// is unreachable re-establishes real enforcement from local config.json
+	// rather than running uncapped behind a UI that still claims "enforced".
+	capState := &capState{enforcement: enforcementUnavailable}
+	statusSrv.attachCapState(capState)
+	applyCap := setupCPUGovernor(capState)
+	capApplier := newCapApplier(applyCap, capState)
+	go capApplier.run(ctx)
+	// Synchronous, before the state machine below ever accepts a job frame.
+	reapplyPersistedCap(cfg.CPUCapPercent, applyCap, capState)
+
 	// Outer state machine: pairing ↔ authenticated.
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
@@ -114,7 +129,7 @@ func main() {
 
 		// Authenticated mode: reconnect loop.
 		statusSrv.update(stateConnected, "", "")
-		err := run(ctx, cfg, *configPath, hw, phashHasher, videoHasher, postClient, statusSrv, sess)
+		err := run(ctx, cfg, *configPath, hw, phashHasher, videoHasher, postClient, statusSrv, sess, capApplier, capState)
 		if ctx.Err() != nil {
 			return
 		}
@@ -160,6 +175,8 @@ func run(
 	postClient *http.Client,
 	statusSrv *statusServer,
 	sess *nodeSession,
+	capApplier *capApplier,
+	capState *capState,
 ) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -172,7 +189,7 @@ func run(
 			return nil
 		}
 
-		err := connect(ctx, cfg, configPath, hw, phashHasher, videoHasher, postClient, statusSrv, sess, &wg)
+		err := connect(ctx, cfg, configPath, hw, phashHasher, videoHasher, postClient, statusSrv, sess, capApplier, capState, &wg)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -209,6 +226,8 @@ func connect(
 	postClient *http.Client,
 	statusSrv *statusServer,
 	sess *nodeSession,
+	capApplier *capApplier,
+	capState *capState,
 	wg *sync.WaitGroup,
 ) error {
 	streamURL, err := url.Parse(cfg.ServerURL + "/api/nodes/stream")
@@ -261,7 +280,7 @@ func connect(
 	log.Printf("sakms-node: connected as %s (id=%s)", cfg.NodeName, nodeID)
 	statusSrv.update(stateConnected, "", nodeID)
 
-	go heartbeat(connCtx, nodeID, cfg, postClient)
+	go heartbeat(connCtx, nodeID, cfg, postClient, capState)
 
 	for {
 		select {
@@ -271,7 +290,7 @@ func connect(
 			if !ok {
 				return nil
 			}
-			applyServerSettings(cfg, configPath, statusSrv, s)
+			applyServerSettings(cfg, configPath, statusSrv, capApplier, s)
 		case br, ok := <-browseCh:
 			if !ok {
 				return nil
@@ -305,7 +324,7 @@ func connect(
 // path, and it deliberately takes NO pathmapPusher — a server push is applied,
 // never re-pushed. Only the control-socket edit path schedules an outbound push,
 // so a server echo can never ping-pong back into another push.
-func applyServerSettings(cfg *NodeConfig, configPath string, statusSrv *statusServer, s nodes.NodeSettings) {
+func applyServerSettings(cfg *NodeConfig, configPath string, statusSrv *statusServer, capApplier *capApplier, s nodes.NodeSettings) {
 	// P8: apply the display-only pause echo in its OWN small write, BEFORE the
 	// pathMap-validation early-return below. A pause echo bundled in a frame
 	// whose pathMap fails node-side validation must still update the node's
@@ -318,6 +337,25 @@ func applyServerSettings(cfg *NodeConfig, configPath string, statusSrv *statusSe
 		cfg.DispatchPaused = s.PauseDispatch
 	}); saveErr != nil {
 		log.Printf("sakms-node: saving pause display state: %v", saveErr)
+	}
+
+	// CPU cap (node-resource-governor plan, Stage 3): persisted + applied in its
+	// OWN write ABOVE the pathMap-validation early-return, for the same reason
+	// pause is hoisted (P8) — enforcement honesty (Principle 1) must not hinge on
+	// pathMap validity. A frame whose pathMap fails validation must still update
+	// and re-apply the operator's cap. This write touches ONLY CPUCapPercent so
+	// it can never clobber (or be clobbered by) the pause or pathMap/MaxJobs
+	// writes. The persist is quick and stays inline; the actual cgroup write is
+	// handed to the async applier so this dispatch-loop path never blocks on a
+	// slow/hung cpu.max write (the last-apply result is recorded by the applier
+	// for GET /status). Like pause, a server echo is applied, never re-pushed.
+	if saveErr := cfg.mutateAndSave(configPath, func() {
+		cfg.CPUCapPercent = s.CPUCapPercent
+	}); saveErr != nil {
+		log.Printf("sakms-node: saving cpu cap: %v", saveErr)
+	}
+	if capApplier != nil {
+		capApplier.enqueue(s.CPUCapPercent)
 	}
 
 	_, mediaRoots := cfg.snapshot()
@@ -452,8 +490,9 @@ func readSSE(ctx context.Context, resp *http.Response) (ack nodes.ConnectAck, jo
 }
 
 // heartbeat POSTs to /api/nodes/heartbeat every 30 seconds until ctx is
-// cancelled.
-func heartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http.Client) {
+// cancelled. Each beat also carries the node's live CPU governor status
+// (capState.snapshot()) back to the server (Stage 3b).
+func heartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http.Client, capState *capState) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -461,15 +500,25 @@ func heartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := postHeartbeat(ctx, nodeID, cfg, client); err != nil {
+			if err := postHeartbeat(ctx, nodeID, cfg, client, capState); err != nil {
 				log.Printf("sakms-node: heartbeat error: %v", err)
 			}
 		}
 	}
 }
 
-func postHeartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http.Client) error {
-	body, err := json.Marshal(map[string]string{"id": nodeID})
+func postHeartbeat(ctx context.Context, nodeID string, cfg *NodeConfig, client *http.Client, capState *capState) error {
+	// Report the live governor status alongside the id: enforcement is the STATIC
+	// capability, and the last-apply result (effectivePercent + error) is reality,
+	// not intent — error is "" when the last apply succeeded. The server decodes
+	// these as optional fields, so the wire shape stays backward compatible.
+	enforcement, apply := capState.snapshot()
+	body, err := json.Marshal(map[string]any{
+		"id":               nodeID,
+		"enforcement":      enforcement,
+		"effectivePercent": apply.EffectivePercent,
+		"error":            apply.Error,
+	})
 	if err != nil {
 		return err
 	}

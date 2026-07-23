@@ -29,7 +29,7 @@ func TestApplyServerSettings_PauseAppliedDespitePathMapRejection(t *testing.T) {
 	}
 	statusSrv := newStatusServer(cfg)
 
-	applyServerSettings(cfg, configPath, statusSrv, nodes.NodeSettings{
+	applyServerSettings(cfg, configPath, statusSrv, nil, nodes.NodeSettings{
 		PathMap:       []nodes.PathMapping{{Server: "/srv/x", Local: "/var/other"}}, // outside /mnt/media → rejected
 		MaxJobs:       7,
 		PauseDispatch: true,
@@ -62,7 +62,7 @@ func TestApplyServerSettings_PauseAppliedOnAcceptedFrame(t *testing.T) {
 	}
 	statusSrv := newStatusServer(cfg)
 
-	applyServerSettings(cfg, configPath, statusSrv, nodes.NodeSettings{
+	applyServerSettings(cfg, configPath, statusSrv, nil, nodes.NodeSettings{
 		PathMap:       []nodes.PathMapping{{Server: "/srv/movies", Local: "/mnt/media/movies"}},
 		MaxJobs:       2,
 		PauseDispatch: true,

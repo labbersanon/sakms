@@ -56,6 +56,17 @@ type NodeConfig struct {
 	StatusPort int            `json:"statusPort"` // port for GET /status; 0 → defaultStatusPort
 	MaxJobs    int            `json:"maxJobs"`    // 0 = unlimited
 
+	// CPUCapPercent is the operator-owned max-CPU governor ("% of total CPU",
+	// 0 = unlimited), persisted locally exactly like MaxJobs/DispatchPaused so
+	// the last-known cap survives a daemon restart INDEPENDENT of the server
+	// (node-resource-governor plan, Critic MAJOR-2). On startup the daemon
+	// re-applies this persisted value before accepting its first job, so a node
+	// that restarts while the server is unreachable re-establishes real
+	// enforcement instead of silently running uncapped behind a UI that still
+	// claims "enforced". Written by the SSE settings echo (applyServerSettings)
+	// under mu, like the other post-startup mutable fields.
+	CPUCapPercent int `json:"cpuCapPercent,omitempty"`
+
 	// DispatchPaused is a DISPLAY-ONLY cache of the server-owned dispatch-pause
 	// bit (node-pause-dispatch plan, Option A). The server is the sole authority
 	// on dispatch exclusion (registry.Dispatch checks its own connectedNode.paused,
@@ -101,7 +112,8 @@ type NodeConfig struct {
 	AuthoredPaths []AuthoredPathMapping `json:"authoredPaths,omitempty"`
 
 	// mu guards the fields that are mutated after startup — MediaRoots,
-	// PathMap, MaxJobs, APIKey, and AuthoredPaths — and serializes them against
+	// PathMap, MaxJobs, CPUCapPercent, DispatchPaused, APIKey, and
+	// AuthoredPaths — and serializes them against
 	// save(). It is
 	// unexported, so encoding/json ignores it. Every writer of those fields
 	// holds the write lock across BOTH the field mutation AND the subsequent
@@ -170,6 +182,15 @@ func (cfg *NodeConfig) pauseSnapshot() bool {
 	cfg.mu.RLock()
 	defer cfg.mu.RUnlock()
 	return cfg.DispatchPaused
+}
+
+// cpuCapSnapshot returns the current configured max-CPU governor percentage
+// under the read lock, mirroring snapshot()'s non-torn-view contract for the
+// status server's GET /status read path.
+func (cfg *NodeConfig) cpuCapSnapshot() int {
+	cfg.mu.RLock()
+	defer cfg.mu.RUnlock()
+	return cfg.CPUCapPercent
 }
 
 // transport returns the node's current server URL + bearer key under the read

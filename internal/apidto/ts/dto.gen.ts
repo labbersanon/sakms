@@ -1384,6 +1384,49 @@ export interface NodeInfo {
    * existing pause.
    */
   pauseDispatch: boolean;
+  /**
+   * CPUCapPercent is the node's stored, operator-owned max-CPU governor
+   * ("% of total CPU", 0 = unlimited/unset), preloaded exactly like MaxJobs so
+   * the frontend's slider shows the real current value instead of defaulting to
+   * 0 (which a subsequent Save would then persist, silently clearing an
+   * existing cap). NOT omitempty — an explicit 0 is meaningful.
+   */
+  cpuCapPercent: number /* int */;
+  /**
+   * Enforcement is the node daemon's STATIC capability report: whether a real
+   * cgroup CPU cap can work on this node at all (systemd + cgroup-v2 present and
+   * writable). It is deliberately DISTINCT from CPUCapApply below — a mechanism
+   * being present at startup does not mean any specific apply succeeded, so this
+   * must never stand in for actual enforcement. Values: "available" |
+   * "unavailable" | "" (not yet reported). Stage 2 has no daemon source for this
+   * yet, so the server emits "" (unknown); Stage 3 wires the daemon's real probe
+   * result through GET /status → SSE → here.
+   */
+  enforcement: string;
+  /**
+   * CPUCapApply is the LAST-APPLY result: the quota actually in force right now
+   * plus any error from the most recent apply attempt — reality, not intent.
+   * Kept separate from Enforcement (static capability) so the UI can show a
+   * "capable but not currently enforced: <reason>" state. Its zero value
+   * (EffectivePercent 0, no error) honestly reads as "nothing enforced yet",
+   * never as a fabricated success. Populated by Stage 3.
+   */
+  cpuCapApply: NodeCPUCapApply;
+}
+/**
+ * NodeCPUCapApply is a node's most-recent CPU-cap apply result, carried on
+ * NodeInfo. EffectivePercent is the resolved cap actually in force (the
+ * percentage the daemon last successfully applied; 0 = uncapped / nothing
+ * applied). Error is the failure from the most recent apply attempt, empty when
+ * the last apply succeeded or none has run. The pair is deliberately two fields,
+ * never collapsed into one: an EffectivePercent that disagrees with the
+ * configured NodeInfo.CPUCapPercent, or a non-empty Error, is what the frontend
+ * reads as "not currently enforced". Populated by Stage 3 (the daemon reports it
+ * via GET /status); Stage 2 defines the shape only and emits the zero value.
+ */
+export interface NodeCPUCapApply {
+  effectivePercent: number /* int */;
+  error?: string;
 }
 /**
  * PendingNodeInfo is a node waiting for operator approval in GET /api/nodes.
@@ -1427,6 +1470,13 @@ export interface PathMapping {
 export interface NodeSettingsRequest {
   pathMap: NodePathMappingInput[];
   maxJobs: number /* int */;
+  /**
+   * CPUCapPercent is the operator-owned max-CPU governor ("% of total CPU",
+   * 0 = unlimited). Operator auth writes it (alongside MaxJobs); it is ignored
+   * on the node-auth path, exactly like MaxJobs. NOT omitempty — an explicit 0
+   * must cross the wire to clear a cap, mirroring MaxJobs.
+   */
+  cpuCapPercent: number /* int */;
   mediaRoots?: string[];
 }
 /**

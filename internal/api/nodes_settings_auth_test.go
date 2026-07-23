@@ -123,6 +123,116 @@ func TestUpdateNodeSettings_NodeAuth_PreservesStoredMaxJobs(t *testing.T) {
 	}
 }
 
+// TestUpdateNodeSettings_OperatorAuth_PersistsCPUCapPercent_AndFrameCarriesIt
+// is the Stage-2 operator-path acceptance for the CPU governor: an operator PUT
+// carrying cpuCapPercent persists it in node_max_jobs AND the authoritative SSE
+// settings frame re-pushed to the live node carries it — the operator-owned cap
+// travels the same write+push path as MaxJobs.
+func TestUpdateNodeSettings_OperatorAuth_PersistsCPUCapPercent_AndFrameCarriesIt(t *testing.T) {
+	mux, reg, _, _, nodeSettingsStore, _, apiKey := testNodesMux(t)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx := context.Background()
+	// Node already approved with a prior cap, connected to capture the push.
+	if err := nodeSettingsStore.Set(ctx, "node-a", nodesettings.Settings{MaxJobs: 2, CPUCapPercent: 10}); err != nil {
+		t.Fatalf("pre-seed: %v", err)
+	}
+	settings := connectCapturingNode(t, reg, "node-a", nil)
+
+	body, _ := json.Marshal(apidto.NodeSettingsRequest{
+		MaxJobs:       7,
+		CPUCapPercent: 50,
+	})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/nodes/node-a/settings", bytes.NewReader(body))
+	req.Header.Set("X-Api-Key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	got, _, err := nodeSettingsStore.Get(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.CPUCapPercent != 50 {
+		t.Errorf("persisted CPUCapPercent: got %d, want 50", got.CPUCapPercent)
+	}
+	if got.MaxJobs != 7 {
+		t.Errorf("persisted MaxJobs: got %d, want 7", got.MaxJobs)
+	}
+
+	push := readSettingsPush(t, settings)
+	if push.CPUCapPercent != 50 {
+		t.Errorf("SSE-pushed CPUCapPercent: got %d, want 50 (the frame must carry the operator's cap)", push.CPUCapPercent)
+	}
+}
+
+// TestUpdateNodeSettings_NodeAuth_PreservesStoredCPUCapPercent is the no-wipe
+// guard for the CPU governor: a node-bearer PathMap push must leave the stored,
+// operator-owned cpuCapPercent unchanged in BOTH the persisted row AND the SSE
+// frame — even though the node request body carries no cap. This is the exact
+// bug class MaxJobs already guards (TestUpdateNodeSettings_NodeAuth_Preserves-
+// StoredMaxJobs): verifyAndBuildPersistedSettings must thread the stored cap
+// through, or Set's unconditional column upsert would zero it to 0 on any
+// node-authored path-map save.
+func TestUpdateNodeSettings_NodeAuth_PreservesStoredCPUCapPercent(t *testing.T) {
+	mux, reg, _, settingsStore, nodeSettingsStore, nodeKeyStore, _ := testNodesMux(t)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx := context.Background()
+	serverDir := t.TempDir()
+	for _, name := range []string{"Movie A", "Movie B", "Movie C"} {
+		if err := os.Mkdir(filepath.Join(serverDir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := settingsStore.Set(ctx, string(apidto.LibraryPathMoviesRoot), serverDir); err != nil {
+		t.Fatalf("settingsStore.Set: %v", err)
+	}
+
+	id, rawKey, err := nodeKeyStore.Create(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("nodekeys.Create: %v", err)
+	}
+	// Stored cap = 50 (the operator-owned value the node must never touch).
+	if err := nodeSettingsStore.Set(ctx, id, nodesettings.Settings{MaxJobs: 4, CPUCapPercent: 50}); err != nil {
+		t.Fatalf("pre-seed CPUCapPercent: %v", err)
+	}
+	settings := connectCapturingNode(t, reg, id, []string{"Movie A", "Movie B", "Movie C"})
+
+	resp := nodeAuthPut(t, srv.URL, id, rawKey, apidto.NodeSettingsRequest{
+		PathMap: []apidto.NodePathMappingInput{
+			{Key: apidto.LibraryPathMoviesRoot, NodePath: "/mnt/movies"},
+		},
+		// No CPUCapPercent in the node body — it must NOT zero the stored cap.
+		MediaRoots: []string{"/mnt/media"},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	got, _, err := nodeSettingsStore.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.CPUCapPercent != 50 {
+		t.Errorf("persisted CPUCapPercent: got %d, want 50 (a node path-map save must not zero the operator's cap)", got.CPUCapPercent)
+	}
+
+	push := readSettingsPush(t, settings)
+	if push.CPUCapPercent != 50 {
+		t.Errorf("SSE-pushed CPUCapPercent: got %d, want 50 (a node push must not zero the cap over SSE)", push.CPUCapPercent)
+	}
+}
+
 // TestUpdateNodeSettings_NodeAuth_URLIdIgnored_CannotWriteAnotherNode is
 // acceptance (c), the security-critical test: node A, authenticated as A, puts
 // node B's real id in the URL. A's row must be written; B's must never be.

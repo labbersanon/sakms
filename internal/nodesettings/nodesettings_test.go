@@ -130,6 +130,64 @@ func TestSet_PartialUpdate_DoesNotDeleteOtherKeys(t *testing.T) {
 	}
 }
 
+// TestSetThenGet_CPUCapPercent_RoundTrip proves the new cpu_cap_percent column
+// is written by Set and read back by Get, including an explicit 0 (unlimited/
+// clear) that must be preserved distinctly rather than lost — the same discipline
+// MaxJobs already follows. CPUCapPercent is operator-owned and rides the shared
+// Set write path alongside MaxJobs (unlike PauseDispatch's own column-scoped
+// method), so it coexists with both on the one node_max_jobs row.
+func TestSetThenGet_CPUCapPercent_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	// Write a non-zero cap alongside MaxJobs and a pause bit.
+	if err := store.Set(ctx, "node-a", nodesettings.Settings{
+		MaxJobs:       4,
+		CPUCapPercent: 50,
+	}); err != nil {
+		t.Fatalf("Set (cap=50): %v", err)
+	}
+	if err := store.SetPauseDispatch(ctx, "node-a", true); err != nil {
+		t.Fatalf("SetPauseDispatch: %v", err)
+	}
+
+	got, ok, err := store.Get(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true after Set")
+	}
+	if got.CPUCapPercent != 50 {
+		t.Errorf("CPUCapPercent: got %d, want 50", got.CPUCapPercent)
+	}
+	if got.MaxJobs != 4 {
+		t.Errorf("MaxJobs coexistence: got %d, want 4", got.MaxJobs)
+	}
+	if !got.PauseDispatch {
+		t.Error("PauseDispatch coexistence: got false, want true (the shared row must carry all three)")
+	}
+
+	// An explicit 0 clears the cap and is read back as 0 (distinct from unset).
+	if err := store.Set(ctx, "node-a", nodesettings.Settings{
+		MaxJobs:       4,
+		CPUCapPercent: 0,
+	}); err != nil {
+		t.Fatalf("Set (cap=0): %v", err)
+	}
+	got, _, err = store.Get(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("Get after clear: %v", err)
+	}
+	if got.CPUCapPercent != 0 {
+		t.Errorf("CPUCapPercent after clear: got %d, want 0", got.CPUCapPercent)
+	}
+	// The pause bit (its own column-scoped writer) is untouched by the cap write.
+	if !got.PauseDispatch {
+		t.Error("a CPUCapPercent write must not reset the independently-owned PauseDispatch")
+	}
+}
+
 func TestSetThenGet_DifferentNodesAreIsolated(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

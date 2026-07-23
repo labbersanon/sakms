@@ -196,7 +196,7 @@ func TestPathMap_ServerPushDoesNotTriggerOutboundPush(t *testing.T) {
 	// Apply an authoritative server push (the SSE settings-apply path). Local
 	// path must be within mediaRoots or it's rejected by validateSettingsPush,
 	// so map into /mnt/media.
-	applyServerSettings(cfg, configPath, statusSrv, nodes.NodeSettings{
+	applyServerSettings(cfg, configPath, statusSrv, nil, nodes.NodeSettings{
 		PathMap: []nodes.PathMapping{{Server: "/srv/movies", Local: "/mnt/media/movies"}},
 		MaxJobs: 3,
 	})
@@ -357,7 +357,7 @@ func TestPathMap_ClearedKeyDoesNotReappearAfterReconnectMerge(t *testing.T) {
 	// Simulate a reconnect settings echo. The server deleted the movies row, so
 	// the echo does NOT carry it (it carries only other, still-configured keys).
 	statusSrv := newStatusServer(cfg)
-	applyServerSettings(cfg, configPath, statusSrv, nodes.NodeSettings{
+	applyServerSettings(cfg, configPath, statusSrv, nil, nodes.NodeSettings{
 		PathMap: []nodes.PathMapping{{Server: "/srv/series", Local: "/mnt/media/series"}},
 		MaxJobs: 2,
 	})

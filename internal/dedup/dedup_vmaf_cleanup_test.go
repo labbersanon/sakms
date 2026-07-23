@@ -46,7 +46,7 @@ func TestApplyLibrary_PrunesVMAFScore_OnDeletedLoser_Movies(t *testing.T) {
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	if _, _, err := ApplyLibrary(ctx, libStore, p, nil, false); err != nil {
+	if _, _, err := ApplyLibrary(ctx, libStore, p, nil, nil, false); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -93,7 +93,7 @@ func TestApplyLibrarySeries_PrunesVMAFScore_OnDeletedLoser_Series(t *testing.T) 
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	if _, _, err := ApplyLibrarySeries(ctx, libStore, p, nil, false); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, p, nil, nil, false); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestApplyLibraryAdult_PrunesVMAFScore_OnDeletedLoser_Adult(t *testing.T) {
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	if _, _, err := ApplyLibraryAdult(ctx, libStore, p, nil, false); err != nil {
+	if _, _, err := ApplyLibraryAdult(ctx, libStore, p, nil, nil, false); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 

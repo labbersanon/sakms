@@ -245,7 +245,7 @@ func TestApplyLibraryAdult_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T)
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, false)
+	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestApplyLibraryAdult_WinnerIsOrphan_DeletesTrackedLoserAndRegistersWinner(
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, false)
+	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestApplyLibraryAdult_KeepAll_NoMutation(t *testing.T) {
 			{Label: "b", Path: loserPath},
 		},
 	}
-	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, true)
+	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 		Status:     proposals.Applied,
 		Candidates: []proposals.Candidate{{Path: "/a.mkv"}, {Path: "/b.mkv"}},
 	}
-	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false); err == nil {
 		t.Fatal("expected ApplyLibraryAdult to refuse an already-applied proposal")
 	}
 }
@@ -361,7 +361,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibraryAdult_RejectsFewerThanTwoCandidates(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	p := proposals.Proposal{Status: proposals.Pending, Candidates: []proposals.Candidate{{Path: "/a.mkv"}}}
-	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false); err == nil {
 		t.Fatal("expected ApplyLibraryAdult to refuse a proposal with fewer than 2 candidates")
 	}
 }

@@ -75,6 +75,10 @@ const accepted = (): Response => new Response(null, { status: 202 });
 
 beforeEach(() => {
   MockEventSource.last = null;
+  // jsdom's localStorage persists across tests in a file; clear it so a
+  // per-mode view preference or skipped-id set from one test never leaks into
+  // another (and so the default card view / empty skip set is the baseline).
+  localStorage.clear();
   vi.stubGlobal("EventSource", MockEventSource);
 });
 
@@ -387,9 +391,14 @@ describe("Dedup — bulk apply (opt-in multi-select of Pending groups)", () => {
     expect(screen.getByLabelText("Select Pending One")).toBeInTheDocument();
     expect(screen.getByLabelText("Select Pending Two")).toBeInTheDocument();
     expect(screen.queryByLabelText("Select Done Group")).toBeNull();
-    // Two pending card checkboxes + one select-all checkbox = 3. (Keepers are
-    // radios, not checkboxes, so they don't count here.)
-    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(3);
+    // The applied "Done Group" exposes NO keeper controls at all (select and
+    // also-keep checkboxes are both pending-gated).
+    expect(screen.getByLabelText("Select all pending")).toBeInTheDocument();
+    // Total checkboxes = 2 pending-select + 1 select-all + 2 "Also keep" (one
+    // per pending group's single non-primary candidate). The PRIMARY keeper is
+    // a radio, and the applied group contributes nothing. Keeper primaries are
+    // radios, so they don't count here.
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(5);
   });
 
   it("shows 'Apply Selected' only once a group is selected", async () => {
@@ -653,5 +662,565 @@ describe("Dedup — live scan progress stream", () => {
     // — the terminal frame was never delivered.
     expect(await screen.findByText("Recovered Group")).toBeInTheDocument();
     expect(screen.getByText("Scan")).toBeInTheDocument();
+  });
+});
+
+// vmafComputing is the poll-shaped "computing" body the card view's VMAF badge
+// gets on a cache miss; quiets the many VMAF fetches card-view tiles fire so a
+// non-VMAF test's fetch stub doesn't have to enumerate them.
+const vmafComputing = () =>
+  jsonResponse({ status: "computing", candidateIndex: 1, referenceIndex: 0 });
+
+describe("Dedup — list/card view toggle (persisted per mode)", () => {
+  it("defaults to card view, switches to list, and persists the choice", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 1, title: "Grp" })]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Grp");
+    // Card default: a <video> preview tile renders; the list table header does not.
+    expect(document.querySelector("video")).toBeTruthy();
+    expect(screen.queryByText("Path")).toBeNull();
+
+    // Switch to list: the table header appears, the video tiles are gone, and
+    // the choice is persisted for this mode.
+    fireEvent.click(screen.getByText("List"));
+    expect(await screen.findByText("Path")).toBeInTheDocument();
+    expect(document.querySelector("video")).toBeNull();
+    expect(localStorage.getItem("sakms.dedup.viewmode.movies")).toBe("list");
+  });
+
+  it("reads the persisted list view on mount (survives a reload)", async () => {
+    localStorage.setItem("sakms.dedup.viewmode.movies", "list");
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 1, title: "Grp" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Grp");
+    // Straight into list view: table header present, no video, no VMAF fetch
+    // (the stub would throw on one).
+    expect(screen.getByText("Path")).toBeInTheDocument();
+    expect(document.querySelector("video")).toBeNull();
+  });
+});
+
+describe("Dedup — Skip (client-side, localStorage)", () => {
+  it("hides a skipped pending group and persists the id per mode", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({ id: 5, title: "Keep Me" }),
+          dedupProposal({ id: 6, title: "Skip Me" }),
+        ]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Skip Me");
+    // Skip the second group: it disappears; the first stays.
+    fireEvent.click(screen.getAllByText("Skip")[1]!);
+    await waitFor(() => expect(screen.queryByText("Skip Me")).toBeNull());
+    expect(screen.getByText("Keep Me")).toBeInTheDocument();
+    expect(localStorage.getItem("sakms.dedup.skipped.movies")).toContain("6");
+  });
+
+  it("survives a reload, then self-empties once a scan rotates the ids", async () => {
+    localStorage.setItem("sakms.dedup.skipped.movies", JSON.stringify([6]));
+    let rotated = false;
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse(
+          rotated
+            ? [dedupProposal({ id: 99, title: "Fresh Group" })]
+            : [
+                dedupProposal({ id: 6, title: "Skip Me" }),
+                dedupProposal({ id: 5, title: "Keep Me" }),
+              ],
+        );
+      if (url.includes("/vmaf")) return vmafComputing();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const first = render(() => <Dedup />);
+    await screen.findByText("Keep Me");
+    // The persisted skip id (6) hides that group across the reload.
+    expect(screen.queryByText("Skip Me")).toBeNull();
+    first.unmount();
+
+    // A rescan rotates proposal ids (6 no longer exists) → the skip set prunes
+    // itself to empty against the live Pending ids.
+    rotated = true;
+    render(() => <Dedup />);
+    await screen.findByText("Fresh Group");
+    await waitFor(() =>
+      expect(localStorage.getItem("sakms.dedup.skipped.movies")).toBe("[]"),
+    );
+  });
+});
+
+describe("Dedup — multi-keep Apply request shape", () => {
+  it("sends additionalKeepIndices for extra checked keepers", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 8,
+            title: "Trio",
+            candidates: [
+              candidate({ label: "a", winner: true }),
+              candidate({ label: "b", winner: false }),
+              candidate({ label: "c", winner: false }),
+            ],
+          }),
+        ]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/8/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Trio");
+    // Primary defaults to the winner (index 0 "a"); also-keep "c" (index 2).
+    fireEvent.click(screen.getByLabelText("Also keep c"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    expect(applyCalls(calls)[0]!.body).toEqual({
+      keepIndex: 0,
+      additionalKeepIndices: [2],
+    });
+  });
+
+  it("OMITS additionalKeepIndices entirely when no extra keeper is checked", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 8, title: "Solo" })]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/8/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Solo");
+    fireEvent.click(screen.getByText("Apply"));
+
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    const body = applyCalls(calls)[0]!.body as Record<string, unknown>;
+    expect(body).toEqual({ keepIndex: 0 });
+    expect("additionalKeepIndices" in body).toBe(false);
+  });
+});
+
+describe("Dedup — Keep All vs checking every box are distinct (AC15)", () => {
+  it("Keep All tracks nothing; checking every box tracks the primary", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 12,
+            title: "Both",
+            candidates: [
+              candidate({ label: "a", winner: true }),
+              candidate({ label: "b", winner: false }),
+            ],
+          }),
+        ]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/12/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Both");
+
+    // Check every non-primary box, then Apply → track primary, delete nothing.
+    fireEvent.click(screen.getByLabelText("Also keep b"));
+    fireEvent.click(screen.getByText("Apply"));
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    expect(applyCalls(calls)[0]!.body).toEqual({
+      keepIndex: 0,
+      additionalKeepIndices: [1],
+    });
+
+    // Keep All is the SEPARATE control: track nothing, delete nothing — a
+    // distinct wire shape ({keepAll:true}) with no keepIndex/additional set.
+    fireEvent.click(screen.getByText("Keep All"));
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(2));
+    expect(applyCalls(calls)[1]!.body).toEqual({ keepAll: true });
+  });
+});
+
+describe("Dedup — bulk apply threads additionalKeepIndices (AC13)", () => {
+  it("includes keepIndex + the multi-keep set per batched group that has extras", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 1,
+            title: "G1",
+            candidates: [
+              candidate({ label: "a1", winner: true }),
+              candidate({ label: "b1", winner: false }),
+              candidate({ label: "c1", winner: false }),
+            ],
+          }),
+          dedupProposal({
+            id: 2,
+            title: "G2",
+            candidates: [
+              candidate({ label: "a2", winner: true }),
+              candidate({ label: "b2", winner: false }),
+            ],
+          }),
+        ]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/apply-batch") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return jsonResponse({
+          results: [
+            { id: 1, ok: true },
+            { id: 2, ok: true },
+          ],
+        });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("G1");
+    fireEvent.click(screen.getByLabelText("Select all pending"));
+    // G1: also-keep c1 (index 2) — the batch item must carry keepIndex 0 AND
+    // additionalKeepIndices [2] (the backend rejects a nil keepIndex with a
+    // non-empty additional set). G2 has no extras → bare {id:2}.
+    fireEvent.click(screen.getByLabelText("Also keep c1"));
+    fireEvent.click(await screen.findByText("Apply Selected (2)"));
+
+    await waitFor(() => expect(batchCalls(calls)).toHaveLength(1));
+    expect(batchCalls(calls)[0]!.body).toEqual({
+      items: [{ id: 1, keepIndex: 0, additionalKeepIndices: [2] }, { id: 2 }],
+    });
+  });
+});
+
+describe("Dedup — primary keeper invariant (safety-critical, AC16)", () => {
+  it("Apply always carries a keepIndex — the kept set can never be empty", async () => {
+    // The primary is a radio with exactly one selection at all times, so a
+    // 0-checked state (which would let the backend delete the whole group) is
+    // structurally unreachable — Apply always sends a keepIndex.
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 4, title: "Always" })]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/4/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Always");
+    // Exactly one primary radio is checked in the group.
+    const checkedRadios = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[type="radio"]'),
+    ).filter((r) => r.checked);
+    expect(checkedRadios).toHaveLength(1);
+
+    fireEvent.click(screen.getByText("Apply"));
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    expect("keepIndex" in (applyCalls(calls)[0]!.body as object)).toBe(true);
+  });
+
+  it("changing the primary in multi-keep mode preserves the whole kept set", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 7,
+            title: "Repoint",
+            candidates: [
+              candidate({ label: "a", winner: true }),
+              candidate({ label: "b", winner: false }),
+              candidate({ label: "c", winner: false }),
+            ],
+          }),
+        ]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/7/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Repoint");
+    // Keep all three (primary a=0, also-keep b=1 and c=2).
+    fireEvent.click(screen.getByLabelText("Also keep b"));
+    fireEvent.click(screen.getByLabelText("Also keep c"));
+    // Re-point the tracked copy to b (index 1). The old primary a (index 0)
+    // must stay kept (moved into the additional set), NOT be dropped/deleted.
+    fireEvent.click(screen.getByLabelText("Keep b"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    const body = applyCalls(calls)[0]!.body as {
+      keepIndex: number;
+      additionalKeepIndices: number[];
+    };
+    expect(body.keepIndex).toBe(1);
+    // Whole kept set {0,1,2} preserved: primary 1 tracked, {0,2} also kept.
+    expect(new Set(body.additionalKeepIndices)).toEqual(new Set([0, 2]));
+  });
+
+  it("promoting the SOLE also-kept candidate to primary preserves the old primary, never drops it", async () => {
+    // Regression test for a real data-loss bug: onPickPrimary's multi-keep
+    // check originally read additionalKeep's size AFTER deleting the
+    // promoted candidate from it, so with exactly one additional keeper,
+    // promoting that specific candidate emptied the set before the check
+    // ran — misclassifying it as sole-keep mode and silently dropping the
+    // old primary out of the kept set entirely (deleted on Apply, despite
+    // the operator never unchecking it). The existing multi-keep test above
+    // uses two additional keepers, so `add.size > 0` still held after the
+    // delete and never exercised this path — this test specifically pins
+    // the one-additional-keeper case.
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 8,
+            title: "SoleAdditional",
+            candidates: [
+              candidate({ label: "a", winner: true }),
+              candidate({ label: "b", winner: false }),
+            ],
+          }),
+        ]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/8/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("SoleAdditional");
+    // Primary is a (index 0). Check "Also keep b" — the ONLY additional keeper.
+    fireEvent.click(screen.getByLabelText("Also keep b"));
+    // Promote b (the sole also-kept candidate) to primary.
+    fireEvent.click(screen.getByLabelText("Keep b"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    const body = applyCalls(calls)[0]!.body as {
+      keepIndex: number;
+      additionalKeepIndices?: number[];
+    };
+    expect(body.keepIndex).toBe(1);
+    // The old primary (a, index 0) must be preserved as an additional
+    // keeper, not silently dropped — this is the exact assertion that fails
+    // against the pre-fix code (additionalKeepIndices would be omitted/empty).
+    expect(new Set(body.additionalKeepIndices ?? [])).toEqual(new Set([0]));
+  });
+
+  it("re-picking the primary in sole-keep mode keeps ONLY the picked candidate", async () => {
+    // With no additional keepers checked, picking a new primary is a plain
+    // dedup re-pick: keep only that one, delete the rest (matches the named
+    // Series re-pick test's semantics, asserted here in the multi-keep model).
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 15,
+            title: "Sole",
+            candidates: [
+              candidate({ label: "a", winner: true }),
+              candidate({ label: "b", winner: false }),
+            ],
+          }),
+        ]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      if (
+        url.includes("/api/proposals/15/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Sole");
+    fireEvent.click(screen.getByLabelText("Keep b"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
+    const body = applyCalls(calls)[0]!.body as Record<string, unknown>;
+    expect(body).toEqual({ keepIndex: 1 });
+    expect("additionalKeepIndices" in body).toBe(false);
+  });
+});
+
+describe("Dedup — VMAF card wiring (AC17)", () => {
+  const vmafGroup = () =>
+    dedupProposal({
+      id: 3,
+      title: "V",
+      candidates: [
+        candidate({ label: "tracked", path: "/m/keep.mkv", winner: true }),
+        candidate({ label: "orphan.mkv", path: "/m/dupe.mkv", winner: false }),
+      ],
+    });
+
+  it("shows a computing indicator, then the score on ready", async () => {
+    let ready = false;
+    stubFetch((url) => {
+      if (
+        url.includes("/api/modes/movies/dedup/proposals") &&
+        !url.includes("/vmaf") &&
+        !url.includes("/video")
+      )
+        return jsonResponse([vmafGroup()]);
+      if (url.includes("/vmaf"))
+        return jsonResponse(
+          ready
+            ? { status: "ready", score: 88.5, candidateIndex: 1, referenceIndex: 0 }
+            : { status: "computing", candidateIndex: 1, referenceIndex: 0 },
+        );
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("V");
+    // The non-primary tile shows the pending indicator first.
+    expect(await screen.findByText("VMAF…")).toBeInTheDocument();
+    // Flip the backend to ready; the bounded re-poll picks up the real score.
+    ready = true;
+    expect(
+      await screen.findByText("VMAF 88.5", undefined, { timeout: 4000 }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a non-blocking error indicator; Apply stays enabled", async () => {
+    stubFetch((url, init) => {
+      if (
+        url.includes("/api/modes/movies/dedup/proposals") &&
+        !url.includes("/vmaf") &&
+        !url.includes("/video")
+      )
+        return jsonResponse([vmafGroup()]);
+      if (url.includes("/vmaf"))
+        return jsonResponse({
+          status: "error",
+          error: "ffmpeg failed",
+          candidateIndex: 1,
+          referenceIndex: 0,
+        });
+      if (
+        url.includes("/api/proposals/3/apply") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("V");
+    expect(await screen.findByText("VMAF n/a")).toBeInTheDocument();
+    // The error never disables the group's actions.
+    const applyBtn = screen.getByText("Apply") as HTMLButtonElement;
+    expect(applyBtn.disabled).toBe(false);
+  });
+
+  it("re-fetches against the new referenceIndex when the primary changes", async () => {
+    const calls = stubFetch((url) => {
+      if (
+        url.includes("/api/modes/movies/dedup/proposals") &&
+        !url.includes("/vmaf") &&
+        !url.includes("/video")
+      )
+        return jsonResponse([vmafGroup()]);
+      if (url.includes("/vmaf"))
+        return jsonResponse({ status: "computing", candidateIndex: 0, referenceIndex: 0 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("V");
+    // Initially primary=0 → the non-primary tile (index 1) scores against ref 0.
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.url.includes("/vmaf") &&
+            c.url.includes("candidateIndex=1") &&
+            c.url.includes("referenceIndex=0"),
+        ),
+      ).toBe(true),
+    );
+    // Re-point primary to index 1 → tile 0 becomes the non-primary and scores
+    // against the NEW reference (index 1) — no special-case logic, just a new
+    // query key.
+    fireEvent.click(screen.getByLabelText("Keep orphan.mkv"));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.url.includes("/vmaf") &&
+            c.url.includes("candidateIndex=0") &&
+            c.url.includes("referenceIndex=1"),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("stops polling once the tiles unmount", async () => {
+    const calls = stubFetch((url) => {
+      if (
+        url.includes("/api/modes/movies/dedup/proposals") &&
+        !url.includes("/vmaf") &&
+        !url.includes("/video")
+      )
+        return jsonResponse([vmafGroup()]);
+      if (url.includes("/vmaf")) return vmafComputing();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const { unmount } = render(() => <Dedup />);
+    await screen.findByText("V");
+    await waitFor(() =>
+      expect(calls.filter((c) => c.url.includes("/vmaf")).length).toBeGreaterThan(
+        0,
+      ),
+    );
+    unmount();
+    const afterUnmount = calls.filter((c) => c.url.includes("/vmaf")).length;
+    // Past one full poll interval, no further VMAF fetches fire.
+    await new Promise((r) => setTimeout(r, 2800));
+    expect(calls.filter((c) => c.url.includes("/vmaf")).length).toBe(afterUnmount);
   });
 });

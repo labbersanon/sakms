@@ -39,6 +39,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -387,7 +388,16 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 // post-removal failure (the winner's libStore.Upsert) still reports every
 // loser that was actually removed to the caller for Session.NotifyPlayers.
 // keepAll never removes anything, so it always returns nil changes.
-func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, keepAll bool) (itemID int64, changes []mode.PathChange, err error) {
+//
+// additionalKeepIndices generalizes the delete step to multi-keep: besides the
+// single primary keeper (idx), every candidate whose index is in this set is
+// also left on disk untouched, exactly as the winner is. Only the primary is
+// ever tracked (Upsert) — additional keepers are files kept but not recorded,
+// matching keepAll's documented "extra kept-but-untracked file" behavior (see
+// .omc/plans/dedup-ux-refine.md AC6/AC10). Nil/empty means single-keep, the
+// original behavior. keepAll (track nothing) stays a distinct third state and
+// is never combined with this (rejected upstream by validateApplyRequest).
+func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool) (itemID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -414,7 +424,9 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	winner := p.Candidates[idx]
 
 	for i, c := range p.Candidates {
-		if i == idx {
+		// Skip the primary keeper and every additional checked keeper — those
+		// files stay on disk (only the primary is tracked below).
+		if i == idx || slices.Contains(additionalKeepIndices, i) {
 			continue
 		}
 		removedPath, err := removeLibraryCandidate(ctx, libStore, c)
@@ -662,7 +674,16 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 // reports every loser that was actually removed to the caller for
 // Session.NotifyPlayers. keepAll never removes anything, so it always
 // returns nil changes.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, keepAll bool) (episodeID int64, changes []mode.PathChange, err error) {
+//
+// additionalKeepIndices generalizes the delete step to multi-keep exactly as
+// ApplyLibrary's does: a candidate whose index is in this set is left on disk
+// untouched alongside the primary keeper. This OR's cleanly with the
+// shared-file guard below — a candidate is skipped from deletion if it is the
+// primary, an additional keeper, OR still referenced by another episode's row.
+// Only the primary is tracked (UpsertEpisode); additional keepers are kept but
+// not recorded (see .omc/plans/dedup-ux-refine.md AC6/AC10/AC11). keepAll (track
+// nothing) stays a distinct third state, never combined with this.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -689,7 +710,9 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 	winner := p.Candidates[idx]
 
 	for i, c := range p.Candidates {
-		if i == idx {
+		// Skip the primary keeper and every additional checked keeper — those
+		// files stay on disk (only the primary is tracked via UpsertEpisode).
+		if i == idx || slices.Contains(additionalKeepIndices, i) {
 			continue
 		}
 		if c.Path == "" {

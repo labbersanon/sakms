@@ -191,7 +191,7 @@ func TestApplyLibrary_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T) {
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestApplyLibrary_WinnerIsOrphan_DeletesTrackedLoserAndRegistersWinner(t *te
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestApplyLibrary_TrackedLoserChangeUsesLibraryItemPathNotCandidatePath(t *t
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	_, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
+	_, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestApplyLibrary_TrackedLoserDBDeleteFails_StillReportsPhysicalDeletion(t *
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	_, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, false)
+	_, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, false)
 	if err == nil {
 		t.Fatal("expected an error from the forced libStore.Delete failure")
 	}
@@ -369,7 +369,7 @@ func TestApplyLibrary_KeepAll_NoMutation(t *testing.T) {
 			{Label: "b", Path: "/b.mkv"},
 		},
 	}
-	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, true)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 		Status:     proposals.Applied,
 		Candidates: []proposals.Candidate{{Path: "/a.mkv"}, {Path: "/b.mkv"}},
 	}
-	if _, _, err := ApplyLibrary(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrary to refuse an already-applied proposal")
 	}
 }
@@ -400,7 +400,7 @@ func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibrary_RejectsFewerThanTwoCandidates(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	p := proposals.Proposal{Status: proposals.Pending, Candidates: []proposals.Candidate{{Path: "/a.mkv"}}}
-	if _, _, err := ApplyLibrary(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrary to refuse a proposal with fewer than 2 candidates")
 	}
 }

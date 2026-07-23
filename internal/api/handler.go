@@ -146,6 +146,14 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// background computation and returns "computing"; the cache (vmaf_scores)
 	// serves repeat views without recomputing (AC2). See vmaf.go.
 	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals/{id}/vmaf", vmafHandler(propStore, libStore))
+	// Raw video bytes of one Dedup candidate, for the card view's click-to-play
+	// preview. Resolves the file server-side by {id}+candidateIndex (bounds-
+	// checked) — never a client-supplied path — and streams it via
+	// http.ServeContent (range/seek support, no in-memory buffering). The trust
+	// boundary is provenance (SAK's own recorded scan path), NOT lexical-root
+	// confinement — see dedupVideoHandler's doc comment and the plan's
+	// pre-mortem #2 for the full history of why no root check is applied.
+	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals/{id}/video", dedupVideoHandler(propStore))
 
 	// Discover is a read-only proxy against TMDB (trending/popular titles,
 	// poster art) — the browse entry point into Search. Search itself is a

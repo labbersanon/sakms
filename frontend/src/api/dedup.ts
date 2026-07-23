@@ -83,19 +83,77 @@ export function fetchDedupProposals(mode: Mode): Promise<Proposal[]> {
   return api<Proposal[]>(`/api/modes/${mode}/dedup/proposals`);
 }
 
-// applyKeep resolves one duplicate group by KEEPING candidate `keepIndex` (an
-// array index into that proposal's `candidates`, in received order) and deleting
-// every other file in the group. keepIndex is threaded through as a real number
-// even when it is 0 — the group's winner may sit at index 0, or the operator may
-// pick candidate 0, and dropping a literal 0 would make the backend silently
-// fall back to its auto-winner and delete the wrong file (dedup.ApplyLibrary
-// indexes p.Candidates[keepIndex] directly). Resolves exactly one proposal id.
-export function applyKeep(id: number, keepIndex: number): Promise<unknown> {
+// applyKeep resolves one duplicate group by KEEPING candidate `keepIndex` (the
+// primary/tracked keeper — an array index into that proposal's `candidates`, in
+// received order) and deleting every other file in the group. keepIndex is
+// threaded through as a real number even when it is 0 — the group's winner may
+// sit at index 0, or the operator may pick candidate 0, and dropping a literal 0
+// would make the backend silently fall back to its auto-winner and delete the
+// wrong file (dedup.ApplyLibrary indexes p.Candidates[keepIndex] directly).
+//
+// additionalKeepIndices is the multi-keep set: extra candidates the operator
+// checked as "also keep" — left on disk untouched (only the primary is tracked).
+// It MUST be OMITTED (not sent as []) when empty, or the existing strict
+// request-shape tests break and the single-keep wire contract changes (see
+// DedupApplyRequest's doc comment / AC9). Resolves exactly one proposal id.
+export function applyKeep(
+  id: number,
+  keepIndex: number,
+  additionalKeepIndices?: number[],
+): Promise<unknown> {
   const body: DedupApplyRequest = { keepIndex };
+  if (additionalKeepIndices && additionalKeepIndices.length > 0) {
+    body.additionalKeepIndices = additionalKeepIndices;
+  }
   return api(`/api/proposals/${id}/apply`, {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+// dedupVideoUrl builds the src for a card tile's click-to-play <video> element:
+// the provenance-only streaming endpoint that resolves proposalId+candidateIndex
+// to a file SAK itself recorded during its own scan (never a client-supplied
+// path — see internal/api/dedup_video.go). It is a plain same-origin URL the
+// browser loads with the session cookie; it does NOT go through api() (that is
+// for JSON, and a <video> streams bytes with Range requests).
+export function dedupVideoUrl(
+  mode: Mode,
+  id: number,
+  candidateIndex: number,
+): string {
+  return `/api/modes/${mode}/dedup/proposals/${id}/video?candidateIndex=${candidateIndex}`;
+}
+
+// DedupVmafScore is the shape of GET /api/modes/{mode}/dedup/proposals/{id}/vmaf.
+// There is no generated DTO for it (the backend type vmafScoreResponse is
+// unexported in internal/api, not internal/apidto), so it is declared locally
+// here — the same local-declaration pattern as DedupScanStatus above. The
+// endpoint is poll-shaped: a cache miss kicks off a background computation and
+// returns "computing" (HTTP 202); the client re-polls until "ready" (score
+// populated) or "error".
+export interface DedupVmafScore {
+  status: "ready" | "computing" | "error";
+  score?: number;
+  cached?: boolean;
+  candidateIndex: number;
+  referenceIndex: number;
+  error?: string;
+}
+
+// fetchDedupVmaf scores one candidate tile (candidateIndex) against the group's
+// current primary (referenceIndex). api() returns the parsed body for the 200
+// ("ready"/"error") AND 202 ("computing") responses alike — only a 4xx (bad
+// params, unknown proposal) throws, which the caller surfaces as an error state.
+export function fetchDedupVmaf(
+  mode: Mode,
+  id: number,
+  candidateIndex: number,
+  referenceIndex: number,
+): Promise<DedupVmafScore> {
+  return api<DedupVmafScore>(
+    `/api/modes/${mode}/dedup/proposals/${id}/vmaf?candidateIndex=${candidateIndex}&referenceIndex=${referenceIndex}`,
+  );
 }
 
 // applyKeepAll resolves one duplicate group by keeping EVERY candidate and

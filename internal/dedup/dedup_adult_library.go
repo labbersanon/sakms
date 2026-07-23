@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/config"
@@ -235,7 +236,16 @@ func adultSceneIdentity(res *identify.MatchResult, err error) (box, sceneID, ite
 // reports the committed file removal to the caller for Session.NotifyPlayers
 // (Critic fix #3). keepAll never removes anything, so it always returns nil
 // changes.
-func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, keepAll bool) (sceneID int64, changes []mode.PathChange, err error) {
+//
+// additionalKeepIndices generalizes the delete step to multi-keep exactly as
+// the Movies/Series siblings do: a candidate whose index is in this set is left
+// on disk untouched alongside the primary keeper. Only the primary is tracked
+// via UpsertScene; an additional keeper is left at its EXISTING tracked/untracked
+// state (an already-tracked additional keeper stays tracked through UpsertScene's
+// ON CONFLICT(box, scene_id) on the primary, which never touches its row — see
+// .omc/plans/dedup-ux-refine.md AC6/AC10 Adult variant). keepAll (track nothing)
+// stays a distinct third state, never combined with this.
+func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool) (sceneID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -262,7 +272,9 @@ func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals
 	winner := p.Candidates[idx]
 
 	for i, c := range p.Candidates {
-		if i == idx {
+		// Skip the primary keeper and every additional checked keeper — those
+		// files stay on disk (only the primary is tracked via UpsertScene).
+		if i == idx || slices.Contains(additionalKeepIndices, i) {
 			continue
 		}
 		removedPath, err := removeSceneCandidate(ctx, libStore, c)

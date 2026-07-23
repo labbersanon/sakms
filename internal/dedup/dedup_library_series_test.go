@@ -253,7 +253,7 @@ func TestApplyLibrarySeries_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, false)
+	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestApplyLibrarySeries_WinnerIsOrphan_DeletesTrackedLoserFile_UpsertsSameEp
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, false)
+	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestApplyLibrarySeries_SharedFileLosesItsOwnKey_NotDeleted_SiblingIntact(t 
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	_, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, false)
+	_, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestApplyLibrarySeries_SharedFileGuardIsPathBased_NotCandidateLabelBased(t 
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	if _, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, false); err != nil {
+	if _, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, nil, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	} else {
 		for _, c := range changes {
@@ -523,7 +523,7 @@ func TestApplyLibrarySeries_KeepAll_NoMutation(t *testing.T) {
 			{Label: "b", Path: "/b.mkv"},
 		},
 	}
-	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, true)
+	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, nil, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 		Status:     proposals.Applied,
 		Candidates: []proposals.Candidate{{Path: "/a.mkv"}, {Path: "/b.mkv"}},
 	}
-	if _, _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrarySeries to refuse an already-applied proposal")
 	}
 }
@@ -554,7 +554,7 @@ func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibrarySeries_RejectsFewerThanTwoCandidates(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	p := proposals.Proposal{Status: proposals.Pending, Candidates: []proposals.Candidate{{Path: "/a.mkv"}}}
-	if _, _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, false); err == nil {
+	if _, _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, nil, false); err == nil {
 		t.Fatal("expected ApplyLibrarySeries to refuse a proposal with fewer than 2 candidates")
 	}
 }

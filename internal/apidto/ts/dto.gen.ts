@@ -635,10 +635,19 @@ export interface RepickRequest {
  *     conservative escape hatch when the group isn't really a duplicate.
  * KeepIndex is a pointer/omitempty so "keep all" omits it entirely rather than
  * sending 0 (which would mean "keep candidate 0").
+ * AdditionalKeepIndices is the multi-keep set: besides the single primary
+ * (KeepIndex), every index listed here is also kept on disk untouched (only the
+ * primary is tracked). It carries ARRAY INDICES into Proposal.Candidates, same
+ * as KeepIndex. It MUST be omitted (undefined), never sent as [], when the
+ * operator kept only one candidate — the empty-set-omission rule that keeps the
+ * single-keep wire shape unchanged for the existing strict request-shape tests.
+ * The backend rejects (400) a set that is out of range, that contains KeepIndex,
+ * that is present with a nil KeepIndex, or that is combined with KeepAll.
  */
 export interface DedupApplyRequest {
   keepIndex?: number /* int */;
   keepAll?: boolean;
+  additionalKeepIndices?: number /* int */[];
 }
 /**
  * ApplyBatchItem is one selected proposal plus its optional Dedup override.
@@ -646,12 +655,16 @@ export interface DedupApplyRequest {
  * DedupApplyRequest (a Dedup group's radio the operator changed before adding
  * it to the batch); Rename and Purge items omit both. KeepIndex MUST be sent
  * even when it is 0 — see DedupApplyRequest's doc comment for why a dropped
- * literal 0 can delete the wrong file.
+ * literal 0 can delete the wrong file. AdditionalKeepIndices carries the same
+ * multi-keep set as DedupApplyRequest and MUST be threaded through the batch too
+ * (omitted, never [], when empty) — dropping it on the bulk path would delete
+ * files the operator checked as "keep".
  */
 export interface ApplyBatchItem {
   id: number /* int64 */;
   keepIndex?: number /* int */;
   keepAll?: boolean;
+  additionalKeepIndices?: number /* int */[];
 }
 /**
  * ApplyBatchRequest is POST /api/proposals/apply-batch's body. Items is capped

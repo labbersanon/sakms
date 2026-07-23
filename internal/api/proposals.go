@@ -45,9 +45,78 @@ func listProposalsHandler(propStore *proposals.Store, wf proposals.Workflow) htt
 // ignore it entirely (an empty or missing body is the normal case for
 // those). KeepIndex nil means "auto" — whichever candidate Scan already
 // marked as the quality winner.
+//
+// AdditionalKeepIndices carries the multi-keep set: besides the single primary
+// (KeepIndex), every candidate index listed here is also kept on disk untouched
+// (only the primary is tracked). It is omitted entirely (not sent as []) when
+// the operator kept only one candidate, so the single-keep wire shape is byte-
+// for-byte unchanged. validateApplyRequest enforces its structural legality
+// (in range, deduped, disjoint from KeepIndex, requires KeepIndex, never with
+// KeepAll) before any delete runs. See .omc/plans/dedup-ux-refine.md.
 type applyProposalRequest struct {
-	KeepIndex *int `json:"keepIndex,omitempty"`
-	KeepAll   bool `json:"keepAll,omitempty"`
+	KeepIndex             *int  `json:"keepIndex,omitempty"`
+	KeepAll               bool  `json:"keepAll,omitempty"`
+	AdditionalKeepIndices []int `json:"additionalKeepIndices,omitempty"`
+}
+
+// validateApplyRequest enforces the STRUCTURAL legality of a Dedup Apply
+// request against the proposal's own candidate slice and normalizes
+// AdditionalKeepIndices in place (de-duplicated, input order preserved). It
+// deliberately covers only structural legality — the semantic invariant "the
+// primary index is one the operator actually checked" is unenforceable
+// server-side (the backend has no independent "checked" signal beyond these
+// very fields) and is a frontend responsibility (see
+// .omc/plans/dedup-ux-refine.md Principle #1 / Pre-mortem #4).
+//
+// Only Dedup proposals carry a meaningful body; Rename/Purge send an empty one
+// and are skipped so a stray field can never turn their apply into a 400. The
+// five rejected combinations (each a specific 400 upstream):
+//   - KeepAll combined with a non-empty AdditionalKeepIndices — KeepAll is the
+//     distinct "track nothing, delete nothing" state; additional keepers only
+//     mean something when a delete is about to happen (AC15 keeps them separate).
+//   - AdditionalKeepIndices non-empty with a nil KeepIndex — no primary to keep.
+//   - KeepIndex out of range.
+//   - an AdditionalKeepIndices entry out of range.
+//   - an AdditionalKeepIndices entry equal to KeepIndex — the primary is already
+//     kept, so listing it again is contradictory, not a harmless duplicate.
+//
+// A repeated entry within AdditionalKeepIndices is NORMALIZED away (deduped),
+// not rejected — slices.Contains in the Apply loop would tolerate it, but a
+// clean set keeps the audit trail honest.
+func validateApplyRequest(req *applyProposalRequest, p *proposals.Proposal) error {
+	if p.Workflow != proposals.Dedup {
+		return nil
+	}
+	n := len(p.Candidates)
+	if req.KeepAll && len(req.AdditionalKeepIndices) > 0 {
+		return fmt.Errorf("keepAll cannot be combined with additionalKeepIndices — Keep All tracks nothing and deletes nothing")
+	}
+	if len(req.AdditionalKeepIndices) > 0 && req.KeepIndex == nil {
+		return fmt.Errorf("additionalKeepIndices requires a keepIndex (the primary keeper)")
+	}
+	if req.KeepIndex != nil && (*req.KeepIndex < 0 || *req.KeepIndex >= n) {
+		return fmt.Errorf("keepIndex %d out of range [0,%d)", *req.KeepIndex, n)
+	}
+	if len(req.AdditionalKeepIndices) == 0 {
+		return nil
+	}
+	seen := make(map[int]bool, len(req.AdditionalKeepIndices))
+	deduped := make([]int, 0, len(req.AdditionalKeepIndices))
+	for _, idx := range req.AdditionalKeepIndices {
+		if idx < 0 || idx >= n {
+			return fmt.Errorf("additionalKeepIndices entry %d out of range [0,%d)", idx, n)
+		}
+		if req.KeepIndex != nil && idx == *req.KeepIndex {
+			return fmt.Errorf("additionalKeepIndices entry %d duplicates keepIndex (the primary is already kept)", idx)
+		}
+		if seen[idx] {
+			continue // normalize repeated entries away
+		}
+		seen[idx] = true
+		deduped = append(deduped, idx)
+	}
+	req.AdditionalKeepIndices = deduped
+	return nil
 }
 
 // proposalApplyStore is the subset of *proposals.Store the apply paths touch —
@@ -90,6 +159,14 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 		p, err := propStore.Get(ctx, id)
 		if err != nil {
 			proposalNotFoundOr500(w, err)
+			return
+		}
+
+		// Structural validation of the (Dedup-only) keep set before anything is
+		// deleted — in range, deduped, disjoint from KeepIndex, KeepIndex present,
+		// never combined with KeepAll. A no-op for Rename/Purge (empty body).
+		if err := validateApplyRequest(&req, p); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -248,19 +325,19 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 	case proposals.Dedup:
 		switch p.Mode {
 		case mode.Movies:
-			itemID, changes, err := dedup.ApplyLibrary(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			itemID, changes, err := dedup.ApplyLibrary(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll)
 			if err != nil {
 				return changes, err
 			}
 			return changes, propStore.MarkApplied(ctx, p.ID, int(itemID))
 		case mode.Series:
-			episodeID, changes, err := dedup.ApplyLibrarySeries(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			episodeID, changes, err := dedup.ApplyLibrarySeries(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll)
 			if err != nil {
 				return changes, err
 			}
 			return changes, propStore.MarkApplied(ctx, p.ID, int(episodeID))
 		case mode.Adult:
-			sceneID, changes, err := dedup.ApplyLibraryAdult(ctx, libStore, p, req.KeepIndex, req.KeepAll)
+			sceneID, changes, err := dedup.ApplyLibraryAdult(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll)
 			if err != nil {
 				return changes, err
 			}
@@ -280,12 +357,17 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 const maxBatchItems = 200
 
 // applyBatchItem is one entry in an apply-batch request. It carries the same
-// per-item Dedup override fields as applyProposalRequest (KeepIndex/KeepAll);
-// Rename and Purge items ignore them, exactly as the single-item path does.
+// per-item Dedup override fields as applyProposalRequest
+// (KeepIndex/KeepAll/AdditionalKeepIndices); Rename and Purge items ignore them,
+// exactly as the single-item path does. AdditionalKeepIndices MUST be threaded
+// through to the reconstructed applyProposalRequest in applyBatchHandler — a
+// draft that dropped it here would silently delete files the operator checked as
+// "keep" on the bulk-apply path (see .omc/plans/dedup-ux-refine.md AC13).
 type applyBatchItem struct {
-	ID        int64 `json:"id"`
-	KeepIndex *int  `json:"keepIndex,omitempty"`
-	KeepAll   bool  `json:"keepAll,omitempty"`
+	ID                    int64 `json:"id"`
+	KeepIndex             *int  `json:"keepIndex,omitempty"`
+	KeepAll               bool  `json:"keepAll,omitempty"`
+	AdditionalKeepIndices []int `json:"additionalKeepIndices,omitempty"`
 }
 
 // applyBatchRequest is the body of POST /api/proposals/apply-batch — a
@@ -377,7 +459,16 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, se
 				sessions[p.Mode] = sess
 			}
 
-			changes, err := applyByWorkflow(ctx, settingsStore, propStore, libStore, sess, *p, applyProposalRequest{KeepIndex: item.KeepIndex, KeepAll: item.KeepAll}, false)
+			// AdditionalKeepIndices MUST be threaded here — omitting it (as an
+			// earlier draft of the plan did) would reconstruct a narrower request
+			// that silently deletes files the operator checked as "keep" on the
+			// bulk-apply path (.omc/plans/dedup-ux-refine.md AC13).
+			batchReq := applyProposalRequest{KeepIndex: item.KeepIndex, KeepAll: item.KeepAll, AdditionalKeepIndices: item.AdditionalKeepIndices}
+			if err := validateApplyRequest(&batchReq, p); err != nil {
+				results = append(results, applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()})
+				continue
+			}
+			changes, err := applyByWorkflow(ctx, settingsStore, propStore, libStore, sess, *p, batchReq, false)
 			// Accumulate committed changes unconditionally — independent of the
 			// item's ok/error result. applyByWorkflow returns non-nil changes
 			// alongside a non-nil err when the physical move/delete committed

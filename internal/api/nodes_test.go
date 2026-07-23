@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,27 +14,31 @@ import (
 	"github.com/labbersanon/sakms/internal/nodes"
 )
 
-// testNewMux returns a mux wired with a real nodes.Registry and all other
-// stores from testStores — the minimal setup the four node routes need.
-func testNodeMux(t *testing.T, reg *nodes.Registry) *http.ServeMux {
-	t.Helper()
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil)
-}
-
 // TestNodeHeartbeat_204 posts a heartbeat and expects 204.
 func TestNodeHeartbeat_204(t *testing.T) {
-	reg := nodes.New()
+	mux, reg, _, _, _, nodeKeyStore, _ := testNodesMux(t)
+
 	// Connect a node so the id is known.
 	id := "test-node-id"
 	_, _, _, disconnect := reg.Connect(id, "test-node", nil)
 	defer disconnect()
 
-	srv := httptest.NewServer(testNodeMux(t, reg))
+	_, rawKey, err := nodeKeyStore.Create(context.Background(), "some-name")
+	if err != nil {
+		t.Fatalf("nodeKeyStore.Create: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{"id": id})
-	resp, err := http.Post(srv.URL+"/api/nodes/heartbeat", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/nodes/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST heartbeat failed: %v", err)
 	}
@@ -46,12 +51,24 @@ func TestNodeHeartbeat_204(t *testing.T) {
 // TestNodeHeartbeat_UnknownID_NoError posts a heartbeat for an unknown id —
 // the Registry treats this as a no-op, so the handler must still return 204.
 func TestNodeHeartbeat_UnknownID_NoError(t *testing.T) {
-	reg := nodes.New()
-	srv := httptest.NewServer(testNodeMux(t, reg))
+	mux, _, _, _, _, nodeKeyStore, _ := testNodesMux(t)
+
+	_, rawKey, err := nodeKeyStore.Create(context.Background(), "some-name")
+	if err != nil {
+		t.Fatalf("nodeKeyStore.Create: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{"id": "nonexistent-id"})
-	resp, err := http.Post(srv.URL+"/api/nodes/heartbeat", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/nodes/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST heartbeat failed: %v", err)
 	}
@@ -63,7 +80,8 @@ func TestNodeHeartbeat_UnknownID_NoError(t *testing.T) {
 
 // TestNodeJobResult_204 posts a job result for a pending job and expects 204.
 func TestNodeJobResult_204(t *testing.T) {
-	reg := nodes.New()
+	mux, reg, _, _, _, nodeKeyStore, _ := testNodesMux(t)
+
 	// Connect a node and dispatch a job so there is a pending channel.
 	_, _, _, disconnect := reg.Connect("result-node-id", "result-node", nil)
 	defer disconnect()
@@ -75,12 +93,23 @@ func TestNodeJobResult_204(t *testing.T) {
 	}
 	_ = nodeID
 
-	srv := httptest.NewServer(testNodeMux(t, reg))
+	_, rawKey, err := nodeKeyStore.Create(context.Background(), "some-name")
+	if err != nil {
+		t.Fatalf("nodeKeyStore.Create: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	res := nodes.JobResult{JobID: "job-abc", Hash: "abc123"}
 	body, _ := json.Marshal(res)
-	resp, err := http.Post(srv.URL+"/api/nodes/jobs/job-abc/result", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/nodes/jobs/job-abc/result", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST job result failed: %v", err)
 	}
@@ -93,13 +122,25 @@ func TestNodeJobResult_204(t *testing.T) {
 // TestNodeJobResult_UnknownJobID_NoError posts a result for an unknown job id
 // — ReportResult is a safe no-op, so the handler still returns 204.
 func TestNodeJobResult_UnknownJobID_NoError(t *testing.T) {
-	reg := nodes.New()
-	srv := httptest.NewServer(testNodeMux(t, reg))
+	mux, _, _, _, _, nodeKeyStore, _ := testNodesMux(t)
+
+	_, rawKey, err := nodeKeyStore.Create(context.Background(), "some-name")
+	if err != nil {
+		t.Fatalf("nodeKeyStore.Create: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	res := nodes.JobResult{JobID: "nonexistent-job", Hash: "abc123"}
 	body, _ := json.Marshal(res)
-	resp, err := http.Post(srv.URL+"/api/nodes/jobs/nonexistent-job/result", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/nodes/jobs/nonexistent-job/result", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST job result failed: %v", err)
 	}
@@ -111,11 +152,16 @@ func TestNodeJobResult_UnknownJobID_NoError(t *testing.T) {
 
 // TestListNodes_EmptyRegistry returns an empty nodes array, not null.
 func TestListNodes_EmptyRegistry(t *testing.T) {
-	reg := nodes.New()
-	srv := httptest.NewServer(testNodeMux(t, reg))
+	mux, _, _, _, _, _, apiKey := testNodesMux(t)
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/nodes")
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/nodes", nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("X-Api-Key", apiKey)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /api/nodes failed: %v", err)
 	}
@@ -139,14 +185,20 @@ func TestListNodes_EmptyRegistry(t *testing.T) {
 // TestListNodes_ConnectedNode verifies the JSON shape: id, name, status,
 // capabilities, lastHeartbeat all present for a connected node.
 func TestListNodes_ConnectedNode(t *testing.T) {
-	reg := nodes.New()
+	mux, reg, _, _, _, _, apiKey := testNodesMux(t)
+
 	_, _, _, disconnect := reg.Connect("render-box-id", "render-box", []string{"cuda"})
 	defer disconnect()
 
-	srv := httptest.NewServer(testNodeMux(t, reg))
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/nodes")
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/nodes", nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("X-Api-Key", apiKey)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /api/nodes failed: %v", err)
 	}
@@ -183,11 +235,18 @@ func TestListNodes_ConnectedNode(t *testing.T) {
 // TestNodeStream_ConnectAck opens an SSE stream and reads the first event,
 // verifying it is a named "ack" event containing a non-empty nodeId.
 func TestNodeStream_ConnectAck(t *testing.T) {
-	reg := nodes.New()
-	srv := httptest.NewServer(testNodeMux(t, reg))
+	mux, _, _, _, _, nodeKeyStore, _ := testNodesMux(t)
+
+	_, rawKey, err := nodeKeyStore.Create(context.Background(), "test-stream-node")
+	if err != nil {
+		t.Fatalf("nodeKeyStore.Create: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/nodes/stream?name=test-stream-node&capabilities=cpu", nil)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/nodes/stream?capabilities=cpu", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET stream failed: %v", err)

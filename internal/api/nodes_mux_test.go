@@ -19,10 +19,9 @@ import (
 
 // testNodesMux builds a real NewNodesMux backed by real stores sharing one
 // sqlite DB (mirroring cmd/sakms/main.go's wiring), plus the API key needed
-// to hit its operator-authenticated routes. Distinct from testNodeMux
-// (nodes_test.go), which has a known pre-existing bug (its reg param is
-// never actually passed into NewMux) — this helper builds the mux this
-// story's new routes are actually registered on.
+// to hit its operator-authenticated routes. nodes_test.go uses this same
+// helper for its node-agent and operator route tests — NewMux (the
+// general-purpose API mux) never registers /api/nodes/* routes at all.
 func testNodesMux(t *testing.T) (mux *http.ServeMux, reg *nodes.Registry, sqlDB *sql.DB, settingsStore *settings.Store, nodeSettingsStore *nodesettings.Store, nodeKeyStore *nodekeys.Store, apiKey string) {
 	t.Helper()
 	authStore, tokenEnc, db := testAuthStoreWithDB(t)

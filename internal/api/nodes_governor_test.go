@@ -19,8 +19,7 @@ import (
 // status (built exactly as cmd/sakms-node's postHeartbeat builds it) is decoded
 // and handed to Registry.Heartbeat, then surfaced through ListNodes. Calls the
 // handler directly with a recorder to bypass NodeKeyMiddleware (the wire-format
-// decode, not auth, is what this exercises), sidestepping the unrelated
-// testNodeMux harness bug.
+// decode, not auth, is what this exercises).
 func TestNodeHeartbeatHandler_PassesGovernorFieldsThrough(t *testing.T) {
 	reg := nodes.New()
 	id := "hb-node-id"

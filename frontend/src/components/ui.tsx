@@ -109,6 +109,10 @@ export function ErrorText(props: { children: JSX.Element }): JSX.Element {
 // the title text bleeding out of the box into the page background behind it.
 // A plain div + heading avoids that native straddle-the-border behavior
 // entirely.
+// NOTE: Dedup.tsx's card-view tiles reproduce these two class strings inline
+// (fixed-width + truncated title, which this component's plain {title:
+// string} prop can't express) instead of using Card directly — keep them in
+// sync if these classes change.
 export const Card: Component<{ title: string; children: JSX.Element }> = (
   props,
 ) => (

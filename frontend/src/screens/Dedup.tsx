@@ -76,7 +76,6 @@ import {
 import {
   BatchResultSummary,
   Button,
-  Card,
   ErrorText,
   ModeTabs,
   Muted,
@@ -641,7 +640,27 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
                       <div class="mt-3 flex flex-wrap gap-3">
                         <For each={candidates()}>
                           {(c, i) => (
-                            <Card title={c.label}>
+                            <div class="w-64 shrink-0 rounded-xl border border-border bg-surface p-4">
+                              {/* Not Card: the label can be a long unwrapped
+                                  filename, and Card's title is a plain
+                                  unstyled <h3> with no way to inject a
+                                  truncate class or title= tooltip from the
+                                  call site. This renders Card's exact
+                                  classes plus a truncated, tooltipped
+                                  heading so the fixed-width card row stays
+                                  even while the full label stays reachable
+                                  on hover and in the DOM (getByText still
+                                  finds it — only CSS clips it). Card's own
+                                  mb-4 is dropped here — this row's gap-3
+                                  already spaces cards on both axes, and
+                                  mb-4 was sized for Card's original stacked
+                                  (non-flex) usage. */}
+                              <h3
+                                class="mb-2 truncate px-2 text-sm font-semibold text-fg"
+                                title={c.label}
+                              >
+                                {c.label}
+                              </h3>
                               <div class="w-56">
                                 {/* preload="none": no bytes are fetched until
                                     the operator hits play (AC3, click-to-play).
@@ -702,7 +721,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
                                   </div>
                                 </Show>
                               </div>
-                            </Card>
+                            </div>
                           )}
                         </For>
                       </div>

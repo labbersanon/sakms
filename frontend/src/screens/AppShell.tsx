@@ -41,9 +41,7 @@ import { Discover } from "./Discover";
 import { Downloads } from "./Downloads";
 import { Grabs } from "./Grabs";
 import { Requests } from "./Requests";
-import { Rename } from "./Rename";
-import { Purge } from "./Purge";
-import { Dedup } from "./Dedup";
+import { Organize } from "./Organize";
 import { Tag } from "./Tag";
 import { Collections } from "./Collections";
 import { Settings } from "./Settings";
@@ -53,7 +51,7 @@ import { BrowserNotifications } from "../components/BrowserNotifications";
 // serves. Guardrail #2 / requirement #7: the router must NEVER claim any
 // /api/* path (the OIDC callback /api/auth/oidc/callback is a real server
 // route). A unit test asserts none of these start with "/api".
-export const APP_ROUTES = ["/dashboard", "/", "/discover", "/downloads", "/grabs", "/requests", "/rename", "/purge", "/dedup", "/tag", "/collections", "/settings"] as const;
+export const APP_ROUTES = ["/dashboard", "/", "/discover", "/downloads", "/grabs", "/requests", "/organize", "/tag", "/collections", "/settings"] as const;
 
 // SIDEBAR_COLLAPSED_KEY persists the sidebar's collapsed/expanded choice across
 // reloads. A single boolean is enough ("true" = collapsed).
@@ -79,6 +77,36 @@ export function createPersistedBool(
     setValue(v);
     try {
       localStorage.setItem(key, String(v));
+    } catch {
+      /* storage unavailable — keep the in-memory value only */
+    }
+  };
+  return [value, set];
+}
+
+// createPersistedString is the string sibling of createPersistedBool above — a
+// string signal mirrored to localStorage, same guarded try/catch shape. Reads
+// degrade to the fallback when storage is blocked/absent (private mode, SSR) or
+// the key is unset. A caller that only accepts a fixed set of values (e.g.
+// Organize's active-tab id) validates the returned string itself; this helper
+// only guards storage access, not the value's domain.
+export function createPersistedString(
+  key: string,
+  fallback: string,
+): [() => string, (v: string) => void] {
+  const read = (): string => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? fallback : raw;
+    } catch {
+      return fallback;
+    }
+  };
+  const [value, setValue] = createSignal(read());
+  const set = (v: string) => {
+    setValue(v);
+    try {
+      localStorage.setItem(key, v);
     } catch {
       /* storage unavailable — keep the in-memory value only */
     }
@@ -142,20 +170,6 @@ const IconRename: Component = () => (
     <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
   </svg>
 );
-const IconPurge: Component = () => (
-  <svg {...svgProps}>
-    <path d="M3 6h18" />
-    <path d="M8 6V4h8v2" />
-    <path d="M6 6v14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V6" />
-    <path d="M10 11v6M14 11v6" />
-  </svg>
-);
-const IconDedup: Component = () => (
-  <svg {...svgProps}>
-    <rect x="9" y="9" width="12" height="12" rx="2" />
-    <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
-  </svg>
-);
 const IconTag: Component = () => (
   <svg {...svgProps}>
     <path d="M20.5 12.5 12 21l-8-8V4h9Z" />
@@ -195,9 +209,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/downloads", label: "Downloads", icon: IconDownloads },
   { href: "/grabs", label: "Grabs", icon: IconGrabs },
   { href: "/requests", label: "Requests", icon: IconRequests },
-  { href: "/rename", label: "Rename", icon: IconRename },
-  { href: "/purge", label: "Purge", icon: IconPurge },
-  { href: "/dedup", label: "Dedup", icon: IconDedup },
+  { href: "/organize", label: "Organize", icon: IconRename },
   { href: "/tag", label: "Tag", icon: IconTag },
   { href: "/collections", label: "Collections", icon: IconCollections },
   { href: "/settings", label: "Settings", icon: IconSettings },
@@ -446,9 +458,7 @@ export const AppShell: Component<{
       <Route path="/downloads" component={Downloads} />
       <Route path="/grabs" component={Grabs} />
       <Route path="/requests" component={Requests} />
-      <Route path="/rename" component={Rename} />
-      <Route path="/purge" component={Purge} />
-      <Route path="/dedup" component={Dedup} />
+      <Route path="/organize" component={Organize} />
       <Route path="/tag" component={Tag} />
       <Route path="/collections" component={Collections} />
       <Route

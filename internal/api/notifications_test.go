@@ -32,6 +32,8 @@ func TestNotificationsStreamUnsubscribesOnDisconnect(t *testing.T) {
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // idempotent with the explicit cancel() below; guarantees
+	// the client goroutine's <-ctx.Done() unblocks even on an early t.Fatalf.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatalf("building request: %v", err)
@@ -40,11 +42,21 @@ func TestNotificationsStreamUnsubscribesOnDisconnect(t *testing.T) {
 	// Fire the request in the background — the handler blocks streaming, so
 	// Do won't return until the connection closes. We observe subscriber count
 	// to know when the handler has subscribed and, later, unsubscribed.
+	//
+	// Body.Close() must NOT happen right after Do() returns: Do() returns as
+	// soon as response headers arrive (right after the handler's connect-time
+	// flush), which races the handler's very next line (Subscribe). Closing
+	// the body immediately can trigger the server's disconnect detection
+	// before — or while — the handler subscribes, so the "subscribed" check
+	// below can race a disconnect that was never supposed to happen until the
+	// explicit cancel() call further down. Hold the connection open until ctx
+	// is actually cancelled, matching the real intended trigger.
 	headers := make(chan int, 1)
 	go func() {
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			headers <- resp.StatusCode
+			<-ctx.Done()
 			resp.Body.Close()
 		}
 	}()

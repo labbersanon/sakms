@@ -40,6 +40,7 @@ import { Dashboard } from "./Dashboard";
 import { Discover } from "./Discover";
 import { Downloads } from "./Downloads";
 import { Grabs } from "./Grabs";
+import { Requests } from "./Requests";
 import { Rename } from "./Rename";
 import { Purge } from "./Purge";
 import { Dedup } from "./Dedup";
@@ -52,7 +53,7 @@ import { BrowserNotifications } from "../components/BrowserNotifications";
 // serves. Guardrail #2 / requirement #7: the router must NEVER claim any
 // /api/* path (the OIDC callback /api/auth/oidc/callback is a real server
 // route). A unit test asserts none of these start with "/api".
-export const APP_ROUTES = ["/dashboard", "/", "/discover", "/downloads", "/grabs", "/rename", "/purge", "/dedup", "/tag", "/collections", "/settings"] as const;
+export const APP_ROUTES = ["/dashboard", "/", "/discover", "/downloads", "/grabs", "/requests", "/rename", "/purge", "/dedup", "/tag", "/collections", "/settings"] as const;
 
 // SIDEBAR_COLLAPSED_KEY persists the sidebar's collapsed/expanded choice across
 // reloads. A single boolean is enough ("true" = collapsed).
@@ -128,6 +129,13 @@ const IconGrabs: Component = () => (
     <path d="M4 20h16" />
   </svg>
 );
+const IconRequests: Component = () => (
+  <svg {...svgProps}>
+    <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+    <rect x="9" y="3" width="6" height="4" rx="1" />
+    <path d="m9 14 2 2 4-4" />
+  </svg>
+);
 const IconRename: Component = () => (
   <svg {...svgProps}>
     <path d="M12 20h9" />
@@ -186,6 +194,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/discover", label: "Discover", icon: IconDiscover },
   { href: "/downloads", label: "Downloads", icon: IconDownloads },
   { href: "/grabs", label: "Grabs", icon: IconGrabs },
+  { href: "/requests", label: "Requests", icon: IconRequests },
   { href: "/rename", label: "Rename", icon: IconRename },
   { href: "/purge", label: "Purge", icon: IconPurge },
   { href: "/dedup", label: "Dedup", icon: IconDedup },
@@ -436,6 +445,7 @@ export const AppShell: Component<{
       <Route path="/discover" component={Discover} />
       <Route path="/downloads" component={Downloads} />
       <Route path="/grabs" component={Grabs} />
+      <Route path="/requests" component={Requests} />
       <Route path="/rename" component={Rename} />
       <Route path="/purge" component={Purge} />
       <Route path="/dedup" component={Dedup} />

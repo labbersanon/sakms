@@ -528,6 +528,97 @@ export interface TrailerResponse {
   url: string;
 }
 /**
+ * CastMember is one cast entry in the detail popup's cast row. ProfilePath is
+ * a bare TMDB image path (proxied by the frontend via /api/images/proxy —
+ * never an absolute URL), "" when TMDB has no headshot.
+ */
+export interface CastMember {
+  name: string;
+  character: string;
+  profilePath: string;
+}
+/**
+ * CrewMember is one KEY crew entry (Director/Writer-Screenplay/Producer/
+ * Editor — filtered server-side, see tmdb.keyCrewJobs). ProfilePath is a bare
+ * TMDB image path, proxied by the frontend.
+ */
+export interface CrewMember {
+  name: string;
+  job: string;
+  profilePath: string;
+}
+/**
+ * WatchProviderDTO is one US subscription (flatrate) streaming service the
+ * title is available on — JustWatch-powered TMDB data, so the UI rendering it
+ * MUST show a "Powered by JustWatch" attribution (TMDB terms). LogoPath is a
+ * bare TMDB image path, proxied by the frontend.
+ */
+export interface WatchProviderDTO {
+  name: string;
+  logoPath: string;
+}
+/**
+ * ReleaseDateEntry is one dated release in the metadata sidebar's full
+ * (US-scoped) release-date list. Type is a human label mapped from TMDB's
+ * release-type enum ("Premiere"/"Theatrical (limited)"/"Theatrical"/"Digital"/
+ * "Physical"/"TV"); Date is the raw release_date string.
+ */
+export interface ReleaseDateEntry {
+  type: string;
+  date: string;
+}
+/**
+ * TitleDetail is the full Discover detail popup payload for a Movie/Series
+ * title. Every section is independently soft-failed by the handler, so any
+ * slice may be empty (that section simply doesn't render) without the whole
+ * response failing. All image-path fields (ProfilePath, LogoPath) are bare
+ * TMDB paths — proxied by the frontend, never absolute URLs. Deliberately
+ * carries NO Revenue/Budget and NO critic/review-badge field (both out of
+ * scope for v1).
+ */
+export interface TitleDetail {
+  status: string;
+  originalLanguage: string;
+  productionCountry: string;
+  productionCountryCode: string;
+  collectionName: string;
+  collectionId: number /* int */;
+  networks: string[];
+  studios: string[];
+  runtime: number /* int */;
+  releaseDates: ReleaseDateEntry[];
+  genres: string[];
+  keywords: string[];
+  cast: CastMember[];
+  crew: CrewMember[];
+  watchProviders: WatchProviderDTO[];
+  recommendations: DiscoverItem[];
+}
+/**
+ * RequestStatusItem is one title's cross-mode status. Status is "In Library"
+ * (a tracked item) or "Downloading" (an in-flight grab — "Requested" collapses
+ * into this in sakms's single-operator model: a grab IS the request, there is
+ * no separate approval queue). GrabID is set only for a Downloading row.
+ * MissingCount is an annotation, Series-only: the number of episodes TMDB
+ * knows about with no file on disk for an otherwise In-Library series (0 for
+ * Movies/Adult, which don't track not-owned titles).
+ */
+export interface RequestStatusItem {
+  mode: string;
+  title: string;
+  tmdbId: number /* int */;
+  status: string;
+  grabId: number /* int64 */;
+  missingCount: number /* int */;
+}
+/**
+ * RequestStatusResponse is GET /api/requests's response — one row per title
+ * across every mode.
+ */
+export interface RequestStatusResponse {
+  items: RequestStatusItem[];
+}
+/**
  * Candidate is one file in a Dedup proposal's duplicate group — the shape the
  * Dedup view (frontend/src/screens/Dedup.tsx) renders one table row from. A
  * CURATED subset of internal/proposals.Candidate: only the fields the view

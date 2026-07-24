@@ -225,7 +225,7 @@ func (c *Client) ExternalIDs(ctx context.Context, tmdbTVID int) (tvdbID int, err
 // records when a movie belongs to a franchise collection. ID == 0 means the
 // movie has no collection entry on TMDB (field absent or null in the response).
 type CollectionRef struct {
-	ID   int    // TMDB collection id
+	ID   int // TMDB collection id
 	Name string
 }
 
@@ -245,6 +245,32 @@ type MovieDetails struct {
 	ReleaseDate string // "YYYY-MM-DD" or "" if absent
 	Genres      []string
 	Collection  CollectionRef // zero (ID==0) when movie has no franchise collection
+	// Extended detail fields (Discover detail popup). Each is the zero value
+	// when TMDB omits it. Status ("Released"/…), OriginalLanguage (ISO 639-1),
+	// and the production country/company data all come natively from the
+	// /movie/{id} response; ReleaseDates comes from the same response via
+	// append_to_response=release_dates (one round-trip, no second call).
+	Status                string
+	OriginalLanguage      string   // ISO 639-1 code, e.g. "en"
+	ProductionCountry     string   // display name of the first production country
+	ProductionCountryCode string   // ISO 3166-1 code of the first production country
+	Studios               []string // production_companies names
+	// ReleaseDates is the full US release-date list (theatrical/digital/
+	// physical/…), US-scoped to match HasUSRelease's US-only convention — the
+	// same underlying /release_dates data HasUSRelease reads a single bool
+	// from, exposed here as the whole list for the detail popup's metadata
+	// sidebar. Deliberately NOT Revenue/Budget (out of scope, low value).
+	ReleaseDates []ReleaseDate
+}
+
+// ReleaseDate is one dated release entry for a movie — TMDB's release "type"
+// enum (see releaseTypeDigital/releaseTypePhysical and the doc there for the
+// full 1–6 enum) plus the raw release_date string. The full list MovieDetails
+// now carries, as opposed to HasUSRelease's single acquirable-yet bool over
+// the same data.
+type ReleaseDate struct {
+	Type int
+	Date string
 }
 
 type movieDetailsResponse struct {
@@ -255,13 +281,30 @@ type movieDetailsResponse struct {
 	Runtime     int    `json:"runtime"`
 	Overview    string `json:"overview"`
 	ReleaseDate string `json:"release_date"`
-	Genres      []struct {
+	Status      string `json:"status"`
+	// OriginalLanguage is TMDB's original_language ISO 639-1 code.
+	OriginalLanguage string `json:"original_language"`
+	Genres           []struct {
 		Name string `json:"name"`
 	} `json:"genres"`
 	BelongsToCollection struct {
 		ID   int    `json:"id"`
 		Name string `json:"name"`
 	} `json:"belongs_to_collection"`
+	ProductionCompanies []struct {
+		Name string `json:"name"`
+	} `json:"production_companies"`
+	ProductionCountries []struct {
+		ISO31661 string `json:"iso_3166_1"`
+		Name     string `json:"name"`
+	} `json:"production_countries"`
+	// ReleaseDates is populated only when the request asks for
+	// append_to_response=release_dates (MovieDetails does; HasUSRelease's own
+	// dedicated /release_dates call uses releaseDatesResponse instead). Same
+	// country-keyed shape either way.
+	ReleaseDates struct {
+		Results []releaseDatesCountry `json:"results"`
+	} `json:"release_dates"`
 }
 
 // MovieDetails fetches TMDB's /movie/{id} — the details-by-id lookup that
@@ -271,26 +314,48 @@ type movieDetailsResponse struct {
 // absent imdb_id decodes to the zero value without erroring.
 func (c *Client) MovieDetails(ctx context.Context, tmdbID int) (MovieDetails, error) {
 	var resp movieDetailsResponse
-	if err := c.do(ctx, fmt.Sprintf("/movie/%d", tmdbID), nil, &resp); err != nil {
+	// append_to_response=release_dates folds the full release-date list into
+	// this one call rather than a second /release_dates round-trip. Existing
+	// callers (posterHandler, auto-grab) ignore the extra field harmlessly.
+	if err := c.do(ctx, fmt.Sprintf("/movie/%d", tmdbID), url.Values{"append_to_response": {"release_dates"}}, &resp); err != nil {
 		return MovieDetails{}, err
 	}
 	details := MovieDetails{
-		ID:          resp.ID,
-		Title:       resp.Title,
-		PosterPath:  resp.PosterPath,
-		IMDBID:      resp.IMDBID,
-		Runtime:     resp.Runtime,
-		Overview:    resp.Overview,
-		ReleaseDate: resp.ReleaseDate,
-		Genres:      make([]string, len(resp.Genres)),
+		ID:               resp.ID,
+		Title:            resp.Title,
+		PosterPath:       resp.PosterPath,
+		IMDBID:           resp.IMDBID,
+		Runtime:          resp.Runtime,
+		Overview:         resp.Overview,
+		ReleaseDate:      resp.ReleaseDate,
+		Status:           resp.Status,
+		OriginalLanguage: resp.OriginalLanguage,
+		Genres:           make([]string, len(resp.Genres)),
+		Studios:          make([]string, len(resp.ProductionCompanies)),
 	}
 	for i, g := range resp.Genres {
 		details.Genres[i] = g.Name
+	}
+	for i, pc := range resp.ProductionCompanies {
+		details.Studios[i] = pc.Name
+	}
+	if len(resp.ProductionCountries) > 0 {
+		details.ProductionCountry = resp.ProductionCountries[0].Name
+		details.ProductionCountryCode = resp.ProductionCountries[0].ISO31661
 	}
 	if resp.BelongsToCollection.ID != 0 {
 		details.Collection = CollectionRef{
 			ID:   resp.BelongsToCollection.ID,
 			Name: resp.BelongsToCollection.Name,
+		}
+	}
+	// US-scoped release-date list, matching HasUSRelease's US-only convention.
+	for _, country := range resp.ReleaseDates.Results {
+		if country.ISO31661 != "US" {
+			continue
+		}
+		for _, rd := range country.ReleaseDates {
+			details.ReleaseDates = append(details.ReleaseDates, ReleaseDate{Type: rd.Type, Date: rd.ReleaseDate})
 		}
 	}
 	return details, nil
@@ -307,15 +372,45 @@ type TVDetails struct {
 	Title      string
 	PosterPath string // "" if TMDB has none on file
 	Genres     []string
+	// Extended detail fields (Discover detail popup) — ALL new: TVDetails
+	// previously carried ONLY ID/Title/PosterPath/Genres (no Runtime, no
+	// Networks, etc.). Each is the zero value when TMDB omits it. Runtime is
+	// the show's nominal per-episode duration (episode_run_time[0]); it is a
+	// display value for the metadata sidebar, NOT the per-episode runtime the
+	// auto-grab bitrate scorer needs (that still comes from SeasonDetails — see
+	// discover_availability.go / seriesEpisodeRuntimeSeconds).
+	Runtime               int
+	Status                string   // e.g. "Returning Series", "Ended"
+	OriginalLanguage      string   // ISO 639-1 code
+	ProductionCountry     string   // display name of the first production country
+	ProductionCountryCode string   // ISO 3166-1 code
+	Networks              []string // networks[].name
 }
 
 type tvDetailsResponse struct {
 	ID         int    `json:"id"`
 	Name       string `json:"name"`
 	PosterPath string `json:"poster_path"`
-	Genres     []struct {
+	Status     string `json:"status"`
+	// OriginalLanguage is TMDB's original_language ISO 639-1 code.
+	OriginalLanguage string `json:"original_language"`
+	// EpisodeRunTime is TMDB's list of typical per-episode runtimes (minutes);
+	// a show may report several or none. Runtime takes the first when present.
+	EpisodeRunTime []int `json:"episode_run_time"`
+	Genres         []struct {
 		Name string `json:"name"`
 	} `json:"genres"`
+	Networks []struct {
+		Name string `json:"name"`
+	} `json:"networks"`
+	// TV exposes both a rich production_countries list (name + ISO) and a bare
+	// origin_country code list — prefer the former for a display name, fall
+	// back to the latter for the code alone.
+	ProductionCountries []struct {
+		ISO31661 string `json:"iso_3166_1"`
+		Name     string `json:"name"`
+	} `json:"production_countries"`
+	OriginCountry []string `json:"origin_country"`
 }
 
 // TVDetails fetches TMDB's /tv/{id} — the details-by-id sibling of
@@ -328,13 +423,28 @@ func (c *Client) TVDetails(ctx context.Context, tmdbID int) (TVDetails, error) {
 		return TVDetails{}, err
 	}
 	details := TVDetails{
-		ID:         resp.ID,
-		Title:      resp.Name,
-		PosterPath: resp.PosterPath,
-		Genres:     make([]string, len(resp.Genres)),
+		ID:               resp.ID,
+		Title:            resp.Name,
+		PosterPath:       resp.PosterPath,
+		Status:           resp.Status,
+		OriginalLanguage: resp.OriginalLanguage,
+		Genres:           make([]string, len(resp.Genres)),
+		Networks:         make([]string, len(resp.Networks)),
 	}
 	for i, g := range resp.Genres {
 		details.Genres[i] = g.Name
+	}
+	for i, n := range resp.Networks {
+		details.Networks[i] = n.Name
+	}
+	if len(resp.EpisodeRunTime) > 0 {
+		details.Runtime = resp.EpisodeRunTime[0]
+	}
+	if len(resp.ProductionCountries) > 0 {
+		details.ProductionCountry = resp.ProductionCountries[0].Name
+		details.ProductionCountryCode = resp.ProductionCountries[0].ISO31661
+	} else if len(resp.OriginCountry) > 0 {
+		details.ProductionCountryCode = resp.OriginCountry[0]
 	}
 	return details, nil
 }
@@ -384,6 +494,261 @@ func (c *Client) TVAggregateCredits(ctx context.Context, tmdbID int) ([]string, 
 		names = append(names, m.Name)
 	}
 	return names, nil
+}
+
+// CreditPerson is one cast or crew member as the Discover detail popup shows
+// them — richer than MovieCredits/TVAggregateCredits' names-only slice.
+// Character is meaningful for cast; Job/Department for crew (both "" for the
+// other kind). ProfilePath is a bare TMDB image path (proxied by the frontend,
+// never hot-linked), "" when TMDB has no headshot on file.
+type CreditPerson struct {
+	Name        string
+	Character   string
+	Job         string
+	Department  string
+	ProfilePath string
+}
+
+// Credits is a title's full cast + crew from a single TMDB credits response —
+// both come from the one /credits (or /aggregate_credits) payload, so there is
+// no second round-trip.
+type Credits struct {
+	Cast []CreditPerson
+	Crew []CreditPerson
+}
+
+// keyCrewJobs is the small allow-list of crew jobs the detail popup surfaces —
+// the DTO stays small by dropping the long tail of crew (gaffers, etc.). A
+// person credited with any of these jobs is kept; everyone else is filtered
+// out server-side. "Writer" and "Screenplay" are both kept (TMDB uses either
+// depending on the title).
+var keyCrewJobs = map[string]bool{
+	"Director":   true,
+	"Writer":     true,
+	"Screenplay": true,
+	"Producer":   true,
+	"Editor":     true,
+}
+
+type movieFullCreditsResponse struct {
+	Cast []struct {
+		Name        string `json:"name"`
+		Character   string `json:"character"`
+		ProfilePath string `json:"profile_path"`
+	} `json:"cast"`
+	Crew []struct {
+		Name        string `json:"name"`
+		Job         string `json:"job"`
+		Department  string `json:"department"`
+		ProfilePath string `json:"profile_path"`
+	} `json:"crew"`
+}
+
+// MovieFullCredits returns a movie's full cast plus its KEY crew (Director/
+// Writer-Screenplay/Producer/Editor only — see keyCrewJobs) from a single
+// /movie/{id}/credits call. Sibling of the names-only MovieCredits (which
+// Rename uses and which is left byte-for-byte unchanged) — the two exist side
+// by side deliberately (no-premature-abstraction). Soft-fail: the Discover
+// detail handler treats an error as an empty credits section, never a failure.
+func (c *Client) MovieFullCredits(ctx context.Context, tmdbID int) (Credits, error) {
+	var resp movieFullCreditsResponse
+	if err := c.do(ctx, fmt.Sprintf("/movie/%d/credits", tmdbID), nil, &resp); err != nil {
+		return Credits{}, err
+	}
+	credits := Credits{Cast: make([]CreditPerson, 0, len(resp.Cast))}
+	for _, m := range resp.Cast {
+		credits.Cast = append(credits.Cast, CreditPerson{Name: m.Name, Character: m.Character, ProfilePath: m.ProfilePath})
+	}
+	for _, m := range resp.Crew {
+		if !keyCrewJobs[m.Job] {
+			continue
+		}
+		credits.Crew = append(credits.Crew, CreditPerson{Name: m.Name, Job: m.Job, Department: m.Department, ProfilePath: m.ProfilePath})
+	}
+	return credits, nil
+}
+
+// tvAggregateFullCreditsResponse models /tv/{id}/aggregate_credits, whose
+// shape DIFFERS from a movie's /credits: a TV cast member's character lives in
+// a roles[] array (a recurring role can hold several) and a crew member's job
+// in a jobs[] array, rather than a single top-level character/job field. This
+// takes the FIRST roles[]/jobs[] entry as the representative character/job.
+//
+// UNVERIFIED ASSUMPTION (per this project's honesty-about-unverified-
+// assumptions convention): this shape is modeled from TMDB's public API
+// documentation only, not yet confirmed against a live aggregate_credits call.
+type tvAggregateFullCreditsResponse struct {
+	Cast []struct {
+		Name        string `json:"name"`
+		ProfilePath string `json:"profile_path"`
+		Roles       []struct {
+			Character string `json:"character"`
+		} `json:"roles"`
+	} `json:"cast"`
+	Crew []struct {
+		Name        string `json:"name"`
+		Department  string `json:"department"`
+		ProfilePath string `json:"profile_path"`
+		Jobs        []struct {
+			Job string `json:"job"`
+		} `json:"jobs"`
+	} `json:"crew"`
+}
+
+// TVAggregateFullCredits is MovieFullCredits' TV sibling — /tv/{id}/
+// aggregate_credits. See tvAggregateFullCreditsResponse's doc for the cast
+// roles[]/crew jobs[] shape difference (and its UNVERIFIED flag). Key-crew
+// filtering (keyCrewJobs) is applied to the first job of each crew member.
+func (c *Client) TVAggregateFullCredits(ctx context.Context, tmdbID int) (Credits, error) {
+	var resp tvAggregateFullCreditsResponse
+	if err := c.do(ctx, fmt.Sprintf("/tv/%d/aggregate_credits", tmdbID), nil, &resp); err != nil {
+		return Credits{}, err
+	}
+	credits := Credits{Cast: make([]CreditPerson, 0, len(resp.Cast))}
+	for _, m := range resp.Cast {
+		character := ""
+		if len(m.Roles) > 0 {
+			character = m.Roles[0].Character
+		}
+		credits.Cast = append(credits.Cast, CreditPerson{Name: m.Name, Character: character, ProfilePath: m.ProfilePath})
+	}
+	for _, m := range resp.Crew {
+		if len(m.Jobs) == 0 {
+			continue
+		}
+		job := m.Jobs[0].Job
+		if !keyCrewJobs[job] {
+			continue
+		}
+		credits.Crew = append(credits.Crew, CreditPerson{Name: m.Name, Job: job, Department: m.Department, ProfilePath: m.ProfilePath})
+	}
+	return credits, nil
+}
+
+type movieKeywordsResponse struct {
+	Keywords []struct {
+		Name string `json:"name"`
+	} `json:"keywords"`
+}
+
+// MovieKeywords returns a movie's own tag keywords from /movie/{id}/keywords
+// (keywords[].name). This is a specific title's tags — NOT SearchKeywords
+// (/search/keyword, free-text id lookup for the admin slider editor). Soft-
+// fail: an error degrades to an empty keyword section in the detail popup.
+func (c *Client) MovieKeywords(ctx context.Context, tmdbID int) ([]string, error) {
+	var resp movieKeywordsResponse
+	if err := c.do(ctx, fmt.Sprintf("/movie/%d/keywords", tmdbID), nil, &resp); err != nil {
+		return nil, err
+	}
+	names := make([]string, len(resp.Keywords))
+	for i, k := range resp.Keywords {
+		names[i] = k.Name
+	}
+	return names, nil
+}
+
+type tvKeywordsResponse struct {
+	Results []struct {
+		Name string `json:"name"`
+	} `json:"results"`
+}
+
+// TVKeywords is MovieKeywords' TV sibling — /tv/{id}/keywords. SHAPE DIFFERS
+// from the movie endpoint: TV nests the list under `results[]`, not
+// `keywords[]` (same name/field, different envelope key). Soft-fail like
+// MovieKeywords.
+func (c *Client) TVKeywords(ctx context.Context, tmdbID int) ([]string, error) {
+	var resp tvKeywordsResponse
+	if err := c.do(ctx, fmt.Sprintf("/tv/%d/keywords", tmdbID), nil, &resp); err != nil {
+		return nil, err
+	}
+	names := make([]string, len(resp.Results))
+	for i, k := range resp.Results {
+		names[i] = k.Name
+	}
+	return names, nil
+}
+
+// WatchProvider is one streaming service a title is available on, from TMDB's
+// JustWatch-powered /watch/providers data. LogoPath is a bare TMDB image path
+// (proxied by the frontend). Name is TMDB's provider_name.
+type WatchProvider struct {
+	Name     string
+	LogoPath string
+}
+
+type watchProvidersResponse struct {
+	// Results is country-keyed (US, GB, …); sakms reads US only (see the
+	// method doc). flatrate = subscription streaming, deliberately preferred
+	// over rent/buy for v1.
+	Results map[string]struct {
+		Flatrate []struct {
+			ProviderName string `json:"provider_name"`
+			LogoPath     string `json:"logo_path"`
+		} `json:"flatrate"`
+	} `json:"results"`
+}
+
+// MovieWatchProviders returns the US subscription (flatrate) streaming
+// providers for a movie, from /movie/{id}/watch/providers. The response is
+// keyed by country; sakms reads results.US.flatrate ONLY — deliberately
+// US-scoped (matching HasUSRelease's US-only convention) and flatrate-only
+// (not rent/buy) for v1. This data is JustWatch-powered, so any UI that
+// renders it MUST show a "Powered by JustWatch" attribution (TMDB terms).
+//
+// UNVERIFIED ASSUMPTION (per this project's honesty-about-unverified-
+// assumptions convention): the results.US.flatrate shape is modeled from
+// TMDB's public API documentation only, not yet confirmed against a live call.
+// Soft-fail: an error degrades to an empty providers section.
+func (c *Client) MovieWatchProviders(ctx context.Context, tmdbID int) ([]WatchProvider, error) {
+	return c.watchProviders(ctx, fmt.Sprintf("/movie/%d/watch/providers", tmdbID))
+}
+
+// TVWatchProviders is MovieWatchProviders' TV sibling — /tv/{id}/watch/
+// providers, same US-flatrate-only reading and same UNVERIFIED flag.
+func (c *Client) TVWatchProviders(ctx context.Context, tmdbID int) ([]WatchProvider, error) {
+	return c.watchProviders(ctx, fmt.Sprintf("/tv/%d/watch/providers", tmdbID))
+}
+
+func (c *Client) watchProviders(ctx context.Context, path string) ([]WatchProvider, error) {
+	var resp watchProvidersResponse
+	if err := c.do(ctx, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	us := resp.Results["US"]
+	out := make([]WatchProvider, 0, len(us.Flatrate))
+	for _, p := range us.Flatrate {
+		out = append(out, WatchProvider{Name: p.ProviderName, LogoPath: p.LogoPath})
+	}
+	return out, nil
+}
+
+// MovieRecommendations returns TMDB's "more like this" list for a movie
+// (/movie/{id}/recommendations), for the given 1-based page — reuses the
+// listResponse/normalizeAll shape of Trending/Popular.
+//
+// DELIBERATE-CHOICE NOTE: neither of the two real Seerr production pages this
+// feature was compared against (a movie and a TV page) rendered a
+// recommendations section — the page scrollHeight ended right after Cast on
+// both, i.e. it is GENUINELY ABSENT, not below-the-fold. Wade chose to build
+// this anyway. This is a deliberate keep, NOT unverified drift — a future
+// reader should not "correct" it away as an unmatched-against-Seerr method.
+func (c *Client) MovieRecommendations(ctx context.Context, tmdbID, page int) ([]Item, error) {
+	var resp listResponse
+	if err := c.do(ctx, fmt.Sprintf("/movie/%d/recommendations", tmdbID), pageQuery(page), &resp); err != nil {
+		return nil, err
+	}
+	return normalizeAll(resp.Results, Movie), nil
+}
+
+// TVRecommendations is MovieRecommendations' TV sibling
+// (/tv/{id}/recommendations). See MovieRecommendations' deliberate-keep note.
+func (c *Client) TVRecommendations(ctx context.Context, tmdbID, page int) ([]Item, error) {
+	var resp listResponse
+	if err := c.do(ctx, fmt.Sprintf("/tv/%d/recommendations", tmdbID), pageQuery(page), &resp); err != nil {
+		return nil, err
+	}
+	return normalizeAll(resp.Results, TV), nil
 }
 
 // SeasonEpisode is one episode as TMDB's season-details endpoint reports
@@ -628,6 +993,15 @@ type FilterOptions struct {
 	Year      int
 	MinRating float64
 	SortBy    string
+	// DateFrom/DateTo are an inclusive release-date window ("YYYY-MM-DD"),
+	// mapped to the media-type-appropriate date field's .gte/.lte in
+	// discoverFilterQuery (primary_release_date for movies, first_air_date for
+	// tv). Backs the Calendar view's month-range query. Either being "" omits
+	// that bound. A caller using these for a calendar should leave SortBy unset
+	// so the "newest" sort's own dateField.lte=today cap doesn't collide with
+	// DateTo (see discoverFilterQuery).
+	DateFrom string
+	DateTo   string
 }
 
 // discoverFilterQuery builds the /discover query for one FilterOptions.
@@ -659,6 +1033,15 @@ func discoverFilterQuery(page int, yearField, dateField string, opts FilterOptio
 	}
 	if opts.Year > 0 {
 		q.Set(yearField, strconv.Itoa(opts.Year))
+	}
+	// Inclusive release-date window (Calendar view). dateField is the same
+	// media-type-specific field the "newest" sort below uses, so no separate
+	// movie/tv branch is needed here.
+	if opts.DateFrom != "" {
+		q.Set(dateField+".gte", opts.DateFrom)
+	}
+	if opts.DateTo != "" {
+		q.Set(dateField+".lte", opts.DateTo)
 	}
 	if opts.MinRating > 0 {
 		q.Set("vote_average.gte", strconv.FormatFloat(opts.MinRating, 'f', 1, 64))

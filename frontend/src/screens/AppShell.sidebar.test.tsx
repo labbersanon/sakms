@@ -18,6 +18,7 @@ const NAV_LABELS = [
   "Discover",
   "Downloads",
   "Grabs",
+  "Requests",
   "Rename",
   "Purge",
   "Dedup",
@@ -55,8 +56,8 @@ describe("Sidebar", () => {
     for (const label of NAV_LABELS) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    // 10 nav icons + 1 collapse-toggle chevron.
-    expect(container.querySelectorAll("svg").length).toBe(11);
+    // 11 nav icons + 1 collapse-toggle chevron.
+    expect(container.querySelectorAll("svg").length).toBe(12);
   });
 
   it("collapse toggle hides labels but keeps icons", () => {
@@ -67,7 +68,7 @@ describe("Sidebar", () => {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     // Icons (and the chevron) all remain when collapsed.
-    expect(container.querySelectorAll("svg").length).toBe(11);
+    expect(container.querySelectorAll("svg").length).toBe(12);
     // The labels survive as native tooltips for hover discoverability.
     for (const label of NAV_LABELS) {
       expect(container.querySelector(`a[title="${label}"]`)).toBeTruthy();
@@ -102,7 +103,7 @@ describe("Sidebar", () => {
 
     // Labels hidden on this fresh mount because the persisted flag was read.
     expect(screen.queryByText("Discover")).not.toBeInTheDocument();
-    expect(container.querySelectorAll("svg").length).toBe(11);
+    expect(container.querySelectorAll("svg").length).toBe(12);
     // Toggle shows the expand affordance, confirming it mounted collapsed.
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
   });

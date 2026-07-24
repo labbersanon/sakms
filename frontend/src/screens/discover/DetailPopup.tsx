@@ -30,20 +30,23 @@ import {
   For,
   Show,
 } from "solid-js";
-import type { AvailabilityCandidate, AvailabilityPreview } from "@dto";
+import type { AvailabilityCandidate, AvailabilityPreview, TitleDetail } from "@dto";
 import {
   type AdultDiscoverItem,
   type DiscoverItem,
   fetchAvailabilityPreview,
+  fetchTitleDetail,
   fetchTrailer,
   proxyImage,
+  tmdbLogo,
   tmdbPoster,
+  tmdbProfile,
 } from "../../api/discover";
 import { libraryRootFolder, manualGrab } from "../../api/grab";
 import { fetchQualityPrefs } from "../../api/settings";
 import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components/ui";
-import { Modal, TextPoster } from "./shared";
-import { SeasonEpisodePicker } from "./Mainstream";
+import { type GrabTarget, Modal, TextPoster } from "./shared";
+import { PosterCard, SeasonEpisodePicker } from "./Mainstream";
 
 // DetailTarget is the card DetailPopup was opened for — a discriminated union
 // so Adult's scene-shaped item (no overview/voteAverage/tmdbId) and
@@ -269,9 +272,93 @@ export function sourceLabel(target: DetailTarget): string {
   return "TMDB";
 }
 
+// formatRuntime turns a minute count into a compact "Xh Ym" (or "Ym") label for
+// the metadata sidebar; 0/negative yields "" so the caller skips the row.
+function formatRuntime(min: number): string {
+  if (!Number.isFinite(min) || min <= 0) return "";
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+// flagEmoji maps a 2-letter ISO country code to its regional-indicator flag
+// emoji (the "if easy" flag the plan allows next to Production Country). Returns
+// "" for anything that isn't a clean 2-letter code, so the label falls back to
+// the country name text alone.
+function flagEmoji(code: string): string {
+  if (!code || code.length !== 2 || !/^[A-Za-z]{2}$/.test(code)) return "";
+  const base = 0x1f1e6;
+  return String.fromCodePoint(
+    ...[...code.toUpperCase()].map((c) => base + (c.charCodeAt(0) - 65)),
+  );
+}
+
+// RatingGauge renders a TMDB voteAverage (0–10) as a circular % gauge
+// (voteAverage × 10), replacing the plain "★ 8.4" text for Movies/Series — pure
+// presentation over the same underlying field (F1 item 1).
+const RatingGauge: Component<{ value: number }> = (props) => {
+  const pct = () => Math.max(0, Math.min(100, Math.round(props.value * 10)));
+  const radius = 16;
+  const circ = 2 * Math.PI * radius;
+  return (
+    <div
+      class="relative h-11 w-11 shrink-0"
+      title={`${props.value.toFixed(1)} / 10`}
+      aria-label={`Rating ${pct()} percent`}
+    >
+      <svg viewBox="0 0 40 40" class="h-full w-full -rotate-90">
+        <circle
+          cx="20"
+          cy="20"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="3"
+          class="text-surface-2"
+        />
+        <circle
+          cx="20"
+          cy="20"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="3"
+          stroke-linecap="round"
+          class="text-accent"
+          stroke-dasharray={String(circ)}
+          stroke-dashoffset={String(circ * (1 - pct() / 100))}
+        />
+      </svg>
+      <span class="absolute inset-0 flex items-center justify-center text-[11px] font-semibold text-fg">
+        {pct()}%
+      </span>
+    </div>
+  );
+};
+
+// SectionHeading is the small uppercase label above each DetailPopup detail
+// section (Crew / Cast / Currently Streaming On / More like this) — one place so
+// the four read identically.
+const SectionHeading: Component<{ children: string }> = (props) => (
+  <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+    {props.children}
+  </h4>
+);
+
 export const DetailPopup: Component<{
   target: DetailTarget;
   onClose: () => void;
+  // onSelectRecommendation re-targets THIS popup to a clicked "More like this"
+  // card: the parent (Mainstream.tsx) swaps its detailTarget, and — because the
+  // popup is rendered <Show keyed> — the whole popup remounts, resetting every
+  // selector/grab/season signal to the new title (see Mainstream.tsx). Optional
+  // so callers that don't render a recommendations rail (they always pass it in
+  // practice) stay type-clean; a rail click is a no-op without it.
+  onSelectRecommendation?: (t: DetailTarget) => void;
+  // onGrab lets a recommendation card's own quick-grab button reuse the parent's
+  // GrabDialog (PosterCard requires it) — same setGrabTarget the surrounding
+  // grid cards use. Optional for the same reason as above.
+  onGrab?: (t: GrabTarget) => void;
 }> = (props) => {
   const mode = () => props.target.mode;
   const item = () => props.target.item;
@@ -303,6 +390,22 @@ export const DetailPopup: Component<{
         ? { m: mode() as "movies" | "series", tmdbId: (item() as DiscoverItem).id }
         : null,
     ({ m, tmdbId }) => fetchTrailer(m, tmdbId).catch(() => ""),
+  );
+
+  // detail is the F1 rich-metadata bundle (cast/crew/keywords/providers/
+  // extended-details/recommendations), keyed on {mode, tmdbId} — Movies/Series
+  // only, skipped entirely for Adult (no TMDB id → no /discover/detail call, so
+  // the Adult popup stays exactly as it was). Soft-fails to undefined: the whole
+  // section simply doesn't render if the combined endpoint errors, and the
+  // backend itself soft-fails each sub-call so a partial bundle is normal (any
+  // missing piece is an empty array/string, guarded per-section below).
+  const [detail] = createResource(
+    () =>
+      mode() !== "adult"
+        ? { m: mode() as "movies" | "series", tmdbId: (item() as DiscoverItem).id }
+        : null,
+    ({ m, tmdbId }) =>
+      fetchTitleDetail(m, tmdbId).catch(() => undefined as TitleDetail | undefined),
   );
 
   const [preview] = createResource(
@@ -482,7 +585,14 @@ export const DetailPopup: Component<{
           </a>
           <div class="min-w-0 flex-1">
             <Show when={ratingValue() > 0}>
-              <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
+              <Show
+                when={mode() !== "adult"}
+                fallback={
+                  <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
+                }
+              >
+                <RatingGauge value={ratingValue()} />
+              </Show>
             </Show>
             <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
             <div class="mt-1 flex items-center gap-3">
@@ -494,12 +604,26 @@ export const DetailPopup: Component<{
               >
                 More on {sourceLabel(props.target)} →
               </a>
-              <Show when={trailer()?.startsWith("https://") || trailer()?.startsWith("http://")}>
+              {/* Trailer, elevated from the old header text link into a
+                  distinct button (F1 item 2) — styling/placement only,
+                  TrailerURL is already wired. Deliberately a SIBLING of the
+                  availability/grab block below, not nested inside it: the
+                  trailer resource is independent of the Prowlarr preview, so
+                  it must keep rendering even while that preview is loading
+                  or has errored (a code-review catch — it used to disappear
+                  whenever preview.error was set, coupling two unrelated
+                  states). */}
+              <Show
+                when={
+                  trailer()?.startsWith("https://") ||
+                  trailer()?.startsWith("http://")
+                }
+              >
                 <a
                   href={trailer()}
                   target="_blank"
                   rel="noreferrer"
-                  class="inline-block text-xs text-fg underline decoration-accent underline-offset-2"
+                  class="rounded-md border border-border bg-surface-2 px-3 py-1 text-xs font-medium text-fg transition hover:opacity-90"
                 >
                   Watch Trailer →
                 </a>
@@ -570,6 +694,10 @@ export const DetailPopup: Component<{
               />
 
               <div class="mt-4 flex items-center justify-end gap-3">
+                {/* Trailer button now lives in the header action row (next
+                    to "More on TMDB") as a sibling of this whole
+                    availability/grab block, not nested inside it — see the
+                    comment there for why. */}
                 <Show when={grabError()}>
                   <ErrorText>{grabError()}</ErrorText>
                 </Show>
@@ -592,6 +720,217 @@ export const DetailPopup: Component<{
               </div>
             </div>
           </Show>
+        </Show>
+
+        {/* F1 rich detail (Movies/Series only). Every image below resolves via
+            tmdbProfile/tmdbLogo → /api/images/proxy (never a direct TMDB host).
+            Each sub-section is independently guarded: the backend soft-fails
+            each TMDB sub-call, so an absent piece arrives empty and simply
+            doesn't render — a partial bundle never breaks the popup. */}
+        <Show when={mode() !== "adult" && detail()}>
+          {(d) => {
+            const meta = () =>
+              [
+                ["Status", d().status] as const,
+                ["Runtime", formatRuntime(d().runtime)] as const,
+                ["Original Language", d().originalLanguage] as const,
+                [
+                  "Production Country",
+                  d().productionCountry
+                    ? `${flagEmoji(d().productionCountryCode)} ${d().productionCountry}`.trim()
+                    : "",
+                ] as const,
+              ].filter(([, v]) => v);
+            return (
+              <div class="mt-4 border-t border-border pt-4">
+                <Show when={d().collectionId > 0 && d().collectionName}>
+                  <div class="mb-3 rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg">
+                    Part of{" "}
+                    <span class="font-semibold">{d().collectionName}</span>
+                  </div>
+                </Show>
+
+                <Show when={d().keywords?.length}>
+                  <div class="mb-3 flex flex-wrap gap-1">
+                    <For each={d().keywords}>
+                      {(k) => (
+                        <span class="inline-block rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
+                          {k}
+                        </span>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+
+                {/* Structured metadata sidebar — Status/Runtime/Language/Country
+                    scalars here; Networks, Studios, and the full release-date
+                    list below. Explicitly NO Revenue/Budget. */}
+                <Show
+                  when={
+                    meta().length > 0 ||
+                    d().networks?.length ||
+                    d().studios?.length ||
+                    d().releaseDates?.length
+                  }
+                >
+                  <div class="mb-1 grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+                    <For each={meta()}>
+                      {([label, value]) => (
+                        <div class="flex justify-between gap-2">
+                          <span class="text-muted">{label}</span>
+                          <span class="truncate text-right text-fg" title={value}>
+                            {value}
+                          </span>
+                        </div>
+                      )}
+                    </For>
+                    <Show when={d().networks?.length}>
+                      <div class="flex justify-between gap-2">
+                        <span class="text-muted">Networks</span>
+                        <span class="truncate text-right text-fg">
+                          {d().networks.join(", ")}
+                        </span>
+                      </div>
+                    </Show>
+                    <Show when={d().studios?.length}>
+                      <div class="flex justify-between gap-2">
+                        <span class="text-muted">Studios</span>
+                        <span class="truncate text-right text-fg">
+                          {d().studios.join(", ")}
+                        </span>
+                      </div>
+                    </Show>
+                  </div>
+                  <Show when={d().releaseDates?.length}>
+                    <div class="mt-2 text-xs">
+                      <div class="mb-1 text-muted">Release dates</div>
+                      <For each={d().releaseDates}>
+                        {(rd) => (
+                          <div class="flex justify-between gap-2">
+                            <span class="text-muted">{rd.type}</span>
+                            <span class="text-fg">{rd.date}</span>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                </Show>
+
+                <Show when={d().crew?.length}>
+                  <div class="mt-4">
+                    <SectionHeading>Crew</SectionHeading>
+                    <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      <For each={d().crew}>
+                        {(c) => (
+                          <div class="text-xs">
+                            <div
+                              class="truncate font-medium text-fg"
+                              title={c.name}
+                            >
+                              {c.name}
+                            </div>
+                            <div class="truncate text-muted" title={c.job}>
+                              {c.job}
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={d().cast?.length}>
+                  <div class="mt-4">
+                    <SectionHeading>Cast</SectionHeading>
+                    <div class="flex gap-3 overflow-x-auto pb-2">
+                      <For each={d().cast}>
+                        {(c) => (
+                          <div class="w-24 shrink-0">
+                            <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface-2">
+                              <Show
+                                when={tmdbProfile(c.profilePath)}
+                                fallback={<TextPoster label={c.name} />}
+                              >
+                                <img
+                                  src={tmdbProfile(c.profilePath)}
+                                  alt={c.name}
+                                  loading="lazy"
+                                  class="h-full w-full object-cover"
+                                />
+                              </Show>
+                            </div>
+                            <div
+                              class="mt-1 truncate text-xs font-medium text-fg"
+                              title={c.name}
+                            >
+                              {c.name}
+                            </div>
+                            <div
+                              class="truncate text-[11px] text-muted"
+                              title={c.character}
+                            >
+                              {c.character}
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={d().watchProviders?.length}>
+                  <div class="mt-4">
+                    <SectionHeading>Currently Streaming On</SectionHeading>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <For each={d().watchProviders}>
+                        {(p) => (
+                          <Show
+                            when={tmdbLogo(p.logoPath)}
+                            fallback={
+                              <span class="rounded-md bg-surface-2 px-2 py-1 text-xs text-fg">
+                                {p.name}
+                              </span>
+                            }
+                          >
+                            <img
+                              src={tmdbLogo(p.logoPath)}
+                              alt={p.name}
+                              title={p.name}
+                              loading="lazy"
+                              class="h-8 w-8 rounded-md object-cover"
+                            />
+                          </Show>
+                        )}
+                      </For>
+                    </div>
+                    {/* TMDB's terms require a visible JustWatch attribution near
+                        the provider logos — hard requirement, do not remove. */}
+                    <div class="mt-1 text-[11px] text-muted">
+                      Powered by JustWatch
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={d().recommendations?.length}>
+                  <div class="mt-4">
+                    <SectionHeading>More like this</SectionHeading>
+                    <div class="flex gap-3 overflow-x-auto pb-2">
+                      <For each={d().recommendations}>
+                        {(rec) => (
+                          <PosterCard
+                            mode={rec.mediaType === "tv" ? "series" : "movies"}
+                            item={rec}
+                            onGrab={(t) => props.onGrab?.(t)}
+                            onDetail={(t) => props.onSelectRecommendation?.(t)}
+                          />
+                        )}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
+              </div>
+            );
+          }}
         </Show>
       </Show>
     </Modal>

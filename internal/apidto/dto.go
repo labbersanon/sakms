@@ -524,6 +524,108 @@ type TrailerResponse struct {
 	URL string `json:"url"`
 }
 
+// --- Discover detail popup: richer per-title detail (Seerr-parity) ----------
+//
+// GET /api/modes/{mode}/discover/detail?tmdbId=N's response (Movies/Series
+// only — Adult has no TMDB id and keeps its existing performers/genres popup).
+// The handler fans the independent TMDB sub-calls (extended details, full
+// credits, keywords, watch providers, recommendations) out in parallel and
+// soft-fails each: any one failing yields an empty section, never a popup-wide
+// error (see internal/api/discover_detail.go). Flat structs, no maps — same
+// cmd/gendto TS-codegen constraint every DTO in this file follows.
+
+// CastMember is one cast entry in the detail popup's cast row. ProfilePath is
+// a bare TMDB image path (proxied by the frontend via /api/images/proxy —
+// never an absolute URL), "" when TMDB has no headshot.
+type CastMember struct {
+	Name        string `json:"name"`
+	Character   string `json:"character"`
+	ProfilePath string `json:"profilePath"`
+}
+
+// CrewMember is one KEY crew entry (Director/Writer-Screenplay/Producer/
+// Editor — filtered server-side, see tmdb.keyCrewJobs). ProfilePath is a bare
+// TMDB image path, proxied by the frontend.
+type CrewMember struct {
+	Name        string `json:"name"`
+	Job         string `json:"job"`
+	ProfilePath string `json:"profilePath"`
+}
+
+// WatchProviderDTO is one US subscription (flatrate) streaming service the
+// title is available on — JustWatch-powered TMDB data, so the UI rendering it
+// MUST show a "Powered by JustWatch" attribution (TMDB terms). LogoPath is a
+// bare TMDB image path, proxied by the frontend.
+type WatchProviderDTO struct {
+	Name     string `json:"name"`
+	LogoPath string `json:"logoPath"`
+}
+
+// ReleaseDateEntry is one dated release in the metadata sidebar's full
+// (US-scoped) release-date list. Type is a human label mapped from TMDB's
+// release-type enum ("Premiere"/"Theatrical (limited)"/"Theatrical"/"Digital"/
+// "Physical"/"TV"); Date is the raw release_date string.
+type ReleaseDateEntry struct {
+	Type string `json:"type"`
+	Date string `json:"date"`
+}
+
+// TitleDetail is the full Discover detail popup payload for a Movie/Series
+// title. Every section is independently soft-failed by the handler, so any
+// slice may be empty (that section simply doesn't render) without the whole
+// response failing. All image-path fields (ProfilePath, LogoPath) are bare
+// TMDB paths — proxied by the frontend, never absolute URLs. Deliberately
+// carries NO Revenue/Budget and NO critic/review-badge field (both out of
+// scope for v1).
+type TitleDetail struct {
+	Status                string             `json:"status"`
+	OriginalLanguage      string             `json:"originalLanguage"`
+	ProductionCountry     string             `json:"productionCountry"`
+	ProductionCountryCode string             `json:"productionCountryCode"`
+	CollectionName        string             `json:"collectionName"`
+	CollectionID          int                `json:"collectionId"`
+	Networks              []string           `json:"networks"`
+	Studios               []string           `json:"studios"`
+	Runtime               int                `json:"runtime"`
+	ReleaseDates          []ReleaseDateEntry `json:"releaseDates"`
+	Genres                []string           `json:"genres"`
+	Keywords              []string           `json:"keywords"`
+	Cast                  []CastMember       `json:"cast"`
+	Crew                  []CrewMember       `json:"crew"`
+	WatchProviders        []WatchProviderDTO `json:"watchProviders"`
+	Recommendations       []DiscoverItem     `json:"recommendations"`
+}
+
+// --- Request-status worklist (Feature 4, derive-on-read) -------------------
+//
+// GET /api/requests's response — a cross-mode (NOT mode-scoped) status rollup
+// aggregated live on read from the tracked library + grabs, with no new
+// persisted table. See internal/api/requests.go for what this adds over the
+// existing /grabs (raw per-mode grab log) and /downloads (download-client
+// status) screens.
+
+// RequestStatusItem is one title's cross-mode status. Status is "In Library"
+// (a tracked item) or "Downloading" (an in-flight grab — "Requested" collapses
+// into this in sakms's single-operator model: a grab IS the request, there is
+// no separate approval queue). GrabID is set only for a Downloading row.
+// MissingCount is an annotation, Series-only: the number of episodes TMDB
+// knows about with no file on disk for an otherwise In-Library series (0 for
+// Movies/Adult, which don't track not-owned titles).
+type RequestStatusItem struct {
+	Mode         string `json:"mode"`
+	Title        string `json:"title"`
+	TMDBID       int    `json:"tmdbId"`
+	Status       string `json:"status"`
+	GrabID       int64  `json:"grabId"`
+	MissingCount int    `json:"missingCount"`
+}
+
+// RequestStatusResponse is GET /api/requests's response — one row per title
+// across every mode.
+type RequestStatusResponse struct {
+	Items []RequestStatusItem `json:"items"`
+}
+
 // --- Review-queue proposals: Rename (Stage 3) -----------------------------
 //
 // The staged scan→propose→apply review queue backing the Rename workflow (and,

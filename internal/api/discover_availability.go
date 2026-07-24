@@ -45,9 +45,10 @@ var discoverAvailabilityTiers = []quality.Tier{quality.Low, quality.Medium, qual
 // it already resolves the correct per-mode Prowlarr query AND the pre-grab
 // RuntimeSeconds the scorer needs (Movies: tmdb.MovieDetails; Series: the
 // picked episode's runtime via seriesEpisodeRuntimeSeconds/SeasonDetails —
-// NOT tmdb.TVDetails, which carries no Runtime field at all; Adult: the
-// request's DurationSeconds query param) — so this handler's only genuinely
-// new logic is the release-match filter and the 32-bucket partition/grade.
+// NOT tmdb.TVDetails.Runtime, which is only the show's nominal per-episode
+// duration, not the specific picked episode's; Adult: the request's
+// DurationSeconds query param) — so this handler's only genuinely new logic
+// is the release-match filter and the 32-bucket partition/grade.
 //
 // UNVERIFIED ASSUMPTION (flagged per this project's honesty-about-
 // unverified-assumptions convention): the plan's query-param list for

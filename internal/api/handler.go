@@ -172,6 +172,16 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// Discover detail popup's "Watch Trailer" link — one-shot per popup open,
 	// Movies/Series only. See discover_trailer.go.
 	mux.HandleFunc("GET /api/modes/{mode}/discover/trailer", discoverTrailerHandler(httpClient, connStore, settingsStore))
+	// Discover detail popup's richer per-title enrichment (cast/crew/keywords/
+	// watch-providers/recommendations/extended metadata) — one on-demand,
+	// per-click TMDB fan-out, soft-failing each section independently.
+	// Movies/Series only. See discover_detail.go.
+	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(httpClient, connStore, settingsStore))
+	// Calendar / upcoming month view — a TMDB release-date-range browse for the
+	// visible month. Movies (release date) / Series (first_air_date premieres)
+	// only; never routes through the trending/popular unreleased-hiding filter.
+	// See discover_detail.go's discoverCalendarHandler.
+	mux.HandleFunc("GET /api/modes/{mode}/discover/calendar", discoverCalendarHandler(httpClient, connStore, settingsStore))
 	// Adult Discover is TPDB-backed (browse + search-by-term), not TMDB — the
 	// concrete path wins over the {mode} wildcard above for Adult (see
 	// adultDiscoverHandler).
@@ -280,6 +290,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
 	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore, libStore, prober))
+	// Request-status worklist: a cross-mode (NOT mode-scoped) rollup aggregated
+	// live from the tracked library + in-flight grabs, plus Series missing-
+	// episode counts. Pure read aggregation, no new table. Distinct from the
+	// per-mode /grabs log and the /downloads client status — see requests.go.
+	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore))
 
 	// Download queue: torrent (anacrolix) + usenet (NNTP) merged into one
 	// stream. GID routing: "nzb-" prefix → usenet engine, otherwise torrent.

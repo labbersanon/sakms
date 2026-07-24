@@ -6,8 +6,15 @@
 // Discover.test.tsx / Discover.grab.test.tsx).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSignal, Show } from "solid-js";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import type { AdultDiscoverItem, AvailabilityCandidate, AvailabilityPreview, DiscoverItem } from "@dto";
+import type {
+  AdultDiscoverItem,
+  AvailabilityCandidate,
+  AvailabilityPreview,
+  DiscoverItem,
+  TitleDetail,
+} from "@dto";
 import {
   DetailPopup,
   type DetailTarget,
@@ -558,5 +565,237 @@ describe("DetailPopup — Adult tags/performers", () => {
 
     expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
     expect(screen.queryByText(/Performers:/)).not.toBeInTheDocument();
+  });
+});
+
+// titleDetail builds a full F1 detail bundle (every section populated); pass an
+// override to blank fields for the graceful-empty path.
+const titleDetail = (over: Partial<TitleDetail> = {}): TitleDetail => ({
+  status: "Released",
+  originalLanguage: "en",
+  productionCountry: "United States",
+  productionCountryCode: "US",
+  collectionName: "Hero Collection",
+  collectionId: 123,
+  networks: [],
+  studios: ["Studio X"],
+  runtime: 125,
+  releaseDates: [{ type: "Theatrical", date: "2024-05-01" }],
+  genres: ["Action"],
+  keywords: ["heist", "spy"],
+  cast: [{ name: "Actor One", character: "Hero", profilePath: "/a1.jpg" }],
+  crew: [{ name: "Dir One", job: "Director", profilePath: "" }],
+  watchProviders: [{ name: "Netflix", logoPath: "/nf.jpg" }],
+  recommendations: [
+    {
+      id: 99,
+      title: "Recommended B",
+      posterPath: "",
+      overview: "",
+      releaseDate: "",
+      voteAverage: 0,
+      mediaType: "movie",
+    },
+  ],
+  ...over,
+});
+
+const emptyDetail = (): TitleDetail =>
+  titleDetail({
+    status: "",
+    originalLanguage: "",
+    productionCountry: "",
+    productionCountryCode: "",
+    collectionName: "",
+    collectionId: 0,
+    networks: [],
+    studios: [],
+    runtime: 0,
+    releaseDates: [],
+    genres: [],
+    keywords: [],
+    cast: [],
+    crew: [],
+    watchProviders: [],
+    recommendations: [],
+  });
+
+describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
+  const stubWithDetail = (
+    detail: TitleDetail,
+    preview: AvailabilityPreview = emptyPreview(),
+  ) =>
+    stubFetch((url) => {
+      if (url.includes("/discover/detail")) return jsonResponse(detail);
+      if (url.includes("/discover/availability")) return jsonResponse(preview);
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+  it("renders every populated section (collection/keywords/metadata/crew/cast/providers+JustWatch/recommendations)", async () => {
+    stubWithDetail(titleDetail());
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    // Collection banner + keyword chips + metadata sidebar.
+    expect(await screen.findByText("Hero Collection")).toBeInTheDocument();
+    expect(screen.getByText("heist")).toBeInTheDocument();
+    expect(screen.getByText("Released")).toBeInTheDocument();
+    expect(screen.getByText("2h 5m")).toBeInTheDocument();
+    // Production Country renders with a leading flag emoji, so match loosely.
+    expect(screen.getByText(/United States/)).toBeInTheDocument();
+    expect(screen.getByText("Studio X")).toBeInTheDocument();
+    expect(screen.getByText("Theatrical")).toBeInTheDocument();
+
+    // Crew ABOVE cast; both render their people.
+    expect(screen.getByText("Dir One")).toBeInTheDocument();
+    expect(screen.getByText("Director")).toBeInTheDocument();
+    expect(screen.getByText("Actor One")).toBeInTheDocument();
+    expect(screen.getByText("Hero")).toBeInTheDocument();
+
+    // Providers row + the hard-required JustWatch attribution.
+    expect(screen.getByAltText("Netflix")).toBeInTheDocument();
+    expect(screen.getByText("Powered by JustWatch")).toBeInTheDocument();
+
+    // Recommendation rail (empty posterPath → the title shows in both the
+    // TextPoster fallback and the card title, so match all).
+    expect(screen.getAllByText("Recommended B").length).toBeGreaterThan(0);
+
+    // Revenue/Budget are explicitly excluded.
+    expect(screen.queryByText(/Revenue/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Budget/i)).not.toBeInTheDocument();
+  });
+
+  it("routes every detail image (headshot, provider logo) through the image proxy — never a direct TMDB host", async () => {
+    stubWithDetail(titleDetail());
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    const headshot = await screen.findByAltText("Actor One");
+    const logo = screen.getByAltText("Netflix");
+    for (const img of [headshot, logo]) {
+      const src = img.getAttribute("src") ?? "";
+      expect(src).toContain("/api/images/proxy");
+      expect(src).not.toContain("//image.tmdb.org/");
+    }
+  });
+
+  it("gracefully renders with every section empty (backend soft-fail per sub-call)", async () => {
+    stubWithDetail(emptyDetail());
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    // The popup itself still works (Grab present); no empty section headings.
+    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(screen.queryByText("Cast")).not.toBeInTheDocument();
+    expect(screen.queryByText("Crew")).not.toBeInTheDocument();
+    expect(screen.queryByText("Currently Streaming On")).not.toBeInTheDocument();
+    expect(screen.queryByText("Powered by JustWatch")).not.toBeInTheDocument();
+    expect(screen.queryByText("More like this")).not.toBeInTheDocument();
+    expect(screen.queryByText("Hero Collection")).not.toBeInTheDocument();
+  });
+
+  it("soft-fails the whole detail fetch to no sections, popup still usable", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return new Response("boom", { status: 500 });
+      if (url.includes("/discover/availability"))
+        return jsonResponse(emptyPreview());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(screen.queryByText("More like this")).not.toBeInTheDocument();
+  });
+
+  it("never fetches /discover/detail for Adult (no TMDB id)", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/availability"))
+        return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+    const target: DetailTarget = { mode: "adult", item: adultScene() };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+    await screen.findByRole("button", { name: "Grab" });
+
+    expect(calls.some((c) => c.url.includes("/discover/detail"))).toBe(false);
+  });
+
+  // The advisor-flagged risk: a recommendation click swaps detailTarget from one
+  // truthy target to another. Mainstream renders the popup <Show keyed>, so this
+  // test replicates that harness and clicks a recommendation AFTER grabbing on
+  // the first title — proving the popup both re-targets (fetches the new tmdbId)
+  // AND resets its component-local grab state (the keyed remount), not just that
+  // the new title's data appears.
+  it("re-targets to a clicked recommendation and resets grab state (keyed remount)", async () => {
+    const previewA = emptyPreview();
+    previewA.res1080.high.torrent = candidate({ title: "A.1080p" });
+
+    const calls = stubFetch((url) => {
+      const tmdbId = new URL(url, "http://x").searchParams.get("tmdbId");
+      if (url.includes("/discover/detail")) {
+        // Title A carries a recommendation to B; B carries none.
+        return jsonResponse(tmdbId === "99" ? emptyDetail() : titleDetail());
+      }
+      if (url.includes("/discover/availability")) return jsonResponse(previewA);
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
+      if (url.includes("/library/root-folder"))
+        return jsonResponse({ path: "/movies" });
+      if (url.includes("/search/grab"))
+        return jsonResponse({ id: 9, mode: "movies", title: "Hero Movie", status: "queued" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const Harness = () => {
+      const [target, setTarget] = createSignal<DetailTarget | null>({
+        mode: "movies",
+        item: movie({ id: 42, title: "Hero Movie" }),
+      });
+      return (
+        <Show when={target()} keyed>
+          {(t) => (
+            <DetailPopup
+              target={t}
+              onClose={() => setTarget(null)}
+              onSelectRecommendation={setTarget}
+            />
+          )}
+        </Show>
+      );
+    };
+    render(() => <Harness />);
+
+    // Grab on title A → "Grabbed" appears, grab state is now set. (The rec rail
+    // adds its own PosterCard "Grab" buttons; the popup's primary Grab is the
+    // first in DOM order, rendered above the detail section.)
+    const grabButtons = await screen.findAllByRole("button", { name: "Grab" });
+    fireEvent.click(grabButtons[0]!);
+    expect(await screen.findByText(/Grabbed/)).toBeInTheDocument();
+
+    // Click the recommendation card body (its title) → re-target to B (id 99).
+    fireEvent.click(screen.getAllByText("Recommended B")[0]!);
+
+    // The popup remounts on the new title: a fresh Grab button, and the prior
+    // title's "Grabbed" state is gone (state reset, not carried over).
+    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(screen.queryByText(/Grabbed/)).not.toBeInTheDocument();
+
+    // Proof it actually re-targeted: a detail/availability fetch fired for id 99.
+    expect(
+      calls.some(
+        (c) => c.url.includes("tmdbId=99") && c.url.includes("/discover/availability"),
+      ),
+    ).toBe(true);
   });
 });

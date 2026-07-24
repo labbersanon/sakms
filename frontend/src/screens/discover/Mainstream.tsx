@@ -70,6 +70,13 @@ import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
 import { AddRssFeedModal } from "./AddRssFeedModal";
 import { useRowOrder } from "./useRowOrder";
+import { CalendarView } from "./CalendarView";
+
+// MainstreamView selects the page's top-level presentation: the default stacked
+// carousel/search/filter "rows" view, or the F2 month "calendar" view. Kept a
+// simple string union (not a tab set) since it's a binary in-page toggle, not a
+// registered ScreenTabs surface.
+type MainstreamView = "rows" | "calendar";
 
 // ModedTitle is the mode a merged card belongs to — the per-item mode a
 // combined (movies+series) row/grid MUST carry so each card grabs via its own
@@ -214,7 +221,11 @@ export const GrabButton: Component<{
 // shortcut) opens DetailPopup via onDetail. The native title= overview
 // tooltip is replaced by a CSS-only (group/group-hover) hover overlay over
 // the poster — same information, richer presentation, no new Solid signal.
-const PosterCard: Component<{
+// Exported (was module-private) so DetailPopup's "More like this" recommendation
+// rail and CalendarView reuse the identical card — same reason SeasonEpisodePicker
+// was exported for DetailPopup — rather than each hand-rolling a parallel one-off
+// (which would also miss the later F3 select-mode checkbox this card will gain).
+export const PosterCard: Component<{
   mode: "movies" | "series";
   item: DiscoverItem;
   onGrab: (t: GrabTarget) => void;
@@ -533,7 +544,25 @@ export const MainstreamDiscover: Component<{
     DEFAULT_MAINSTREAM_FILTERS,
   );
   const filtering = () => !searching() && isMainstreamFilterActive(filters());
-  createEffect(() => props.onFilteringChange?.(filtering()));
+
+  // view toggles the whole page between the default rows and the F2 calendar.
+  // Calendar has no reorderable rows, so — like an active filter — it must
+  // disable the shell's Edit toggle: onFilteringChange is the existing upward
+  // signal that gates Edit (index.tsx), so calendar reuses it (Edit is disabled
+  // whenever a filter is active OR calendar is showing), rather than adding a
+  // second parallel prop for the same effect.
+  const [view, setView] = createSignal<MainstreamView>("rows");
+  createEffect(() =>
+    props.onFilteringChange?.(filtering() || view() === "calendar"),
+  );
+
+  // selectView switches the top-level view; entering calendar clears any active
+  // search (calendar is its own view, not a rows-mode activity) so returning to
+  // rows lands back on the carousels, not a stale search result.
+  const selectView = (v: MainstreamView) => {
+    if (v === "calendar") clearSearch();
+    setView(v);
+  };
 
   // toFilterParams maps the bar's filter state onto the API's optional-param
   // shape (empty genre set / null year/rating become "unset", i.e. not sent).
@@ -739,29 +768,52 @@ export const MainstreamDiscover: Component<{
 
   return (
     <div>
-      <form
-        class="mb-4 flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          // A search takes over the view — reset any active filter so clearing
-          // the search returns to the carousels, not into a stale filter grid.
-          setFilters(DEFAULT_MAINSTREAM_FILTERS);
-          setSubmitted(draft());
-        }}
-      >
-        <input
-          class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-          placeholder="Search movies & shows…"
-          value={draft()}
-          onInput={(e) => setDraft(e.currentTarget.value)}
-        />
-        <Show when={searching()}>
-          <Button onClick={clearSearch}>Clear</Button>
-        </Show>
-      </form>
+      {/* Rows | Calendar view toggle. Lives in the filter-bar area inside the
+          Mainstream tab (not a third top-level Discover tab) — the same
+          avoid-a-degenerate-tab reasoning as index.tsx's Adult-disabled block. */}
+      <div class="mb-3 flex items-center gap-1">
+        <For each={["rows", "calendar"] as MainstreamView[]}>
+          {(v) => (
+            <button
+              type="button"
+              class="rounded-md px-3 py-1.5 text-sm font-medium transition"
+              classList={{
+                "bg-accent text-accent-fg": view() === v,
+                "bg-surface-2 text-muted hover:text-fg": view() !== v,
+              }}
+              onClick={() => selectView(v)}
+            >
+              {v === "rows" ? "Rows" : "Calendar"}
+            </button>
+          )}
+        </For>
+      </div>
 
-      <Show when={!searching()}>
-        <MainstreamFilterSortBar value={filters} onChange={applyFilters} />
+      <Show when={view() !== "calendar"}>
+        <form
+          class="mb-4 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            // A search takes over the view — reset any active filter so clearing
+            // the search returns to the carousels, not into a stale filter grid.
+            setFilters(DEFAULT_MAINSTREAM_FILTERS);
+            setSubmitted(draft());
+          }}
+        >
+          <input
+            class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            placeholder="Search movies & shows…"
+            value={draft()}
+            onInput={(e) => setDraft(e.currentTarget.value)}
+          />
+          <Show when={searching()}>
+            <Button onClick={clearSearch}>Clear</Button>
+          </Show>
+        </form>
+
+        <Show when={!searching()}>
+          <MainstreamFilterSortBar value={filters} onChange={applyFilters} />
+        </Show>
       </Show>
 
       <Show when={setupError()}>
@@ -783,6 +835,12 @@ export const MainstreamDiscover: Component<{
         </Show>
       </Show>
 
+      <Show
+        when={view() !== "calendar"}
+        fallback={
+          <CalendarView onGrab={setGrabTarget} onDetail={setDetailTarget} />
+        }
+      >
       <Show
         when={searching()}
         fallback={
@@ -869,12 +927,26 @@ export const MainstreamDiscover: Component<{
           </Show>
         </section>
       </Show>
+      </Show>
 
       <Show when={grabTarget()}>
         {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
       </Show>
-      <Show when={detailTarget()}>
-        {(t) => <DetailPopup target={t()} onClose={() => setDetailTarget(null)} />}
+      {/* keyed: a "More like this" click swaps detailTarget from one truthy
+          target to another. Without keyed, Solid updates props.target on the
+          SAME DetailPopup instance, leaving its component-local signals
+          (resolution/tier/protocol/grabbed/seasonEpisode) stale from the prior
+          title while only the keyed resources refetch. keyed remounts the popup
+          so every one of those resets to the newly-targeted title. */}
+      <Show when={detailTarget()} keyed>
+        {(t) => (
+          <DetailPopup
+            target={t}
+            onClose={() => setDetailTarget(null)}
+            onSelectRecommendation={setDetailTarget}
+            onGrab={setGrabTarget}
+          />
+        )}
       </Show>
     </div>
   );

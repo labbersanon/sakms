@@ -15,6 +15,7 @@ import type {
   PerformerSummary,
   PosterResponse,
   StudioSummary,
+  TitleDetail,
   TrailerResponse,
 } from "@dto";
 
@@ -24,6 +25,7 @@ export type {
   DiscoverItem,
   PerformerSummary,
   StudioSummary,
+  TitleDetail,
 };
 
 
@@ -54,6 +56,14 @@ export type DiscoverCategory = "trending" | "popular" | "upcoming";
 // Decision #7). w342 is the grid poster size the old frontend used.
 const TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w342";
 
+// TMDB_PROFILE_BASE / TMDB_LOGO_BASE are the size-specific image roots for cast/
+// crew headshots (w185) and watch-provider logos (w92) the DetailPopup renders.
+// Same host as TMDB_POSTER_BASE — every one of these is wrapped by proxyImage so
+// the byte flows through the Go image proxy, never a direct browser→TMDB request
+// (plan Decision #7 / F1 acceptance: no image.tmdb.org host reaches an <img src>).
+const TMDB_PROFILE_BASE = "https://image.tmdb.org/t/p/w185";
+const TMDB_LOGO_BASE = "https://image.tmdb.org/t/p/w92";
+
 // proxyImage rewrites an absolute upstream image URL into a same-origin image
 // proxy request. This is the ONLY way images reach the DOM in this app: an
 // <img src> must be proxyImage(...)'d, never the raw upstream URL. Returns ""
@@ -69,6 +79,21 @@ export function proxyImage(rawURL: string): string {
 export function tmdbPoster(posterPath: string): string {
   if (!posterPath) return "";
   return proxyImage(TMDB_POSTER_BASE + posterPath);
+}
+
+// tmdbProfile turns a TMDB profilePath (cast/crew headshot) into a proxied image
+// URL; blank yields "" so the card renders its text fallback. Mirrors tmdbPoster
+// exactly, only the size root differs (w185 headshots).
+export function tmdbProfile(profilePath: string): string {
+  if (!profilePath) return "";
+  return proxyImage(TMDB_PROFILE_BASE + profilePath);
+}
+
+// tmdbLogo turns a TMDB logoPath (watch-provider logo) into a proxied image URL;
+// blank yields "". Mirrors tmdbPoster, only the size root differs (w92 logos).
+export function tmdbLogo(logoPath: string): string {
+  if (!logoPath) return "";
+  return proxyImage(TMDB_LOGO_BASE + logoPath);
 }
 
 // fetchDiscover returns one TMDB category (trending/popular) for Movies/Series,
@@ -144,6 +169,24 @@ export function fetchTrailer(
   ).then((r) => r.url);
 }
 
+// fetchTitleDetail resolves one Movies/Series title's rich detail bundle for the
+// DetailPopup — cast, crew, keywords, watch providers, extended metadata, and
+// "more like this" recommendations — from the combined, parallel-fanned-out
+// GET /api/modes/{mode}/discover/detail?tmdbId=N. The backend soft-fails each
+// sub-call, so a missing section arrives as an empty array/string rather than a
+// popup-wide error (see internal/api/discover_detail.go). Movies/Series only:
+// Adult scenes have no TMDB id and never call this. This is one explicit-click,
+// per-title fetch — NOT the banned automatic per-card availability probe, and
+// not Prowlarr (see CLAUDE.md's "Discover never queries Prowlarr" note).
+export function fetchTitleDetail(
+  mode: Exclude<Mode, "adult">,
+  tmdbId: number,
+): Promise<TitleDetail> {
+  return api<TitleDetail>(
+    `/api/modes/${mode}/discover/detail?tmdbId=${tmdbId}`,
+  );
+}
+
 // fetchTitlePoster lazily resolves one library card's TMDB poster path by
 // tmdbId (Movies/Series only) — the library caches no poster art, so each
 // rendered existing-library card fetches its own poster on demand. The library
@@ -157,6 +200,23 @@ export function fetchTitlePoster(
   return api<PosterResponse>(
     `/api/modes/${mode}/poster?tmdbId=${tmdbId}`,
   ).then((r) => r.posterPath);
+}
+
+// fetchDiscoverCalendar returns the Movies-release / TV-premiere items whose
+// release date falls in [from, to] (inclusive, YYYY-MM-DD) for one mode —
+// GET /api/modes/{mode}/discover/calendar. Backs CalendarView's month grid; the
+// caller buckets the returned DiscoverItem[] by releaseDate into day cells. v1
+// is Movies release dates + TV first-air premieres; a per-episode air-date
+// calendar is a documented follow-up (heavier, per-episode queries).
+export function fetchDiscoverCalendar(
+  mode: Exclude<Mode, "adult">,
+  from: string,
+  to: string,
+): Promise<DiscoverItem[]> {
+  const q = new URLSearchParams({ from, to });
+  return api<DiscoverItem[]>(
+    `/api/modes/${mode}/discover/calendar?${q.toString()}`,
+  );
 }
 
 // fetchTmdbSearch runs a TMDB title search for one mode (Movies/Series) — the

@@ -87,6 +87,19 @@ type adultPerformer struct {
 	Source string `json:"source"`
 }
 
+// validTPDBSort is the allow-list of TPDB SearchOrderEnum values the Adult
+// Discover sort bar may request, passed through as BrowseScenes' orderBy
+// argument. These three are the recency sorts confirmed present in TPDB's live
+// OpenAPI SearchOrderEnum (see tpdbrest.BrowseScenes' doc). The enum's other
+// members (most_relevant, duration_*, former_*) are deliberately excluded
+// pending verification of their semantics against the live spec — an unknown
+// or absent sortBy falls back to "" (the historical plain unordered browse).
+var validTPDBSort = map[string]bool{
+	"recently_released": true,
+	"recently_created":  true,
+	"recently_updated":  true,
+}
+
 // adultTPDBClient builds a standalone tpdbrest client from the stored "tpdb"
 // connection, writing the appropriate HTTP error and returning ok=false when
 // it isn't configured (or can't be loaded). Every Adult Discover handler needs
@@ -194,8 +207,15 @@ func adultDiscoverHandler(httpClient *http.Client, connStore *connections.Store)
 					return scenes[i].Rating > scenes[j].Rating
 				})
 			default:
-				// No/unknown category → the historical plain unordered browse.
-				scenes, err = client.BrowseScenes(ctx, page, perPage, "")
+				// No/unknown category → a plain browse, optionally ordered by
+				// the sort bar's allow-listed sortBy (recently_*). An unknown or
+				// absent sortBy resolves to "", preserving the historical plain
+				// unordered browse exactly.
+				orderBy := r.URL.Query().Get("sortBy")
+				if !validTPDBSort[orderBy] {
+					orderBy = ""
+				}
+				scenes, err = client.BrowseScenes(ctx, page, perPage, orderBy)
 			}
 		}
 		if err != nil {

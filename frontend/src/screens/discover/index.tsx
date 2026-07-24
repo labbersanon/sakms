@@ -31,6 +31,7 @@
 
 import {
   type Component,
+  createEffect,
   createSignal,
   Show,
   Switch,
@@ -69,6 +70,19 @@ export const Discover: Component = () => {
   const adultEnabled = useAdultEnabled();
   const [tab, setTab] = createSignal("mainstream");
   const [editMode, setEditMode] = createSignal(false);
+  // mainstreamFiltering mirrors MainstreamDiscover's active-filter state (it
+  // owns the filter signal; this toggle lives one level up). Row-reordering
+  // Edit mode is meaningless against a filtered grid, so the Edit toggle is
+  // disabled and forced off while a Mainstream filter is active.
+  const [mainstreamFiltering, setMainstreamFiltering] = createSignal(false);
+  // adultSorting is AdultDiscover's equivalent of mainstreamFiltering — Edit
+  // mode (row reordering) is meaningless against a sorted grid, same
+  // reasoning as the Mainstream filter case, so the toggle is disabled and
+  // forced off while an Adult sort is active too.
+  const [adultSorting, setAdultSorting] = createSignal(false);
+  createEffect(() => {
+    if (mainstreamFiltering() || adultSorting()) setEditMode(false);
+  });
 
   const selectTab = (id: string) => {
     setEditMode(false);
@@ -87,7 +101,10 @@ export const Discover: Component = () => {
         when={adultEnabled()}
         fallback={
           <div class="mt-4">
-            <MainstreamDiscover editMode={editMode} />
+            <MainstreamDiscover
+              editMode={editMode}
+              onFilteringChange={setMainstreamFiltering}
+            />
           </div>
         }
       >
@@ -98,6 +115,10 @@ export const Discover: Component = () => {
           trailing={
             <Button
               class="!px-3 !py-1.5 !text-sm"
+              disabled={
+                (tab() === "mainstream" && mainstreamFiltering()) ||
+                (tab() === "adult" && adultSorting())
+              }
               onClick={() => setEditMode((v) => !v)}
             >
               {editMode() ? "Done" : "Edit"}
@@ -108,10 +129,16 @@ export const Discover: Component = () => {
         <div class="mt-4">
           <Switch>
             <Match when={tab() === "adult"}>
-              <AdultDiscover editMode={editMode} />
+              <AdultDiscover
+                editMode={editMode}
+                onSortingChange={setAdultSorting}
+              />
             </Match>
             <Match when={tab() === "mainstream"}>
-              <MainstreamDiscover editMode={editMode} />
+              <MainstreamDiscover
+                editMode={editMode}
+                onFilteringChange={setMainstreamFiltering}
+              />
             </Match>
           </Switch>
         </div>

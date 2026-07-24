@@ -24,6 +24,7 @@
 import {
   type Component,
   type JSX,
+  createEffect,
   createResource,
   createSignal,
   For,
@@ -31,10 +32,13 @@ import {
 } from "solid-js";
 import {
   type AdultDiscoverItem,
+  type AdultSortBy,
   type PerformerSummary,
   type StashBox,
   type StudioSummary,
   fetchAdultDiscover,
+  fetchAdultDiscoverMergedRecent,
+  fetchAdultDiscoverSorted,
   fetchAdultPerformerScenes,
   fetchAdultPerformers,
   fetchAdultStudioScenes,
@@ -44,6 +48,7 @@ import {
   fetchStashBoxStudios,
   proxyImage,
 } from "../../api/discover";
+import { type AdultSortValue, AdultSortBar } from "./FilterSortBar";
 import { fetchConnections } from "../../api/settings";
 import {
   type AdultNewestReleaseItem,
@@ -337,10 +342,16 @@ type AdultDrill = { kind: "studio" | "performer"; id: string; name: string };
 // dialog for every scene card (rows, search, drill-down) and the not-configured
 // setup modal, raised once when any strip's fetch reports TPDB missing.
 // editMode (from Discover/index.tsx's tab-bar Edit toggle) swaps the browse
-// row block for RowEditor's reorder/enable/delete UI.
-export const AdultDiscover: Component<{ editMode?: () => boolean }> = (
-  props,
-) => {
+// row block for RowEditor's reorder/enable/delete UI. onSortingChange lets
+// the tab shell disable its Edit toggle while a sort is active — mirrors
+// Mainstream.tsx's onFilteringChange (RowEditor already can't render during
+// a sort since it lives in the sorting() fallback branch below, but leaving
+// the Edit button clickable-but-inert while sorting reads as a bug from the
+// operator's side, same reasoning Mainstream's gating documents).
+export const AdultDiscover: Component<{
+  editMode?: () => boolean;
+  onSortingChange?: (active: boolean) => void;
+}> = (props) => {
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   const [setupError, setSetupError] = createSignal<unknown>(null);
@@ -353,6 +364,30 @@ export const AdultDiscover: Component<{ editMode?: () => boolean }> = (
 
   // drill is the active Studio/Performer drill-down (null = the browse rows).
   const [drill, setDrill] = createSignal<AdultDrill | null>(null);
+
+  // adultSort is the sort bar's value. sorting() is true only when a non-
+  // default sort is chosen AND the view isn't a search or a drill-down (a
+  // sort has no defined meaning inside one studio's/performer's scene list).
+  // When sorting, a single sorted grid replaces the browse rows.
+  const [adultSort, setAdultSort] = createSignal<AdultSortValue>("default");
+  const sorting = () => !searching() && !drill() && adultSort() !== "default";
+  createEffect(() => props.onSortingChange?.(sorting()));
+
+  // Changing the sort clears search and any drill-down (all three views are
+  // mutually exclusive).
+  const applyAdultSort = (v: AdultSortValue) => {
+    clearSearch();
+    setDrill(null);
+    setAdultSort(v);
+  };
+
+  // sortTitle labels the sorted grid by the active sort.
+  const sortTitle = () =>
+    adultSort() === "newest"
+      ? "Newest Releases"
+      : adultSort() === "recently_created"
+        ? "Recently Added"
+        : "Recently Updated";
 
   // connections drives which OPTIONAL Adult Discover sources (StashDB/FansDB)
   // render at all — fetched once on mount, same as any other read-only
@@ -644,8 +679,9 @@ export const AdultDiscover: Component<{ editMode?: () => boolean }> = (
         onSubmit={(e) => {
           e.preventDefault();
           // A new search takes precedence over any drill-down (Clear returns to
-          // the rows, not back into a stale drill).
+          // the rows, not back into a stale drill) and any active sort.
           setDrill(null);
+          setAdultSort("default");
           setSubmitted(draft());
         }}
       >
@@ -659,6 +695,10 @@ export const AdultDiscover: Component<{ editMode?: () => boolean }> = (
           <Button onClick={clearSearch}>Clear</Button>
         </Show>
       </form>
+
+      <Show when={!searching() && !drill()}>
+        <AdultSortBar value={adultSort} onChange={applyAdultSort} />
+      </Show>
 
       <Show when={setupError()}>
         <Show
@@ -685,7 +725,10 @@ export const AdultDiscover: Component<{ editMode?: () => boolean }> = (
           <Show
             when={drill()}
             fallback={
-              <>
+              <Show
+                when={sorting()}
+                fallback={
+                  <>
                 <Show when={props.editMode?.()}>
                   <RowEditor
                     rows={rowDescriptors()}
@@ -714,7 +757,29 @@ export const AdultDiscover: Component<{ editMode?: () => boolean }> = (
                     }}
                   />
                 </Show>
-              </>
+                  </>
+                }
+              >
+                <PaginatedStrip<AdultDiscoverItem>
+                  title={sortTitle()}
+                  reloadToken={() => adultSort()}
+                  load={(page) =>
+                    adultSort() === "newest"
+                      ? fetchAdultDiscoverMergedRecent(page)
+                      : fetchAdultDiscoverSorted(adultSort() as AdultSortBy, page)
+                  }
+                  onError={setSetupError}
+                  containerClass="flex flex-wrap gap-3"
+                >
+                  {(item) => (
+                    <AdultCard
+                      item={item}
+                      onGrab={setGrabTarget}
+                      onDetail={setDetailTarget}
+                    />
+                  )}
+                </PaginatedStrip>
+              </Show>
             }
           >
             {(d) => (

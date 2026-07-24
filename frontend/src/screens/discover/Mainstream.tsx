@@ -27,7 +27,9 @@ import {
 import {
   type DiscoverItem,
   type DiscoverCategory,
+  type DiscoverFilterParams,
   fetchDiscover,
+  fetchDiscoverFiltered,
   fetchTitlePoster,
   fetchTmdbSearch,
   tmdbPoster,
@@ -38,9 +40,16 @@ import {
   type GrabTarget,
   ConfigureConnectionModal,
   GrabDialog,
+  PaginatedStrip,
   TextPoster,
   notConfiguredService,
 } from "./shared";
+import {
+  type MainstreamFilters,
+  DEFAULT_MAINSTREAM_FILTERS,
+  MainstreamFilterSortBar,
+  isMainstreamFilterActive,
+} from "./FilterSortBar";
 import { Carousel } from "../../components/Carousel";
 import {
   type Slider,
@@ -496,9 +505,14 @@ const SliderRow: Component<{
 // and the not-configured setup modal, raised once when any row's fetch reports
 // TMDB missing. editMode (from Discover/index.tsx's tab-bar Edit toggle) swaps
 // the row block for RowEditor's reorder/enable/delete UI.
-export const MainstreamDiscover: Component<{ editMode?: () => boolean }> = (
-  props,
-) => {
+export const MainstreamDiscover: Component<{
+  editMode?: () => boolean;
+  // onFilteringChange lets the tab shell (index.tsx) disable its Edit toggle
+  // while a filtered grid is up — reordering carousels has no meaning against
+  // a filter result. The filter state lives here; the toggle button lives one
+  // level up, so this is the minimal upward signal to gate it.
+  onFilteringChange?: (active: boolean) => void;
+}> = (props) => {
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   const [setupError, setSetupError] = createSignal<unknown>(null);
@@ -510,6 +524,33 @@ export const MainstreamDiscover: Component<{ editMode?: () => boolean }> = (
   const [draft, setDraft] = createSignal("");
   const [submitted, setSubmitted] = createSignal("");
   const searching = () => submitted().trim().length > 0;
+
+  // Filters: the ad-hoc filter/sort bar's state. filtering() is true only when
+  // a real filter/non-default sort is set AND no search is running (search and
+  // filters are mutually exclusive views). When filtering, a single filtered
+  // grid replaces the carousels.
+  const [filters, setFilters] = createSignal<MainstreamFilters>(
+    DEFAULT_MAINSTREAM_FILTERS,
+  );
+  const filtering = () => !searching() && isMainstreamFilterActive(filters());
+  createEffect(() => props.onFilteringChange?.(filtering()));
+
+  // toFilterParams maps the bar's filter state onto the API's optional-param
+  // shape (empty genre set / null year/rating become "unset", i.e. not sent).
+  const toFilterParams = (f: MainstreamFilters): DiscoverFilterParams => ({
+    genreIds: f.genreIds.length ? f.genreIds : undefined,
+    year: f.year ?? undefined,
+    minRating: f.minRating ?? undefined,
+    sortBy: f.sortBy,
+  });
+
+  // Changing any filter clears an active search (mutual exclusivity); the bar
+  // itself only renders when not searching, but a search could be committed in
+  // the same tick, so clear defensively.
+  const applyFilters = (f: MainstreamFilters) => {
+    clearSearch();
+    setFilters(f);
+  };
 
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
@@ -702,6 +743,9 @@ export const MainstreamDiscover: Component<{ editMode?: () => boolean }> = (
         class="mb-4 flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
+          // A search takes over the view — reset any active filter so clearing
+          // the search returns to the carousels, not into a stale filter grid.
+          setFilters(DEFAULT_MAINSTREAM_FILTERS);
           setSubmitted(draft());
         }}
       >
@@ -715,6 +759,10 @@ export const MainstreamDiscover: Component<{ editMode?: () => boolean }> = (
           <Button onClick={clearSearch}>Clear</Button>
         </Show>
       </form>
+
+      <Show when={!searching()}>
+        <MainstreamFilterSortBar value={filters} onChange={applyFilters} />
+      </Show>
 
       <Show when={setupError()}>
         <Show
@@ -738,7 +786,10 @@ export const MainstreamDiscover: Component<{ editMode?: () => boolean }> = (
       <Show
         when={searching()}
         fallback={
-          <>
+          <Show
+            when={filtering()}
+            fallback={
+              <>
             <Show when={props.editMode?.()}>
               <RowEditor
                 rows={rowDescriptors()}
@@ -765,7 +816,32 @@ export const MainstreamDiscover: Component<{ editMode?: () => boolean }> = (
                 }}
               />
             </Show>
-          </>
+              </>
+            }
+          >
+            <PaginatedStrip<DiscoverItem>
+              title="Filtered results"
+              reloadToken={() => JSON.stringify(filters())}
+              load={(page) =>
+                fetchDiscoverFiltered(
+                  filters().contentType,
+                  toFilterParams(filters()),
+                  page,
+                )
+              }
+              onError={setSetupError}
+              containerClass="flex flex-wrap gap-3"
+            >
+              {(item) => (
+                <PosterCard
+                  mode={filters().contentType}
+                  item={item}
+                  onGrab={setGrabTarget}
+                  onDetail={setDetailTarget}
+                />
+              )}
+            </PaginatedStrip>
+          </Show>
         }
       >
         <section class="mt-2">

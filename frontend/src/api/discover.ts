@@ -86,6 +86,51 @@ export function fetchDiscover(
   );
 }
 
+// DiscoverSortBy is the UI sort key fetchDiscoverFiltered sends (backend maps
+// it to a TMDB sort_by allow-list). "popularity" is the default; the filter
+// bar surfaces it as "Most Popular"/"Highest Rated"/"Newest".
+export type DiscoverSortBy = "popularity" | "rating" | "newest";
+
+// DiscoverFilterParams is the optional ad-hoc filter surface the Mainstream
+// filter bar drives — every field omitted (zero-length genreIds, null year/
+// rating) simply isn't sent, so an empty params object is a plain unfiltered
+// browse. studioId/networkId aren't exposed by the bar today but are accepted
+// so the same function can back a studio/network-scoped filter later.
+export interface DiscoverFilterParams {
+  genreIds?: number[];
+  year?: number;
+  minRating?: number;
+  sortBy?: DiscoverSortBy;
+  studioId?: number;
+  networkId?: number;
+}
+
+// fetchDiscoverFiltered runs the real TMDB /discover query (category=filter)
+// for Movies/Series — the only TMDB path that accepts genre/year/rating/sort,
+// unlike the fixed trending/popular/upcoming curated lists. Each optional
+// param is set only when present, the same conditional-URLSearchParams shape
+// fetchAvailabilityPreview uses. DiscoverCategory is intentionally NOT widened
+// to include "filter" — this is a separate function, since a filtered browse
+// replaces the carousels rather than being one of them.
+export function fetchDiscoverFiltered(
+  mode: Exclude<Mode, "adult">,
+  params: DiscoverFilterParams,
+  page = 1,
+): Promise<DiscoverItem[]> {
+  const q = new URLSearchParams();
+  q.set("category", "filter");
+  q.set("page", String(page));
+  if (params.genreIds && params.genreIds.length > 0) {
+    q.set("genreIds", params.genreIds.join(","));
+  }
+  if (params.year != null) q.set("year", String(params.year));
+  if (params.minRating != null) q.set("minRating", String(params.minRating));
+  if (params.sortBy) q.set("sortBy", params.sortBy);
+  if (params.studioId != null) q.set("studioId", String(params.studioId));
+  if (params.networkId != null) q.set("networkId", String(params.networkId));
+  return api<DiscoverItem[]>(`/api/modes/${mode}/discover?${q.toString()}`);
+}
+
 // fetchTrailer resolves one Movies/Series title's YouTube trailer URL (via
 // GET /api/modes/{mode}/discover/trailer) — DetailPopup's "Watch Trailer"
 // link. Returns "" (not an error) when TMDB has no matching trailer on file,
@@ -139,6 +184,43 @@ export function fetchAdultDiscover(query?: string): Promise<AdultDiscoverItem[]>
     ? `/api/modes/adult/discover?q=${encodeURIComponent(q)}`
     : `/api/modes/adult/discover`;
   return api<AdultDiscoverItem[]>(path);
+}
+
+// AdultSortBy is the TPDB browse order fetchAdultDiscoverSorted passes through
+// as the backend's orderBy param (allow-listed server-side). "recently_released"
+// is part of the contract but the sort bar surfaces the phash-deduped merged
+// "Newest Releases" feed (fetchAdultDiscoverMergedRecent) for that intent
+// instead, so only recently_created ("Recently Added") / recently_updated
+// ("Recently Updated") reach this function from the bar.
+export type AdultSortBy =
+  | "recently_released"
+  | "recently_created"
+  | "recently_updated";
+
+// fetchAdultDiscoverSorted returns one page of TPDB's scene catalog in the
+// given sort order — the TPDB-only sort path (Recently Added/Updated). Newest
+// Releases uses fetchAdultDiscoverMergedRecent instead (TPDB+StashDB merged).
+export function fetchAdultDiscoverSorted(
+  sortBy: AdultSortBy,
+  page = 1,
+): Promise<AdultDiscoverItem[]> {
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/discover?sortBy=${sortBy}&page=${page}&perPage=20`,
+  );
+}
+
+// fetchAdultDiscoverMergedRecent returns the TPDB+StashDB merged "newest"
+// feed (recently_released + StashDB date-sort, deduped by phash, graceful
+// TPDB-only fallback). Backs the Adult sort bar's "Newest Releases". The
+// backend route (GET /api/modes/adult/discover/recent-merged) never went away
+// — this wrapper was dropped in the 2026-07-15 newest-rows redesign when its
+// one caller was removed, and is reintroduced here for the sort bar.
+export function fetchAdultDiscoverMergedRecent(
+  page = 1,
+): Promise<AdultDiscoverItem[]> {
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/discover/recent-merged?page=${page}&perPage=20`,
+  );
 }
 
 // StashBox names the two OPTIONAL Adult Discover sources (StashDB, FansDB) —

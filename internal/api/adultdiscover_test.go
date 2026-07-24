@@ -221,6 +221,67 @@ func TestAdultDiscoverHandler_CategoryTopRated(t *testing.T) {
 	}
 }
 
+// TestAdultDiscoverHandler_SortByPassthrough proves a valid allow-listed
+// sortBy on the plain browse path is forwarded to TPDB as orderBy.
+func TestAdultDiscoverHandler_SortByPassthrough(t *testing.T) {
+	var gotOrderBy string
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		gotOrderBy = r.URL.Query().Get("orderBy")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"_id":"s1","title":"A Scene","date":"2024-01-01","site":{"name":"Tushy"}}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/adult/discover?sortBy=recently_created")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if gotOrderBy != "recently_created" {
+		t.Errorf("expected a valid sortBy to forward as orderBy=recently_created, got %q", gotOrderBy)
+	}
+}
+
+// TestAdultDiscoverHandler_InvalidSortByFallsBack proves an unknown sortBy is
+// rejected by the allow-list and resolves to "" — no orderBy param is sent,
+// preserving the historical plain unordered browse.
+func TestAdultDiscoverHandler_InvalidSortByFallsBack(t *testing.T) {
+	var hadOrderBy bool
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		_, hadOrderBy = r.URL.Query()["orderBy"]
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"_id":"s1","title":"A Scene","date":"2024-01-01","site":{"name":"Tushy"}}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/adult/discover?sortBy=most_relevant")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if hadOrderBy {
+		t.Errorf("expected an unknown sortBy to send NO orderBy param (plain browse), but one was sent")
+	}
+}
+
 func TestAdultStudiosHandler_Browse(t *testing.T) {
 	var gotPath, gotPage, gotPerPage string
 	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {

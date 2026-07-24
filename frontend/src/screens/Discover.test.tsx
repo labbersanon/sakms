@@ -8,6 +8,11 @@ import type {
   TrackedItem,
 } from "@dto";
 import { Discover } from "./Discover";
+import {
+  fetchAdultDiscoverMergedRecent,
+  fetchAdultDiscoverSorted,
+  fetchDiscoverFiltered,
+} from "../api/discover";
 import { AdultModeContext } from "../components/ui";
 
 const jsonResponse = (obj: unknown): Response =>
@@ -1153,6 +1158,247 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
 // the WRONG implementation — Discover must render NO tab bar at all and show
 // Mainstream content directly. Asserted by checking the tab buttons themselves
 // are absent, not merely that "Adult" is gone.
+// The integration behavior the whole feature exists for: activating a
+// filter/sort replaces the carousels with a single grid, the right request
+// fires, and clearing reverts. Activated via a sort pill (needs no genre
+// fetch). NOTE: mainstreamDefaults' catch-all `/discover` branch shadows both
+// category=filter and sortBy URLs, so those are matched BEFORE it (specific-
+// first, same as every other test here).
+describe("Discover — filter/sort replaces the rows, then restores", () => {
+  it("Mainstream: a non-default sort swaps carousels for a category=filter grid, disables Edit, and clears back", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("category=filter"))
+        return jsonResponse([movie({ id: 77, title: "Filtered Movie" })]);
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Trend Movie" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
+
+    // Activate "Highest Rated" (sortBy=rating) — carousels give way to the grid.
+    fireEvent.click(screen.getByText("Highest Rated"));
+
+    expect(await screen.findByText("Filtered Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
+    expect(screen.queryByText("Trend Movie")).not.toBeInTheDocument();
+
+    // The grid fetched the real /discover filter query.
+    expect(
+      fetchMock.mock.calls.some(([u]) => {
+        const p = new URL(String(u), "http://x").searchParams;
+        return p.get("category") === "filter" && p.get("sortBy") === "rating";
+      }),
+    ).toBe(true);
+
+    // Row-reordering Edit mode is meaningless against a filtered grid.
+    expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
+
+    // Clearing the filter brings the carousels back.
+    fireEvent.click(screen.getByText("Clear filters"));
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Filtered Movie")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit" })).not.toBeDisabled();
+  });
+
+  it("Adult: a sort swaps the browse rows for a sorted grid, and Default restores them", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("sortBy=recently_created"))
+        return jsonResponse([scene({ id: "srt1", title: "Sorted Scene" })]);
+      if (url.includes("/api/modes/adult/studios"))
+        return jsonResponse([studio({ id: "st1", name: "Vixen Studio" })]);
+      if (url.includes("/api/modes/adult/performers"))
+        return jsonResponse([performer({ id: "pf1", name: "A Performer" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    expect(await screen.findByText("Studios")).toBeInTheDocument();
+    expect(await screen.findByText("Performers")).toBeInTheDocument();
+
+    // "Recently Added" → TPDB recently_created sort; rows give way to the grid.
+    fireEvent.click(screen.getByText("Recently Added"));
+
+    expect(await screen.findByText("Sorted Scene")).toBeInTheDocument();
+    expect(screen.queryByText("Studios")).not.toBeInTheDocument();
+    expect(screen.queryByText("Performers")).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).includes("sortBy=recently_created"),
+      ),
+    ).toBe(true);
+
+    // Back to Default restores the browse rows.
+    fireEvent.click(screen.getByText("Default"));
+    expect(await screen.findByText("Studios")).toBeInTheDocument();
+    expect(await screen.findByText("Performers")).toBeInTheDocument();
+    expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
+  });
+
+  // The two tests above only assert view precedence (filter/sort wins while
+  // active). These assert the actual clearing wiring itself — that
+  // submitting a search resets the filter/sort *state* to default, not just
+  // that the bar is hidden while searching. (The reverse direction —
+  // applying a filter/sort while a search is active — isn't reachable
+  // through the UI: the filter/sort bar only renders when !searching(), so
+  // there's no click path that fires it mid-search; Mainstream.tsx's
+  // applyFilters still calls clearSearch() defensively for the theoretical
+  // same-tick case, but that has no user-reachable test surface.) A
+  // regression that dropped setFilters(DEFAULT)/setAdultSort("default")
+  // from a search submit would pass every other test in this file but fail
+  // these.
+  it("Mainstream: submitting a search resets an active filter to default (not just hides it)", async () => {
+    stubFetch((url) => {
+      if (url.includes("category=filter"))
+        return jsonResponse([movie({ id: 77, title: "Filtered Movie" })]);
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Trend Movie" })]);
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse([movie({ id: 90, title: "Search Movie" })]);
+      if (url.includes("/api/modes/series/tmdb-search")) return jsonResponse([]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+
+    // Activate a filter, then submit a search — the search should win (view
+    // precedence, already covered above) AND reset the filter underneath.
+    fireEvent.click(screen.getByText("Highest Rated"));
+    expect(await screen.findByText("Filtered Movie")).toBeInTheDocument();
+
+    fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
+      target: { value: "search" },
+    });
+    fireEvent.submit(screen.getByPlaceholderText("Search movies & shows…").closest("form")!);
+    expect(await screen.findByText("Search Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Filtered Movie")).not.toBeInTheDocument();
+
+    // Clearing the search must land on the carousels, not the filtered
+    // grid — proving the filter was actually reset, not just hidden.
+    fireEvent.click(screen.getByText("Clear"));
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Filtered Movie")).not.toBeInTheDocument();
+    expect(screen.queryByText("Search Movie")).not.toBeInTheDocument();
+  });
+
+  it("Adult: submitting a search resets an active sort to Default (not just hides it)", async () => {
+    stubFetch((url) => {
+      if (url.includes("sortBy=recently_created"))
+        return jsonResponse([scene({ id: "srt1", title: "Sorted Scene" })]);
+      if (url.includes("/api/modes/adult/discover?q="))
+        return jsonResponse([scene({ id: "sr1", title: "Search Scene" })]);
+      if (url.includes("/api/modes/adult/studios"))
+        return jsonResponse([studio({ id: "st1", name: "Vixen Studio" })]);
+      if (url.includes("/api/modes/adult/performers"))
+        return jsonResponse([performer({ id: "pf1", name: "A Performer" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    expect(await screen.findByText("Studios")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Recently Added"));
+    expect(await screen.findByText("Sorted Scene")).toBeInTheDocument();
+
+    fireEvent.input(screen.getByPlaceholderText("Search scenes by title…"), {
+      target: { value: "search" },
+    });
+    fireEvent.submit(screen.getByPlaceholderText("Search scenes by title…").closest("form")!);
+    expect(await screen.findByText("Search Scene")).toBeInTheDocument();
+    expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
+
+    // Clearing the search must land on the browse rows, not the sorted
+    // grid — proving the sort was actually reset, not just hidden.
+    fireEvent.click(screen.getByText("Clear"));
+    expect(await screen.findByText("Studios")).toBeInTheDocument();
+    expect(await screen.findByText("Performers")).toBeInTheDocument();
+    expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
+    expect(screen.queryByText("Search Scene")).not.toBeInTheDocument();
+  });
+});
+
+// The filter/sort query-string builders — asserted directly (not through the
+// rendered screen) so the exact param contract the parallel backend agent
+// implements is pinned. URLSearchParams percent-encodes the genreIds comma
+// (28%2C12), which Go decodes before splitting — so parse the query rather
+// than substring-matching the raw string.
+describe("Discover API — filter/sort query strings", () => {
+  const captureUrl = () => {
+    let captured = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        captured = String(input);
+        return jsonResponse([]);
+      }),
+    );
+    return () => captured;
+  };
+
+  it("fetchDiscoverFiltered builds category=filter with each present param", async () => {
+    const url = captureUrl();
+    await fetchDiscoverFiltered(
+      "movies",
+      { genreIds: [28, 12], year: 2023, minRating: 7, sortBy: "rating" },
+      2,
+    );
+    const parsed = new URL(url(), "http://x");
+    expect(parsed.pathname).toBe("/api/modes/movies/discover");
+    const p = parsed.searchParams;
+    expect(p.get("category")).toBe("filter");
+    expect(p.get("page")).toBe("2");
+    expect(p.get("genreIds")).toBe("28,12");
+    expect(p.get("year")).toBe("2023");
+    expect(p.get("minRating")).toBe("7");
+    expect(p.get("sortBy")).toBe("rating");
+  });
+
+  it("fetchDiscoverFiltered omits unset params (empty genres / null year)", async () => {
+    const url = captureUrl();
+    await fetchDiscoverFiltered("series", {}, 1);
+    const parsed = new URL(url(), "http://x");
+    expect(parsed.pathname).toBe("/api/modes/series/discover");
+    const p = parsed.searchParams;
+    expect(p.get("category")).toBe("filter");
+    expect(p.get("page")).toBe("1");
+    expect(p.has("genreIds")).toBe(false);
+    expect(p.has("year")).toBe(false);
+    expect(p.has("minRating")).toBe(false);
+    expect(p.has("sortBy")).toBe(false);
+  });
+
+  it("fetchAdultDiscoverSorted passes sortBy + page + perPage", async () => {
+    const url = captureUrl();
+    await fetchAdultDiscoverSorted("recently_created", 3);
+    expect(url()).toBe(
+      "/api/modes/adult/discover?sortBy=recently_created&page=3&perPage=20",
+    );
+  });
+
+  it("fetchAdultDiscoverMergedRecent hits the recent-merged route", async () => {
+    const url = captureUrl();
+    await fetchAdultDiscoverMergedRecent(2);
+    expect(url()).toBe(
+      "/api/modes/adult/discover/recent-merged?page=2&perPage=20",
+    );
+  });
+});
+
 describe("Discover — Adult mode disabled (no dangling tab bar)", () => {
   const renderDiscoverDisabled = () =>
     render(() => (

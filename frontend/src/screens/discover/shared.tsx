@@ -577,7 +577,11 @@ const defaultStripPageSize = 20;
 
 export function PaginatedStrip<T>(props: {
   title: string;
-  reloadToken: () => number;
+  // reloadToken is any value that changing signals a reload-from-page-1 (the
+  // "I just configured it, refetch" numeric signal, or a filter/sort-state
+  // string). It's only ever fed to on() as a change trigger — never used
+  // numerically — so number and string work identically here.
+  reloadToken: () => number | string;
   load: (page: number) => Promise<T[]>;
   onError: (err: unknown) => void;
   containerClass?: string;

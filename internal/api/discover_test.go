@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -447,6 +448,125 @@ func TestDiscoverHandler_NetworkRequiresSeriesMode(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for movies network browsing, got %d", resp.StatusCode)
+	}
+}
+
+// TestDiscoverHandler_FilterZeroParams proves category=filter with no filter
+// params is valid (not a 400 like genre/studio/network) — it's a pure
+// default-popularity browse, and the default sort_by=popularity.desc reaches
+// TMDB.
+func TestDiscoverHandler_FilterZeroParams(t *testing.T) {
+	var gotPath, gotSort string
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSort = r.URL.Query().Get("sort_by")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":1,"title":"Some Movie"}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=filter")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a zero-param filter, got %d", resp.StatusCode)
+	}
+	if gotPath != "/discover/movie" || gotSort != "popularity.desc" {
+		t.Errorf("expected /discover/movie?sort_by=popularity.desc, got path=%s sort_by=%s", gotPath, gotSort)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("unexpected items: %+v", items)
+	}
+}
+
+// TestDiscoverHandler_FilterFullCombination proves a full filter combination
+// (genre + year + minRating + rating sort) builds every expected TMDB query
+// param: pipe-joined genres, the movie year field, the rating floor + its
+// vote_count floor, and the mapped sort_by.
+func TestDiscoverHandler_FilterFullCombination(t *testing.T) {
+	var q url.Values
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		q = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":1,"title":"Some Movie"}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=filter&genreIds=28,12&year=2023&minRating=7&sortBy=rating")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if got := q.Get("with_genres"); got != "28|12" {
+		t.Errorf("expected with_genres=28|12, got %q", got)
+	}
+	if got := q.Get("primary_release_year"); got != "2023" {
+		t.Errorf("expected primary_release_year=2023, got %q", got)
+	}
+	if got := q.Get("vote_average.gte"); got != "7.0" {
+		t.Errorf("expected vote_average.gte=7.0, got %q", got)
+	}
+	if got := q.Get("vote_count.gte"); got != "200" {
+		t.Errorf("expected vote_count.gte=200, got %q", got)
+	}
+	if got := q.Get("sort_by"); got != "vote_average.desc" {
+		t.Errorf("expected sort_by=vote_average.desc, got %q", got)
+	}
+}
+
+// TestDiscoverHandler_FilterInvalidSortByFallsBack proves an unrecognized
+// sortBy is mapped to the safe popularity.desc default (mapSortBy is an
+// allow-list, not a passthrough) rather than erroring or leaking the raw
+// client string into TMDB's sort_by.
+func TestDiscoverHandler_FilterInvalidSortByFallsBack(t *testing.T) {
+	var gotSort string
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		gotSort = r.URL.Query().Get("sort_by")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":1,"title":"Some Movie"}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=filter&sortBy=drop%20table")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for an unrecognized sortBy (not a 400), got %d", resp.StatusCode)
+	}
+	if gotSort != "popularity.desc" {
+		t.Errorf("expected an unrecognized sortBy to fall back to popularity.desc, got %q", gotSort)
 	}
 }
 

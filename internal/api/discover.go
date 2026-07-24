@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -24,6 +25,26 @@ func mediaTypeForMode(m mode.Mode) tmdb.MediaType {
 		return tmdb.TV
 	}
 	return tmdb.Movie
+}
+
+// mapSortBy translates the Discover filter bar's UI sort key into a TMDB
+// sort_by value — an allow-list mapper, deliberately NOT a passthrough, so a
+// raw client string can never reach TMDB's sort_by. "newest" maps to the
+// media-type-appropriate date field (first_air_date.desc for tv,
+// primary_release_date.desc for movies), and anything unrecognized (including
+// the empty string) falls back to the safe popularity.desc default.
+func mapSortBy(uiSort string, mt tmdb.MediaType) string {
+	switch uiSort {
+	case "rating":
+		return "vote_average.desc"
+	case "newest":
+		if mt == tmdb.TV {
+			return "first_air_date.desc"
+		}
+		return "primary_release_date.desc"
+	default:
+		return "popularity.desc"
+	}
 }
 
 // discoverHandler returns TMDB's trending or popular titles for {mode}'s
@@ -114,6 +135,35 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, sett
 				return
 			}
 			items, err = sess.TMDB.DiscoverTVByNetwork(ctx, networkID, page)
+		case "filter":
+			// The Discover filter bar's ad-hoc genre/year/rating/sort browse.
+			// Unlike genre/studio/network above, none of these params are
+			// required — category=filter with zero params is a valid pure-sort
+			// or default-popularity browse — so each is parsed leniently and
+			// silently skipped when absent/invalid rather than 400-ing.
+			opts := tmdb.FilterOptions{SortBy: mapSortBy(r.URL.Query().Get("sortBy"), mt)}
+			for _, g := range strings.Split(r.URL.Query().Get("genreIds"), ",") {
+				if id, gerr := strconv.Atoi(strings.TrimSpace(g)); gerr == nil {
+					opts.GenreIDs = append(opts.GenreIDs, id)
+				}
+			}
+			if y, yerr := strconv.Atoi(r.URL.Query().Get("year")); yerr == nil {
+				opts.Year = y
+			}
+			if mr, merr := strconv.ParseFloat(r.URL.Query().Get("minRating"), 64); merr == nil {
+				opts.MinRating = mr
+			}
+			if mt == tmdb.TV {
+				if n, nerr := strconv.Atoi(r.URL.Query().Get("networkId")); nerr == nil {
+					opts.NetworkID = n
+				}
+				items, err = sess.TMDB.DiscoverTVFiltered(ctx, opts, page)
+			} else {
+				if s, serr := strconv.Atoi(r.URL.Query().Get("studioId")); serr == nil {
+					opts.StudioID = s
+				}
+				items, err = sess.TMDB.DiscoverMoviesFiltered(ctx, opts, page)
+			}
 		default:
 			http.Error(w, fmt.Sprintf("unrecognized category %q", category), http.StatusBadRequest)
 			return
@@ -128,6 +178,9 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, sett
 		// (Adult never reaches this handler at all); Upcoming is deliberately
 		// exempt too, since showing not-yet-released titles is that row's
 		// entire purpose — only Trending/Popular claim to be "watch it now."
+		// category=="filter" is deliberately NOT in this condition either: a
+		// year/genre-filtered browse should be able to surface a title with no
+		// US release yet, exactly as genre/studio/network already can.
 		if mt == tmdb.Movie && (category == "trending" || category == "popular") {
 			fetchPage := func(p int) ([]tmdb.Item, error) {
 				if category == "trending" {

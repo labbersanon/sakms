@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
@@ -649,6 +651,142 @@ func TestDiscoverTVByKeyword_SendsKeywordID(t *testing.T) {
 	}
 	if gotKeyword != "818" {
 		t.Errorf("expected with_keywords=818, got %q", gotKeyword)
+	}
+	if len(items) != 1 || items[0].MediaType != TV {
+		t.Errorf("unexpected items: %+v", items)
+	}
+}
+
+// TestDiscoverFilterQuery_GenreORJoin proves multiple genre ids are pipe-
+// joined (OR), not comma-joined (AND) — the deliberate choice so a
+// multi-genre filter returns "any of these," not "all of these."
+func TestDiscoverFilterQuery_GenreORJoin(t *testing.T) {
+	q := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{GenreIDs: []int{28, 12, 16}})
+	if got := q.Get("with_genres"); got != "28|12|16" {
+		t.Errorf("expected pipe-joined with_genres=28|12|16, got %q", got)
+	}
+}
+
+// TestDiscoverFilterQuery_MovieVsTVFieldSplit proves the caller-supplied
+// yearField/dateField names are what actually reach the query — movies use
+// primary_release_*, tv uses first_air_date*.
+func TestDiscoverFilterQuery_MovieVsTVFieldSplit(t *testing.T) {
+	movie := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{Year: 2023})
+	if movie.Get("primary_release_year") != "2023" || movie.Has("first_air_date_year") {
+		t.Errorf("movie query should set primary_release_year only, got %v", movie)
+	}
+	tv := discoverFilterQuery(1, "first_air_date_year", "first_air_date", FilterOptions{Year: 2023})
+	if tv.Get("first_air_date_year") != "2023" || tv.Has("primary_release_year") {
+		t.Errorf("tv query should set first_air_date_year only, got %v", tv)
+	}
+}
+
+// TestDiscoverFilterQuery_VoteCountFloorOnRatingSort proves the vote_count.gte
+// floor is applied for a "Highest Rated" sort even when no explicit MinRating
+// is set — a lone low-vote title must not dominate the top of the grid.
+func TestDiscoverFilterQuery_VoteCountFloorOnRatingSort(t *testing.T) {
+	q := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{SortBy: "vote_average.desc"})
+	if got := q.Get("vote_count.gte"); got != strconv.Itoa(filterVoteCountFloor) {
+		t.Errorf("expected vote_count.gte=%d for a rating sort with no min-rating, got %q", filterVoteCountFloor, got)
+	}
+}
+
+// TestDiscoverFilterQuery_VoteCountFloorOnMinRating proves the floor is also
+// applied whenever an explicit MinRating is set, and that MinRating is
+// formatted to one decimal place.
+func TestDiscoverFilterQuery_VoteCountFloorOnMinRating(t *testing.T) {
+	q := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{MinRating: 7})
+	if got := q.Get("vote_average.gte"); got != "7.0" {
+		t.Errorf("expected vote_average.gte=7.0 (one decimal), got %q", got)
+	}
+	if got := q.Get("vote_count.gte"); got != strconv.Itoa(filterVoteCountFloor) {
+		t.Errorf("expected vote_count.gte floor when a min-rating is set, got %q", got)
+	}
+}
+
+// TestDiscoverFilterQuery_NoVoteCountFloorWhenNeitherSet proves the floor is
+// absent when there's neither a min-rating nor a rating sort — a plain
+// popularity or newest browse shouldn't exclude low-vote titles.
+func TestDiscoverFilterQuery_NoVoteCountFloorWhenNeitherSet(t *testing.T) {
+	q := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{SortBy: "popularity.desc"})
+	if q.Has("vote_count.gte") {
+		t.Errorf("expected no vote_count.gte for a non-rating browse, got %q", q.Get("vote_count.gte"))
+	}
+}
+
+// TestDiscoverFilterQuery_LteBoundOnlyOnNewestSort proves the {dateField}.lte
+// cap is applied only on the newest (date-desc) sort — with nowFn overridden
+// for a deterministic date assertion — and never on other sorts.
+func TestDiscoverFilterQuery_LteBoundOnlyOnNewestSort(t *testing.T) {
+	orig := nowFn
+	nowFn = func() time.Time { return time.Date(2023, 6, 15, 0, 0, 0, 0, time.UTC) }
+	defer func() { nowFn = orig }()
+
+	newest := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{SortBy: "primary_release_date.desc"})
+	if got := newest.Get("primary_release_date.lte"); got != "2023-06-15" {
+		t.Errorf("expected primary_release_date.lte=2023-06-15 on the newest sort, got %q", got)
+	}
+
+	// A rating sort must not carry any .lte date bound.
+	rating := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{SortBy: "vote_average.desc"})
+	if rating.Has("primary_release_date.lte") {
+		t.Errorf("expected no .lte bound on a non-newest sort, got %q", rating.Get("primary_release_date.lte"))
+	}
+
+	// The tv newest sort uses first_air_date, not primary_release_date.
+	tvNewest := discoverFilterQuery(1, "first_air_date_year", "first_air_date", FilterOptions{SortBy: "first_air_date.desc"})
+	if got := tvNewest.Get("first_air_date.lte"); got != "2023-06-15" {
+		t.Errorf("expected first_air_date.lte=2023-06-15 on the tv newest sort, got %q", got)
+	}
+}
+
+// TestDiscoverMoviesFiltered_HitsDiscoverMovie proves the movie filter path
+// hits /discover/movie and forwards the built query (pipe-joined genres, sort).
+func TestDiscoverMoviesFiltered_HitsDiscoverMovie(t *testing.T) {
+	var gotPath, gotGenres, gotSort string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotGenres = r.URL.Query().Get("with_genres")
+		gotSort = r.URL.Query().Get("sort_by")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(movieFixture))
+	})
+
+	items, err := c.DiscoverMoviesFiltered(context.Background(), FilterOptions{GenreIDs: []int{28, 12}, SortBy: "popularity.desc"}, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/discover/movie" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if gotGenres != "28|12" || gotSort != "popularity.desc" {
+		t.Errorf("expected with_genres=28|12 sort_by=popularity.desc, got with_genres=%q sort_by=%q", gotGenres, gotSort)
+	}
+	if len(items) != 1 || items[0].MediaType != Movie {
+		t.Errorf("unexpected items: %+v", items)
+	}
+}
+
+// TestDiscoverTVFiltered_HitsDiscoverTV is DiscoverMoviesFiltered's sibling for
+// the TV catalog.
+func TestDiscoverTVFiltered_HitsDiscoverTV(t *testing.T) {
+	var gotPath, gotNetwork string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotNetwork = r.URL.Query().Get("with_networks")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(tvFixture))
+	})
+
+	items, err := c.DiscoverTVFiltered(context.Background(), FilterOptions{NetworkID: 213}, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/discover/tv" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if gotNetwork != "213" {
+		t.Errorf("expected with_networks=213, got %q", gotNetwork)
 	}
 	if len(items) != 1 || items[0].MediaType != TV {
 		t.Errorf("unexpected items: %+v", items)

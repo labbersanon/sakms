@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/httpx"
@@ -49,6 +50,13 @@ const (
 // (internal/mode/mode.go). A var (not const) so tests can override it to point
 // at an httptest fake, exactly as TPDBGraphQLURL documents.
 var DefaultBaseURL = "https://api.themoviedb.org/3"
+
+// nowFn returns the current time — indirected as a var (not a direct
+// time.Now() call) for the same reason DefaultBaseURL is a var not a const:
+// so a test can override it deterministically. discoverFilterQuery's
+// "newest" sort caps results to a `{dateField}.lte=<today>` bound, and a
+// hardcoded time.Now() would make that bound untestable.
+var nowFn = time.Now
 
 // Config parameterizes the client. BaseURL is normally DefaultBaseURL — a fixed
 // public endpoint every caller now passes as a hardcoded constant, the same way
@@ -589,6 +597,112 @@ var KnownNetworks = []Network{
 func (c *Client) DiscoverTVByNetwork(ctx context.Context, networkID int, page int) ([]Item, error) {
 	var resp listResponse
 	if err := c.do(ctx, "/discover/tv", discoverQuery(page, "with_networks", networkID), &resp); err != nil {
+		return nil, err
+	}
+	return normalizeAll(resp.Results, TV), nil
+}
+
+// filterVoteCountFloor is the minimum TMDB vote_count a title must have to
+// appear in a rating-aware filtered browse. A single title with one 10/10
+// vote shouldn't outrank a broadly-loved title with a thousand 8/10 votes,
+// so any browse that sorts or filters by rating asks TMDB to exclude
+// low-sample-size outliers below this floor. 200 is a starting default; tune
+// during manual testing if TV (which accumulates fewer votes per title than
+// movies) needs its own lower floor.
+const filterVoteCountFloor = 200
+
+// FilterOptions is the ad-hoc filter/sort surface for the Discover screen's
+// filter bar — distinct from the single-filter discoverQuery family above
+// (kept untouched for the admin Sliders system, per this project's
+// no-premature-abstraction convention). Every field's zero value omits it
+// from the query, so a bare FilterOptions is a valid default-popularity
+// browse. GenreIDs are OR-combined (see discoverFilterQuery); StudioID maps
+// to with_companies (movies) and NetworkID to with_networks (tv); Year filters
+// on the media-type-appropriate year field; MinRating sets vote_average.gte;
+// SortBy is an already-mapped TMDB sort_by value (see api.mapSortBy — never a
+// raw client string).
+type FilterOptions struct {
+	GenreIDs  []int
+	StudioID  int
+	NetworkID int
+	Year      int
+	MinRating float64
+	SortBy    string
+}
+
+// discoverFilterQuery builds the /discover query for one FilterOptions.
+// yearField/dateField are the media-type-specific TMDB field names the caller
+// passes ("primary_release_year"/"primary_release_date" for movies,
+// "first_air_date_year"/"first_air_date" for tv) — the one thing that differs
+// between the movie and tv /discover endpoints, threaded in rather than
+// branched on a MediaType here.
+func discoverFilterQuery(page int, yearField, dateField string, opts FilterOptions) url.Values {
+	q := pageQuery(page)
+	if q == nil {
+		q = url.Values{}
+	}
+	if len(opts.GenreIDs) > 0 {
+		// Pipe-join = OR, NOT comma-join = AND. Most titles carry only 1-3
+		// genres, so an AND of several genres returns almost nothing; a
+		// multi-select genre filter is far more useful as "any of these."
+		ids := make([]string, len(opts.GenreIDs))
+		for i, id := range opts.GenreIDs {
+			ids[i] = strconv.Itoa(id)
+		}
+		q.Set("with_genres", strings.Join(ids, "|"))
+	}
+	if opts.StudioID > 0 {
+		q.Set("with_companies", strconv.Itoa(opts.StudioID))
+	}
+	if opts.NetworkID > 0 {
+		q.Set("with_networks", strconv.Itoa(opts.NetworkID))
+	}
+	if opts.Year > 0 {
+		q.Set(yearField, strconv.Itoa(opts.Year))
+	}
+	if opts.MinRating > 0 {
+		q.Set("vote_average.gte", strconv.FormatFloat(opts.MinRating, 'f', 1, 64))
+	}
+	// Apply the vote_count floor whenever the result set is rating-aware —
+	// either an explicit MinRating, or a "Highest Rated" sort with no explicit
+	// minimum (which still needs the floor, or a lone high-rated low-vote title
+	// dominates the top of the grid). See filterVoteCountFloor's doc.
+	if opts.MinRating > 0 || opts.SortBy == "vote_average.desc" {
+		q.Set("vote_count.gte", strconv.Itoa(filterVoteCountFloor))
+	}
+	if opts.SortBy != "" {
+		q.Set("sort_by", opts.SortBy)
+		// On the "newest" sort (date descending), also cap to today so
+		// unreleased/placeholder-dated titles — which TMDB dates far in the
+		// future — don't dominate the top of the grid (Upcoming has its own
+		// row for those). Only this sort needs the bound; a popularity or
+		// rating sort isn't ordered by date at all.
+		if opts.SortBy == dateField+".desc" {
+			q.Set(dateField+".lte", nowFn().Format("2006-01-02"))
+		}
+	}
+	return q
+}
+
+// DiscoverMoviesFiltered returns TMDB movies matching opts (genre/studio/year/
+// rating/sort), for the given 1-based page — the Discover filter bar's Movies
+// data source. Sibling of DiscoverMoviesByGenre, but built from the richer
+// multi-field FilterOptions rather than one filter id.
+func (c *Client) DiscoverMoviesFiltered(ctx context.Context, opts FilterOptions, page int) ([]Item, error) {
+	var resp listResponse
+	if err := c.do(ctx, "/discover/movie", discoverFilterQuery(page, "primary_release_year", "primary_release_date", opts), &resp); err != nil {
+		return nil, err
+	}
+	return normalizeAll(resp.Results, Movie), nil
+}
+
+// DiscoverTVFiltered is DiscoverMoviesFiltered's direct sibling for the TV
+// catalog — note the different year/date field names TMDB's /discover/tv
+// endpoint uses (first_air_date_year/first_air_date, not
+// primary_release_year/primary_release_date).
+func (c *Client) DiscoverTVFiltered(ctx context.Context, opts FilterOptions, page int) ([]Item, error) {
+	var resp listResponse
+	if err := c.do(ctx, "/discover/tv", discoverFilterQuery(page, "first_air_date_year", "first_air_date", opts), &resp); err != nil {
 		return nil, err
 	}
 	return normalizeAll(resp.Results, TV), nil

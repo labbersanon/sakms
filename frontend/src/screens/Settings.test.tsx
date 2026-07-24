@@ -76,7 +76,7 @@ function defaultGet(url: string): Response | undefined {
     return jsonResponse({ intervalSeconds: 0 });
   if (url.includes("/api/admin/watch-folders"))
     return jsonResponse({ enabled: false, roots: {} });
-  // EntityDatabaseSection (Advanced > Adult) mount GET — empty cache, no
+  // EntityDatabaseSection (Global, unconditional) mount GET — empty cache, no
   // sources synced yet.
   if (url.includes("/api/admin/entity-sync"))
     return jsonResponse({ studioCount: 0, performerCount: 0, sources: [] });
@@ -154,7 +154,7 @@ const renderSettings = () => render(() => <Settings onReboot={() => {}} />);
 // role+name so they never collide with a Card's <legend> of the same text
 // (legends aren't buttons) nor with the Movies/Series/Adult mode buttons.
 const goToSection = (
-  name: "Connections" | "Auth" | "AI" | "Library" | "Advanced" | "UI",
+  name: "Connections" | "Auth" | "AI" | "Library" | "Advanced" | "UI" | "Global",
 ) => fireEvent.click(screen.getByRole("button", { name }));
 
 // clickSectionSave clicks the one section-level Save button per tab. The batched-
@@ -1431,20 +1431,31 @@ describe("DurationSetting — select-all-on-focus", () => {
 });
 
 // clickAdvancedSectionSave scopes the click to the "Advanced Settings" card's
-// own SectionSave button. Needed because WatchFoldersSection's poll-interval
-// DurationSetting (added below the Advanced Settings card, standalone — not
-// wrapped in this tab's SectionSave, same as Entity Database's
-// entity-sync-interval) renders its own always-visible "Save" button. Unlike
-// entity-sync-interval (Adult-only), WatchFoldersSection mounts in every
-// mode, so a bare "Save" role query is no longer unique on this tab at all,
-// not just in Adult mode — see the pre-existing identify-enabled test further
-// down for the original instance of this same scoping need.
+// own SectionSave button. The Advanced tab now holds only the per-mode
+// SectionSave-batched fields (phash-threshold, match-confidence-threshold,
+// identify-enabled) — recheck-interval, Entity Database, and Watch Folders
+// all moved to the Global tab, each with its own standalone Save button, so
+// they no longer collide with this scoped query. Kept scoped (rather than
+// switched to the bare clickSectionSave helper) since it's still correct and
+// makes no assumption about what else might render on this tab.
 const clickAdvancedSectionSave = () => {
   const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
   fireEvent.click(within(advancedCard).getByRole("button", { name: "Save" }));
 };
 
-describe("Advanced Settings", () => {
+// clickStandaloneSave scopes a click to a single standalone-save field's own
+// Save button — the same scoped-lookup pattern the pre-existing
+// watch-folders-poll-interval test uses (`.closest("div.mb-3")` on the input,
+// then find "Save" within that scope), needed now that recheck-interval is a
+// standalone (non-SectionSave-batched) field on the Global tab with its own
+// always-visible Save button, alongside Entity Database's and Watch Folders'
+// own standalone Save buttons on the same tab.
+const clickStandaloneSave = (input: HTMLElement) => {
+  const container = input.closest("div.mb-3") as HTMLElement;
+  fireEvent.click(within(container).getByRole("button", { name: "Save" }));
+};
+
+describe("Global Settings", () => {
   it("recheck-interval (Days/Hours/Minutes picker) saves to the GLOBAL /api/settings/recheck-interval as seconds", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/settings/recheck-interval") && url.includes("/api"))
@@ -1452,14 +1463,16 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Global");
     // Value 0 defaults the picker to the "Hours" unit; typing "1" there means
     // 1 hour = 3600 seconds.
     const input = (await screen.findByLabelText(
       "Monitored title refresh interval — global",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "1" } });
-    clickAdvancedSectionSave();
+    // recheck-interval is a standalone (non-batched) field on the Global tab
+    // now — it has its own Save button, same as watch-folders-poll-interval.
+    clickStandaloneSave(input);
     await waitFor(() =>
       expect(
         calls.some(
@@ -1483,13 +1496,13 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Global");
     const input = (await screen.findByLabelText(
       "Monitored title refresh interval — global",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "-5" } });
     await waitFor(() => expect(input.value).toBe("0"));
-    clickAdvancedSectionSave();
+    clickStandaloneSave(input);
     await waitFor(() =>
       expect(
         calls.some(
@@ -1509,7 +1522,7 @@ describe("Advanced Settings", () => {
   it("clearing the recheck-interval amount stays blank while editing, not forced back to 0", async () => {
     stubFetch();
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Global");
     const input = (await screen.findByLabelText(
       "Monitored title refresh interval — global",
     )) as HTMLInputElement;
@@ -1526,7 +1539,7 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Global");
     const input = (await screen.findByLabelText(
       "Monitored title refresh interval — global",
     )) as HTMLInputElement;
@@ -1534,7 +1547,7 @@ describe("Advanced Settings", () => {
     fireEvent.input(input, { target: { value: "" } });
     fireEvent.blur(input);
     expect(input.value).toBe("0");
-    clickAdvancedSectionSave();
+    clickStandaloneSave(input);
     await waitFor(() =>
       expect(
         calls.some(
@@ -1554,7 +1567,7 @@ describe("Advanced Settings", () => {
   it("'Refresh now' fires the manual recheck trigger and confirms it started", async () => {
     const calls = stubFetch();
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Global");
     await screen.findByLabelText("Monitored title refresh interval — global");
     fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
     await waitFor(() =>
@@ -1582,7 +1595,7 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Global");
     await screen.findByLabelText("Monitored title refresh interval — global");
     fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
     expect(
@@ -1590,6 +1603,75 @@ describe("Advanced Settings", () => {
     ).toBeInTheDocument();
   });
 
+  it("watch-folders poll interval saves to the GLOBAL /api/settings/watch-folders-poll-interval as seconds", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/settings/watch-folders-poll-interval"))
+        return jsonResponse({ intervalSeconds: 0 });
+      if (url.includes("/api/admin/watch-folders"))
+        return jsonResponse({ enabled: false, roots: {} });
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Global");
+    // Value 0 defaults the picker to the "Hours" unit; typing "1" there means
+    // 1 hour = 3600 seconds — same convention as recheck-interval above.
+    const input = (await screen.findByLabelText(
+      "Config poll interval — global",
+    )) as HTMLInputElement;
+    // Zero-state help text uses this control's own zeroLabel override, NOT
+    // the shared "(0 = off, the default)" fallback the other DurationSetting
+    // call sites use — confirms the new zeroLabel prop actually took effect
+    // for this call site.
+    expect(
+      screen.getByText(/0 = use the default 30-second cadence/i),
+    ).toBeInTheDocument();
+    fireEvent.input(input, { target: { value: "1" } });
+    // WatchFoldersSection is a standalone card (not wrapped in any
+    // SectionSave), so this DurationSetting has its own Save button — same
+    // shape as EntityDatabaseSection's entity-sync-interval and
+    // recheck-interval above. Scope to the field's own container to avoid
+    // colliding with the Watch Folders enabled-toggle's own standalone Save
+    // button in the same card.
+    clickStandaloneSave(input);
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/settings/watch-folders-poll-interval"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) =>
+        c.method === "PUT" &&
+        c.url.includes("/api/settings/watch-folders-poll-interval"),
+    )!;
+    expect(put.body).toEqual({ intervalSeconds: 3600 });
+  });
+
+  // The new tab's own render-through-relocation smoke test: everything that
+  // moved off Advanced actually renders under the Global tab, in one place.
+  it("renders the recheck-interval field, 'Refresh now' trigger, watch-folders poll-interval field, and Entity Database section", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("Global");
+    expect(
+      await screen.findByLabelText("Monitored title refresh interval — global"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Refresh now" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Config poll interval — global"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("Entity Database — background sync"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("Advanced Settings", () => {
   it("phash-threshold above 256 disables the section Save button (blocked before clicking, not after)", async () => {
     const calls = stubFetch();
     renderSettings();
@@ -1691,11 +1773,12 @@ describe("Advanced Settings", () => {
       "Adult phash-first identification enabled",
     )) as HTMLInputElement;
     fireEvent.change(toggle, { target: { checked: false } });
-    // Adult mode also mounts the Entity Database section's OWN standalone
-    // Save button (its duration picker sits outside this tab's SectionSave,
-    // same as Adult newest rows' scan-interval card) — so "Save" is no
-    // longer unique on this tab in Adult mode. Scope to the Advanced
-    // SectionSave's own card instead of the shared clickSectionSave helper.
+    // The Advanced tab now holds only the SectionSave-batched per-mode
+    // fields (phash-threshold, match-confidence-threshold,
+    // identify-enabled) — Entity Database, Watch Folders, and
+    // recheck-interval all moved to the Global tab, so a bare "Save" role
+    // query is unique on this tab again. Still scoped to the Advanced
+    // Settings card for robustness, same as clickAdvancedSectionSave.
     const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
     fireEvent.click(within(advancedCard).getByRole("button", { name: "Save" }));
     await waitFor(() =>
@@ -1711,53 +1794,6 @@ describe("Advanced Settings", () => {
       (c) => c.method === "PUT" && c.url.includes("/identify-enabled"),
     )!;
     expect(put.body).toEqual({ enabled: false });
-  });
-
-  it("watch-folders poll interval saves to the GLOBAL /api/settings/watch-folders-poll-interval as seconds", async () => {
-    const calls = stubFetch((url) => {
-      if (url.includes("/api/settings/watch-folders-poll-interval"))
-        return jsonResponse({ intervalSeconds: 0 });
-      if (url.includes("/api/admin/watch-folders"))
-        return jsonResponse({ enabled: false, roots: {} });
-      return undefined;
-    });
-    renderSettings();
-    goToSection("Advanced");
-    // Value 0 defaults the picker to the "Hours" unit; typing "1" there means
-    // 1 hour = 3600 seconds — same convention as recheck-interval above.
-    const input = (await screen.findByLabelText(
-      "Config poll interval — global",
-    )) as HTMLInputElement;
-    // Zero-state help text uses this control's own zeroLabel override, NOT
-    // the shared "(0 = off, the default)" fallback the other three
-    // DurationSetting call sites use — confirms the new zeroLabel prop
-    // actually took effect for this call site.
-    expect(
-      screen.getByText(/0 = use the default 30-second cadence/i),
-    ).toBeInTheDocument();
-    fireEvent.input(input, { target: { value: "1" } });
-    // WatchFoldersSection is a standalone card (not wrapped in the Advanced
-    // tab's SectionSave), so this DurationSetting has its own Save button —
-    // same shape as EntityDatabaseSection's entity-sync-interval. Scope to
-    // the field's own container to avoid colliding with the Watch Folders
-    // enabled-toggle's own standalone Save button in the same card.
-    const container = input.closest("div.mb-3") as HTMLElement;
-    fireEvent.click(within(container).getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(
-        calls.some(
-          (c) =>
-            c.method === "PUT" &&
-            c.url.includes("/api/settings/watch-folders-poll-interval"),
-        ),
-      ).toBe(true),
-    );
-    const put = calls.find(
-      (c) =>
-        c.method === "PUT" &&
-        c.url.includes("/api/settings/watch-folders-poll-interval"),
-    )!;
-    expect(put.body).toEqual({ intervalSeconds: 3600 });
   });
 });
 
@@ -1775,7 +1811,7 @@ describe("Section tabs", () => {
     expect(screen.queryByLabelText("Library root folder")).toBeNull(); // Library
     expect(
       screen.queryByLabelText("Monitored title refresh interval — global"),
-    ).toBeNull(); // Advanced
+    ).toBeNull(); // Global
   });
 
   it("UI tab shows the Discover subsection with Mainstream/Adult sub-tabs, hiding Connections", async () => {
@@ -1841,7 +1877,7 @@ describe("Section tabs", () => {
     expect(screen.getByText("Movies")).toBeInTheDocument();
     expect(screen.getByText("Series")).toBeInTheDocument();
     expect(screen.getByText("Adult")).toBeInTheDocument();
-    // Advanced's global field is NOT on this tab.
+    // Global's field is NOT on this tab.
     expect(
       screen.queryByLabelText("Monitored title refresh interval — global"),
     ).toBeNull();
@@ -1851,9 +1887,11 @@ describe("Section tabs", () => {
     stubFetch();
     renderSettings();
     goToSection("Advanced");
+    // recheck-interval moved to the Global tab — phash-threshold is the field
+    // that actually stays on Advanced.
     expect(
       await screen.findByLabelText(
-        "Monitored title refresh interval — global",
+        "Dedup phash similarity threshold (0–256)",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Library root folder")).toBeNull();

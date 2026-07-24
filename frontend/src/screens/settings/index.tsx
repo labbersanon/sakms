@@ -10,9 +10,11 @@
 // kids classification); UI (screen-presentation admin controls — today a
 // Discover subsection with Mainstream/Adult sub-tabs hosting the custom slider
 // and Adult-newest-row editors, see UI.tsx); Auth (Authentication mode + API
-// Access break-glass key together); Advanced (per-mode phash-threshold; match-
-// confidence-threshold for Movies/Series; identify-enabled for Adult only;
-// recheck-interval is global).
+// Access break-glass key together); Global (settings that don't vary with the
+// mode selector: monitored-title refresh interval + manual trigger, Entity
+// Database, Watch Folders — see Global.tsx); Advanced (per-mode
+// phash-threshold; match-confidence-threshold for Movies/Series;
+// identify-enabled for Adult only).
 //
 // There are TWO INDEPENDENT selectors here and they must not be conflated: the
 // section-tab selector (SECTION_TABS below), and a Movies/Series/Adult MODE
@@ -21,13 +23,14 @@
 // ScreenTabBar — it is NOT registered with the shell, since the shell's single
 // tab slot already holds the section tabs. One shared `mode` signal backs both
 // per-mode tabs, so switching between Library and Advanced preserves the
-// selected mode.
+// selected mode. Global has no mode selector at all — none of its settings
+// vary by mode.
 //
 // This screen is split across settings/: shared primitives (Card, SaveStatus,
 // useSaveStatus, MODE_LABELS) in shared.tsx; one file per section (Connections/
-// Auth/AI/Library/Advanced); ConnectionsTab.tsx and UI.tsx each add an inline
-// sub-tab split combining two of those section files under one top-level tab;
-// this file is the thin tab shell.
+// Auth/AI/Library/Global/Advanced); ConnectionsTab.tsx and UI.tsx each add an
+// inline sub-tab split combining two of those section files under one
+// top-level tab; this file is the thin tab shell.
 
 import { type Component, createSignal, Show } from "solid-js";
 import type { Mode } from "../../api/discover";
@@ -47,6 +50,7 @@ import {
   QualityPrefsSection,
 } from "./Library";
 import { AdvancedSection } from "./Advanced";
+import { GlobalSection } from "./Global";
 import { SectionSave } from "./shared";
 import { UISection } from "./UI";
 import { WebhooksSection } from "./Webhooks";
@@ -63,6 +67,7 @@ const SECTION_TABS: TabDef[] = [
   { id: "auth", label: "Auth" },
   { id: "webhooks", label: "Notifications" },
   { id: "nodes", label: "Nodes" },
+  { id: "global", label: "Global" },
   { id: "advanced", label: "Advanced" },
 ];
 
@@ -135,6 +140,10 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
 
       <Show when={section() === "nodes"}>
         <NodesSection />
+      </Show>
+
+      <Show when={section() === "global"}>
+        <GlobalSection />
       </Show>
 
       <Show when={section() === "advanced"}>

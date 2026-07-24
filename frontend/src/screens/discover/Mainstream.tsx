@@ -21,6 +21,7 @@ import {
   createResource,
   createSignal,
   on,
+  onCleanup,
   For,
   Show,
 } from "solid-js";
@@ -41,9 +42,11 @@ import {
   ConfigureConnectionModal,
   GrabDialog,
   PaginatedStrip,
+  SelectCheckbox,
   TextPoster,
   notConfiguredService,
 } from "./shared";
+import { useSelection } from "./selection";
 import {
   type MainstreamFilters,
   DEFAULT_MAINSTREAM_FILTERS,
@@ -225,20 +228,113 @@ export const GrabButton: Component<{
 // rail and CalendarView reuse the identical card — same reason SeasonEpisodePicker
 // was exported for DetailPopup — rather than each hand-rolling a parallel one-off
 // (which would also miss the later F3 select-mode checkbox this card will gain).
+// SeriesSeasonSelect is the Series-card select-mode UI. There is no
+// season-enumeration data source anywhere in this codebase (DiscoverItem carries
+// no season count; the existing SeasonEpisodePicker is free-text, and DetailPopup
+// gates on that same free-text input), so a Series card CANNOT render a checkbox
+// per season. Instead it reuses SeasonEpisodePicker to ADD one season at a time
+// to the selection (multi-season within one series is in scope; selecting a whole
+// series at once is explicitly OUT of v1 scope). Each added season is its own
+// selection entry keyed series:${tmdbId}:S${season}; while its chip is on screen
+// it register()s its exact grab target, so buildBatch pulls a live, correct
+// payload — an orphaned/removed season is dropped, never grabbed (pre-mortem #5).
+const SeriesSeasonSelect: Component<{ item: DiscoverItem }> = (props) => {
+  const selection = useSelection();
+  const keyFor = (season: number) => `series:${props.item.id}:S${season}`;
+  const targetFor = (season: number): GrabTarget => ({
+    mode: "series",
+    label: `${props.item.title} S${season}`,
+    request: {
+      title: props.item.title,
+      tmdbId: props.item.id,
+      seasonNumber: season,
+      seasonSpecified: true,
+    },
+  });
+  // added is the set of seasons the operator has surfaced on this card. Episode
+  // is intentionally ignored for bulk-select — selection is season-level, per the
+  // plan's key format; the picker's episode box just isn't used here.
+  const [added, setAdded] = createSignal<number[]>([]);
+  const addSeason = (season: number) => {
+    if (season <= 0) return;
+    setAdded((prev) => (prev.includes(season) ? prev : [...prev, season]));
+    if (selection && !selection.has(keyFor(season))) selection.toggle(keyFor(season));
+  };
+  return (
+    <div class="mt-1.5">
+      <For each={added()}>
+        {(season) => {
+          // Register this season's live target while its chip is mounted; the
+          // cleanup deregisters it on removal/unmount so a no-longer-shown
+          // season becomes an orphan and is dropped at submit time.
+          createEffect(() => {
+            if (!selection) return;
+            const cleanup = selection.register(keyFor(season), targetFor(season));
+            onCleanup(cleanup);
+          });
+          const checked = () => selection?.has(keyFor(season)) ?? false;
+          return (
+            <button
+              type="button"
+              class="mb-1 mr-1 inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs"
+              classList={{
+                "border-accent bg-accent text-accent-fg": checked(),
+                "border-border text-muted": !checked(),
+              }}
+              onClick={() => selection?.toggle(keyFor(season))}
+            >
+              <span>{checked() ? "✓" : "+"}</span> Season {season}
+            </button>
+          );
+        }}
+      </For>
+      <SeasonEpisodePicker onSubmit={(season) => addSeason(season)} />
+    </div>
+  );
+};
+
 export const PosterCard: Component<{
   mode: "movies" | "series";
   item: DiscoverItem;
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
 }> = (props) => {
+  const selection = useSelection();
+  const inSelect = () => selection?.selectMode() ?? false;
   const src = () => tmdbPoster(props.item.posterPath);
+  const movieKey = () => `movies:${props.item.id}`;
+  const movieTarget = (): GrabTarget => ({
+    mode: "movies",
+    label: props.item.title,
+    request: { title: props.item.title, tmdbId: props.item.id },
+  });
+  // A Movie is one selectable item and register()s directly while in
+  // select-mode; a Series registers per-season inside SeriesSeasonSelect
+  // (a whole series is never one selectable item — see that component).
+  createEffect(() => {
+    if (!selection || !inSelect() || props.mode !== "movies") return;
+    const cleanup = selection.register(movieKey(), movieTarget());
+    onCleanup(cleanup);
+  });
+  const movieChecked = () =>
+    props.mode === "movies" && (selection?.has(movieKey()) ?? false);
+  // In select-mode the card BODY toggles selection instead of opening the
+  // DetailPopup (movies only; a series toggles via its season chips). Outside
+  // select-mode the click-to-open-popup behavior is unchanged.
+  const onBody = () => {
+    if (inSelect()) {
+      if (props.mode === "movies") selection?.toggle(movieKey());
+      return;
+    }
+    props.onDetail({ mode: props.mode, item: props.item });
+  };
   return (
     <div class="w-[180px] shrink-0">
-      <div
-        class="group cursor-pointer"
-        onClick={() => props.onDetail({ mode: props.mode, item: props.item })}
-      >
+      <div class="group cursor-pointer" onClick={onBody}>
         <div class="relative aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
+          <Show when={inSelect() && props.mode === "movies"}>
+            <SelectCheckbox checked={movieChecked()} />
+          </Show>
           <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
             <img
               src={src()}
@@ -263,9 +359,19 @@ export const PosterCard: Component<{
           </Show>
         </div>
       </div>
-      <div class="mt-1.5">
-        <GrabButton mode={props.mode} item={props.item} onGrab={props.onGrab} />
-      </div>
+      {/* In select-mode a Series swaps its single-grab button for the
+          season-add UI; a Movie keeps its unchanged one-click Grab button (the
+          per-card single-item affordance the plan preserves). */}
+      <Show
+        when={inSelect() && props.mode === "series"}
+        fallback={
+          <div class="mt-1.5">
+            <GrabButton mode={props.mode} item={props.item} onGrab={props.onGrab} />
+          </div>
+        }
+      >
+        <SeriesSeasonSelect item={props.item} />
+      </Show>
     </div>
   );
 };

@@ -92,6 +92,14 @@ func minSeedersFor(m mode.Mode) int {
 //
 // Exactly one release is ever grabbed per call: no bulk action, the same
 // staged-single-mutation invariant every other SAK workflow keeps.
+//
+// AMENDED 2026-07-24: "no bulk action" is now scoped to THIS single-item route.
+// A bounded, user-approved multi-select sibling — POST /api/autograb-batch
+// (autoGrabBatchHandler in autograb_batch.go) — grabs an operator-selected set
+// SEQUENTIALLY (at most one Prowlarr search in flight, capped at
+// MaxBatchGrabItems). It reuses this exact pipeline (grabOneBatchItem) per item;
+// each item is still a single one-release grab, just looped under one request.
+// This handler and its "exactly one add" tests are unchanged.
 func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))

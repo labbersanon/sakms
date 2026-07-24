@@ -8,7 +8,10 @@
 //
 // No bulk actions (project convention): create/update/delete/enable-toggle each
 // act on exactly one row. Reordering is button-based (up/down), not
-// drag-and-drop — same as SliderAdmin.
+// drag-and-drop — same as SliderAdmin. (Still holds HERE — Adult-row CRUD is
+// genuinely single-item. Not absolute app-wide: two bounded, documented bulk
+// exceptions exist elsewhere — bulk-apply on Rename/Dedup/Purge, and bulk-grab
+// in Discover's opt-in Select mode — neither touching this screen.)
 
 import {
   type Component,

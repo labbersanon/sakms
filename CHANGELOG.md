@@ -3285,3 +3285,134 @@ progress notes (mediaRoots enforcement/rejection against a real crafted
 push, a real wrong-folder mapping rejection with evidence, RPM
 build/install under the new non-root user) are still outstanding and
 need a dedicated pass — not exercised by this deploy verification.
+
+## 2026-07-24 — Discover depth features: richer detail popup, calendar, requests worklist, bounded bulk-grab
+
+Closed a real gap between Discover and Sonarr/Radarr/Seerr, grounded in a
+side-by-side comparison against Wade's own production Seerr instance
+(`seerr.zaena.us`) rather than assumption — two real pages (a TV show, a
+movie) were screenshotted and diffed against what this app's DetailPopup
+showed. Findings not previously in the plan: watch-provider availability
+("Currently Streaming On"), per-title keyword tags, a crew grid separate
+from cast, and a collection/franchise banner. One assumption was corrected
+by the same comparison: neither checked Seerr page rendered a
+recommendations/"similar titles" rail — genuinely absent, not below the
+fold — yet the operator chose to keep it in scope anyway; that choice is
+recorded in code so a future session doesn't "fix" it as drift.
+
+Ran as a Planner→Architect→Critic consensus plan (deliberate mode; see
+`.omc/plans/discover-depth-features.md`), one Architect revision round
+(a factual correction — `TVDetails` had no `Runtime`/`Networks` fields
+before this work, contrary to an early plan draft's claim — plus a
+broadened doc-drift sweep, an ADR alternative recorded, a 5th pre-mortem
+scenario, and an execution-risk split into two passes) and one Critic
+ITERATE round (two one-line text fixes: the drift-sweep gate command was
+case-sensitive and missed a real hit, and the bulk-grab backend fork was
+built as the global-endpoint design but left listed as an unresolved
+question). Both rounds closed to APPROVE before either pass touched code.
+
+**Pass 1 (additive, read-only, no guardrail exposure):**
+- **Richer DetailPopup** — new sibling TMDB client methods (`MovieFullCredits`/
+  `TVAggregateFullCredits`, pulling cast+crew from one `/credits` response
+  rather than expanding the names-only Rename-only methods; `MovieKeywords`/
+  `TVKeywords`; `MovieWatchProviders`/`TVWatchProviders`, US+flatrate-scoped
+  matching the existing `HasUSRelease` convention, with a hard "Powered by
+  JustWatch" attribution requirement per TMDB's terms; `MovieRecommendations`/
+  `TVRecommendations`), extended `MovieDetails`/`TVDetails` (status, full
+  release-date list, language, country, studios/networks — genuinely new
+  fields for TV, not previously present), and a new parallel-fan-out,
+  soft-failing `GET /discover/detail` endpoint (one sub-call failing degrades
+  to an empty section, never a whole-popup 500). Revenue/Budget explicitly
+  excluded as low-value. Frontend: a circular % rating gauge, the trailer
+  link elevated to a button, a crew grid above cast, a "More like this" rail,
+  and a structured metadata sidebar.
+- **Calendar view** — a new date-ranged `/discover/calendar` query
+  (`FilterOptions` extended with `DateFrom`/`DateTo`) and an in-Mainstream
+  "Rows | Calendar" toggle (not a new top-level tab, avoiding the same
+  degenerate-tab situation the Adult-disabled case already guards against).
+- **Request-status worklist** — a new cross-mode `GET /api/requests`,
+  derive-on-read from tracked library items + active grabs + Series missing-
+  episode rows (no new persisted table; "Requested" honestly collapses into
+  "Downloading" since this single-operator model has no separate approval
+  queue). A new `/requests` screen + sidebar entry.
+
+Shipped as commit `b27551c`. Independent functional/security/code-quality
+review (three parallel agents) found one real bug — the new trailer button
+was accidentally nested inside the Prowlarr-availability error guard, so it
+vanished whenever that unrelated check failed — fixed before commit, along
+with a missing calendar memoization and two stale doc comments.
+
+**Pass 2 (the bounded guardrail reversal, built and reviewed as its own
+focused change, mirroring how the 2026-07-17 bulk-apply exception shipped
+separately):**
+- **Bulk/multi-select request-and-grab on Discover** — a KNOWING,
+  operator-approved narrowing of Discover's "no bulk actions (Guardrail #3):
+  every affordance grabs exactly one title per click" convention. The
+  operator was directly told this conflicted with the documented guardrail
+  before choosing to override it. Distinct from the bulk-apply exception in
+  the one way that matters: bulk-apply acts on already-reviewed *staged*
+  proposals; Discover's grab flow has no staging step at all, so bulk-grab
+  is N repeats of the same single-item live-acquisition primitive, not a
+  new category of action. Built with three HARD, test-proven safety
+  properties (a build was not considered done without all three): (1)
+  strictly sequential server-side execution — a Prowlarr mock proved max 1
+  concurrent search in flight across a whole batch, never the client-side/
+  goroutine fan-out that would recreate the exact pattern that got the old
+  per-card availability badge permanently banned; (2) a 20-item cap
+  (flattened — a season-expanded series counts one item per selected
+  season) rejected before any search fires, proven by a mock asserting zero
+  requests on an over-cap batch; (3) a full-phrasing, case-insensitive
+  doc-drift sweep across `internal/`, `frontend/`, and `docs/` confirming
+  every one of the ~10 places the old "no bulk actions" convention was
+  asserted is either amended with an AMENDED note (never silently deleted)
+  or confirmed still factually true and scoped to its own screen. A 4th
+  property, added after an Architect-flagged gap: selection state is bound
+  to what's currently rendered — cleared on tab and route change, and any
+  selected-but-no-longer-visible card is dropped before the batch request
+  is built (surfaced to the operator as "N selected, M submitted", never
+  silently) — closing a real live-acquisition mis-grab vector (a stale
+  selection firing a grab against the wrong title after navigating away and
+  back). Results are three-state per item (grabbed / needs-a-manual-pick /
+  error) and never auto-dismiss, so a partial batch failure is never
+  silently swallowed.
+- New global `POST /api/autograb-batch` (cross-mode, mirroring the existing
+  `applyBatchHandler`'s per-mode session-caching pattern), a new
+  `selection.tsx` ref-counted SolidJS context (the orphan-drop safety
+  centerpiece), `BulkBar`/`BulkResultModal` components, and an exported
+  `FallbackPickList` (was module-private) reused verbatim rather than
+  duplicated.
+- Doc sites amended (not silently rewritten): `discover/index.tsx`'s
+  Guardrail #3 comment, `internal/api/autograb.go`, `internal/apidto/dto.go`
+  (the same file the new batch DTOs land in — the highest-risk site for
+  self-contradiction), `frontend/src/api/grab.ts`, `Grabs.tsx`,
+  `SliderAdmin.tsx`, `AdultRowAdmin.tsx`. `frontend/SEERR_SCOPE.md`
+  deliberately left unchanged — its numbered Guardrail #3 is the
+  single-operator/not-multi-user rule, which this feature does not touch
+  (still one operator, no user/role/permission concept introduced); what's
+  narrowed is only the "no bulk actions" convention text a few files
+  separately attributed to that guardrail.
+
+Independent functional/security/code-quality review (three more parallel
+agents, deliberately more adversarial given this pass fires live
+acquisitions and reverses a documented invariant) found no Critical/High/
+Medium blocking issues — security review was clean end-to-end (auth,
+cap enforcement, mode-value allowlisting, SSRF/injection, XSS all verified
+against source, not assumed). Two Medium test-adequacy gaps were closed
+before this entry: a route-change test that would have stayed green even
+if the underlying safety effect were deleted (remounting a component
+trivially clears its own local state — the test needed to isolate the
+effect itself, not the remount), fixed by adding a second test where
+Discover stays mounted across a pathname change; and no backend test had
+proven per-mode session isolation across a genuinely mixed-mode batch,
+closed with a new test that submits one Movies item and one Adult item in
+the same batch with an identical release differing only in whether it
+clears each mode's own seeder floor (5 vs. 3) — the only way to get
+"movies falls back, adult grabs" from an otherwise-identical release is if
+the two items were never routed through the wrong mode's session.
+
+`docs/ROADMAP.md` was deliberately NOT touched by either pass despite being
+one of the plan's enumerated doc sites — it already carries an unrelated,
+uncommitted edit from a different concurrent session sharing this working
+directory, and editing the same region would have risked conflating the
+two. Moving the roadmap entry to "Recently shipped" is left as a manual
+follow-up once that other session's edit is resolved.

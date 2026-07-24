@@ -6,7 +6,11 @@
 // and a human might want to eyeball it. The copy must never read as a failure.
 //
 // This is intentionally NOT a management screen (no bulk actions, no
-// mutate-many affordances) — Guardrail #3 / the project's no-bulk invariant.
+// mutate-many affordances) — the project's no-bulk-on-this-screen convention.
+// This stays factually true and UNCHANGED: Grabs is read-only. The bounded
+// bulk exceptions that now exist (bulk-apply on Rename/Dedup/Purge review
+// queues, and bulk-grab in Discover's opt-in Select mode) live on those
+// screens, not here — Grabs gains no bulk affordance.
 
 import {
   type Component,

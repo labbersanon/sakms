@@ -407,6 +407,11 @@ type Grab struct {
 //     it's more reliable than reconstructing a query from Title/Studio) +
 //     DurationSeconds (TPDB's pre-grab runtime → the scorer's
 //     RuntimeSeconds; 0 = unknown, handled neutrally).
+//
+// The same AutoGrabRequest is reused per item by the bounded multi-select
+// sibling POST /api/autograb-batch (see AutoGrabBatchRequest below). That
+// endpoint is the one documented, user-approved exception to the "one title per
+// call" framing here; this single mode-scoped route is unchanged.
 type AutoGrabRequest struct {
 	Title           string `json:"title"`
 	TMDBID          int    `json:"tmdbId,omitempty"`
@@ -427,6 +432,11 @@ type AutoGrabRequest struct {
 // Status is one of internal/autograb.Status's values ("qualified",
 // "below-floor", "mislabeled", "low-seeders", "unknown-bitrate",
 // "unknown-resolution").
+//
+// "one release per click, never a batch" above describes the manual
+// POST /search/grab affordance and stays true for it; AutoGrabBatchResult
+// (below) reuses this same candidate type for a bulk grab's per-item fallback
+// pick list.
 type AutoGrabCandidate struct {
 	Title       string  `json:"title"`
 	Indexer     string  `json:"indexer"`
@@ -452,12 +462,84 @@ type AutoGrabCandidate struct {
 //     didn't qualify. The operator picks exactly one to grab; Grab is nil.
 //
 // Message is a short human summary for the UI.
+//
+// AutoGrabBatchResult (below) models one item of the bounded multi-select
+// POST /api/autograb-batch on this same three-state shape — the batch is the
+// documented, user-approved exception to the single-grab "one release per call"
+// invariant, not a rewrite of it.
 type AutoGrabResponse struct {
 	Grabbed    bool                `json:"grabbed"`
 	Fallback   bool                `json:"fallback"`
 	Message    string              `json:"message"`
 	Grab       *Grab               `json:"grab,omitempty"`
 	Candidates []AutoGrabCandidate `json:"candidates,omitempty"`
+}
+
+// --- Discover bulk auto-grab: bounded multi-select exception ------------------
+//
+// AMENDED 2026-07-24 — POST /api/autograb-batch is a deliberate, documented,
+// user-approved exception to the single-grab "no bulk action / one release per
+// click, never a batch" invariant the AutoGrabRequest/AutoGrabCandidate/
+// AutoGrabResponse doc comments above describe. Those comments stay factually
+// true for the single-item POST /api/modes/{mode}/autograb route — it still
+// grabs exactly one release per call. This batch endpoint is a separate, bounded
+// path: an operator explicitly multi-selects already-reviewed Discover cards and
+// the server grabs them SEQUENTIALLY (never concurrently — at most one Prowlarr
+// search in flight across the whole batch, the same architectural rule that
+// keeps Discover off per-card indexer probes), capped at MaxBatchGrabItems
+// submitted items, with per-item skip-and-continue semantics. It reuses the
+// single-grab pipeline per item; each item is a real, independent one-release
+// grab, just looped under one request. See internal/api/autograb_batch.go and
+// .omc/plans/discover-depth-features.md Feature 3.
+
+// AutoGrabBatchItem is one entry in an AutoGrabBatchRequest: a mode plus the
+// same per-title AutoGrabRequest the single endpoint takes. Each item carries
+// its own Mode because the batch is cross-mode (a mixed Discover selection can
+// span Movies/Series/Adult), unlike the mode-scoped single route whose mode
+// lives in the URL path.
+type AutoGrabBatchItem struct {
+	Mode    string          `json:"mode"`
+	Request AutoGrabRequest `json:"request"`
+}
+
+// AutoGrabBatchResult is one item's THREE-STATE outcome (modeled on
+// AutoGrabResponse, NOT apply-batch's binary {OK,Error}):
+//   - Grabbed == true:  the item cleared the floor and was sent to the download
+//     client; Grab holds the recorded grab, Candidates empty.
+//   - Fallback == true: nothing auto-qualified; Candidates is the ranked manual
+//     pick list, no grab was attempted.
+//   - Error != "":      the item failed (unknown mode, unconfigured service,
+//     search error, ...); it was skipped and the batch continued.
+//
+// Index is the item's position in the submitted Items slice (stable even when
+// items are reordered for display); Label is a short human tag (the request
+// Title) for the results UI.
+type AutoGrabBatchResult struct {
+	Index      int                 `json:"index"`
+	Mode       string              `json:"mode"`
+	Label      string              `json:"label"`
+	Grabbed    bool                `json:"grabbed"`
+	Fallback   bool                `json:"fallback"`
+	Message    string              `json:"message,omitempty"`
+	Error      string              `json:"error,omitempty"`
+	Grab       *Grab               `json:"grab,omitempty"`
+	Candidates []AutoGrabCandidate `json:"candidates,omitempty"`
+}
+
+// AutoGrabBatchRequest is POST /api/autograb-batch's body — a flattened list of
+// per-mode grab items. The cap (MaxBatchGrabItems) counts these submitted items:
+// a season-expanded series contributes one item per selected season, so the cap
+// bounds live acquisitions fired, not Discover cards selected.
+type AutoGrabBatchRequest struct {
+	Items []AutoGrabBatchItem `json:"items"`
+}
+
+// AutoGrabBatchResponse is POST /api/autograb-batch's result: one
+// AutoGrabBatchResult per submitted item, in submission order. The HTTP status
+// is always 200 (except the pre-loop empty/over-cap 400s) — per-item success or
+// failure lives in the results, never the status code.
+type AutoGrabBatchResponse struct {
+	Results []AutoGrabBatchResult `json:"results"`
 }
 
 // --- Discover detail popup: on-demand per-resolution/tier/protocol availability -

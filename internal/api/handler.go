@@ -288,6 +288,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// bitrate-quality-floor scoring, then either grab the top qualifier or
 	// return the ranked manual pick list. Exactly one release per call.
 	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore))
+	// Bulk auto-grab: a bounded, user-approved multi-select exception to the
+	// single route's "one release per call". Cross-mode (each item carries its
+	// own mode, so NOT under /modes/{mode}); items are grabbed SEQUENTIALLY (max
+	// one Prowlarr search in flight), capped at MaxBatchGrabItems, skip-and-
+	// continue per item. See autoGrabBatchHandler in autograb_batch.go.
+	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
 	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore, libStore, prober))
 	// Request-status worklist: a cross-mode (NOT mode-scoped) rollup aggregated

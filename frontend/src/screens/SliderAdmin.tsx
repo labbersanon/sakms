@@ -10,7 +10,11 @@
 // No bulk actions (project convention): create/update/delete/enable-toggle
 // each act on exactly one slider. Reordering is button-based (up/down), not
 // drag-and-drop — simpler to implement/test and satisfies the task's
-// "drag-OR-button-based" requirement.
+// "drag-OR-button-based" requirement. (This convention still holds HERE — slider
+// CRUD is genuinely single-item. It is not absolute across the whole app: two
+// bounded, documented bulk exceptions exist elsewhere — bulk-apply on
+// Rename/Dedup/Purge review queues, and bulk-grab in Discover's opt-in Select
+// mode — neither of which touches this screen.)
 
 import {
   type Component,

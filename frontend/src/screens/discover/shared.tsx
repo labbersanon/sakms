@@ -200,10 +200,34 @@ export const ConfigureConnectionModal: Component<{
   );
 };
 
+// SelectCheckbox is the select-mode overlay a selectable card shows in the
+// corner of its poster — a purely visual checkbox reflecting whether the card
+// is currently in the bulk-grab selection. Exported so PosterCard and AdultCard
+// (and the Series season chips) render one consistent affordance rather than
+// three hand-rolled ones. It is display-only; the card body's onClick owns the
+// actual toggle.
+export const SelectCheckbox: Component<{ checked: boolean }> = (props) => (
+  <div
+    data-testid="select-checkbox"
+    data-checked={props.checked ? "true" : "false"}
+    class="pointer-events-none absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border-2 text-xs font-bold shadow"
+    classList={{
+      "border-accent bg-accent text-accent-fg": props.checked,
+      "border-white/80 bg-black/50 text-transparent": !props.checked,
+    }}
+    aria-hidden="true"
+  >
+    ✓
+  </div>
+);
+
 // FallbackPickList renders the ranked manual pick list the backend returns when
 // nothing auto-qualified. Each row labels why it wasn't auto-picked and offers
-// a single "Grab this" — one release per click, never a batch.
-const FallbackPickList: Component<{
+// a single "Grab this" — one release per click, never a batch. Exported (was
+// module-private) so BulkResultModal reuses it verbatim for a bulk-grab item
+// that fell back to a manual pick, instead of a second copy (Pass 2 prereq
+// refactor, no behavior change).
+export const FallbackPickList: Component<{
   response: AutoGrabResponse;
   onPick: (c: AutoGrabCandidate) => void;
   grabbing: string;

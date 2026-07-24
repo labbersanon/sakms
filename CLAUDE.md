@@ -128,6 +128,31 @@ above, so don't drop them for convenience:
     anything the operator didn't explicitly check. Grabs and tag actions are
     untouched by this — they still take exactly one already-approved thing,
     same as always.
+  - **AMENDED 2026-07-24 — bounded Discover bulk-grab exception (a second,
+    deliberate, documented reversal; see `docs/ROADMAP.md`'s Discovery &
+    requests UX entry and `CHANGELOG.md`).** Distinct from the bulk-apply
+    exception above in one load-bearing way: bulk-apply acts on
+    *already-reviewed Pending proposals* staged by a prior Scan — there is
+    a review step before the batch ever fires. Discover's Search/Grab
+    flow has no such staging step at all (a click there already fires a
+    live Prowlarr search + download-client add, staged-for-approval's
+    "approval" *is* the operator's click). Bulk-grab is the same
+    single-item primitive repeated N times from one opt-in "Select" mode
+    on Discover, capped (≤20 flattened items — a season-expanded series
+    counts one item per selected season), executed sequentially server-side
+    (`POST /api/autograb-batch`, never a client-side/goroutine fan-out —
+    that would recreate the exact "hundreds of concurrent indexer queries"
+    pattern that got the per-card availability badge permanently banned,
+    see the "Discover never queries Prowlarr" note below), with a
+    three-state per-item result (grabbed / needs-a-manual-pick / error)
+    that never silently swallows a partial failure. It is still NOT a
+    queue-wide "grab everything," a scheduler, or cross-mode
+    auto-approval — every item is one the operator explicitly checked, and
+    every OTHER Discover affordance (the per-card Grab button, the
+    season/episode picker) is unchanged and still strictly single-item.
+    Selection is cleared on tab/route change and any selected-but-no-
+    longer-rendered card is dropped before the request is built, so a
+    stale selection can never fire a live grab of the wrong title.
 - **Secrets encrypted at rest** (`internal/secrets`, a locally generated
   key file, not an OS keychain — the primary deployment target is a
   headless container with no keychain to use).

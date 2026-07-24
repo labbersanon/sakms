@@ -27,6 +27,7 @@ import {
   createEffect,
   createResource,
   createSignal,
+  onCleanup,
   For,
   Show,
 } from "solid-js";
@@ -61,9 +62,11 @@ import {
   ConfigureConnectionModal,
   GrabDialog,
   PaginatedStrip,
+  SelectCheckbox,
   TextPoster,
   notConfiguredService,
 } from "./shared";
+import { useSelection } from "./selection";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
 import {
   type RssFeed,
@@ -134,29 +137,48 @@ const AdultCard: Component<{
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
 }> = (props) => {
+  const selection = useSelection();
+  const inSelect = () => selection?.selectMode() ?? false;
   const src = () => proxyImage(props.item.image);
   const subtitle = () =>
     [props.item.studio, yearOf(props.item.date), sourceLabel(props.item.source)]
       .filter(Boolean)
       .join(" · ");
-  const grab = () =>
-    props.onGrab({
-      mode: "adult",
-      label: props.item.title,
-      request: {
-        title: props.item.title,
-        studio: props.item.studio,
-        releaseTitle: props.item.releaseTitle,
-        durationSeconds: props.item.durationSeconds,
-      },
-    });
+  // A scene is one selectable item, keyed on its stash-box/TPDB scene id.
+  const sceneKey = () => `adult:${props.item.id}`;
+  const sceneTarget = (): GrabTarget => ({
+    mode: "adult",
+    label: props.item.title,
+    request: {
+      title: props.item.title,
+      studio: props.item.studio,
+      releaseTitle: props.item.releaseTitle,
+      durationSeconds: props.item.durationSeconds,
+    },
+  });
+  createEffect(() => {
+    if (!selection || !inSelect()) return;
+    const cleanup = selection.register(sceneKey(), sceneTarget());
+    onCleanup(cleanup);
+  });
+  const checked = () => selection?.has(sceneKey()) ?? false;
+  const grab = () => props.onGrab(sceneTarget());
+  // In select-mode the card body toggles selection instead of opening the
+  // DetailPopup; outside it, the click-to-open behavior is unchanged.
+  const onBody = () => {
+    if (inSelect()) {
+      selection?.toggle(sceneKey());
+      return;
+    }
+    props.onDetail({ mode: "adult", item: props.item });
+  };
   return (
     <div class="w-[200px] shrink-0">
-      <div
-        class="group cursor-pointer"
-        onClick={() => props.onDetail({ mode: "adult", item: props.item })}
-      >
+      <div class="group cursor-pointer" onClick={onBody}>
         <div class="relative aspect-video overflow-hidden rounded-lg border border-border bg-surface">
+          <Show when={inSelect()}>
+            <SelectCheckbox checked={checked()} />
+          </Show>
           <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
             <img
               src={src()}

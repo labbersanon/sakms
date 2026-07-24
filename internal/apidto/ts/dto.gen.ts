@@ -411,6 +411,10 @@ export interface Grab {
  *     it's more reliable than reconstructing a query from Title/Studio) +
  *     DurationSeconds (TPDB's pre-grab runtime → the scorer's
  *     RuntimeSeconds; 0 = unknown, handled neutrally).
+ * The same AutoGrabRequest is reused per item by the bounded multi-select
+ * sibling POST /api/autograb-batch (see AutoGrabBatchRequest below). That
+ * endpoint is the one documented, user-approved exception to the "one title per
+ * call" framing here; this single mode-scoped route is unchanged.
  */
 export interface AutoGrabRequest {
   title: string;
@@ -434,6 +438,10 @@ export interface AutoGrabRequest {
  * Status is one of internal/autograb.Status's values ("qualified",
  * "below-floor", "mislabeled", "low-seeders", "unknown-bitrate",
  * "unknown-resolution").
+ * "one release per click, never a batch" above describes the manual
+ * POST /search/grab affordance and stays true for it; AutoGrabBatchResult
+ * (below) reuses this same candidate type for a bulk grab's per-item fallback
+ * pick list.
  */
 export interface AutoGrabCandidate {
   title: string;
@@ -459,6 +467,10 @@ export interface AutoGrabCandidate {
  *     the SAME score that gated auto-grab), each row labeled with why it
  *     didn't qualify. The operator picks exactly one to grab; Grab is nil.
  * Message is a short human summary for the UI.
+ * AutoGrabBatchResult (below) models one item of the bounded multi-select
+ * POST /api/autograb-batch on this same three-state shape — the batch is the
+ * documented, user-approved exception to the single-grab "one release per call"
+ * invariant, not a rewrite of it.
  */
 export interface AutoGrabResponse {
   grabbed: boolean;
@@ -466,6 +478,59 @@ export interface AutoGrabResponse {
   message: string;
   grab?: Grab;
   candidates?: AutoGrabCandidate[];
+}
+/**
+ * AutoGrabBatchItem is one entry in an AutoGrabBatchRequest: a mode plus the
+ * same per-title AutoGrabRequest the single endpoint takes. Each item carries
+ * its own Mode because the batch is cross-mode (a mixed Discover selection can
+ * span Movies/Series/Adult), unlike the mode-scoped single route whose mode
+ * lives in the URL path.
+ */
+export interface AutoGrabBatchItem {
+  mode: string;
+  request: AutoGrabRequest;
+}
+/**
+ * AutoGrabBatchResult is one item's THREE-STATE outcome (modeled on
+ * AutoGrabResponse, NOT apply-batch's binary {OK,Error}):
+ *   - Grabbed == true:  the item cleared the floor and was sent to the download
+ *     client; Grab holds the recorded grab, Candidates empty.
+ *   - Fallback == true: nothing auto-qualified; Candidates is the ranked manual
+ *     pick list, no grab was attempted.
+ *   - Error != "":      the item failed (unknown mode, unconfigured service,
+ *     search error, ...); it was skipped and the batch continued.
+ * Index is the item's position in the submitted Items slice (stable even when
+ * items are reordered for display); Label is a short human tag (the request
+ * Title) for the results UI.
+ */
+export interface AutoGrabBatchResult {
+  index: number /* int */;
+  mode: string;
+  label: string;
+  grabbed: boolean;
+  fallback: boolean;
+  message?: string;
+  error?: string;
+  grab?: Grab;
+  candidates?: AutoGrabCandidate[];
+}
+/**
+ * AutoGrabBatchRequest is POST /api/autograb-batch's body — a flattened list of
+ * per-mode grab items. The cap (MaxBatchGrabItems) counts these submitted items:
+ * a season-expanded series contributes one item per selected season, so the cap
+ * bounds live acquisitions fired, not Discover cards selected.
+ */
+export interface AutoGrabBatchRequest {
+  items: AutoGrabBatchItem[];
+}
+/**
+ * AutoGrabBatchResponse is POST /api/autograb-batch's result: one
+ * AutoGrabBatchResult per submitted item, in submission order. The HTTP status
+ * is always 200 (except the pre-loop empty/over-cap 400s) — per-item success or
+ * failure lives in the results, never the status code.
+ */
+export interface AutoGrabBatchResponse {
+  results: AutoGrabBatchResult[];
 }
 /**
  * AvailabilityPreview is the full 4-resolution grid — one upfront fetch backs

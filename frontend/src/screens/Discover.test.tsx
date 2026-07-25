@@ -821,6 +821,95 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     );
     expect(stashSubtitle?.textContent).toBe("Blacked · 2023 · StashDB");
   });
+
+  // Drill routing guard (G1/G4): a stash-box studio card carries `box` so its
+  // drill hits the box-scoped scenes endpoint, while a TPDB studio card (no
+  // box) still hits the original TPDB endpoint — a stash-box id must never be
+  // queried against TPDB, and the TPDB path must stay untouched.
+  it("routes a StashDB studio drill to the box endpoint and a TPDB studio drill to the TPDB endpoint", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("/api/connections"))
+        return jsonResponse([connectionSummary("stashdb")]);
+      // Box-scoped drill — matched before the browse path (a substring of it).
+      if (url.includes("/api/modes/adult/discover/stashdb/studios/sbst1/scenes"))
+        return jsonResponse([scene({ id: "sbsc1", title: "StashDB Studio Scene", source: "stashdb" })]);
+      if (url.includes("/api/modes/adult/discover/stashdb/studios"))
+        return jsonResponse([studio({ id: "sbst1", name: "StashDB Studio", source: "stashdb" })]);
+      // TPDB drill — matched before the TPDB browse path.
+      if (url.includes("/api/modes/adult/studios/st1/scenes"))
+        return jsonResponse([scene({ id: "tsc1", title: "TPDB Studio Scene" })]);
+      if (url.includes("/api/modes/adult/studios"))
+        return jsonResponse([studio({ id: "st1", name: "TPDB Studio" })]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+
+    // TPDB studio → the original non-box TPDB endpoint, never a box endpoint.
+    fireEvent.click(await screen.findByText("TPDB Studio"));
+    expect(await screen.findByText("TPDB Studio Scene")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/adult/studios/st1/scenes"),
+      ),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByText("Back to browse"));
+
+    // StashDB studio → the box-scoped endpoint, and never TPDB with the box id.
+    fireEvent.click(await screen.findByText("StashDB Studio"));
+    expect(await screen.findByText("StashDB Studio Scene")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/adult/discover/stashdb/studios/sbst1/scenes"),
+      ),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/adult/studios/sbst1/scenes"),
+      ),
+    ).toBe(false);
+  });
+
+  it("routes a StashDB performer drill to the box endpoint (never TPDB)", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("/api/connections"))
+        return jsonResponse([connectionSummary("stashdb")]);
+      if (url.includes("/api/modes/adult/discover/stashdb/performers/sbpf1/scenes"))
+        return jsonResponse([scene({ id: "sbps1", title: "StashDB Perf Scene", source: "stashdb" })]);
+      if (url.includes("/api/modes/adult/discover/stashdb/performers"))
+        return jsonResponse([
+          performer({
+            id: "sbpf1",
+            name: "StashDB Performer",
+            image: "https://cdn.theporndb.net/performers/sb.jpg",
+            source: "stashdb",
+          }),
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+
+    fireEvent.click(await screen.findByText("StashDB Performer"));
+    expect(await screen.findByText("StashDB Perf Scene")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/adult/discover/stashdb/performers/sbpf1/scenes"),
+      ),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/adult/performers/sbpf1/scenes"),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("Discover — Adult admin newest rows", () => {

@@ -345,6 +345,59 @@ func (c *Client) QueryScenes(ctx context.Context, sort SceneSort, page, perPage 
 	return out, nil
 }
 
+// queryScenesFiltered runs queryScenesQuery with one entity filter applied.
+// filterKey is "studios" or "performers". Filter shape is upstream-schema-
+// grounded (SceneQueryInput.<filterKey>: MultiIDCriterionInput; confirmed from
+// stashapp/stash-box's scene.graphql/filter.graphql on master) but NOT yet
+// smoke-tested against the live server1-configured StashDB/FansDB instances —
+// a live smoke test is expected before relying on it (see the drill-down
+// plan's Guardrail G7). page/perPage are clamped the same lenient way
+// QueryScenes clamps them, sort is DATE / direction DESC (newest first).
+func (c *Client) queryScenesFiltered(ctx context.Context, filterKey, id string, page, perPage int) ([]Scene, error) {
+	if perPage <= 0 {
+		perPage = defaultBrowsePerPage
+	}
+	if page <= 0 {
+		page = 1
+	}
+	input := map[string]any{
+		"page":      page,
+		"per_page":  perPage,
+		"sort":      string(SceneSortDate),
+		"direction": "DESC",
+		filterKey:   map[string]any{"value": []string{id}, "modifier": "INCLUDES"},
+	}
+	var data struct {
+		QueryScenes struct {
+			Scenes []rawBrowseScene `json:"scenes"`
+		} `json:"queryScenes"`
+	}
+	if err := c.do(ctx, queryScenesQuery, map[string]any{"input": input}, &data); err != nil {
+		return nil, err
+	}
+	out := make([]Scene, len(data.QueryScenes.Scenes))
+	for i, rs := range data.QueryScenes.Scenes {
+		out[i] = rs.toScene()
+	}
+	return out, nil
+}
+
+// QueryScenesByStudio browses one page of a stash-box's scenes for a single
+// studio id, newest first — backs the Adult Discover StashDB/FansDB studio-card
+// drill-down. See queryScenesFiltered for the upstream-schema-grounded /
+// live-smoke-test caveat on the filter shape.
+func (c *Client) QueryScenesByStudio(ctx context.Context, studioID string, page, perPage int) ([]Scene, error) {
+	return c.queryScenesFiltered(ctx, "studios", studioID, page, perPage)
+}
+
+// QueryScenesByPerformer browses one page of a stash-box's scenes for a single
+// performer id, newest first — backs the Adult Discover StashDB/FansDB
+// performer-card drill-down. See queryScenesFiltered for the
+// upstream-schema-grounded / live-smoke-test caveat on the filter shape.
+func (c *Client) QueryScenesByPerformer(ctx context.Context, performerID string, page, perPage int) ([]Scene, error) {
+	return c.queryScenesFiltered(ctx, "performers", performerID, page, perPage)
+}
+
 const searchSceneQuery = `query SearchScene($term: String!) {
   searchScene(term: $term) { id title release_date studio { name parent { name } } tags { name } images { url } duration }
 }`

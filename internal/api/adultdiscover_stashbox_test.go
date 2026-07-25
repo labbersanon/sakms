@@ -198,6 +198,137 @@ func TestAdultStashBox_UpstreamErrorIs502(t *testing.T) {
 	}
 }
 
+func TestAdultStashBoxStudioScenes_HappyPathStampsSourceAndPassesID(t *testing.T) {
+	var gotFilter map[string]any
+	box := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				Input map[string]any `json:"input"`
+			} `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if raw, ok := req.Variables.Input["studios"].(map[string]any); ok {
+			gotFilter = raw
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb-st-1","title":"Studio Drill Scene",` +
+			`"release_date":"2024-09-09","studio":{"name":"Blacked","parent":null},` +
+			`"images":[{"url":"http://cdn/drill.jpg"}],"duration":1800,"fingerprints":[]}]}}}`))
+	})
+
+	srv := httptest.NewServer(newAdultMux(t, map[string]string{"stashdb": box.URL}))
+	defer srv.Close()
+
+	var items []adultScene
+	getJSON(t, srv.URL+"/api/modes/adult/discover/stashdb/studios/st-42/scenes", &items)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(items))
+	}
+	got := items[0]
+	if got.ID != "sb-st-1" || got.Title != "Studio Drill Scene" || got.Studio != "Blacked" ||
+		got.Date != "2024-09-09" || got.Image != "http://cdn/drill.jpg" || got.DurationSeconds != 1800 {
+		t.Errorf("unexpected mapping: %+v", got)
+	}
+	if got.Source != "stashdb" {
+		t.Errorf("expected source=stashdb, got %q", got.Source)
+	}
+	// The {id} path segment must reach the outgoing studios filter.
+	if gotFilter == nil {
+		t.Fatal("expected a studios filter in the outgoing request")
+	}
+	if gotFilter["modifier"] != "INCLUDES" {
+		t.Errorf("studios.modifier = %v, want INCLUDES", gotFilter["modifier"])
+	}
+	vals, _ := gotFilter["value"].([]any)
+	if len(vals) != 1 || vals[0] != "st-42" {
+		t.Errorf("studios.value = %v, want [st-42] (the {id} path segment)", gotFilter["value"])
+	}
+}
+
+func TestAdultStashBoxPerformerScenes_HappyPathStampsSourceAndPassesID(t *testing.T) {
+	var gotFilter map[string]any
+	box := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				Input map[string]any `json:"input"`
+			} `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if raw, ok := req.Variables.Input["performers"].(map[string]any); ok {
+			gotFilter = raw
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb-pf-1","title":"Perf Drill Scene",` +
+			`"release_date":"2024-10-10","studio":{"name":"Tushy","parent":null},` +
+			`"images":[],"duration":1200,"fingerprints":[]}]}}}`))
+	})
+
+	srv := httptest.NewServer(newAdultMux(t, map[string]string{"fansdb": box.URL}))
+	defer srv.Close()
+
+	var items []adultScene
+	getJSON(t, srv.URL+"/api/modes/adult/discover/fansdb/performers/pf-77/scenes", &items)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(items))
+	}
+	if items[0].ID != "sb-pf-1" || items[0].Source != "fansdb" {
+		t.Errorf("unexpected mapping: %+v", items[0])
+	}
+	if gotFilter == nil {
+		t.Fatal("expected a performers filter in the outgoing request")
+	}
+	vals, _ := gotFilter["value"].([]any)
+	if len(vals) != 1 || vals[0] != "pf-77" {
+		t.Errorf("performers.value = %v, want [pf-77] (the {id} path segment)", gotFilter["value"])
+	}
+}
+
+func TestAdultStashBoxEntityScenes_NotConfiguredReturnsEmptyArray(t *testing.T) {
+	// No stashdb/fansdb connection upserted → the studio/performer drill-down
+	// routes must answer 200 with a literal [] (optional-source contract).
+	srv := httptest.NewServer(newAdultMux(t, map[string]string{}))
+	defer srv.Close()
+
+	for _, path := range []string{
+		"/api/modes/adult/discover/stashdb/studios/st1/scenes",
+		"/api/modes/adult/discover/stashdb/performers/pf1/scenes",
+		"/api/modes/adult/discover/fansdb/studios/st1/scenes",
+		"/api/modes/adult/discover/fansdb/performers/pf1/scenes",
+	} {
+		var items []adultScene
+		getJSON(t, srv.URL+path, &items)
+		if len(items) != 0 {
+			t.Errorf("%s: expected empty array, got %+v", path, items)
+		}
+	}
+}
+
+func TestAdultStashBoxEntityScenes_UpstreamErrorIs502(t *testing.T) {
+	box := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
+	})
+
+	srv := httptest.NewServer(newAdultMux(t, map[string]string{"stashdb": box.URL}))
+	defer srv.Close()
+
+	for _, path := range []string{
+		"/api/modes/adult/discover/stashdb/studios/st1/scenes",
+		"/api/modes/adult/discover/stashdb/performers/pf1/scenes",
+	} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		func() {
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("%s: expected 502 on a GraphQL/upstream error, got %d", path, resp.StatusCode)
+			}
+		}()
+	}
+}
+
 // --- merged "Recently Released" (now pooled + D5-gated, see adultdiscover_stashbox.go) ---
 //
 // adultDiscoverMergedRecentHandler was re-pointed off the old live TPDB+StashDB

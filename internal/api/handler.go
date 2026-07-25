@@ -199,7 +199,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/recent", adultStashBoxRecentHandler(httpClient, connStore, box))
 		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/trending", adultStashBoxTrendingHandler(httpClient, connStore, box))
 		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/studios", adultStashBoxStudiosHandler(httpClient, connStore, box))
+		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/studios/{id}/scenes", adultStashBoxStudioScenesHandler(httpClient, connStore, box))
 		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/performers", adultStashBoxPerformersHandler(httpClient, connStore, box))
+		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/performers/{id}/scenes", adultStashBoxPerformerScenesHandler(httpClient, connStore, box))
 	}
 	// discoverHandler's category query param now also accepts upcoming/genre/
 	// studio/network (see discover.go) alongside trending/popular — this route

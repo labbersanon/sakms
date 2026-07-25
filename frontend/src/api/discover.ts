@@ -326,6 +326,35 @@ export function fetchStashBoxPerformers(
   );
 }
 
+// fetchStashBoxStudioScenes is the stash-box studio drill-down: one page of just
+// the scenes for a stash-box studio id, scoped to which box (StashDB/FansDB) the
+// id belongs to. Mirrors fetchStashBoxStudios' path family plus the {id}/scenes
+// segment fetchAdultStudioScenes uses; returns the same scene shape (Source is
+// stamped to box server-side, not "tpdb"). box is threaded so a stash-box id is
+// never queried against TPDB or the wrong box.
+export function fetchStashBoxStudioScenes(
+  box: StashBox,
+  id: string,
+  page = 1,
+): Promise<AdultDiscoverItem[]> {
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/discover/${box}/studios/${encodeURIComponent(id)}/scenes?page=${page}&perPage=20`,
+  );
+}
+
+// fetchStashBoxPerformerScenes is the stash-box performer drill-down: one page of
+// just the scenes for a stash-box performer id, scoped to its box. Mirrors
+// fetchStashBoxStudioScenes exactly, only the /performers path segment differs.
+export function fetchStashBoxPerformerScenes(
+  box: StashBox,
+  id: string,
+  page = 1,
+): Promise<AdultDiscoverItem[]> {
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/discover/${box}/performers/${encodeURIComponent(id)}/scenes?page=${page}&perPage=20`,
+  );
+}
+
 // fetchAdultStudios returns one page of TPDB's studio (site) catalog for the
 // Studios browse row. Each card's opaque id doubles as the {id} path segment of
 // fetchAdultStudioScenes below.

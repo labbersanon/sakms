@@ -3,6 +3,7 @@ package stashbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -530,6 +531,166 @@ func TestQueryScenes_SendsPaginationAndSort(t *testing.T) {
 	}
 	if gotInput["direction"] != "DESC" {
 		t.Errorf("direction = %v, want DESC", gotInput["direction"])
+	}
+}
+
+// assertEntityFilter checks the outgoing SceneQueryInput carries the expected
+// single-entity filter under filterKey ("studios"/"performers") with value
+// [wantID] and modifier "INCLUDES" — the executable contract pinning the exact
+// filter field names/shape against the upstream stash-box schema (G7).
+func assertEntityFilter(t *testing.T, gotInput map[string]any, filterKey, wantID string) {
+	t.Helper()
+	raw, ok := gotInput[filterKey]
+	if !ok {
+		t.Fatalf("input missing %q filter, got %+v", filterKey, gotInput)
+	}
+	filter, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("%q filter = %T, want an object", filterKey, raw)
+	}
+	if filter["modifier"] != "INCLUDES" {
+		t.Errorf("%q.modifier = %v, want INCLUDES", filterKey, filter["modifier"])
+	}
+	vals, ok := filter["value"].([]any)
+	if !ok || len(vals) != 1 || vals[0] != wantID {
+		t.Errorf("%q.value = %v, want [%q]", filterKey, filter["value"], wantID)
+	}
+}
+
+func TestQueryScenesByStudio_SendsStudiosFilterAndDecodes(t *testing.T) {
+	var gotInput map[string]any
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				Input map[string]any `json:"input"`
+			} `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotInput = req.Variables.Input
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sc1","title":"Studio Scene",` +
+			`"release_date":"2024-07-07","studio":{"name":"Vixen","parent":null},` +
+			`"images":[{"url":"http://cdn/sc1.jpg"}],"duration":1500,"fingerprints":[]}]}}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.QueryScenesByStudio(context.Background(), "st1", 2, 9)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertEntityFilter(t, gotInput, "studios", "st1")
+	if _, has := gotInput["performers"]; has {
+		t.Errorf("studio query must not carry a performers filter, got %+v", gotInput)
+	}
+	if gotInput["sort"] != "DATE" {
+		t.Errorf("sort = %v, want DATE", gotInput["sort"])
+	}
+	if gotInput["direction"] != "DESC" {
+		t.Errorf("direction = %v, want DESC", gotInput["direction"])
+	}
+	if gotInput["page"].(float64) != 2 || gotInput["per_page"].(float64) != 9 {
+		t.Errorf("pagination not sent through: page=%v per_page=%v", gotInput["page"], gotInput["per_page"])
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(out))
+	}
+	s := out[0]
+	if s.ID != "sc1" || s.Title != "Studio Scene" || s.StudioName != "Vixen" ||
+		s.ReleaseDate != "2024-07-07" || s.ImageURL != "http://cdn/sc1.jpg" || s.Duration != 1500 {
+		t.Errorf("unexpected decode: %+v", s)
+	}
+}
+
+func TestQueryScenesByStudio_ClampsPageAndPerPage(t *testing.T) {
+	var gotInput map[string]any
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				Input map[string]any `json:"input"`
+			} `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotInput = req.Variables.Input
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[]}}}`))
+	})
+	defer closeSrv()
+
+	// page 0 / perPage -1 must clamp to page 1 / per_page 20 (defaultBrowsePerPage).
+	if _, err := c.QueryScenesByStudio(context.Background(), "st1", 0, -1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotInput["page"].(float64) != 1 {
+		t.Errorf("page = %v, want clamped 1", gotInput["page"])
+	}
+	if gotInput["per_page"].(float64) != 20 {
+		t.Errorf("per_page = %v, want defaulted 20", gotInput["per_page"])
+	}
+}
+
+func TestQueryScenesByPerformer_SendsPerformersFilterAndDecodes(t *testing.T) {
+	var gotInput map[string]any
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				Input map[string]any `json:"input"`
+			} `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotInput = req.Variables.Input
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sc2","title":"Perf Scene",` +
+			`"release_date":"2024-08-08","studio":{"name":"Tushy","parent":null},` +
+			`"images":[{"url":"http://cdn/sc2.jpg"}],"duration":2100,"fingerprints":[]}]}}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.QueryScenesByPerformer(context.Background(), "pf9", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertEntityFilter(t, gotInput, "performers", "pf9")
+	if _, has := gotInput["studios"]; has {
+		t.Errorf("performer query must not carry a studios filter, got %+v", gotInput)
+	}
+	if gotInput["sort"] != "DATE" || gotInput["direction"] != "DESC" {
+		t.Errorf("sort/direction = %v/%v, want DATE/DESC", gotInput["sort"], gotInput["direction"])
+	}
+	if len(out) != 1 || out[0].ID != "sc2" || out[0].StudioName != "Tushy" || out[0].Duration != 2100 {
+		t.Fatalf("unexpected decode: %+v", out)
+	}
+}
+
+func TestQueryScenesByStudio_EmptyScenesYieldsEmptySlice(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[]}}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.QueryScenesByStudio(context.Background(), "st1", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("expected empty slice for no scenes, got %+v", out)
+	}
+}
+
+func TestQueryScenesByPerformer_PropagatesGraphQLError(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errors":[{"message":"bad filter"}]}`))
+	})
+	defer closeSrv()
+
+	_, err := c.QueryScenesByPerformer(context.Background(), "pf9", 1, 20)
+	if err == nil {
+		t.Fatal("expected a GraphQL error to propagate")
+	}
+	var gqlErr *GraphQLError
+	if !errors.As(err, &gqlErr) {
+		t.Fatalf("expected *GraphQLError, got %T (%v)", err, err)
 	}
 }
 

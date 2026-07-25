@@ -178,6 +178,85 @@ func adultStashBoxPerformersHandler(httpClient *http.Client, connStore *connecti
 	}
 }
 
+// adultStashBoxStudioScenesHandler is the stash-box studio drill-down — clicking
+// a <Box> Studios-row card shows just that studio's scenes
+// (QueryScenesByStudio, filtered by the opaque stash-box studio id in {id}).
+// Mirrors adultStashBoxStudiosHandler's optional-source contract (unconfigured
+// box → []/200, never a setup prompt) and stamps Source: box. Scenes are built
+// inline rather than via writeAdultScenes, which is typed for []tpdbrest.Scene
+// and stamps Source:"tpdb" (both a type mismatch and a provenance-display bug).
+func adultStashBoxStudioScenesHandler(httpClient *http.Client, connStore *connections.Store, box string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		client, ok, err := adultStashBoxClient(ctx, connStore, httpClient, box)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			writeEmptyJSONArray(w)
+			return
+		}
+		page, perPage := adultPagination(r)
+		scenes, err := client.QueryScenesByStudio(ctx, r.PathValue("id"), page, perPage)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeStashBoxScenes(w, scenes, box)
+	}
+}
+
+// adultStashBoxPerformerScenesHandler is the stash-box performer drill-down —
+// clicking a <Box> Performers-row card shows just that performer's scenes
+// (QueryScenesByPerformer, filtered by the opaque stash-box performer id in
+// {id}). Same optional-source contract and Source: box stamping as
+// adultStashBoxStudioScenesHandler.
+func adultStashBoxPerformerScenesHandler(httpClient *http.Client, connStore *connections.Store, box string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		client, ok, err := adultStashBoxClient(ctx, connStore, httpClient, box)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			writeEmptyJSONArray(w)
+			return
+		}
+		page, perPage := adultPagination(r)
+		scenes, err := client.QueryScenesByPerformer(ctx, r.PathValue("id"), page, perPage)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeStashBoxScenes(w, scenes, box)
+	}
+}
+
+// writeStashBoxScenes encodes a stash-box scene slice into the adultScene wire
+// shape with Source stamped to box ("stashdb"/"fansdb") — the stash-box analogue
+// of writeAdultScenes, kept separate because it takes []stashbox.Scene (not
+// []tpdbrest.Scene) and must stamp the real box provenance, not "tpdb". Mirrors
+// the inline adultScene construction adultStashBoxScenesHandler already uses.
+func writeStashBoxScenes(w http.ResponseWriter, scenes []stashbox.Scene, box string) {
+	out := make([]adultScene, len(scenes))
+	for i, s := range scenes {
+		out[i] = adultScene{
+			ID:              s.ID,
+			Title:           s.Title,
+			Studio:          s.StudioName,
+			Date:            s.ReleaseDate,
+			Image:           s.ImageURL,
+			DurationSeconds: s.Duration,
+			Source:          box,
+			// Rating stays 0 — stash-box has no numeric rating field.
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
 // adultDiscoverMergedRecentHandler backs Adult Discover's "Recently Released"
 // sort-bar row. It is re-pointed off the old live TPDB+StashDB merge and onto
 // the identified-available pool (D5): one page of cached scene/movie entities

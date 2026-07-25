@@ -3,12 +3,12 @@
 // Studios row, and a TPDB Performers row, plus optional StashDB/FansDB
 // scene/Studios/Performers rows shown only when that connection is
 // configured (see the STASH_BOX_ROWS and configuredServices doc comments
-// below). Searching swaps the rows for a plain result grid; clicking a TPDB
-// Studio/Performer card drills down into a paginated grid of just that
-// entity's scenes (the optional sources' Studios/Performers cards are
-// non-interactive — no stash-box scenes-by-entity drill-down endpoint
-// exists yet, see EntityCard). Extracted from the original single-file
-// Discover.tsx.
+// below). Searching swaps the rows for a plain result grid; clicking a
+// Studio/Performer card — TPDB or a stash-box (StashDB/FansDB) source —
+// drills down into a paginated grid of just that entity's scenes. A
+// stash-box drill threads its `box` through AdultDrill so the box-scoped
+// id hits its own catalog, never TPDB's (see EntityCard/AdultDrill).
+// Extracted from the original single-file Discover.tsx.
 //
 // Row order (Optional RSS Discover rows + inline row editor): the browse
 // row block is driven by a merged, operator-reorderable key list (see
@@ -46,8 +46,10 @@ import {
   fetchAdultStudioScenes,
   fetchAdultStudios,
   fetchStashBoxPerformers,
+  fetchStashBoxPerformerScenes,
   fetchStashBoxScenes,
   fetchStashBoxStudios,
+  fetchStashBoxStudioScenes,
   proxyImage,
 } from "../../api/discover";
 import { type AdultSortValue, AdultSortBar } from "./FilterSortBar";
@@ -228,15 +230,14 @@ const AdultCard: Component<{
 // logo's edges (found live 2026-07-15: both Studios and Performers shared
 // one aspect-video/object-cover frame before this fix).
 //
-// onSelect is OPTIONAL: TPDB's Studios/Performers rows pass it and the whole
-// card renders as a button that drills down into that entity's scenes (via
-// setDrill). StashDB/FansDB's Studios/Performers rows deliberately do NOT pass
-// it — there is no stash-box scenes-by-entity drill-down endpoint, and TPDB's
-// drill-down route expects a TPDB id, so wiring a stash-box id into setDrill
-// would silently query the wrong catalog. Omitting onSelect renders a plain,
-// non-interactive <div> tile instead — same art/name, no click behavior — so
-// those rows stay visible (the backend QueryStudios/QueryPerformers browse
-// still shows real data) without a broken or misleading drill-down.
+// onSelect is OPTIONAL: the Studios/Performers rows that support drill-down
+// (TPDB's, and now StashDB/FansDB's) pass it, and the whole card renders as a
+// button that drills into that entity's scenes (via setDrill). A stash-box row
+// passes `box: row.box` too, so setDrill carries the `(box, id)` identity a
+// stash-box entity actually is — the box-scoped fetcher then queries that box's
+// own catalog, never TPDB's. Rows with no drill target (e.g. the admin
+// newest-rows studio/performer tiles) omit onSelect, rendering a plain,
+// non-interactive <div> tile instead — same art/name, no click behavior.
 const EntityCard: Component<{
   kind: "studio" | "performer";
   name: string;
@@ -362,9 +363,18 @@ const STASH_BOX_ORDERABLE_ROWS: StashBoxOrderableRow[] = STASH_BOX_ROWS.flatMap(
   ],
 );
 
-// AdultDrill is the active drill-down target: which entity kind, its opaque TPDB
-// id (passed verbatim to the drill-down endpoint), and its name for the header.
-type AdultDrill = { kind: "studio" | "performer"; id: string; name: string };
+// AdultDrill is the active drill-down target: which entity kind, its opaque id
+// (passed verbatim to the drill-down endpoint), and its name for the header.
+// box is set ONLY for a stash-box (StashDB/FansDB) drill — it carries the
+// `(box, id)` identity a stash-box entity actually is, so the drill loader
+// routes to the box-scoped fetcher instead of TPDB. Absent = a TPDB drill (the
+// original path, unchanged).
+type AdultDrill = {
+  kind: "studio" | "performer";
+  id: string;
+  name: string;
+  box?: StashBox;
+};
 
 // AdultDiscover is the scene-shaped browse, row-based like Mainstream: a search
 // bar over two ordered scene rows (Recently Released, Highest Rated), a Studios
@@ -725,7 +735,16 @@ export const AdultDiscover: Component<{
             load={(page) => fetchStashBoxStudios(row.box, page)}
             onError={setSetupError}
           >
-            {(s) => <EntityCard kind="studio" name={s.name} image={s.image} />}
+            {(s) => (
+              <EntityCard
+                kind="studio"
+                name={s.name}
+                image={s.image}
+                onSelect={() =>
+                  setDrill({ kind: "studio", id: s.id, name: s.name, box: row.box })
+                }
+              />
+            )}
           </PaginatedStrip>
         );
       }
@@ -736,7 +755,16 @@ export const AdultDiscover: Component<{
           load={(page) => fetchStashBoxPerformers(row.box, page)}
           onError={setSetupError}
         >
-          {(p) => <EntityCard kind="performer" name={p.name} image={p.image} />}
+          {(p) => (
+            <EntityCard
+              kind="performer"
+              name={p.name}
+              image={p.image}
+              onSelect={() =>
+                setDrill({ kind: "performer", id: p.id, name: p.name, box: row.box })
+              }
+            />
+          )}
         </PaginatedStrip>
       );
     }
@@ -867,11 +895,22 @@ export const AdultDiscover: Component<{
                 <PaginatedStrip
                   title={d().name}
                   reloadToken={reloadToken}
-                  load={(page) =>
-                    d().kind === "studio"
-                      ? fetchAdultStudioScenes(d().id, page)
-                      : fetchAdultPerformerScenes(d().id, page)
-                  }
+                  load={(page) => {
+                    // Capture box once so TypeScript narrows StashBox | undefined
+                    // away on the branch (reading d().box twice in the ternary
+                    // would not narrow and would not typecheck). box set = a
+                    // stash-box drill (route to the box-scoped fetcher); box
+                    // absent = the original TPDB path, unchanged.
+                    const b = d().box;
+                    if (d().kind === "studio") {
+                      return b
+                        ? fetchStashBoxStudioScenes(b, d().id, page)
+                        : fetchAdultStudioScenes(d().id, page);
+                    }
+                    return b
+                      ? fetchStashBoxPerformerScenes(b, d().id, page)
+                      : fetchAdultPerformerScenes(d().id, page);
+                  }}
                   onError={setSetupError}
                   containerClass="flex flex-wrap gap-3"
                 >

@@ -138,7 +138,13 @@ func (id *Identifier) IdentifyDetailed(ctx context.Context, stem, parentName str
 		return detail, nil
 	}
 
-	if id.Brave == nil {
+	if id.Brave == nil || id.AI == nil {
+		// webSearchAndGround's whole job is handing Brave results to the AI
+		// client for interpretation — with no AI client configured, it has
+		// nothing to do (and ExtractFromSearch would call a nil AIClient and
+		// panic the whole process, which happened in production on 2026-07-25
+		// once the browse pass started actually running and reached this path
+		// with Brave configured but no AI connection set up).
 		return detail, nil
 	}
 

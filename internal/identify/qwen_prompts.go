@@ -136,7 +136,7 @@ type SearchSnippet struct {
 // tokens alone. Rejects a result whose title is too dissimilar to the
 // original filename (search results were clearly about something else).
 func ExtractFromSearch(ctx context.Context, client AIClient, stem string, results []SearchSnippet, parentName string) (GroundedExtraction, error) {
-	if len(results) == 0 {
+	if client == nil || len(results) == 0 {
 		return GroundedExtraction{}, nil
 	}
 

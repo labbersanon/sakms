@@ -262,6 +262,20 @@ func TestExtractFromSearch_NoResultsReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestExtractFromSearch_NilClientReturnsEmpty(t *testing.T) {
+	// Regression guard for the 2026-07-25 production panic: a nil AIClient
+	// (Brave configured but no AI connection set up) must degrade gracefully,
+	// not panic on the nil interface method call.
+	results := []SearchSnippet{{Title: "t", Description: "d", URL: "u"}}
+	got, err := ExtractFromSearch(context.Background(), nil, "stem", results, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != (GroundedExtraction{}) {
+		t.Fatalf("expected zero-value result for a nil client, got %+v", got)
+	}
+}
+
 func TestExtractFromSearch_RejectsDissimilarGroundedTitle(t *testing.T) {
 	// The grounded title has near-zero token overlap with the original
 	// filename — the sanity gate (similarity < 0.2) must reject it.

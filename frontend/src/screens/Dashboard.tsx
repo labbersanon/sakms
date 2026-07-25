@@ -9,11 +9,15 @@
 // The backend emits its first data event ~2s after connect (after its initial
 // sample pair), so the loading state is expected on first mount.
 //
-// Layout is a 3-column grid (CPU + GPUs left, Memory/Network/Container/Storage
-// middle, aggregate Disk I/O right) with two circular arc gauges (CPU, Disk
-// I/O), a used/free donut per storage mount, fill bars for Memory and GPU VRAM,
-// and sparkline history for CPU and Network — the sakms cream/navy/gold palette
-// throughout, via the semantic color tokens (never hard-coded hex).
+// Layout is a 3-column grid (CPU + GPUs left, Memory/Network/Container middle,
+// aggregate Disk I/O right) followed by a full-width Storage Mounts section: a
+// responsive multi-column grid of compact used/free donut tiles, one per mount,
+// so several sit side-by-side rather than stacking one-per-row (which forced
+// scrolling once several root folders were configured). Two circular arc gauges
+// (CPU, Disk I/O), a compact used/free donut per storage mount, fill bars for
+// Memory and GPU VRAM, and sparkline history for CPU and Network — the sakms
+// cream/navy/gold palette throughout, via the semantic color tokens (never
+// hard-coded hex).
 
 import {
   type Component,
@@ -163,17 +167,23 @@ function arcPath(startAngle: number, endAngle: number): string {
   return `M ${start.x} ${start.y} A ${DONUT_R} ${DONUT_R} 0 ${largeArc} 1 ${end.x} ${end.y}`;
 }
 
-const Donut: Component<{ percent: number; title?: string }> = (props) => {
+const Donut: Component<{ percent: number; title?: string; compact?: boolean }> = (
+  props,
+) => {
   const clamped = () => Math.max(0, Math.min(100, props.percent));
   const usedPct = () => Math.round(clamped());
   const half = DONUT_GAP_DEG / 2;
   const usedAngle = () => (clamped() / 100) * 360;
   const usedD = () => arcPath(half, usedAngle() - half);
   const freeD = () => arcPath(usedAngle() + half, 360 - half);
+  // The ring's stroke and gap are viewBox-relative (units in the 0..100 box),
+  // so a smaller max render width scales the whole ring — thickness included —
+  // proportionally; the compact variant (storage-mount tiles in the dense grid)
+  // just clamps to a smaller width than the default 160px used elsewhere.
   return (
     <svg
       viewBox="0 0 100 100"
-      class="mx-auto w-full max-w-[160px]"
+      class={`mx-auto w-full ${props.compact ? "max-w-[96px]" : "max-w-[160px]"}`}
       role="img"
       aria-label={props.title ?? `${usedPct()}% used`}
       data-used-percent={usedPct()}
@@ -316,6 +326,7 @@ export const Dashboard: Component = () => {
         fallback={<Muted>Waiting for the first live reading…</Muted>}
       >
         {(s) => (
+          <>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-[1fr_2fr_1fr]">
             {/* Left column: CPU gauge + history, then per-GPU cards. */}
             <div class="flex flex-col gap-4">
@@ -367,7 +378,7 @@ export const Dashboard: Component = () => {
               </For>
             </div>
 
-            {/* Middle column: Memory, Network, Container disk, Storage. */}
+            {/* Middle column: Memory, Network, Container disk. */}
             <div class="flex flex-col gap-4">
               <Card title="Memory">
                 <div class="mb-2 text-sm text-fg">
@@ -395,35 +406,6 @@ export const Dashboard: Component = () => {
                   <span>W: {formatBps(s().containerDiskWriteBps)}</span>
                 </div>
               </Card>
-
-              <For each={s().storageMounts}>
-                {(mount) => (
-                  <Card title={mount.name}>
-                    <Show
-                      when={mount.configured}
-                      fallback={<Muted>Not configured</Muted>}
-                    >
-                      <div class="mb-2 text-sm text-fg">
-                        {formatGB(mount.totalBytes - mount.availBytes)} used
-                        {" of "}
-                        {formatGB(mount.totalBytes)}
-                      </div>
-                      <Donut
-                        percent={
-                          mount.totalBytes > 0
-                            ? ((mount.totalBytes - mount.availBytes) /
-                                mount.totalBytes) *
-                              100
-                            : 0
-                        }
-                        title={`${formatGB(
-                          mount.totalBytes - mount.availBytes,
-                        )} used · ${formatGB(mount.availBytes)} free`}
-                      />
-                    </Show>
-                  </Card>
-                )}
-              </For>
             </div>
 
             {/* Right column: aggregate Disk I/O gauge + per-disk breakdown. */}
@@ -453,6 +435,49 @@ export const Dashboard: Component = () => {
               </Card>
             </div>
           </div>
+
+          {/* Storage Mounts — pulled out of the 3-column grid into their own
+              full-width, responsive multi-column grid so several compact
+              used/free donut tiles sit side-by-side instead of stacking one
+              per row down the middle column (which required scrolling once a
+              real number of root folders was configured). */}
+          <div class="mt-4">
+            <h2 class="mb-2 px-2 text-sm font-semibold text-fg">
+              Storage Mounts
+            </h2>
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              <For each={s().storageMounts}>
+                {(mount) => (
+                  <Card title={mount.name}>
+                    <Show
+                      when={mount.configured}
+                      fallback={<Muted>Not configured</Muted>}
+                    >
+                      <Donut
+                        compact
+                        percent={
+                          mount.totalBytes > 0
+                            ? ((mount.totalBytes - mount.availBytes) /
+                                mount.totalBytes) *
+                              100
+                            : 0
+                        }
+                        title={`${formatGB(
+                          mount.totalBytes - mount.availBytes,
+                        )} used · ${formatGB(mount.availBytes)} free`}
+                      />
+                      <div class="mt-2 text-center text-xs text-fg">
+                        {formatGB(mount.totalBytes - mount.availBytes)} used
+                        {" of "}
+                        {formatGB(mount.totalBytes)}
+                      </div>
+                    </Show>
+                  </Card>
+                )}
+              </For>
+            </div>
+          </div>
+          </>
         )}
       </Show>
     </div>

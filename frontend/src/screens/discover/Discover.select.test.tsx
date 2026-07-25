@@ -263,7 +263,9 @@ describe("Discover select-mode — works over every card surface", () => {
 
     fireEvent.click(screen.getByText("Select"));
     // Apply a rating filter → the carousels are replaced by the filtered grid.
-    fireEvent.click(screen.getByText("7+"));
+    fireEvent.change(screen.getByLabelText("Minimum rating"), {
+      target: { value: "7" },
+    });
     await screen.findByText("Filtered Movie");
 
     // The same checkbox overlay renders over the filtered-grid card.

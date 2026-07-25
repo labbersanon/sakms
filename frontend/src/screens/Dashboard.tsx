@@ -11,8 +11,9 @@
 //
 // Layout is a 3-column grid (CPU + GPUs left, Memory/Network/Container/Storage
 // middle, aggregate Disk I/O right) with two circular arc gauges (CPU, Disk
-// I/O) and sparkline history for CPU and Network — the sakms cream/navy/gold
-// palette throughout, via the semantic color tokens (never hard-coded hex).
+// I/O), a used/free donut per storage mount, fill bars for Memory and GPU VRAM,
+// and sparkline history for CPU and Network — the sakms cream/navy/gold palette
+// throughout, via the semantic color tokens (never hard-coded hex).
 
 import {
   type Component,
@@ -120,6 +121,97 @@ const ArcGauge: Component<{
         font-size="9"
       >
         {props.sublabel}
+      </text>
+    </svg>
+  );
+};
+
+// Donut is a two-slice used/free ring — a parts-of-a-whole snapshot of how full
+// a storage mount is. It's a *meter* (a magnitude read against a track), not a
+// categorical two-series chart: the used slice carries the accent, the free
+// slice is the same surface-2 track the Bar and ArcGauge above use, so the pair
+// reads as "fill vs. remaining" rather than two independent identities. Each
+// slice is an explicit arc <path> (rather than ArcGauge's dash-patterned circle)
+// because both slices need a real 2px surface gap between them — the white card
+// shows through the gap, which is the secondary encoding that keeps the two pale
+// arcs distinct without relying on color contrast alone. The parent keeps the
+// "{used} used of {total}" text line beside this, so identity is never
+// color-alone.
+const DONUT_R = 38; // ring radius within the 0..100 viewBox
+const DONUT_STROKE = 14; // ring thickness
+const DONUT_C = 2 * Math.PI * DONUT_R; // ≈ 238.76
+// DONUT_GAP_DEG turns a ~3px surface gap (at the ~160px max render width) into
+// degrees of arc, split half onto each end of a slice.
+const DONUT_GAP_DEG = (3 / DONUT_C) * 360;
+
+// polarToCartesian maps a clockwise angle measured from 12 o'clock (0° = top)
+// to an (x,y) on the ring. SVG's y-axis points down, so adding the standard
+// −90° phase makes increasing angles sweep clockwise.
+function polarToCartesian(angleDeg: number): { x: number; y: number } {
+  const a = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: 50 + DONUT_R * Math.cos(a), y: 50 + DONUT_R * Math.sin(a) };
+}
+
+// arcPath returns an SVG arc `d` from startAngle to endAngle (clockwise, degrees
+// from 12 o'clock). It returns "" for a non-positive sweep so a slice narrower
+// than the gap simply draws nothing.
+function arcPath(startAngle: number, endAngle: number): string {
+  if (endAngle - startAngle <= 0) return "";
+  const start = polarToCartesian(startAngle);
+  const end = polarToCartesian(endAngle);
+  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${DONUT_R} ${DONUT_R} 0 ${largeArc} 1 ${end.x} ${end.y}`;
+}
+
+const Donut: Component<{ percent: number; title?: string }> = (props) => {
+  const clamped = () => Math.max(0, Math.min(100, props.percent));
+  const usedPct = () => Math.round(clamped());
+  const half = DONUT_GAP_DEG / 2;
+  const usedAngle = () => (clamped() / 100) * 360;
+  const usedD = () => arcPath(half, usedAngle() - half);
+  const freeD = () => arcPath(usedAngle() + half, 360 - half);
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      class="mx-auto w-full max-w-[160px]"
+      role="img"
+      aria-label={props.title ?? `${usedPct()}% used`}
+      data-used-percent={usedPct()}
+    >
+      <Show when={props.title}>
+        {(t) => <title>{t()}</title>}
+      </Show>
+      <path
+        d={freeD()}
+        fill="none"
+        stroke="currentColor"
+        stroke-width={DONUT_STROKE}
+        class="text-surface-2"
+      />
+      <path
+        d={usedD()}
+        fill="none"
+        stroke="currentColor"
+        stroke-width={DONUT_STROKE}
+        class="text-accent"
+      />
+      <text
+        x="50"
+        y="48"
+        text-anchor="middle"
+        class="fill-fg font-bold"
+        font-size="16"
+      >
+        {usedPct()}%
+      </text>
+      <text
+        x="50"
+        y="61"
+        text-anchor="middle"
+        class="fill-muted"
+        font-size="8"
+      >
+        used
       </text>
     </svg>
   );
@@ -316,7 +408,7 @@ export const Dashboard: Component = () => {
                         {" of "}
                         {formatGB(mount.totalBytes)}
                       </div>
-                      <Bar
+                      <Donut
                         percent={
                           mount.totalBytes > 0
                             ? ((mount.totalBytes - mount.availBytes) /
@@ -324,6 +416,9 @@ export const Dashboard: Component = () => {
                               100
                             : 0
                         }
+                        title={`${formatGB(
+                          mount.totalBytes - mount.availBytes,
+                        )} used · ${formatGB(mount.availBytes)} free`}
                       />
                     </Show>
                   </Card>

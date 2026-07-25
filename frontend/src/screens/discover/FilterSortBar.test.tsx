@@ -1,8 +1,10 @@
 // FilterSortBar tests: the isMainstreamFilterActive truth table plus the two
-// rendered bars' onChange wiring (genre chips, content-type toggle, min-rating/
-// sort-by pills, year select, clear; Adult's sort pill mapping). Mirrors this
-// repo's Discover test conventions (stubGlobal("fetch") + a controlled
-// signal driving `value`, so an interaction's onChange re-renders the bar).
+// rendered bars' onChange wiring (content-type/genre/min-rating/sort-by/year
+// selects, clear; Adult's sort select mapping). Every control is a native
+// <select> now, so interactions are fireEvent.change(getByLabelText(...)) —
+// the same pattern the year select already used. Mirrors this repo's Discover
+// test conventions (stubGlobal("fetch") + a controlled signal driving `value`,
+// so an interaction's onChange re-renders the bar).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
@@ -52,7 +54,8 @@ describe("isMainstreamFilterActive", () => {
     );
   });
   it("a genre / year / min-rating / non-default sort is active", () => {
-    expect(isMainstreamFilterActive({ ...base, genreIds: [28] })).toBe(true);
+    expect(isMainstreamFilterActive({ ...base, genreId: 5 })).toBe(true);
+    expect(isMainstreamFilterActive({ ...base, genreId: null })).toBe(false);
     expect(isMainstreamFilterActive({ ...base, year: 2023 })).toBe(true);
     expect(isMainstreamFilterActive({ ...base, minRating: 7 })).toBe(true);
     expect(isMainstreamFilterActive({ ...base, sortBy: "rating" })).toBe(true);
@@ -71,32 +74,51 @@ describe("MainstreamFilterSortBar", () => {
     return { value, onChange };
   };
 
-  it("toggles a genre chip and reports its id via onChange", async () => {
+  it("selects a genre from the dropdown and reports its id via onChange", async () => {
     stubGenres([
       { id: 28, name: "Action" },
       { id: 12, name: "Adventure" },
     ]);
     const { onChange } = renderBar();
-    fireEvent.click(await screen.findByText("Action"));
+    // The genre options load async; wait for one before selecting it.
+    await screen.findByText("Action");
+    fireEvent.change(screen.getByLabelText("Genre"), {
+      target: { value: "28" },
+    });
     expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ genreIds: [28] }),
+      expect.objectContaining({ genreId: 28 }),
     );
   });
 
-  it("switching content type clears genre ids and reloads the genre list", async () => {
+  it("'All genres' maps back to null", async () => {
+    stubGenres([{ id: 28, name: "Action" }]);
+    const { onChange } = renderBar({
+      ...DEFAULT_MAINSTREAM_FILTERS,
+      genreId: 28,
+    });
+    await screen.findByText("Action");
+    fireEvent.change(screen.getByLabelText("Genre"), { target: { value: "" } });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ genreId: null }),
+    );
+  });
+
+  it("switching content type clears the genre and reloads the genre list", async () => {
     const fn = stubGenres(
       [{ id: 28, name: "Action" }],
       [{ id: 10759, name: "Action & Adventure" }],
     );
     const { onChange } = renderBar({
       ...DEFAULT_MAINSTREAM_FILTERS,
-      genreIds: [28],
+      genreId: 28,
     });
-    fireEvent.click(screen.getByText("Series"));
+    fireEvent.change(screen.getByLabelText("Content type"), {
+      target: { value: "series" },
+    });
     expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ contentType: "series", genreIds: [] }),
+      expect.objectContaining({ contentType: "series", genreId: null }),
     );
-    // The TV genre list is fetched and its (different-id-space) chip renders.
+    // The TV genre list is fetched and its (different-id-space) option renders.
     expect(await screen.findByText("Action & Adventure")).toBeInTheDocument();
     expect(
       fn.mock.calls.some(([u]) =>
@@ -105,27 +127,35 @@ describe("MainstreamFilterSortBar", () => {
     ).toBe(true);
   });
 
-  it("maps the min-rating pill to a number, and 'Any rating' back to null", () => {
+  it("maps the min-rating select to a number, and 'Any rating' back to null", () => {
     stubGenres([]);
     const { onChange } = renderBar();
-    fireEvent.click(screen.getByText("7+"));
+    fireEvent.change(screen.getByLabelText("Minimum rating"), {
+      target: { value: "7" },
+    });
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ minRating: 7 }),
     );
-    fireEvent.click(screen.getByText("Any rating"));
+    fireEvent.change(screen.getByLabelText("Minimum rating"), {
+      target: { value: "any" },
+    });
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ minRating: null }),
     );
   });
 
-  it("maps the sort-by pills to their UI keys", () => {
+  it("maps the sort-by select to its UI keys", () => {
     stubGenres([]);
     const { onChange } = renderBar();
-    fireEvent.click(screen.getByText("Highest Rated"));
+    fireEvent.change(screen.getByLabelText("Sort by"), {
+      target: { value: "rating" },
+    });
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ sortBy: "rating" }),
     );
-    fireEvent.click(screen.getByText("Newest"));
+    fireEvent.change(screen.getByLabelText("Sort by"), {
+      target: { value: "newest" },
+    });
     expect(onChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ sortBy: "newest" }),
     );
@@ -171,15 +201,23 @@ describe("AdultSortBar", () => {
     return { onChange };
   };
 
-  it("maps each label to its sort value", () => {
+  it("maps each option to its sort value", () => {
     const { onChange } = renderSort();
-    fireEvent.click(screen.getByText("Newest Releases"));
+    fireEvent.change(screen.getByLabelText("Sort"), {
+      target: { value: "newest" },
+    });
     expect(onChange).toHaveBeenLastCalledWith("newest");
-    fireEvent.click(screen.getByText("Recently Added"));
+    fireEvent.change(screen.getByLabelText("Sort"), {
+      target: { value: "recently_created" },
+    });
     expect(onChange).toHaveBeenLastCalledWith("recently_created");
-    fireEvent.click(screen.getByText("Recently Updated"));
+    fireEvent.change(screen.getByLabelText("Sort"), {
+      target: { value: "recently_updated" },
+    });
     expect(onChange).toHaveBeenLastCalledWith("recently_updated");
-    fireEvent.click(screen.getByText("Default"));
+    fireEvent.change(screen.getByLabelText("Sort"), {
+      target: { value: "default" },
+    });
     expect(onChange).toHaveBeenLastCalledWith("default");
   });
 

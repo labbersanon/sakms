@@ -1181,7 +1181,9 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
 
     // Activate "Highest Rated" (sortBy=rating) — carousels give way to the grid.
-    fireEvent.click(screen.getByText("Highest Rated"));
+    fireEvent.change(screen.getByLabelText("Sort by"), {
+      target: { value: "rating" },
+    });
 
     expect(await screen.findByText("Filtered Movie")).toBeInTheDocument();
     expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
@@ -1225,7 +1227,9 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     expect(await screen.findByText("Performers")).toBeInTheDocument();
 
     // "Recently Added" → TPDB recently_created sort; rows give way to the grid.
-    fireEvent.click(screen.getByText("Recently Added"));
+    fireEvent.change(screen.getByLabelText("Sort"), {
+      target: { value: "recently_created" },
+    });
 
     expect(await screen.findByText("Sorted Scene")).toBeInTheDocument();
     expect(screen.queryByText("Studios")).not.toBeInTheDocument();
@@ -1237,7 +1241,9 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     ).toBe(true);
 
     // Back to Default restores the browse rows.
-    fireEvent.click(screen.getByText("Default"));
+    fireEvent.change(screen.getByLabelText("Sort"), {
+      target: { value: "default" },
+    });
     expect(await screen.findByText("Studios")).toBeInTheDocument();
     expect(await screen.findByText("Performers")).toBeInTheDocument();
     expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
@@ -1274,7 +1280,9 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
 
     // Activate a filter, then submit a search — the search should win (view
     // precedence, already covered above) AND reset the filter underneath.
-    fireEvent.click(screen.getByText("Highest Rated"));
+    fireEvent.change(screen.getByLabelText("Sort by"), {
+      target: { value: "rating" },
+    });
     expect(await screen.findByText("Filtered Movie")).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
@@ -1312,7 +1320,9 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     fireEvent.click(await screen.findByText("Adult"));
     expect(await screen.findByText("Studios")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Recently Added"));
+    fireEvent.change(screen.getByLabelText("Sort"), {
+      target: { value: "recently_created" },
+    });
     expect(await screen.findByText("Sorted Scene")).toBeInTheDocument();
 
     fireEvent.input(screen.getByPlaceholderText("Search scenes by title…"), {

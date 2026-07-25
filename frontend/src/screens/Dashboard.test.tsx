@@ -103,6 +103,83 @@ describe("Dashboard view", () => {
     expect(screen.getByText(/5\.0 GB used of 10\.0 GB/)).toBeInTheDocument();
   });
 
+  it("renders the storage-mount donut at the correct used proportion", async () => {
+    const { container } = render(() => <Dashboard />);
+    // 5 GB used of 10 GB → the used slice fills 50% of the ring.
+    MockEventSource.last!.emit(snapshot());
+    await screen.findByText(/5\.0 GB used of 10\.0 GB/);
+
+    const donut = container.querySelector<SVGSVGElement>(
+      "[data-used-percent]",
+    );
+    expect(donut).not.toBeNull();
+    expect(donut!.getAttribute("data-used-percent")).toBe("50");
+    // Both slices actually draw (used + free arcs), guarding the arc geometry
+    // against a regression that data-used-percent alone (input-only) can't see.
+    const arcs = donut!.querySelectorAll("path");
+    expect(arcs.length).toBe(2);
+    for (const p of arcs) expect(p.getAttribute("d")).toBeTruthy();
+    // The center label directly labels the used slice (identity is never
+    // color-alone), and a native <title> carries the exact used/free readout.
+    expect(donut!.querySelector("title")?.textContent).toMatch(
+      /5\.0 GB used · 5\.0 GB free/,
+    );
+  });
+
+  it("renders a 79%-used storage-mount donut for an uneven snapshot", async () => {
+    const { container } = render(() => <Dashboard />);
+    MockEventSource.last!.emit(
+      snapshot({
+        storageMounts: [
+          {
+            name: "Media",
+            totalBytes: 10737418240, // 10 GB
+            availBytes: 2254857831, // ~2.1 GB avail → ~79% used
+            configured: true,
+          },
+        ],
+      }),
+    );
+    await screen.findByText("Media");
+    const donut = container.querySelector<SVGSVGElement>(
+      "[data-used-percent]",
+    );
+    expect(donut!.getAttribute("data-used-percent")).toBe("79");
+  });
+
+  // A full disk (0 bytes available) is the real-world case most likely to
+  // expose an SVG arc-degeneracy regression (the classic "a 360°+ sweep
+  // renders as nothing" bug) — pin it explicitly rather than relying on the
+  // 50%/79% cases alone to cover the edge.
+  it("renders a 100%-used storage-mount donut without a degenerate arc", async () => {
+    const { container } = render(() => <Dashboard />);
+    MockEventSource.last!.emit(
+      snapshot({
+        storageMounts: [
+          {
+            name: "Full Disk",
+            totalBytes: 10737418240, // 10 GB
+            availBytes: 0, // 0 avail → 100% used
+            configured: true,
+          },
+        ],
+      }),
+    );
+    await screen.findByText("Full Disk");
+    const donut = container.querySelector<SVGSVGElement>(
+      "[data-used-percent]",
+    );
+    expect(donut).not.toBeNull();
+    expect(donut!.getAttribute("data-used-percent")).toBe("100");
+    // The used slice draws a near-full ring; the free slice is empty (its
+    // sweep is non-positive once the gap is subtracted) — both must be
+    // present as <path> elements, but only one carries a real "d".
+    const arcs = donut!.querySelectorAll("path");
+    expect(arcs.length).toBe(2);
+    expect(arcs[1]!.getAttribute("d")).toBeTruthy(); // used
+    expect(arcs[0]!.getAttribute("d")).toBeFalsy(); // free
+  });
+
   it("shows a reconnecting notice on an EventSource error", async () => {
     render(() => <Dashboard />);
     MockEventSource.last!.fail();

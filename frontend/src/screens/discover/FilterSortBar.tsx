@@ -1,14 +1,15 @@
 // FilterSortBar — the Discover filter/sort controls, one file with two
 // deliberately-separate components (Mainstream's TMDB backend and Adult's
 // TPDB/StashBox backend expose genuinely different filterable surfaces, so no
-// forced-shared generic): MainstreamFilterSortBar (content-type toggle + genre
-// multi-select + year + min-rating + sort-by + clear) and AdultSortBar (one
-// sort pill). Both are pure presentational shells over a caller-owned filter/
-// sort signal — the parent screen decides what an active filter/sort actually
-// renders (a filtered grid replaces the carousels; see Mainstream.tsx/Adult.tsx).
+// forced-shared generic): MainstreamFilterSortBar (content-type + genre + year
+// + min-rating + sort-by + clear, all native <select> dropdowns on one row) and
+// AdultSortBar (one sort <select>). Both are pure presentational shells over a
+// caller-owned filter/sort signal — the parent screen decides what an active
+// filter/sort actually renders (a filtered grid replaces the carousels; see
+// Mainstream.tsx/Adult.tsx).
 
-import { type Component, createResource, For, Show } from "solid-js";
-import { PillSelector, labelClass } from "../../components/ui";
+import { type Component, type JSX, createResource, For, Show } from "solid-js";
+import { labelClass } from "../../components/ui";
 import { type AdultSortBy, type DiscoverSortBy } from "../../api/discover";
 import { type Genre, fetchGenres } from "../../api/discoverSliders";
 
@@ -19,10 +20,11 @@ export type MainstreamContentType = "movies" | "series";
 
 // MainstreamFilters is the full filter state the bar reads/writes. contentType
 // is which catalog to browse; the rest are the actual filters. A null year/
-// minRating means "unset" (no bound sent); genreIds is the multi-select set.
+// minRating/genreId means "unset" (no bound sent) — genre is a single-select
+// dropdown, the same single-value shape as year/minRating/sortBy.
 export type MainstreamFilters = {
   contentType: MainstreamContentType;
-  genreIds: number[];
+  genreId: number | null;
   year: number | null;
   minRating: number | null;
   sortBy: DiscoverSortBy;
@@ -30,7 +32,7 @@ export type MainstreamFilters = {
 
 export const DEFAULT_MAINSTREAM_FILTERS: MainstreamFilters = {
   contentType: "movies",
-  genreIds: [],
+  genreId: null,
   year: null,
   minRating: null,
   sortBy: "popularity",
@@ -43,25 +45,27 @@ export const DEFAULT_MAINSTREAM_FILTERS: MainstreamFilters = {
 // only a real genre/year/rating filter or a non-default sort is "active".
 export function isMainstreamFilterActive(f: MainstreamFilters): boolean {
   return (
-    f.genreIds.length > 0 ||
+    f.genreId != null ||
     f.year != null ||
     f.minRating != null ||
     f.sortBy !== "popularity"
   );
 }
 
+const CONTENT_TYPE_OPTIONS: MainstreamContentType[] = ["movies", "series"];
 const CONTENT_TYPE_LABELS: Record<MainstreamContentType, string> = {
   movies: "Movies",
   series: "Series",
 };
 
+const SORT_BY_OPTIONS: DiscoverSortBy[] = ["popularity", "rating", "newest"];
 const SORT_BY_LABELS: Record<DiscoverSortBy, string> = {
   popularity: "Most Popular",
   rating: "Highest Rated",
   newest: "Newest",
 };
 
-// MinRatingKey is the pill value; "any" maps to null (no min-rating bound),
+// MinRatingKey is the select value; "any" maps to null (no min-rating bound),
 // every other key to its integer floor.
 type MinRatingKey = "any" | "6" | "7" | "8" | "9";
 const MIN_RATING_OPTIONS: MinRatingKey[] = ["any", "6", "7", "8", "9"];
@@ -82,12 +86,41 @@ const YEAR_OPTIONS: number[] = (() => {
   return years;
 })();
 
-// MainstreamFilterSortBar renders the Movies/Series filter surface. value is a
-// Solid accessor (the parent owns the signal); every control calls onChange
-// with the full next MainstreamFilters. The genre chips re-fetch on a
-// contentType switch (movie vs. tv genre lists differ), and switching content
-// type also clears genreIds so a movie genre id never reaches the /discover/tv
-// endpoint.
+const SELECT_CLASS =
+  "rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent";
+
+// SelectField is the one labeled native <select> the filter bar repeats for
+// each control (label above, select below) so the whole bar reads as one
+// consistent inline row of dropdowns. `for`/`id` pair the label to the select
+// so tests (and screen readers) resolve it by label text.
+const SelectField: Component<{
+  id: string;
+  label: string;
+  value: string | number;
+  onChange: (value: string) => void;
+  children: JSX.Element;
+}> = (props) => (
+  <div class="flex flex-col">
+    <label class={labelClass} for={props.id}>
+      {props.label}
+    </label>
+    <select
+      id={props.id}
+      class={`mt-1 ${SELECT_CLASS}`}
+      value={props.value}
+      onChange={(e) => props.onChange(e.currentTarget.value)}
+    >
+      {props.children}
+    </select>
+  </div>
+);
+
+// MainstreamFilterSortBar renders the Movies/Series filter surface as a single
+// row of native <select> dropdowns. value is a Solid accessor (the parent owns
+// the signal); every control calls onChange with the full next MainstreamFilters.
+// The genre options re-fetch on a contentType switch (movie vs. tv genre lists
+// differ), and switching content type also clears genreId so a movie genre id
+// never reaches the /discover/tv endpoint.
 export const MainstreamFilterSortBar: Component<{
   value: () => MainstreamFilters;
   onChange: (f: MainstreamFilters) => void;
@@ -100,13 +133,6 @@ export const MainstreamFilterSortBar: Component<{
   const patch = (partial: Partial<MainstreamFilters>) =>
     props.onChange({ ...props.value(), ...partial });
 
-  const toggleGenre = (id: number) => {
-    const cur = props.value().genreIds;
-    patch({
-      genreIds: cur.includes(id) ? cur.filter((g) => g !== id) : [...cur, id],
-    });
-  };
-
   const minRatingKey = (): MinRatingKey => {
     const r = props.value().minRating;
     return r == null ? "any" : (String(r) as MinRatingKey);
@@ -114,84 +140,76 @@ export const MainstreamFilterSortBar: Component<{
 
   return (
     <div class="mb-4 rounded-xl border border-border bg-surface p-4">
-      <PillSelector<MainstreamContentType>
-        label="Content type"
-        options={["movies", "series"]}
-        optionLabels={CONTENT_TYPE_LABELS}
-        selected={props.value().contentType}
-        onSelect={(ct) => patch({ contentType: ct, genreIds: [] })}
-      />
-
-      <div class="mb-2">
-        <div class={labelClass}>Genres</div>
-        <div class="mt-1 flex flex-wrap gap-1.5">
-          <For each={genres() ?? []}>
-            {(g) => (
-              <button
-                type="button"
-                class="rounded-md border px-2 py-1 text-xs font-medium"
-                classList={{
-                  "border-accent bg-accent text-accent-fg": props
-                    .value()
-                    .genreIds.includes(g.id),
-                  "border-border bg-surface-2 text-fg": !props
-                    .value()
-                    .genreIds.includes(g.id),
-                }}
-                onClick={() => toggleGenre(g.id)}
-              >
-                {g.name}
-              </button>
-            )}
-          </For>
-        </div>
-      </div>
-
-      <div class="mb-2">
-        <label class={labelClass} for="discover-filter-year">
-          Year
-        </label>
-        <div class="mt-1">
-          <select
-            id="discover-filter-year"
-            class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-            value={props.value().year ?? ""}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
-              patch({ year: v ? parseInt(v, 10) : null });
-            }}
-          >
-            <option value="">Any year</option>
-            <For each={YEAR_OPTIONS}>{(y) => <option value={y}>{y}</option>}</For>
-          </select>
-        </div>
-      </div>
-
-      <PillSelector<MinRatingKey>
-        label="Minimum rating"
-        options={MIN_RATING_OPTIONS}
-        optionLabels={MIN_RATING_LABELS}
-        selected={minRatingKey()}
-        onSelect={(k) => patch({ minRating: k === "any" ? null : parseInt(k, 10) })}
-      />
-
-      <PillSelector<DiscoverSortBy>
-        label="Sort by"
-        options={["popularity", "rating", "newest"]}
-        optionLabels={SORT_BY_LABELS}
-        selected={props.value().sortBy}
-        onSelect={(s) => patch({ sortBy: s })}
-      />
-
-      <Show when={isMainstreamFilterActive(props.value())}>
-        <button
-          type="button"
-          class="mt-1 text-sm text-accent underline"
-          onClick={() => props.onChange(DEFAULT_MAINSTREAM_FILTERS)}
+      <div class="flex flex-wrap items-end gap-3">
+        <SelectField
+          id="discover-filter-content-type"
+          label="Content type"
+          value={props.value().contentType}
+          onChange={(v) =>
+            patch({ contentType: v as MainstreamContentType, genreId: null })
+          }
         >
-          Clear filters
-        </button>
-      </Show>
+          <For each={CONTENT_TYPE_OPTIONS}>
+            {(ct) => <option value={ct}>{CONTENT_TYPE_LABELS[ct]}</option>}
+          </For>
+        </SelectField>
+
+        <SelectField
+          id="discover-filter-genre"
+          label="Genre"
+          value={props.value().genreId ?? ""}
+          onChange={(v) => patch({ genreId: v ? parseInt(v, 10) : null })}
+        >
+          <option value="">All genres</option>
+          <For each={genres() ?? []}>
+            {(g) => <option value={g.id}>{g.name}</option>}
+          </For>
+        </SelectField>
+
+        <SelectField
+          id="discover-filter-year"
+          label="Year"
+          value={props.value().year ?? ""}
+          onChange={(v) => patch({ year: v ? parseInt(v, 10) : null })}
+        >
+          <option value="">Any year</option>
+          <For each={YEAR_OPTIONS}>{(y) => <option value={y}>{y}</option>}</For>
+        </SelectField>
+
+        <SelectField
+          id="discover-filter-min-rating"
+          label="Minimum rating"
+          value={minRatingKey()}
+          onChange={(v) =>
+            patch({ minRating: v === "any" ? null : parseInt(v, 10) })
+          }
+        >
+          <For each={MIN_RATING_OPTIONS}>
+            {(k) => <option value={k}>{MIN_RATING_LABELS[k]}</option>}
+          </For>
+        </SelectField>
+
+        <SelectField
+          id="discover-filter-sort-by"
+          label="Sort by"
+          value={props.value().sortBy}
+          onChange={(v) => patch({ sortBy: v as DiscoverSortBy })}
+        >
+          <For each={SORT_BY_OPTIONS}>
+            {(s) => <option value={s}>{SORT_BY_LABELS[s]}</option>}
+          </For>
+        </SelectField>
+
+        <Show when={isMainstreamFilterActive(props.value())}>
+          <button
+            type="button"
+            class="text-sm text-accent underline"
+            onClick={() => props.onChange(DEFAULT_MAINSTREAM_FILTERS)}
+          >
+            Clear filters
+          </button>
+        </Show>
+      </div>
     </div>
   );
 };
@@ -219,19 +237,25 @@ const ADULT_SORT_LABELS: Record<AdultSortValue, string> = {
 };
 
 // AdultSortBar renders Adult's sort-only control (TPDB/StashBox have no genre/
-// year/rating filter surface). value is a parent-owned accessor; onChange
-// receives the next AdultSortValue.
+// year/rating filter surface) as the same native <select> dropdown style the
+// Mainstream bar uses. value is a parent-owned accessor; onChange receives the
+// next AdultSortValue.
 export const AdultSortBar: Component<{
   value: () => AdultSortValue;
   onChange: (v: AdultSortValue) => void;
 }> = (props) => (
   <div class="mb-4 rounded-xl border border-border bg-surface p-4">
-    <PillSelector<AdultSortValue>
-      label="Sort"
-      options={ADULT_SORT_OPTIONS}
-      optionLabels={ADULT_SORT_LABELS}
-      selected={props.value()}
-      onSelect={props.onChange}
-    />
+    <div class="flex flex-wrap items-end gap-3">
+      <SelectField
+        id="discover-adult-sort"
+        label="Sort"
+        value={props.value()}
+        onChange={(v) => props.onChange(v as AdultSortValue)}
+      >
+        <For each={ADULT_SORT_OPTIONS}>
+          {(opt) => <option value={opt}>{ADULT_SORT_LABELS[opt]}</option>}
+        </For>
+      </SelectField>
+    </div>
   </div>
 );

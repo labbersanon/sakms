@@ -187,7 +187,7 @@ const renderSettingsWithAdultMode = () => {
 // role+name so they never collide with a Card's <legend> of the same text
 // (legends aren't buttons) nor with the Movies/Series/Adult mode buttons.
 const goToSection = (
-  name: "Connections" | "Auth" | "AI" | "Library" | "Advanced" | "UI" | "Global",
+  name: "Connections" | "Auth" | "AI" | "Library" | "Advanced" | "UI",
 ) => fireEvent.click(screen.getByRole("button", { name }));
 
 // clickSectionSave clicks the one section-level Save button per tab. The batched-
@@ -1464,13 +1464,12 @@ describe("DurationSetting — select-all-on-focus", () => {
 });
 
 // clickAdvancedSectionSave scopes the click to the "Advanced Settings" card's
-// own SectionSave button. The Advanced tab now holds only the per-mode
-// SectionSave-batched fields (phash-threshold, match-confidence-threshold,
-// identify-enabled) — recheck-interval, Entity Database, and Watch Folders
-// all moved to the Global tab, each with its own standalone Save button, so
-// they no longer collide with this scoped query. Kept scoped (rather than
-// switched to the bare clickSectionSave helper) since it's still correct and
-// makes no assumption about what else might render on this tab.
+// own SectionSave button. The Advanced tab leads with the Global cards
+// (Adult Mode, recheck-interval, Entity Database, Watch Folders — each with
+// its own standalone Save button) before the per-mode SectionSave-batched
+// fields (phash-threshold, match-confidence-threshold, identify-enabled), so
+// several "Save" buttons co-render on this tab — scoping to the Advanced
+// Settings card is what keeps this click unambiguous.
 const clickAdvancedSectionSave = () => {
   const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
   fireEvent.click(within(advancedCard).getByRole("button", { name: "Save" }));
@@ -1496,7 +1495,7 @@ describe("Global Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     // Value 0 defaults the picker to the "Hours" unit; typing "1" there means
     // 1 hour = 3600 seconds.
     const input = (await screen.findByLabelText(
@@ -1529,7 +1528,7 @@ describe("Global Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     const input = (await screen.findByLabelText(
       "Monitored title refresh interval — global",
     )) as HTMLInputElement;
@@ -1555,7 +1554,7 @@ describe("Global Settings", () => {
   it("clearing the recheck-interval amount stays blank while editing, not forced back to 0", async () => {
     stubFetch();
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     const input = (await screen.findByLabelText(
       "Monitored title refresh interval — global",
     )) as HTMLInputElement;
@@ -1572,7 +1571,7 @@ describe("Global Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     const input = (await screen.findByLabelText(
       "Monitored title refresh interval — global",
     )) as HTMLInputElement;
@@ -1600,7 +1599,7 @@ describe("Global Settings", () => {
   it("'Refresh now' fires the manual recheck trigger and confirms it started", async () => {
     const calls = stubFetch();
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     await screen.findByLabelText("Monitored title refresh interval — global");
     fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
     await waitFor(() =>
@@ -1628,7 +1627,7 @@ describe("Global Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     await screen.findByLabelText("Monitored title refresh interval — global");
     fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
     expect(
@@ -1645,7 +1644,7 @@ describe("Global Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     // Value 0 defaults the picker to the "Hours" unit; typing "1" there means
     // 1 hour = 3600 seconds — same convention as recheck-interval above.
     const input = (await screen.findByLabelText(
@@ -1688,7 +1687,7 @@ describe("Global Settings", () => {
   it("renders the recheck-interval field, 'Refresh now' trigger, watch-folders poll-interval field, and Entity Database section", async () => {
     stubFetch();
     renderSettings();
-    goToSection("Global");
+    goToSection("Advanced");
     expect(
       await screen.findByLabelText("Monitored title refresh interval — global"),
     ).toBeInTheDocument();
@@ -1761,7 +1760,7 @@ describe("Adult mode disable switch", () => {
   it("the master switch always renders when the underlying value is disabled", async () => {
     stubFetch(adultModeFetch(false).override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     const checkbox = (await screen.findByLabelText(
       "Enable Adult mode",
     )) as HTMLInputElement;
@@ -1771,7 +1770,7 @@ describe("Adult mode disable switch", () => {
   it("the master switch always renders when the underlying value is enabled", async () => {
     stubFetch(adultModeFetch(true).override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     const checkbox = (await screen.findByLabelText(
       "Enable Adult mode",
     )) as HTMLInputElement;
@@ -1783,7 +1782,7 @@ describe("Adult mode disable switch", () => {
   it("enabling is a plain, immediate single PUT with no confirmation dialog", async () => {
     const calls = stubFetch(adultModeFetch(false).override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     const checkbox = (await screen.findByLabelText(
       "Enable Adult mode",
     )) as HTMLInputElement;
@@ -1815,7 +1814,7 @@ describe("Adult mode disable switch", () => {
   it("disabling opens a confirmation dialog instead of firing a request immediately", async () => {
     const calls = stubFetch(adultModeFetch(true).override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     await openDisableDialog();
     expect(
       calls.some(
@@ -1830,7 +1829,7 @@ describe("Adult mode disable switch", () => {
     const { override, getEnabled, getScanInterval } = adultModeFetch(true);
     const calls = stubFetch(override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     await openDisableDialog();
     fireEvent.click(
       screen.getByLabelText("Also stop the Adult Newest background scanner"),
@@ -1850,7 +1849,7 @@ describe("Adult mode disable switch", () => {
   it("confirming WITHOUT the scanner checkbox fires only the adult-mode-enabled PUT", async () => {
     const calls = stubFetch(adultModeFetch(true).override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     await openDisableDialog();
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     await waitFor(() =>
@@ -1874,7 +1873,7 @@ describe("Adult mode disable switch", () => {
   it("confirming WITH the scanner checkbox fires two sequential PUTs in order: adult-mode-enabled then adult-newest-scan-interval", async () => {
     const calls = stubFetch(adultModeFetch(true).override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     await openDisableDialog();
     fireEvent.click(
       screen.getByLabelText("Also stop the Adult Newest background scanner"),
@@ -1915,7 +1914,7 @@ describe("Adult mode disable switch", () => {
     expect(screen.getByText("fansdb")).toBeInTheDocument();
     expect(screen.getByText("tpdb")).toBeInTheDocument();
 
-    goToSection("Global");
+    goToSection("Advanced");
     await openDisableDialog();
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     await waitFor(() =>
@@ -1948,7 +1947,7 @@ describe("Adult mode disable switch", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText(/no naming preferences/);
 
-    goToSection("Global");
+    goToSection("Advanced");
     await openDisableDialog();
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     await waitFor(() =>
@@ -1970,7 +1969,7 @@ describe("Adult mode disable switch", () => {
   it("EntityDatabaseSection stays visible regardless of switch state", async () => {
     stubFetch(adultModeFetch(false).override);
     renderSettingsWithAdultMode();
-    goToSection("Global");
+    goToSection("Advanced");
     expect(
       await screen.findByText("Entity Database — background sync"),
     ).toBeInTheDocument();
@@ -2101,12 +2100,12 @@ describe("Advanced Settings", () => {
       "Adult phash-first identification enabled",
     )) as HTMLInputElement;
     fireEvent.change(toggle, { target: { checked: false } });
-    // The Advanced tab now holds only the SectionSave-batched per-mode
-    // fields (phash-threshold, match-confidence-threshold,
-    // identify-enabled) — Entity Database, Watch Folders, and
-    // recheck-interval all moved to the Global tab, so a bare "Save" role
-    // query is unique on this tab again. Still scoped to the Advanced
-    // Settings card for robustness, same as clickAdvancedSectionSave.
+    // The Advanced tab leads with the Global cards (Adult Mode, Monitored
+    // Title Refresh, Entity Database, Watch Folders — each with its own
+    // standalone Save button) before the per-mode SectionSave-batched fields
+    // (phash-threshold, match-confidence-threshold, identify-enabled), so a
+    // bare "Save" role query is NOT unique on this tab — scope to the Advanced
+    // Settings card, same as clickAdvancedSectionSave.
     const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
     fireEvent.click(within(advancedCard).getByRole("button", { name: "Save" }));
     await waitFor(() =>
@@ -2215,8 +2214,8 @@ describe("Section tabs", () => {
     stubFetch();
     renderSettings();
     goToSection("Advanced");
-    // recheck-interval moved to the Global tab — phash-threshold is the field
-    // that actually stays on Advanced.
+    // phash-threshold is the signature per-mode Advanced field; asserting the
+    // Library root folder is absent confirms Library's panels didn't leak here.
     expect(
       await screen.findByLabelText(
         "Dedup phash similarity threshold (0–256)",

@@ -671,9 +671,11 @@ export const MainstreamDiscover: Component<{
   };
 
   // toFilterParams maps the bar's filter state onto the API's optional-param
-  // shape (empty genre set / null year/rating become "unset", i.e. not sent).
+  // shape (null genre/year/rating become "unset", i.e. not sent). The single
+  // selected genreId is sent as a 1-element genreIds array — the backend still
+  // takes the array param and comma-splits/OR-joins it, so no backend change.
   const toFilterParams = (f: MainstreamFilters): DiscoverFilterParams => ({
-    genreIds: f.genreIds.length ? f.genreIds : undefined,
+    genreIds: f.genreId != null ? [f.genreId] : undefined,
     year: f.year ?? undefined,
     minRating: f.minRating ?? undefined,
     sortBy: f.sortBy,

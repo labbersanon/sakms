@@ -10,9 +10,10 @@
 // kids classification); UI (screen-presentation admin controls — today a
 // Discover subsection with Mainstream/Adult sub-tabs hosting the custom slider
 // and Adult-newest-row editors, see UI.tsx); Auth (Authentication mode + API
-// Access break-glass key together); Global (settings that don't vary with the
-// mode selector: monitored-title refresh interval + manual trigger, Entity
-// Database, Watch Folders — see Global.tsx); Advanced (per-mode
+// Access break-glass key together); Advanced (leads with the mode-INDEPENDENT
+// Global settings — monitored-title refresh interval + manual trigger, Entity
+// Database, Watch Folders, Adult Mode master switch, see Global.tsx — rendered
+// ABOVE the mode selector so they read as global, then the per-mode fields:
 // phash-threshold; match-confidence-threshold for Movies/Series;
 // identify-enabled for Adult only).
 //
@@ -23,12 +24,14 @@
 // ScreenTabBar — it is NOT registered with the shell, since the shell's single
 // tab slot already holds the section tabs. One shared `mode` signal backs both
 // per-mode tabs, so switching between Library and Advanced preserves the
-// selected mode. Global has no mode selector at all — none of its settings
-// vary by mode.
+// selected mode. GlobalSection sits ABOVE the Advanced tab's mode selector
+// precisely because none of its settings vary by mode — the selector below it
+// governs only the AdvancedSection fields, not the global cards above.
 //
 // This screen is split across settings/: shared primitives (Card, SaveStatus,
 // useSaveStatus, MODE_LABELS) in shared.tsx; one file per section (Connections/
-// Auth/AI/Library/Global/Advanced); ConnectionsTab.tsx and UI.tsx each add an
+// Auth/AI/Library/Global/Advanced — Global is composed into the Advanced tab
+// here, it has no tab of its own); ConnectionsTab.tsx and UI.tsx each add an
 // inline sub-tab split combining two of those section files under one
 // top-level tab; this file is the thin tab shell.
 
@@ -68,7 +71,6 @@ const SECTION_TABS: TabDef[] = [
   { id: "auth", label: "Auth" },
   { id: "webhooks", label: "Notifications" },
   { id: "nodes", label: "Nodes" },
-  { id: "global", label: "Global" },
   { id: "advanced", label: "Advanced" },
 ];
 
@@ -164,11 +166,14 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
         <NodesSection />
       </Show>
 
-      <Show when={section() === "global"}>
-        <GlobalSection />
-      </Show>
-
       <Show when={section() === "advanced"}>
+        {/* Global (mode-INDEPENDENT) settings render FIRST, above the mode
+            selector, so they're visually and structurally separate from — and
+            clearly not governed by — the per-mode selector that follows. Their
+            standalone Save buttons stay outside AdvancedSection's own
+            SectionSave batch since GlobalSection is a sibling, not a child, of
+            it. */}
+        <GlobalSection />
         <ModeSelector mode={mode} onSelect={setMode} />
         <AdvancedSection mode={mode} />
       </Show>

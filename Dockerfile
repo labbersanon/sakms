@@ -37,9 +37,19 @@ COPY . .
 # cutover removed the old tracked static/index.html), so the embed content
 # comes only from here; without this COPY, //go:embed static fails cleanly.
 COPY --from=frontend /src/internal/web/static ./internal/web/static
+# CGO_ENABLED=1: required for internal/sysinfo's real NVML GPU-utilization
+# path (go-nvml's type definitions live in cgo bridge files — see
+# gpu_nvml.go/gpu_nvml_nocgo.go's !cgo-gated stub). This does NOT reintroduce
+# a cgo sqlite driver — modernc.org/sqlite stays pure Go regardless of this
+# flag, cgo is only exercised by go-nvml's dlopen-at-runtime shim, which needs
+# no NVIDIA headers/libs at build time (only a C compiler, already present in
+# this base image). server1's docker-compose.yml has carried `runtime:
+# nvidia` + NVIDIA_VISIBLE_DEVICES since 2026-07-17 specifically for this;
+# CGO_ENABLED=0 silently made that passthrough a no-op the whole time — GPU
+# utilization never actually read via NVML in any deployed build until now.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -o /out/sakms ./cmd/sakms
+    CGO_ENABLED=1 go build -trimpath -o /out/sakms ./cmd/sakms
 
 # ffmpeg stage: fetch a pinned, checksum-verified BtbN static FFmpeg build that
 # INCLUDES the libvmaf filter. Debian trixie's own ffmpeg package — base AND the
@@ -79,8 +89,10 @@ RUN set -eux; \
     /out/ffmpeg -hide_banner -h filter=libvmaf | grep -q "Calculate the VMAF"
 
 # Debian, not Alpine, for the runtime base: the BtbN ffmpeg build links glibc
-# (not musl), and CGO is off anyway (modernc.org/sqlite is pure Go), so glibc is
-# the right call. ffmpeg/ffprobe come from the pinned BtbN stage above (NOT the
+# (not musl), and the Go binary itself now links glibc too (CGO_ENABLED=1, for
+# go-nvml's cgo bridge — see the build stage above; modernc.org/sqlite stays
+# pure Go regardless), so glibc is doubly the right call here. ffmpeg/ffprobe
+# come from the pinned BtbN stage above (NOT the
 # distro package, which lacks libvmaf) and are placed on PATH at /usr/local/bin,
 # which is where sakms resolves the bare `ffmpeg`/`ffprobe` names it exec's
 # (internal/phash, internal/videophash, internal/vmaf).

@@ -22,9 +22,39 @@ import (
 // don't collide with EventSource's transport-level onerror handler) so the
 // client can display a transient warning without losing the connection.
 //
+// The first rate-based snapshot is inherently delayed by one full tick after
+// the initial (unflushed) sample — CPU%/network/disk rates need two samples
+// with a time delta between them, there is no way around that. What IS
+// avoidable is making the operator wait a full 2s for that first delta on a
+// freshly opened Dashboard: fastFirstTickC (nil, i.e. permanently unready in
+// a select, unless the configured interval is large enough to be the real
+// production default) fires once at firstTickInterval(interval) — a quarter
+// of the normal cadence — racing the main ticker's own first tick. Whichever
+// wins sends the first snapshot; the main ticker is completely unaffected
+// and keeps its own steady interval-paced cadence afterward (this is a bonus
+// early tick, not a restructuring of the steady-state loop). Gated behind
+// firstTickThreshold specifically so every existing ms-scale test interval
+// takes the nil-channel path and observes byte-identical timing to before
+// this optimization existed.
+//
 // tickInterval is variadic purely so tests can inject a short interval; a
 // production call (handler.go) passes only sampleFn and gets the 2s default,
 // keeping the registration a clean one-arg call.
+const firstTickThreshold = time.Second
+
+// firstTickInterval returns the duration of the one-time fast first tick for
+// a given steady-state interval — a quarter of it, so production's 2s
+// default gets its first real snapshot around 500ms instead of 2s. Below
+// firstTickThreshold (i.e. every test-injected interval), it returns 0,
+// signaling "no fast-first tick" to the caller (see its use in
+// sysinfoStreamHandler).
+func firstTickInterval(interval time.Duration) time.Duration {
+	if interval <= firstTickThreshold {
+		return 0
+	}
+	return interval / 4
+}
+
 func sysinfoStreamHandler(
 	sampleFn func([]sysinfo.MountSpec) (sysinfo.RawSample, error),
 	mountsFn func(context.Context) []sysinfo.MountSpec,
@@ -55,22 +85,40 @@ func sysinfoStreamHandler(
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
+		// fastFirstTickC stays nil (permanently unready — a nil channel is a
+		// documented, safe Go idiom for "this select case never fires") when
+		// firstTickInterval reports there's nothing to speed up, so every
+		// existing test's timing is completely unaffected by this branch's
+		// mere presence.
+		var fastFirstTickC <-chan time.Time
+		if d := firstTickInterval(interval); d > 0 {
+			fastFirstTimer := time.NewTimer(d)
+			defer fastFirstTimer.Stop()
+			fastFirstTickC = fastFirstTimer.C
+		}
+
+		sampleAndSend := func() {
+			curr, err := sampleFn(mountsFn(ctx))
+			if err != nil {
+				fmt.Fprintf(w, "event: sampleError\ndata: %s\n\n", err.Error())
+				flusher.Flush()
+				return
+			}
+			snap := sysinfo.ComputeRates(prev, curr)
+			prev = curr
+			data, _ := json.Marshal(snap)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				curr, err := sampleFn(mountsFn(ctx))
-				if err != nil {
-					fmt.Fprintf(w, "event: sampleError\ndata: %s\n\n", err.Error())
-					flusher.Flush()
-					continue
-				}
-				snap := sysinfo.ComputeRates(prev, curr)
-				prev = curr
-				data, _ := json.Marshal(snap)
-				fmt.Fprintf(w, "data: %s\n\n", data)
-				flusher.Flush()
+				sampleAndSend()
+			case <-fastFirstTickC:
+				sampleAndSend()
 			}
 		}
 	}

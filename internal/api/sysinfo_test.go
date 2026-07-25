@@ -60,6 +60,84 @@ func waitForFlushes(t *testing.T, rec *flushRecorder, n int, within time.Duratio
 	t.Fatalf("timed out waiting for %d flushes (got %d)", n, rec.flushCount())
 }
 
+// TestFirstTickInterval pins firstTickInterval's two behaviors: below-or-at
+// firstTickThreshold (every existing test interval) → 0, meaning "no fast
+// first tick, take the nil-channel path"; above it (production's 2s default)
+// → a quarter of the interval.
+func TestFirstTickInterval(t *testing.T) {
+	cases := []struct {
+		interval time.Duration
+		want     time.Duration
+	}{
+		{5 * time.Millisecond, 0},       // this file's own test interval
+		{999 * time.Millisecond, 0},     // just under the threshold
+		{firstTickThreshold, 0},         // exactly at the threshold — still 0 (<=)
+		{2 * time.Second, 500 * time.Millisecond}, // the real production default
+		{4 * time.Second, time.Second},
+	}
+	for _, c := range cases {
+		if got := firstTickInterval(c.interval); got != c.want {
+			t.Errorf("firstTickInterval(%v) = %v, want %v", c.interval, got, c.want)
+		}
+	}
+}
+
+// TestSysinfoStream_FastFirstTick_BeatsTheFullInterval is the load-bearing
+// proof for the fix: with a production-scale interval (here 1.1s, just over
+// firstTickThreshold so the fast-first path activates, but still fast enough
+// for a unit test), the FIRST real data snapshot must arrive well before a
+// full interval has elapsed — proving an operator opening the Dashboard
+// doesn't sit on a blank "Waiting for the first live reading…" screen for
+// the full 2s in production.
+func TestSysinfoStream_FastFirstTick_BeatsTheFullInterval(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	sampleFn := func(_ []sysinfo.MountSpec) (sysinfo.RawSample, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		n := int64(calls)
+		return sysinfo.RawSample{
+			CapturedAt:     time.Now(),
+			CPUUsageMicros: n * 1000,
+			MemLimitBytes:  1 << 30,
+		}, nil
+	}
+	mockMounts := func(_ context.Context) []sysinfo.MountSpec {
+		return []sysinfo.MountSpec{{Name: "App data", Path: t.TempDir()}}
+	}
+
+	const interval = 1100 * time.Millisecond // > firstTickThreshold (1s)
+	handler := sysinfoStreamHandler(sampleFn, mockMounts, interval)
+
+	rec := newFlushRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sysinfo/stream", nil).WithContext(ctx)
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		handler(rec, req)
+		close(done)
+	}()
+
+	// The fast-first tick fires at interval/4 (~275ms). Give it generous
+	// slack (well under half the full interval) so this can never pass by
+	// accident even on a loaded CI box, while still proving it beat the full
+	// 1.1s tick.
+	waitForFlushes(t, rec, 1, interval/2)
+	elapsed := time.Since(start)
+	cancel()
+	<-done
+
+	if elapsed >= interval {
+		t.Errorf("first snapshot took %v, expected well under the full %v interval (fast-first-tick did not fire)", elapsed, interval)
+	}
+	if !strings.Contains(rec.body(), "data: ") {
+		t.Errorf("expected a data event in the body, got: %q", rec.body())
+	}
+}
+
 func TestSysinfoStream_WritesEvents(t *testing.T) {
 	var calls int
 	var mu sync.Mutex

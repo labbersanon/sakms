@@ -1532,6 +1532,22 @@ type RowOrderRequest struct {
 	Keys []string `json:"keys"`
 }
 
+// RowHiddenResponse is GET /api/discover/row-hidden/{screen}'s body — the set
+// of currently-hidden structural row keys for one screen; absent-from-list
+// means visible. A sibling of RowOrderResponse (same shape) but deliberately
+// a distinct type: the semantics differ (there is no append-missing concept
+// for hidden state), so it is stored under its own settings key.
+type RowHiddenResponse struct {
+	Keys []string `json:"keys"`
+}
+
+// RowHiddenRequest is PUT /api/discover/row-hidden/{screen}'s body — the full
+// replacement set of currently-hidden structural row keys for one screen;
+// absent-from-list means visible.
+type RowHiddenRequest struct {
+	Keys []string `json:"keys"`
+}
+
 // SysinfoServerDisk is per-physical-disk I/O from /proc/diskstats.
 type SysinfoServerDisk struct {
 	Name     string  `json:"name"`

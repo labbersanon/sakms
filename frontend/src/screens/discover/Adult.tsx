@@ -12,14 +12,15 @@
 //
 // Row order (Optional RSS Discover rows + inline row editor): the browse
 // row block is driven by a merged, operator-reorderable key list (see
-// api/rowOrder.ts's mergeRowOrder) — newest rows/Studios/Performers/
-// stash-box rows are reorderable but not removable here (they already have
-// their own management surfaces elsewhere); admin-added RSS feed rows
-// (target=adult) are both reorderable AND removable/toggleable inline. Only
-// applies to the plain browse view — search results and a Studio/Performer
-// drill-down are unaffected. editMode (from Discover/index.tsx's tab-bar
-// Edit toggle) swaps the row list for RowEditor's UI; the "+ Add RSS feed"
-// tile at the bottom is always visible regardless of edit mode.
+// api/rowOrder.ts's mergeRowOrder). Two row classes: Studios/Performers/
+// stash-box rows are STRUCTURAL (drag-reorder + a Show/Hide toggle, no Delete —
+// they have no deletable backing entity); admin-added newest rows and RSS feed
+// rows (target=adult) are ENTITY rows (drag-reorder + enable-toggle + Delete
+// inline, backed by their own CRUD APIs). Only applies to the plain browse
+// view — search results and a Studio/Performer drill-down are unaffected.
+// editMode (from Discover/index.tsx's tab-bar Edit toggle) swaps the row list
+// for RowEditor's UI; the "+ Add RSS feed" tile at the bottom is always visible
+// regardless of edit mode.
 
 import {
   type Component,
@@ -53,8 +54,10 @@ import { type AdultSortValue, AdultSortBar } from "./FilterSortBar";
 import { fetchConnections } from "../../api/settings";
 import {
   type AdultNewestReleaseItem,
+  deleteAdultNewestRow,
   fetchAdultNewestRowItems,
   fetchAdultNewestRows,
+  updateAdultNewestRow,
 } from "../../api/adultNewestRows";
 import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
 import {
@@ -448,24 +451,29 @@ export const AdultDiscover: Component<{
   const configuredServices = () =>
     new Set((connections() ?? []).map((c) => c.service));
 
-  // newestRows are the operator-defined "newest" rows (Prowlarr-backed, matched
+  // newest rows are the operator-defined "newest" rows (Prowlarr-backed, matched
   // to TPDB/StashDB/FansDB entities by the background scan) — the confirmed
   // downloadable-right-now value-add this feature exists for, so they lead the
-  // browse view. Fetched once on mount, already sortOrder-ascending from the
-  // backend (Store.List's ordering), filtered to enabled here. The fetcher
-  // swallows its own error (-> []) for the exact same reason connections above
-  // does: an unguarded read of an errored resource re-throws on every render
-  // and this app has no ErrorBoundary, which would crash the whole SPA instead
-  // of just hiding these optional rows.
-  const [newestRowsData] = createResource(async () => {
+  // browse view. Keyed on reloadToken (not once-on-mount) so an inline
+  // enable/delete in the row editor refetches the list, already sortOrder-
+  // ascending from the backend (Store.List's ordering). The fetcher swallows
+  // its own error (-> []) for the exact same reason connections above does: an
+  // unguarded read of an errored resource re-throws on every render and this app
+  // has no ErrorBoundary, which would crash the whole SPA instead of just hiding
+  // these optional rows.
+  const [newestRowsData] = createResource(reloadToken, async () => {
     try {
       return await fetchAdultNewestRows();
     } catch {
       return [];
     }
   });
-  const newestRows = () =>
-    (newestRowsData() ?? []).filter((r) => r.enabled);
+  // allNewestRows feeds the row editor / known-keys (a DISABLED newest row must
+  // still appear in Edit mode with an unchecked Enabled toggle, so it can be
+  // re-enabled — see the descriptorFor/visibleKeys split below);
+  // enabledNewestRows feeds the actual rendered Discover row content.
+  const allNewestRows = () => newestRowsData() ?? [];
+  const enabledNewestRows = () => allNewestRows().filter((r) => r.enabled);
 
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
@@ -491,10 +499,10 @@ export const AdultDiscover: Component<{
 
   const configureFor = () => notConfiguredService(setupError());
 
-  // --- Discover row order: newest rows/Studios/Performers/stash-box rows
-  // (reorderable, not removable here) + admin-added RSS feed rows
-  // (reorderable AND removable/toggleable), fully interleavable via Edit
-  // mode (RowEditor). Only applies to the plain browse view. ---
+  // --- Discover row order: Studios/Performers/stash-box rows (structural:
+  // reorderable + Show/Hide) + admin-added newest rows and RSS feed rows
+  // (entity: reorderable + enable-toggle + Delete), fully interleavable via
+  // Edit mode (RowEditor). Only applies to the plain browse view. ---
   const [feedsData] = createResource(reloadToken, () =>
     fetchRssFeeds().catch(() => [] as RssFeed[]),
   );
@@ -509,14 +517,14 @@ export const AdultDiscover: Component<{
   // original hardcoded row sequence exactly: newest rows, Studios,
   // Performers, then any configured stash-box rows, then RSS feeds.
   const knownKeys = () => [
-    ...newestRows().map((r) => `newestrow:${r.id}`),
+    ...allNewestRows().map((r) => `newestrow:${r.id}`),
     "studios",
     "performers",
     ...stashBoxKnownRows().map((r) => r.key),
     ...adultFeeds().map((f) => `rssfeed:${f.id}`),
   ];
 
-  const { orderedKeys, moveRow, persistOrder, error: rowOrderError } =
+  const { orderedKeys, persistOrder, isHidden, toggleHidden, error: rowOrderError } =
     useRowOrder("adult", knownKeys);
   // rowActionError covers a toggle/delete's own mutation failure
   // (updateRssFeed/deleteRssFeed) — a distinct failure mode from
@@ -527,21 +535,29 @@ export const AdultDiscover: Component<{
   const editError = () => rowOrderError() || rowActionError();
 
   const descriptorFor = (key: string): RowDescriptor | undefined => {
-    if (key === "studios") return { key, label: "Studios", removable: false };
-    if (key === "performers") return { key, label: "Performers", removable: false };
+    if (key === "studios") {
+      return { key, label: "Studios", kind: "structural", hidden: isHidden(key) };
+    }
+    if (key === "performers") {
+      return { key, label: "Performers", kind: "structural", hidden: isHidden(key) };
+    }
     if (key.startsWith("newestrow:")) {
       const id = Number(key.slice("newestrow:".length));
-      const row = newestRows().find((r) => r.id === id);
-      return row ? { key, label: row.title, removable: false } : undefined;
+      const row = allNewestRows().find((r) => r.id === id);
+      return row
+        ? { key, label: row.title, kind: "entity", enabled: row.enabled }
+        : undefined;
     }
     if (key.startsWith("stashbox:")) {
       const row = STASH_BOX_ORDERABLE_ROWS.find((r) => r.key === key);
-      return row ? { key, label: row.label, removable: false } : undefined;
+      return row
+        ? { key, label: row.label, kind: "structural", hidden: isHidden(key) }
+        : undefined;
     }
     if (key.startsWith("rssfeed:")) {
       const id = Number(key.slice("rssfeed:".length));
       const f = adultFeeds().find((f) => f.id === id);
-      return f ? { key, label: f.title, removable: true, enabled: f.enabled } : undefined;
+      return f ? { key, label: f.title, kind: "entity", enabled: f.enabled } : undefined;
     }
     return undefined;
   };
@@ -552,20 +568,36 @@ export const AdultDiscover: Component<{
       .filter((d): d is RowDescriptor => d !== undefined);
 
   const toggleRowEnabled = async (row: RowDescriptor) => {
-    if (!row.key.startsWith("rssfeed:")) return;
     try {
-      const f = adultFeeds().find((f) => `rssfeed:${f.id}` === row.key);
-      if (!f) return;
-      await updateRssFeed(f.id, {
-        title: f.title,
-        // feedUrl is masked on read (f.feedUrl is "" now, not the real URL) —
-        // send null to PRESERVE the stored encrypted URL. Re-sending f.feedUrl
-        // would post "" and the backend rejects it as ErrFeedURLRequired.
-        feedUrl: null,
-        target: f.target,
-        protocol: f.protocol,
-        enabled: !f.enabled,
-      });
+      if (row.key.startsWith("newestrow:")) {
+        const id = Number(row.key.slice("newestrow:".length));
+        const nr = allNewestRows().find((r) => r.id === id);
+        if (!nr) return;
+        // Reconstruct the FULL upsert body from the looked-up row — the
+        // descriptor only carries key/label/kind/enabled, so genreFilter/rowType
+        // must come from the row object or the PUT would silently clear them.
+        await updateAdultNewestRow(id, {
+          title: nr.title,
+          rowType: nr.rowType,
+          genreFilter: nr.genreFilter,
+          enabled: !nr.enabled,
+        });
+      } else if (row.key.startsWith("rssfeed:")) {
+        const f = adultFeeds().find((f) => `rssfeed:${f.id}` === row.key);
+        if (!f) return;
+        await updateRssFeed(f.id, {
+          title: f.title,
+          // feedUrl is masked on read (f.feedUrl is "" now, not the real URL) —
+          // send null to PRESERVE the stored encrypted URL. Re-sending f.feedUrl
+          // would post "" and the backend rejects it as ErrFeedURLRequired.
+          feedUrl: null,
+          target: f.target,
+          protocol: f.protocol,
+          enabled: !f.enabled,
+        });
+      } else {
+        return;
+      }
       setReloadToken((n) => n + 1);
     } catch (e) {
       setRowActionError((e as Error).message);
@@ -573,10 +605,16 @@ export const AdultDiscover: Component<{
   };
 
   const deleteRow = async (row: RowDescriptor) => {
-    if (!row.key.startsWith("rssfeed:")) return;
+    const isNewest = row.key.startsWith("newestrow:");
+    const isFeed = row.key.startsWith("rssfeed:");
+    if (!isNewest && !isFeed) return;
     if (!confirm(`Delete "${row.label}"?`)) return;
     try {
-      await deleteRssFeed(Number(row.key.slice("rssfeed:".length)));
+      if (isNewest) {
+        await deleteAdultNewestRow(Number(row.key.slice("newestrow:".length)));
+      } else {
+        await deleteRssFeed(Number(row.key.slice("rssfeed:".length)));
+      }
       persistOrder(orderedKeys().filter((k) => k !== row.key));
       setReloadToken((n) => n + 1);
     } catch (e) {
@@ -589,7 +627,11 @@ export const AdultDiscover: Component<{
       if (key.startsWith("rssfeed:")) {
         return enabledAdultFeeds().some((f) => `rssfeed:${f.id}` === key);
       }
-      return true;
+      if (key.startsWith("newestrow:")) {
+        return enabledNewestRows().some((r) => `newestrow:${r.id}` === key);
+      }
+      // structural rows (Studios/Performers/stash-box): shown unless hidden.
+      return !isHidden(key);
     });
 
   const renderRow = (key: string): JSX.Element => {
@@ -633,7 +675,7 @@ export const AdultDiscover: Component<{
     }
     if (key.startsWith("newestrow:")) {
       const id = Number(key.slice("newestrow:".length));
-      const row = newestRows().find((r) => r.id === id)!;
+      const row = enabledNewestRows().find((r) => r.id === id)!;
       return (
         <PaginatedStrip<AdultNewestReleaseItem>
           title={row.title}
@@ -764,8 +806,9 @@ export const AdultDiscover: Component<{
                 <Show when={props.editMode?.()}>
                   <RowEditor
                     rows={rowDescriptors()}
-                    onMove={moveRow}
+                    onReorder={persistOrder}
                     onToggleEnabled={(r) => void toggleRowEnabled(r)}
+                    onToggleHidden={(r) => toggleHidden(r.key)}
                     onDelete={(r) => void deleteRow(r)}
                   />
                   <Show when={editError()}>

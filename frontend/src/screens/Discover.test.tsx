@@ -387,8 +387,8 @@ describe("Discover — Mainstream search (replaces rows, then restores)", () => 
   });
 });
 
-describe("Discover — row-order Edit mode", () => {
-  it("Edit reveals RowEditor over the merged built-in + RSS row list; moving a row up PUTs the new key order", async () => {
+describe("Discover — row-editor Edit mode", () => {
+  it("Edit reveals RowEditor with drag handles; entity rows get Delete, and hiding a structural row PUTs row-hidden", async () => {
     type Call = { url: string; method: string; body: unknown };
     const calls: Call[] = [];
     const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -422,6 +422,12 @@ describe("Discover — row-order Edit mode", () => {
       if (url === "/api/discover/row-order/mainstream" && method === "PUT") {
         return new Response(null, { status: 204 });
       }
+      if (url === "/api/discover/row-hidden/mainstream" && method === "GET") {
+        return jsonResponse({ keys: [] });
+      }
+      if (url === "/api/discover/row-hidden/mainstream" && method === "PUT") {
+        return new Response(null, { status: 204 });
+      }
       if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
         return jsonResponse([movie({ id: 1, title: "Trend Movie" })]);
       const d = mainstreamDefaults(url);
@@ -439,23 +445,34 @@ describe("Discover — row-order Edit mode", () => {
     fireEvent.click(screen.getByText("Edit"));
     expect(await screen.findByText("Reorder rows")).toBeInTheDocument();
 
-    // Scope to the editor panel — "NZBGeek Movies" also still appears as the
-    // live carousel's own <h2> title below it.
+    // Scope to the editor panel — the row labels also appear as live carousel
+    // <h2> titles below it.
     const editorCard = screen.getByText("Reorder rows").closest("div") as HTMLElement;
+
+    // Every row is drag-reorderable via its explicit grip handle (the ▲/▼
+    // buttons are gone — reorder is drag-and-drop now).
+    expect(within(editorCard).getAllByLabelText(/^Drag /).length).toBeGreaterThan(0);
+    expect(within(editorCard).queryByLabelText(/Move .* up/)).not.toBeInTheDocument();
+
+    // The RSS feed is an ENTITY row → it keeps its Delete button.
     const feedRow = within(editorCard)
       .getByText("NZBGeek Movies")
       .closest("li") as HTMLElement;
-    fireEvent.click(within(feedRow).getByLabelText("Move NZBGeek Movies up"));
+    expect(within(feedRow).getByText("Delete")).toBeInTheDocument();
+
+    // A built-in category row is STRUCTURAL → it gets a Show/Hide toggle (no
+    // Delete). Hiding it PUTs the new hidden set to the row-hidden endpoint.
+    const structuralRow = within(editorCard)
+      .getByText("Trending Movies")
+      .closest("li") as HTMLElement;
+    expect(within(structuralRow).queryByText("Delete")).not.toBeInTheDocument();
+    fireEvent.click(within(structuralRow).getByLabelText("Trending Movies visible"));
 
     const putCall = calls.find(
-      (c) => c.url === "/api/discover/row-order/mainstream" && c.method === "PUT",
+      (c) => c.url === "/api/discover/row-hidden/mainstream" && c.method === "PUT",
     );
     expect(putCall).toBeTruthy();
-    const keys = (putCall!.body as { keys: string[] }).keys;
-    expect(keys).toContain("rssfeed:7");
-    // Default order: trakt-watchlist, 6 MAINSTREAM_ROWS keys, rssfeed:7,
-    // library — index 7. Moving up swaps it with "upcoming-shows" (index 6).
-    expect(keys.indexOf("rssfeed:7")).toBe(6);
+    expect((putCall!.body as { keys: string[] }).keys).toContain("trending-movies");
   });
 });
 
@@ -872,6 +889,53 @@ describe("Discover — Adult admin newest rows", () => {
       newestHeader.compareDocumentPosition(studiosHeader) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("a DISABLED newest row still appears in the row editor (as an entity row with an unchecked Enabled toggle), so it can be re-enabled", async () => {
+    stubFetch((url) => {
+      if (url.includes("/newest-rows/1/resolve")) return jsonResponse([]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+          { id: 3, title: "Hidden Studios", rowType: "studio", sortOrder: 2, enabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    // The disabled row is filtered from the live browse content...
+    expect(await screen.findByText("Newest Scenes")).toBeInTheDocument();
+    expect(screen.queryByText("Hidden Studios")).not.toBeInTheDocument();
+
+    // ...but it MUST reappear in Edit mode so it isn't a dead end. (Regression
+    // guard for the enabled-only knownKeys bug: allNewestRows feeds the editor,
+    // enabledNewestRows feeds the rendered rows.)
+    fireEvent.click(screen.getByText("Edit"));
+    const editorCard = (await screen.findByText("Reorder rows")).closest(
+      "div",
+    ) as HTMLElement;
+
+    const disabledRow = within(editorCard)
+      .getByText("Hidden Studios")
+      .closest("li") as HTMLElement;
+    const enabledBox = within(disabledRow).getByLabelText(
+      "Hidden Studios enabled",
+    ) as HTMLInputElement;
+    expect(enabledBox.checked).toBe(false);
+    // It's an entity row, so it also carries a Delete button.
+    expect(within(disabledRow).getByText("Delete")).toBeInTheDocument();
+
+    // The enabled newest row shows a checked Enabled toggle for contrast.
+    const enabledRow = within(editorCard)
+      .getByText("Newest Scenes")
+      .closest("li") as HTMLElement;
+    expect(
+      (within(enabledRow).getByLabelText("Newest Scenes enabled") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
   });
 });
 

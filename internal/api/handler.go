@@ -239,6 +239,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// deliberately loose (see discoverRowOrderSettingKey's doc comment).
 	mux.HandleFunc("GET /api/discover/row-order/{screen}", getRowOrderHandler(settingsStore))
 	mux.HandleFunc("PUT /api/discover/row-order/{screen}", putRowOrderHandler(settingsStore))
+	// Discover row hidden state — a sibling of row-order (see
+	// discover_row_hidden.go), the per-screen set of currently-hidden
+	// structural row keys. Stored under its own settings key with its own
+	// DTO because its reconciliation semantics differ (absent-from-list means
+	// visible; no append-missing concept). Reuses the same settingsStore.
+	mux.HandleFunc("GET /api/discover/row-hidden/{screen}", getRowHiddenHandler(settingsStore))
+	mux.HandleFunc("PUT /api/discover/row-hidden/{screen}", putRowHiddenHandler(settingsStore))
 	// Trakt: watchlist connection (Settings) + Discover watchlist row. See
 	// trakt.go for the handlers and the full route-table rationale — this is
 	// just the one-line mux registration. traktFlow is one shared in-memory

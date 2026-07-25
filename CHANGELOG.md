@@ -3416,3 +3416,75 @@ uncommitted edit from a different concurrent session sharing this working
 directory, and editing the same region would have risked conflating the
 two. Moving the roadmap entry to "Recently shipped" is left as a manual
 follow-up once that other session's edit is resolved.
+
+---
+
+## 2026-07-25 — Discover RowEditor: drag-and-drop + structural show/hide + newest-row parity
+
+The Discover Edit-mode row editor (`frontend/src/screens/discover/RowEditor.tsx`,
+shared by Mainstream and Adult) was reworked so `newestrow:` entries get the
+same editor management `slider:`/`rssfeed:` already had, and so built-in
+(structural) rows can be hidden. Paired with a
+new backend row-hidden sibling endpoint (`GET/PUT
+/api/discover/row-hidden/{screen}`, `RowHiddenRequest`/`RowHiddenResponse`
+DTOs, `discover_row_hidden.go` + `discover_row_hidden_test.go`), cloned from
+the existing `discover_row_order.go` handlers — same settings-KV storage
+pattern, same screen validation, no `NewMux` signature change. Both land in
+this same change.
+
+**Framing correction (not a "total lockout" fix).** Disabled Adult
+`newestrow:` entries were never fully unmanageable — they stayed editable via
+Settings → Adult Rows (`AdultRowAdmin.tsx`). What was missing was *row-editor
+parity*: a disabled newest row vanished from the inline editor entirely (the
+enabled-only `newestRows()` signal fed both the rendered rows AND `knownKeys`),
+so it couldn't be re-enabled or reordered from Discover. Split into
+`allNewestRows()` (feeds the editor + known-keys, includes disabled) vs.
+`enabledNewestRows()` (feeds the rendered Discover content), mirroring
+Mainstream's existing all-vs-enabled slider split.
+
+**Row taxonomy.** `RowDescriptor.removable: boolean` was replaced with
+`kind: "structural" | "entity"`:
+- **Entity** rows (`slider:`, `rssfeed:`, `newestrow:`) — real deletable rows
+  with their own CRUD — get an Enabled toggle + Delete (confirm-first). Adult's
+  `newestrow:` toggle/delete were newly wired to the existing
+  `updateAdultNewestRow`/`deleteAdultNewestRow` APIs; the toggle reconstructs the
+  FULL `AdultNewestRowUpsertRequest` (title/rowType/genreFilter/enabled) from the
+  looked-up row object, since the descriptor alone doesn't carry rowType/
+  genreFilter and a partial PUT would silently clear them.
+- **Structural** rows (Mainstream: `trakt-watchlist`, the 6 `MAINSTREAM_ROWS`,
+  `library`; Adult: `studios`, `performers`, `stashbox:*`) — no backing entity —
+  get a Show/Hide toggle persisting to the new per-screen row-hidden store, and
+  no Delete. A hidden structural row is dropped from the normal Discover view but
+  still renders (dimmed) in Edit mode with its Show toggle, so it's never a dead
+  end. `isHidden(key)` defaults to `false` (visible) while the hidden-keys signal
+  is still loading (null), mirroring `useRowOrder`'s `storedKeys() ?? []` pattern,
+  so rows never flash hidden on first paint.
+
+**Reorder is now drag-and-drop.** The `▲`/`▼` buttons (and `useRowOrder`'s
+`moveRow`) were removed; reorder flows through `RowEditor`'s `onReorder(newKeys)`
+→ the screen's existing `persistOrder`. Drag is initiated only from an explicit
+`⠿` grip handle so the checkbox/Delete/Show-Hide controls stay clickable. The
+resulting-order computation is a pure `reorderKeys()` (unit-tested directly,
+since a jsdom pointer drag isn't simulable).
+
+**Two documented convention reversals** (per `RowEditor.tsx`'s own prior doc
+comment, now corrected):
+1. "no new frontend dependency" → a drag-and-drop dependency is added. Shipped
+   `@thisbeyond/solid-dnd@^0.7.5` (the plan's primary pick). Its parent-owned
+   `onDragEnd(from→to)` model fits SAK's server-persisted, parent-controlled
+   order; `@formkit/drag-and-drop`'s list-owning `setValues` model was the
+   documented fallback but wasn't needed. The one real risk — whether its `.jsx`
+   (shipped under the `solid` export condition) transforms cleanly through this
+   Vite 6 + vite-plugin-solid build — was verified by a real `pnpm build` (98
+   modules transformed, no `optimizeDeps.exclude` workaround required), so the
+   fallback was never triggered.
+2. "built-in rows can be reordered but not hidden or deleted" → structural
+   built-in rows are now hideable (still not deletable — they have no entity).
+
+Tests: `RowEditor.test.tsx` rewritten for the `kind` discriminator + reorderKeys
++ show/hide wiring; new `useRowOrder.test.ts` for the reorder/hidden signal
+logic; `rowOrder.test.ts` extended for `fetchRowHidden`/`saveRowHidden`; the
+`Discover.test.tsx` row-editor integration test migrated off the removed
+▲/▼ buttons (now asserts drag handles + a structural Show/Hide → row-hidden PUT),
+plus a new regression guard that a disabled newest row still appears in the
+editor. `pnpm typecheck`, `pnpm build`, and `pnpm test` (451 passing) all green.

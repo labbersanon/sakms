@@ -10,9 +10,10 @@
 // operator-reorderable key list (see api/rowOrder.ts's mergeRowOrder) that
 // interleaves the built-in rows above with admin-defined custom sliders and
 // RSS feed rows. `editMode` (passed down from Discover/index.tsx's tab-bar
-// Edit toggle) swaps the row list for RowEditor's reorder/enable/delete UI;
-// the "+ Add RSS feed" tile at the bottom is always visible regardless of
-// edit mode.
+// Edit toggle) swaps the row list for RowEditor's drag-reorder UI: built-in
+// (structural) rows get a Show/Hide toggle, dynamic (entity) sliders/RSS feeds
+// get an enable-toggle + Delete. The "+ Add RSS feed" tile at the bottom is
+// always visible regardless of edit mode.
 
 import {
   type Component,
@@ -747,7 +748,7 @@ export const MainstreamDiscover: Component<{
     "library",
   ];
 
-  const { orderedKeys, moveRow, persistOrder, error: rowOrderError } =
+  const { orderedKeys, persistOrder, isHidden, toggleHidden, error: rowOrderError } =
     useRowOrder("mainstream", knownKeys);
   // rowActionError covers a toggle/delete's own mutation failure (updateSlider/
   // deleteRssFeed/etc.) — a distinct failure mode from useRowOrder's error
@@ -758,19 +759,26 @@ export const MainstreamDiscover: Component<{
 
   const descriptorFor = (key: string): RowDescriptor | undefined => {
     const builtinRow = MAINSTREAM_ROWS.find((r) => r.key === key);
-    if (builtinRow) return { key, label: builtinRow.title, removable: false };
+    if (builtinRow) {
+      return { key, label: builtinRow.title, kind: "structural", hidden: isHidden(key) };
+    }
     if (MAINSTREAM_FIXED_LABELS[key]) {
-      return { key, label: MAINSTREAM_FIXED_LABELS[key]!, removable: false };
+      return {
+        key,
+        label: MAINSTREAM_FIXED_LABELS[key]!,
+        kind: "structural",
+        hidden: isHidden(key),
+      };
     }
     if (key.startsWith("slider:")) {
       const id = Number(key.slice("slider:".length));
       const s = allSliders().find((s) => s.id === id);
-      return s ? { key, label: s.title, removable: true, enabled: s.enabled } : undefined;
+      return s ? { key, label: s.title, kind: "entity", enabled: s.enabled } : undefined;
     }
     if (key.startsWith("rssfeed:")) {
       const id = Number(key.slice("rssfeed:".length));
       const f = mainstreamFeeds().find((f) => f.id === id);
-      return f ? { key, label: f.title, removable: true, enabled: f.enabled } : undefined;
+      return f ? { key, label: f.title, kind: "entity", enabled: f.enabled } : undefined;
     }
     return undefined;
   };
@@ -839,7 +847,8 @@ export const MainstreamDiscover: Component<{
       if (key.startsWith("rssfeed:")) {
         return enabledFeeds().some((f) => `rssfeed:${f.id}` === key);
       }
-      return true;
+      // structural rows (built-ins, Trakt, library): shown unless hidden.
+      return !isHidden(key);
     });
 
   const renderRow = (key: string): JSX.Element => {
@@ -962,8 +971,9 @@ export const MainstreamDiscover: Component<{
             <Show when={props.editMode?.()}>
               <RowEditor
                 rows={rowDescriptors()}
-                onMove={moveRow}
+                onReorder={persistOrder}
                 onToggleEnabled={(r) => void toggleRowEnabled(r)}
+                onToggleHidden={(r) => toggleHidden(r.key)}
                 onDelete={(r) => void deleteRow(r)}
               />
               <Show when={editError()}>

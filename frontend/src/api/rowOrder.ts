@@ -8,7 +8,12 @@
 // key that no longer resolves to anything live.
 
 import { api } from "./client";
-import type { RowOrderRequest, RowOrderResponse } from "@dto";
+import type {
+  RowHiddenRequest,
+  RowHiddenResponse,
+  RowOrderRequest,
+  RowOrderResponse,
+} from "@dto";
 
 export type DiscoverScreen = "mainstream" | "adult";
 
@@ -24,6 +29,28 @@ export function saveRowOrder(
 ): Promise<void> {
   const body: RowOrderRequest = { keys };
   return api<void>(`/api/discover/row-order/${screen}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+// fetchRowHidden / saveRowHidden are the row-order siblings for the per-screen
+// hidden-structural-row set (GET/PUT /api/discover/row-hidden/{screen}). Unlike
+// row-order there is NO mergeRowOrder-style reconciliation: absent-from-list
+// means visible, so the raw stored key set is used as-is (see
+// internal/api/discover_row_hidden.go / RowHiddenResponse's doc comment).
+export function fetchRowHidden(screen: DiscoverScreen): Promise<string[]> {
+  return api<RowHiddenResponse>(`/api/discover/row-hidden/${screen}`).then(
+    (r) => r.keys,
+  );
+}
+
+export function saveRowHidden(
+  screen: DiscoverScreen,
+  keys: string[],
+): Promise<void> {
+  const body: RowHiddenRequest = { keys };
+  return api<void>(`/api/discover/row-hidden/${screen}`, {
     method: "PUT",
     body: JSON.stringify(body),
   });

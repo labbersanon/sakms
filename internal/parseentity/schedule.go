@@ -67,7 +67,15 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 	httpClient := &http.Client{Timeout: outboundTimeout}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	log.Printf("parseentity: background entity sync enabled (every %s) — a deliberate opt-in exception to manual-by-default", interval)
+	log.Printf("parseentity: background entity sync enabled (every %s) — a deliberate opt-in exception to manual-by-default, immediate boot poll", interval)
+
+	// Immediate boot poll: fire once before the first interval so the entity
+	// cache (studios/performers) is populated at startup rather than only after
+	// a full interval elapses. With a 24h cadence in a deployment that redeploys
+	// several times a day, a no-boot-poll ticker never actually fired, leaving
+	// the entity DB empty and degrading the Adult filename-parse match quality
+	// that adultnewest's browse pass depends on. Mirrors adultnewest's boot poll.
+	runCycle(ctx, httpClient, connStore, store)
 
 	for {
 		select {

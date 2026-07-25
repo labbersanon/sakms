@@ -167,7 +167,15 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 		browseTicker = time.NewTicker(interval)
 		defer browseTicker.Stop()
 		browseC = browseTicker.C
-		log.Printf("adultnewest: background newest-releases (browse) scan enabled (every %s) — a deliberate opt-in exception to manual-by-default", interval)
+		log.Printf("adultnewest: background newest-releases (browse) scan enabled (every %s) — a deliberate opt-in exception to manual-by-default, immediate boot poll", interval)
+		// Immediate boot poll: fire once before the first interval. The browse
+		// pass feeds (and depends on) parseentity's entity cache, and both jobs
+		// use a 24h ticker; because this deployment redeploys several times a
+		// day, a no-initial-tick browse pass effectively never fired — the
+		// original "manual-first, no boot poll" shape produced a real bug (the
+		// pass never ran, degrading every Adult identify's match quality).
+		// Mirrors the feed pass's boot poll below.
+		runCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore)
 	}
 
 	var feedTicker *time.Ticker
@@ -180,8 +188,12 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 		// Immediate boot poll (D7 / Low finding): fire once before the first
 		// interval so feed-only Adult content isn't invisible for up to one
 		// interval after every restart (the cold-start health map gates all feed
-		// sources until the first successful poll). The browse pass keeps its
-		// no-initial-tick shape — do NOT unify them.
+		// sources until the first successful poll). The browse pass now boot-polls
+		// too (see its block above) — both passes fire once at startup. The
+		// earlier "browse keeps its no-initial-tick shape — do NOT unify them"
+		// note was reversed on 2026-07-25: that shape produced a real bug in this
+		// fast-redeploy deployment (the browse pass never actually ran, since its
+		// 24h ticker never survived to fire between redeploys).
 		runFeedCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
 	}
 

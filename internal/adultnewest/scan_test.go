@@ -116,6 +116,56 @@ func fakeTPDB(t *testing.T, sites, performers map[string]bool) *httptest.Server 
 	return srv
 }
 
+// TestRun_BrowseBootPollFiresBeforeInterval proves the browse pass now fires an
+// immediate boot poll — the deliberate reversal of its earlier "no-initial-tick"
+// shape. With a long browse interval and the feed pass off, Prowlarr is still
+// queried at t≈0, before the first tick would ever elapse. Without the boot poll
+// the browse pass effectively never ran in this fast-redeploy deployment (a 24h
+// ticker never survives to fire between redeploys), leaving the entity DB its
+// match quality depends on empty. Mirrors TestRun_FeedBootPollFiresBeforeInterval.
+func TestRun_BrowseBootPollFiresBeforeInterval(t *testing.T) {
+	connStore, settingsStore, releaseStore := newTestScanStores(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ollama := fakeOllama(t, `{"studio":null,"title":null,"performers":null}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	hit := make(chan struct{}, 1)
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/search" {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case hit <- struct{}{}:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(prow.Close)
+	if err := connStore.Upsert(ctx, "prowlarr", prow.URL, "key"); err != nil {
+		t.Fatalf("configuring prowlarr: %v", err)
+	}
+
+	// Feed pass explicitly off, so only the browse boot poll can query Prowlarr.
+	if err := settingsStore.Set(ctx, FeedIntervalSettingKey, "0"); err != nil {
+		t.Fatalf("disabling feed pass: %v", err)
+	}
+
+	// A one-hour browse interval: if the boot poll didn't fire, Prowlarr would
+	// not be queried for an hour — the test would time out at 2s instead.
+	go Run(ctx, time.Hour, connStore, settingsStore, releaseStore, nil, nil, NewFeedHealth())
+
+	select {
+	case <-hit:
+		// Boot poll fired — success.
+	case <-time.After(2 * time.Second):
+		t.Fatal("prowlarr was not queried within 2s — the browse boot poll did not fire before the interval")
+	}
+}
+
 func configureAI(t *testing.T, ctx context.Context, connStore *connections.Store, settingsStore *settings.Store, ollamaURL string) {
 	t.Helper()
 	if err := connStore.Upsert(ctx, "ollama", ollamaURL, ""); err != nil {

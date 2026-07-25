@@ -50,8 +50,39 @@ type MatchedRelease struct {
 	// JSON-array-encoded TEXT column convention as Genres. Empty for
 	// Studio/Performer rows and for entities matched before this field
 	// existed.
-	Performers  []string
-	FirstSeenAt string
+	Performers []string
+	// DownloadURL is the feed enclosure URL for a feed-sourced entity (empty for
+	// a browse-only entity). When present, Adult Discover grabs directly via
+	// dispatchToDownloadClient, skipping the Prowlarr search entirely (D4). It is
+	// exposed to a card only while the row's feed is fresh (see
+	// FeedHealth.DirectGrabURL); it is never cleared when the feed goes unhealthy.
+	DownloadURL string
+	// DownloadProtocol is the feed's admin-set protocol ("torrent" | "usenet")
+	// for a feed enclosure, threaded into the direct-grab dispatch.
+	DownloadProtocol string
+	// SizeBytes is the feed enclosure's byte length (0 if absent/unknown).
+	SizeBytes int64
+	// BrowseConfirmed is the VISIBILITY fact: the cat-6000 browse pass currently
+	// confirms this entity, independent of every feed. Set true by the browse
+	// pass (and for Studio/Performer entities, which are never feed-gated); never
+	// cleared by the feed pass. A row is shown iff BrowseConfirmed OR its feed is
+	// fresh (see FeedHealth.Available).
+	BrowseConfirmed bool
+	// FeedID is the GRAB-PATH fact: which feed (rss_feeds.id) offers a direct-grab
+	// enclosure for this entity, or 0 for "no feed source." Selects which
+	// feed-health entry the row is gated against.
+	FeedID int64
+	// FeedItemKey is the row's stable identity within that feed (D6: enclosure
+	// URL, else link, else a hash of feed id + title) — the same derivation as
+	// the per-poll presence key set, so a row and the poll that confirms it
+	// always agree on the key (used by RefreshLastConfirmedSeen).
+	FeedItemKey string
+	// LastConfirmedSeen is the persisted TTL clock: the Unix timestamp (seconds)
+	// of the last successful poll that confirmed this feed enclosure present. 0 =
+	// never confirmed in a poll (correct for browse-only rows). Read at request
+	// time by FeedHealth.feedFresh.
+	LastConfirmedSeen int64
+	FirstSeenAt       string
 }
 
 // ReleaseStore persists matched-entity cache rows plus the separate
@@ -121,11 +152,23 @@ func (s *ReleaseStore) MarkSeen(ctx context.Context, releaseGUID string) error {
 	return nil
 }
 
-// Insert writes one matched entity to the cache. Idempotent by design — an
-// entity's identity doesn't change over time (unlike internal/recheck's
-// availability boolean, which does), so a duplicate (row_type, entity_source,
-// entity_id) is silently ignored rather than updated: the release that first
-// surfaced an entity wins that cache row.
+// Insert writes one matched entity to the cache, merging two orthogonal facts
+// independently on a (row_type, entity_source, entity_id) conflict (M1):
+//
+//   - browse_confirmed = MAX(existing, incoming) — a boolean OR: a feed insert
+//     (browse_confirmed=0) never clears an existing browse confirmation, and a
+//     browse insert (1) raises it. Visibility is preserved regardless of order.
+//   - the enclosure (download_url/protocol/size/feed_id/feed_item_key/
+//     last_confirmed_seen) is adopted ONLY onto a row that has none yet
+//     (existing download_url = '' AND incoming != '') — first-feed-wins: a
+//     browse insert (download_url='') never overwrites a feed's enclosure, and a
+//     second feed never downgrades the first feed's enclosure.
+//
+// Identity-stable metadata (title/studio/image/genres/performers) keeps the
+// first-writer-wins contract — it is intentionally NOT in the SET clause, so it
+// is preserved on conflict. This closes M1 (a feed match can no longer be
+// silently dropped by a pre-cached browse row) without letting a browse match
+// steal a feed row's grab path.
 func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 	genres := m.Genres
 	if genres == nil {
@@ -149,12 +192,60 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO adult_newest_releases
-			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, performers)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(row_type, entity_source, entity_id) DO NOTHING
-	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate, m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON), string(performersJSON))
+			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date,
+			 entity_duration_seconds, first_seen_release_title, genres, performers,
+			 download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(row_type, entity_source, entity_id) DO UPDATE SET
+			browse_confirmed  = MAX(adult_newest_releases.browse_confirmed, excluded.browse_confirmed),
+			download_url      = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
+			                    THEN excluded.download_url      ELSE adult_newest_releases.download_url      END,
+			download_protocol = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
+			                    THEN excluded.download_protocol ELSE adult_newest_releases.download_protocol END,
+			size_bytes        = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
+			                    THEN excluded.size_bytes        ELSE adult_newest_releases.size_bytes        END,
+			feed_id           = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
+			                    THEN excluded.feed_id           ELSE adult_newest_releases.feed_id           END,
+			feed_item_key     = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
+			                    THEN excluded.feed_item_key     ELSE adult_newest_releases.feed_item_key     END,
+			last_confirmed_seen = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
+			                    THEN excluded.last_confirmed_seen ELSE adult_newest_releases.last_confirmed_seen END
+	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate,
+		m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON), string(performersJSON),
+		m.DownloadURL, m.DownloadProtocol, m.SizeBytes, m.BrowseConfirmed, m.FeedID, m.FeedItemKey, m.LastConfirmedSeen)
 	if err != nil {
 		return fmt.Errorf("inserting matched entity %q: %w", m.EntityID, err)
+	}
+	return nil
+}
+
+// RefreshLastConfirmedSeen advances the persisted TTL clock (last_confirmed_seen)
+// to nowUnix for every already-cached row of feedID whose feed_item_key is in
+// keys — writer (ii) of the two last-seen writers (D3). It is run once per
+// successful poll over the FULL current window (every item the feed returned,
+// not just the newly-identified ones), so a continuously-listed item's TTL never
+// lapses while its feed is healthy — including a re-seen item the Insert upsert
+// no-ops on and an item skipped by the identify budget. A no-op for empty keys.
+func (s *ReleaseStore) RefreshLastConfirmedSeen(ctx context.Context, feedID int64, keys []string, nowUnix int64) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	placeholders := make([]byte, 0, len(keys)*2)
+	args := make([]any, 0, len(keys)+2)
+	args = append(args, nowUnix, feedID)
+	for i, k := range keys {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args = append(args, k)
+	}
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`
+		UPDATE adult_newest_releases SET last_confirmed_seen = ?
+		WHERE feed_id = ? AND feed_item_key IN (%s)
+	`, placeholders), args...)
+	if err != nil {
+		return fmt.Errorf("refreshing last_confirmed_seen for feed %d: %w", feedID, err)
 	}
 	return nil
 }
@@ -163,6 +254,33 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 // non-positive per-page count — matches tpdbrest.defaultBrowsePerPage's
 // convention for the same reason (a sane Discover-grid-sized default).
 const defaultResolvePerPage = 20
+
+// releaseColumns is the full SELECT column list shared by List/SearchScenes/
+// ListRecentScenes so every read scans the same shape via scanRelease — one
+// place to keep in sync with the schema (and with scanRelease's Scan order).
+const releaseColumns = `id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, performers, download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen, first_seen_at`
+
+// scanRelease decodes one row selected via releaseColumns into a MatchedRelease,
+// unmarshalling the JSON-encoded genres/performers arrays. Column order here
+// must match releaseColumns exactly.
+func scanRelease(rows *sql.Rows) (MatchedRelease, error) {
+	var m MatchedRelease
+	var rowTypeStr, genresJSON, performersJSON string
+	if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio,
+		&m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &m.FirstSeenReleaseTitle, &genresJSON, &performersJSON,
+		&m.DownloadURL, &m.DownloadProtocol, &m.SizeBytes, &m.BrowseConfirmed, &m.FeedID, &m.FeedItemKey,
+		&m.LastConfirmedSeen, &m.FirstSeenAt); err != nil {
+		return MatchedRelease{}, fmt.Errorf("scanning matched entity: %w", err)
+	}
+	m.RowType = RowType(rowTypeStr)
+	if err := json.Unmarshal([]byte(genresJSON), &m.Genres); err != nil {
+		return MatchedRelease{}, fmt.Errorf("decoding genres for entity %d: %w", m.ID, err)
+	}
+	if err := json.Unmarshal([]byte(performersJSON), &m.Performers); err != nil {
+		return MatchedRelease{}, fmt.Errorf("decoding performers for entity %d: %w", m.ID, err)
+	}
+	return m, nil
+}
 
 // List returns one page of cached matches for the given row type, newest
 // first, optionally narrowed to entities whose genres include genreFilter.
@@ -181,8 +299,7 @@ func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter st
 	}
 	offset := (page - 1) * perPage
 
-	query := `
-		SELECT id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, performers, first_seen_at
+	query := `SELECT ` + releaseColumns + `
 		FROM adult_newest_releases
 		WHERE row_type = ?`
 	args := []any{string(rowType)}
@@ -201,17 +318,82 @@ func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter st
 
 	out := []MatchedRelease{}
 	for rows.Next() {
-		var m MatchedRelease
-		var rowTypeStr, genresJSON, performersJSON string
-		if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio, &m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &m.FirstSeenReleaseTitle, &genresJSON, &performersJSON, &m.FirstSeenAt); err != nil {
-			return nil, fmt.Errorf("scanning matched entity: %w", err)
+		m, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
 		}
-		m.RowType = RowType(rowTypeStr)
-		if err := json.Unmarshal([]byte(genresJSON), &m.Genres); err != nil {
-			return nil, fmt.Errorf("decoding genres for entity %d: %w", m.ID, err)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// sceneRowTypes is the row_type set the pooled scene listings (SearchScenes,
+// ListRecentScenes) draw from — grabbable scene/movie entities, never
+// Studio/Performer aggregates (those have no enclosure and aren't a "scene").
+var sceneRowTypes = []any{string(RowScene), string(RowMovie)}
+
+// SearchScenes returns one page of cached scene/movie entities whose title
+// matches q (case-insensitive substring), newest-first. This is Adult search
+// re-pointed off a live TPDB call and onto the identified-available pool (D4b):
+// a title LIKE over the cache works regardless of a pooled entity's source
+// (TPDB/StashDB/FansDB), which an id-based TPDB cross-reference could not. The
+// caller applies the D5 visibility gate + DirectGrabURL exposure to the result.
+func (s *ReleaseStore) SearchScenes(ctx context.Context, q string, page int) ([]MatchedRelease, error) {
+	if page <= 0 {
+		page = 1
+	}
+	perPage := defaultResolvePerPage
+	offset := (page - 1) * perPage
+
+	args := append([]any{}, sceneRowTypes...)
+	args = append(args, `%`+q+`%`, perPage, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+releaseColumns+`
+		FROM adult_newest_releases
+		WHERE row_type IN (?, ?) AND entity_title LIKE ? COLLATE NOCASE
+		ORDER BY first_seen_at DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("searching pooled scenes: %w", err)
+	}
+	defer rows.Close()
+
+	out := []MatchedRelease{}
+	for rows.Next() {
+		m, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal([]byte(performersJSON), &m.Performers); err != nil {
-			return nil, fmt.Errorf("decoding performers for entity %d: %w", m.ID, err)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListRecentScenes returns one page of cached scene/movie entities ordered by
+// the entity's own release date descending (unknown/blank dates sort last) —
+// the pooled replacement for the live TPDB+StashDB "Recently Released" merge
+// (adultDiscoverMergedRecentHandler). The caller applies the D5 gate + exposure.
+func (s *ReleaseStore) ListRecentScenes(ctx context.Context, page int) ([]MatchedRelease, error) {
+	if page <= 0 {
+		page = 1
+	}
+	perPage := defaultResolvePerPage
+	offset := (page - 1) * perPage
+
+	args := append([]any{}, sceneRowTypes...)
+	args = append(args, perPage, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+releaseColumns+`
+		FROM adult_newest_releases
+		WHERE row_type IN (?, ?)
+		ORDER BY entity_date = '' ASC, entity_date DESC, first_seen_at DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing recent pooled scenes: %w", err)
+	}
+	defer rows.Close()
+
+	out := []MatchedRelease{}
+	for rows.Next() {
+		m, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, m)
 	}

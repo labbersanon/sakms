@@ -19,6 +19,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -168,9 +169,14 @@ func findAdultNewestRow(ctx context.Context, store *adultnewest.Store, id int) (
 }
 
 // toDTOReleaseItem maps a cached adultnewest.MatchedRelease onto the wire DTO
-// resolveAdultNewestRowHandler returns.
-func toDTOReleaseItem(m adultnewest.MatchedRelease) apidto.AdultNewestReleaseItem {
-	return apidto.AdultNewestReleaseItem{
+// resolveAdultNewestRowHandler returns. The feed enclosure fields
+// (downloadUrl/protocol/sizeBytes) are populated ONLY when the row's feed is
+// currently fresh — via feedHealth.DirectGrabURL, never from the raw
+// download_url column — so an unhealthy/pruned/beyond-TTL feed's stale enclosure
+// is never offered for direct-grab; the card then falls back to the Prowlarr
+// path (D4/D5).
+func toDTOReleaseItem(m adultnewest.MatchedRelease, feedHealth *adultnewest.FeedHealth, now time.Time) apidto.AdultNewestReleaseItem {
+	item := apidto.AdultNewestReleaseItem{
 		ID:              m.EntityID,
 		Title:           m.EntityTitle,
 		Studio:          m.EntityStudio,
@@ -183,13 +189,19 @@ func toDTOReleaseItem(m adultnewest.MatchedRelease) apidto.AdultNewestReleaseIte
 		Genres:          m.Genres,
 		Performers:      m.Performers,
 	}
+	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
+		item.DownloadURL = url
+		item.Protocol = m.DownloadProtocol
+		item.SizeBytes = m.SizeBytes
+	}
+	return item
 }
 
 // resolveAdultNewestRowHandler is GET /api/modes/adult/newest-rows/{id}/resolve
 // — reads the row's config, then lists matching cached releases for the
 // requested page. See this file's package doc for why this never touches
 // Prowlarr or the identify pipeline at request time.
-func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
+func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -218,9 +230,20 @@ func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adu
 			return
 		}
 
-		items := make([]apidto.AdultNewestReleaseItem, len(matches))
-		for i, m := range matches {
-			items[i] = toDTOReleaseItem(m)
+		// D5 visibility gate: a row is shown iff it is browse-confirmed OR its
+		// feed source is fresh. Studio/Performer entities are always
+		// browse-confirmed (never feed-gated), so they always pass; a feed-only
+		// scene whose feed is unhealthy/pruned/beyond-TTL gates out, while a
+		// both-sourced scene stays visible (with an empty enclosure → Prowlarr
+		// fallback, via toDTOReleaseItem's DirectGrabURL). Gating post-query can
+		// under-fill a page (accepted at this cache's scale).
+		now := time.Now()
+		items := make([]apidto.AdultNewestReleaseItem, 0, len(matches))
+		for _, m := range matches {
+			if !feedHealth.Available(m.BrowseConfirmed, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
+				continue
+			}
+			items = append(items, toDTOReleaseItem(m, feedHealth, now))
 		}
 		writeJSON(w, items)
 	}

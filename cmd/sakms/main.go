@@ -122,8 +122,20 @@ func run() error {
 	}
 	// rssFeedsStore backs admin-defined raw RSS 2.0 feed rows (NZBGeek
 	// saved-search style) — a per-row feed URL fetched and parsed server-side
-	// at resolve time, a separate concept from slidersStore (TMDB-backed).
-	rssFeedsStore := rssfeeds.New(sqlDB)
+	// at resolve time, a separate concept from slidersStore (TMDB-backed). The
+	// feed URL is encrypted at rest (secretStore) — a feed URL commonly embeds
+	// an indexer API key — via the trakt.Store pattern.
+	rssFeedsStore := rssfeeds.NewStore(sqlDB, secretStore)
+	// Real production migration: encrypt any pre-existing plaintext feed_url
+	// rows. This MUST complete before the feed poller starts AND before the HTTP
+	// server accepts requests, so neither reads/writes a half-migrated row; the
+	// Store's plaintext read-fallback keeps unreached rows working if it errors,
+	// so it is logged-and-non-fatal (same one-shot boot-step shape as
+	// SweepStalePHashThresholds above; context.Background() for the same reason —
+	// the signal-driven ctx doesn't exist yet here).
+	if err := rssFeedsStore.BackfillEncryption(context.Background()); err != nil {
+		log.Printf("rss feeds: encrypting plaintext feed urls: %v (unreached rows keep working via the plaintext read-fallback; retried next boot)", err)
+	}
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
 	// internal/trakt's package doc for why); secretStore encrypts the same
@@ -140,6 +152,12 @@ func run() error {
 	// start-call below.
 	adultNewestRowStore := adultnewest.New(sqlDB)
 	adultNewestReleaseStore := adultnewest.NewReleaseStore(sqlDB)
+	// feedHealth is the concurrency-safe per-feed liveness holder shared by the
+	// adultnewest feed poller (sole writer) and the three Adult Discover read
+	// handlers (readers) so a feed-sourced row's request-time availability is a
+	// cheap in-memory health check plus the row's persisted last_confirmed_seen —
+	// no live probe. Constructed once here; injected into both.
+	feedHealth := adultnewest.NewFeedHealth()
 	// entityStore is the DB-first entity cache for Adult filename parsing. It
 	// wraps the same sqlDB as every other store — no second connection needed.
 	entityStore := parseentity.NewSQLiteStore(sqlDB)
@@ -197,7 +215,7 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -319,7 +337,7 @@ func run() error {
 	// for Adult Discover's newest-releases rows to read. Gated OFF by
 	// default (interval 0). To remove entirely: delete internal/adultnewest,
 	// this line, its NewMux params, and the two stores' construction above.
-	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, settingsStore, adultNewestReleaseStore, entityStore)
+	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, settingsStore, adultNewestReleaseStore, entityStore, rssFeedsStore, feedHealth)
 
 	// Same deliberate, opt-in exception as recheck/adultnewest above: a
 	// background job that syncs all four entity-cache sources (Stash/TPDB/

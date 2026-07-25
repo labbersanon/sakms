@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tmdb"
@@ -68,7 +70,7 @@ func newAdultMux(t *testing.T, conns map[string]string) *http.ServeMux {
 		}
 		overrideFixedURL(t, service, u)
 	}
-	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil)
+	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil)
 }
 
 func TestAdultStashBox_NotConfiguredReturnsEmptyArray(t *testing.T) {
@@ -196,209 +198,114 @@ func TestAdultStashBox_UpstreamErrorIs502(t *testing.T) {
 	}
 }
 
-// --- merged "Recently Released" ---
+// --- merged "Recently Released" (now pooled + D5-gated, see adultdiscover_stashbox.go) ---
+//
+// adultDiscoverMergedRecentHandler was re-pointed off the old live TPDB+StashDB
+// merge and onto the identified-available pool (ReleaseStore.ListRecentScenes),
+// gated by the D5 visibility rule + DirectGrabURL exposure. These tests seed the
+// adult_newest_releases cache directly and assert the pooled/gated contract; the
+// former live-fetch/dedup/merge tests were removed with that behavior.
 
-func TestAdultMergedRecent_StashDBNotConfigured_TPDBOnly(t *testing.T) {
-	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("orderBy"); got != "recently_released" {
-			t.Errorf("expected orderBy=recently_released, got %q", got)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"_id":"t1","title":"TPDB Scene","date":"2024-01-01","site":{"name":"Tushy"}}]}`))
-	})
-
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL}))
-	defer srv.Close()
-
-	var items []adultScene
-	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
-	if len(items) != 1 || items[0].ID != "t1" || items[0].Source != "tpdb" {
-		t.Errorf("expected TPDB-only output, got %+v", items)
-	}
-}
-
-func TestAdultMergedRecent_DropsStashDBDuplicateBySharedPHash(t *testing.T) {
-	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"_id":"t1","title":"TPDB Scene","date":"2024-05-05","site":{"name":"Tushy"},` +
-			`"hashes":[{"hash":"shared","type":"phash"}]}]}`))
-	})
-	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb1","title":"Dup Scene","release_date":"2024-05-04",` +
-			`"studio":{"name":"Blacked","parent":null},"images":[],"duration":0,` +
-			`"fingerprints":[{"hash":"shared","algorithm":"PHASH"}]}]}}}`))
-	})
-
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
-	defer srv.Close()
-
-	var items []adultScene
-	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
-	if len(items) != 1 || items[0].ID != "t1" {
-		t.Fatalf("expected the StashDB duplicate dropped, TPDB kept, got %+v", items)
-	}
-}
-
-func TestAdultMergedRecent_DisjointPHash_BothAppear(t *testing.T) {
-	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"_id":"t1","title":"TPDB Scene","date":"2024-01-01","site":{"name":"Tushy"},` +
-			`"hashes":[{"hash":"tpdbhash","type":"phash"}]}]}`))
-	})
-	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb1","title":"Exclusive Scene","release_date":"2024-02-02",` +
-			`"studio":{"name":"Blacked","parent":null},"images":[],"duration":0,` +
-			`"fingerprints":[{"hash":"stashhash","algorithm":"PHASH"}]}]}}}`))
-	})
-
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
-	defer srv.Close()
-
-	var items []adultScene
-	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
-	if len(items) != 2 {
-		t.Fatalf("expected both scenes (disjoint phashes), got %+v", items)
-	}
-}
-
-// TestAdultMergedRecent_NoTPDBHashesDoesNotMask proves an empty TPDB hash set
-// never falsely dedups a StashDB scene — the favor-false-negatives contract.
-func TestAdultMergedRecent_NoTPDBHashesDoesNotMask(t *testing.T) {
-	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// No "hashes" at all on the TPDB scene.
-		w.Write([]byte(`{"data":[{"_id":"t1","title":"TPDB Scene","date":"2024-01-01","site":{"name":"Tushy"}}]}`))
-	})
-	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb1","title":"StashDB Scene","release_date":"2024-02-02",` +
-			`"studio":{"name":"Blacked","parent":null},"images":[],"duration":0,` +
-			`"fingerprints":[{"hash":"stashhash","algorithm":"PHASH"}]}]}}}`))
-	})
-
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
-	defer srv.Close()
-
-	var items []adultScene
-	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
-	if len(items) != 2 {
-		t.Fatalf("an empty TPDB hash set must not mask the StashDB scene, got %+v", items)
-	}
-}
-
-func TestAdultMergedRecent_SortedByDateDescending(t *testing.T) {
-	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"_id":"t1","title":"Old TPDB","date":"2024-01-01","site":{"name":"Tushy"}}]}`))
-	})
-	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb1","title":"New StashDB","release_date":"2024-12-31",` +
-			`"studio":{"name":"Blacked","parent":null},"images":[],"duration":0,"fingerprints":[]}]}}}`))
-	})
-
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
-	defer srv.Close()
-
-	var items []adultScene
-	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
-	if len(items) != 2 {
-		t.Fatalf("expected 2 scenes, got %+v", items)
-	}
-	// Newest first, across both sources.
-	if items[0].ID != "sb1" || items[1].ID != "t1" {
-		t.Errorf("expected newest-first order [sb1, t1], got [%s, %s]", items[0].ID, items[1].ID)
-	}
-}
-
-// TestAdultMergedRecent_StashDBErrors_DegradesToTPDBOnly proves a StashDB
-// failure (configured, but the upstream call itself errors) degrades to
-// TPDB-only output instead of failing the whole row — the fix for a real
-// regression where a transient StashDB hiccup 502'd the entire "Recently
-// Released" row and discarded the TPDB scenes already fetched successfully.
-func TestAdultMergedRecent_StashDBErrors_DegradesToTPDBOnly(t *testing.T) {
-	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"_id":"t1","title":"TPDB Scene","date":"2024-01-01","site":{"name":"Tushy"}}]}`))
-	})
-	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
-	})
-
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/recent-merged")
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 (degrade to TPDB-only), got %d", resp.StatusCode)
-	}
-	var items []adultScene
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		t.Fatalf("decoding: %v", err)
-	}
-	if len(items) != 1 || items[0].ID != "t1" || items[0].Source != "tpdb" {
-		t.Errorf("expected TPDB-only output despite the StashDB error, got %+v", items)
-	}
-}
-
-// TestAdultMergedRecent_TruncatesToPerPage proves the merged output never
-// exceeds perPage even when TPDB's page plus StashDB's disjoint (non-dup)
-// scenes together would — the fix for a real bug where a "page" of the
-// merged row could silently return up to 2×perPage items.
-func TestAdultMergedRecent_TruncatesToPerPage(t *testing.T) {
-	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[` +
-			`{"_id":"t1","title":"T1","date":"2024-06-01","site":{"name":"Tushy"}},` +
-			`{"_id":"t2","title":"T2","date":"2024-05-01","site":{"name":"Tushy"}}` +
-			`]}`))
-	})
-	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[` +
-			`{"id":"s1","title":"S1","release_date":"2024-07-01","studio":{"name":"Blacked","parent":null},"images":[],"duration":0,"fingerprints":[{"hash":"a","algorithm":"PHASH"}]},` +
-			`{"id":"s2","title":"S2","release_date":"2024-04-01","studio":{"name":"Blacked","parent":null},"images":[],"duration":0,"fingerprints":[{"hash":"b","algorithm":"PHASH"}]}` +
-			`]}}}`))
-	})
-
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
-	defer srv.Close()
-
-	var items []adultScene
-	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged?page=1&perPage=3", &items)
-	if len(items) != 3 {
-		t.Fatalf("expected output truncated to perPage=3 (4 disjoint scenes available), got %d: %+v", len(items), items)
-	}
-	// Truncation keeps the newest-first items: s1 (07-01), t1 (06-01), t2 (05-01) — s2 (04-01) is dropped.
-	wantOrder := []string{"s1", "t1", "t2"}
-	for i, id := range wantOrder {
-		if items[i].ID != id {
-			t.Errorf("position %d: expected %q, got %q (full: %+v)", i, id, items[i].ID, items)
+// newAdultPoolServer builds a server whose adult_newest_releases cache is seeded
+// with seed and whose injected FeedHealth is fh, so the pooled Adult Discover
+// read paths (recent-merged, search) can be exercised with no live upstream call
+// and a controllable feed-health state.
+func newAdultPoolServer(t *testing.T, fh *adultnewest.FeedHealth, seed []adultnewest.MatchedRelease) *httptest.Server {
+	t.Helper()
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	for _, m := range seed {
+		if err := adultNewestReleaseStore.Insert(context.Background(), m); err != nil {
+			t.Fatalf("seeding release %q: %v", m.EntityID, err)
 		}
 	}
+	mux := NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, rssFeedsStore, nil, nil, nil, nil, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
 }
 
-func TestAdultMergedRecent_TPDBNotConfiguredIs400(t *testing.T) {
-	// TPDB is required — the merged route must behave exactly like the
-	// category=recent path when TPDB is absent (400 setup prompt), not silently
-	// empty.
-	srv := httptest.NewServer(newAdultMux(t, map[string]string{}))
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/recent-merged")
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
+func TestAdultMergedRecent_EmptyCacheReturnsEmptyArray(t *testing.T) {
+	srv := newAdultPoolServer(t, adultnewest.NewFeedHealth(), nil)
+	var items []adultScene
+	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
+	if len(items) != 0 {
+		t.Errorf("expected [] from an empty pool, got %+v", items)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 when TPDB isn't configured, got %d", resp.StatusCode)
+}
+
+func TestAdultMergedRecent_ReturnsPooledScenesNewestFirst(t *testing.T) {
+	seed := []adultnewest.MatchedRelease{
+		{RowType: adultnewest.RowScene, EntityID: "s-old", EntitySource: "tpdb", EntityTitle: "Old", EntityDate: "2024-01-01", BrowseConfirmed: true},
+		{RowType: adultnewest.RowScene, EntityID: "s-new", EntitySource: "tpdb", EntityTitle: "New", EntityDate: "2024-12-31", BrowseConfirmed: true},
+	}
+	srv := newAdultPoolServer(t, adultnewest.NewFeedHealth(), seed)
+	var items []adultScene
+	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 pooled scenes, got %+v", items)
+	}
+	if items[0].ID != "s-new" || items[1].ID != "s-old" {
+		t.Errorf("expected newest-date-first [s-new, s-old], got [%s, %s]", items[0].ID, items[1].ID)
+	}
+	if items[0].Source != "tpdb" {
+		t.Errorf("expected source preserved from the cache row, got %q", items[0].Source)
+	}
+}
+
+func TestAdultMergedRecent_GatesOutFeedOnlyWhenFeedNotFresh(t *testing.T) {
+	now := time.Now().Unix()
+	seed := []adultnewest.MatchedRelease{
+		// Browse-confirmed scene — always visible.
+		{RowType: adultnewest.RowScene, EntityID: "browse", EntitySource: "tpdb", EntityTitle: "Browse", EntityDate: "2024-02-02", BrowseConfirmed: true},
+		// Feed-only scene whose feed (id 7) has no health entry → gated out.
+		{RowType: adultnewest.RowScene, EntityID: "feedonly", EntitySource: "tpdb", EntityTitle: "FeedOnly", EntityDate: "2024-03-03",
+			DownloadURL: "http://feed/x.torrent", DownloadProtocol: "torrent", FeedID: 7, FeedItemKey: "http://feed/x.torrent", LastConfirmedSeen: now},
+	}
+	// FeedHealth with NO entry for feed 7 → feedFresh false → feed-only gates out.
+	srv := newAdultPoolServer(t, adultnewest.NewFeedHealth(), seed)
+	var items []adultScene
+	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
+	if len(items) != 1 || items[0].ID != "browse" {
+		t.Fatalf("expected only the browse-confirmed scene visible, got %+v", items)
+	}
+}
+
+func TestAdultMergedRecent_BothSourcedFeedDownStaysVisibleWithoutEnclosure(t *testing.T) {
+	now := time.Now().Unix()
+	seed := []adultnewest.MatchedRelease{
+		// Both-sourced: browse-confirmed AND has a feed enclosure on feed 7.
+		{RowType: adultnewest.RowScene, EntityID: "both", EntitySource: "tpdb", EntityTitle: "Both", EntityDate: "2024-04-04", BrowseConfirmed: true,
+			DownloadURL: "http://feed/both.torrent", DownloadProtocol: "torrent", FeedID: 7, FeedItemKey: "http://feed/both.torrent", LastConfirmedSeen: now},
+	}
+	// Feed 7 is NOT healthy (empty FeedHealth) → the row stays visible via
+	// browse_confirmed but its enclosure is not exposed (Prowlarr fallback).
+	srv := newAdultPoolServer(t, adultnewest.NewFeedHealth(), seed)
+	var items []adultScene
+	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
+	if len(items) != 1 || items[0].ID != "both" {
+		t.Fatalf("expected the both-sourced row still visible, got %+v", items)
+	}
+	if items[0].DownloadURL != "" {
+		t.Errorf("expected empty downloadUrl when the feed is down (Prowlarr fallback), got %q", items[0].DownloadURL)
+	}
+}
+
+func TestAdultMergedRecent_FreshFeedExposesEnclosure(t *testing.T) {
+	now := time.Now()
+	seed := []adultnewest.MatchedRelease{
+		{RowType: adultnewest.RowScene, EntityID: "feedonly", EntitySource: "tpdb", EntityTitle: "FeedOnly", EntityDate: "2024-05-05",
+			DownloadURL: "http://feed/x.torrent", DownloadProtocol: "torrent", SizeBytes: 4242, FeedID: 7, FeedItemKey: "http://feed/x.torrent", LastConfirmedSeen: now.Unix()},
+	}
+	fh := adultnewest.NewFeedHealth()
+	fh.SetHealthy(7, now) // feed 7 fresh → enclosure exposed and row visible
+	srv := newAdultPoolServer(t, fh, seed)
+	var items []adultScene
+	getJSON(t, srv.URL+"/api/modes/adult/discover/recent-merged", &items)
+	if len(items) != 1 || items[0].ID != "feedonly" {
+		t.Fatalf("expected the feed-only row visible on a fresh feed, got %+v", items)
+	}
+	if items[0].DownloadURL != "http://feed/x.torrent" || items[0].Protocol != "torrent" || items[0].SizeBytes != 4242 {
+		t.Errorf("expected the enclosure exposed on a fresh feed, got %+v", items[0])
 	}
 }
 

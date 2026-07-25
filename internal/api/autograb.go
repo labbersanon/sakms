@@ -120,6 +120,24 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		// Direct-grab path (C1/D4): a request carrying its own enclosure URL (an
+		// Adult feed item) is dispatched straight to the download client — no
+		// Prowlarr search, no candidate scoring, and crucially no Prowlarr/TMDB
+		// dependency, so it works on a Prowlarr-less install. Returning here is
+		// what relaxes the sess.Prowlarr==nil guard below for this case (the guard
+		// stays as-is and only ever runs for the search path). The same enclosure
+		// rides the bulk path identically via grabOneBatchItem — one code path.
+		if strings.TrimSpace(req.DownloadURL) != "" {
+			dto, status, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
+			if err != nil {
+				http.Error(w, err.Error(), status)
+				return
+			}
+			writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: true, Message: "grabbed " + req.Title, Grab: dto})
+			return
+		}
+
 		if sess.Prowlarr == nil {
 			http.Error(w, "prowlarr isn't configured yet — add it in Settings first", http.StatusBadRequest)
 			return
@@ -195,6 +213,42 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 			Grab:    &dto,
 		})
 	}
+}
+
+// grabDirectEnclosure dispatches a request's own feed enclosure URL straight to
+// the download client and records the grab — the shared core of BOTH the single
+// (autoGrabHandler) and bulk (grabOneBatchItem) direct-grab paths, so a card
+// grabbed singly or in bulk takes the identical Prowlarr-free path (C1/D4). No
+// Prowlarr search, no candidate scoring; the root folder is resolved
+// server-side (a true one-click grab supplies only the enclosure + title), and
+// Indexer is stamped "feed" (there is no indexer search to name). Returns the
+// recorded grab DTO plus the HTTP status a caller should surface on error.
+func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (*apidto.Grab, int, error) {
+	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	downloadClient, gid, status, err := dispatchToDownloadClient(ctx, sess, m, nzb, req.DownloadProtocol, req.DownloadURL, req.Title)
+	if err != nil {
+		return nil, status, err
+	}
+	created, err := grabsStore.Create(ctx, grabs.Grab{
+		Mode: m, Title: req.Title, TMDBID: req.TMDBID,
+		SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
+		Indexer: "feed", Protocol: req.DownloadProtocol,
+		DownloadClient: downloadClient, RootFolderPath: rootFolder,
+	})
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	if gid != "" {
+		if err := grabsStore.SetDownloadGID(ctx, created.ID, gid); err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		created.DownloadGID = gid
+	}
+	dto := toDTOGrab(created)
+	return &dto, http.StatusOK, nil
 }
 
 // autoGrabSearch runs the per-mode Prowlarr search and resolves the known

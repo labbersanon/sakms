@@ -797,7 +797,10 @@ export const MainstreamDiscover: Component<{
         if (!f) return;
         await updateRssFeed(f.id, {
           title: f.title,
-          feedUrl: f.feedUrl,
+          // feedUrl is masked on read (f.feedUrl is "" now, not the real URL) —
+          // send null to PRESERVE the stored encrypted URL. Re-sending f.feedUrl
+          // would post "" and the backend rejects it as ErrFeedURLRequired.
+          feedUrl: null,
           target: f.target,
           protocol: f.protocol,
           enabled: !f.enabled,

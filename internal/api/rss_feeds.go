@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -23,9 +24,13 @@ const maxResolvedRssFeedItems = 50
 // toDTOSlider.
 func toDTORssFeed(f rssfeeds.Feed) apidto.RssFeed {
 	return apidto.RssFeed{
-		ID:        f.ID,
-		Title:     f.Title,
-		FeedURL:   f.FeedURL,
+		ID:    f.ID,
+		Title: f.Title,
+		// FeedURL is intentionally masked — the URL is an encrypted secret
+		// (commonly embeds an indexer API key) and must never round-trip to the
+		// client. See apidto.RssFeed.FeedURL's doc comment; the frontend sends
+		// null to preserve it on an untouched save.
+		FeedURL:   "",
 		Target:    string(f.Target),
 		Protocol:  string(f.Protocol),
 		SortOrder: f.SortOrder,
@@ -87,7 +92,14 @@ func createRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		f, err := store.Create(r.Context(), req.Title, req.FeedURL, rssfeeds.Target(req.Target), rssfeeds.Protocol(req.Protocol), req.Enabled)
+		// Create always needs the real URL once (there is no stored value to
+		// preserve yet). A nil/absent feedUrl is an empty create → Store.Create
+		// returns ErrFeedURLRequired, surfaced as a 400.
+		feedURL := ""
+		if req.FeedURL != nil {
+			feedURL = *req.FeedURL
+		}
+		f, err := store.Create(r.Context(), req.Title, feedURL, rssfeeds.Target(req.Target), rssfeeds.Protocol(req.Protocol), req.Enabled)
 		if err != nil {
 			rssFeedStoreError(w, err)
 			return
@@ -111,6 +123,10 @@ func updateRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+		// req.FeedURL is three-state (*string): nil preserves the stored
+		// (encrypted) URL — the toggle/edit path the frontend uses when it only
+		// changes enabled/title never re-sends the masked URL — a non-empty value
+		// replaces it, "" is rejected by the Store as ErrFeedURLRequired.
 		f, err := store.Update(r.Context(), id, req.Title, req.FeedURL, rssfeeds.Target(req.Target), rssfeeds.Protocol(req.Protocol), req.Enabled)
 		if err != nil {
 			rssFeedStoreError(w, err)
@@ -204,7 +220,11 @@ func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.
 
 		items, err := rssfeed.FetchItems(ctx, httpClient, f.FeedURL)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			// err embeds f.FeedURL, which may carry an indexer API key in its
+			// query string (the same secret migration 0043 encrypts at rest) —
+			// log it server-side only, never in the client-facing response.
+			log.Printf("resolving rss feed %d: %v", id, err)
+			http.Error(w, "could not fetch the feed — check the feed URL and try again", http.StatusBadGateway)
 			return
 		}
 		if len(items) > maxResolvedRssFeedItems {

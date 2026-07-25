@@ -12,15 +12,19 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 )
 
+// rssURLPtr wraps a plaintext feed URL as the three-state *string the upsert DTO
+// now takes (non-nil, non-empty = set/replace).
+func rssURLPtr(s string) *string { return &s }
+
 // TestRssFeedCRUD_EndToEnd exercises create/list/update/delete against the
 // real HTTP handlers backed by a real migrated SQLite file.
 func TestRssFeedCRUD_EndToEnd(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	createBody, _ := json.Marshal(apidto.RssFeedUpsertRequest{
-		Title: "NZBGeek Saved Search", FeedURL: "https://nzbgeek.info/rss?t=1", Target: "movie", Protocol: "usenet", Enabled: true,
+		Title: "NZBGeek Saved Search", FeedURL: rssURLPtr("https://nzbgeek.info/rss?t=1"), Target: "movie", Protocol: "usenet", Enabled: true,
 	})
 	createResp, err := http.Post(srv.URL+"/api/discover/rss-feeds", "application/json", bytes.NewReader(createBody))
 	if err != nil {
@@ -54,7 +58,7 @@ func TestRssFeedCRUD_EndToEnd(t *testing.T) {
 
 	// Update it.
 	updateBody, _ := json.Marshal(apidto.RssFeedUpsertRequest{
-		Title: "NZBGeek Saved Search (renamed)", FeedURL: "https://nzbgeek.info/rss?t=2", Target: "tv", Protocol: "torrent", Enabled: false,
+		Title: "NZBGeek Saved Search (renamed)", FeedURL: rssURLPtr("https://nzbgeek.info/rss?t=2"), Target: "tv", Protocol: "torrent", Enabled: false,
 	})
 	updateReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/discover/rss-feeds/"+strconv.Itoa(created.ID), bytes.NewReader(updateBody))
 	updateResp, err := http.DefaultClient.Do(updateReq)
@@ -102,10 +106,10 @@ func TestRssFeedCRUD_EndToEnd(t *testing.T) {
 // validation errors surface as 400s, not 500s.
 func TestCreateRssFeedHandler_RejectsInvalidTarget(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
-	body, _ := json.Marshal(apidto.RssFeedUpsertRequest{Title: "Bad", FeedURL: "https://example.com/rss", Target: "not-a-real-target", Protocol: "usenet"})
+	body, _ := json.Marshal(apidto.RssFeedUpsertRequest{Title: "Bad", FeedURL: rssURLPtr("https://example.com/rss"), Target: "not-a-real-target", Protocol: "usenet"})
 	resp, err := http.Post(srv.URL+"/api/discover/rss-feeds", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
@@ -130,7 +134,7 @@ func TestReorderRssFeedsHandler_Reorders(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(apidto.RssFeedReorderRequest{IDs: []int{second.ID, first.ID}})
@@ -181,7 +185,7 @@ func TestResolveRssFeedHandler_MapsItemsToDTO(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/rss-feeds/" + strconv.Itoa(f.ID) + "/resolve")
@@ -214,7 +218,7 @@ func TestResolveRssFeedHandler_MapsItemsToDTO(t *testing.T) {
 // nonexistent feed id 404s instead of panicking or 500ing.
 func TestResolveRssFeedHandler_UnknownIDReturns404(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/rss-feeds/999/resolve")

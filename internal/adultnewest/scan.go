@@ -2,6 +2,8 @@ package adultnewest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net/http"
@@ -15,6 +17,8 @@ import (
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/rssfeed"
+	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -71,6 +75,45 @@ const adultCategory = 6000
 // package's doc comment).
 const maxNewPerCycle = 25
 
+// FeedIntervalSettingKey holds the FEED pass's cadence, in whole seconds — a
+// deliberate new tunable, distinct from IntervalSettingKey (the 24h browse
+// pass). The feed pass runs on its own ticker with its own budget, which is what
+// makes browse-vs-feed identify-budget starvation (M2) structurally impossible.
+const FeedIntervalSettingKey = "adult_newest_feed_interval_seconds"
+
+// defaultFeedIntervalSeconds is the feed pass's cadence when
+// FeedIntervalSettingKey has never been set — 30 min (D7). Under the health+TTL
+// gate this governs new-content latency, feed-health-change detection, and the
+// last_confirmed_seen refresh cadence (which must stay ≪ feedAvailabilityTTL —
+// 30 min ≪ 14 days, with enormous margin), NOT the availability staleness bound.
+const defaultFeedIntervalSeconds = 1800
+
+// feedMaxNewPerCycle bounds how many newly-seen FEED items get run through the
+// identify pipeline per feed cycle — the feed pass's own budget, never shared
+// with the browse pass's maxNewPerCycle (M2). Feeds are small (tens of items),
+// so this drains a feed's backlog in a cycle or two.
+const feedMaxNewPerCycle = 25
+
+// LoadFeedInterval reads FeedIntervalSettingKey and returns it as a Duration,
+// defaulting to defaultFeedIntervalSeconds when genuinely unset (same
+// unset-vs-explicit-0 distinction as LoadInterval): a fresh install polls feeds
+// out of the box (harmless when no adult feeds are configured — runFeedCycle
+// returns early), an explicit "0" turns it off.
+func LoadFeedInterval(ctx context.Context, settingsStore *settings.Store) time.Duration {
+	v, err := settingsStore.Get(ctx, FeedIntervalSettingKey)
+	if errors.Is(err, settings.ErrNotFound) {
+		return defaultFeedIntervalSeconds * time.Second
+	}
+	if err != nil {
+		return 0
+	}
+	secs, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
 // LoadInterval reads IntervalSettingKey and returns it as a Duration.
 // Genuinely unset (never saved — a fresh install, or an existing install
 // from before this default existed) returns defaultIntervalHours, not off —
@@ -107,31 +150,77 @@ func LoadInterval(ctx context.Context, settingsStore *settings.Store) time.Durat
 // interval defaults to defaultIntervalHours, not off (see
 // IntervalSettingKey's doc comment), so this job runs out of the box unlike
 // every other background job in this codebase.
-func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore) {
-	if interval <= 0 {
-		return // opt-in gate: off by default, honoring "manual first"
+func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth) {
+	feedInterval := LoadFeedInterval(ctx, settingsStore)
+	if interval <= 0 && feedInterval <= 0 {
+		return // opt-in gate: both passes off, honoring "manual first"
 	}
 
 	httpClient := &http.Client{Timeout: outboundTimeout}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	log.Printf("adultnewest: background newest-releases scan enabled (every %s) — a deliberate opt-in exception to manual-by-default", interval)
+
+	// Two independent tickers, each with its own enable check and cadence, so
+	// disabling one pass never stops the other (M2: feeds and browse never share
+	// a ticker or a budget). A nil channel parks its case in the select.
+	var browseTicker *time.Ticker
+	var browseC <-chan time.Time
+	if interval > 0 {
+		browseTicker = time.NewTicker(interval)
+		defer browseTicker.Stop()
+		browseC = browseTicker.C
+		log.Printf("adultnewest: background newest-releases (browse) scan enabled (every %s) — a deliberate opt-in exception to manual-by-default", interval)
+	}
+
+	var feedTicker *time.Ticker
+	var feedC <-chan time.Time
+	if feedInterval > 0 {
+		feedTicker = time.NewTicker(feedInterval)
+		defer feedTicker.Stop()
+		feedC = feedTicker.C
+		log.Printf("adultnewest: background feed pass enabled (every %s) — dedicated ticker/budget, immediate boot poll", feedInterval)
+		// Immediate boot poll (D7 / Low finding): fire once before the first
+		// interval so feed-only Adult content isn't invisible for up to one
+		// interval after every restart (the cold-start health map gates all feed
+		// sources until the first successful poll). The browse pass keeps its
+		// no-initial-tick shape — do NOT unify them.
+		runFeedCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-browseC:
 			cur := LoadInterval(ctx, settingsStore)
 			if cur <= 0 {
-				log.Printf("adultnewest: interval set to 0 — stopping background scan (restart to re-enable)")
-				return
+				log.Printf("adultnewest: browse interval set to 0 — stopping browse pass (restart to re-enable)")
+				browseTicker.Stop()
+				browseC = nil
+				if feedC == nil {
+					return
+				}
+				continue
 			}
 			if cur != interval {
 				interval = cur
-				ticker.Reset(cur)
+				browseTicker.Reset(cur)
 			}
 			runCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore)
+		case <-feedC:
+			cur := LoadFeedInterval(ctx, settingsStore)
+			if cur <= 0 {
+				log.Printf("adultnewest: feed interval set to 0 — stopping feed pass (restart to re-enable)")
+				feedTicker.Stop()
+				feedC = nil
+				if browseC == nil {
+					return
+				}
+				continue
+			}
+			if cur != feedInterval {
+				feedInterval = cur
+				feedTicker.Reset(cur)
+			}
+			runFeedCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
 		}
 	}
 }
@@ -299,37 +388,43 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		}
 	}
 
-	// Studio/Performer rows are only cached when StudioImage/PerformerImage
-	// actually confirms the name against a real StashDB/FansDB/TPDB entity
-	// (source != ""). This was found live, during this feature's own deploy
-	// verification: verifyStudio/verifyPerformers (identify/entityverify.go)
-	// fall back to the AI's raw/cleaned guess when nothing matches — a
-	// deliberate choice there, since that fallback value was only ever used
-	// to build a scene-search term before this feature existed (a wrong
-	// guess just made that one search slightly less precise, no visible
-	// harm). Using the same fallback to create a user-visible Discover CARD
-	// is a different bar: a live scan produced cards for "And", "Clouds",
-	// and a full raw scene title mis-parsed as a "studio" — all guesses the
-	// AI invented with no real entity behind them, easy to tell apart from
-	// genuine matches because none of them resolved to any image anywhere.
-	// Skipping the unconfirmed case is the same "decline rather than
-	// fabricate" principle rejectNonStudioGuess already applies one layer
-	// down — applied here too, one layer up.
+	out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
+	return out, nil
+}
+
+// identifyStudioPerformers extracts the Studio and Performer side-entities a
+// scene identification already derived (see IdentifyDetailed's doc comment),
+// each as its own confirmed cache row — shared by the browse pass (matchRelease)
+// and the feed pass (processFeedItem), which capture them identically.
+//
+// A Studio/Performer row is only cached when StudioImage/PerformerImage actually
+// confirms the name against a real StashDB/FansDB/TPDB entity (source != ""),
+// the same "decline rather than fabricate" bar found live during this feature's
+// deploy verification (verifyStudio/verifyPerformers fall back to the AI's raw
+// guess when nothing matches — fine for building a search term, wrong for a
+// user-visible Discover card; a live scan once produced cards for "And",
+// "Clouds", and a mis-parsed scene title, none of which resolved to any image).
+//
+// These entities carry NO feed enclosure and are never feed-gated, so they are
+// always BrowseConfirmed=true — i.e. always visible via FeedHealth.Available,
+// regardless of which pass identified them (matching the 0044 migration's
+// backfill of every pre-existing row to browse_confirmed=1).
+func identifyStudioPerformers(ctx context.Context, id *identify.Identifier, detail identify.DetailedMatch) []MatchedRelease {
+	var out []MatchedRelease
 	if detail.StudioName != "" {
 		image, source := id.StudioImage(ctx, detail.StudioName)
 		if source != "" {
 			out = append(out, MatchedRelease{
 				RowType: RowStudio,
 				// TPDB/StashDB/FansDB catalog ids aren't available from
-				// verifyStudio's corrected-name-only result, so the
-				// corrected name itself is used as the entity id — stable
-				// enough for display/dedup purposes even though it isn't a
-				// real opaque catalog id (see StudioImage's doc comment for
-				// the same name-only lookup convention).
-				EntityID:     detail.StudioName,
-				EntitySource: source,
-				EntityTitle:  detail.StudioName,
-				EntityImage:  image,
+				// verifyStudio's corrected-name-only result, so the corrected
+				// name itself is used as the entity id — stable enough for
+				// display/dedup even though it isn't a real opaque catalog id.
+				EntityID:        detail.StudioName,
+				EntitySource:    source,
+				EntityTitle:     detail.StudioName,
+				EntityImage:     image,
+				BrowseConfirmed: true,
 			})
 		}
 	}
@@ -342,15 +437,15 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 			continue
 		}
 		out = append(out, MatchedRelease{
-			RowType:      RowPerformer,
-			EntityID:     performer,
-			EntitySource: source,
-			EntityTitle:  performer,
-			EntityImage:  image,
+			RowType:         RowPerformer,
+			EntityID:        performer,
+			EntitySource:    source,
+			EntityTitle:     performer,
+			EntityImage:     image,
+			BrowseConfirmed: true,
 		})
 	}
-
-	return out, nil
+	return out
 }
 
 // adultQueryApostrophe/adultQueryNonAlnum/normalizeAdultQuery are an
@@ -422,5 +517,185 @@ func toMatchedRelease(rowType RowType, m identify.MatchResult, releaseTitle stri
 		FirstSeenReleaseTitle: releaseTitle,
 		Genres:                genres,
 		Performers:            performers,
+		// The browse pass is the explicit provenance signal D5's visibility gate
+		// depends on: every entity the cat-6000 browse pass identifies+confirms
+		// is browse-confirmed, so it stays visible regardless of any feed's
+		// health. Empty feed fields (feed_id=0, download_url='') — the feed pass
+		// builds those via toFeedMatchedRelease instead.
+		BrowseConfirmed: true,
 	}
+}
+
+// toFeedMatchedRelease builds a FEED-sourced scene/movie cache row: the same
+// identified metadata as the browse pass's toMatchedRelease, but with
+// BrowseConfirmed=false (the feed pass never asserts browse confirmation — the
+// M1 upsert MERGEs it, so a browse-then-feed entity keeps its browse
+// confirmation) and the feed's own enclosure (download_url/protocol/size),
+// feed_id, feed_item_key (D6), and last_confirmed_seen=now attached. No
+// confirmAvailable Prowlarr search runs for a feed item — the enclosure IS the
+// availability proof (D4).
+func toFeedMatchedRelease(rowType RowType, m identify.MatchResult, releaseTitle string, feedID int64, downloadURL, protocol, feedItemKey string, sizeBytes, nowUnix int64) MatchedRelease {
+	mr := toMatchedRelease(rowType, m, releaseTitle)
+	mr.BrowseConfirmed = false
+	mr.DownloadURL = downloadURL
+	mr.DownloadProtocol = protocol
+	mr.SizeBytes = sizeBytes
+	mr.FeedID = feedID
+	mr.FeedItemKey = feedItemKey
+	mr.LastConfirmedSeen = nowUnix
+	return mr
+}
+
+// feedItemKey derives a stable per-item key (D6): the enclosure URL when
+// present, else the item link, else a hash of feed id + title. The SAME
+// derivation produces the adult_newest_seen dedup key, the cache row's
+// feed_item_key, and the per-poll presence key set the last-seen bulk refresh
+// keys on — so a persisted row and the poll that confirms it always agree.
+func feedItemKey(feedID int, it rssfeed.Item) string {
+	if it.EnclosureURL != "" {
+		return it.EnclosureURL
+	}
+	if it.Link != "" {
+		return it.Link
+	}
+	sum := sha256.Sum256([]byte(strconv.Itoa(feedID) + "\x00" + it.Title))
+	return "feed:" + strconv.Itoa(feedID) + ":" + hex.EncodeToString(sum[:])
+}
+
+// runFeedCycle performs exactly one FEED pass and returns — the feed-sourced
+// sibling of runCycle, run on its own ticker/budget (D7). It lists enabled
+// Adult feeds, prunes stale health entries, and for each reachable feed marks it
+// healthy, refreshes last_confirmed_seen across its FULL current window, then
+// identifies up to feedMaxNewPerCycle newly-seen items and upserts them with the
+// feed's enclosure. Per-feed fault isolation: a fetch error marks only that feed
+// unhealthy and skips it, never aborting the others. Strictly sequential (no
+// concurrency), preserving the "Discover never queries Prowlarr / no fan-out"
+// safety shape. No confirmAvailable call for feed items (D4).
+func runFeedCycle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth) {
+	feeds, err := rssFeedsStore.List(ctx)
+	if err != nil {
+		log.Printf("adultnewest: listing rss feeds for feed pass: %v", err)
+		return
+	}
+	var adultFeeds []rssfeeds.Feed
+	enabledIDs := make([]int64, 0, len(feeds))
+	for _, f := range feeds {
+		if f.Target == rssfeeds.TargetAdult && f.Enabled {
+			adultFeeds = append(adultFeeds, f)
+			enabledIDs = append(enabledIDs, int64(f.ID))
+		}
+	}
+	// Drop health entries for feeds disabled/deleted since the last cycle so a
+	// removed feed stops reading healthy (a missing entry is unhealthy).
+	feedHealth.PruneToEnabled(enabledIDs)
+	if len(adultFeeds) == 0 {
+		return
+	}
+
+	// Build one Adult session for the identify pipeline (no Prowlarr needed — a
+	// feed item's enclosure is its own availability proof). Same entity-store
+	// injection + parsing-backend gate as runCycle.
+	sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, mode.Adult)
+	if err != nil {
+		log.Printf("adultnewest: building adult session for feed pass: %v", err)
+		return
+	}
+	if sess.Identify != nil {
+		sess.Identify.EntityStore = entityStore
+	}
+	if sess.Identify == nil || (sess.Identify.EntityStore == nil && sess.Identify.AI == nil) {
+		return // no parsing backend configured — nothing to identify against
+	}
+
+	for _, f := range adultFeeds {
+		items, err := rssfeed.FetchItems(ctx, httpClient, f.FeedURL)
+		if err != nil {
+			feedHealth.MarkUnhealthy(int64(f.ID))
+			log.Printf("adultnewest: fetching feed %q (id=%d): %v — feed marked unhealthy this cycle", f.Title, f.ID, err)
+			continue
+		}
+		now := time.Now()
+		feedHealth.SetHealthy(int64(f.ID), now)
+
+		// Full-window presence keys — the durable TTL-clock refresh (writer (ii),
+		// D3): advance last_confirmed_seen for EVERY already-cached row still
+		// present in this poll, independent of the identify budget below, so a
+		// within-window over-budget or upsert-no-op row never TTL-expires while
+		// its feed is healthy.
+		keys := make([]string, 0, len(items))
+		for _, it := range items {
+			keys = append(keys, feedItemKey(f.ID, it))
+		}
+		if err := releaseStore.RefreshLastConfirmedSeen(ctx, int64(f.ID), keys, now.Unix()); err != nil {
+			log.Printf("adultnewest: refreshing last_confirmed_seen for feed %q: %v", f.Title, err)
+		}
+
+		seen, err := releaseStore.SeenGUIDs(ctx, keys)
+		if err != nil {
+			log.Printf("adultnewest: checking seen feed items for %q: %v", f.Title, err)
+			continue
+		}
+
+		processed := 0
+		for _, it := range items {
+			if processed >= feedMaxNewPerCycle {
+				break
+			}
+			key := feedItemKey(f.ID, it)
+			if key == "" || seen[key] {
+				continue
+			}
+			processed++
+			if err := processFeedItem(ctx, sess.Identify, releaseStore, f, it, key, now.Unix()); err != nil {
+				log.Printf("adultnewest: processing feed item %q: %v", it.Title, err)
+			}
+			// Marked seen regardless of match outcome (same as the browse pass)
+			// so an unmatched feed item isn't re-identified every cycle.
+			if err := releaseStore.MarkSeen(ctx, key); err != nil {
+				log.Printf("adultnewest: marking feed item %q seen: %v", it.Title, err)
+			}
+		}
+	}
+}
+
+// processFeedItem identifies one feed item and upserts every entity it resolved
+// to — a scene/movie with the feed's enclosure attached (browse_confirmed=0),
+// plus its studio/performers (browse-confirmed, no enclosure, shared with the
+// browse pass). The D3 upsert merges browse_confirmed, so if the browse pass
+// already confirmed this entity that fact is preserved. No confirmAvailable.
+func processFeedItem(ctx context.Context, id *identify.Identifier, releaseStore *ReleaseStore, f rssfeeds.Feed, it rssfeed.Item, key string, nowUnix int64) error {
+	detail, err := id.IdentifyDetailed(ctx, it.Title, "")
+	if err != nil {
+		return err
+	}
+	// Enclosure URL, falling back to the item link when absent — matching
+	// resolveRssFeedHandler's own fallback.
+	downloadURL := it.EnclosureURL
+	if downloadURL == "" {
+		downloadURL = it.Link
+	}
+
+	var out []MatchedRelease
+	switch {
+	case detail.Scene != nil:
+		rowType := RowScene
+		if detail.Scene.Type == "movie" {
+			rowType = RowMovie
+		}
+		out = append(out, toFeedMatchedRelease(rowType, *detail.Scene, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
+	default:
+		// No scene match — try TPDB's movie catalog directly, same lighter-weight
+		// fallback the browse pass uses.
+		if movie, err := id.Boxes.SearchTPDBMovies(ctx, it.Title); err == nil && movie != nil {
+			out = append(out, toFeedMatchedRelease(RowMovie, *movie, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
+		}
+	}
+	out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
+
+	for _, m := range out {
+		if err := releaseStore.Insert(ctx, m); err != nil {
+			return err
+		}
+	}
+	return nil
 }

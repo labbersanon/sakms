@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
@@ -66,6 +68,60 @@ type adultScene struct {
 	Slug            string   `json:"slug"`
 	Genres          []string `json:"genres,omitempty"`
 	Performers      []string `json:"performers,omitempty"`
+	// ReleaseTitle/DownloadURL/Protocol/SizeBytes are populated only for a
+	// POOLED (adult_newest_releases-sourced) scene — a live TPDB/StashDB browse
+	// item leaves them empty. ReleaseTitle is the raw indexer release title used
+	// as the Prowlarr-fallback grab query; DownloadURL/Protocol/SizeBytes are the
+	// feed enclosure, exposed ONLY while the feed is fresh (FeedHealth.DirectGrabURL).
+	// These mirror apidto.AdultDiscoverItem's tags exactly so the one frontend
+	// type parses both this emitted shape and the generated DTO. See D4/D5.
+	ReleaseTitle string `json:"releaseTitle,omitempty"`
+	DownloadURL  string `json:"downloadUrl,omitempty"`
+	Protocol     string `json:"protocol,omitempty"`
+	SizeBytes    int64  `json:"sizeBytes,omitempty"`
+}
+
+// poolReleaseToAdultScene converts a cached adultnewest.MatchedRelease into the
+// adultScene wire shape, applying the D5 direct-grab exposure: the enclosure
+// (downloadUrl/protocol/sizeBytes) is carried ONLY when the row's feed is
+// currently fresh, via feedHealth.DirectGrabURL — never from the raw column — so
+// a card whose feed is down falls back to the Prowlarr GrabDialog path
+// (ReleaseTitle drives that fallback query). Caller applies the visibility gate.
+func poolReleaseToAdultScene(m adultnewest.MatchedRelease, feedHealth *adultnewest.FeedHealth, now time.Time) adultScene {
+	s := adultScene{
+		ID:              m.EntityID,
+		Title:           m.EntityTitle,
+		Studio:          m.EntityStudio,
+		Date:            m.EntityDate,
+		Image:           m.EntityImage,
+		DurationSeconds: m.EntityDurationSeconds,
+		Source:          m.EntitySource,
+		Genres:          m.Genres,
+		Performers:      m.Performers,
+		ReleaseTitle:    m.FirstSeenReleaseTitle,
+	}
+	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
+		s.DownloadURL = url
+		s.Protocol = m.DownloadProtocol
+		s.SizeBytes = m.SizeBytes
+	}
+	return s
+}
+
+// writePooledScenes gates a cached scene slice through the D5 visibility rule
+// (browse-confirmed OR feed-fresh) and encodes the survivors as adultScene — the
+// shared tail of the two pooled Adult Discover read paths (search, merged-recent).
+func writePooledScenes(w http.ResponseWriter, matches []adultnewest.MatchedRelease, feedHealth *adultnewest.FeedHealth) {
+	now := time.Now()
+	out := make([]adultScene, 0, len(matches))
+	for _, m := range matches {
+		if !feedHealth.Available(m.BrowseConfirmed, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
+			continue
+		}
+		out = append(out, poolReleaseToAdultScene(m, feedHealth, now))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
 }
 
 // adultStudio mirrors apidto.StudioSummary — one TPDB site (studio) reduced to
@@ -178,9 +234,26 @@ func writeAdultScenes(w http.ResponseWriter, scenes []tpdbrest.Scene) {
 // can't share discoverHandler's TMDB path — this route is registered on the
 // concrete /api/modes/adult/discover pattern (a literal "adult", not a {mode}
 // wildcard), which ServeMux prefers over the wildcard {mode}/discover one.
-func adultDiscoverHandler(httpClient *http.Client, connStore *connections.Store) http.HandlerFunc {
+func adultDiscoverHandler(httpClient *http.Client, connStore *connections.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+
+		// Search (q) is re-pointed off a live TPDB call and onto the identified-
+		// available pool (D4b): a title match over adult_newest_releases, gated by
+		// the D5 visibility rule and enclosure-exposed by DirectGrabURL. This
+		// needs no TPDB client — an install with no cache simply returns []. Only
+		// the non-q browse path below uses live TPDB.
+		if q := r.URL.Query().Get("q"); q != "" {
+			page, _ := adultPagination(r)
+			matches, err := releaseStore.SearchScenes(ctx, q, page)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writePooledScenes(w, matches, feedHealth)
+			return
+		}
+
 		client, ok := adultTPDBClient(w, r, httpClient, connStore)
 		if !ok {
 			return
@@ -188,12 +261,7 @@ func adultDiscoverHandler(httpClient *http.Client, connStore *connections.Store)
 
 		var scenes []tpdbrest.Scene
 		var err error
-		if q := r.URL.Query().Get("q"); q != "" {
-			// Search-by-term entry point — no studio narrowing here (the browse
-			// screen searches by free title text; identify.SearchTPDB is what
-			// narrows by studio during identification).
-			scenes, err = client.SearchByTitle(ctx, q, "")
-		} else {
+		{
 			page, perPage := adultPagination(r)
 			switch r.URL.Query().Get("category") {
 			case "recent":

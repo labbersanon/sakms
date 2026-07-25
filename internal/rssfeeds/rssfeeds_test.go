@@ -2,28 +2,48 @@ package rssfeeds
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/secrets"
 )
 
-// newTestStore builds a Store against a real, freshly migrated SQLite file —
-// exercising the actual schema/migration, not mocks, the same way every
-// other store in this repo is tested (see discoversliders_test.go).
+// newTestStore builds a Store against a real, freshly migrated SQLite file and
+// a real secrets.Store — exercising the actual schema/migration and actual
+// encryption, not mocks, the same convention as trakt/connections tests.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
+	return newTestStoreOnDB(t, newTestDB(t))
+}
 
+// newTestDB opens a fresh migrated SQLite file, returning its handle so a test
+// can seed a pre-migration-shaped row (e.g. a plaintext feed_url) before
+// building the Store over it.
+func newTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
 	sqlDB, err := db.Open(filepath.Join(dir, "sakms.db"))
 	if err != nil {
 		t.Fatalf("opening db: %v", err)
 	}
 	t.Cleanup(func() { sqlDB.Close() })
-
-	return New(sqlDB)
+	return sqlDB
 }
+
+func newTestStoreOnDB(t *testing.T, sqlDB *sql.DB) *Store {
+	t.Helper()
+	secretStore, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("building secret store: %v", err)
+	}
+	return NewStore(sqlDB, secretStore)
+}
+
+// ptr is a tiny helper for the three-state *string feedURL on Update.
+func ptr(s string) *string { return &s }
 
 func TestCreateAndList_RoundTripsFeed(t *testing.T) {
 	s := newTestStore(t)
@@ -124,7 +144,7 @@ func TestUpdate_OverwritesFieldsAndPreservesSortOrder(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	updated, err := s.Update(ctx, a.ID, "First Renamed", "https://example.com/rss1-new", TargetAdult, Torrent, false)
+	updated, err := s.Update(ctx, a.ID, "First Renamed", ptr("https://example.com/rss1-new"), TargetAdult, Torrent, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +158,7 @@ func TestUpdate_OverwritesFieldsAndPreservesSortOrder(t *testing.T) {
 
 func TestUpdate_NotFound(t *testing.T) {
 	s := newTestStore(t)
-	_, err := s.Update(context.Background(), 999, "X", "https://example.com/rss", TargetMovie, Usenet, true)
+	_, err := s.Update(context.Background(), 999, "X", ptr("https://example.com/rss"), TargetMovie, Usenet, true)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -151,8 +171,151 @@ func TestUpdate_ValidatesLikeCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := s.Update(ctx, a.ID, "First", "", TargetMovie, Usenet, true); !errors.Is(err, ErrFeedURLRequired) {
+	if _, err := s.Update(ctx, a.ID, "First", ptr(""), TargetMovie, Usenet, true); !errors.Is(err, ErrFeedURLRequired) {
 		t.Fatalf("expected ErrFeedURLRequired, got %v", err)
+	}
+}
+
+// TestCreate_EncryptsURLAtRest asserts the stored feed_url column is blanked
+// and the ciphertext lives in feed_url_encrypted, while List round-trips the
+// decrypted plaintext URL back.
+func TestCreate_EncryptsURLAtRest(t *testing.T) {
+	sqlDB := newTestDB(t)
+	s := newTestStoreOnDB(t, sqlDB)
+	ctx := context.Background()
+
+	const url = "https://indexer.example/rss?apikey=SECRET123"
+	f, err := s.Create(ctx, "Feed", url, TargetAdult, Torrent, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var plain, encrypted string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT feed_url, feed_url_encrypted FROM rss_feeds WHERE id = ?`, f.ID).Scan(&plain, &encrypted); err != nil {
+		t.Fatalf("reading stored columns: %v", err)
+	}
+	if plain != "" {
+		t.Errorf("expected feed_url blanked at rest, got %q", plain)
+	}
+	if encrypted == "" || encrypted == url {
+		t.Errorf("expected feed_url_encrypted to be non-empty ciphertext, got %q", encrypted)
+	}
+
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].FeedURL != url {
+		t.Errorf("expected List to decrypt url back to %q, got %+v", url, list)
+	}
+}
+
+// TestUpdate_NilURLPreservesStoredCiphertext asserts the three-state rule: a
+// nil feedURL (an untouched save from a form that never received the real URL)
+// keeps the stored encrypted URL intact rather than wiping it.
+func TestUpdate_NilURLPreservesStoredCiphertext(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const url = "https://indexer.example/rss?apikey=KEEPME"
+	f, err := s.Create(ctx, "Feed", url, TargetAdult, Torrent, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Toggle enabled off without touching the URL (feedURL == nil).
+	if _, err := s.Update(ctx, f.ID, "Feed", nil, TargetAdult, Torrent, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].FeedURL != url || list[0].Enabled {
+		t.Errorf("expected preserved url %q and enabled=false, got %+v", url, list)
+	}
+}
+
+// TestUpdate_ValueReplacesURL asserts a non-nil, non-empty feedURL replaces the
+// stored ciphertext.
+func TestUpdate_ValueReplacesURL(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	f, err := s.Create(ctx, "Feed", "https://old.example/rss", TargetAdult, Torrent, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	const newURL = "https://new.example/rss?apikey=NEW"
+	if _, err := s.Update(ctx, f.ID, "Feed", ptr(newURL), TargetAdult, Torrent, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].FeedURL != newURL {
+		t.Errorf("expected replaced url %q, got %+v", newURL, list)
+	}
+}
+
+// TestBackfillEncryption_MigratesPlaintextAndIsIdempotent seeds a pre-migration
+// plaintext row directly, then asserts BackfillEncryption encrypts it, blanks
+// the plaintext column, is a no-op on re-run, and leaves an already-encrypted
+// row untouched. It also asserts the decrypt-on-read plaintext FALLBACK: before
+// backfill runs, List still resolves the plaintext row's URL.
+func TestBackfillEncryption_MigratesPlaintextAndIsIdempotent(t *testing.T) {
+	sqlDB := newTestDB(t)
+	s := newTestStoreOnDB(t, sqlDB)
+	ctx := context.Background()
+
+	// A row shaped like a pre-0043 install: plaintext feed_url, no ciphertext.
+	const plainURL = "https://legacy.example/rss?apikey=LEGACY"
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO rss_feeds (title, feed_url, feed_url_encrypted, target, protocol, sort_order, enabled, updated_at)
+		VALUES ('Legacy', ?, '', 'adult', 'torrent', 0, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+	`, plainURL); err != nil {
+		t.Fatalf("seeding plaintext row: %v", err)
+	}
+
+	// Read-fallback: List resolves the plaintext URL even before backfill.
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].FeedURL != plainURL {
+		t.Fatalf("expected plaintext read-fallback to return %q, got %+v", plainURL, list)
+	}
+
+	if err := s.BackfillEncryption(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	var plain, encrypted string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT feed_url, feed_url_encrypted FROM rss_feeds WHERE title = 'Legacy'`).Scan(&plain, &encrypted); err != nil {
+		t.Fatalf("reading columns after backfill: %v", err)
+	}
+	if plain != "" || encrypted == "" || encrypted == plainURL {
+		t.Errorf("expected plaintext blanked and ciphertext set, got feed_url=%q feed_url_encrypted=%q", plain, encrypted)
+	}
+
+	// Idempotent: a second run changes nothing (ciphertext unchanged).
+	if err := s.BackfillEncryption(ctx); err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	var encrypted2 string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT feed_url_encrypted FROM rss_feeds WHERE title = 'Legacy'`).Scan(&encrypted2); err != nil {
+		t.Fatalf("reading ciphertext after second backfill: %v", err)
+	}
+	if encrypted2 != encrypted {
+		t.Errorf("expected idempotent backfill to leave ciphertext unchanged, got %q then %q", encrypted, encrypted2)
+	}
+
+	// Still resolves to the original plaintext after backfill.
+	list, err = s.List(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].FeedURL != plainURL {
+		t.Errorf("expected url %q after backfill, got %+v", plainURL, list)
 	}
 }
 

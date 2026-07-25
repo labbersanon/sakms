@@ -68,7 +68,7 @@ import (
 // feed URL fetched and parsed server-side, a separate concept from
 // slidersStore (TMDB-backed) and adultNewestRowStore (Prowlarr-scan-cache-
 // backed) even though its CRUD+reorder shape mirrors both.
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub) *http.ServeMux {
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,
@@ -185,11 +185,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// Adult Discover is TPDB-backed (browse + search-by-term), not TMDB — the
 	// concrete path wins over the {mode} wildcard above for Adult (see
 	// adultDiscoverHandler).
-	mux.HandleFunc("GET /api/modes/adult/discover", adultDiscoverHandler(httpClient, connStore))
+	mux.HandleFunc("GET /api/modes/adult/discover", adultDiscoverHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth))
 	// Merged, deduped "Recently Released" — always TPDB, plus StashDB's
 	// exclusive scenes when StashDB is configured (TPDB-only otherwise, fully
 	// backward compatible). See adultDiscoverMergedRecentHandler.
-	mux.HandleFunc("GET /api/modes/adult/discover/recent-merged", adultDiscoverMergedRecentHandler(httpClient, connStore))
+	mux.HandleFunc("GET /api/modes/adult/discover/recent-merged", adultDiscoverMergedRecentHandler(adultNewestReleaseStore, feedHealth))
 	// Optional StashDB/FansDB Adult Discover sources — scene (recent/trending),
 	// studio, and performer browse rows per box. Unlike TPDB (required, 400 when
 	// absent) these are optional: an unconfigured box returns [] (200), never a
@@ -270,7 +270,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("PUT /api/modes/adult/newest-rows/{id}", updateAdultNewestRowHandler(adultNewestRowStore))
 	mux.HandleFunc("DELETE /api/modes/adult/newest-rows/{id}", deleteAdultNewestRowHandler(adultNewestRowStore))
 	mux.HandleFunc("POST /api/modes/adult/newest-rows/reorder", reorderAdultNewestRowsHandler(adultNewestRowStore))
-	mux.HandleFunc("GET /api/modes/adult/newest-rows/{id}/resolve", resolveAdultNewestRowHandler(adultNewestRowStore, adultNewestReleaseStore))
+	mux.HandleFunc("GET /api/modes/adult/newest-rows/{id}/resolve", resolveAdultNewestRowHandler(adultNewestRowStore, adultNewestReleaseStore, feedHealth))
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/genres", adultNewestGenresHandler(adultNewestReleaseStore))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them

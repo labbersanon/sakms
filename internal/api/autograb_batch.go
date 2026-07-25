@@ -119,14 +119,21 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 			}
 
 			// The same per-item preflight the single endpoint enforces, converted
-			// to per-item errors (never an abort). autoGrabSearch dereferences
-			// sess.Prowlarr.Search unguarded, so a nil-Prowlarr item without this
-			// guard would panic and kill the whole batch.
-			if sess.Prowlarr == nil {
+			// to per-item errors (never an abort). Both guards are RELAXED for a
+			// direct-grab item (one carrying its own enclosure URL): it dispatches
+			// straight to the download client and needs neither Prowlarr nor TMDB,
+			// so a Prowlarr-less install can grab feed items in bulk exactly as it
+			// can singly (Low finding — single/bulk parity). autoGrabSearch
+			// dereferences sess.Prowlarr.Search unguarded, so a nil-Prowlarr
+			// SEARCH item without the first guard would still panic — but
+			// grabOneBatchItem takes the direct path before autoGrabSearch for a
+			// DownloadURL-bearing item.
+			directGrab := strings.TrimSpace(item.Request.DownloadURL) != ""
+			if sess.Prowlarr == nil && !directGrab {
 				fail("prowlarr isn't configured yet — add it in Settings first")
 				continue
 			}
-			if m != mode.Adult && sess.TMDB == nil {
+			if m != mode.Adult && sess.TMDB == nil && !directGrab {
 				fail("tmdb isn't configured yet — add it in Settings first")
 				continue
 			}
@@ -165,11 +172,27 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 // list. It shares every building block with the single endpoint (nothing is
 // re-implemented here), returning a three-state outcome — a grab, a fallback
 // candidate list, or an error — instead of writing HTTP, so the batch loop can
-// record it per item. Callers must have already confirmed sess.Prowlarr (and,
-// for non-Adult, sess.TMDB) is non-nil. Like the single handler, exactly one
-// release is grabbed per successful item: this is still a one-release grab, run
-// once per selected item.
+// record it per item. Like the single handler, exactly one release is grabbed
+// per successful item: this is still a one-release grab, run once per selected
+// item.
+//
+// A DownloadURL-bearing item (an Adult feed enclosure) takes the direct-grab
+// path first — shared with the single handler via grabDirectEnclosure — before
+// autoGrabSearch (which dereferences sess.Prowlarr), so it neither searches nor
+// requires Prowlarr (C1/D4). For every OTHER item the precondition still holds:
+// callers must have confirmed sess.Prowlarr (and, for non-Adult, sess.TMDB) is
+// non-nil.
 func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
+	// Direct-grab (C1/D4): dispatch the item's own enclosure straight to the
+	// download client, identical to the single handler's path — no Prowlarr.
+	if strings.TrimSpace(req.DownloadURL) != "" {
+		dto, _, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
+		if err != nil {
+			return nil, false, nil, "", err
+		}
+		return dto, false, nil, "grabbed " + req.Title, nil
+	}
+
 	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, req)
 	if err != nil {
 		return nil, false, nil, "", err

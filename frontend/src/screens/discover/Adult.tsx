@@ -154,6 +154,13 @@ const AdultCard: Component<{
       studio: props.item.studio,
       releaseTitle: props.item.releaseTitle,
       durationSeconds: props.item.durationSeconds,
+      // Direct-enclosure grab (D4/C1): when the card's feed is currently fresh
+      // it carries a downloadUrl+protocol, so both the single Grab and the bulk
+      // batch dispatch straight to the download client and skip Prowlarr. Absent
+      // (browse-only / stale feed) → undefined, dropped by JSON.stringify → the
+      // Prowlarr search path runs unchanged. protocol maps to downloadProtocol.
+      downloadUrl: props.item.downloadUrl,
+      downloadProtocol: props.item.protocol,
     },
   });
   createEffect(() => {
@@ -551,7 +558,10 @@ export const AdultDiscover: Component<{
       if (!f) return;
       await updateRssFeed(f.id, {
         title: f.title,
-        feedUrl: f.feedUrl,
+        // feedUrl is masked on read (f.feedUrl is "" now, not the real URL) —
+        // send null to PRESERVE the stored encrypted URL. Re-sending f.feedUrl
+        // would post "" and the backend rejects it as ErrFeedURLRequired.
+        feedUrl: null,
         target: f.target,
         protocol: f.protocol,
         enabled: !f.enabled,

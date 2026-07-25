@@ -257,6 +257,15 @@ type AdultDiscoverItem struct {
 	ReleaseTitle    string   `json:"releaseTitle,omitempty"`
 	Genres          []string `json:"genres,omitempty"`
 	Performers      []string `json:"performers,omitempty"`
+	// DownloadURL/Protocol/SizeBytes are the feed enclosure for a pooled,
+	// feed-sourced entity — populated ONLY when the item's feed is currently
+	// fresh (the backend builds them via FeedHealth.DirectGrabURL). When present
+	// the Grab dialog threads them into AutoGrabRequest.DownloadURL/
+	// DownloadProtocol for a direct grab; when empty (browse-only, or a feed not
+	// currently fresh) the card falls back to the Prowlarr search path (D4/D5).
+	DownloadURL string `json:"downloadUrl,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	SizeBytes   int64  `json:"sizeBytes,omitempty"`
 }
 
 // StudioSummary is one entry in Adult Discover's Studios row
@@ -422,6 +431,15 @@ type AutoGrabRequest struct {
 	DurationSeconds int    `json:"durationSeconds,omitempty"`
 	// ReleaseTitle is Adult-only — see this struct's doc comment above.
 	ReleaseTitle string `json:"releaseTitle,omitempty"`
+	// DownloadURL/DownloadProtocol are the direct-grab fields (Adult feed
+	// entities): when DownloadURL is present the server dispatches it straight to
+	// the download client, skipping the Prowlarr search entirely — identically
+	// for the single (autoGrabHandler) and bulk (grabOneBatchItem) entrypoints,
+	// so one code path serves both (D4/C1). Empty ⇒ the existing Prowlarr search
+	// path runs, unchanged. The card only carries these while its feed is fresh
+	// (see FeedHealth.DirectGrabURL); otherwise it falls back to the Prowlarr path.
+	DownloadURL      string `json:"downloadUrl,omitempty"`
+	DownloadProtocol string `json:"downloadProtocol,omitempty"`
 }
 
 // AutoGrabCandidate is one graded release in an auto-grab manual-fallback list
@@ -1319,6 +1337,13 @@ type AdultNewestReleaseItem struct {
 	ReleaseTitle string   `json:"releaseTitle,omitempty"`
 	Genres       []string `json:"genres,omitempty"`
 	Performers   []string `json:"performers,omitempty"`
+	// DownloadURL/Protocol/SizeBytes are the feed enclosure for a feed-sourced
+	// pooled entity — populated ONLY when the item's feed is currently fresh (via
+	// FeedHealth.DirectGrabURL). Empty for a browse-only entity or a feed not
+	// currently fresh, in which case the card grabs via the Prowlarr path (D4/D5).
+	DownloadURL string `json:"downloadUrl,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	SizeBytes   int64  `json:"sizeBytes,omitempty"`
 }
 
 // --- Trakt (mainstream-discover-seerr): watchlist connection + OAuth device flow -
@@ -1427,9 +1452,16 @@ type BrowseResponse struct {
 // "movie" | "tv" | "adult" (a feed belongs to exactly one mode, no "mixed").
 // Mirrors Slider's CRUD+reorder DTO shape almost exactly.
 type RssFeed struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	FeedURL   string `json:"feedUrl"`
+	ID    int    `json:"id"`
+	Title string `json:"title"`
+	// FeedURL is MASKED in every response — a feed URL commonly embeds an indexer
+	// API key, encrypted at rest (feed_url_encrypted), and the Settings form must
+	// never receive the real value back (a naive re-send on an untouched save
+	// would round-trip it through the wire and into a plaintext-in-transit
+	// exposure). The handler always emits "" here (omitempty drops it); the
+	// frontend shows a "set" placeholder and sends null on preserve. Same posture
+	// as ConnectionSummary never returning the raw APIKey.
+	FeedURL   string `json:"feedUrl,omitempty"`
 	Target    string `json:"target"`
 	Protocol  string `json:"protocol"`
 	SortOrder int    `json:"sortOrder"`
@@ -1439,16 +1471,18 @@ type RssFeed struct {
 }
 
 // RssFeedUpsertRequest is the body of POST /api/discover/rss-feeds (create)
-// and PUT /api/discover/rss-feeds/{id} (update) — every editable field,
-// mirroring rssfeeds.Store.Create/Update's parameters exactly. Nothing here
-// is a secret, so unlike ConnectionUpsertRequest.APIKey every field is a
-// plain value, no three-state pointer semantics needed.
+// and PUT /api/discover/rss-feeds/{id} (update). FeedURL follows the same
+// three-state secret rule as ConnectionUpsertRequest.APIKey (nil = preserve the
+// stored URL, "" = reject as feed-url-required, non-empty = replace) — now that
+// the URL is a masked secret, a naive `feedUrl: string` would silently wipe it
+// on an untouched save. Create supplies the real URL once; an Update that
+// doesn't change the URL sends nil.
 type RssFeedUpsertRequest struct {
-	Title    string `json:"title"`
-	FeedURL  string `json:"feedUrl"`
-	Target   string `json:"target"`
-	Protocol string `json:"protocol"`
-	Enabled  bool   `json:"enabled"`
+	Title    string  `json:"title"`
+	FeedURL  *string `json:"feedUrl,omitempty"`
+	Target   string  `json:"target"`
+	Protocol string  `json:"protocol"`
+	Enabled  bool    `json:"enabled"`
 }
 
 // RssFeedReorderRequest is POST /api/discover/rss-feeds/reorder's body — ids

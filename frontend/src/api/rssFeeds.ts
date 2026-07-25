@@ -17,6 +17,20 @@ import type {
 
 export type { RssFeed, RssFeedItem, RssFeedUpsertRequest };
 
+// RssFeedUpdateBody widens the generated RssFeedUpsertRequest's feedUrl to
+// `string | null`. The feed URL is now a masked secret (feed_url_encrypted;
+// toDTORssFeed always emits ""), so an update that only changes enabled/title
+// MUST send `feedUrl: null` to preserve the stored URL — the backend's
+// three-state *string reads null (or absent) as "preserve", "" as
+// ErrFeedURLRequired, non-empty as "replace". tygo maps Go *string to a plain
+// `string | undefined`, so it can't express the null the plan (and the
+// toDTORssFeed doc comment) call for — this widens it at the boundary. Create
+// never preserves (there's no stored value yet), so createRssFeed keeps the
+// unwidened RssFeedUpsertRequest.
+export type RssFeedUpdateBody = Omit<RssFeedUpsertRequest, "feedUrl"> & {
+  feedUrl?: string | null;
+};
+
 // TARGETS mirrors internal/rssfeeds.Target's fixed enum — a feed belongs to
 // exactly one mode, no "mixed" (unlike Slider's target, which allows mixed).
 export const TARGETS = ["movie", "tv", "adult"] as const;
@@ -43,7 +57,7 @@ export function createRssFeed(body: RssFeedUpsertRequest): Promise<RssFeed> {
 
 export function updateRssFeed(
   id: number,
-  body: RssFeedUpsertRequest,
+  body: RssFeedUpdateBody,
 ): Promise<RssFeed> {
   return api<RssFeed>(`/api/discover/rss-feeds/${id}`, {
     method: "PUT",

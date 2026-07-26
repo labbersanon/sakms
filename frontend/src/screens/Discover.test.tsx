@@ -616,12 +616,24 @@ describe("Discover — Adult tab (row-based browse)", () => {
     expect(container.querySelectorAll("img").length).toBe(0);
   });
 
-  it("drills into a studio's scenes and returns to the rows via Back to browse", async () => {
+  it("drills into a merged studio's scenes and returns to the rows via Back to browse", async () => {
+    // The Studios row is now the merged TPDB+StashDB row (fetchMergedStudios →
+    // /studios-merged); a card carries an id-pair, and drilling it hits the
+    // merged-scenes endpoint by that pair. /studios-merged/scenes is checked
+    // before /studios-merged (a substring of it).
     const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/studios/st1/scenes"))
+      if (url.includes("/api/modes/adult/discover/studios-merged/scenes"))
         return jsonResponse([scene({ id: "sc1", title: "Studio Only Scene" })]);
-      if (url.includes("/api/modes/adult/studios"))
-        return jsonResponse([studio({ id: "st1", name: "Drill Studio" })]);
+      if (url.includes("/api/modes/adult/studios-merged"))
+        return jsonResponse([
+          {
+            name: "Drill Studio",
+            image: "https://cdn.theporndb.net/sites/drill.jpg",
+            source: "merged",
+            tpdbId: "st1",
+            stashdbId: "sd1",
+          },
+        ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -636,11 +648,16 @@ describe("Discover — Adult tab (row-based browse)", () => {
     expect(screen.getByText("Back to browse")).toBeInTheDocument();
     // The rows are gone while drilled in.
     expect(screen.queryByText("Performers")).not.toBeInTheDocument();
-    // The drill-down endpoint was actually hit with the opaque studio id.
+    // The merged-scenes endpoint was hit with the card's id-pair.
     expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/studios/st1/scenes"),
-      ),
+      fetchMock.mock.calls.some(([u]) => {
+        const s = String(u);
+        return (
+          s.includes("/api/modes/adult/discover/studios-merged/scenes") &&
+          s.includes("tpdbId=st1") &&
+          s.includes("stashdbId=sd1")
+        );
+      }),
     ).toBe(true);
 
     // Back to browse restores the rows and drops the drill-down.
@@ -650,17 +667,21 @@ describe("Discover — Adult tab (row-based browse)", () => {
     expect(screen.queryByText("Studio Only Scene")).not.toBeInTheDocument();
   });
 
-  it("drills into a performer's scenes via the performer drill-down endpoint", async () => {
+  it("drills into a merged performer's scenes via the merged-scenes endpoint", async () => {
+    // The Performers row is the merged TPDB+StashDB row; a StashDB-only card
+    // (only stashdbId set) drills to the merged-scenes endpoint with just that
+    // id (the absent tpdbId is omitted from the query).
     const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/performers/pf1/scenes"))
+      if (url.includes("/api/modes/adult/discover/performers-merged/scenes"))
         return jsonResponse([scene({ id: "ps1", title: "Performer Only Scene" })]);
-      if (url.includes("/api/modes/adult/performers"))
+      if (url.includes("/api/modes/adult/performers-merged"))
         return jsonResponse([
-          performer({
-            id: "pf1",
+          {
             name: "Drill Performer",
             image: "https://cdn.theporndb.net/performers/drill.jpg",
-          }),
+            source: "stashdb",
+            stashdbId: "pf1",
+          },
         ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
@@ -674,9 +695,14 @@ describe("Discover — Adult tab (row-based browse)", () => {
     expect(await screen.findByText("Performer Only Scene")).toBeInTheDocument();
     expect(screen.getByText("Back to browse")).toBeInTheDocument();
     expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/performers/pf1/scenes"),
-      ),
+      fetchMock.mock.calls.some(([u]) => {
+        const s = String(u);
+        return (
+          s.includes("/api/modes/adult/discover/performers-merged/scenes") &&
+          s.includes("stashdbId=pf1") &&
+          !s.includes("tpdbId=")
+        );
+      }),
     ).toBe(true);
   });
 });
@@ -715,23 +741,12 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     expect(screen.queryByText("FansDB Performers")).not.toBeInTheDocument();
   });
 
-  it("shows StashDB's rows (and only StashDB's) when only stashdb is configured", async () => {
+  it("shows only StashDB's Trending scene row when stashdb is configured (its Studios/Performers rows are replaced by the merged rows)", async () => {
     stubFetch((url) => {
       if (url.includes("/api/connections"))
         return jsonResponse([connectionSummary("stashdb")]);
       if (url.includes("/api/modes/adult/discover/stashdb/trending"))
         return jsonResponse([scene({ id: "sb1", title: "StashDB Trend Scene", source: "stashdb" })]);
-      if (url.includes("/api/modes/adult/discover/stashdb/studios"))
-        return jsonResponse([studio({ id: "sbst1", name: "StashDB Studio", source: "stashdb" })]);
-      if (url.includes("/api/modes/adult/discover/stashdb/performers"))
-        return jsonResponse([
-          performer({
-            id: "sbpf1",
-            name: "StashDB Performer",
-            image: "https://cdn.theporndb.net/performers/sb.jpg",
-            source: "stashdb",
-          }),
-        ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -740,12 +755,13 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
 
+    // StashDB's scene row (Trending) survives (G2)...
     expect(await screen.findByText("StashDB Trending")).toBeInTheDocument();
-    expect(screen.getByText("StashDB Studios")).toBeInTheDocument();
-    expect(screen.getByText("StashDB Performers")).toBeInTheDocument();
     expect(await screen.findByText("StashDB Trend Scene")).toBeInTheDocument();
-    expect(await screen.findByText("StashDB Studio")).toBeInTheDocument();
-    expect(await screen.findByText("StashDB Performer")).toBeInTheDocument();
+    // ...but its dedicated Studios/Performers rows are gone — folded into the
+    // merged "Studios"/"Performers" rows (plan G1/G2).
+    expect(screen.queryByText("StashDB Studios")).not.toBeInTheDocument();
+    expect(screen.queryByText("StashDB Performers")).not.toBeInTheDocument();
 
     // FansDB stays hidden — only stashdb was in the connections list.
     expect(screen.queryByText("FansDB Recently Released")).not.toBeInTheDocument();
@@ -823,23 +839,19 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
   });
 
   // Drill routing guard (G1/G4): a stash-box studio card carries `box` so its
-  // drill hits the box-scoped scenes endpoint, while a TPDB studio card (no
-  // box) still hits the original TPDB endpoint — a stash-box id must never be
-  // queried against TPDB, and the TPDB path must stay untouched.
-  it("routes a StashDB studio drill to the box endpoint and a TPDB studio drill to the TPDB endpoint", async () => {
+  // drill hits the box-scoped scenes endpoint — a stash-box id must never be
+  // queried against TPDB. StashDB's Studios/Performers rows are gone (folded
+  // into the merged rows), so FansDB is now the box that still owns entity rows
+  // and exercises this path; its box-drill routing must stay untouched (G1).
+  it("routes a FansDB studio drill to the box endpoint (never TPDB)", async () => {
     const fetchMock = stubFetch((url) => {
       if (url.includes("/api/connections"))
-        return jsonResponse([connectionSummary("stashdb")]);
+        return jsonResponse([connectionSummary("fansdb")]);
       // Box-scoped drill — matched before the browse path (a substring of it).
-      if (url.includes("/api/modes/adult/discover/stashdb/studios/sbst1/scenes"))
-        return jsonResponse([scene({ id: "sbsc1", title: "StashDB Studio Scene", source: "stashdb" })]);
-      if (url.includes("/api/modes/adult/discover/stashdb/studios"))
-        return jsonResponse([studio({ id: "sbst1", name: "StashDB Studio", source: "stashdb" })]);
-      // TPDB drill — matched before the TPDB browse path.
-      if (url.includes("/api/modes/adult/studios/st1/scenes"))
-        return jsonResponse([scene({ id: "tsc1", title: "TPDB Studio Scene" })]);
-      if (url.includes("/api/modes/adult/studios"))
-        return jsonResponse([studio({ id: "st1", name: "TPDB Studio" })]);
+      if (url.includes("/api/modes/adult/discover/fansdb/studios/fbst1/scenes"))
+        return jsonResponse([scene({ id: "fbsc1", title: "FansDB Studio Scene", source: "fansdb" })]);
+      if (url.includes("/api/modes/adult/discover/fansdb/studios"))
+        return jsonResponse([studio({ id: "fbst1", name: "FansDB Studio", source: "fansdb" })]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -848,45 +860,34 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
 
-    // TPDB studio → the original non-box TPDB endpoint, never a box endpoint.
-    fireEvent.click(await screen.findByText("TPDB Studio"));
-    expect(await screen.findByText("TPDB Studio Scene")).toBeInTheDocument();
+    // FansDB studio → the box-scoped endpoint, and never TPDB with the box id.
+    fireEvent.click(await screen.findByText("FansDB Studio"));
+    expect(await screen.findByText("FansDB Studio Scene")).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/studios/st1/scenes"),
-      ),
-    ).toBe(true);
-
-    fireEvent.click(screen.getByText("Back to browse"));
-
-    // StashDB studio → the box-scoped endpoint, and never TPDB with the box id.
-    fireEvent.click(await screen.findByText("StashDB Studio"));
-    expect(await screen.findByText("StashDB Studio Scene")).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/discover/stashdb/studios/sbst1/scenes"),
+        String(u).includes("/api/modes/adult/discover/fansdb/studios/fbst1/scenes"),
       ),
     ).toBe(true);
     expect(
       fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/studios/sbst1/scenes"),
+        String(u).includes("/api/modes/adult/studios/fbst1/scenes"),
       ),
     ).toBe(false);
   });
 
-  it("routes a StashDB performer drill to the box endpoint (never TPDB)", async () => {
+  it("routes a FansDB performer drill to the box endpoint (never TPDB)", async () => {
     const fetchMock = stubFetch((url) => {
       if (url.includes("/api/connections"))
-        return jsonResponse([connectionSummary("stashdb")]);
-      if (url.includes("/api/modes/adult/discover/stashdb/performers/sbpf1/scenes"))
-        return jsonResponse([scene({ id: "sbps1", title: "StashDB Perf Scene", source: "stashdb" })]);
-      if (url.includes("/api/modes/adult/discover/stashdb/performers"))
+        return jsonResponse([connectionSummary("fansdb")]);
+      if (url.includes("/api/modes/adult/discover/fansdb/performers/fbpf1/scenes"))
+        return jsonResponse([scene({ id: "fbps1", title: "FansDB Perf Scene", source: "fansdb" })]);
+      if (url.includes("/api/modes/adult/discover/fansdb/performers"))
         return jsonResponse([
           performer({
-            id: "sbpf1",
-            name: "StashDB Performer",
-            image: "https://cdn.theporndb.net/performers/sb.jpg",
-            source: "stashdb",
+            id: "fbpf1",
+            name: "FansDB Performer",
+            image: "https://cdn.theporndb.net/performers/fb.jpg",
+            source: "fansdb",
           }),
         ]);
       const d = mainstreamDefaults(url);
@@ -897,16 +898,16 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
 
-    fireEvent.click(await screen.findByText("StashDB Performer"));
-    expect(await screen.findByText("StashDB Perf Scene")).toBeInTheDocument();
+    fireEvent.click(await screen.findByText("FansDB Performer"));
+    expect(await screen.findByText("FansDB Perf Scene")).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/discover/stashdb/performers/sbpf1/scenes"),
+        String(u).includes("/api/modes/adult/discover/fansdb/performers/fbpf1/scenes"),
       ),
     ).toBe(true);
     expect(
       fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/performers/sbpf1/scenes"),
+        String(u).includes("/api/modes/adult/performers/fbpf1/scenes"),
       ),
     ).toBe(false);
   });

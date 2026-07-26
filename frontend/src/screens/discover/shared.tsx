@@ -643,6 +643,20 @@ export function PaginatedStrip<T>(props: {
       // nothing, and only then hid the button — a silent round trip
       // indistinguishable from the button doing nothing at all (found live,
       // 2026-07-15).
+      //
+      // This check is also safe for the merged Adult Studios/Performers rows
+      // (fetchMergedStudios/fetchMergedPerformers) with NO change needed, per
+      // the plan's Q1 exhaustion-safety proof: both source legs (TPDB, StashDB)
+      // are fetched at the SAME perPage server-side and the merged page is
+      // never truncated, so the merged batch size is always >= max(|tpdb|,
+      // |stash|) (mutual-best pairing is 1:1, so |pairs| <= min of the two).
+      // While EITHER leg still has a full page, that max is perPage, so the
+      // merged batch is >= perPage and exhaustion does NOT fire. The batch only
+      // drops below perPage once BOTH legs have delivered their final short/
+      // empty pages — exactly the correct end-of-row condition. (An empty TPDB
+      // leg past its final page, incl. TPDB's silent-pagination-clamp case the
+      // backend converts to an empty-200, just makes the row scroll on as pure
+      // StashDB and still terminates here when StashDB drains.)
       if (batch.length < (props.perPage ?? defaultStripPageSize)) {
         setExhausted(true);
       }

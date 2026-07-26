@@ -931,3 +931,194 @@ func TestScene_ImagePrefersTPDBHostedFieldsOverStudioPassthrough(t *testing.T) {
 		t.Errorf("expected the raw image field as last-resort fallback, got %q", out[2].Image)
 	}
 }
+
+// TestBrowsePerformers_SendsNameSort proves the live-verified lowercase
+// orderBy=asc_name param is sent (NOT the OpenAPI spec's uppercase ASC_NAME,
+// which 422s live) so the merged Performers row can page-align by name.
+func TestBrowsePerformers_SendsNameSort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("orderBy"); got != "asc_name" {
+			t.Errorf("expected orderBy=asc_name (lowercase), got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	if _, err := c.BrowsePerformers(context.Background(), 1, 20); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBrowseSites_SendsNameSort is the /sites analogue: the live API accepts
+// orderBy=asc_name (lowercase) even though the OpenAPI operation omits the
+// param entirely.
+func TestBrowseSites_SendsNameSort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("orderBy"); got != "asc_name" {
+			t.Errorf("expected orderBy=asc_name (lowercase), got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	if _, err := c.BrowseSites(context.Background(), 1, 20); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBrowsePerformers_DetectsClampAndSkipsBackfill guards the live-verified
+// TPDB /performers out-of-range clamp mitigation: TPDB answers a page past the
+// last one with HTTP 200 + the final page's items repeated, echoing
+// meta.current_page as the last real page (not the requested one).
+// BrowsePerformers must detect that (current_page < requested page) and return
+// an empty slice (the synthetic empty-200 the pagination contract needs), and
+// must NOT fire the image backfill on the discarded stale page.
+//
+// The clamped-page fixture items have EMPTY Image and NON-EMPTY ID on purpose:
+// backfillMissingImages skips any entry that already has an Image OR has an
+// empty ID, so only empty-Image + non-empty-ID items make the "zero
+// detail-fetch hits" assertion a real proof that the clamp branch skipped
+// backfill — rather than passing vacuously through either skip clause.
+func TestBrowsePerformers_DetectsClampAndSkipsBackfill(t *testing.T) {
+	const finalPage = 2
+	// Both the real final page (2) and the out-of-range page (3) return the
+	// same items with meta.current_page pinned to 2 — the live clamp behavior.
+	const pageBody = `{"data":[{"_id":"p1","name":"Zed One"},{"_id":"p2","name":"Zed Two"}],"meta":{"current_page":2}}`
+	var detailCalls int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/performers" {
+			_, _ = w.Write([]byte(pageBody))
+			return
+		}
+		// Any /performers/{id} hit is a backfill detail fetch.
+		atomic.AddInt64(&detailCalls, 1)
+		_, _ = w.Write([]byte(`{"data":{"_id":"p1","name":"Zed One","posters":[{"url":"http://cdn/x.jpg"}]}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+
+	// Control: the real final page (current_page == requested) returns items,
+	// and — since the items have empty images — backfill DOES fire here.
+	out, err := c.BrowsePerformers(context.Background(), finalPage, 20)
+	if err != nil {
+		t.Fatalf("control final page: unexpected error: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("control final page: expected 2 items, got %d", len(out))
+	}
+	if atomic.LoadInt64(&detailCalls) == 0 {
+		t.Errorf("control final page: expected backfill to fire on empty-image items, got 0 detail fetches")
+	}
+
+	// Clamped: one page past final. meta.current_page (2) < requested (3) →
+	// synthetic empty-200 and NO backfill on the discarded stale page.
+	atomic.StoreInt64(&detailCalls, 0)
+	out, err = c.BrowsePerformers(context.Background(), finalPage+1, 20)
+	if err != nil {
+		t.Fatalf("clamped page: unexpected error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("clamped page: expected nil (synthetic empty-200), got %+v", out)
+	}
+	if got := atomic.LoadInt64(&detailCalls); got != 0 {
+		t.Errorf("clamped page: expected zero detail-fetch hits (backfill skipped), got %d", got)
+	}
+}
+
+// TestBrowsePerformers_MissingMetaNotClamped guards the conservative side of
+// clamp detection: a response with no meta block (current_page decodes to 0)
+// must NOT be treated as a clamp, even at a high page number — no false drain.
+func TestBrowsePerformers_MissingMetaNotClamped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Riley","image":"http://cdn/a.jpg"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 999, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 item (no false drain on missing meta), got %+v", out)
+	}
+}
+
+// TestScenesByPerformer_DetectsClamp guards ScenesByPerformer's by-analogy clamp
+// mitigation (see its doc comment): the guard mirrors BrowsePerformers' — a page
+// whose echoed meta.current_page is below the requested page is TPDB's
+// out-of-range clamp (HTTP 200 + the final page's scenes REPEATED), so
+// ScenesByPerformer must return an empty slice (the synthetic empty-200 the
+// merged drill-down's exhaustion check needs) instead of the stale repeated
+// scenes.
+//
+// Unlike the performers clamp test there is no image-backfill side-effect to
+// count, so non-vacuity rests entirely on the fixture: the clamped-page mock
+// serves a NON-EMPTY data array (one real scene) with meta.current_page pinned
+// BELOW the requested page. Asserting the method returns empty there proves the
+// clamp branch fired — an empty-data mock would pass regardless. The control
+// case (requested page == echoed current_page → the real scene comes back)
+// proves the guard doesn't false-drain a legitimate final page.
+func TestScenesByPerformer_DetectsClamp(t *testing.T) {
+	const finalPage = 2
+	// Both the real final page (2) and the out-of-range page (3) return the same
+	// scene with meta.current_page pinned to 2 — the live clamp behavior.
+	const pageBody = `{"data":[{"_id":"sc1","title":"Repeated Scene","date":"2024-01-01","site":{"name":"Vixen"}}],"meta":{"current_page":2}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/performers/p1/scenes" {
+			t.Errorf("expected path /performers/p1/scenes, got %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(pageBody))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+
+	// Control: the real final page (current_page == requested) returns its scene.
+	out, err := c.ScenesByPerformer(context.Background(), "p1", finalPage, 20)
+	if err != nil {
+		t.Fatalf("control final page: unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Title != "Repeated Scene" {
+		t.Fatalf("control final page: expected the real scene, got %+v", out)
+	}
+
+	// Clamped: one page past final. meta.current_page (2) < requested (3) →
+	// synthetic empty-200, NOT the stale repeated scene.
+	out, err = c.ScenesByPerformer(context.Background(), "p1", finalPage+1, 20)
+	if err != nil {
+		t.Fatalf("clamped page: unexpected error: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("clamped page: expected nil (synthetic empty-200), got %+v", out)
+	}
+}
+
+// TestScenesByPerformer_MissingMetaNotClamped guards the conservative side of
+// ScenesByPerformer's clamp detection (mirrors TestBrowsePerformers_
+// MissingMetaNotClamped): a response with no meta block (current_page decodes to
+// 0) must NOT be treated as a clamp, even at a high page number — no false drain.
+func TestScenesByPerformer_MissingMetaNotClamped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"sc1","title":"Only Scene","date":"2024-01-01"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.ScenesByPerformer(context.Background(), "p1", 999, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 scene (no false drain on missing meta), got %+v", out)
+	}
+}

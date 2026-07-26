@@ -756,6 +756,9 @@ func TestQueryPerformers_DecodesAndPaginates(t *testing.T) {
 	if gotInput["page"].(float64) != 3 || gotInput["per_page"].(float64) != 15 {
 		t.Errorf("pagination not sent through: %+v", gotInput)
 	}
+	if gotInput["sort"] != "NAME" {
+		t.Errorf("sort = %v, want NAME", gotInput["sort"])
+	}
 	if len(out) != 2 {
 		t.Fatalf("expected 2 performers, got %d", len(out))
 	}

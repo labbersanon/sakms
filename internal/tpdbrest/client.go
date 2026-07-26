@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -281,6 +282,14 @@ func firstNonEmpty(vals ...string) string {
 
 type scenesResponse struct {
 	Data []rawScene `json:"data"`
+	// Meta.CurrentPage is TPDB's echoed page number — the same field
+	// performersResponse carries, decoded here on the shared scenes envelope so
+	// ScenesByPerformer can reuse BrowsePerformers' out-of-range clamp detection
+	// (see ScenesByPerformer). Every other scenes caller decodes it harmlessly
+	// and ignores it; only ScenesByPerformer acts on it.
+	Meta struct {
+		CurrentPage int `json:"current_page"`
+	} `json:"meta"`
 }
 
 // doGet is the shared GET+decode mechanics every REST lookup (scenes,
@@ -308,15 +317,24 @@ func (c *Client) get(ctx context.Context, params url.Values) ([]Scene, error) {
 // caller passes its own already-escaped path rather than reaching into a shared
 // /scenes endpoint.
 func (c *Client) getScenes(ctx context.Context, path string, params url.Values) ([]Scene, error) {
+	out, _, err := c.getScenesPaged(ctx, path, params)
+	return out, err
+}
+
+// getScenesPaged is getScenes plus TPDB's echoed meta.current_page (0 when
+// absent) — the scenes analogue of getPerformers' extra return value. Only
+// ScenesByPerformer needs the page (for its out-of-range clamp detection);
+// every other scenes caller goes through getScenes and discards it.
+func (c *Client) getScenesPaged(ctx context.Context, path string, params url.Values) ([]Scene, int, error) {
 	var sr scenesResponse
 	if err := c.doGet(ctx, path, params, &sr); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]Scene, len(sr.Data))
 	for i, rs := range sr.Data {
 		out[i] = rs.toScene()
 	}
-	return out, nil
+	return out, sr.Meta.CurrentPage, nil
 }
 
 // Ping confirms the base URL/key work by making one real, minimal request
@@ -460,6 +478,15 @@ func (rp rawPerformer) toPerformer() Performer {
 
 type performersResponse struct {
 	Data []rawPerformer `json:"data"`
+	// Meta.CurrentPage is TPDB's echoed page number. It is load-bearing for
+	// BrowsePerformers' clamp detection: TPDB answers an out-of-range
+	// /performers page with HTTP 200 + the last real page's items repeated,
+	// echoing meta.current_page as that clamped (last real) page rather than
+	// the requested one — the signal used to synthesize the empty-200 the
+	// pagination contract requires (see BrowsePerformers).
+	Meta struct {
+		CurrentPage int `json:"current_page"`
+	} `json:"meta"`
 }
 
 // performerResponse is TPDB's single-entity envelope — GetPerformerByID's
@@ -547,16 +574,20 @@ func (c *Client) backfillMissingImages(ctx context.Context, performers []Perform
 	wg.Wait()
 }
 
-func (c *Client) getPerformers(ctx context.Context, params url.Values) ([]Performer, error) {
+// getPerformers returns the decoded performer page plus TPDB's echoed
+// meta.current_page (0 when absent). The current-page value is what
+// BrowsePerformers uses to detect TPDB's out-of-range clamp; callers that
+// don't paginate (SearchPerformers) discard it.
+func (c *Client) getPerformers(ctx context.Context, params url.Values) ([]Performer, int, error) {
 	var pr performersResponse
 	if err := c.doGet(ctx, "/performers", params, &pr); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]Performer, len(pr.Data))
 	for i, rp := range pr.Data {
 		out[i] = rp.toPerformer()
 	}
-	return out, nil
+	return out, pr.Meta.CurrentPage, nil
 }
 
 // SearchPerformers text-searches performers by name. Similarity filtering of
@@ -566,7 +597,8 @@ func (c *Client) getPerformers(ctx context.Context, params url.Values) ([]Perfor
 // caller, internal/identify's entity-verification pipeline, never reads
 // Image and already throttles its own TPDB calls).
 func (c *Client) SearchPerformers(ctx context.Context, term string) ([]Performer, error) {
-	return c.getPerformers(ctx, url.Values{"q": {term}})
+	out, _, err := c.getPerformers(ctx, url.Values{"q": {term}})
+	return out, err
 }
 
 // BrowsePerformers returns one page of TPDB's performer catalog with NO search
@@ -577,10 +609,42 @@ func (c *Client) SearchPerformers(ctx context.Context, term string) ([]Performer
 // perPage defaults to defaultBrowsePerPage when non-positive). The spec's
 // optional "letter" first-initial filter is deliberately not used here.
 //
-// The only caller of backfillMissingImages (see that function's doc comment):
-// Discover's Performers row is the one place a performer's Image is actually
-// rendered, so it's the one place worth paying the extra detail-fetch calls
-// for.
+// Name sort (live-verified 2026-07-26, this deployment's creds): the request
+// sends orderBy=asc_name so the merged Performers row's page-local dedup can
+// rely on both sources being name-aligned. NOTE the value is LOWERCASE
+// asc_name, NOT the OpenAPI spec's documented uppercase PerformerOrderEnum
+// value "ASC_NAME" — the uppercase form returns a live 422 ("The selected
+// order by is invalid."). This is a real spec-vs-implementation mismatch,
+// confirmed live (the same lowercase-snake-case convention BrowseScenes'
+// orderBy already uses, e.g. "recently_created"); stated here as fact, not a
+// documented-but-unconfirmed guess.
+//
+// Out-of-range clamp handling (live-verified 2026-07-26): TPDB does NOT honor
+// the standard "empty-200 past the final page" contract for /performers.
+// Instead it answers a page beyond the last one with HTTP 200 + the final
+// page's items REPEATED, while echoing meta.current_page as the last real page
+// (e.g. request page 501 of a 500-page catalog → 200, the same 20 items as
+// page 500, meta.current_page == 500). Left as-is that would make the merged
+// Performers row non-terminating (a full stale page keeps merged size >=
+// perPage forever, so the frontend's `< perPage` exhaustion check never
+// fires). So this method DETECTS the clamp — currentPage > 0 && currentPage <
+// requested page — and returns an empty slice, synthesizing the empty-200 the
+// pagination contract requires so the row exhausts correctly.
+//
+// This detection depends on TPDB's OBSERVED clamp-echo behavior: that it
+// reports the last real page in meta.current_page instead of the requested
+// one. If TPDB ever changed to echo the REQUESTED page while still serving
+// stale repeated data, detection would silently stop firing. That failure
+// mode is soft — a Performers row that scrolls forever past the catalog's end,
+// NOT data corruption or a crash — and would surface via the deep-row
+// exhaustion manual/e2e check, not silently. The comparison is deliberately
+// page-value-based (never a hardcoded 500 or catalog size — those are today's
+// data, not a contract) and so is direction/perPage-agnostic.
+//
+// backfillMissingImages (see its doc comment) runs only on a real,
+// non-clamped page — Discover's Performers row is the one place a performer's
+// Image is actually rendered — and is skipped entirely on a clamped page so
+// the bounded detail-fetch burst never fires on discarded stale data.
 func (c *Client) BrowsePerformers(ctx context.Context, page, perPage int) ([]Performer, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
@@ -588,12 +652,19 @@ func (c *Client) BrowsePerformers(ctx context.Context, page, perPage int) ([]Per
 	if page <= 0 {
 		page = 1
 	}
-	out, err := c.getPerformers(ctx, url.Values{
+	out, currentPage, err := c.getPerformers(ctx, url.Values{
 		"per_page": {strconv.Itoa(perPage)},
 		"page":     {strconv.Itoa(page)},
+		"orderBy":  {"asc_name"},
 	})
 	if err != nil {
 		return nil, err
+	}
+	// currentPage > 0 guards against a missing/zero meta (treated as
+	// not-clamped — conservative, never a false drain).
+	if currentPage > 0 && currentPage < page {
+		log.Printf("tpdbrest: BrowsePerformers page %d clamped by TPDB to %d; returning empty (treating source as exhausted past its final page)", page, currentPage)
+		return nil, nil
 	}
 	c.backfillMissingImages(ctx, out)
 	return out, nil
@@ -608,6 +679,25 @@ func (c *Client) BrowsePerformers(ctx context.Context, page, perPage int) ([]Per
 // like the browse methods. This is preferred over filtering /scenes by a
 // performer_id query param — the dedicated endpoint is what the spec provides
 // for exactly this drill-down.
+//
+// Out-of-range clamp handling — applied BY ANALOGY, NOT independently
+// live-verified for this endpoint. BrowsePerformers documents (and its clamp
+// test guards) a live-verified TPDB behavior: GET /performers answers a page
+// past the last one with HTTP 200 + the final page's items REPEATED, echoing
+// meta.current_page as the last real page rather than the requested one, which
+// left un-mitigated makes a paginated row non-terminating. This method is the
+// same TPDB REST API family with the same per-entity-paginated shape
+// (SceneResource array + meta.current_page), and the merged drill-down that
+// calls it (internal/api/adultdiscover_merge.go's mergedScenes) routinely pages
+// TPDB past its own end once the StashDB leg is deeper — the exact condition
+// that would trip the clamp bug. The same guard is therefore applied here
+// pre-emptively: currentPage > 0 && currentPage < requested page → return an
+// empty slice (the synthetic empty-200 the pagination contract needs). This is
+// an inference from the confirmed-buggy sibling /performers endpoint, NOT a fact
+// established against /performers/{id}/scenes directly. If a future session gets
+// the chance to live-verify this specific endpoint's out-of-range behavior,
+// update this comment to state the confirmed fact (clamps, or is clean) instead
+// of this by-analogy inference.
 func (c *Client) ScenesByPerformer(ctx context.Context, performerID string, page, perPage int) ([]Scene, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
@@ -619,7 +709,18 @@ func (c *Client) ScenesByPerformer(ctx context.Context, performerID string, page
 		"per_page": {strconv.Itoa(perPage)},
 		"page":     {strconv.Itoa(page)},
 	}
-	return c.getScenes(ctx, "/performers/"+url.PathEscape(performerID)+"/scenes", params)
+	out, currentPage, err := c.getScenesPaged(ctx, "/performers/"+url.PathEscape(performerID)+"/scenes", params)
+	if err != nil {
+		return nil, err
+	}
+	// currentPage > 0 guards against a missing/zero meta (treated as
+	// not-clamped — conservative, never a false drain). Mirrors
+	// BrowsePerformers' clamp detection exactly.
+	if currentPage > 0 && currentPage < page {
+		log.Printf("tpdbrest: ScenesByPerformer performer %s page %d clamped by TPDB to %d; returning empty (treating source as exhausted past its final page)", performerID, page, currentPage)
+		return nil, nil
+	}
+	return out, nil
 }
 
 // Site mirrors a subset of ThePornDB's REST site (studio) response shape.
@@ -677,6 +778,22 @@ func (c *Client) SearchSites(ctx context.Context, term string) ([]Site, error) {
 // required params); page/per_page alone are a valid browse. page/perPage are
 // clamped like the other browse methods (page >= 1; perPage defaults to
 // defaultBrowsePerPage). The spec's optional "letter" filter is not used here.
+//
+// Name sort (live-verified 2026-07-26): sends orderBy=asc_name so the merged
+// Studios row's page-local dedup can rely on name alignment. As with
+// /performers, the working value is LOWERCASE asc_name; the uppercase
+// "ASC_NAME" 422s live. Extra wrinkle for /sites: the OpenAPI operation does
+// not even list an orderBy param (only q/letter/page/per_page), yet the live
+// API accepts orderBy=asc_name and sorts by it — a spec-vs-implementation
+// mismatch confirmed live, stated as fact.
+//
+// Out-of-range behavior (live-verified 2026-07-26): unlike /performers, TPDB
+// /sites DOES honor the standard contract — a page past the final one returns
+// a clean empty-200 (not the clamp-and-repeat that /performers exhibits). So
+// BrowseSites needs NO clamp-detection guard; adding one would be a dead
+// branch against a behavior verified not to occur (and a premature
+// abstraction). If /sites is ever observed to clamp meta.current_page like
+// /performers does, mirror BrowsePerformers' clamp guard here.
 func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
@@ -687,6 +804,7 @@ func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, er
 	return c.getSites(ctx, url.Values{
 		"per_page": {strconv.Itoa(perPage)},
 		"page":     {strconv.Itoa(page)},
+		"orderBy":  {"asc_name"},
 	})
 }
 
@@ -698,6 +816,17 @@ func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, er
 // directly, never parsed as an int. Preferred over filtering /scenes by a
 // site_id query param — the dedicated endpoint is what the spec provides for
 // exactly this drill-down.
+//
+// Deliberately NO out-of-range clamp guard — left unguarded BY ANALOGY to
+// BrowseSites, whose doc records that GET /sites was live-verified to honor the
+// standard empty-200-past-the-end contract (unlike /performers, which clamps and
+// repeats). Since /sites is clean, its scenes sub-resource is assumed clean too.
+// That is an inference from the parent /sites endpoint's confirmed-clean
+// behavior, NOT a fact established against /sites/{id}/scenes directly — the same
+// honesty caveat ScenesByPerformer carries in the opposite direction. If a future
+// session live-verifies this endpoint (or observes it clamping meta.current_page
+// like /performers does), update this comment with the confirmed fact and, if it
+// clamps, mirror ScenesByPerformer's guard here.
 func (c *Client) ScenesBySite(ctx context.Context, siteID string, page, perPage int) ([]Scene, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage

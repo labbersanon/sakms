@@ -295,6 +295,61 @@ type PerformerSummary struct {
 	Source string `json:"source"`
 }
 
+// MergedPerformerCard is one entry in Adult Discover's merged Performers row
+// (GET /api/modes/adult/performers-merged) — a TPDB performer and a StashDB
+// performer fuzzy-paired into a single browse card (see the
+// ralplan-merge-tpdb-stashbox-performers-studios plan, Q1/Q3/Q6), or an
+// unpaired TPDB- or StashDB-exclusive entity. A merged card carries BOTH
+// source ids so drill-down can fetch scenes from both sources directly,
+// without re-running a fuzzy match at click time (browse-time pairing is
+// authoritative).
+//
+// Field-semantics invariant (load-bearing — the frontend renders off this
+// exactly, do not violate it when constructing a card):
+//   - Name is ALWAYS the canonical/display name — StashDB-first
+//     (firstNonEmpty(stash.Name, tpdb.Name)) when the card represents a
+//     paired match.
+//   - AltName is populated IFF NamesDiverged == true, and holds the OTHER
+//     source's (TPDB) name. It is always "" when NamesDiverged is false.
+//   - NamesDiverged == true implies Source == "merged" implies both TPDBID
+//     and StashDBID are set — a name divergence can only exist on a paired
+//     card; an unpaired card is never diverged.
+//   - Source is exactly one of: "tpdb" (TPDB-exclusive, unpaired — only
+//     TPDBID set), "stashdb" (StashDB-exclusive, unpaired — only StashDBID
+//     set), or "merged" (paired, from both sources — regardless of whether
+//     the two names collapsed to one or diverged; both TPDBID and StashDBID
+//     are set).
+//
+// Image is StashDB-first (firstNonEmpty(stash.ImageURL, tpdb.Image)) when
+// paired, since StashDB performer art is populated far more often than
+// TPDB's — render a text-only card when blank and route non-empty values
+// through the image proxy, never hot-link either source directly.
+type MergedPerformerCard struct {
+	Name          string `json:"name"`
+	AltName       string `json:"altName,omitempty"`
+	NamesDiverged bool   `json:"namesDiverged,omitempty"`
+	Image         string `json:"image"`
+	Source        string `json:"source"`
+	TPDBID        string `json:"tpdbId,omitempty"`
+	StashDBID     string `json:"stashdbId,omitempty"`
+}
+
+// MergedStudioCard is the studio analogue of MergedPerformerCard — one entry
+// in Adult Discover's merged Studios row (GET /api/modes/adult/studios-merged),
+// pairing a TPDB site with a StashDB studio. Every field-semantics invariant
+// documented on MergedPerformerCard applies identically here (Name/AltName/
+// NamesDiverged/Source/id relationship); see that type's doc comment as the
+// single source of truth rather than duplicating it per-field here.
+type MergedStudioCard struct {
+	Name          string `json:"name"`
+	AltName       string `json:"altName,omitempty"`
+	NamesDiverged bool   `json:"namesDiverged,omitempty"`
+	Image         string `json:"image"`
+	Source        string `json:"source"`
+	TPDBID        string `json:"tpdbId,omitempty"`
+	StashDBID     string `json:"stashdbId,omitempty"`
+}
+
 // PosterResponse is GET /api/modes/{mode}/poster's response — the lazily
 // resolved TMDB poster path for one library card, keyed by tmdbId (Movies/
 // Series only). PosterPath is a bare TMDB path (e.g. "/abc.jpg") the client

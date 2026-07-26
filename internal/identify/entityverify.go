@@ -17,7 +17,47 @@ import (
 const (
 	performerMatchThreshold = 0.6
 	studioMatchThreshold    = 0.6
+
+	// nameCollapseTightness is the bar a merged-row pair's two source names
+	// (see PairByName in pair.go) must clear to collapse into a single
+	// displayed name rather than surfacing both ("TPDB: X / StashDB: Y") for
+	// operator review. Deliberately tighter than the 0.6 pairing thresholds
+	// above: a pair can clear 0.6 (worth showing as one merged card) while
+	// still differing enough that silently picking one name would hide a
+	// possible false-positive merge from the operator. Single-sourced here,
+	// next to the other tuned magic numbers in this package, rather than in
+	// whatever caller consumes it.
+	nameCollapseTightness = 0.9
 )
+
+// normalizedEqual reports whether a and b are equal after normalizeForSearch
+// (the same separator normalization applied before every other
+// search/similarity comparison in this package), compared case-insensitively.
+// A fast, cheap check that's strictly weaker than nearExactName's full
+// similarity check below.
+func normalizedEqual(a, b string) bool {
+	return strings.EqualFold(normalizeForSearch(a), normalizeForSearch(b))
+}
+
+// nearExactName reports whether a and b are close enough to be the same
+// entity's name for collapse-to-one-name purposes (vs. surfacing both — see
+// PairByName's caller in the merge-TPDB-StashDB plan's Q3). Asymmetry-safe:
+// goes through maxSimilarity (pair.go) rather than a single fixed-order
+// TitleSimilarity call, since TitleSimilarity's containment branch is
+// arg-order-dependent (similarity.go:52).
+func nearExactName(a, b string) bool {
+	return normalizedEqual(a, b) || maxSimilarity(a, b) >= nameCollapseTightness
+}
+
+// NearExactName is nearExactName's exported form, for callers outside this
+// package (e.g. a merged-row handler in internal/api deciding whether to
+// collapse a paired TPDB/StashDB name to one displayed name or surface both —
+// see PairByName's doc comment and the merge-TPDB-StashDB plan's Q3). Keeps
+// the tuned nameCollapseTightness constant and the asymmetry-safe comparison
+// single-sourced in this package rather than re-implemented by a caller.
+func NearExactName(a, b string) bool {
+	return nearExactName(a, b)
+}
 
 // normalizeForSearch replaces filename-style separators (dots, dashes,
 // underscores) with spaces before using an AI-extracted guess as a search

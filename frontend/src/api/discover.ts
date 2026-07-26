@@ -12,6 +12,8 @@ import type {
   AdultDiscoverItem,
   AvailabilityPreview,
   DiscoverItem,
+  MergedPerformerCard,
+  MergedStudioCard,
   PerformerSummary,
   PosterResponse,
   StudioSummary,
@@ -23,6 +25,8 @@ export type {
   AdultDiscoverItem,
   AvailabilityPreview,
   DiscoverItem,
+  MergedPerformerCard,
+  MergedStudioCard,
   PerformerSummary,
   StudioSummary,
   TitleDetail,
@@ -234,8 +238,8 @@ export function fetchTmdbSearch(
 
 // fetchAdultDiscover returns one page of TPDB's scene catalog (plain browse),
 // or a title search when query is non-empty. This is the search path — Adult
-// Discover's browse rows come from fetchAdultNewestRows/fetchAdultStudios/
-// fetchAdultPerformers instead (the old fixed Recently Released/Highest Rated
+// Discover's browse rows come from fetchAdultNewestRows/fetchMergedStudios/
+// fetchMergedPerformers instead (the old fixed Recently Released/Highest Rated
 // category rows were removed 2026-07-15, stale/redundant once the
 // Prowlarr-matched newest rows shipped).
 export function fetchAdultDiscover(query?: string): Promise<AdultDiscoverItem[]> {
@@ -355,23 +359,23 @@ export function fetchStashBoxPerformerScenes(
   );
 }
 
-// fetchAdultStudios returns one page of TPDB's studio (site) catalog for the
-// Studios browse row. Each card's opaque id doubles as the {id} path segment of
-// fetchAdultStudioScenes below.
+// fetchAdultStudios/fetchAdultPerformers/fetchAdultStudioScenes/
+// fetchAdultPerformerScenes: TPDB-only, no longer wired into the Studios/
+// Performers browse rows or their drill-down — those now use
+// fetchMergedStudios/fetchMergedPerformers/fetchMergedStudioScenes/
+// fetchMergedPerformerScenes below (TPDB+StashDB merged). The backend routes
+// these call still exist and still work; kept here pending a separate Task 8
+// dead-code decision (needs sign-off before deletion — see
+// .omc/plans/ralplan-merge-tpdb-stashbox-performers-studios.md's OQ3), not
+// currently called anywhere in this codebase.
 export function fetchAdultStudios(page = 1): Promise<StudioSummary[]> {
   return api<StudioSummary[]>(`/api/modes/adult/studios?page=${page}`);
 }
 
-// fetchAdultPerformers returns one page of TPDB's performer catalog for the
-// Performers browse row. Each card's opaque id doubles as the {id} path segment
-// of fetchAdultPerformerScenes below.
 export function fetchAdultPerformers(page = 1): Promise<PerformerSummary[]> {
   return api<PerformerSummary[]>(`/api/modes/adult/performers?page=${page}`);
 }
 
-// fetchAdultStudioScenes is the studio drill-down: one page of just the scenes
-// for a studio id (a StudioSummary.id, passed verbatim as an opaque string).
-// Returns the same scene shape as fetchAdultDiscover.
 export function fetchAdultStudioScenes(
   id: string,
   page = 1,
@@ -381,15 +385,80 @@ export function fetchAdultStudioScenes(
   );
 }
 
-// fetchAdultPerformerScenes is the performer drill-down: one page of just the
-// scenes for a performer id (a PerformerSummary.id, passed verbatim as an opaque
-// string). Returns the same scene shape as fetchAdultDiscover.
 export function fetchAdultPerformerScenes(
   id: string,
   page = 1,
 ): Promise<AdultDiscoverItem[]> {
   return api<AdultDiscoverItem[]>(
     `/api/modes/adult/performers/${encodeURIComponent(id)}/scenes?page=${page}`,
+  );
+}
+
+// fetchMergedPerformers returns one page of the merged Performers row —
+// TPDB + StashDB performers fuzzy-paired and deduped server-side into
+// MergedPerformerCard[] (GET /api/modes/adult/performers-merged). Replaces the
+// separate TPDB (fetchAdultPerformers) and StashDB performer rows. Both source
+// legs are fetched at the SAME perPage server-side (plan G6b) — pass the same
+// perPage PaginatedStrip uses for its exhaustion check (defaults to 20).
+export function fetchMergedPerformers(
+  page = 1,
+  perPage = 20,
+): Promise<MergedPerformerCard[]> {
+  return api<MergedPerformerCard[]>(
+    `/api/modes/adult/performers-merged?page=${page}&perPage=${perPage}`,
+  );
+}
+
+// fetchMergedStudios returns one page of the merged Studios row — TPDB sites +
+// StashDB studios fuzzy-paired and deduped server-side into MergedStudioCard[]
+// (GET /api/modes/adult/studios-merged). Same contract as fetchMergedPerformers,
+// only the entity type and route differ.
+export function fetchMergedStudios(
+  page = 1,
+  perPage = 20,
+): Promise<MergedStudioCard[]> {
+  return api<MergedStudioCard[]>(
+    `/api/modes/adult/studios-merged?page=${page}&perPage=${perPage}`,
+  );
+}
+
+// fetchMergedPerformerScenes is the merged-performer drill-down: one page of the
+// phash-deduped TPDB+StashDB scene list for a card's id-pair (GET /api/modes/
+// adult/discover/performers-merged/scenes). The browse-time pairing is
+// authoritative, so the card carries BOTH ids and this fetches from both known
+// sources directly — never re-running a fuzzy match at click time. At least one
+// of tpdbId/stashdbId must be present; each is sent only when non-empty (a
+// single-source card fetches just its one source). Scenes carry a per-scene
+// Source stamped server-side.
+export function fetchMergedPerformerScenes(
+  ids: { tpdbId?: string; stashdbId?: string },
+  page = 1,
+  perPage = 20,
+): Promise<AdultDiscoverItem[]> {
+  const q = new URLSearchParams();
+  if (ids.tpdbId) q.set("tpdbId", ids.tpdbId);
+  if (ids.stashdbId) q.set("stashdbId", ids.stashdbId);
+  q.set("page", String(page));
+  q.set("perPage", String(perPage));
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/discover/performers-merged/scenes?${q.toString()}`,
+  );
+}
+
+// fetchMergedStudioScenes is the merged-studio drill-down — same id-pair
+// contract as fetchMergedPerformerScenes, only the route differs.
+export function fetchMergedStudioScenes(
+  ids: { tpdbId?: string; stashdbId?: string },
+  page = 1,
+  perPage = 20,
+): Promise<AdultDiscoverItem[]> {
+  const q = new URLSearchParams();
+  if (ids.tpdbId) q.set("tpdbId", ids.tpdbId);
+  if (ids.stashdbId) q.set("stashdbId", ids.stashdbId);
+  q.set("page", String(page));
+  q.set("perPage", String(perPage));
+  return api<AdultDiscoverItem[]>(
+    `/api/modes/adult/discover/studios-merged/scenes?${q.toString()}`,
   );
 }
 

@@ -35,16 +35,18 @@ import {
 import {
   type AdultDiscoverItem,
   type AdultSortBy,
+  type MergedPerformerCard,
+  type MergedStudioCard,
   type PerformerSummary,
   type StashBox,
   type StudioSummary,
   fetchAdultDiscover,
   fetchAdultDiscoverMergedRecent,
   fetchAdultDiscoverSorted,
-  fetchAdultPerformerScenes,
-  fetchAdultPerformers,
-  fetchAdultStudioScenes,
-  fetchAdultStudios,
+  fetchMergedPerformerScenes,
+  fetchMergedPerformers,
+  fetchMergedStudioScenes,
+  fetchMergedStudios,
   fetchStashBoxPerformers,
   fetchStashBoxPerformerScenes,
   fetchStashBoxScenes,
@@ -238,13 +240,31 @@ const AdultCard: Component<{
 // own catalog, never TPDB's. Rows with no drill target (e.g. the admin
 // newest-rows studio/performer tiles) omit onSelect, rendering a plain,
 // non-interactive <div> tile instead — same art/name, no click behavior.
+// namesDiverged (merged rows only) flags a fuzzy — but not near-exact — pairing
+// of a TPDB and a StashDB entity: the two source names genuinely differ, so the
+// card MUST show BOTH ("TPDB: {altName}" and "StashDB: {name}") as two
+// separately-legible lines rather than silently collapsing to one. This is the
+// provenance-surfacing safety valve for the fuzzy merge (plan Q3/Q6/Principle
+// 4): an operator has to actually SEE both names to catch a bad automatic merge,
+// which a single-line `truncate` at 200px would hide. altName holds the OTHER
+// (TPDB) name and is only set when namesDiverged. The non-diverged common case
+// (TPDB-only, StashDB-only, FansDB, and near-exact-collapsed merged cards) is
+// unchanged — a single `truncate` line.
 const EntityCard: Component<{
   kind: "studio" | "performer";
   name: string;
   image: string;
+  altName?: string;
+  namesDiverged?: boolean;
   onSelect?: () => void;
 }> = (props) => {
   const src = () => proxyImage(props.image);
+  // hoverTitle carries both labeled names on a diverged card so the full,
+  // un-clamped text is available on hover; a plain card keeps its single name.
+  const hoverTitle = () =>
+    props.namesDiverged
+      ? `TPDB: ${props.altName ?? ""} / StashDB: ${props.name}`
+      : props.name;
   const artwork = () => (
     <>
       <div
@@ -267,14 +287,25 @@ const EntityCard: Component<{
           />
         </Show>
       </div>
-      <div class="mt-1.5 truncate text-sm text-fg">{props.name}</div>
+      <Show
+        when={props.namesDiverged}
+        fallback={<div class="mt-1.5 truncate text-sm text-fg">{props.name}</div>}
+      >
+        {/* Two per-line line-clamp-1 rows (NOT one shared truncate) so both the
+            TPDB and StashDB names stay genuinely visible within the 200px tile —
+            neither line eats the width and hides the other. */}
+        <div class="mt-1.5 text-sm text-fg">
+          <div class="line-clamp-1">TPDB: {props.altName}</div>
+          <div class="line-clamp-1">StashDB: {props.name}</div>
+        </div>
+      </Show>
     </>
   );
   return (
     <Show
       when={props.onSelect}
       fallback={
-        <div class="w-[200px] shrink-0 text-left" title={props.name}>
+        <div class="w-[200px] shrink-0 text-left" title={hoverTitle()}>
           {artwork()}
         </div>
       }
@@ -283,7 +314,7 @@ const EntityCard: Component<{
         <button
           type="button"
           class="w-[200px] shrink-0 text-left"
-          title={props.name}
+          title={hoverTitle()}
           onClick={() => onSelect()()}
         >
           {artwork()}
@@ -348,33 +379,43 @@ const STASH_BOX_ORDERABLE_ROWS: StashBoxOrderableRow[] = STASH_BOX_ROWS.flatMap(
       shape: "scenes" as const,
       sceneKind: sr.kind,
     })),
-    {
-      key: `stashbox:${row.box}:studios`,
-      box: row.box,
-      label: `${row.label} Studios`,
-      shape: "studios" as const,
-    },
-    {
-      key: `stashbox:${row.box}:performers`,
-      box: row.box,
-      label: `${row.label} Performers`,
-      shape: "performers" as const,
-    },
+    // Studios/Performers rows are generated ONLY for FansDB. StashDB's own
+    // studios/performers rows are replaced by the two merged "studios"/
+    // "performers" rows (TPDB + StashDB unified — see renderRow and the plan's
+    // G1/G2). StashDB's scene rows (e.g. Trending, above) and all of FansDB's
+    // rows are untouched.
+    ...(row.box === "fansdb"
+      ? [
+          {
+            key: `stashbox:${row.box}:studios`,
+            box: row.box,
+            label: `${row.label} Studios`,
+            shape: "studios" as const,
+          },
+          {
+            key: `stashbox:${row.box}:performers`,
+            box: row.box,
+            label: `${row.label} Performers`,
+            shape: "performers" as const,
+          },
+        ]
+      : []),
   ],
 );
 
-// AdultDrill is the active drill-down target: which entity kind, its opaque id
-// (passed verbatim to the drill-down endpoint), and its name for the header.
-// box is set ONLY for a stash-box (StashDB/FansDB) drill — it carries the
-// `(box, id)` identity a stash-box entity actually is, so the drill loader
-// routes to the box-scoped fetcher instead of TPDB. Absent = a TPDB drill (the
-// original path, unchanged).
-type AdultDrill = {
-  kind: "studio" | "performer";
-  id: string;
-  name: string;
-  box?: StashBox;
-};
+// AdultDrill is the active drill-down target — a discriminated union of two
+// shapes:
+//   - FansDB variant ({box, id}): a stash-box drill carrying the `(box, id)`
+//     identity a stash-box entity actually is, routed to the box-scoped fetcher.
+//     Unchanged from before this merge feature.
+//   - Merged variant ({tpdbId?, stashdbId?}): a merged Studios/Performers card's
+//     authoritative id-pair (at least one present). The drill loader fetches
+//     scenes from both known sources directly via the merged-scenes fetchers,
+//     never re-running a fuzzy match at click time (plan Q2/G8).
+// The two are told apart by the presence of `box` (`"box" in d`).
+type AdultDrill =
+  | { kind: "studio" | "performer"; name: string; box: StashBox; id: string }
+  | { kind: "studio" | "performer"; name: string; tpdbId?: string; stashdbId?: string };
 
 // AdultDiscover is the scene-shaped browse, row-based like Mainstream: a search
 // bar over two ordered scene rows (Recently Released, Highest Rated), a Studios
@@ -647,18 +688,27 @@ export const AdultDiscover: Component<{
   const renderRow = (key: string): JSX.Element => {
     if (key === "studios") {
       return (
-        <PaginatedStrip<StudioSummary>
+        <PaginatedStrip<MergedStudioCard>
           title="Studios"
           reloadToken={reloadToken}
-          load={(page) => fetchAdultStudios(page)}
+          load={(page) => fetchMergedStudios(page)}
           onError={setSetupError}
         >
           {(s) => (
             <EntityCard
               kind="studio"
               name={s.name}
+              altName={s.altName}
+              namesDiverged={s.namesDiverged}
               image={s.image}
-              onSelect={() => setDrill({ kind: "studio", id: s.id, name: s.name })}
+              onSelect={() =>
+                setDrill({
+                  kind: "studio",
+                  name: s.name,
+                  tpdbId: s.tpdbId,
+                  stashdbId: s.stashdbId,
+                })
+              }
             />
           )}
         </PaginatedStrip>
@@ -666,18 +716,27 @@ export const AdultDiscover: Component<{
     }
     if (key === "performers") {
       return (
-        <PaginatedStrip<PerformerSummary>
+        <PaginatedStrip<MergedPerformerCard>
           title="Performers"
           reloadToken={reloadToken}
-          load={(page) => fetchAdultPerformers(page)}
+          load={(page) => fetchMergedPerformers(page)}
           onError={setSetupError}
         >
           {(p) => (
             <EntityCard
               kind="performer"
               name={p.name}
+              altName={p.altName}
+              namesDiverged={p.namesDiverged}
               image={p.image}
-              onSelect={() => setDrill({ kind: "performer", id: p.id, name: p.name })}
+              onSelect={() =>
+                setDrill({
+                  kind: "performer",
+                  name: p.name,
+                  tpdbId: p.tpdbId,
+                  stashdbId: p.stashdbId,
+                })
+              }
             />
           )}
         </PaginatedStrip>
@@ -896,20 +955,22 @@ export const AdultDiscover: Component<{
                   title={d().name}
                   reloadToken={reloadToken}
                   load={(page) => {
-                    // Capture box once so TypeScript narrows StashBox | undefined
-                    // away on the branch (reading d().box twice in the ternary
-                    // would not narrow and would not typecheck). box set = a
-                    // stash-box drill (route to the box-scoped fetcher); box
-                    // absent = the original TPDB path, unchanged.
-                    const b = d().box;
-                    if (d().kind === "studio") {
-                      return b
-                        ? fetchStashBoxStudioScenes(b, d().id, page)
-                        : fetchAdultStudioScenes(d().id, page);
+                    // Capture the drill once so TypeScript narrows the union on
+                    // the `"box" in dd` guard. FansDB variant ({box, id}) →
+                    // box-scoped stash-box fetcher, unchanged. Merged variant
+                    // ({tpdbId?, stashdbId?}) → the merged-scenes fetcher, which
+                    // fetches from both known sources by the card's id-pair (no
+                    // click-time fuzzy match — plan Q2/G8).
+                    const dd = d();
+                    if ("box" in dd) {
+                      return dd.kind === "studio"
+                        ? fetchStashBoxStudioScenes(dd.box, dd.id, page)
+                        : fetchStashBoxPerformerScenes(dd.box, dd.id, page);
                     }
-                    return b
-                      ? fetchStashBoxPerformerScenes(b, d().id, page)
-                      : fetchAdultPerformerScenes(d().id, page);
+                    const ids = { tpdbId: dd.tpdbId, stashdbId: dd.stashdbId };
+                    return dd.kind === "studio"
+                      ? fetchMergedStudioScenes(ids, page)
+                      : fetchMergedPerformerScenes(ids, page);
                   }}
                   onError={setSetupError}
                   containerClass="flex flex-wrap gap-3"

@@ -517,9 +517,18 @@ const queryPerformersQuery = `query QueryPerformers($input: PerformerQueryInput!
   }
 }`
 
-// QueryPerformers browses one page of a stash-box's performer catalog. page/
-// perPage are clamped like QueryScenes. Backs Adult Discover's optional
-// StashDB/FansDB Performers rows.
+// QueryPerformers browses one page of a stash-box's performer catalog, sorting
+// by NAME (mirroring QueryStudios) so the merged Adult Discover Performers row
+// can page-align both sources by name. page/perPage are clamped like
+// QueryScenes. Backs Adult Discover's optional StashDB/FansDB Performers rows.
+//
+// StashDB honors the full-page-until-final pagination contract (P),
+// live-verified 2026-07-26 against the real queryPerformers: full per_page
+// pages until a short final page (final page 5517 of 5517 returned 4 of a
+// 110,324-performer catalog at per_page 20), and a page BEYOND the last one
+// returns a clean empty result with no GraphQL error (P.2) — not the
+// clamp-and-repeat TPDB's REST /performers exhibits. sort:NAME was likewise
+// confirmed accepted by PerformerQueryInput (real reordering observed).
 func (c *Client) QueryPerformers(ctx context.Context, page, perPage int) ([]Performer, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
@@ -527,7 +536,7 @@ func (c *Client) QueryPerformers(ctx context.Context, page, perPage int) ([]Perf
 	if page <= 0 {
 		page = 1
 	}
-	input := map[string]any{"page": page, "per_page": perPage}
+	input := map[string]any{"page": page, "per_page": perPage, "sort": "NAME"}
 	var data struct {
 		QueryPerformers struct {
 			Performers []rawBrowsePerformer `json:"performers"`

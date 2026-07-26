@@ -7,6 +7,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  fetchMergedPerformerScenes,
+  fetchMergedPerformers,
+  fetchMergedStudioScenes,
+  fetchMergedStudios,
   fetchStashBoxPerformerScenes,
   fetchStashBoxStudioScenes,
 } from "./discover";
@@ -49,6 +53,50 @@ describe("fetchStashBoxPerformerScenes", () => {
     await fetchStashBoxPerformerScenes("fansdb", "pf9", 3);
     expect(String(fetchMock.mock.calls[0]![0])).toBe(
       "/api/modes/adult/discover/fansdb/performers/pf9/scenes?page=3&perPage=20",
+    );
+  });
+});
+
+describe("fetchMergedPerformers / fetchMergedStudios (browse rows)", () => {
+  it("hits the performers-merged route with page + perPage (defaults)", async () => {
+    const fetchMock = captureFetch();
+    await fetchMergedPerformers();
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "/api/modes/adult/performers-merged?page=1&perPage=20",
+    );
+  });
+
+  it("hits the studios-merged route threading a non-default page + perPage", async () => {
+    const fetchMock = captureFetch();
+    await fetchMergedStudios(3, 40);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "/api/modes/adult/studios-merged?page=3&perPage=40",
+    );
+  });
+});
+
+describe("fetchMergedPerformerScenes / fetchMergedStudioScenes (merged drill)", () => {
+  it("sends BOTH ids when the card carries a full pair", async () => {
+    const fetchMock = captureFetch();
+    await fetchMergedPerformerScenes({ tpdbId: "t1", stashdbId: "s1" }, 2);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "/api/modes/adult/discover/performers-merged/scenes?tpdbId=t1&stashdbId=s1&page=2&perPage=20",
+    );
+  });
+
+  it("omits an absent id (StashDB-only card) and defaults page 1", async () => {
+    const fetchMock = captureFetch();
+    await fetchMergedStudioScenes({ stashdbId: "s9" });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "/api/modes/adult/discover/studios-merged/scenes?stashdbId=s9&page=1&perPage=20",
+    );
+  });
+
+  it("omits an absent stashdbId (TPDB-only card)", async () => {
+    const fetchMock = captureFetch();
+    await fetchMergedPerformerScenes({ tpdbId: "t7" });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "/api/modes/adult/discover/performers-merged/scenes?tpdbId=t7&page=1&perPage=20",
     );
   });
 });

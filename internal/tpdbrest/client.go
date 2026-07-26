@@ -424,19 +424,37 @@ type Performer struct {
 // rawPerformer mirrors the fields this client consumes from a TPDB
 // PerformerResource. Per the live OpenAPI schema
 // (https://api.theporndb.net/openapi.json) a performer carries three nullable
-// image fields — "image", "thumbnail", "face" (there is NO field literally
-// named "avatar") — and toPerformer collapses them into the single Image field
-// above by first-non-empty preference: image, then thumbnail, then face.
+// flat image fields — "image", "thumbnail", "face" — plus a separate
+// "posters" array of MediaResource (TPDB's own re-hosted cdn.theporndb.net
+// images, id/url/size/order), the performer analogue of a scene's
+// Background.Large. Confirmed by a live sample against this deployment's own
+// data (2026-07-26): the flat fields are empty for a large share of real
+// performers even though TPDB has art for them — that art lives in the
+// unread "posters" array, causing missing-poster cards on Adult Discover's
+// Performers row. toPerformer prefers the first posters[] entry, falling
+// back to the flat fields only when posters is empty (same shape as
+// toScene's Background.Large-first preference below).
 type rawPerformer struct {
-	ID        flexID `json:"_id"`
-	Name      string `json:"name"`
-	Image     string `json:"image"`
-	Thumbnail string `json:"thumbnail"`
-	Face      string `json:"face"`
+	ID        flexID           `json:"_id"`
+	Name      string           `json:"name"`
+	Image     string           `json:"image"`
+	Thumbnail string           `json:"thumbnail"`
+	Face      string           `json:"face"`
+	Posters   []rawPosterEntry `json:"posters"`
+}
+
+// rawPosterEntry mirrors one entry of a TPDB MediaResource — only url is
+// consumed; id/size/order aren't needed for picking the first poster.
+type rawPosterEntry struct {
+	URL string `json:"url"`
 }
 
 func (rp rawPerformer) toPerformer() Performer {
-	return Performer{ID: string(rp.ID), Name: rp.Name, Image: firstNonEmpty(rp.Image, rp.Thumbnail, rp.Face)}
+	posterURL := ""
+	if len(rp.Posters) > 0 {
+		posterURL = rp.Posters[0].URL
+	}
+	return Performer{ID: string(rp.ID), Name: rp.Name, Image: firstNonEmpty(posterURL, rp.Image, rp.Thumbnail, rp.Face)}
 }
 
 type performersResponse struct {

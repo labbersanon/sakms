@@ -188,6 +188,51 @@ func TestBrowsePerformers_PaginatesWithoutSearchTerm(t *testing.T) {
 	}
 }
 
+// TestBrowsePerformers_PrefersPostersOverFlatFields guards the fix for a real
+// missing-poster bug found on this deployment's live data (2026-07-26): TPDB's
+// image/thumbnail/face fields are empty for a large share of real performers
+// even though TPDB has art for them in the separate "posters" array
+// (cdn.theporndb.net re-hosted, the performer analogue of a scene's
+// Background.Large). A regression that stopped reading posters[0].url would
+// pass every other performer test (none set posters) while reintroducing the
+// exact missing-poster symptom this test exists to catch.
+func TestBrowsePerformers_PrefersPostersOverFlatFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Danna Blacke","image":"","thumbnail":"","face":"","posters":[{"id":1,"url":"https://cdn.theporndb.net/performer/poster.jpg","size":1024,"order":1}]}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Image != "https://cdn.theporndb.net/performer/poster.jpg" {
+		t.Fatalf("expected Image from posters[0].url, got %+v", out)
+	}
+}
+
+// TestBrowsePerformers_FallsBackWhenPostersEmpty guards the other half of the
+// same preference chain: when posters is empty/absent, the flat fields are
+// still used exactly as before (no regression to the pre-fix happy path).
+func TestBrowsePerformers_FallsBackWhenPostersEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Riley Reid","image":"http://cdn/image.jpg","thumbnail":"http://cdn/thumb.jpg"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Image != "http://cdn/image.jpg" {
+		t.Fatalf("expected Image to fall back to flat image field, got %+v", out)
+	}
+}
+
 // TestBrowsePerformers_ToleratesNumericID guards flexID's reuse on
 // rawPerformer.ID: a regression that narrowed it back to a plain string would
 // pass every other performer test (all use quoted-string ids) while still

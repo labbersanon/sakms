@@ -280,7 +280,7 @@ func TestAdultStudiosHandler_Browse(t *testing.T) {
 		gotPath = r.URL.Path
 		gotPage, gotPerPage = r.URL.Query().Get("page"), r.URL.Query().Get("per_page")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"_id":"st1","name":"Tushy","logo":"http://cdn/logo.png"}]}`))
+		w.Write([]byte(`{"data":[{"uuid":"st1","name":"Tushy","logo":"http://cdn/logo.png"}]}`))
 	})
 
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)

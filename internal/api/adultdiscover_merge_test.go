@@ -376,7 +376,7 @@ func TestPerformersMerged_HardError4xxReturns502(t *testing.T) {
 func TestStudiosMerged_MergesBothSources(t *testing.T) {
 	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"_id":"t1","name":"Vixen","logo":"http://cdn/t.png"}],"meta":{"current_page":1}}`))
+		w.Write([]byte(`{"data":[{"uuid":"t1","name":"Vixen","logo":"http://cdn/t.png"}],"meta":{"current_page":1}}`))
 	})
 	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -394,6 +394,15 @@ func TestStudiosMerged_MergesBothSources(t *testing.T) {
 	}
 	if cards[0].Source != "merged" || cards[0].Name != "Vixen" || cards[0].Image != "http://cdn/s.png" {
 		t.Errorf("card[0] should be the collapsed merged Vixen with StashDB image, got %+v", cards[0])
+	}
+	// Both ids must be set on a merged card (the DTO's own documented
+	// invariant) -- guards a real live-verified bug (2026-07-26): rawSiteEntry
+	// decoded a nonexistent "_id" field (SiteResource has no "_id", only
+	// "uuid") so every TPDBID silently stayed empty. This assertion was
+	// missing before the bug was found live; a regression that reintroduces
+	// it now fails here instead of only in production.
+	if cards[0].TPDBID != "t1" || cards[0].StashDBID != "s1" {
+		t.Errorf("card[0] should carry both source ids, got %+v", cards[0])
 	}
 	if cards[1].Source != "stashdb" || cards[1].StashDBID != "s2" {
 		t.Errorf("card[1] should be the StashDB-exclusive studio, got %+v", cards[1])

@@ -402,7 +402,7 @@ func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		// logo present → chosen first over poster/favicon.
-		_, _ = w.Write([]byte(`{"data":[{"_id":"s1","name":"Tushy","logo":"http://cdn/logo.png","favicon":"http://cdn/fav.ico","poster":"http://cdn/poster.jpg"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"uuid":"s1","name":"Tushy","logo":"http://cdn/logo.png","favicon":"http://cdn/fav.ico","poster":"http://cdn/poster.jpg"}]}`))
 	}))
 	defer srv.Close()
 
@@ -419,12 +419,19 @@ func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 	}
 }
 
-// TestBrowseSites_ToleratesNumericID is TestBrowsePerformers_ToleratesNumericID's
-// sibling for rawSiteEntry.ID — same regression-guard rationale.
-func TestBrowseSites_ToleratesNumericID(t *testing.T) {
+// TestBrowseSites_DecodesUUIDNotID guards a real live-verified bug fix
+// (2026-07-26): SiteResource has no "_id" field at all (confirmed against the
+// live OpenAPI spec — only "uuid" and a plain numeric "id" exist; "_id" is a
+// PerformerResource-only field), so rawSiteEntry decoding "_id" left every
+// Site.ID silently empty. A regression that reverted the field back to "_id"
+// would pass every other site test (none happen to include a stray "id"/"_id"
+// key) while reintroducing the exact bug that broke TPDB studio drill-down.
+// This fixture includes a decoy numeric "id" alongside the real "uuid" to
+// prove decode prefers uuid, not id or _id.
+func TestBrowseSites_DecodesUUIDNotID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"_id":7,"name":"Numeric ID Site"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":7,"uuid":"7e8d5654-2ca4-46de-ac1e-8683f9e7f778","name":"Real UUID Site"}]}`))
 	}))
 	defer srv.Close()
 
@@ -433,8 +440,8 @@ func TestBrowseSites_ToleratesNumericID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(out) != 1 || out[0].ID != "7" {
-		t.Fatalf("got %+v", out)
+	if len(out) != 1 || out[0].ID != "7e8d5654-2ca4-46de-ac1e-8683f9e7f778" {
+		t.Fatalf("expected ID from uuid, got %+v", out)
 	}
 }
 
@@ -880,7 +887,7 @@ func TestSearchSites_ParsesResponse(t *testing.T) {
 			t.Errorf("expected q=tushy, got %q", r.URL.Query().Get("q"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"_id":"s1","name":"Tushy"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"uuid":"s1","name":"Tushy"}]}`))
 	}))
 	defer srv.Close()
 

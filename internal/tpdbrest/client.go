@@ -739,8 +739,21 @@ type Site struct {
 // fields — "logo", "favicon", "poster" — and toSite collapses them into the
 // single Image field above by first-non-empty preference: logo, then poster,
 // then favicon (favicon last as it's the least presentable at grid size).
+//
+// ID decodes "uuid", NOT "_id" — live-verified 2026-07-26 bug fix:
+// SiteResource has NO "_id" field at all (confirmed against the live spec's
+// SiteResource schema: only "uuid" (string) and "id" (a plain number) exist;
+// "_id" is a PerformerResource-only field). rawSiteEntry previously decoded
+// "_id" here, matching rawPerformer's convention, which silently left every
+// Site.ID empty (the JSON key never matched) since before this session —
+// this predates and is unrelated to today's TPDB+StashDB merge feature; it
+// surfaced today because the new merged Studios row was the first caller to
+// actually depend on Site.ID end-to-end for drill-down routing. "uuid" is
+// confirmed live-valid for the /sites/{identifier} and
+// /sites/{identifier}/scenes path parameter ("Identifier for this entity,
+// can be slug, id or uuid").
 type rawSiteEntry struct {
-	ID      flexID `json:"_id"`
+	ID      string `json:"uuid"`
 	Name    string `json:"name"`
 	Logo    string `json:"logo"`
 	Favicon string `json:"favicon"`
@@ -748,7 +761,7 @@ type rawSiteEntry struct {
 }
 
 func (rs rawSiteEntry) toSite() Site {
-	return Site{ID: string(rs.ID), Name: rs.Name, Image: firstNonEmpty(rs.Logo, rs.Poster, rs.Favicon)}
+	return Site{ID: rs.ID, Name: rs.Name, Image: firstNonEmpty(rs.Logo, rs.Poster, rs.Favicon)}
 }
 
 type sitesResponse struct {

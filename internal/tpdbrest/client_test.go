@@ -939,13 +939,16 @@ func TestScene_ImagePrefersTPDBHostedFieldsOverStudioPassthrough(t *testing.T) {
 	}
 }
 
-// TestBrowsePerformers_SendsNameSort proves the live-verified lowercase
-// orderBy=asc_name param is sent (NOT the OpenAPI spec's uppercase ASC_NAME,
-// which 422s live) so the merged Performers row can page-align by name.
-func TestBrowsePerformers_SendsNameSort(t *testing.T) {
+// TestBrowsePerformers_SendsMostRelevantSort proves orderBy=most_relevant is
+// sent (NOT the original asc_name — switched 2026-07-26, operator-approved,
+// after live sampling found TPDB's alphabetically-first performer pages are
+// dominated by non-performer junk; most_relevant was live-sampled and found
+// to return only real performer names). A regression that reverted this to
+// asc_name would reintroduce the junk-on-page-1 symptom.
+func TestBrowsePerformers_SendsMostRelevantSort(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("orderBy"); got != "asc_name" {
-			t.Errorf("expected orderBy=asc_name (lowercase), got %q", got)
+		if got := r.URL.Query().Get("orderBy"); got != "most_relevant" {
+			t.Errorf("expected orderBy=most_relevant (lowercase), got %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[]}`))

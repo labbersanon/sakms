@@ -517,18 +517,39 @@ const queryPerformersQuery = `query QueryPerformers($input: PerformerQueryInput!
   }
 }`
 
-// QueryPerformers browses one page of a stash-box's performer catalog, sorting
-// by NAME (mirroring QueryStudios) so the merged Adult Discover Performers row
-// can page-align both sources by name. page/perPage are clamped like
-// QueryScenes. Backs Adult Discover's optional StashDB/FansDB Performers rows.
+// QueryPerformers browses one page of a stash-box's performer catalog,
+// sorting by POPULARITY. page/perPage are clamped like QueryScenes. Backs
+// Adult Discover's optional StashDB/FansDB Performers rows.
+//
+// Sort changed from NAME to POPULARITY on 2026-07-26 (operator-approved),
+// paired with tpdbrest.BrowsePerformers switching to orderBy=most_relevant —
+// see that method's doc comment for the full story: NAME/asc_name originally
+// aligned both sources page-for-page for the merged row's dedup, but live
+// sampling found TPDB's alphabetically-first performer pages are dominated by
+// non-performer junk (toy-product names, compilation titles). POPULARITY
+// exists in StashDB's live PerformerSortEnum (confirmed via public GraphQL
+// introspection, no auth needed) and a live unauthenticated queryPerformers
+// call with sort:POPULARITY passed GraphQL schema validation (failed only on
+// "not authorized", not an invalid-enum-value error) — confirms the value is
+// schema-valid, NOT that it returns real popularity-ordered data (that would
+// need this deployment's actual credentials, not independently confirmed).
+//
+// KNOWN TRADEOFF (see tpdbrest.BrowsePerformers for the full explanation):
+// TPDB's most_relevant and StashDB's POPULARITY are two independent ranking
+// systems with no structural guarantee they page-align the way a shared NAME
+// sort did by definition. Page-local dedup may be less effective than
+// before; accepted by the operator as the cost of fixing the junk-on-page-1
+// problem.
 //
 // StashDB honors the full-page-until-final pagination contract (P),
-// live-verified 2026-07-26 against the real queryPerformers: full per_page
-// pages until a short final page (final page 5517 of 5517 returned 4 of a
-// 110,324-performer catalog at per_page 20), and a page BEYOND the last one
-// returns a clean empty result with no GraphQL error (P.2) — not the
-// clamp-and-repeat TPDB's REST /performers exhibits. sort:NAME was likewise
-// confirmed accepted by PerformerQueryInput (real reordering observed).
+// live-verified 2026-07-26 against the real queryPerformers under the
+// PREVIOUS sort:NAME: full per_page pages until a short final page (final
+// page 5517 of 5517 returned 4 of a 110,324-performer catalog at per_page
+// 20), and a page BEYOND the last one returns a clean empty result with no
+// GraphQL error (P.2) — not the clamp-and-repeat TPDB's REST /performers
+// exhibits. Not independently re-verified under sort:POPULARITY, though
+// pagination-boundary behavior is not expected to depend on which sort field
+// is active.
 func (c *Client) QueryPerformers(ctx context.Context, page, perPage int) ([]Performer, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
@@ -536,7 +557,7 @@ func (c *Client) QueryPerformers(ctx context.Context, page, perPage int) ([]Perf
 	if page <= 0 {
 		page = 1
 	}
-	input := map[string]any{"page": page, "per_page": perPage, "sort": "NAME"}
+	input := map[string]any{"page": page, "per_page": perPage, "sort": "POPULARITY"}
 	var data struct {
 		QueryPerformers struct {
 			Performers []rawBrowsePerformer `json:"performers"`

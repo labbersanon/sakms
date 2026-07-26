@@ -609,27 +609,45 @@ func (c *Client) SearchPerformers(ctx context.Context, term string) ([]Performer
 // perPage defaults to defaultBrowsePerPage when non-positive). The spec's
 // optional "letter" first-initial filter is deliberately not used here.
 //
-// Name sort (live-verified 2026-07-26, this deployment's creds): the request
-// sends orderBy=asc_name so the merged Performers row's page-local dedup can
-// rely on both sources being name-aligned. NOTE the value is LOWERCASE
-// asc_name, NOT the OpenAPI spec's documented uppercase PerformerOrderEnum
-// value "ASC_NAME" — the uppercase form returns a live 422 ("The selected
-// order by is invalid."). This is a real spec-vs-implementation mismatch,
-// confirmed live (the same lowercase-snake-case convention BrowseScenes'
-// orderBy already uses, e.g. "recently_created"); stated here as fact, not a
-// documented-but-unconfirmed guess.
+// Sort (live-verified 2026-07-26, this deployment's creds): the request sends
+// orderBy=most_relevant, NOT a name sort. Originally shipped as orderBy=
+// asc_name (name-aligned with StashDB for the merged row's page-local dedup),
+// but live sampling after launch found TPDB's alphabetically-first entries
+// (roughly pages 1-5 of 500) are dominated by non-performer junk — sex-toy
+// product names, compilation-video titles, auto-generated hex-string ids —
+// while pages 50+ are entirely real performer names. orderBy=most_relevant
+// (confirmed via TPDB's live OpenAPI PerformerOrderEnum, then live-sampled:
+// two full pages, zero junk, all real names) fixes that. The value is
+// LOWERCASE most_relevant, NOT the spec's uppercase "MOST_RELEVANT" — same
+// lowercase-snake-case-vs-uppercase-spec mismatch already confirmed for
+// asc_name/desc_name and BrowseScenes' orderBy (e.g. "recently_created").
 //
-// Out-of-range clamp handling (live-verified 2026-07-26): TPDB does NOT honor
-// the standard "empty-200 past the final page" contract for /performers.
-// Instead it answers a page beyond the last one with HTTP 200 + the final
-// page's items REPEATED, while echoing meta.current_page as the last real page
-// (e.g. request page 501 of a 500-page catalog → 200, the same 20 items as
-// page 500, meta.current_page == 500). Left as-is that would make the merged
-// Performers row non-terminating (a full stale page keeps merged size >=
-// perPage forever, so the frontend's `< perPage` exhaustion check never
-// fires). So this method DETECTS the clamp — currentPage > 0 && currentPage <
-// requested page — and returns an empty slice, synthesizing the empty-200 the
-// pagination contract requires so the row exhausts correctly.
+// KNOWN TRADEOFF, accepted by the operator (2026-07-26): most_relevant is an
+// independent ranking TPDB computes internally; StashDB's paired
+// queryPerformers now sorts by its own POPULARITY, a SEPARATE ranking system
+// with no structural guarantee the two align page-for-page the way a name
+// sort does by definition (same starting letter → same page on both sides).
+// Page-local dedup may be less effective than under the original name-sort
+// design — some real cross-source duplicates may show up as two unmerged
+// cards more often than before. Not independently re-measured after this
+// switch; if dedup quality visibly regresses, that's the tradeoff to
+// revisit, not a bug in this comment's absent claim of alignment.
+//
+// Out-of-range clamp handling (live-verified 2026-07-26 under orderBy=
+// asc_name; NOT independently re-verified under most_relevant, though the
+// clamp is pagination-metadata behavior rather than sort-content-dependent,
+// so it's expected — not confirmed — to hold under any orderBy value): TPDB
+// does NOT honor the standard "empty-200 past the final page" contract for
+// /performers. Instead it answers a page beyond the last one with HTTP 200 +
+// the final page's items REPEATED, while echoing meta.current_page as the
+// last real page (e.g. request page 501 of a 500-page catalog → 200, the
+// same 20 items as page 500, meta.current_page == 500). Left as-is that
+// would make the merged Performers row non-terminating (a full stale page
+// keeps merged size >= perPage forever, so the frontend's `< perPage`
+// exhaustion check never fires). So this method DETECTS the clamp —
+// currentPage > 0 && currentPage < requested page — and returns an empty
+// slice, synthesizing the empty-200 the pagination contract requires so the
+// row exhausts correctly.
 //
 // This detection depends on TPDB's OBSERVED clamp-echo behavior: that it
 // reports the last real page in meta.current_page instead of the requested
@@ -655,7 +673,7 @@ func (c *Client) BrowsePerformers(ctx context.Context, page, perPage int) ([]Per
 	out, currentPage, err := c.getPerformers(ctx, url.Values{
 		"per_page": {strconv.Itoa(perPage)},
 		"page":     {strconv.Itoa(page)},
-		"orderBy":  {"asc_name"},
+		"orderBy":  {"most_relevant"},
 	})
 	if err != nil {
 		return nil, err

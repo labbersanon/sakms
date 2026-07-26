@@ -756,8 +756,12 @@ func TestQueryPerformers_DecodesAndPaginates(t *testing.T) {
 	if gotInput["page"].(float64) != 3 || gotInput["per_page"].(float64) != 15 {
 		t.Errorf("pagination not sent through: %+v", gotInput)
 	}
-	if gotInput["sort"] != "NAME" {
-		t.Errorf("sort = %v, want NAME", gotInput["sort"])
+	// POPULARITY, not NAME -- switched 2026-07-26 (operator-approved) paired
+	// with tpdbrest.BrowsePerformers' orderBy=most_relevant switch. A
+	// regression back to NAME would defeat the fix for TPDB's junk-on-page-1
+	// symptom by re-aligning against TPDB's alphabetical order.
+	if gotInput["sort"] != "POPULARITY" {
+		t.Errorf("sort = %v, want POPULARITY", gotInput["sort"])
 	}
 	if len(out) != 2 {
 		t.Fatalf("expected 2 performers, got %d", len(out))

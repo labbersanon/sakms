@@ -820,8 +820,6 @@ func TestSearchPerformers_ParsesResponse(t *testing.T) {
 			t.Errorf("expected q=riley reid, got %q", r.URL.Query().Get("q"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// image populated so no image-backfill request fires here — that path
-		// is covered separately by the TestBrowsePerformers_Backfill* tests.
 		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Riley Reid","image":"https://cdn.theporndb.net/performer/riley.jpg"}]}`))
 	}))
 	defer srv.Close()
@@ -833,6 +831,43 @@ func TestSearchPerformers_ParsesResponse(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].Name != "Riley Reid" || out[0].ID != "p1" {
 		t.Fatalf("got %+v", out)
+	}
+}
+
+// TestSearchPerformers_NeverBackfills guards a real regression an architect
+// review caught (2026-07-26): SearchPerformers backs
+// internal/identify's entity-verification pipeline, which only reads
+// performer Name (never Image) and already rate-limits its own TPDB calls via
+// internal/throttle before calling SearchPerformers. If backfillMissingImages
+// were ever wired into the shared getPerformers again (as it briefly was),
+// it would fire unthrottled GET /performers/{id} calls through this path for
+// data no caller uses -- defeating the exact protection internal/throttle
+// exists for. An empty-image result must never trigger any request beyond
+// the original /performers search call.
+func TestSearchPerformers_NeverBackfills(t *testing.T) {
+	var requestPaths []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestPaths = append(requestPaths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"No Art Performer"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.SearchPerformers(context.Background(), "no art performer")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Image != "" {
+		t.Fatalf("got %+v", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requestPaths) != 1 || requestPaths[0] != "/performers" {
+		t.Errorf("expected exactly one request to /performers and no detail-endpoint backfill, got %v", requestPaths)
 	}
 }
 

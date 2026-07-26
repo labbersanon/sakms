@@ -496,14 +496,32 @@ const maxImageBackfillConcurrency = 5
 // list responses leave posters/image/thumbnail/face all empty for a real
 // share of performers. This backfill's working hypothesis is that the
 // per-entity GET /performers/{id} detail endpoint hydrates fields the list
-// endpoint doesn't (a known Laravel-API-Resource pattern); see this fix's
-// post-deploy live check for whether that hypothesis held.
+// endpoint doesn't (a known Laravel-API-Resource pattern); a post-deploy live
+// check found the same performers still empty even after this backfill too —
+// see BrowsePerformers' doc comment for the conclusion that landed on
+// (genuine upstream no-art-on-file for those specific entries).
+//
+// Deliberately NOT called from getPerformers/SearchPerformers: SearchPerformers
+// is used by internal/identify's entity-verification pipeline
+// (entityverify.go), which only reads performer Name (never Image) and already
+// rate-limits its TPDB calls via internal/throttle before calling
+// SearchPerformers — routing an unthrottled detail-fetch burst through that
+// path would defeat the exact protection internal/throttle exists for, for a
+// caller that doesn't even use the data. Only BrowsePerformers (Adult
+// Discover's Performers row, where the image is actually displayed) calls
+// this.
 //
 // Best-effort and bounded: a failed or slow detail fetch for one performer
-// never fails the whole browse/search (its Image just stays empty, same
+// never fails the whole browse (its Image just stays empty, same
 // degrade-gracefully contract Performer.Image already documents), and only
 // entries with an empty Image are fetched at all — a page that's already
-// fully populated from the list response costs zero extra requests.
+// fully populated from the list response costs zero extra requests. Worst
+// case (every entry on a full page needs backfill) is bounded by
+// maxImageBackfillConcurrency and this client's outboundTimeout
+// (cmd/sakms/main.go): ceil(perPage/maxImageBackfillConcurrency) sequential
+// waves, e.g. up to ~3 timeout-length waves added to one page load if TPDB is
+// unresponsive for every gap — an accepted latency/completeness tradeoff for
+// a browse row, not a hard bound on wall-clock time.
 func (c *Client) backfillMissingImages(ctx context.Context, performers []Performer) {
 	sem := make(chan struct{}, maxImageBackfillConcurrency)
 	var wg sync.WaitGroup
@@ -535,13 +553,15 @@ func (c *Client) getPerformers(ctx context.Context, params url.Values) ([]Perfor
 	for i, rp := range pr.Data {
 		out[i] = rp.toPerformer()
 	}
-	c.backfillMissingImages(ctx, out)
 	return out, nil
 }
 
 // SearchPerformers text-searches performers by name. Similarity filtering of
 // results is business logic that belongs in internal/identify, not here —
-// same convention as SearchByTitle.
+// same convention as SearchByTitle. Deliberately does NOT run
+// backfillMissingImages — see that function's doc comment for why (its one
+// caller, internal/identify's entity-verification pipeline, never reads
+// Image and already throttles its own TPDB calls).
 func (c *Client) SearchPerformers(ctx context.Context, term string) ([]Performer, error) {
 	return c.getPerformers(ctx, url.Values{"q": {term}})
 }
@@ -553,6 +573,11 @@ func (c *Client) SearchPerformers(ctx context.Context, term string) ([]Performer
 // exactly like BrowseScenes. page/perPage are clamped the same way (page >= 1;
 // perPage defaults to defaultBrowsePerPage when non-positive). The spec's
 // optional "letter" first-initial filter is deliberately not used here.
+//
+// The only caller of backfillMissingImages (see that function's doc comment):
+// Discover's Performers row is the one place a performer's Image is actually
+// rendered, so it's the one place worth paying the extra detail-fetch calls
+// for.
 func (c *Client) BrowsePerformers(ctx context.Context, page, perPage int) ([]Performer, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
@@ -560,10 +585,15 @@ func (c *Client) BrowsePerformers(ctx context.Context, page, perPage int) ([]Per
 	if page <= 0 {
 		page = 1
 	}
-	return c.getPerformers(ctx, url.Values{
+	out, err := c.getPerformers(ctx, url.Values{
 		"per_page": {strconv.Itoa(perPage)},
 		"page":     {strconv.Itoa(page)},
 	})
+	if err != nil {
+		return nil, err
+	}
+	c.backfillMissingImages(ctx, out)
+	return out, nil
 }
 
 // ScenesByPerformer returns one page of a single performer's scenes via TPDB's

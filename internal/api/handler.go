@@ -233,7 +233,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("PUT /api/discover/rss-feeds/{id}", updateRssFeedHandler(rssFeedsStore))
 	mux.HandleFunc("DELETE /api/discover/rss-feeds/{id}", deleteRssFeedHandler(rssFeedsStore))
 	mux.HandleFunc("POST /api/discover/rss-feeds/reorder", reorderRssFeedsHandler(rssFeedsStore))
-	mux.HandleFunc("GET /api/discover/rss-feeds/{id}/resolve", resolveRssFeedHandler(httpClient, rssFeedsStore))
+	mux.HandleFunc("GET /api/discover/rss-feeds/{id}/resolve", resolveRssFeedHandler(httpClient, rssFeedsStore, adultNewestReleaseStore))
 	// Discover row display order — a best-effort hint over the FULL merged
 	// row set (built-in rows + every dynamic row type), one per screen (see
 	// discover_row_order.go). NOT the same invariant as the reorder routes

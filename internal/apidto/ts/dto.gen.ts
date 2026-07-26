@@ -1426,6 +1426,18 @@ export interface RssFeedReorderRequest {
  * byte length, 0 when absent. Indexer is the feed's own configured Title,
  * reusing the existing free-form Indexer display field grabs already have —
  * see internal/api/rss_feeds.go's resolve handler.
+ * ResolvedTitle/ResolvedStudio/ResolvedImage are populated ONLY for an
+ * Adult-targeted feed whose item enclosure key matched a row in the Adult
+ * identify pipeline's pool (adult_newest_releases) — the feed-first-identify
+ * resolved poster/title/studio for this exact release, mirroring
+ * AdultDiscoverItem.Title/Studio/Image's shape (ResolvedImage is a raw TPDB CDN
+ * URL the client MUST route through the image proxy, never hot-link). All three
+ * are omitempty because they are only ever set on that one path: a Movies/Series
+ * feed has no pool to join against (the handler never even looks one up for a
+ * non-Adult target), and an Adult item not yet identified — or that matched
+ * nothing — leaves them empty, so the card falls back to the raw feed Title with
+ * no poster exactly as before this field existed. The grab still uses the raw
+ * Title + DownloadURL, never these display-only fields.
  */
 export interface RssFeedItem {
   title: string;
@@ -1435,6 +1447,9 @@ export interface RssFeedItem {
   downloadUrl: string;
   protocol: string;
   indexer: string;
+  resolvedTitle?: string;
+  resolvedStudio?: string;
+  resolvedImage?: string;
 }
 /**
  * --- Discover row order (internal/api/discover_row_order.go) — a

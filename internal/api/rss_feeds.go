@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/rssfeed"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
@@ -199,7 +200,19 @@ func findRssFeed(ctx context.Context, store *rssfeeds.Store, id int) (*rssfeeds.
 // Protocol is the feed's own admin-set protocol (not sniffed from the XML);
 // Indexer is the feed's own Title, reusing the existing free-form Indexer
 // display field grabs already have.
-func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.HandlerFunc {
+//
+// For an Adult-targeted feed only, each item is additionally joined against the
+// Adult identify pipeline's matched-entity pool (adult_newest_releases) by its
+// enclosure key — the same feed_item_key adultnewest.feedItemKey() derives, which
+// for every non-degenerate item equals the DownloadURL computed here — and, when
+// a match exists, the item is enriched with that pipeline's resolved
+// poster/title/studio (ResolvedTitle/ResolvedStudio/ResolvedImage). An item with
+// no pool match, and every item of a Movies/Series feed (no pool to join
+// against — the lookup is skipped entirely), keeps the raw feed title and no
+// resolved fields, exactly as before. The pool join is best-effort: a lookup
+// error is logged and the un-enriched items are still returned, never failing
+// the whole feed view.
+func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store, releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -232,6 +245,10 @@ func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.
 		}
 
 		out := make([]apidto.RssFeedItem, len(items))
+		// keys collects each Adult item's enclosure key for the single batched
+		// pool join below; nil (and never allocated) for a Movies/Series feed.
+		var keys []string
+		adult := f.Target == rssfeeds.TargetAdult
 		for i, it := range items {
 			downloadURL := it.EnclosureURL
 			if downloadURL == "" {
@@ -245,6 +262,30 @@ func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.
 				DownloadURL: downloadURL,
 				Protocol:    string(f.Protocol),
 				Indexer:     f.Title,
+			}
+			// downloadURL == "" only for a degenerate item with no enclosure and
+			// no link (feedItemKey would hash it instead) — never a real pool key,
+			// so skip it and avoid a spurious "" lookup.
+			if adult && downloadURL != "" {
+				keys = append(keys, downloadURL)
+			}
+		}
+
+		if adult {
+			matches, err := releaseStore.ByFeedItemKeys(ctx, keys)
+			if err != nil {
+				// Best-effort enrichment: the raw feed still resolves without the
+				// resolved poster/title/studio, so log and fall through rather than
+				// failing the whole feed view over a pool-join hiccup.
+				log.Printf("enriching rss feed %d against adult pool: %v", id, err)
+			} else {
+				for i := range out {
+					if m, ok := matches[out[i].DownloadURL]; ok {
+						out[i].ResolvedTitle = m.EntityTitle
+						out[i].ResolvedStudio = m.EntityStudio
+						out[i].ResolvedImage = m.EntityImage
+					}
+				}
 			}
 		}
 

@@ -104,3 +104,31 @@ describe("RssFeedCard — grab", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
   });
 });
+
+describe("RssFeedCard — resolved Adult poster", () => {
+  it("renders a proxied poster and the resolved title when resolved data is present", () => {
+    const it0 = item({
+      resolvedTitle: "Resolved Scene Title",
+      resolvedStudio: "Resolved Studio",
+      resolvedImage: "https://cdn.theporndb.net/scene-123.jpg",
+    });
+    render(() => <RssFeedCard item={it0} mode="adult" />);
+
+    const img = screen.getByRole("img") as HTMLImageElement;
+    // The image must flow through the Go image proxy, never hot-link the CDN.
+    expect(img.src).toContain("/api/images/proxy?url=");
+    expect(img.src).toContain(encodeURIComponent(it0.resolvedImage as string));
+
+    // The resolved (cleaned) title is displayed, not the raw release name.
+    expect(screen.getByText("Resolved Scene Title")).toBeInTheDocument();
+    expect(screen.queryByText("Some.Release.2026")).not.toBeInTheDocument();
+  });
+
+  it("renders the plain-text tile with no poster when resolved data is absent", () => {
+    render(() => <RssFeedCard item={item()} mode="movies" />);
+
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    // Falls back to the raw feed title exactly as before enrichment existed.
+    expect(screen.getByText("Some.Release.2026")).toBeInTheDocument();
+  });
+});

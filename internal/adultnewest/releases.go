@@ -282,6 +282,55 @@ func scanRelease(rows *sql.Rows) (MatchedRelease, error) {
 	return m, nil
 }
 
+// ByFeedItemKeys returns the cached matched entities whose feed_item_key is in
+// keys, mapped by feed_item_key — the join the Adult RSS feed resolve handler
+// (internal/api/rss_feeds.go) uses to enrich a live feed item with the identify
+// pipeline's already-resolved poster/title/studio for the same enclosure.
+// Batched into one IN query (same shape as SeenGUIDs) rather than a lookup per
+// item. NOT scoped by feed_id: a feed_item_key IS the enclosure URL (D6), which
+// globally identifies the release, so a cross-feed duplicate still resolves.
+// first_seen_at DESC, id DESC + first-wins collapses the case where one key
+// maps to more than one entity row (a real, reachable state — e.g. the same
+// enclosure identified as both a scene and a performer/studio row, or matched
+// independently by two different feeds; feed_item_key is NOT the table's
+// uniqueness key, (row_type, entity_source, entity_id) is) onto the newest
+// match, with id as a strict tie-breaker so the result is a total order even
+// when first_seen_at collides. A no-op for empty keys; browse-only rows
+// (feed_item_key = '') never match a non-empty enclosure key.
+func (s *ReleaseStore) ByFeedItemKeys(ctx context.Context, keys []string) (map[string]MatchedRelease, error) {
+	out := make(map[string]MatchedRelease, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	placeholders := make([]byte, 0, len(keys)*2)
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args[i] = k
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT `+releaseColumns+`
+		FROM adult_newest_releases
+		WHERE feed_item_key IN (%s)
+		ORDER BY first_seen_at DESC, id DESC`, placeholders), args...)
+	if err != nil {
+		return nil, fmt.Errorf("looking up matched entities by feed item key: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		m, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := out[m.FeedItemKey]; !ok {
+			out[m.FeedItemKey] = m
+		}
+	}
+	return out, rows.Err()
+}
+
 // List returns one page of cached matches for the given row type, newest
 // first, optionally narrowed to entities whose genres include genreFilter.
 // The genre match is a plain substring check against the JSON-encoded

@@ -68,6 +68,53 @@ func TestInsertAndList_RoundTripsMatchedRelease(t *testing.T) {
 	}
 }
 
+func TestByFeedItemKeys_MapsPresentKeysAndSkipsAbsent(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	// Two feed-sourced rows with distinct enclosure keys, plus a browse-only row
+	// (empty feed_item_key) that must never surface for a non-empty key lookup.
+	rows := []MatchedRelease{
+		{RowType: RowScene, EntityID: "a", EntitySource: "tpdb", EntityTitle: "Scene A",
+			EntityStudio: "Studio A", EntityImage: "https://cdn/a.jpg", DownloadURL: "https://x/a.torrent",
+			DownloadProtocol: "torrent", FeedID: 1, FeedItemKey: "https://x/a.torrent"},
+		{RowType: RowScene, EntityID: "b", EntitySource: "tpdb", EntityTitle: "Scene B",
+			EntityStudio: "Studio B", EntityImage: "https://cdn/b.jpg", DownloadURL: "https://x/b.torrent",
+			DownloadProtocol: "torrent", FeedID: 1, FeedItemKey: "https://x/b.torrent"},
+		{RowType: RowScene, EntityID: "c", EntitySource: "tpdb", EntityTitle: "Browse Only",
+			BrowseConfirmed: true, FeedItemKey: ""},
+	}
+	for _, m := range rows {
+		if err := s.Insert(ctx, m); err != nil {
+			t.Fatalf("seeding %q: %v", m.EntityID, err)
+		}
+	}
+
+	got, err := s.ByFeedItemKeys(ctx, []string{"https://x/a.torrent", "https://x/missing.torrent"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one match, got %+v", got)
+	}
+	m, ok := got["https://x/a.torrent"]
+	if !ok || m.EntityTitle != "Scene A" || m.EntityStudio != "Studio A" || m.EntityImage != "https://cdn/a.jpg" {
+		t.Errorf("unexpected match for key a: %+v", got)
+	}
+	if _, ok := got["https://x/missing.torrent"]; ok {
+		t.Errorf("absent key must not appear in the result map: %+v", got)
+	}
+
+	// Empty input is a no-op, non-nil map (mirrors SeenGUIDs' empty-input contract).
+	empty, err := s.ByFeedItemKeys(ctx, nil)
+	if err != nil {
+		t.Fatalf("unexpected error on empty input: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected empty map for empty keys, got %+v", empty)
+	}
+}
+
 func TestInsert_DuplicateEntityIsIgnoredNotUpdated(t *testing.T) {
 	s := newTestReleaseStore(t)
 	ctx := context.Background()

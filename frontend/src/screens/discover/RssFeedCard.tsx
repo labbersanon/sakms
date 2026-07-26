@@ -1,5 +1,5 @@
 // RssFeedCard — one item from an admin-added raw RSS feed row (NZBGeek
-// saved-search style). A plain text-forward card (title, pubDate, size, feed
+// saved-search style). Text-forward by default (title, pubDate, size, feed
 // name) with a single one-click Grab button — mirrors AdultCard's existing
 // quick-grab button's request/response/"Grabbed" state handling (shared.tsx's
 // GrabDialog.pickManual), but with NO DetailPopup integration: an RSS item is
@@ -9,11 +9,23 @@
 // the existing /search/grab endpoint unchanged (see internal/grabs +
 // internal/api/search.go's dispatchToDownloadClient — protocol-agnostic, no
 // new grab machinery needed for this feature).
+//
+// An Adult feed item can now additionally carry the identify pipeline's resolved
+// poster/title/studio (resolvedImage/resolvedTitle/resolvedStudio, joined onto
+// the live feed item server-side — see rss_feeds.go's resolve handler): when
+// present the card renders an AdultCard-style poster (proxied image, resolved
+// title + studio) instead of the plain text tile. It falls back to the plain
+// text-forward form for an unmatched Adult item and for every Movies/Series
+// item (which never carry resolved fields). The Grab always uses the RAW feed
+// title + downloadUrl the release actually needs — the resolved fields are
+// display-only.
 
 import { type Component, Show, createSignal } from "solid-js";
 import type { RssFeedItem } from "@dto";
 import { libraryRootFolder, manualGrab } from "../../api/grab";
+import { proxyImage } from "../../api/discover";
 import { Button, ErrorText } from "../../components/ui";
+import { TextPoster } from "./shared";
 
 // formatSize renders a byte count as a short human-readable size — "" when
 // absent (SizeBytes is 0/omitted for a malformed/no-enclosure item).
@@ -39,6 +51,17 @@ export const RssFeedCard: Component<{
 
   const meta = () =>
     [props.item.indexer, formatSize(props.item.sizeBytes), props.item.pubDate]
+      .filter(Boolean)
+      .join(" · ");
+
+  // resolved is true once the server joined this (Adult) feed item onto the
+  // identify pipeline's pool — it then carries a poster and/or a cleaned title.
+  const resolved = () =>
+    Boolean(props.item.resolvedImage || props.item.resolvedTitle);
+  const posterSrc = () => proxyImage(props.item.resolvedImage ?? "");
+  const displayTitle = () => props.item.resolvedTitle || props.item.title;
+  const resolvedMeta = () =>
+    [props.item.resolvedStudio, formatSize(props.item.sizeBytes), props.item.pubDate]
       .filter(Boolean)
       .join(" · ");
 
@@ -69,14 +92,39 @@ export const RssFeedCard: Component<{
 
   return (
     <div class="w-[220px] shrink-0">
-      <div class="flex h-24 flex-col justify-between rounded-lg border border-border bg-surface p-2">
-        <div class="line-clamp-3 text-sm text-fg" title={props.item.title}>
-          {props.item.title}
+      <Show
+        when={resolved()}
+        fallback={
+          <div class="flex h-24 flex-col justify-between rounded-lg border border-border bg-surface p-2">
+            <div class="line-clamp-3 text-sm text-fg" title={props.item.title}>
+              {props.item.title}
+            </div>
+            <div class="truncate text-xs text-muted" title={meta()}>
+              {meta() || "—"}
+            </div>
+          </div>
+        }
+      >
+        <div class="aspect-video overflow-hidden rounded-lg border border-border bg-surface">
+          <Show
+            when={posterSrc()}
+            fallback={<TextPoster label={displayTitle()} />}
+          >
+            <img
+              src={posterSrc()}
+              alt={displayTitle()}
+              loading="lazy"
+              class="h-full w-full object-cover"
+            />
+          </Show>
         </div>
-        <div class="truncate text-xs text-muted" title={meta()}>
-          {meta() || "—"}
+        <div class="mt-1.5 truncate text-sm text-fg" title={displayTitle()}>
+          {displayTitle()}
         </div>
-      </div>
+        <div class="truncate text-xs text-muted" title={resolvedMeta()}>
+          {resolvedMeta() || "—"}
+        </div>
+      </Show>
       <div class="mt-1.5">
         <Show
           when={!grabbed()}

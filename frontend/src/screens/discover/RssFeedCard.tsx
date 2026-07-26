@@ -15,10 +15,14 @@
 // the live feed item server-side — see rss_feeds.go's resolve handler): when
 // present the card renders an AdultCard-style poster (proxied image, resolved
 // title + studio) instead of the plain text tile. It falls back to the plain
-// text-forward form for an unmatched Adult item and for every Movies/Series
-// item (which never carry resolved fields). The Grab always uses the RAW feed
-// title + downloadUrl the release actually needs — the resolved fields are
-// display-only.
+// text-forward form for every Movies/Series item (which never carry resolved
+// fields) and for any Adult item that arrives without resolved fields. Note the
+// resolve handler now filters unmatched Adult items out server-side, so on the
+// normal path an Adult item always arrives resolved — the fallback stays load-
+// bearing for Movies/Series always, and for Adult only in the best-effort case
+// where a pool-lookup error made the server return raw items un-enriched. The
+// Grab always uses the RAW feed title + downloadUrl the release actually needs —
+// the resolved fields are display-only.
 
 import { type Component, Show, createSignal } from "solid-js";
 import type { RssFeedItem } from "@dto";

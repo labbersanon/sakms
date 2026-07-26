@@ -252,8 +252,9 @@ func matchedPoolRow() adultnewest.MatchedRelease {
 
 // TestResolveRssFeedHandler_AdultEnrichesFromPool proves an Adult feed item whose
 // enclosure key matches a pooled matched-entity gets the resolved
-// title/studio/image populated, while an item with no pool match keeps them empty
-// (raw-feed fallback), exactly as before enrichment existed.
+// title/studio/image populated, AND that an item with no pool match is filtered
+// out of the response entirely (not returned unenriched) — the resolved Adult
+// feed row surfaces only identified releases.
 func TestResolveRssFeedHandler_AdultEnrichesFromPool(t *testing.T) {
 	fakeFeed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/rss+xml")
@@ -286,8 +287,10 @@ func TestResolveRssFeedHandler_AdultEnrichesFromPool(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
-	if len(items) != 2 {
-		t.Fatalf("expected 2 items, got %+v", items)
+	// Only the matched item survives: the unmatched item is dropped, not returned
+	// unenriched.
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item (unmatched dropped), got %+v", items)
 	}
 
 	// Matched item: resolved fields populated; the RAW release title (used by the
@@ -300,9 +303,12 @@ func TestResolveRssFeedHandler_AdultEnrichesFromPool(t *testing.T) {
 		t.Errorf("enrichment must not alter the raw grab fields, got %+v", items[0])
 	}
 
-	// Unmatched item: no resolved fields, raw fallback exactly as before.
-	if items[1].ResolvedTitle != "" || items[1].ResolvedStudio != "" || items[1].ResolvedImage != "" {
-		t.Errorf("expected unmatched item to keep empty resolved fields, got %+v", items[1])
+	// The unmatched release must be absent from the response entirely — asserted by
+	// identity, not merely by the count above, so this pins the new filter behavior.
+	for _, it := range items {
+		if it.Title == "Unmatched.Release.2026.XXX" || it.DownloadURL == "https://example.com/details/2" {
+			t.Errorf("unmatched Adult item must be filtered out of the response, but found %+v", it)
+		}
 	}
 }
 

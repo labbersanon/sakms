@@ -204,14 +204,17 @@ func findRssFeed(ctx context.Context, store *rssfeeds.Store, id int) (*rssfeeds.
 // For an Adult-targeted feed only, each item is additionally joined against the
 // Adult identify pipeline's matched-entity pool (adult_newest_releases) by its
 // enclosure key — the same feed_item_key adultnewest.feedItemKey() derives, which
-// for every non-degenerate item equals the DownloadURL computed here — and, when
-// a match exists, the item is enriched with that pipeline's resolved
-// poster/title/studio (ResolvedTitle/ResolvedStudio/ResolvedImage). An item with
-// no pool match, and every item of a Movies/Series feed (no pool to join
-// against — the lookup is skipped entirely), keeps the raw feed title and no
-// resolved fields, exactly as before. The pool join is best-effort: a lookup
-// error is logged and the un-enriched items are still returned, never failing
-// the whole feed view.
+// for every non-degenerate item equals the DownloadURL computed here — and the
+// response is filtered down to only the items that matched, each enriched with
+// that pipeline's resolved poster/title/studio (ResolvedTitle/ResolvedStudio/
+// ResolvedImage). An Adult item with no pool match is dropped from the response
+// entirely (not returned unenriched): an unidentified raw release is noise in the
+// resolved feed row, so it never reaches the client. A Movies/Series feed has no
+// pool to join against (the lookup is skipped entirely) and returns every raw item
+// unfiltered, with no resolved fields. The pool join is best-effort: a lookup
+// error is logged and the raw items are returned unfiltered and un-enriched
+// (rather than blanking the whole feed row over a transient pool hiccup), never
+// failing the whole feed view.
 func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store, releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -274,18 +277,28 @@ func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store, relea
 		if adult {
 			matches, err := releaseStore.ByFeedItemKeys(ctx, keys)
 			if err != nil {
-				// Best-effort enrichment: the raw feed still resolves without the
-				// resolved poster/title/studio, so log and fall through rather than
-				// failing the whole feed view over a pool-join hiccup.
+				// Best-effort enrichment: a transient pool-join hiccup shouldn't
+				// blank the whole feed row, so log and return the raw items
+				// unfiltered rather than dropping everything as "unmatched".
 				log.Printf("enriching rss feed %d against adult pool: %v", id, err)
 			} else {
+				// Adult feeds surface only pool-matched items: an item with no
+				// resolved entity is dropped entirely (not returned unenriched),
+				// so the resolved row never shows unidentified raw releases.
+				// Standard in-place filter — filtered[j] is only ever written from
+				// out[i] with j <= i, so reusing out's backing array is safe.
+				filtered := out[:0]
 				for i := range out {
-					if m, ok := matches[out[i].DownloadURL]; ok {
-						out[i].ResolvedTitle = m.EntityTitle
-						out[i].ResolvedStudio = m.EntityStudio
-						out[i].ResolvedImage = m.EntityImage
+					m, ok := matches[out[i].DownloadURL]
+					if !ok {
+						continue
 					}
+					out[i].ResolvedTitle = m.EntityTitle
+					out[i].ResolvedStudio = m.EntityStudio
+					out[i].ResolvedImage = m.EntityImage
+					filtered = append(filtered, out[i])
 				}
+				out = filtered
 			}
 		}
 

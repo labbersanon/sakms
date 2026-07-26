@@ -489,17 +489,19 @@ const maxImageBackfillConcurrency = 5
 
 // backfillMissingImages fills in Image for any performer whose list-endpoint
 // entry came back empty, by calling GetPerformerByID for just that performer.
-// Live-verified against this deployment's real data (2026-07-26): even after
-// toPerformer() was fixed to prefer a performer's "posters" array, the exact
-// same performers stayed empty on GET /performers (the list endpoint) — both
-// endpoints advertise the same PerformerResource schema, but this deployment's
-// list responses leave posters/image/thumbnail/face all empty for a real
-// share of performers. This backfill's working hypothesis is that the
-// per-entity GET /performers/{id} detail endpoint hydrates fields the list
-// endpoint doesn't (a known Laravel-API-Resource pattern); a post-deploy live
-// check found the same performers still empty even after this backfill too —
-// see BrowsePerformers' doc comment for the conclusion that landed on
-// (genuine upstream no-art-on-file for those specific entries).
+// Live-verified against this deployment's real data (2026-07-26) in three
+// steps: (1) toPerformer() alone, preferring "posters", left the same
+// performers empty as before — the list endpoint's own posters/image/
+// thumbnail/face are all empty for a real share of performers; (2) this
+// backfill's working hypothesis was that the per-entity GET /performers/{id}
+// detail endpoint hydrates what the list endpoint doesn't (a known
+// Laravel-API-Resource pattern); (3) a post-deploy check found the same
+// performers still empty even through the detail endpoint. Conclusion:
+// genuine upstream no-art-on-file for those specific entries (several of
+// which are tag-style junk names, not real performers) — not a remaining
+// code bug. This backfill is still worth keeping because it fixes every
+// performer where TPDB *does* have posters-only or detail-only data, which a
+// live sample showed is a real, separate case from the no-art-anywhere one.
 //
 // Deliberately NOT called from getPerformers/SearchPerformers: SearchPerformers
 // is used by internal/identify's entity-verification pipeline
@@ -514,14 +516,15 @@ const maxImageBackfillConcurrency = 5
 // Best-effort and bounded: a failed or slow detail fetch for one performer
 // never fails the whole browse (its Image just stays empty, same
 // degrade-gracefully contract Performer.Image already documents), and only
-// entries with an empty Image are fetched at all — a page that's already
-// fully populated from the list response costs zero extra requests. Worst
-// case (every entry on a full page needs backfill) is bounded by
-// maxImageBackfillConcurrency and this client's outboundTimeout
+// entries with an empty Image are fetched at all — a fully-populated page
+// costs zero extra requests. Worst case (every entry needs backfill) is
+// bounded by maxImageBackfillConcurrency and this client's outboundTimeout
 // (cmd/sakms/main.go): ceil(perPage/maxImageBackfillConcurrency) sequential
-// waves, e.g. up to ~3 timeout-length waves added to one page load if TPDB is
-// unresponsive for every gap — an accepted latency/completeness tradeoff for
-// a browse row, not a hard bound on wall-clock time.
+// waves — at this package's defaultBrowsePerPage (20) and
+// maxImageBackfillConcurrency (5), up to ~4 timeout-length waves added to one
+// page load if TPDB is unresponsive for every gap. An accepted
+// latency/completeness tradeoff for a browse row, not a hard bound on
+// wall-clock time.
 func (c *Client) backfillMissingImages(ctx context.Context, performers []Performer) {
 	sem := make(chan struct{}, maxImageBackfillConcurrency)
 	var wg sync.WaitGroup

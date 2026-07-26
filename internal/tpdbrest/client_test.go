@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -230,6 +232,138 @@ func TestBrowsePerformers_FallsBackWhenPostersEmpty(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].Image != "http://cdn/image.jpg" {
 		t.Fatalf("expected Image to fall back to flat image field, got %+v", out)
+	}
+}
+
+// TestBrowsePerformers_BackfillsFromDetailEndpoint guards the fallback added
+// after live testing showed the "posters" fix (above) didn't change anything
+// for performers whose list-endpoint entry is empty across every image
+// field: GET /performers/{id} is called for exactly the empty ones, and its
+// result backfills Image.
+func TestBrowsePerformers_BackfillsFromDetailEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/performers":
+			_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Liv M"}]}`))
+		case "/performers/p1":
+			_, _ = w.Write([]byte(`{"data":{"_id":"p1","name":"Liv M","posters":[{"id":1,"url":"https://cdn.theporndb.net/performer/detail-only.jpg"}]}}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Image != "https://cdn.theporndb.net/performer/detail-only.jpg" {
+		t.Fatalf("expected Image backfilled from detail endpoint, got %+v", out)
+	}
+}
+
+// TestBrowsePerformers_BackfillSkipsAlreadyPopulated guards the cost side of
+// the backfill: a performer whose list entry already has an image must never
+// trigger a detail fetch, so a fully-populated page costs zero extra
+// requests.
+func TestBrowsePerformers_BackfillSkipsAlreadyPopulated(t *testing.T) {
+	var detailCalls int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/performers" {
+			atomic.AddInt64(&detailCalls, 1)
+			_, _ = w.Write([]byte(`{"data":{"_id":"p1","name":"x"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Danna Blacke","image":"https://cdn.theporndb.net/performer/already-there.jpg"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Image != "https://cdn.theporndb.net/performer/already-there.jpg" {
+		t.Fatalf("got %+v", out)
+	}
+	if atomic.LoadInt64(&detailCalls) != 0 {
+		t.Errorf("expected zero detail-endpoint calls for an already-populated performer, got %d", detailCalls)
+	}
+}
+
+// TestBrowsePerformers_BackfillToleratesDetailError guards the best-effort
+// contract: a failing detail fetch must never fail the whole browse, and
+// other performers on the same page must still resolve normally.
+func TestBrowsePerformers_BackfillToleratesDetailError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/performers" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"_id":"broken","name":"No Art Anywhere"},{"_id":"p2","name":"Already Fine","image":"https://cdn.theporndb.net/performer/fine.jpg"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("a failing detail backfill must not fail the browse: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("got %+v", out)
+	}
+	if out[0].Image != "" {
+		t.Errorf("expected the unbackfillable performer to keep an empty Image, got %q", out[0].Image)
+	}
+	if out[1].Image != "https://cdn.theporndb.net/performer/fine.jpg" {
+		t.Errorf("expected the already-populated sibling to be unaffected, got %q", out[1].Image)
+	}
+}
+
+// TestBrowsePerformers_BackfillIsBounded guards
+// maxImageBackfillConcurrency: a page where every performer needs a backfill
+// must never exceed that many detail requests in flight at once.
+func TestBrowsePerformers_BackfillIsBounded(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, maxInFlight := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/performers" {
+			data := `{"data":[`
+			for i := 0; i < 20; i++ {
+				if i > 0 {
+					data += ","
+				}
+				data += `{"_id":"p` + string(rune('a'+i)) + `","name":"x"}`
+			}
+			data += `]}`
+			_, _ = w.Write([]byte(data))
+			return
+		}
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":{"_id":"x","name":"x"}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	if _, err := c.BrowsePerformers(context.Background(), 1, 20); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if maxInFlight > maxImageBackfillConcurrency {
+		t.Errorf("expected at most %d concurrent detail requests, saw %d", maxImageBackfillConcurrency, maxInFlight)
 	}
 }
 
@@ -686,7 +820,9 @@ func TestSearchPerformers_ParsesResponse(t *testing.T) {
 			t.Errorf("expected q=riley reid, got %q", r.URL.Query().Get("q"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Riley Reid"}]}`))
+		// image populated so no image-backfill request fires here — that path
+		// is covered separately by the TestBrowsePerformers_Backfill* tests.
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Riley Reid","image":"https://cdn.theporndb.net/performer/riley.jpg"}]}`))
 	}))
 	defer srv.Close()
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 
 	"github.com/labbersanon/sakms/internal/httpx"
 )
@@ -461,6 +462,70 @@ type performersResponse struct {
 	Data []rawPerformer `json:"data"`
 }
 
+// performerResponse is TPDB's single-entity envelope — GetPerformerByID's
+// response shape, distinct from performersResponse's array envelope above.
+type performerResponse struct {
+	Data rawPerformer `json:"data"`
+}
+
+// GetPerformerByID fetches one performer via TPDB's dedicated
+// GET /performers/{identifier} endpoint (confirmed in the live OpenAPI path
+// list). Used by backfillMissingImages below to recover an image the list
+// endpoint omitted — see that function's doc comment for why the list
+// endpoint alone isn't always sufficient.
+func (c *Client) GetPerformerByID(ctx context.Context, id string) (Performer, error) {
+	var pr performerResponse
+	if err := c.doGet(ctx, "/performers/"+url.PathEscape(id), url.Values{}, &pr); err != nil {
+		return Performer{}, err
+	}
+	return pr.Data.toPerformer(), nil
+}
+
+// maxImageBackfillConcurrency bounds how many detail-fetch calls
+// backfillMissingImages fires at once, so a browse/search page full of
+// list-endpoint image gaps never bursts an unbounded number of concurrent
+// upstream requests.
+const maxImageBackfillConcurrency = 5
+
+// backfillMissingImages fills in Image for any performer whose list-endpoint
+// entry came back empty, by calling GetPerformerByID for just that performer.
+// Live-verified against this deployment's real data (2026-07-26): even after
+// toPerformer() was fixed to prefer a performer's "posters" array, the exact
+// same performers stayed empty on GET /performers (the list endpoint) — both
+// endpoints advertise the same PerformerResource schema, but this deployment's
+// list responses leave posters/image/thumbnail/face all empty for a real
+// share of performers. This backfill's working hypothesis is that the
+// per-entity GET /performers/{id} detail endpoint hydrates fields the list
+// endpoint doesn't (a known Laravel-API-Resource pattern); see this fix's
+// post-deploy live check for whether that hypothesis held.
+//
+// Best-effort and bounded: a failed or slow detail fetch for one performer
+// never fails the whole browse/search (its Image just stays empty, same
+// degrade-gracefully contract Performer.Image already documents), and only
+// entries with an empty Image are fetched at all — a page that's already
+// fully populated from the list response costs zero extra requests.
+func (c *Client) backfillMissingImages(ctx context.Context, performers []Performer) {
+	sem := make(chan struct{}, maxImageBackfillConcurrency)
+	var wg sync.WaitGroup
+	for i := range performers {
+		if performers[i].Image != "" || performers[i].ID == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			detail, err := c.GetPerformerByID(ctx, performers[i].ID)
+			if err != nil {
+				return
+			}
+			performers[i].Image = detail.Image
+		}(i)
+	}
+	wg.Wait()
+}
+
 func (c *Client) getPerformers(ctx context.Context, params url.Values) ([]Performer, error) {
 	var pr performersResponse
 	if err := c.doGet(ctx, "/performers", params, &pr); err != nil {
@@ -470,6 +535,7 @@ func (c *Client) getPerformers(ctx context.Context, params url.Values) ([]Perfor
 	for i, rp := range pr.Data {
 		out[i] = rp.toPerformer()
 	}
+	c.backfillMissingImages(ctx, out)
 	return out, nil
 }
 

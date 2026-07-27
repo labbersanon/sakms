@@ -996,6 +996,42 @@ surface) shipped 2026-07-19 — see "Recently shipped" below.
 
 ### System dashboard — shipped 2026-07-17, see "Recently shipped" below.
 
+### Discovery & requests UX (single-operator scope)
+Identified 2026-07-24 comparing sakms against an external concept doc for a
+hypothetical multi-user "unified media platform" (working name "OmniMedia")
+that assumed Overseerr/Jellyseerr-style multi-user requests, per-user quotas,
+and role-based auto-approval. **Scoped down, not adopted wholesale** —
+CLAUDE.md's single-operator, no-permissions-surface decision stands; nothing
+below introduces per-user roles, quotas, or a second user. See "Dropped from
+scope" for the multi-user piece that was explicitly rejected. What's still
+worth building, staying single-operator:
+- **Bulk/multi-select request-and-grab** — not yet started. Today Discover
+  approves and grabs one title/season at a time; select several titles (or
+  several seasons of one show) and request+grab them in a single action,
+  same "same-screen multi-select" shape as the existing Rename/Dedup/Purge
+  bulk-apply feature (`apply-batch`), not a queue-wide "grab everything."
+- **Request-status view** — not yet started. A single screen surfacing
+  Requested/Downloading/In Library/Missing across the library, instead of
+  only per-card badges inside Discover — closer to a "worklist" than a new
+  approval concept, since there's still only one operator approving anything.
+
+### Storage & health analytics
+Identified 2026-07-24 during the same OmniMedia comparison above. Extends
+the existing System dashboard (`internal/sysinfo`, shipped 2026-07-17)
+rather than replacing it.
+- **Storage allocation breakdown by media type and quality tier** — not yet
+  started. Per-user breakdown from the source concept doesn't apply
+  (single-operator); what's relevant is showing how `/data` usage splits
+  across Movies/Series/Adult and quality tier, using data already tracked in
+  `internal/library`/`internal/quality`, no new collection needed.
+- **Propose-only pruning rules** — not yet started. Rules that flag
+  low-priority or stale media (age, size, quality-tier floor) as prune
+  *candidates* and stage them in the existing Purge review queue for a human
+  Apply — explicitly NOT auto-delete, same staged-for-approval invariant
+  every other workflow follows. If built, likely wired through the existing
+  `internal/scanschedule` Scan-only scheduler (see CLAUDE.md's Automation
+  section) to periodically populate candidates rather than a new scheduler.
+
 ### Dropped from scope
 - **Token/regex-based custom renaming engine** — considered, then
   explicitly dropped (2026-07-10): would have reopened `internal/naming`'s
@@ -1015,6 +1051,13 @@ surface) shipped 2026-07-19 — see "Recently shipped" below.
   single-operator tool with far less surface.
 - **GraphQL API** — dropped; the existing REST surface has no problem a
   GraphQL rewrite would actually solve.
+- **Multi-user request workflows / RBAC / per-user quotas** — considered
+  2026-07-24 (comparing sakms against an external "OmniMedia" concept doc
+  that assumed Overseerr/Jellyseerr-style multi-user requests) and rejected:
+  directly contradicts CLAUDE.md's settled single-operator, no-permissions-
+  surface decision, restated multiple times in that file. Not planned; see
+  "Discovery & requests UX" above for the single-operator-scoped version of
+  what's actually worth building from that comparison.
 
 ---
 

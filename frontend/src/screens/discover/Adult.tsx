@@ -10,17 +10,22 @@
 // id hits its own catalog, never TPDB's (see EntityCard/AdultDrill).
 // Extracted from the original single-file Discover.tsx.
 //
-// Row order (Optional RSS Discover rows + inline row editor): the browse
-// row block is driven by a merged, operator-reorderable key list (see
-// api/rowOrder.ts's mergeRowOrder). Two row classes: Studios/Performers/
-// stash-box rows are STRUCTURAL (drag-reorder + a Show/Hide toggle, no Delete —
-// they have no deletable backing entity); admin-added newest rows and RSS feed
-// rows (target=adult) are ENTITY rows (drag-reorder + enable-toggle + Delete
-// inline, backed by their own CRUD APIs). Only applies to the plain browse
-// view — search results and a Studio/Performer drill-down are unaffected.
-// editMode (from Discover/index.tsx's tab-bar Edit toggle) swaps the row list
-// for RowEditor's UI; the "+ Add RSS feed" tile at the bottom is always visible
-// regardless of edit mode.
+// Row order (inline row editor): the browse row block is driven by a merged,
+// operator-reorderable key list (see api/rowOrder.ts's mergeRowOrder). Two row
+// classes: Studios/Performers/stash-box rows are STRUCTURAL (drag-reorder + a
+// Show/Hide toggle, no Delete — they have no deletable backing entity);
+// admin-added newest rows (target=adult) are ENTITY rows (drag-reorder +
+// enable-toggle + Delete inline, backed by their own CRUD APIs). Only applies
+// to the plain browse view — search results and a Studio/Performer drill-down
+// are unaffected. editMode (from Discover/index.tsx's tab-bar Edit toggle)
+// swaps the row list for RowEditor's UI.
+//
+// RSS feeds (target=adult) are NOT part of this row-order/editor system: their
+// admin (add/edit/enable/delete/reorder) lives in Settings → UI → Discover →
+// Adult, and each enabled feed's RssFeedRow renders here on an independent
+// path, after all structural rows, ordered by the feed's own sort_order — fully
+// decoupled from the row-order store so editing the structural order can never
+// relocate a feed row.
 
 import {
   type Component,
@@ -75,15 +80,9 @@ import {
 } from "./shared";
 import { useSelection } from "./selection";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
-import {
-  type RssFeed,
-  deleteRssFeed,
-  fetchRssFeeds,
-  updateRssFeed,
-} from "../../api/rssFeeds";
+import { type RssFeed, fetchRssFeeds } from "../../api/rssFeeds";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
-import { AddRssFeedModal } from "./AddRssFeedModal";
 import { useRowOrder } from "./useRowOrder";
 
 // sourceLabel maps a non-TPDB AdultDiscoverItem.source to its display label —
@@ -362,7 +361,7 @@ const STASH_BOX_ROWS: {
 // STASH_BOX_ORDERABLE_ROWS flattens STASH_BOX_ROWS into individual rows, each
 // with its own stable Discover row-order key ("stashbox:{box}:{kind}") — the
 // row-order feature interleaves these individually with newest
-// rows/Studios/Performers/RSS feed rows, not as one per-box block.
+// rows/Studios/Performers, not as one per-box block.
 type StashBoxOrderableRow = {
   key: string;
   box: StashBox;
@@ -551,9 +550,11 @@ export const AdultDiscover: Component<{
   const configureFor = () => notConfiguredService(setupError());
 
   // --- Discover row order: Studios/Performers/stash-box rows (structural:
-  // reorderable + Show/Hide) + admin-added newest rows and RSS feed rows
-  // (entity: reorderable + enable-toggle + Delete), fully interleavable via
-  // Edit mode (RowEditor). Only applies to the plain browse view. ---
+  // reorderable + Show/Hide) + admin-added newest rows (entity: reorderable +
+  // enable-toggle + Delete), fully interleavable via Edit mode (RowEditor).
+  // Only applies to the plain browse view. RSS feeds are intentionally excluded
+  // from this system — see the file header and the independent feed-render path
+  // in the browse block below. ---
   const [feedsData] = createResource(reloadToken, () =>
     fetchRssFeeds().catch(() => [] as RssFeed[]),
   );
@@ -566,19 +567,22 @@ export const AdultDiscover: Component<{
   // knownKeys is every row this screen currently knows about. Default order
   // (an empty stored order, e.g. a fresh install) matches the page's
   // original hardcoded row sequence exactly: newest rows, Studios,
-  // Performers, then any configured stash-box rows, then RSS feeds.
+  // Performers, then any configured stash-box rows. RSS feeds are deliberately
+  // NOT included — they are decoupled from the row-order store entirely and
+  // render on their own sort_order-ordered path after all structural rows (so
+  // reordering structural rows can never silently relocate a feed row to the
+  // tail via mergeRowOrder's unknown-key append).
   const knownKeys = () => [
     ...allNewestRows().map((r) => `newestrow:${r.id}`),
     "studios",
     "performers",
     ...stashBoxKnownRows().map((r) => r.key),
-    ...adultFeeds().map((f) => `rssfeed:${f.id}`),
   ];
 
   const { orderedKeys, persistOrder, isHidden, toggleHidden, error: rowOrderError } =
     useRowOrder("adult", knownKeys);
-  // rowActionError covers a toggle/delete's own mutation failure
-  // (updateRssFeed/deleteRssFeed) — a distinct failure mode from
+  // rowActionError covers a newest-row toggle/delete's own mutation failure
+  // (updateAdultNewestRow/deleteAdultNewestRow) — a distinct failure mode from
   // useRowOrder's error (a saveRowOrder persist failure) but shown in the
   // same spot; editError combines them so RowEditor's error line doesn't
   // need two <Show> blocks.
@@ -605,11 +609,6 @@ export const AdultDiscover: Component<{
         ? { key, label: row.label, kind: "structural", hidden: isHidden(key) }
         : undefined;
     }
-    if (key.startsWith("rssfeed:")) {
-      const id = Number(key.slice("rssfeed:".length));
-      const f = adultFeeds().find((f) => f.id === id);
-      return f ? { key, label: f.title, kind: "entity", enabled: f.enabled } : undefined;
-    }
     return undefined;
   };
 
@@ -633,19 +632,6 @@ export const AdultDiscover: Component<{
           genreFilter: nr.genreFilter,
           enabled: !nr.enabled,
         });
-      } else if (row.key.startsWith("rssfeed:")) {
-        const f = adultFeeds().find((f) => `rssfeed:${f.id}` === row.key);
-        if (!f) return;
-        await updateRssFeed(f.id, {
-          title: f.title,
-          // feedUrl is masked on read (f.feedUrl is "" now, not the real URL) —
-          // send null to PRESERVE the stored encrypted URL. Re-sending f.feedUrl
-          // would post "" and the backend rejects it as ErrFeedURLRequired.
-          feedUrl: null,
-          target: f.target,
-          protocol: f.protocol,
-          enabled: !f.enabled,
-        });
       } else {
         return;
       }
@@ -656,16 +642,10 @@ export const AdultDiscover: Component<{
   };
 
   const deleteRow = async (row: RowDescriptor) => {
-    const isNewest = row.key.startsWith("newestrow:");
-    const isFeed = row.key.startsWith("rssfeed:");
-    if (!isNewest && !isFeed) return;
+    if (!row.key.startsWith("newestrow:")) return;
     if (!confirm(`Delete "${row.label}"?`)) return;
     try {
-      if (isNewest) {
-        await deleteAdultNewestRow(Number(row.key.slice("newestrow:".length)));
-      } else {
-        await deleteRssFeed(Number(row.key.slice("rssfeed:".length)));
-      }
+      await deleteAdultNewestRow(Number(row.key.slice("newestrow:".length)));
       persistOrder(orderedKeys().filter((k) => k !== row.key));
       setReloadToken((n) => n + 1);
     } catch (e) {
@@ -675,9 +655,6 @@ export const AdultDiscover: Component<{
 
   const visibleKeys = () =>
     orderedKeys().filter((key) => {
-      if (key.startsWith("rssfeed:")) {
-        return enabledAdultFeeds().some((f) => `rssfeed:${f.id}` === key);
-      }
       if (key.startsWith("newestrow:")) {
         return enabledNewestRows().some((r) => `newestrow:${r.id}` === key);
       }
@@ -827,11 +804,12 @@ export const AdultDiscover: Component<{
         </PaginatedStrip>
       );
     }
-    const feed = enabledAdultFeeds().find((f) => `rssfeed:${f.id}` === key)!;
-    return <RssFeedRow feed={feed} reloadToken={reloadToken} onError={setSetupError} />;
+    // RSS feeds render on their own independent path (see the browse block),
+    // never through renderRow — visibleKeys no longer yields rssfeed: keys.
+    // This terminal return only satisfies renderRow's return-on-every-path
+    // contract for keys that resolve to nothing live.
+    return null;
   };
-
-  const [addFeedOpen, setAddFeedOpen] = createSignal(false);
 
   return (
     <div>
@@ -903,22 +881,21 @@ export const AdultDiscover: Component<{
                   </Show>
                 </Show>
                 <For each={visibleKeys()}>{(key) => renderRow(key)}</For>
-                <div class="mt-6 flex justify-center">
-                  <Button onClick={() => setAddFeedOpen(true)}>
-                    + Add RSS feed
-                  </Button>
-                </div>
-                <Show when={addFeedOpen()}>
-                  <AddRssFeedModal
-                    allowedTargets={["adult"]}
-                    defaultTarget="adult"
-                    onClose={() => setAddFeedOpen(false)}
-                    onSaved={() => {
-                      setAddFeedOpen(false);
-                      setReloadToken((n) => n + 1);
-                    }}
-                  />
-                </Show>
+                {/* RSS feed rows render on an independent path, fully decoupled
+                    from the row-order store: always after all structural rows,
+                    ordered by each feed's own sort_order (already applied by
+                    fetchRssFeeds' backend List query, so no client-side sort).
+                    Feed admin (add/edit/enable/delete/reorder) now lives in
+                    Settings → UI → Discover → Adult. */}
+                <For each={enabledAdultFeeds()}>
+                  {(feed) => (
+                    <RssFeedRow
+                      feed={feed}
+                      reloadToken={reloadToken}
+                      onError={setSetupError}
+                    />
+                  )}
+                </For>
                   </>
                 }
               >

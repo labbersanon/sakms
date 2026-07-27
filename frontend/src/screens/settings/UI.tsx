@@ -18,6 +18,7 @@ import { type Component, createSignal, Match, Show, Switch } from "solid-js";
 import { ScreenTabBar, useAdultEnabled, type TabDef } from "../../components/ui";
 import { SliderAdminSection } from "../SliderAdmin";
 import { AdultRowAdminSection } from "../AdultRowAdmin";
+import { RssFeedAdminSection } from "./RssFeedAdmin";
 
 const DISCOVER_TABS: TabDef[] = [
   { id: "mainstream", label: "Mainstream" },
@@ -52,6 +53,7 @@ export const UISection: Component = () => {
           </Match>
           <Match when={tab() === "adult"}>
             <AdultRowAdminSection />
+            <RssFeedAdminSection />
           </Match>
         </Switch>
       </Show>

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -84,23 +85,95 @@ func listRssFeedsHandler(store *rssfeeds.Store) http.HandlerFunc {
 	}
 }
 
-// createRssFeedHandler is POST /api/discover/rss-feeds — validated by
-// rssfeeds.Store.Create (title/feed_url/target/protocol).
-func createRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
+// detectProtocolSampleSize caps how many of a feed's leading items
+// detectProtocol inspects — enough to tolerate a malformed or atypical first
+// entry (one item with no enclosure and no scheme signal) without scanning a
+// whole feed, since a well-formed feed's protocol is decided by its very first
+// real enclosure.
+const detectProtocolSampleSize = 5
+
+// enclosureTypeProtocols maps a known RSS 2.0 <enclosure type> MIME value to
+// the protocol it implies. Anything not in this map (or an absent type
+// attribute) falls back to the enclosure URL's scheme in detectProtocol.
+var enclosureTypeProtocols = map[string]rssfeeds.Protocol{
+	"application/x-bittorrent": rssfeeds.Torrent,
+	"x-scheme-handler/magnet":  rssfeeds.Torrent,
+	"application/x-nzb":        rssfeeds.Usenet,
+}
+
+// detectProtocol infers a feed's download protocol from its parsed items,
+// sampling the first detectProtocolSampleSize entries. For each sampled item it
+// checks the enclosure's MIME type against enclosureTypeProtocols first, then
+// falls back to the enclosure URL's scheme (a "magnet:" URL is decisively
+// torrent on its own). It returns confident=false when no sampled item yields a
+// determination — the expected outcome for a bare-.torrent-over-https feed with
+// no `type` attribute and no magnet scheme, where guessing (e.g. "https means
+// usenet") would reintroduce exactly the wrong-protocol bug class this
+// detection exists to eliminate. Placed in internal/api (not rssfeed/rssfeeds)
+// so it needs no new cross-package import edge — this package already imports
+// both.
+func detectProtocol(items []rssfeed.Item) (rssfeeds.Protocol, bool) {
+	for i, it := range items {
+		if i >= detectProtocolSampleSize {
+			break
+		}
+		mime := strings.ToLower(strings.TrimSpace(it.EnclosureType))
+		if p, ok := enclosureTypeProtocols[mime]; ok {
+			return p, true
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(it.EnclosureURL)), "magnet:") {
+			return rssfeeds.Torrent, true
+		}
+	}
+	return "", false
+}
+
+// writeProtocolUndetected emits the shared 422 protocol_undetected response
+// used by both the create (omitted-protocol) and rescan paths when detection is
+// inconclusive — the frontend's fallback pop-up keys on this exact body.
+func writeProtocolUndetected(w http.ResponseWriter) {
+	writeJSONStatus(w, http.StatusUnprocessableEntity, apidto.ProtocolUndetectedResponse{Error: "protocol_undetected"})
+}
+
+// createRssFeedHandler is POST /api/discover/rss-feeds. When the request
+// carries an explicit protocol (Mainstream's AddRssFeedModal, or the Adult
+// fallback pop-up's retry) it is used as-is and Store.Create is called exactly
+// as before. When protocol is nil (the Adult Add flow, which has no manual
+// protocol field), the feed is fetched and detectProtocol runs: a confident
+// result is stored; an inconclusive one returns 422 protocol_undetected for the
+// frontend's manual-pick fallback. Store.Create still validates
+// title/feed_url/target/protocol.
+func createRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req apidto.RssFeedUpsertRequest
+		ctx := r.Context()
+		var req apidto.RssFeedCreateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		// Create always needs the real URL once (there is no stored value to
-		// preserve yet). A nil/absent feedUrl is an empty create → Store.Create
-		// returns ErrFeedURLRequired, surfaced as a 400.
-		feedURL := ""
-		if req.FeedURL != nil {
-			feedURL = *req.FeedURL
+
+		var protocol rssfeeds.Protocol
+		if req.Protocol != nil {
+			protocol = rssfeeds.Protocol(*req.Protocol)
+		} else {
+			// Auto-detect: fetch the feed once and sniff its enclosures. A fetch
+			// error embeds the feed URL (which may carry an indexer API key), so
+			// log it server-side only and return a generic 502.
+			items, err := rssfeed.FetchItems(ctx, httpClient, req.FeedURL)
+			if err != nil {
+				log.Printf("detecting protocol for new rss feed %q: %v", req.Title, err)
+				http.Error(w, "could not fetch the feed — check the feed URL and try again", http.StatusBadGateway)
+				return
+			}
+			detected, confident := detectProtocol(items)
+			if !confident {
+				writeProtocolUndetected(w)
+				return
+			}
+			protocol = detected
 		}
-		f, err := store.Create(r.Context(), req.Title, feedURL, rssfeeds.Target(req.Target), rssfeeds.Protocol(req.Protocol), req.Enabled)
+
+		f, err := store.Create(ctx, req.Title, req.FeedURL, rssfeeds.Target(req.Target), protocol, req.Enabled)
 		if err != nil {
 			rssFeedStoreError(w, err)
 			return
@@ -119,7 +192,7 @@ func updateRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 			http.Error(w, "id path parameter must be an integer", http.StatusBadRequest)
 			return
 		}
-		var req apidto.RssFeedUpsertRequest
+		var req apidto.RssFeedUpdateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
@@ -189,6 +262,58 @@ func findRssFeed(ctx context.Context, store *rssfeeds.Store, id int) (*rssfeeds.
 		}
 	}
 	return nil, rssfeeds.ErrNotFound
+}
+
+// rescanRssFeedHandler is POST /api/discover/rss-feeds/{id}/rescan — re-runs
+// protocol auto-detection against an existing feed and, on a confident result,
+// overwrites only its stored protocol (title/feedURL/target/enabled/sortOrder
+// all preserved from the current row: feedURL is passed nil so Store.Update
+// keeps the encrypted URL, and sort_order is never touched by Update). An
+// inconclusive result returns the same 422 protocol_undetected shape as create,
+// so the frontend's fallback pop-up can offer a one-time manual protocol pick.
+func rescanRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "id path parameter must be an integer", http.StatusBadRequest)
+			return
+		}
+
+		f, err := findRssFeed(ctx, store, id)
+		if err != nil {
+			if errors.Is(err, rssfeeds.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+
+		items, err := rssfeed.FetchItems(ctx, httpClient, f.FeedURL)
+		if err != nil {
+			// err embeds f.FeedURL, which may carry an indexer API key — log it
+			// server-side only, never in the client-facing response.
+			log.Printf("rescanning rss feed %d: %v", id, err)
+			http.Error(w, "could not fetch the feed — check the feed URL and try again", http.StatusBadGateway)
+			return
+		}
+
+		detected, confident := detectProtocol(items)
+		if !confident {
+			writeProtocolUndetected(w)
+			return
+		}
+
+		// Preserve the full current row, changing only protocol: feedURL nil keeps
+		// the stored (encrypted) URL, sort_order is untouched by Store.Update.
+		updated, err := store.Update(ctx, id, f.Title, nil, f.Target, detected, f.Enabled)
+		if err != nil {
+			rssFeedStoreError(w, err)
+			return
+		}
+		writeJSON(w, toDTORssFeed(*updated))
+	}
 }
 
 // resolveRssFeedHandler is GET /api/discover/rss-feeds/{id}/resolve — loads

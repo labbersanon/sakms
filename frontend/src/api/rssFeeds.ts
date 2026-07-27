@@ -9,15 +9,22 @@
 
 import { api } from "./client";
 import type {
+  ProtocolUndetectedResponse,
   RssFeed,
+  RssFeedCreateRequest,
   RssFeedItem,
   RssFeedReorderRequest,
-  RssFeedUpsertRequest,
+  RssFeedUpdateRequest,
 } from "@dto";
 
-export type { RssFeed, RssFeedItem, RssFeedUpsertRequest };
+export type {
+  RssFeed,
+  RssFeedItem,
+  RssFeedCreateRequest,
+  ProtocolUndetectedResponse,
+};
 
-// RssFeedUpdateBody widens the generated RssFeedUpsertRequest's feedUrl to
+// RssFeedUpdateBody widens the generated RssFeedUpdateRequest's feedUrl to
 // `string | null`. The feed URL is now a masked secret (feed_url_encrypted;
 // toDTORssFeed always emits ""), so an update that only changes enabled/title
 // MUST send `feedUrl: null` to preserve the stored URL — the backend's
@@ -25,11 +32,33 @@ export type { RssFeed, RssFeedItem, RssFeedUpsertRequest };
 // ErrFeedURLRequired, non-empty as "replace". tygo maps Go *string to a plain
 // `string | undefined`, so it can't express the null the plan (and the
 // toDTORssFeed doc comment) call for — this widens it at the boundary. Create
-// never preserves (there's no stored value yet), so createRssFeed keeps the
-// unwidened RssFeedUpsertRequest.
-export type RssFeedUpdateBody = Omit<RssFeedUpsertRequest, "feedUrl"> & {
+// has its own RssFeedCreateRequest type (protocol optional, feedUrl a required
+// plain string), so createRssFeed doesn't use this.
+export type RssFeedUpdateBody = Omit<RssFeedUpdateRequest, "feedUrl"> & {
   feedUrl?: string | null;
 };
+
+// PROTOCOL_UNDETECTED is the fixed sentinel the backend returns (as a 422 body
+// {"error":"protocol_undetected"}) from both create (protocol omitted) and
+// rescan when a feed's enclosures don't yield a confident torrent/usenet
+// determination — see apidto.ProtocolUndetectedResponse. api() surfaces a
+// non-ok JSON body's `error` field as the thrown Error's message, so the create
+// path detects this by catching an Error with exactly this message; the rescan
+// path returns it as a union member instead (see rescanRssFeed).
+export const PROTOCOL_UNDETECTED = "protocol_undetected";
+
+// isProtocolUndetected narrows a rescanRssFeed result (or any value) to the
+// inconclusive-detection response, so a caller can branch to the manual-pick
+// fallback pop-up instead of treating it as a resolved feed.
+export function isProtocolUndetected(
+  v: unknown,
+): v is ProtocolUndetectedResponse {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    (v as ProtocolUndetectedResponse).error === PROTOCOL_UNDETECTED
+  );
+}
 
 // TARGETS mirrors internal/rssfeeds.Target's fixed enum — a feed belongs to
 // exactly one mode, no "mixed" (unlike Slider's target, which allows mixed).
@@ -48,11 +77,40 @@ export function fetchRssFeeds(): Promise<RssFeed[]> {
   return api<RssFeed[]>("/api/discover/rss-feeds");
 }
 
-export function createRssFeed(body: RssFeedUpsertRequest): Promise<RssFeed> {
+// createRssFeed posts a new feed — POST /api/discover/rss-feeds. Protocol is
+// optional on RssFeedCreateRequest: Mainstream's AddRssFeedModal and the Adult
+// fallback pop-up's retry send an explicit protocol; the Adult Add flow omits
+// it and the backend auto-detects. When detection is inconclusive the backend
+// returns 422 protocol_undetected, which api() throws as Error(PROTOCOL_UNDETECTED)
+// — the Adult Add flow catches that and opens the manual-pick pop-up.
+export function createRssFeed(body: RssFeedCreateRequest): Promise<RssFeed> {
   return api<RssFeed>("/api/discover/rss-feeds", {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+// rescanRssFeed re-runs backend protocol auto-detection against an existing
+// feed — POST /api/discover/rss-feeds/{id}/rescan. A confident result overwrites
+// the stored protocol and returns the updated feed; an inconclusive result
+// returns the ProtocolUndetectedResponse union member (converted from api()'s
+// thrown 422) so the caller can open the manual-pick pop-up instead of surfacing
+// an error. The pop-up's manual pick is then applied via updateRssFeed (a PUT
+// with the chosen protocol), NOT a second rescan — the rescan endpoint has no
+// manual-protocol input.
+export async function rescanRssFeed(
+  id: number,
+): Promise<RssFeed | ProtocolUndetectedResponse> {
+  try {
+    return await api<RssFeed>(`/api/discover/rss-feeds/${id}/rescan`, {
+      method: "POST",
+    });
+  } catch (e) {
+    if (e instanceof Error && e.message === PROTOCOL_UNDETECTED) {
+      return { error: PROTOCOL_UNDETECTED };
+    }
+    throw e;
+  }
 }
 
 export function updateRssFeed(

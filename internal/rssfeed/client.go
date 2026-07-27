@@ -29,7 +29,8 @@ type Item struct {
 	Link            string
 	PubDate         string
 	EnclosureURL    string
-	EnclosureLength int64 // bytes, 0 if absent
+	EnclosureLength int64  // bytes, 0 if absent
+	EnclosureType   string // the enclosure's MIME type attribute, "" if absent
 }
 
 // rss is the raw RSS 2.0 XML shape this package decodes — only the fields
@@ -44,6 +45,7 @@ type rss struct {
 			Enclosure struct {
 				URL    string `xml:"url,attr"`
 				Length int64  `xml:"length,attr"`
+				Type   string `xml:"type,attr"`
 			} `xml:"enclosure"`
 		} `xml:"item"`
 	} `xml:"channel"`
@@ -88,6 +90,7 @@ func FetchItems(ctx context.Context, httpClient *http.Client, feedURL string) ([
 			PubDate:         it.PubDate,
 			EnclosureURL:    it.Enclosure.URL,
 			EnclosureLength: it.Enclosure.Length,
+			EnclosureType:   it.Enclosure.Type,
 		}
 	}
 	return items, nil

@@ -1563,19 +1563,51 @@ type RssFeed struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// RssFeedUpsertRequest is the body of POST /api/discover/rss-feeds (create)
-// and PUT /api/discover/rss-feeds/{id} (update). FeedURL follows the same
-// three-state secret rule as ConnectionUpsertRequest.APIKey (nil = preserve the
-// stored URL, "" = reject as feed-url-required, non-empty = replace) — now that
-// the URL is a masked secret, a naive `feedUrl: string` would silently wipe it
-// on an untouched save. Create supplies the real URL once; an Update that
-// doesn't change the URL sends nil.
-type RssFeedUpsertRequest struct {
+// RssFeedUpdateRequest is the body of PUT /api/discover/rss-feeds/{id}
+// (update only — Create has its own RssFeedCreateRequest below). FeedURL
+// follows the same three-state secret rule as ConnectionUpsertRequest.APIKey
+// (nil = preserve the stored URL, "" = reject as feed-url-required, non-empty =
+// replace) — now that the URL is a masked secret, a naive `feedUrl: string`
+// would silently wipe it on an untouched save. Protocol is required here: an
+// update always resends the feed's current (or operator-changed) protocol,
+// which the Store validates against its fixed enum.
+type RssFeedUpdateRequest struct {
 	Title    string  `json:"title"`
 	FeedURL  *string `json:"feedUrl,omitempty"`
 	Target   string  `json:"target"`
 	Protocol string  `json:"protocol"`
 	Enabled  bool    `json:"enabled"`
+}
+
+// RssFeedCreateRequest is the body of POST /api/discover/rss-feeds (create).
+// It is RssFeedUpdateRequest with exactly two deltas, and every other field
+// (Title, Target, Enabled) is identical:
+//   - FeedURL is a required plain string, not the three-state *string of
+//     update: create has no stored URL to preserve, so there is nothing to
+//     express with a nil.
+//   - Protocol is an optional *string: nil means "auto-detect the protocol
+//     from the feed's enclosures server-side" (the Add flow with no manual
+//     protocol field); a non-nil value is used as-is (Mainstream's
+//     AddRssFeedModal, and the Adult fallback pop-up's retry after an
+//     inconclusive detection, both send an explicit protocol). Because the
+//     JSON field names match the old shared type, a present `protocol` string
+//     unmarshals into a non-nil pointer exactly as before — Mainstream's wire
+//     behavior is unchanged.
+type RssFeedCreateRequest struct {
+	Title    string  `json:"title"`
+	FeedURL  string  `json:"feedUrl"`
+	Target   string  `json:"target"`
+	Protocol *string `json:"protocol,omitempty"`
+	Enabled  bool    `json:"enabled"`
+}
+
+// ProtocolUndetectedResponse is the 422 body returned by create (with an
+// omitted protocol) and rescan when the feed's enclosures don't yield a
+// confident torrent/usenet determination. Error is always the fixed sentinel
+// "protocol_undetected", which the frontend's fallback pop-up keys on to
+// prompt the operator for a one-time manual protocol pick.
+type ProtocolUndetectedResponse struct {
+	Error string `json:"error"`
 }
 
 // RssFeedReorderRequest is POST /api/discover/rss-feeds/reorder's body — ids

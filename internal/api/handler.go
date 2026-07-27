@@ -229,10 +229,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// sliders above: a feed's items are already fully-resolved releases
 	// (a real downloadUrl+protocol in hand), not catalog titles to search for.
 	mux.HandleFunc("GET /api/discover/rss-feeds", listRssFeedsHandler(rssFeedsStore))
-	mux.HandleFunc("POST /api/discover/rss-feeds", createRssFeedHandler(rssFeedsStore))
+	mux.HandleFunc("POST /api/discover/rss-feeds", createRssFeedHandler(httpClient, rssFeedsStore))
 	mux.HandleFunc("PUT /api/discover/rss-feeds/{id}", updateRssFeedHandler(rssFeedsStore))
 	mux.HandleFunc("DELETE /api/discover/rss-feeds/{id}", deleteRssFeedHandler(rssFeedsStore))
 	mux.HandleFunc("POST /api/discover/rss-feeds/reorder", reorderRssFeedsHandler(rssFeedsStore))
+	mux.HandleFunc("POST /api/discover/rss-feeds/{id}/rescan", rescanRssFeedHandler(httpClient, rssFeedsStore))
 	mux.HandleFunc("GET /api/discover/rss-feeds/{id}/resolve", resolveRssFeedHandler(httpClient, rssFeedsStore, adultNewestReleaseStore))
 	// Discover row display order — a best-effort hint over the FULL merged
 	// row set (built-in rows + every dynamic row type), one per screen (see

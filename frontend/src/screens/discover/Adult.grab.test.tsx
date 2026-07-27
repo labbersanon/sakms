@@ -1,5 +1,4 @@
-// AdultDiscover grab-plumbing tests for the direct-enclosure (D4/C1) feature
-// and the masked-feed-URL three-state toggle:
+// AdultDiscover grab-plumbing tests for the direct-enclosure (D4/C1) feature:
 //
 //   1. sceneTarget() must carry downloadUrl/downloadProtocol from the card when
 //      the item has them, so the single Grab (and, via the same GrabTarget, the
@@ -7,8 +6,12 @@
 //      silently falling through to a Prowlarr search. When the item has no
 //      enclosure, those keys must be ABSENT (JSON.stringify drops undefined), so
 //      the Prowlarr path runs unchanged.
-//   2. The RSS-feed enable/disable toggle must send feedUrl: null (preserve) —
-//      NOT the masked "" value f.feedUrl now holds, which the backend rejects.
+//
+// (The former masked-feed-URL enable-toggle test was removed with consensus plan
+// Step 13: RSS feed admin — including the feedUrl:null-on-toggle three-state —
+// moved off Discover into Settings → UI → Discover → Adult, so feeds no longer
+// appear in Adult's RowEditor at all. Feed decoupling is now covered by
+// Adult.rssfeed.test.tsx; the three-state save is the Settings panel's own test.)
 //
 // Renders the exported AdultDiscover directly (fewer stubs than the full
 // Discover shell). Conventions mirror Discover.test.tsx (stubFetch/Call +
@@ -170,56 +173,5 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1)", () => {
     const body = grab?.body as Record<string, unknown>;
     expect("downloadUrl" in body).toBe(false);
     expect("downloadProtocol" in body).toBe(false);
-  });
-});
-
-describe("AdultDiscover — RSS feed enable toggle three-state", () => {
-  it("sends feedUrl: null (preserve) on toggle, never the masked display value", async () => {
-    const feed = {
-      id: 9,
-      title: "Adult Feed",
-      // Masked on read, exactly as the real backend now emits it.
-      feedUrl: "",
-      target: "adult",
-      protocol: "usenet",
-      sortOrder: 0,
-      enabled: true,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-    };
-    const calls = stubFetch((url, init) => {
-      if (url.includes("/api/discover/rss-feeds/9") && init?.method === "PUT")
-        return jsonResponse({ ...feed, enabled: false });
-      if (url.includes("/api/discover/rss-feeds")) return jsonResponse([feed]);
-      return defaults(url) ?? undefined;
-    });
-
-    // editMode true → the browse rows are swapped for RowEditor, which exposes
-    // the per-feed "enabled" checkbox that drives toggleRowEnabled.
-    render(() => <AdultDiscover editMode={() => true} />);
-
-    const toggle = (await screen.findByLabelText(
-      "Adult Feed enabled",
-    )) as HTMLInputElement;
-    fireEvent.click(toggle);
-
-    await vi.waitFor(() =>
-      expect(
-        calls.some(
-          (c) =>
-            c.url.includes("/api/discover/rss-feeds/9") && c.method === "PUT",
-        ),
-      ).toBe(true),
-    );
-
-    const put = calls.find(
-      (c) => c.url.includes("/api/discover/rss-feeds/9") && c.method === "PUT",
-    );
-    const body = put?.body as Record<string, unknown>;
-    // Explicit null on the wire — discriminates the fix from both the old
-    // `feedUrl: f.feedUrl` (which posted "") bug and a plain omit.
-    expect(body.feedUrl).toBeNull();
-    expect(body.enabled).toBe(false);
-    expect(body.title).toBe("Adult Feed");
   });
 });

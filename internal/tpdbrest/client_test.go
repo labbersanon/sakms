@@ -2,8 +2,10 @@ package tpdbrest
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -414,7 +416,7 @@ func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
-	out, err := c.BrowseSites(context.Background(), 0, 0)
+	out, hasMore, err := c.BrowseSites(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -423,6 +425,39 @@ func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 	}
 	if out[0].Image != "http://cdn/logo.png" {
 		t.Errorf("expected Image to prefer logo, got %q", out[0].Image)
+	}
+	// Only 1 item ever existed (page 2 is a true empty-200) — the catalog is
+	// genuinely exhausted, not just short of this call's requested 20.
+	if hasMore {
+		t.Errorf("expected hasMore=false at the real end of a 1-item catalog, got true")
+	}
+}
+
+// TestBrowseSites_HasMoreTrueWhenFullPageCollected proves the positive case:
+// when the walk collects a full requested page, hasMore reports true (more
+// likely exists upstream) — the complement of the exhausted-catalog case
+// above and the all-junk-cap case in TestBrowseSites_CapBoundsTheWalk.
+func TestBrowseSites_HasMoreTrueWhenFullPageCollected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var items []string
+		for i := 0; i < 20; i++ {
+			items = append(items, fmt.Sprintf(`{"uuid":"s%d","name":"Studio %d"}`, i, i))
+		}
+		_, _ = w.Write([]byte(`{"data":[` + strings.Join(items, ",") + `]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, hasMore, err := c.BrowseSites(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 20 {
+		t.Fatalf("expected a full 20-item page, got %d", len(out))
+	}
+	if !hasMore {
+		t.Errorf("expected hasMore=true after collecting a full requested page, got false")
 	}
 }
 
@@ -447,7 +482,7 @@ func TestBrowseSites_DecodesUUIDNotID(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
-	out, err := c.BrowseSites(context.Background(), 1, 20)
+	out, _, err := c.BrowseSites(context.Background(), 1, 20)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -476,7 +511,7 @@ func TestBrowseSites_FiltersJunkNetworks(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
-	out, err := c.BrowseSites(context.Background(), 1, 20)
+	out, _, err := c.BrowseSites(context.Background(), 1, 20)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -520,7 +555,7 @@ func TestBrowseSites_WalksPastAllJunkPage(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
-	out, err := c.BrowseSites(context.Background(), 1, 20)
+	out, _, err := c.BrowseSites(context.Background(), 1, 20)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -555,7 +590,7 @@ func TestBrowseSites_SecondAppPageOffsetsIntoAccumulated(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
-	out, err := c.BrowseSites(context.Background(), 2, 1)
+	out, _, err := c.BrowseSites(context.Background(), 2, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -579,12 +614,18 @@ func TestBrowseSites_CapBoundsTheWalk(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
-	out, err := c.BrowseSites(context.Background(), 1, 20)
+	out, hasMore, err := c.BrowseSites(context.Background(), 1, 20)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(out) != 0 {
 		t.Fatalf("expected 0 real entries (all junk), got %+v", out)
+	}
+	// Hitting the cap is NOT "more may exist" — it's an unresolved backstop,
+	// not evidence of upstream content, so hasMore must be false here (same
+	// as the genuine-end-of-catalog case), not true.
+	if hasMore {
+		t.Errorf("expected hasMore=false when the walk stops at the cap, got true")
 	}
 	if got := atomic.LoadInt64(&requestCount); got != maxSitePagesPerRequest {
 		t.Fatalf("expected the walk to stop exactly at the %d-page cap, made %d requests", maxSitePagesPerRequest, got)
@@ -1121,7 +1162,7 @@ func TestBrowseSites_SendsNameSort(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
-	if _, err := c.BrowseSites(context.Background(), 1, 20); err != nil {
+	if _, _, err := c.BrowseSites(context.Background(), 1, 20); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

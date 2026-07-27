@@ -344,11 +344,11 @@ export interface MergedPerformerCard {
 }
 /**
  * MergedStudioCard is the studio analogue of MergedPerformerCard — one entry
- * in Adult Discover's merged Studios row (GET /api/modes/adult/studios-merged),
- * pairing a TPDB site with a StashDB studio. Every field-semantics invariant
- * documented on MergedPerformerCard applies identically here (Name/AltName/
- * NamesDiverged/Source/id relationship); see that type's doc comment as the
- * single source of truth rather than duplicating it per-field here.
+ * in Adult Discover's merged Studios row, pairing a TPDB site with a StashDB
+ * studio. Every field-semantics invariant documented on MergedPerformerCard
+ * applies identically here (Name/AltName/NamesDiverged/Source/id
+ * relationship); see that type's doc comment as the single source of truth
+ * rather than duplicating it per-field here.
  */
 export interface MergedStudioCard {
   name: string;
@@ -358,6 +358,25 @@ export interface MergedStudioCard {
   source: string;
   tpdbId?: string;
   stashdbId?: string;
+}
+/**
+ * MergedStudioPage is GET /api/modes/adult/studios-merged's actual response
+ * shape — Items plus an explicit HasMore, NOT a bare MergedStudioCard array
+ * like the Performers row's endpoint returns. This is Studios-specific:
+ * unlike Performers, the Studios row's TPDB leg passes through
+ * filterZeroSceneSites (internal/api/adultdiscover_merge.go), which can drop
+ * items from an already-fetched page — so "this page came back short" no
+ * longer reliably means "the catalog is exhausted." HasMore is computed
+ * server-side from signals BEFORE that filter ran (see
+ * adultStudiosMergedHandler), so the frontend's PaginatedStrip can trust it
+ * instead of inferring exhaustion from len(Items) < perPage the way every
+ * other Discover row does. Do NOT add this wrapper to Performers or any
+ * other row that has no post-fetch filter — a bare array + length-inference
+ * is already correct there, and wrapping it would be premature abstraction.
+ */
+export interface MergedStudioPage {
+  items: MergedStudioCard[];
+  hasMore: boolean;
 }
 /**
  * PosterResponse is GET /api/modes/{mode}/poster's response — the lazily

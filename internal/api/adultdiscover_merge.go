@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
@@ -294,6 +297,63 @@ func adultPerformersMergedHandler(httpClient *http.Client, connStore *connection
 	}
 }
 
+// filterZeroSceneSites checks every TPDB site's scene count concurrently
+// (bounded to 5 in flight, same rationale as filterByUSRelease's identical
+// pattern in discover.go) and drops entries with zero scenes attached.
+//
+// Why this exists (live-verified 2026-07-26): a user-reported check found two
+// /sites entries ("007xvision", "100% Brazil Productions") that TPDB's own
+// REST search finds, but that don't appear on TPDB's public website — neither
+// belongs to a known junk-storefront network (junkNetworkIDs in
+// internal/tpdbrest), so BrowseSites' existing filter doesn't catch them.
+// Sampling 24 non-storefront entries found the real signal: every one of 12
+// no-image entries had ZERO scenes (100%), vs 8 of 12 has-image entries with
+// real scene counts (2 to 2712) and only 4 with zero. A "studio" with no
+// scenes has nothing to show and isn't a useful Discover card, so this is a
+// direct, principled correctness signal — not a name or image heuristic.
+//
+// Scoped to ONLY the page-sized slice BrowseSites already returned for this
+// request, deliberately NOT the larger internal buffer BrowseSites may walk
+// through (see that method's doc) — an explicit, requested cost/precision
+// tradeoff: checking every walked candidate would mean up to
+// maxSitePagesPerRequest*perPage extra TPDB API calls per page load, the
+// same class of per-card fanout this app's CLAUDE.md permanently bans for
+// Discover (the "hundreds of concurrent indexer queries" incident). Checking
+// only the ~perPage items about to be displayed keeps this bounded to at
+// most perPage calls (5 at a time), at the cost of a page occasionally
+// returning fewer than perPage items even when the catalog isn't exhausted —
+// accepted, the same tradeoff class as BrowseSites' own walk cap.
+//
+// Fails OPEN on a per-item ScenesBySite error (logs and keeps the item,
+// rather than assuming zero scenes) — one transient TPDB hiccup among up to
+// perPage per-item calls must not hide a real studio.
+func filterZeroSceneSites(ctx context.Context, tpdb *tpdbrest.Client, sites []tpdbrest.Site) []tpdbrest.Site {
+	keep := make([]bool, len(sites))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
+	for i, s := range sites {
+		i, s := i, s
+		g.Go(func() error {
+			scenes, err := tpdb.ScenesBySite(gctx, s.ID, 1, 1)
+			if err != nil {
+				log.Printf("adult discover studios-merged: scene-count check failed for site %q, keeping it rather than assuming zero scenes: %v", s.ID, err)
+				keep[i] = true
+				return nil
+			}
+			keep[i] = len(scenes) > 0
+			return nil
+		})
+	}
+	_ = g.Wait() // every goroutine above always returns nil — see the fail-open note.
+	out := make([]tpdbrest.Site, 0, len(sites))
+	for i, s := range sites {
+		if keep[i] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // adultStudiosMergedHandler is adultPerformersMergedHandler's studios sibling —
 // identical concurrency, required-TPDB/optional-StashDB, no-truncation, and
 // exhaustion-coupling contract (see that handler's doc comment for the full
@@ -316,16 +376,17 @@ func adultStudiosMergedHandler(httpClient *http.Client, connStore *connections.S
 		}
 
 		var (
-			tpdbItems  []tpdbrest.Site
-			tpdbErr    error
-			stashItems []stashbox.Studio
-			stashErr   error
-			wg         sync.WaitGroup
+			tpdbItems   []tpdbrest.Site
+			tpdbHasMore bool
+			tpdbErr     error
+			stashItems  []stashbox.Studio
+			stashErr    error
+			wg          sync.WaitGroup
 		)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tpdbItems, tpdbErr = tpdb.BrowseSites(ctx, page, perPage)
+			tpdbItems, tpdbHasMore, tpdbErr = tpdb.BrowseSites(ctx, page, perPage)
 		}()
 		if hasStash {
 			wg.Add(1)
@@ -344,8 +405,23 @@ func adultStudiosMergedHandler(httpClient *http.Client, connStore *connections.S
 			log.Printf("adult discover studios-merged: stashdb query failed, degrading to tpdb-only: %v", stashErr)
 			stashItems = nil
 		}
+		tpdbItems = filterZeroSceneSites(ctx, tpdb, tpdbItems)
+		// hasMore is sourced from tpdbHasMore (computed by BrowseSites BEFORE
+		// filterZeroSceneSites ran — see that method's doc) OR'd with StashDB's
+		// own length-based signal (StashDB has no junk filter, so "a full page
+		// came back" is already a valid "more may exist" signal for that leg —
+		// both legs are fetched at the SAME clamped perPage above, which this
+		// comparison depends on). Deliberately NOT inferred from
+		// len(mergeStudios(...)) or len(tpdbItems) post-filter: either would
+		// reintroduce the exact premature-termination bug filterZeroSceneSites'
+		// own doc comment warns about — a page whose real items all happened to
+		// be zero-scene would look like "the row is exhausted" when it isn't.
+		hasMore := tpdbHasMore || len(stashItems) >= perPage
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(mergeStudios(tpdbItems, stashItems))
+		json.NewEncoder(w).Encode(apidto.MergedStudioPage{
+			Items:   mergeStudios(tpdbItems, stashItems),
+			HasMore: hasMore,
+		})
 	}
 }
 

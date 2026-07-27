@@ -902,7 +902,19 @@ const maxSitePagesPerRequest = 15
 // can happen on an all-junk-but-nonempty page and must NOT stop the walk.
 // Conflating those two would silently reintroduce the exact bug this method
 // fixes, just one layer down.
-func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, error) {
+//
+// The bool return is hasMore: true if this walk collected a full requested
+// page (page*perPage items), meaning more likely exists upstream; false if
+// it stopped at TPDB's genuine end-of-catalog or the maxSitePagesPerRequest
+// cap. It's computed HERE, on accum BEFORE any caller-side filtering (e.g.
+// internal/api/adultdiscover_merge.go's filterZeroSceneSites) — that's the
+// whole point: a caller-side filter can legitimately shrink the returned
+// slice below perPage on a page that ISN'T the catalog's real end, and a
+// caller inferring "no more results" from post-filter length alone would
+// reintroduce this exact class of premature-termination bug one layer up.
+// Callers that don't need this signal (e.g. the unmerged, currently-dead
+// adultStudiosHandler) can discard it.
+func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, bool, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
 	}
@@ -919,7 +931,7 @@ func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, er
 			"orderBy":  {"asc_name"},
 		})
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(raw) == 0 {
 			break // true end of TPDB's /sites catalog
@@ -931,12 +943,13 @@ func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, er
 			accum = append(accum, rs.toSite())
 		}
 	}
+	hasMore := len(accum) >= needed
 
 	start := (page - 1) * perPage
 	if start >= len(accum) {
-		return []Site{}, nil
+		return []Site{}, false, nil
 	}
-	return accum[start:min(page*perPage, len(accum))], nil
+	return accum[start:min(page*perPage, len(accum))], hasMore, nil
 }
 
 // ScenesBySite returns one page of a single site's scenes via TPDB's dedicated

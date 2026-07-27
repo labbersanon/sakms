@@ -606,7 +606,13 @@ export function PaginatedStrip<T>(props: {
   // string). It's only ever fed to on() as a change trigger — never used
   // numerically — so number and string work identically here.
   reloadToken: () => number | string;
-  load: (page: number) => Promise<T[]>;
+  // load's return type is widened (backward compatible — every existing
+  // caller returns a plain T[], unaffected) to ALSO allow an explicit
+  // {items, hasMore} envelope for the rare row whose batch length can no
+  // longer be trusted as an exhaustion signal (see the load() function
+  // below for why). Only the Studios row (fetchMergedStudios) uses this
+  // today.
+  load: (page: number) => Promise<T[] | { items: T[]; hasMore: boolean }>;
   onError: (err: unknown) => void;
   containerClass?: string;
   children: (item: T) => JSX.Element;
@@ -632,32 +638,49 @@ export function PaginatedStrip<T>(props: {
     const next = reset ? 1 : page() + 1;
     setLoading(true);
     try {
-      const batch = await props.load(next);
+      const result = await props.load(next);
+      // An envelope ({items, hasMore}) carries an EXPLICIT exhaustion signal
+      // computed server-side — used only by rows (currently just Studios,
+      // via fetchMergedStudios) whose batch length can no longer be trusted
+      // for that purpose (see below). Every other caller returns a plain
+      // array and falls through to the length-inference branch, unchanged.
+      const isEnvelope = !Array.isArray(result);
+      const batch = isEnvelope ? result.items : result;
       setItems((prev) => (reset ? batch : [...prev, ...batch]));
       setPage(next);
-      // A batch smaller than a full page means this WAS the last page —
-      // checking only `=== 0` (the old behavior) missed this: a row with
-      // fewer than perPage total items returned everything on page 1
-      // (batch.length > 0), so "Show more" kept rendering even though
-      // nothing remained. Clicking it fetched an empty page 2, appended
-      // nothing, and only then hid the button — a silent round trip
-      // indistinguishable from the button doing nothing at all (found live,
-      // 2026-07-15).
-      //
-      // This check is also safe for the merged Adult Studios/Performers rows
-      // (fetchMergedStudios/fetchMergedPerformers) with NO change needed, per
-      // the plan's Q1 exhaustion-safety proof: both source legs (TPDB, StashDB)
-      // are fetched at the SAME perPage server-side and the merged page is
-      // never truncated, so the merged batch size is always >= max(|tpdb|,
-      // |stash|) (mutual-best pairing is 1:1, so |pairs| <= min of the two).
-      // While EITHER leg still has a full page, that max is perPage, so the
-      // merged batch is >= perPage and exhaustion does NOT fire. The batch only
-      // drops below perPage once BOTH legs have delivered their final short/
-      // empty pages — exactly the correct end-of-row condition. (An empty TPDB
-      // leg past its final page, incl. TPDB's silent-pagination-clamp case the
-      // backend converts to an empty-200, just makes the row scroll on as pure
-      // StashDB and still terminates here when StashDB drains.)
-      if (batch.length < (props.perPage ?? defaultStripPageSize)) {
+      if (isEnvelope) {
+        if (!result.hasMore) setExhausted(true);
+      } else if (batch.length < (props.perPage ?? defaultStripPageSize)) {
+        // A batch smaller than a full page means this WAS the last page —
+        // checking only `=== 0` (the old behavior) missed this: a row with
+        // fewer than perPage total items returned everything on page 1
+        // (batch.length > 0), so "Show more" kept rendering even though
+        // nothing remained. Clicking it fetched an empty page 2, appended
+        // nothing, and only then hid the button — a silent round trip
+        // indistinguishable from the button doing nothing at all (found
+        // live, 2026-07-15).
+        //
+        // This check is also safe for the merged Adult Performers row
+        // (fetchMergedPerformers) with NO change needed, per the plan's Q1
+        // exhaustion-safety proof: both source legs (TPDB, StashDB) are
+        // fetched at the SAME perPage server-side and the merged page is
+        // never truncated, so the merged batch size is always >= max(|tpdb|,
+        // |stash|) (mutual-best pairing is 1:1, so |pairs| <= min of the
+        // two). While EITHER leg still has a full page, that max is perPage,
+        // so the merged batch is >= perPage and exhaustion does NOT fire.
+        // The batch only drops below perPage once BOTH legs have delivered
+        // their final short/empty pages — exactly the correct end-of-row
+        // condition. (An empty TPDB leg past its final page, incl. TPDB's
+        // silent-pagination-clamp case the backend converts to an
+        // empty-200, just makes the row scroll on as pure StashDB and still
+        // terminates here when StashDB drains.)
+        //
+        // The merged Studios row (fetchMergedStudios) is NO LONGER covered
+        // by this proof (2026-07-26) — its TPDB leg passes through a
+        // server-side zero-scene filter that can drop items from an
+        // already-fetched page, breaking the "never truncated" premise this
+        // proof depends on. That's why it now returns the explicit-hasMore
+        // envelope above instead of relying on this length check.
         setExhausted(true);
       }
     } catch (e) {

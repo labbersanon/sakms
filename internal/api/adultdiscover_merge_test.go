@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -376,6 +378,12 @@ func TestPerformersMerged_HardError4xxReturns502(t *testing.T) {
 func TestStudiosMerged_MergesBothSources(t *testing.T) {
 	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/sites/t1/scenes" {
+			// filterZeroSceneSites' check (2026-07-26) — t1 has a scene, so it
+			// survives the zero-scene filter.
+			w.Write([]byte(`{"data":[{"_id":"sc1","title":"A Scene"}]}`))
+			return
+		}
 		// BrowseSites now walks internally (2026-07-26, junk-network filter) —
 		// page 1 has the one real item, page 2+ must be empty so the walk
 		// terminates at the true end of the (tiny, fixture) catalog instead of
@@ -395,8 +403,12 @@ func TestStudiosMerged_MergesBothSources(t *testing.T) {
 	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
 	defer srv.Close()
 
-	var cards []apidto.MergedStudioCard
-	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?perPage=5", &cards)
+	// The endpoint returns a MergedStudioPage envelope ({items, hasMore}), not
+	// a bare array (2026-07-26, see that DTO's doc comment) -- unlike the
+	// Performers-merged endpoint, which is unaffected and still bare-array.
+	var page apidto.MergedStudioPage
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?perPage=5", &page)
+	cards := page.Items
 	if len(cards) != 2 {
 		t.Fatalf("expected 2 merged studio cards, got %d: %+v", len(cards), cards)
 	}
@@ -414,6 +426,93 @@ func TestStudiosMerged_MergesBothSources(t *testing.T) {
 	}
 	if cards[1].Source != "stashdb" || cards[1].StashDBID != "s2" {
 		t.Errorf("card[1] should be the StashDB-exclusive studio, got %+v", cards[1])
+	}
+	// Both fixture legs are smaller than perPage (5): TPDB has 1 real item,
+	// StashDB has 2 -- neither leg delivered a full page, so the row is
+	// genuinely exhausted and HasMore must be false.
+	if page.HasMore {
+		t.Errorf("expected HasMore=false when both legs are smaller than perPage, got true")
+	}
+}
+
+// TestStudiosMerged_HasMoreSurvivesZeroSceneFiltering is the definitive
+// regression guard for the whole zero-scene-filter fix chain (2026-07-26):
+// TPDB returns a full page (BrowseSites' own hasMore, computed BEFORE
+// filtering, is true), but every one of those items has zero scenes, so
+// filterZeroSceneSites drops all of them. StashDB (small fixture, no more
+// pages) alone would signal exhausted. HasMore must still be TRUE, sourced
+// from tpdbHasMore -- NOT re-derived from the post-filter (now-empty) merged
+// result, which is exactly the bug this feature exists to prevent: a page
+// with zero real items showing wrongly ends the row when the real TPDB
+// catalog is not actually exhausted.
+func TestStudiosMerged_HasMoreSurvivesZeroSceneFiltering(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/scenes") {
+			w.Write([]byte(`{"data":[]}`)) // every site has zero scenes
+			return
+		}
+		if r.URL.Query().Get("page") == "1" {
+			w.Write([]byte(`{"data":[{"uuid":"t1","name":"Orphan One"},{"uuid":"t2","name":"Orphan Two"}]}`))
+			return
+		}
+		w.Write([]byte(`{"data":[]}`))
+	})
+	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL}))
+	defer srv.Close()
+
+	var page apidto.MergedStudioPage
+	// perPage=2 matches the fixture's 2-item page exactly, so
+	// tpdbHasMore = len(accum) >= needed = 2 >= 2 = true.
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?perPage=2", &page)
+	if len(page.Items) != 0 {
+		t.Fatalf("expected 0 items (both zero-scene entries dropped), got %+v", page.Items)
+	}
+	if !page.HasMore {
+		t.Errorf("expected HasMore=true (sourced pre-filter) even though this page's items were all dropped, got false")
+	}
+}
+
+// --- Unit: filterZeroSceneSites ---
+
+// TestFilterZeroSceneSites_DropsZeroSceneEntries proves the core behavior:
+// a site with zero scenes is dropped, one with scenes is kept, and original
+// order is preserved among survivors.
+func TestFilterZeroSceneSites_DropsZeroSceneEntries(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/sites/has-scenes/scenes":
+			w.Write([]byte(`{"data":[{"_id":"sc1","title":"A Scene"}]}`))
+		case "/sites/zero-scenes/scenes":
+			w.Write([]byte(`{"data":[]}`))
+		default:
+			t.Errorf("unexpected scenes request path %q", r.URL.Path)
+		}
+	})
+	client := tpdbrest.New(tpdb.URL, "testkey", &http.Client{})
+	sites := []tpdbrest.Site{
+		{ID: "zero-scenes", Name: "Orphan Placeholder"},
+		{ID: "has-scenes", Name: "Real Studio"},
+	}
+	out := filterZeroSceneSites(context.Background(), client, sites)
+	if len(out) != 1 || out[0].ID != "has-scenes" {
+		t.Fatalf("expected only the has-scenes entry to survive, got %+v", out)
+	}
+}
+
+// TestFilterZeroSceneSites_FailsOpenOnError proves a per-item ScenesBySite
+// error keeps the item rather than dropping it — one transient TPDB hiccup
+// must not silently hide a real studio.
+func TestFilterZeroSceneSites_FailsOpenOnError(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	client := tpdbrest.New(tpdb.URL, "testkey", &http.Client{})
+	sites := []tpdbrest.Site{{ID: "s1", Name: "Real Studio"}}
+	out := filterZeroSceneSites(context.Background(), client, sites)
+	if len(out) != 1 || out[0].ID != "s1" {
+		t.Fatalf("expected the item to survive a ScenesBySite error (fail-open), got %+v", out)
 	}
 }
 

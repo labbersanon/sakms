@@ -14,6 +14,7 @@ import type {
   DiscoverItem,
   MergedPerformerCard,
   MergedStudioCard,
+  MergedStudioPage,
   PerformerSummary,
   PosterResponse,
   StudioSummary,
@@ -27,6 +28,7 @@ export type {
   DiscoverItem,
   MergedPerformerCard,
   MergedStudioCard,
+  MergedStudioPage,
   PerformerSummary,
   StudioSummary,
   TitleDetail,
@@ -410,14 +412,19 @@ export function fetchMergedPerformers(
 }
 
 // fetchMergedStudios returns one page of the merged Studios row — TPDB sites +
-// StashDB studios fuzzy-paired and deduped server-side into MergedStudioCard[]
-// (GET /api/modes/adult/studios-merged). Same contract as fetchMergedPerformers,
-// only the entity type and route differ.
+// StashDB studios fuzzy-paired and deduped server-side. Unlike
+// fetchMergedPerformers, this returns a MergedStudioPage envelope
+// ({items, hasMore}), NOT a bare array: the Studios row's TPDB leg passes
+// through a server-side zero-scene filter that can drop items from an
+// already-fetched page, so PaginatedStrip can no longer safely infer "no
+// more results" from batch.length < perPage — see MergedStudioPage's doc
+// comment (@dto) for the full rationale. hasMore is computed server-side
+// before that filter runs.
 export function fetchMergedStudios(
   page = 1,
   perPage = 20,
-): Promise<MergedStudioCard[]> {
-  return api<MergedStudioCard[]>(
+): Promise<MergedStudioPage> {
+  return api<MergedStudioPage>(
     `/api/modes/adult/studios-merged?page=${page}&perPage=${perPage}`,
   );
 }

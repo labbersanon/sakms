@@ -305,7 +305,7 @@ func adultStudiosHandler(httpClient *http.Client, connStore *connections.Store) 
 			return
 		}
 		page, perPage := adultPagination(r)
-		sites, err := client.BrowseSites(r.Context(), page, perPage)
+		sites, _, err := client.BrowseSites(r.Context(), page, perPage)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return

@@ -275,8 +275,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// literal path segments from the plain "performers"/"studios" browse rows
 	// above (no ServeMux conflict). TPDB required (400 when absent); StashDB
 	// optional (degrades to TPDB-only).
-	mux.HandleFunc("GET /api/modes/adult/performers-merged", adultPerformersMergedHandler(httpClient, connStore))
-	mux.HandleFunc("GET /api/modes/adult/studios-merged", adultStudiosMergedHandler(httpClient, connStore))
+	mux.HandleFunc("GET /api/modes/adult/performers-merged", adultPerformersMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth))
+	mux.HandleFunc("GET /api/modes/adult/studios-merged", adultStudiosMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth))
 	mux.HandleFunc("GET /api/modes/adult/discover/performers-merged/scenes", adultPerformerMergedScenesHandler(httpClient, connStore))
 	mux.HandleFunc("GET /api/modes/adult/discover/studios-merged/scenes", adultStudioMergedScenesHandler(httpClient, connStore))
 	// Adult "newest" rows (internal/adultnewest) — admin-defined rows backed

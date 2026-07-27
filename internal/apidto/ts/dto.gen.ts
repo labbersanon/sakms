@@ -361,21 +361,42 @@ export interface MergedStudioCard {
 }
 /**
  * MergedStudioPage is GET /api/modes/adult/studios-merged's actual response
- * shape — Items plus an explicit HasMore, NOT a bare MergedStudioCard array
- * like the Performers row's endpoint returns. This is Studios-specific:
- * unlike Performers, the Studios row's TPDB leg passes through
- * filterZeroSceneSites (internal/api/adultdiscover_merge.go), which can drop
- * items from an already-fetched page — so "this page came back short" no
- * longer reliably means "the catalog is exhausted." HasMore is computed
- * server-side from signals BEFORE that filter ran (see
- * adultStudiosMergedHandler), so the frontend's PaginatedStrip can trust it
- * instead of inferring exhaustion from len(Items) < perPage the way every
- * other Discover row does. Do NOT add this wrapper to Performers or any
- * other row that has no post-fetch filter — a bare array + length-inference
- * is already correct there, and wrapping it would be premature abstraction.
+ * shape — Items plus an explicit HasMore, NOT a bare MergedStudioCard array.
+ * The Studios row's TPDB leg passes through filterZeroSceneSites, and BOTH
+ * rows now also run a post-merge grabbable-availability hard filter
+ * (internal/api/adultdiscover_merge.go) — either can drop items from an
+ * already-fetched page, so "this page came back short" no longer reliably
+ * means "the catalog is exhausted." HasMore is computed server-side from
+ * signals BEFORE any of those filters ran (see adultStudiosMergedHandler),
+ * so the frontend's PaginatedStrip can trust it instead of inferring
+ * exhaustion from len(Items) < perPage the way a row with no post-fetch
+ * filter still correctly does. See MergedPerformerPage below — the
+ * Performers row's parallel sibling, needing the same envelope for the same
+ * reason. Do NOT add this wrapper to a row that has no post-fetch filter —
+ * a bare array + length-inference is already correct there, and wrapping it
+ * would be premature abstraction.
  */
 export interface MergedStudioPage {
   items: MergedStudioCard[];
+  hasMore: boolean;
+}
+/**
+ * MergedPerformerPage is GET /api/modes/adult/performers-merged's actual
+ * response shape — MergedStudioPage's Performers-row sibling, added
+ * 2026-07-27 when the Performers row gained its own post-merge
+ * grabbable-availability hard filter (filterAvailablePerformers,
+ * internal/api/adultdiscover_merge.go). Before that, Performers had no
+ * post-fetch filter and correctly stayed a bare MergedPerformerCard array;
+ * see MergedStudioPage's doc for why a filtered row needs this envelope.
+ * HasMore is derived from pre-filter source lengths
+ * (len(tpdbItems) >= perPage || len(stashItems) >= perPage, captured before
+ * the availability filter runs) rather than a flag BrowsePerformers itself
+ * returns — unlike BrowseSites (which walks internally and returns its own
+ * hasMore), BrowsePerformers is a single call that clamp-detects past its
+ * final page, so it has no internal walk to compute one from.
+ */
+export interface MergedPerformerPage {
+  items: MergedPerformerCard[];
   hasMore: boolean;
 }
 /**

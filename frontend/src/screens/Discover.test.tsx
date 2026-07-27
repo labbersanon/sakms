@@ -705,6 +705,72 @@ describe("Discover — Adult tab (row-based browse)", () => {
       }),
     ).toBe(true);
   });
+
+  // Regression test for Decision DE (2026-07-27): the merged Performers row's
+  // new post-merge availability filter (Option B) can drop every item on a
+  // page while the underlying catalog still has more (hasMore=true). Before
+  // this fix, PaginatedStrip's "Show more" control was nested inside
+  // <Show when={items().length > 0}>, so an empty page hid the button along
+  // with the item list -- a dead end with no way to advance. Page 1 here
+  // comes back fully filtered-empty; page 2 has a real item. DE-2's bounded
+  // auto-advance should reach it with no manual click required.
+  it("Performers row: an availability-filtered empty page auto-advances instead of dead-ending", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/adult/performers-merged")) {
+        if (url.includes("page=2"))
+          return jsonResponse({
+            items: [
+              {
+                name: "Real Performer",
+                image: "https://cdn.theporndb.net/performers/real.jpg",
+                source: "tpdb",
+                tpdbId: "pf-real",
+              },
+            ],
+            hasMore: false,
+          });
+        return jsonResponse({ items: [], hasMore: true });
+      }
+      if (url.includes("/api/modes/adult/studios-merged"))
+        return jsonResponse({ items: [], hasMore: false });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+
+    expect(await screen.findByText("Real Performer")).toBeInTheDocument();
+  });
+
+  // DE-2's auto-advance is bounded: a pathologically sparse catalog (every
+  // page filtered fully empty, hasMore never turns false) must not loop
+  // forever. After maxEmptyAutoAdvance (3) consecutive empty pages, the loop
+  // stops and hands control back to a manually-clickable "Show more" -- which
+  // the DE fix also makes reachable with zero items on screen, unlike the old
+  // items().length > 0 gate.
+  it("Performers row: caps auto-advance at 3 empty pages, leaving a reachable Show more control", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("/api/modes/adult/performers-merged"))
+        return jsonResponse({ items: [], hasMore: true });
+      if (url.includes("/api/modes/adult/studios-merged"))
+        return jsonResponse({ items: [], hasMore: false });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+
+    expect(await screen.findByText("Show more")).toBeInTheDocument();
+    const calls = fetchMock.mock.calls.filter(([u]) =>
+      String(u).includes("/api/modes/adult/performers-merged"),
+    );
+    // 1 initial load (page 1) + 3 bounded auto-advances (pages 2-4) = 4.
+    expect(calls.length).toBe(4);
+  });
 });
 
 // connectionSummary is the ConnectionSummary DTO factory this describe block
@@ -1342,6 +1408,13 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     expect(await screen.findByText("Filtered Movie")).toBeInTheDocument();
     expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
     expect(screen.queryByText("Trend Movie")).not.toBeInTheDocument();
+    // Decision DE regression guard: the filter grid's PaginatedStrip returns
+    // a plain array here (1 item, under a full page), which still exhausts
+    // via the pre-existing length check — the DE fix's widened "Show more"
+    // guard (which also renders when items are empty but the row isn't
+    // exhausted) must NOT sprout a phantom control for this, or any other,
+    // plain-array Mainstream row.
+    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
 
     // The grid fetched the real /discover filter query.
     expect(

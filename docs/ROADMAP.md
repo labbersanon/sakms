@@ -951,6 +951,26 @@ surface) shipped 2026-07-19 — see "Recently shipped" below.
   own separate mechanism (Give back) and wasn't extended here.
 - **Logical episode-splitting** — shipped 2026-07-16, see "Recently shipped"
   below.
+- **Descriptor-as-co-credit pollution in TPDB performer catalogs** — not yet
+  started; logged 2026-07-27 out of
+  `.omc/plans/ralplan-adult-discover-performers-availability-gate.md`'s scope
+  (its "Out of Scope" Decision DC). Live-verified 2026-07-26: certain
+  low-curation/amateur-published TPDB sites credit scenes with body-part/act
+  descriptor tags (e.g. "Huge Tits") alongside real performer stage names, in
+  the same scene credit list — TPDB conflates the two at the data-entry
+  level. The merged Performers row's Option B availability hard filter
+  (shipped 2026-07-27, `internal/api/adultdiscover_merge.go`'s
+  `filterAvailablePerformers`) deliberately does NOT and CANNOT fix this —
+  it only checks catalog/grabbable presence, so a descriptor co-credited on
+  an available scene is retained exactly like a real performer sharing that
+  scene (see `TestFilterAvailablePerformers_DescriptorCoCreditHonestyWitness`
+  for the executable proof this stays true). Every structural signal tested
+  during that investigation (`is_parent`, `extras.gender` presence,
+  `site_performers` count) failed to discriminate a descriptor from a real
+  person. A curated credit-role/denylist approach was considered and
+  rejected as too fragile (risks hiding a real performer with a provocative
+  stage name) — a separate effort would need a genuinely different signal,
+  not yet identified.
 
 ### Metadata expansion
 - **TVDB as fallback metadata source** — shipped 2026-07-17, see "Recently

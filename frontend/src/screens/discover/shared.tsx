@@ -608,10 +608,10 @@ export function PaginatedStrip<T>(props: {
   reloadToken: () => number | string;
   // load's return type is widened (backward compatible — every existing
   // caller returns a plain T[], unaffected) to ALSO allow an explicit
-  // {items, hasMore} envelope for the rare row whose batch length can no
-  // longer be trusted as an exhaustion signal (see the load() function
-  // below for why). Only the Studios row (fetchMergedStudios) uses this
-  // today.
+  // {items, hasMore} envelope for a row whose batch length can no longer be
+  // trusted as an exhaustion signal (see the load() function below for why).
+  // The Studios and Performers rows (fetchMergedStudios/fetchMergedPerformers)
+  // use this today.
   load: (page: number) => Promise<T[] | { items: T[]; hasMore: boolean }>;
   onError: (err: unknown) => void;
   containerClass?: string;
@@ -633,6 +633,12 @@ export function PaginatedStrip<T>(props: {
   const [page, setPage] = createSignal(0);
   const [loading, setLoading] = createSignal(false);
   const [exhausted, setExhausted] = createSignal(false);
+  // emptyAutoAdvances counts consecutive envelope pages that came back with
+  // hasMore=true but zero items (e.g. every item on the page was dropped by
+  // a post-merge availability filter) — see DE-2 below. Reset whenever a
+  // page delivers at least one item or the row reloads from page 1.
+  const [emptyAutoAdvances, setEmptyAutoAdvances] = createSignal(0);
+  const maxEmptyAutoAdvance = 3;
 
   const load = async (reset: boolean) => {
     const next = reset ? 1 : page() + 1;
@@ -640,16 +646,19 @@ export function PaginatedStrip<T>(props: {
     try {
       const result = await props.load(next);
       // An envelope ({items, hasMore}) carries an EXPLICIT exhaustion signal
-      // computed server-side — used only by rows (currently just Studios,
-      // via fetchMergedStudios) whose batch length can no longer be trusted
-      // for that purpose (see below). Every other caller returns a plain
-      // array and falls through to the length-inference branch, unchanged.
+      // computed server-side — used only by rows (currently Studios and
+      // Performers, via fetchMergedStudios/fetchMergedPerformers) whose batch
+      // length can no longer be trusted for that purpose (see below). Every
+      // other caller returns a plain array and falls through to the
+      // length-inference branch, unchanged.
       const isEnvelope = !Array.isArray(result);
       const batch = isEnvelope ? result.items : result;
       setItems((prev) => (reset ? batch : [...prev, ...batch]));
       setPage(next);
+      let hasMore = true;
       if (isEnvelope) {
-        if (!result.hasMore) setExhausted(true);
+        hasMore = result.hasMore;
+        if (!hasMore) setExhausted(true);
       } else if (batch.length < (props.perPage ?? defaultStripPageSize)) {
         // A batch smaller than a full page means this WAS the last page —
         // checking only `=== 0` (the old behavior) missed this: a row with
@@ -660,28 +669,33 @@ export function PaginatedStrip<T>(props: {
         // indistinguishable from the button doing nothing at all (found
         // live, 2026-07-15).
         //
-        // This check is also safe for the merged Adult Performers row
-        // (fetchMergedPerformers) with NO change needed, per the plan's Q1
-        // exhaustion-safety proof: both source legs (TPDB, StashDB) are
-        // fetched at the SAME perPage server-side and the merged page is
-        // never truncated, so the merged batch size is always >= max(|tpdb|,
-        // |stash|) (mutual-best pairing is 1:1, so |pairs| <= min of the
-        // two). While EITHER leg still has a full page, that max is perPage,
-        // so the merged batch is >= perPage and exhaustion does NOT fire.
-        // The batch only drops below perPage once BOTH legs have delivered
-        // their final short/empty pages — exactly the correct end-of-row
-        // condition. (An empty TPDB leg past its final page, incl. TPDB's
-        // silent-pagination-clamp case the backend converts to an
-        // empty-200, just makes the row scroll on as pure StashDB and still
-        // terminates here when StashDB drains.)
-        //
-        // The merged Studios row (fetchMergedStudios) is NO LONGER covered
-        // by this proof (2026-07-26) — its TPDB leg passes through a
-        // server-side zero-scene filter that can drop items from an
-        // already-fetched page, breaking the "never truncated" premise this
-        // proof depends on. That's why it now returns the explicit-hasMore
-        // envelope above instead of relying on this length check.
+        // The merged Studios and Performers rows (fetchMergedStudios /
+        // fetchMergedPerformers) are NOT covered by this length-inference
+        // path — both pass through a server-side post-merge filter
+        // (zero-scene for Studios, grabbable-availability for both) that can
+        // drop items from an already-fetched page, so a short batch no
+        // longer reliably means "the catalog is exhausted." That's why both
+        // return the explicit-hasMore envelope handled in the branch above
+        // instead of relying on this length check.
         setExhausted(true);
+      }
+      // DE-2: an envelope page can legitimately come back with zero items
+      // but hasMore=true (every item on this page was dropped by the
+      // availability filter, while the underlying catalog still has more).
+      // Auto-advance past up to maxEmptyAutoAdvance consecutive empty pages
+      // so the operator isn't required to manually click "Show more"
+      // through a run of filtered-empty pages — capped so a pathologically
+      // sparse catalog can't turn one "Show more" click into an unbounded
+      // fetch loop; the manual button (DE) remains reachable once the cap is
+      // hit.
+      if (isEnvelope && batch.length === 0 && hasMore) {
+        if (emptyAutoAdvances() < maxEmptyAutoAdvance) {
+          setEmptyAutoAdvances((n) => n + 1);
+          await load(false);
+          return;
+        }
+      } else {
+        setEmptyAutoAdvances(0);
       }
     } catch (e) {
       props.onError(e);
@@ -697,9 +711,21 @@ export function PaginatedStrip<T>(props: {
       setItems([]);
       setPage(0);
       setExhausted(false);
+      setEmptyAutoAdvances(0);
       void load(true);
     }),
   );
+
+  // canAdvance is the DE guard: whether a "Show more" control should be
+  // reachable. Deliberately does NOT depend on items().length — the old
+  // guard nested this control inside <Show when={items().length > 0}>,
+  // so a page emptied entirely by a post-merge filter (hasMore=true, but
+  // every item on it dropped) hid the button along with the empty item
+  // list, leaving no way to advance past it (a dead end). page() > 0
+  // excludes the pre-first-load state (no phantom control before anything
+  // has been fetched); !exhausted() && !props.singlePage are unchanged from
+  // before.
+  const canAdvance = () => !exhausted() && !props.singlePage && page() > 0;
 
   return (
     <section class="mt-6">
@@ -707,14 +733,14 @@ export function PaginatedStrip<T>(props: {
         {props.title}
       </h2>
       <Show
-        when={items().length > 0}
+        when={items().length > 0 || canAdvance()}
         fallback={
           <Muted>{loading() ? "Loading…" : "Nothing here yet."}</Muted>
         }
       >
         <div class={props.containerClass ?? "flex items-stretch gap-3 overflow-x-auto pb-2"}>
           <For each={items()}>{(item) => props.children(item)}</For>
-          <Show when={!exhausted() && !props.singlePage}>
+          <Show when={canAdvance()}>
             <div class="flex w-28 shrink-0 items-center justify-center">
               <Button
                 class="!py-1 text-xs"

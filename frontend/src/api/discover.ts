@@ -13,6 +13,7 @@ import type {
   AvailabilityPreview,
   DiscoverItem,
   MergedPerformerCard,
+  MergedPerformerPage,
   MergedStudioCard,
   MergedStudioPage,
   PerformerSummary,
@@ -27,6 +28,7 @@ export type {
   AvailabilityPreview,
   DiscoverItem,
   MergedPerformerCard,
+  MergedPerformerPage,
   MergedStudioCard,
   MergedStudioPage,
   PerformerSummary,
@@ -397,16 +399,22 @@ export function fetchAdultPerformerScenes(
 }
 
 // fetchMergedPerformers returns one page of the merged Performers row —
-// TPDB + StashDB performers fuzzy-paired and deduped server-side into
-// MergedPerformerCard[] (GET /api/modes/adult/performers-merged). Replaces the
-// separate TPDB (fetchAdultPerformers) and StashDB performer rows. Both source
-// legs are fetched at the SAME perPage server-side (plan G6b) — pass the same
-// perPage PaginatedStrip uses for its exhaustion check (defaults to 20).
+// TPDB + StashDB performers fuzzy-paired and deduped server-side. Like
+// fetchMergedStudios, this returns a MergedPerformerPage envelope
+// ({items, hasMore}), NOT a bare array: the row passes through a server-side
+// availability filter (Option B) that can drop items from an already-fetched
+// page, so PaginatedStrip can no longer safely infer "no more results" from
+// batch.length < perPage — see MergedPerformerPage's doc comment (@dto) for
+// the full rationale. hasMore is computed server-side before that filter
+// runs. Replaces the separate TPDB (fetchAdultPerformers) and StashDB
+// performer rows. Both source legs are fetched at the SAME perPage
+// server-side (plan G6b) — pass the same perPage PaginatedStrip uses for its
+// exhaustion check (defaults to 20).
 export function fetchMergedPerformers(
   page = 1,
   perPage = 20,
-): Promise<MergedPerformerCard[]> {
-  return api<MergedPerformerCard[]>(
+): Promise<MergedPerformerPage> {
+  return api<MergedPerformerPage>(
     `/api/modes/adult/performers-merged?page=${page}&perPage=${perPage}`,
   );
 }

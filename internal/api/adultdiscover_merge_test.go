@@ -1,14 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
@@ -266,8 +270,9 @@ func TestPerformersMerged_DegradesToTPDBOnlyWhenStashDBErrors(t *testing.T) {
 	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}))
 	defer srv.Close()
 
-	var cards []apidto.MergedPerformerCard
-	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?perPage=5", &cards)
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?perPage=5", &page)
+	cards := page.Items
 	if len(cards) != 1 || cards[0].Source != "tpdb" || cards[0].TPDBID != "t1" {
 		t.Errorf("expected TPDB-only degradation (never a request error) when StashDB errors, got %+v", cards)
 	}
@@ -309,8 +314,9 @@ func TestPerformersMerged_UnevenPaginationExhaustion_TPDBShallowerClamp(t *testi
 	seenStash := map[string]int{}
 	exhaustedAt := 0
 	for page := 1; page <= 5; page++ {
-		var cards []apidto.MergedPerformerCard
-		getJSON(t, fmt.Sprintf("%s/api/modes/adult/performers-merged?page=%d&perPage=%d", srv.URL, page, perPage), &cards)
+		var pageResp apidto.MergedPerformerPage
+		getJSON(t, fmt.Sprintf("%s/api/modes/adult/performers-merged?page=%d&perPage=%d", srv.URL, page, perPage), &pageResp)
+		cards := pageResp.Items
 		for _, c := range cards {
 			switch c.Source {
 			case "tpdb":
@@ -404,8 +410,8 @@ func TestStudiosMerged_MergesBothSources(t *testing.T) {
 	defer srv.Close()
 
 	// The endpoint returns a MergedStudioPage envelope ({items, hasMore}), not
-	// a bare array (2026-07-26, see that DTO's doc comment) -- unlike the
-	// Performers-merged endpoint, which is unaffected and still bare-array.
+	// a bare array (2026-07-26, see that DTO's doc comment) -- Performers-merged
+	// mirrors this with its own MergedPerformerPage envelope (see the tests above).
 	var page apidto.MergedStudioPage
 	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?perPage=5", &page)
 	cards := page.Items
@@ -584,5 +590,363 @@ func TestMergedScenes_PhashMergedAndSourceStamped(t *testing.T) {
 		if s.Source == "" {
 			t.Errorf("every merged scene must carry a Source, got %+v", s)
 		}
+	}
+}
+
+// --- Unit + integration: Option B availability hard filter ---
+//
+// .omc/plans/ralplan-adult-discover-performers-availability-gate.md's Testing
+// section (Decision DB) is the source of truth for this section's coverage —
+// see that file for the full rationale each test below encodes.
+
+// newAdultMuxWithPool is newAdultMux (TPDB/StashDB connections wired to fake
+// servers) plus newAdultPoolServer's pool-seeding/injectable-FeedHealth
+// (adultdiscover_stashbox_test.go) combined into one helper — the availability
+// hard filter needs both a live merged browse (TPDB/StashDB) AND a seeded
+// adult_newest_releases pool to exercise end-to-end.
+func newAdultMuxWithPool(t *testing.T, conns map[string]string, fh *adultnewest.FeedHealth, seed []adultnewest.MatchedRelease) *http.ServeMux {
+	t.Helper()
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	for service, u := range conns {
+		if err := connStore.Upsert(context.Background(), service, u, "key"); err != nil {
+			t.Fatalf("upserting %s: %v", service, err)
+		}
+		overrideFixedURL(t, service, u)
+	}
+	for _, m := range seed {
+		if err := adultNewestReleaseStore.Insert(context.Background(), m); err != nil {
+			t.Fatalf("seeding release %q: %v", m.EntityID, err)
+		}
+	}
+	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, rssFeedsStore, nil, nil, nil, nil, nil)
+}
+
+// seedReleaseStore inserts rows into releaseStore, failing the test on error.
+func seedReleaseStore(t *testing.T, releaseStore *adultnewest.ReleaseStore, rows ...adultnewest.MatchedRelease) {
+	t.Helper()
+	for _, m := range rows {
+		if err := releaseStore.Insert(context.Background(), m); err != nil {
+			t.Fatalf("seeding release %q: %v", m.EntityID, err)
+		}
+	}
+}
+
+// TestAvailableNameSets_RollsUpSceneCreditsOnly is the DB rollup mandatory
+// test: Scene/Movie rows contribute their Performers[]/EntityStudio; Performer/
+// Studio rows contribute nothing (they're written BrowseConfirmed=true
+// unconditionally by the scan job, so including them would turn this into a
+// catalog-presence signal, not a grabbable one — see availableNameSets' doc).
+func TestAvailableNameSets_RollsUpSceneCreditsOnly(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, releaseStore, _ := testStores(t)
+	seedReleaseStore(t, releaseStore,
+		adultnewest.MatchedRelease{RowType: adultnewest.RowScene, EntityID: "sc1", EntitySource: "tpdb",
+			EntityTitle: "A Scene", EntityStudio: "Vixen", Performers: []string{"Riley Reid", "Jane Doe"}, BrowseConfirmed: true},
+		// These are unconditionally BrowseConfirmed=true by scan.go — must NOT
+		// be read here, or the availability signal degenerates into
+		// catalog-presence (plan's Decision DB rationale).
+		adultnewest.MatchedRelease{RowType: adultnewest.RowPerformer, EntityID: "pf1", EntitySource: "tpdb",
+			EntityTitle: "Should Not Appear", BrowseConfirmed: true},
+		adultnewest.MatchedRelease{RowType: adultnewest.RowStudio, EntityID: "st1", EntitySource: "tpdb",
+			EntityTitle: "Should Not Appear Studio", BrowseConfirmed: true},
+	)
+
+	performerNames, studioNames := availableNameSets(context.Background(), releaseStore, adultnewest.NewFeedHealth())
+	got := map[string]bool{}
+	for _, n := range performerNames {
+		got[n] = true
+	}
+	if len(performerNames) != 2 || !got["Riley Reid"] || !got["Jane Doe"] {
+		t.Errorf("expected exactly the scene's 2 credited performers, got %+v", performerNames)
+	}
+	if len(studioNames) != 1 || studioNames[0] != "Vixen" {
+		t.Errorf("expected exactly the scene's studio, got %+v", studioNames)
+	}
+}
+
+// TestAvailableNameSets_FeedOnlyGatedByFeedHealth proves a feed-only credit
+// (BrowseConfirmed=false) is included iff its feed is currently fresh — driving
+// FeedHealth healthy/stale via SetHealthy, mirroring
+// TestAdultMergedRecent_GatesOutFeedOnlyWhenFeedNotFresh's established pattern.
+func TestAvailableNameSets_FeedOnlyGatedByFeedHealth(t *testing.T) {
+	now := time.Now()
+	seedFeedOnlyRow := func(t *testing.T, releaseStore *adultnewest.ReleaseStore) {
+		t.Helper()
+		seedReleaseStore(t, releaseStore, adultnewest.MatchedRelease{
+			RowType: adultnewest.RowScene, EntityID: "feedonly", EntitySource: "tpdb", EntityTitle: "Feed Only Scene",
+			Performers: []string{"Feed Person"}, EntityStudio: "Feed Studio",
+			FeedID: 7, FeedItemKey: "http://feed/x.torrent", LastConfirmedSeen: now.Unix(),
+		})
+	}
+
+	t.Run("stale feed excludes the credit", func(t *testing.T) {
+		_, _, _, _, _, _, _, _, _, releaseStore, _ := testStores(t)
+		seedFeedOnlyRow(t, releaseStore)
+		performerNames, studioNames := availableNameSets(context.Background(), releaseStore, adultnewest.NewFeedHealth())
+		if len(performerNames) != 0 || len(studioNames) != 0 {
+			t.Errorf("expected the feed-only credit excluded while its feed is unhealthy, got performers=%+v studios=%+v", performerNames, studioNames)
+		}
+	})
+
+	t.Run("fresh feed includes the credit", func(t *testing.T) {
+		_, _, _, _, _, _, _, _, _, releaseStore, _ := testStores(t)
+		seedFeedOnlyRow(t, releaseStore)
+		fh := adultnewest.NewFeedHealth()
+		fh.SetHealthy(7, now)
+		performerNames, studioNames := availableNameSets(context.Background(), releaseStore, fh)
+		if len(performerNames) != 1 || performerNames[0] != "Feed Person" {
+			t.Errorf("expected the feed-only performer credit included once its feed is healthy, got %+v", performerNames)
+		}
+		if len(studioNames) != 1 || studioNames[0] != "Feed Studio" {
+			t.Errorf("expected the feed-only studio credit included once its feed is healthy, got %+v", studioNames)
+		}
+	})
+}
+
+// TestAvailableNameSets_EmptyNameHygiene is the mandatory empty-name hygiene
+// test (Critic MINOR): blank/whitespace-only Performers[] entries and an
+// all-whitespace EntityStudio must never pollute the available-name sets with
+// an empty-string key.
+func TestAvailableNameSets_EmptyNameHygiene(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, releaseStore, _ := testStores(t)
+	seedReleaseStore(t, releaseStore, adultnewest.MatchedRelease{
+		RowType: adultnewest.RowScene, EntityID: "sc1", EntitySource: "tpdb", EntityTitle: "Blank Studio Scene",
+		EntityStudio: "   ", Performers: []string{"", "  ", "Real Name"}, BrowseConfirmed: true,
+	})
+
+	performerNames, studioNames := availableNameSets(context.Background(), releaseStore, adultnewest.NewFeedHealth())
+	if len(performerNames) != 1 || performerNames[0] != "Real Name" {
+		t.Errorf("expected blank/whitespace performer entries excluded, only the real name kept, got %+v", performerNames)
+	}
+	if len(studioNames) != 0 {
+		t.Errorf("expected the whitespace-only studio excluded entirely (no empty-string key), got %+v", studioNames)
+	}
+	// A card whose own name normalizes to empty must never be spuriously kept,
+	// even against a hygiene-failure set.
+	if nameAvailable("", performerNames) {
+		t.Errorf("an empty card name must never match")
+	}
+}
+
+// TestNameAvailable_EmptyNameNeverMatches guards nameAvailable's own defensive
+// empty-name check, independent of availableNameSets' build-time hygiene.
+func TestNameAvailable_EmptyNameNeverMatches(t *testing.T) {
+	if nameAvailable("", []string{"Real Name"}) {
+		t.Error("an empty name must never match a populated set")
+	}
+	if nameAvailable("", []string{""}) {
+		t.Error("an empty name must never match, even against a blank set entry")
+	}
+}
+
+// TestCardAvailable_ChecksBothNameAndAltName is the mandatory diverged-card
+// predicate test (Architect #1 / Critic MINOR-1): cardAvailable must match via
+// EITHER Name or AltName, not Name alone.
+func TestCardAvailable_ChecksBothNameAndAltName(t *testing.T) {
+	if !cardAvailable("Name Only", "", []string{"Name Only"}) {
+		t.Error("expected a match via Name")
+	}
+	if !cardAvailable("Stash Spelling", "Tpdb Spelling", []string{"Tpdb Spelling"}) {
+		t.Error("expected a match via AltName alone")
+	}
+	if cardAvailable("Stash Spelling", "Tpdb Spelling", []string{"Something Else"}) {
+		t.Error("expected no match when neither Name nor AltName is in the set")
+	}
+}
+
+// TestFilterAvailablePerformers_DivergedCardKeptViaAltNameMatch is the
+// mandatory diverged-card test at the filter's own boundary (not just the
+// cardAvailable predicate in isolation) — mirrors
+// TestMergePerformers_DivergentPairSurfacesBothNames' fixture: Name is
+// StashDB's canonical spelling, AltName is TPDB's. The pool credits this
+// scene under the TPDB spelling (AltName) — proving the filter does not
+// false-negative on a diverged card.
+func TestFilterAvailablePerformers_DivergedCardKeptViaAltNameMatch(t *testing.T) {
+	cards := []apidto.MergedPerformerCard{
+		{Name: "Anna Bella Rose East", AltName: "Anna Bella Rose West", NamesDiverged: true},
+	}
+	out := filterAvailablePerformers(cards, []string{"Anna Bella Rose West"})
+	if len(out) != 1 {
+		t.Fatalf("expected the diverged card kept via its AltName match, got %+v", out)
+	}
+}
+
+// TestFilterAvailablePerformers_DropsUnavailableKeepsAvailable is the basic DB
+// hard-filter contract: a card whose name is in the available set is kept; a
+// card whose name is absent is dropped.
+func TestFilterAvailablePerformers_DropsUnavailableKeepsAvailable(t *testing.T) {
+	cards := []apidto.MergedPerformerCard{{Name: "Riley Reid"}, {Name: "Unknown Person"}}
+	out := filterAvailablePerformers(cards, []string{"Riley Reid"})
+	if len(out) != 1 || out[0].Name != "Riley Reid" {
+		t.Fatalf("expected only the available card kept, got %+v", out)
+	}
+}
+
+// TestFilterAvailablePerformers_EmptyAvailableFailsOpen is the mandatory
+// empty-pool floor test: with zero available names, every card is kept
+// unfiltered — an infrastructure gap (pool never scanned, adultnewest
+// disabled, or a pool-read error) must never silently empty the row.
+func TestFilterAvailablePerformers_EmptyAvailableFailsOpen(t *testing.T) {
+	cards := []apidto.MergedPerformerCard{{Name: "Anyone"}, {Name: "Someone Else"}}
+	out := filterAvailablePerformers(cards, nil)
+	if len(out) != 2 {
+		t.Fatalf("expected fail-open (all cards kept) when available is empty, got %+v", out)
+	}
+}
+
+// TestFilterAvailableStudios_DropsUnavailableKeepsAvailable is
+// filterAvailablePerformers' studio sibling of the basic hard-filter contract.
+func TestFilterAvailableStudios_DropsUnavailableKeepsAvailable(t *testing.T) {
+	cards := []apidto.MergedStudioCard{{Name: "Vixen"}, {Name: "Unknown Studio"}}
+	out := filterAvailableStudios(cards, []string{"Vixen"})
+	if len(out) != 1 || out[0].Name != "Vixen" {
+		t.Fatalf("expected only the available studio kept, got %+v", out)
+	}
+}
+
+// TestFilterAvailablePerformers_DescriptorCoCreditHonestyWitness is the DC
+// regression witness (honesty guard — KEEP verbatim in force, per the plan).
+// "Huge Tits" is a body-part descriptor TPDB miscredits as a scene performer
+// alongside real names (live-verified 2026-07-26 investigation, see the
+// investigation PRD in memory). This encodes, as an executable expectation,
+// that the availability hard filter does NOT and CANNOT distinguish a
+// descriptor from a real person — it only checks catalog presence, so a
+// descriptor co-credited on an available scene is retained exactly like a
+// real performer sharing that scene. Any future change that claims to "fix
+// descriptors via availability" must confront this test.
+func TestFilterAvailablePerformers_DescriptorCoCreditHonestyWitness(t *testing.T) {
+	cards := []apidto.MergedPerformerCard{
+		{Name: "Huge Tits"},        // the descriptor miscredit
+		{Name: "Karin Kitty"},      // the real performer sharing the scene
+		{Name: "Not In Any Scene"}, // an unrelated card, correctly dropped
+	}
+	out := filterAvailablePerformers(cards, []string{"Huge Tits", "Karin Kitty"})
+	if len(out) != 2 {
+		t.Fatalf("expected both co-credited names (descriptor AND real performer) retained, only the uncredited name dropped, got %+v", out)
+	}
+	kept := map[string]bool{}
+	for _, c := range out {
+		kept[c.Name] = true
+	}
+	if !kept["Huge Tits"] {
+		t.Errorf("the availability filter must not filter out a descriptor co-credit -- it has no signal to distinguish it from a real performer, got %+v", out)
+	}
+}
+
+// TestFilterAvailablePerformers_LogsDropCountButNeverLeaksToResponse is the
+// mandatory diagnostic-drop-count test: the filter emits a server-log-only
+// kept/dropped line, and that count never leaks into the MergedPerformerPage
+// DTO/response shape.
+func TestFilterAvailablePerformers_LogsDropCountButNeverLeaksToResponse(t *testing.T) {
+	var buf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prevOut)
+
+	cards := []apidto.MergedPerformerCard{{Name: "Riley Reid"}, {Name: "Unknown Person"}}
+	out := filterAvailablePerformers(cards, []string{"Riley Reid"})
+	if len(out) != 1 {
+		t.Fatalf("expected only the available card kept, got %+v", out)
+	}
+	if !strings.Contains(buf.String(), "kept 1, dropped 1 of 2") {
+		t.Errorf("expected a server-log-only kept/dropped diagnostic line, got %q", buf.String())
+	}
+
+	body, err := json.Marshal(apidto.MergedPerformerPage{Items: out, HasMore: false})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(body, &generic); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for k := range generic {
+		if k != "items" && k != "hasMore" {
+			t.Errorf("unexpected key %q leaked into MergedPerformerPage JSON -- the drop count must stay server-log-only", k)
+		}
+	}
+}
+
+// TestPerformersMerged_EmptyPoolFailsOpenShowsAllCards is the empty-pool floor
+// mandatory test at the HTTP/handler level: with zero scene/movie pool rows,
+// the row returns unfiltered.
+func TestPerformersMerged_EmptyPoolFailsOpenShowsAllCards(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(tpdbPerformerPage(1, [2]string{"t1", "Anyone At All"})))
+	})
+	mux := newAdultMuxWithPool(t, map[string]string{"tpdb": tpdb.URL}, adultnewest.NewFeedHealth(), nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Anyone At All" {
+		t.Fatalf("expected the card kept unfiltered on an empty pool (fail-open -- an infrastructure gap must never silently empty the row), got %+v", page.Items)
+	}
+}
+
+// TestPerformersMerged_AvailabilityFilterDropsAllButHasMoreStaysTrue is the
+// mandatory hasMore-integrity test: MergedPerformerPage.HasMore is computed
+// from PRE-filter source lengths -- a page whose items are ALL dropped by the
+// availability filter still reports HasMore=true when a full source page was
+// fetched (the pool here is populated but matches neither returned card, so
+// the filter genuinely engages rather than failing open).
+func TestPerformersMerged_AvailabilityFilterDropsAllButHasMoreStaysTrue(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(tpdbPerformerPage(1, [2]string{"t1", "Not In Pool One"}, [2]string{"t2", "Not In Pool Two"})))
+	})
+	seed := []adultnewest.MatchedRelease{
+		{RowType: adultnewest.RowScene, EntityID: "sc1", EntitySource: "tpdb", EntityTitle: "Some Scene",
+			Performers: []string{"Somebody Else Entirely"}, BrowseConfirmed: true},
+	}
+	mux := newAdultMuxWithPool(t, map[string]string{"tpdb": tpdb.URL}, adultnewest.NewFeedHealth(), seed)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?perPage=2", &page)
+	if len(page.Items) != 0 {
+		t.Fatalf("expected both cards dropped (neither matches the pool's sole credit), got %+v", page.Items)
+	}
+	if !page.HasMore {
+		t.Errorf("expected HasMore=true (sourced pre-filter) even though every item on this page was dropped, got false")
+	}
+}
+
+// TestStudiosMerged_AvailabilityFilterAppliesAfterZeroSceneLayer is the
+// mandatory Studios composition guard: layer 2 (filterZeroSceneSites) runs
+// pre-merge on the TPDB leg only and removes a zero-scene TPDB site
+// regardless of pool availability; layer 3 (filterAvailableStudios) runs
+// post-merge and is the ONLY layer that can touch a StashDB-exclusive studio,
+// since filterZeroSceneSites never sees it.
+func TestStudiosMerged_AvailabilityFilterAppliesAfterZeroSceneLayer(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/scenes") {
+			w.Write([]byte(`{"data":[]}`)) // every TPDB site has zero scenes
+			return
+		}
+		w.Write([]byte(`{"data":[{"uuid":"orphan","name":"Zero Scene Site"}]}`))
+	})
+	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"queryStudios":{"studios":[{"id":"s1","name":"Stash Only Studio","images":[]}]}}}`))
+	})
+	// "Stash Only Studio" is pool-available; "Zero Scene Site" is not in the
+	// pool at all -- irrelevant either way, since layer 2 removes it before
+	// layer 3 ever runs.
+	seed := []adultnewest.MatchedRelease{
+		{RowType: adultnewest.RowScene, EntityID: "sc1", EntitySource: "stashdb", EntityTitle: "A Scene",
+			EntityStudio: "Stash Only Studio", BrowseConfirmed: true},
+	}
+	mux := newAdultMuxWithPool(t, map[string]string{"tpdb": tpdb.URL, "stashdb": stash.URL}, adultnewest.NewFeedHealth(), seed)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedStudioPage
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Stash Only Studio" {
+		t.Fatalf("expected only the StashDB-exclusive, pool-available studio to survive both layers, got %+v", page.Items)
 	}
 }

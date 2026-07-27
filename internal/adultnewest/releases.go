@@ -160,8 +160,8 @@ func (s *ReleaseStore) MarkSeen(ctx context.Context, releaseGUID string) error {
 //     browse insert (1) raises it. Visibility is preserved regardless of order.
 //   - the enclosure (download_url/protocol/size/feed_id/feed_item_key/
 //     last_confirmed_seen) is adopted ONLY onto a row that has none yet
-//     (existing download_url = '' AND incoming != '') — first-feed-wins: a
-//     browse insert (download_url='') never overwrites a feed's enclosure, and a
+//     (existing download_url is empty and incoming is not) — first-feed-wins: a
+//     browse insert (whose download_url is empty) never overwrites a feed's enclosure, and a
 //     second feed never downgrades the first feed's enclosure.
 //
 // Identity-stable metadata (title/studio/image/genres/performers) keeps the
@@ -296,7 +296,7 @@ func scanRelease(rows *sql.Rows) (MatchedRelease, error) {
 // uniqueness key, (row_type, entity_source, entity_id) is) onto the newest
 // match, with id as a strict tie-breaker so the result is a total order even
 // when first_seen_at collides. A no-op for empty keys; browse-only rows
-// (feed_item_key = '') never match a non-empty enclosure key.
+// (whose feed_item_key is empty) never match a non-empty enclosure key.
 func (s *ReleaseStore) ByFeedItemKeys(ctx context.Context, keys []string) (map[string]MatchedRelease, error) {
 	out := make(map[string]MatchedRelease, len(keys))
 	if len(keys) == 0 {
@@ -445,6 +445,58 @@ func (s *ReleaseStore) ListRecentScenes(ctx context.Context, page int) ([]Matche
 			return nil, err
 		}
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SceneCredit is the subset of a pooled Scene/Movie row's fields relevant to
+// building a "currently grabbable" performer/studio name-set (see
+// internal/api/adultdiscover_merge.go's availability hard filter) — a
+// deliberately lean shape (5 columns, not the full 20-column MatchedRelease)
+// since this feeds a per-request rollup, not a display list.
+type SceneCredit struct {
+	Performers        []string
+	Studio            string
+	BrowseConfirmed   bool
+	FeedID            int64
+	LastConfirmedSeen int64
+}
+
+// ScenePoolCredits returns every pooled Scene/Movie row's credit-relevant
+// fields, unpaginated — the pool is small by design (bounded scan cadence,
+// 6-month purge, see scan.go), so a full unpaginated read here is the
+// correct scale, unlike ListRecentScenes/SearchScenes which page for
+// display. Deliberately excludes Performer/Studio rows (row_type
+// RowPerformer/RowStudio): those are written BrowseConfirmed=true
+// unconditionally (scan.go), so including them would silently bypass the
+// FeedHealth-gated "grabbable" signal this method exists to provide — the
+// caller applies FeedHealth.Available itself, this method only returns raw
+// per-row facts.
+func (s *ReleaseStore) ScenePoolCredits(ctx context.Context) ([]SceneCredit, error) {
+	args := append([]any{}, sceneRowTypes...)
+	rows, err := s.db.QueryContext(ctx, `SELECT entity_studio, performers, browse_confirmed, feed_id, last_confirmed_seen
+		FROM adult_newest_releases
+		WHERE row_type IN (?, ?)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing scene pool credits: %w", err)
+	}
+	defer rows.Close()
+
+	out := []SceneCredit{}
+	for rows.Next() {
+		var c SceneCredit
+		var performersJSON string
+		var browseConfirmed int
+		if err := rows.Scan(&c.Studio, &performersJSON, &browseConfirmed, &c.FeedID, &c.LastConfirmedSeen); err != nil {
+			return nil, fmt.Errorf("scanning scene pool credit: %w", err)
+		}
+		c.BrowseConfirmed = browseConfirmed != 0
+		if performersJSON != "" {
+			if err := json.Unmarshal([]byte(performersJSON), &c.Performers); err != nil {
+				return nil, fmt.Errorf("decoding performers for scene pool credit: %w", err)
+			}
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

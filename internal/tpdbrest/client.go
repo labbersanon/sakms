@@ -776,32 +776,88 @@ type rawSiteEntry struct {
 	Logo    string `json:"logo"`
 	Favicon string `json:"favicon"`
 	Poster  string `json:"poster"`
+	// Network is present on /sites LIST responses (confirmed live 2026-07-26,
+	// not just the /sites/{id} detail endpoint) — see junkNetworkIDs below,
+	// the only consumer of this field.
+	Network *struct {
+		ID int `json:"id"`
+	} `json:"network"`
 }
 
 func (rs rawSiteEntry) toSite() Site {
 	return Site{ID: rs.ID, Name: rs.Name, Image: firstNonEmpty(rs.Logo, rs.Poster, rs.Favicon)}
 }
 
+// junkNetworkIDs are TPDB "network" ids for clip-selling platforms whose
+// entire catalog of TPDB "sites" is one auto-generated storefront per
+// individual creator (e.g. "Manyvids: Aryana", "I Want Clips: Athenabastet")
+// rather than a real production studio — confirmed live 2026-07-26: sampling
+// 100 pages spread across TPDB's full /sites catalog found ~63% of entries
+// belong to one of these seven networks. Each entry's raw JSON carries a
+// nested "network" object with a stable numeric id; filtering on that id is
+// far more robust than matching the entry's own display-name text (which was
+// tried and rejected — a name-prefix heuristic risks a real studio whose name
+// happens to collide, and doesn't survive typo/capitalization drift the way a
+// structural id does). NOT exhaustive: smaller clip-storefront platforms
+// below the sampling threshold likely exist and aren't caught here — this
+// list only covers the seven confirmed by live sampling, not a documented
+// TPDB API enum (no such enum exists).
+var junkNetworkIDs = map[int]bool{
+	5502:   true, // ManyVids
+	9347:   true, // I Want Clips
+	47302:  true, // APClips
+	5940:   true, // Clips4Sale
+	39646:  true, // TPDB's own "FansDB" network — unrelated to this app's separate FansDB stash-box connection
+	71743:  true, // HobbyPorn
+	111095: true, // Yourvids
+}
+
+func isJunkNetwork(rs rawSiteEntry) bool {
+	return rs.Network != nil && junkNetworkIDs[rs.Network.ID]
+}
+
 type sitesResponse struct {
 	Data []rawSiteEntry `json:"data"`
 }
 
-func (c *Client) getSites(ctx context.Context, params url.Values) ([]Site, error) {
+func (c *Client) getSitesRaw(ctx context.Context, params url.Values) ([]rawSiteEntry, error) {
 	var sr sitesResponse
 	if err := c.doGet(ctx, "/sites", params, &sr); err != nil {
 		return nil, err
 	}
-	out := make([]Site, len(sr.Data))
-	for i, rs := range sr.Data {
+	return sr.Data, nil
+}
+
+func (c *Client) getSites(ctx context.Context, params url.Values) ([]Site, error) {
+	raw, err := c.getSitesRaw(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Site, len(raw))
+	for i, rs := range raw {
 		out[i] = rs.toSite()
 	}
 	return out, nil
 }
 
-// SearchSites text-searches sites (studios) by name.
+// SearchSites text-searches sites (studios) by name. Deliberately NOT
+// junk-network-filtered, same scope precedent as BrowsePerformers only
+// filtering Browse, not Search — a search is explicit user intent, including
+// (if the operator really wants it) a specific clip-platform storefront.
 func (c *Client) SearchSites(ctx context.Context, term string) ([]Site, error) {
 	return c.getSites(ctx, url.Values{"q": {term}})
 }
+
+// maxSitePagesPerRequest bounds how many raw TPDB /sites pages a single
+// BrowseSites call will walk (see that method's doc for why the walk
+// exists). Sized generously so ordinary shallow browsing never hits it —
+// junk clusters alphabetically (all "Manyvids: " entries fall together under
+// M, etc.), so the cost of the walk grows with how deep into the catalog a
+// row has scrolled, not with perPage alone. Hitting the cap means BrowseSites
+// returns fewer than perPage items on a page that isn't the true catalog end
+// — an accepted, logged degradation for a Discover browse row, not a
+// correctness bug (see BrowseSites' doc).
+const maxSitePagesPerRequest = 15
 
 // BrowseSites returns one page of TPDB's site (studio) catalog with NO search
 // term — the plain paginated browse backing Adult Discover's Studios row. The
@@ -810,21 +866,42 @@ func (c *Client) SearchSites(ctx context.Context, term string) ([]Site, error) {
 // clamped like the other browse methods (page >= 1; perPage defaults to
 // defaultBrowsePerPage). The spec's optional "letter" filter is not used here.
 //
-// Name sort (live-verified 2026-07-26): sends orderBy=asc_name so the merged
-// Studios row's page-local dedup can rely on name alignment. As with
+// Name sort (live-verified 2026-07-26): sends orderBy=asc_name. As with
 // /performers, the working value is LOWERCASE asc_name; the uppercase
 // "ASC_NAME" 422s live. Extra wrinkle for /sites: the OpenAPI operation does
 // not even list an orderBy param (only q/letter/page/per_page), yet the live
 // API accepts orderBy=asc_name and sorts by it — a spec-vs-implementation
-// mismatch confirmed live, stated as fact.
+// mismatch confirmed live, stated as fact. Unlike BrowsePerformers, /sites'
+// own orderBy=most_relevant was live-verified (2026-07-26) to return results
+// BYTE-IDENTICAL to asc_name — TPDB's site relevance ranking doesn't
+// functionally differ from name order for this catalog, so it's not a usable
+// fix signal here and asc_name stays.
 //
-// Out-of-range behavior (live-verified 2026-07-26): unlike /performers, TPDB
-// /sites DOES honor the standard contract — a page past the final one returns
-// a clean empty-200 (not the clamp-and-repeat that /performers exhibits). So
-// BrowseSites needs NO clamp-detection guard; adding one would be a dead
-// branch against a behavior verified not to occur (and a premature
-// abstraction). If /sites is ever observed to clamp meta.current_page like
-// /performers does, mirror BrowsePerformers' clamp guard here.
+// Junk-network filtering (added 2026-07-26, see junkNetworkIDs): entries
+// belonging to a known clip-platform storefront network are excluded. Because
+// some raw TPDB pages are close to or exactly 100% junk by this definition,
+// returning whatever's left after filtering a single fetched page could
+// return fewer than perPage items (even zero) on a page that ISN'T the true
+// end of the catalog — which would make the merged Studios row's "fewer than
+// a full page = no more results" exhaustion check (see PaginatedStrip,
+// frontend/src/screens/discover/shared.tsx) terminate early, well before the
+// real catalog is exhausted. So this method walks: it re-fetches raw TPDB
+// /sites pages starting from page 1 on every call (no cross-call state —
+// simpler and safer than a resume cursor; a per-row server-side page cache
+// was considered and rejected, since two browser tabs or a page reload could
+// interleave requests out of sequence and silently skip or duplicate
+// studios), filtering junk-network entries as it goes, until it has
+// accumulated page*perPage legitimate items, or hits maxSitePagesPerRequest,
+// or reaches TPDB's own genuine end of catalog.
+//
+// End-of-catalog detection (live-verified 2026-07-26): unlike /performers,
+// TPDB /sites DOES honor the standard contract — a page past the final one
+// returns a clean empty-200 (not the clamp-and-repeat that /performers
+// exhibits). The walk's only true-exhaustion signal is a raw page returning
+// zero items (len(sr.Data)==0) — NOT "zero items survived filtering," which
+// can happen on an all-junk-but-nonempty page and must NOT stop the walk.
+// Conflating those two would silently reintroduce the exact bug this method
+// fixes, just one layer down.
 func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, error) {
 	if perPage <= 0 {
 		perPage = defaultBrowsePerPage
@@ -832,11 +909,34 @@ func (c *Client) BrowseSites(ctx context.Context, page, perPage int) ([]Site, er
 	if page <= 0 {
 		page = 1
 	}
-	return c.getSites(ctx, url.Values{
-		"per_page": {strconv.Itoa(perPage)},
-		"page":     {strconv.Itoa(page)},
-		"orderBy":  {"asc_name"},
-	})
+	needed := page * perPage
+
+	var accum []Site
+	for rawPage := 1; len(accum) < needed && rawPage <= maxSitePagesPerRequest; rawPage++ {
+		raw, err := c.getSitesRaw(ctx, url.Values{
+			"per_page": {strconv.Itoa(perPage)},
+			"page":     {strconv.Itoa(rawPage)},
+			"orderBy":  {"asc_name"},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			break // true end of TPDB's /sites catalog
+		}
+		for _, rs := range raw {
+			if isJunkNetwork(rs) {
+				continue
+			}
+			accum = append(accum, rs.toSite())
+		}
+	}
+
+	start := (page - 1) * perPage
+	if start >= len(accum) {
+		return []Site{}, nil
+	}
+	return accum[start:min(page*perPage, len(accum))], nil
 }
 
 // ScenesBySite returns one page of a single site's scenes via TPDB's dedicated

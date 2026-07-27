@@ -174,7 +174,7 @@ func TestDedupeStashScenesByTPDBHashes(t *testing.T) {
 		{ID: "t2", Title: "T Two", Site: "S", Hashes: nil}, // no hashes → can't mask anything
 	}
 	stash := []stashbox.Scene{
-		{ID: "sx", Title: "Dup", PHashes: []string{"h1"}}, // shares h1 → dropped
+		{ID: "sx", Title: "Dup", PHashes: []string{"h1"}},  // shares h1 → dropped
 		{ID: "sy", Title: "Keep", PHashes: []string{"h2"}}, // no overlap → kept
 	}
 	out := dedupeStashScenesByTPDBHashes(tpdb, stash)
@@ -376,7 +376,15 @@ func TestPerformersMerged_HardError4xxReturns502(t *testing.T) {
 func TestStudiosMerged_MergesBothSources(t *testing.T) {
 	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"uuid":"t1","name":"Vixen","logo":"http://cdn/t.png"}],"meta":{"current_page":1}}`))
+		// BrowseSites now walks internally (2026-07-26, junk-network filter) —
+		// page 1 has the one real item, page 2+ must be empty so the walk
+		// terminates at the true end of the (tiny, fixture) catalog instead of
+		// looping to its cap and returning duplicate "Vixen" entries.
+		if r.URL.Query().Get("page") == "1" {
+			w.Write([]byte(`{"data":[{"uuid":"t1","name":"Vixen","logo":"http://cdn/t.png"}],"meta":{"current_page":1}}`))
+			return
+		}
+		w.Write([]byte(`{"data":[]}`))
 	})
 	stash := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

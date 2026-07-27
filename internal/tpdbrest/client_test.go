@@ -394,15 +394,22 @@ func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 			t.Errorf("expected path /sites, got %q", r.URL.Path)
 		}
 		q := r.URL.Query()
-		if q.Get("per_page") != "20" || q.Get("page") != "1" {
-			t.Errorf("expected defaulted per_page=20 page=1, got %v", q)
-		}
 		if _, hasQ := q["q"]; hasQ {
 			t.Errorf("expected no search term on a browse, got %v", q)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// logo present → chosen first over poster/favicon.
-		_, _ = w.Write([]byte(`{"data":[{"uuid":"s1","name":"Tushy","logo":"http://cdn/logo.png","favicon":"http://cdn/fav.ico","poster":"http://cdn/poster.jpg"}]}`))
+		if q.Get("page") == "1" {
+			if q.Get("per_page") != "20" {
+				t.Errorf("expected defaulted per_page=20, got %v", q)
+			}
+			// logo present → chosen first over poster/favicon.
+			_, _ = w.Write([]byte(`{"data":[{"uuid":"s1","name":"Tushy","logo":"http://cdn/logo.png","favicon":"http://cdn/fav.ico","poster":"http://cdn/poster.jpg"}]}`))
+			return
+		}
+		// Any page past 1 is the walk's end-of-catalog probe (1 real item is
+		// short of the requested 20, so BrowseSites keeps walking) — an
+		// empty-200 stops it.
+		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))
 	defer srv.Close()
 
@@ -431,7 +438,11 @@ func TestBrowseSites_PaginatesWithoutSearchTerm(t *testing.T) {
 func TestBrowseSites_DecodesUUIDNotID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":7,"uuid":"7e8d5654-2ca4-46de-ac1e-8683f9e7f778","name":"Real UUID Site"}]}`))
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte(`{"data":[{"id":7,"uuid":"7e8d5654-2ca4-46de-ac1e-8683f9e7f778","name":"Real UUID Site"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`)) // end-of-catalog probe past the 1 real item
 	}))
 	defer srv.Close()
 
@@ -442,6 +453,141 @@ func TestBrowseSites_DecodesUUIDNotID(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].ID != "7e8d5654-2ca4-46de-ac1e-8683f9e7f778" {
 		t.Fatalf("expected ID from uuid, got %+v", out)
+	}
+}
+
+// TestBrowseSites_FiltersJunkNetworks proves entries belonging to a known
+// clip-platform storefront network (junkNetworkIDs) are excluded, while a
+// legitimate entry with no network, and one with a non-denylisted network,
+// both survive.
+func TestBrowseSites_FiltersJunkNetworks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte(`{"data":[
+				{"uuid":"junk1","name":"Manyvids: Aryana","network":{"id":5502}},
+				{"uuid":"real1","name":"Real Indie Studio"},
+				{"uuid":"real2","name":"1000 Facials","network":{"id":4320}}
+			]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowseSites(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 non-junk entries, got %d: %+v", len(out), out)
+	}
+	for _, s := range out {
+		if s.ID == "junk1" {
+			t.Errorf("junk-network entry %q should have been filtered out", s.ID)
+		}
+	}
+}
+
+// TestBrowseSites_WalksPastAllJunkPage is the core regression guard for the
+// bug this method's walk fixes: a raw TPDB page that is 100% junk-network
+// entries (but NOT empty) must NOT be treated as end-of-catalog. A revert to
+// naive single-page filtering would return 0 items here and the merged
+// Studios row would terminate early, well before the real catalog ends.
+func TestBrowseSites_WalksPastAllJunkPage(t *testing.T) {
+	var pageRequests []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		mu.Lock()
+		pageRequests = append(pageRequests, page)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch page {
+		case "1":
+			// Entirely junk, but NOT empty — must not stop the walk.
+			_, _ = w.Write([]byte(`{"data":[
+				{"uuid":"j1","name":"Manyvids: A","network":{"id":5502}},
+				{"uuid":"j2","name":"Manyvids: B","network":{"id":5502}}
+			]}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"data":[{"uuid":"real1","name":"Real Studio"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowseSites(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].ID != "real1" {
+		t.Fatalf("expected the walk to reach the real entry on page 2, got %+v", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pageRequests) < 2 {
+		t.Fatalf("expected BrowseSites to walk past the all-junk page 1, only requested %v", pageRequests)
+	}
+}
+
+// TestBrowseSites_SecondAppPageOffsetsIntoAccumulated proves app-level page 2
+// (perPage 1) returns the SECOND real (non-junk) entry, not the second raw
+// TPDB entry — i.e. filtering happens before the page-slice offset is
+// applied, not after.
+func TestBrowseSites_SecondAppPageOffsetsIntoAccumulated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`{"data":[
+				{"uuid":"real1","name":"Alpha Studio"},
+				{"uuid":"junk1","name":"Manyvids: X","network":{"id":5502}},
+				{"uuid":"real2","name":"Beta Studio"}
+			]}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowseSites(context.Background(), 2, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].ID != "real2" {
+		t.Fatalf("expected app-page 2 (perPage 1) to be the second REAL entry, got %+v", out)
+	}
+}
+
+// TestBrowseSites_CapBoundsTheWalk proves the walk stops at
+// maxSitePagesPerRequest rather than looping forever against a pathological
+// upstream that never returns a full empty-200 (e.g. an all-junk catalog).
+// This is the second, independent backstop behind the empty-200 terminator.
+func TestBrowseSites_CapBoundsTheWalk(t *testing.T) {
+	var requestCount int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&requestCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		// Every page: 1 junk item, never empty, never enough real items.
+		_, _ = w.Write([]byte(`{"data":[{"uuid":"j","name":"Manyvids: X","network":{"id":5502}}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowseSites(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("expected 0 real entries (all junk), got %+v", out)
+	}
+	if got := atomic.LoadInt64(&requestCount); got != maxSitePagesPerRequest {
+		t.Fatalf("expected the walk to stop exactly at the %d-page cap, made %d requests", maxSitePagesPerRequest, got)
 	}
 }
 

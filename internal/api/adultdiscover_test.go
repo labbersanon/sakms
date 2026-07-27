@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
@@ -274,13 +276,26 @@ func TestAdultDiscoverHandler_InvalidSortByFallsBack(t *testing.T) {
 	}
 }
 
+// TestAdultStudiosHandler_Browse also guards BrowseSites' junk-network-filter
+// walk (2026-07-26, see tpdbrest.BrowseSites): the fake TPDB serves 15 real
+// items on each of pages 1-2 and an empty page 3 (no junk in this fixture —
+// that behavior is covered directly in tpdbrest's own tests), so app page 2
+// at perPage 15 must resolve to exactly TPDB page 2's 15 items, proving the
+// handler's plumbing survives BrowseSites now walking internally instead of
+// making one direct pass-through request.
 func TestAdultStudiosHandler_Browse(t *testing.T) {
-	var gotPath, gotPage, gotPerPage string
+	var gotPath string
 	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		gotPage, gotPerPage = r.URL.Query().Get("page"), r.URL.Query().Get("per_page")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"uuid":"st1","name":"Tushy","logo":"http://cdn/logo.png"}]}`))
+		switch r.URL.Query().Get("page") {
+		case "1":
+			w.Write([]byte(`{"data":[` + fakeSitesPage("p1", 15) + `]}`))
+		case "2":
+			w.Write([]byte(`{"data":[` + fakeSitesPage("p2", 15) + `]}`))
+		default:
+			w.Write([]byte(`{"data":[]}`))
+		}
 	})
 
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
@@ -301,16 +316,30 @@ func TestAdultStudiosHandler_Browse(t *testing.T) {
 	if gotPath != "/sites" {
 		t.Errorf("expected browse to hit /sites, got %q", gotPath)
 	}
-	if gotPage != "2" || gotPerPage != "15" {
-		t.Errorf("expected page=2 per_page=15, got page=%q per_page=%q", gotPage, gotPerPage)
-	}
 	var studios []adultStudio
 	if err := json.NewDecoder(resp.Body).Decode(&studios); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
-	if len(studios) != 1 || studios[0].ID != "st1" || studios[0].Name != "Tushy" || studios[0].Image != "http://cdn/logo.png" {
-		t.Errorf("unexpected studios: %+v", studios)
+	if len(studios) != 15 {
+		t.Fatalf("expected 15 studios (app page 2 = TPDB page 2's real items), got %d: %+v", len(studios), studios)
 	}
+	if studios[0].ID != "p2-1" || studios[0].Name != "p2-1" {
+		t.Errorf("expected app page 2 to be TPDB page 2's content, got first=%+v", studios[0])
+	}
+}
+
+// fakeSitesPage builds n raw TPDB site JSON objects with ids/names
+// "{prefix}-1".."{prefix}-n", no network field (never junk-filtered).
+func fakeSitesPage(prefix string, n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			b.WriteByte(',')
+		}
+		id := prefix + "-" + strconv.Itoa(i)
+		b.WriteString(`{"uuid":"` + id + `","name":"` + id + `"}`)
+	}
+	return b.String()
 }
 
 func TestAdultPerformersHandler_Browse(t *testing.T) {

@@ -633,14 +633,24 @@ export function PaginatedStrip<T>(props: {
   const [page, setPage] = createSignal(0);
   const [loading, setLoading] = createSignal(false);
   const [exhausted, setExhausted] = createSignal(false);
-  // emptyAutoAdvances counts consecutive envelope pages that came back with
-  // hasMore=true but zero items (e.g. every item on the page was dropped by
-  // a post-merge availability filter) — see DE-2 below. Reset whenever a
-  // page delivers at least one item or the row reloads from page 1.
-  const [emptyAutoAdvances, setEmptyAutoAdvances] = createSignal(0);
-  const maxEmptyAutoAdvance = 3;
+  // autoAdvanceCount counts how many extra envelope pages THIS load-more
+  // operation (one manual "Show more" click, or the reset-effect's initial
+  // load) has auto-fetched on its own — see DE-2 below. Reset to 0 whenever an
+  // operation's auto-advance chain ends (enough gathered, row exhausted, or the
+  // cap hit) and whenever the row reloads from page 1, so each fresh operation
+  // gets the full budget again.
+  const [autoAdvanceCount, setAutoAdvanceCount] = createSignal(0);
+  const maxAutoAdvance = 3;
 
-  const load = async (reset: boolean) => {
+  // load fetches one page and appends it. chainStart records items().length as
+  // it was at the START of the current load-more operation (a top-level manual
+  // click or the reset-effect's initial call); it defaults to the CURRENT
+  // items().length, which is correct for both of those top-level entry points
+  // (0 right after the effect clears items on reset; the accumulated length on
+  // a manual click). The recursive auto-advance call (see DE-2 below) passes
+  // chainStart through UNCHANGED so the whole chain measures "items gained by
+  // this one operation" against a single fixed reference point.
+  const load = async (reset: boolean, chainStart = items().length) => {
     const next = reset ? 1 : page() + 1;
     setLoading(true);
     try {
@@ -679,23 +689,51 @@ export function PaginatedStrip<T>(props: {
         // instead of relying on this length check.
         setExhausted(true);
       }
-      // DE-2: an envelope page can legitimately come back with zero items
-      // but hasMore=true (every item on this page was dropped by the
-      // availability filter, while the underlying catalog still has more).
-      // Auto-advance past up to maxEmptyAutoAdvance consecutive empty pages
-      // so the operator isn't required to manually click "Show more"
-      // through a run of filtered-empty pages — capped so a pathologically
-      // sparse catalog can't turn one "Show more" click into an unbounded
-      // fetch loop; the manual button (DE) remains reachable once the cap is
-      // hit.
-      if (isEnvelope && batch.length === 0 && hasMore) {
-        if (emptyAutoAdvances() < maxEmptyAutoAdvance) {
-          setEmptyAutoAdvances((n) => n + 1);
-          await load(false);
-          return;
-        }
+      // DE-2: an envelope row's post-merge availability filter can hand back a
+      // page that's EMPTY or merely SPARSE (fewer real items than a full page)
+      // while the underlying catalog still has more (hasMore=true) — every
+      // item on the page, or most of them, was dropped by the filter. Either
+      // way, one manual "Show more" click yielded far less than the perPage
+      // worth of new cards every other Discover row delivers per click. The
+      // originally-empty-only version of this branch (batch.length === 0)
+      // missed the sparse case entirely: the live Performers row returns pages
+      // of 1 item each against the small curated identify pool, so it never
+      // tripped an all-empty check and the operator got exactly one new item
+      // per click.
+      //
+      // Broadened trigger: keep auto-fetching subsequent pages until the items
+      // GAINED BY THIS OPERATION reach the row's own perPage target — i.e.
+      // gained = items().length (read reactively right after the setItems above;
+      // Solid signal writes are synchronous outside batch(), so this sees the
+      // just-appended length) minus chainStart, the length when this operation
+      // began. chainStart is threaded through the recursion unchanged, so the
+      // whole chain accumulates toward one shared full-page goal rather than
+      // resetting its measure each hop.
+      //
+      // Stop (and let the existing manual "Show more" (DE) control take over)
+      // on whichever comes first: gained >= target (a full page's worth
+      // collected), hasMore === false (row genuinely exhausted, handled above),
+      // or maxAutoAdvance extra fetches (the bounded cap, so a pathologically
+      // sparse catalog can't turn one click into an unbounded loop). The cap is
+      // per-operation: setAutoAdvanceCount(0) fires the moment a chain ends, so
+      // the NEXT click re-engages the full budget and again pulls ~a page's
+      // worth — not one item like the pre-fix behavior.
+      //
+      // Plain-array callers are structurally unaffected: isEnvelope is false
+      // for them, so this whole branch is skipped and setAutoAdvanceCount(0)
+      // runs — identical to before this change and to their all-along behavior.
+      const target = props.perPage ?? defaultStripPageSize;
+      if (
+        isEnvelope &&
+        hasMore &&
+        items().length - chainStart < target &&
+        autoAdvanceCount() < maxAutoAdvance
+      ) {
+        setAutoAdvanceCount((n) => n + 1);
+        await load(false, chainStart);
+        return;
       } else {
-        setEmptyAutoAdvances(0);
+        setAutoAdvanceCount(0);
       }
     } catch (e) {
       props.onError(e);
@@ -711,7 +749,7 @@ export function PaginatedStrip<T>(props: {
       setItems([]);
       setPage(0);
       setExhausted(false);
-      setEmptyAutoAdvances(0);
+      setAutoAdvanceCount(0);
       void load(true);
     }),
   );

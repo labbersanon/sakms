@@ -746,10 +746,12 @@ describe("Discover — Adult tab (row-based browse)", () => {
 
   // DE-2's auto-advance is bounded: a pathologically sparse catalog (every
   // page filtered fully empty, hasMore never turns false) must not loop
-  // forever. After maxEmptyAutoAdvance (3) consecutive empty pages, the loop
-  // stops and hands control back to a manually-clickable "Show more" -- which
-  // the DE fix also makes reachable with zero items on screen, unlike the old
-  // items().length > 0 gate.
+  // forever. After maxAutoAdvance (3) extra fetches the loop stops and hands
+  // control back to a manually-clickable "Show more" -- which the DE fix also
+  // makes reachable with zero items on screen, unlike the old
+  // items().length > 0 gate. The all-empty case still caps at exactly the same
+  // fetch count as before the sparse-aware broadening (gained stays 0 < target
+  // every page, so the cap is what stops it) -- this locks that in.
   it("Performers row: caps auto-advance at 3 empty pages, leaving a reachable Show more control", async () => {
     const fetchMock = stubFetch((url) => {
       if (url.includes("/api/modes/adult/performers-merged"))
@@ -769,6 +771,62 @@ describe("Discover — Adult tab (row-based browse)", () => {
       String(u).includes("/api/modes/adult/performers-merged"),
     );
     // 1 initial load (page 1) + 3 bounded auto-advances (pages 2-4) = 4.
+    expect(calls.length).toBe(4);
+  });
+
+  // Sparse-page auto-advance (extends DE-2, 2026-07-27): the live Performers
+  // row returns pages of exactly ONE item each against the small curated
+  // identify pool (page 1 -> 1 item, page 2 -> 1 item, ... all hasMore=true) --
+  // never fully empty, so the old all-empty check never fired and the operator
+  // got exactly one new card per "Show more" click. The broadened trigger keeps
+  // auto-fetching while fewer than perPage (20) items have been gathered THIS
+  // operation, bounded by the same cap. So a single initial load should
+  // accumulate a page's worth (bounded: 1 initial fetch + up to 3 auto-advances
+  // = 4 one-item pages = 4 cards), not 1 -- and, since hasMore is still true and
+  // the cap was hit before reaching a full perPage, still leave a reachable
+  // manual "Show more" control.
+  it("Performers row: sparse 1-item pages auto-advance to ~a full page's worth, not one item, keeping Show more", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("/api/modes/adult/performers-merged")) {
+        const page = Number(new URL(url, "http://x").searchParams.get("page") ?? "1");
+        return jsonResponse({
+          items: [
+            {
+              name: `Sparse Performer ${page}`,
+              image: `https://cdn.theporndb.net/performers/p${page}.jpg`,
+              source: "tpdb",
+              tpdbId: `pf-sparse-${page}`,
+            },
+          ],
+          hasMore: true,
+        });
+      }
+      if (url.includes("/api/modes/adult/studios-merged"))
+        return jsonResponse({ items: [], hasMore: false });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+
+    // Await the LAST page's card first so the whole async auto-advance chain
+    // has settled, then assert every earlier page's card is present too -- one
+    // card from each of the 4 one-item pages the single initial operation
+    // pulled, proving it did NOT stop after page 1 with a lone item.
+    expect(await screen.findByText("Sparse Performer 4")).toBeInTheDocument();
+    expect(screen.getByText("Sparse Performer 1")).toBeInTheDocument();
+    expect(screen.getByText("Sparse Performer 2")).toBeInTheDocument();
+    expect(screen.getByText("Sparse Performer 3")).toBeInTheDocument();
+    // Cap hit at 4 fetches, hasMore still true -> the manual control stays.
+    expect(screen.getByText("Show more")).toBeInTheDocument();
+
+    const calls = fetchMock.mock.calls.filter(([u]) =>
+      String(u).includes("/api/modes/adult/performers-merged"),
+    );
+    // 1 initial load + 3 bounded auto-advances = 4, same budget as the
+    // all-empty cap case above -- the trigger widened, the bound did not.
     expect(calls.length).toBe(4);
   });
 });

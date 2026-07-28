@@ -8,12 +8,16 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/adultmerge"
+	"github.com/labbersanon/sakms/internal/adultmergecache"
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/db"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
@@ -25,7 +29,7 @@ func TestMergePerformers_NearExactPairCollapses(t *testing.T) {
 	// divergence flag, no AltName, both ids set, Source "merged".
 	tpdb := []tpdbrest.Performer{{ID: "t1", Name: "Riley Reid", Image: "t.jpg"}}
 	stash := []stashbox.Performer{{ID: "s1", Name: "Riley Reid", ImageURL: "s.jpg"}}
-	out := mergePerformers(tpdb, stash)
+	out := adultmerge.MergePerformers(tpdb, stash)
 	if len(out) != 1 {
 		t.Fatalf("expected 1 collapsed card, got %d: %+v", len(out), out)
 	}
@@ -49,7 +53,7 @@ func TestMergePerformers_DivergentPairSurfacesBothNames(t *testing.T) {
 	// NOT near-exact (<0.9), so BOTH names must be surfaced.
 	tpdb := []tpdbrest.Performer{{ID: "t1", Name: "Anna Bella Rose West", Image: "t.jpg"}}
 	stash := []stashbox.Performer{{ID: "s1", Name: "Anna Bella Rose East", ImageURL: "s.jpg"}}
-	out := mergePerformers(tpdb, stash)
+	out := adultmerge.MergePerformers(tpdb, stash)
 	if len(out) != 1 {
 		t.Fatalf("expected 1 merged card, got %d: %+v", len(out), out)
 	}
@@ -74,7 +78,7 @@ func TestMergePerformers_DivergentPairSurfacesBothNames(t *testing.T) {
 func TestMergePerformers_PairedImageFallsBackToTPDBWhenStashEmpty(t *testing.T) {
 	tpdb := []tpdbrest.Performer{{ID: "t1", Name: "Riley Reid", Image: "t.jpg"}}
 	stash := []stashbox.Performer{{ID: "s1", Name: "Riley Reid", ImageURL: ""}}
-	out := mergePerformers(tpdb, stash)
+	out := adultmerge.MergePerformers(tpdb, stash)
 	if len(out) != 1 || out[0].Image != "t.jpg" {
 		t.Errorf("expected TPDB image fallback when StashDB image is empty, got %+v", out)
 	}
@@ -91,7 +95,7 @@ func TestMergePerformers_UnpairedBothSidesSurviveAndSpineOrder(t *testing.T) {
 		{ID: "s1", Name: "Riley Reid", ImageURL: "s1.jpg"},
 		{ID: "s3", Name: "Only Stashdb Person", ImageURL: "s3.jpg"},
 	}
-	out := mergePerformers(tpdb, stash)
+	out := adultmerge.MergePerformers(tpdb, stash)
 	if len(out) != 3 {
 		t.Fatalf("expected 3 cards (1 merged + 2 exclusives), got %d: %+v", len(out), out)
 	}
@@ -113,7 +117,7 @@ func TestMergePerformers_NilTPDBPurePassthrough(t *testing.T) {
 		{ID: "s1", Name: "Alpha", ImageURL: "a.jpg"},
 		{ID: "s2", Name: "Beta", ImageURL: "b.jpg"},
 	}
-	out := mergePerformers(nil, stash)
+	out := adultmerge.MergePerformers(nil, stash)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 pure-StashDB cards, got %d: %+v", len(out), out)
 	}
@@ -126,14 +130,14 @@ func TestMergePerformers_NilTPDBPurePassthrough(t *testing.T) {
 
 func TestMergePerformers_NilStashPurePassthrough(t *testing.T) {
 	tpdb := []tpdbrest.Performer{{ID: "t1", Name: "Alpha", Image: "a.jpg"}}
-	out := mergePerformers(tpdb, nil)
+	out := adultmerge.MergePerformers(tpdb, nil)
 	if len(out) != 1 || out[0].Source != "tpdb" || out[0].TPDBID != "t1" || out[0].StashDBID != "" {
 		t.Errorf("expected a pure TPDB-only passthrough, got %+v", out)
 	}
 }
 
 func TestMergePerformers_EmptyBothNoPanic(t *testing.T) {
-	out := mergePerformers(nil, nil)
+	out := adultmerge.MergePerformers(nil, nil)
 	if len(out) != 0 {
 		t.Errorf("expected empty result for two empty legs, got %+v", out)
 	}
@@ -147,7 +151,7 @@ func TestMergeStudios_DivergentNearExactAndPassthrough(t *testing.T) {
 		{ID: "s1", Name: "Vixen", ImageURL: "s.png"},
 		{ID: "s2", Name: "Exclusive Studio", ImageURL: "ex.png"},
 	}
-	out := mergeStudios(tpdb, stash)
+	out := adultmerge.MergeStudios(tpdb, stash)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 cards (1 merged + 1 exclusive), got %d: %+v", len(out), out)
 	}
@@ -161,13 +165,13 @@ func TestMergeStudios_DivergentNearExactAndPassthrough(t *testing.T) {
 	// Divergent-studio case (4-token, share 3).
 	dt := []tpdbrest.Site{{ID: "t9", Name: "Big City Films West"}}
 	ds := []stashbox.Studio{{ID: "s9", Name: "Big City Films East"}}
-	dout := mergeStudios(dt, ds)
+	dout := adultmerge.MergeStudios(dt, ds)
 	if len(dout) != 1 || !dout[0].NamesDiverged || dout[0].Name != "Big City Films East" || dout[0].AltName != "Big City Films West" {
 		t.Errorf("expected a divergent-name merged studio surfacing both names, got %+v", dout)
 	}
 
 	// Nil-leg passthrough.
-	if got := mergeStudios(nil, ds); len(got) != 1 || got[0].Source != "stashdb" {
+	if got := adultmerge.MergeStudios(nil, ds); len(got) != 1 || got[0].Source != "stashdb" {
 		t.Errorf("expected pure StashDB studio passthrough on a nil TPDB leg, got %+v", got)
 	}
 }
@@ -501,7 +505,7 @@ func TestFilterZeroSceneSites_DropsZeroSceneEntries(t *testing.T) {
 		{ID: "zero-scenes", Name: "Orphan Placeholder"},
 		{ID: "has-scenes", Name: "Real Studio"},
 	}
-	out := filterZeroSceneSites(context.Background(), client, sites)
+	out := adultmerge.FilterZeroSceneSites(context.Background(), client, sites)
 	if len(out) != 1 || out[0].ID != "has-scenes" {
 		t.Fatalf("expected only the has-scenes entry to survive, got %+v", out)
 	}
@@ -516,7 +520,7 @@ func TestFilterZeroSceneSites_FailsOpenOnError(t *testing.T) {
 	})
 	client := tpdbrest.New(tpdb.URL, "testkey", &http.Client{})
 	sites := []tpdbrest.Site{{ID: "s1", Name: "Real Studio"}}
-	out := filterZeroSceneSites(context.Background(), client, sites)
+	out := adultmerge.FilterZeroSceneSites(context.Background(), client, sites)
 	if len(out) != 1 || out[0].ID != "s1" {
 		t.Fatalf("expected the item to survive a ScenesBySite error (fail-open), got %+v", out)
 	}
@@ -618,7 +622,16 @@ func newAdultMuxWithPool(t *testing.T, conns map[string]string, fh *adultnewest.
 			t.Fatalf("seeding release %q: %v", m.EntityID, err)
 		}
 	}
-	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, rssFeedsStore, nil, nil, nil, nil, nil)
+	// A fresh migrated DB backs the merged-row precompute cache. Left empty here,
+	// so every merged-handler request is a cache miss that falls through to the
+	// live merge path — preserving these tests' existing live-path assertions.
+	cacheDB, err := db.Open(filepath.Join(t.TempDir(), "mergecache.db"))
+	if err != nil {
+		t.Fatalf("opening merge-cache db: %v", err)
+	}
+	t.Cleanup(func() { cacheDB.Close() })
+	adultMergeCacheStore := adultmergecache.New(cacheDB)
+	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, adultMergeCacheStore, rssFeedsStore, nil, nil, nil, nil, nil)
 }
 
 // seedReleaseStore inserts rows into releaseStore, failing the test on error.
@@ -948,5 +961,242 @@ func TestStudiosMerged_AvailabilityFilterAppliesAfterZeroSceneLayer(t *testing.T
 	getJSON(t, srv.URL+"/api/modes/adult/studios-merged", &page)
 	if len(page.Items) != 1 || page.Items[0].Name != "Stash Only Studio" {
 		t.Fatalf("expected only the StashDB-exclusive, pool-available studio to survive both layers, got %+v", page.Items)
+	}
+}
+
+// --- Read-cache path (internal/adultmergecache) ---
+
+// newAdultMuxWithCache is newAdultMuxWithPool that ALSO returns the merged-row
+// cache store, so a test can pre-populate it and then exercise the handler's
+// cache read path. fh is the caller's FeedHealth (so an availability flip can be
+// driven between requests); seed pre-loads the adult_newest_releases pool.
+func newAdultMuxWithCache(t *testing.T, conns map[string]string, fh *adultnewest.FeedHealth, seed []adultnewest.MatchedRelease) (*http.ServeMux, *adultmergecache.Store) {
+	t.Helper()
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	for service, u := range conns {
+		if err := connStore.Upsert(context.Background(), service, u, "key"); err != nil {
+			t.Fatalf("upserting %s: %v", service, err)
+		}
+		overrideFixedURL(t, service, u)
+	}
+	for _, m := range seed {
+		if err := adultNewestReleaseStore.Insert(context.Background(), m); err != nil {
+			t.Fatalf("seeding release %q: %v", m.EntityID, err)
+		}
+	}
+	cacheDB, err := db.Open(filepath.Join(t.TempDir(), "mergecache.db"))
+	if err != nil {
+		t.Fatalf("opening merge-cache db: %v", err)
+	}
+	t.Cleanup(func() { cacheDB.Close() })
+	cacheStore := adultmergecache.New(cacheDB)
+	mux := NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, cacheStore, rssFeedsStore, nil, nil, nil, nil, nil)
+	return mux, cacheStore
+}
+
+func putPerformerCache(t *testing.T, store *adultmergecache.Store, page int, hasMore bool, cards []apidto.MergedPerformerCard) {
+	t.Helper()
+	payload, err := json.Marshal(cards)
+	if err != nil {
+		t.Fatalf("marshal performer cache payload: %v", err)
+	}
+	if err := store.Put(context.Background(), "performers", page, 20, payload, hasMore, "2026-07-28T00:00:00Z"); err != nil {
+		t.Fatalf("performer cache Put: %v", err)
+	}
+}
+
+func putStudioCache(t *testing.T, store *adultmergecache.Store, page int, hasMore bool, cards []apidto.MergedStudioCard) {
+	t.Helper()
+	payload, err := json.Marshal(cards)
+	if err != nil {
+		t.Fatalf("marshal studio cache payload: %v", err)
+	}
+	if err := store.Put(context.Background(), "studios", page, 20, payload, hasMore, "2026-07-28T00:00:00Z"); err != nil {
+		t.Fatalf("studio cache Put: %v", err)
+	}
+}
+
+// TestPerformersMerged_CacheHitServesWithoutUpstream proves an eligible request
+// is served from the cache with NO live TPDB/StashDB call. TPDB is deliberately
+// left unconfigured: the live path 400s when TPDB is absent, so a 200 with the
+// cached cards can only mean the handler never fell through to the live fetch.
+func TestPerformersMerged_CacheHitServesWithoutUpstream(t *testing.T) {
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, nil)
+	putPerformerCache(t, store, 1, true, []apidto.MergedPerformerCard{
+		{Name: "Riley Reid", Source: "tpdb", TPDBID: "t1"},
+		{Name: "Jane Doe", Source: "tpdb", TPDBID: "t2"},
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &page)
+	// Empty pool → availability filter fails open → both cached cards returned.
+	if len(page.Items) != 2 {
+		t.Fatalf("expected both cached cards served from cache (would 400 if the live path ran with TPDB absent), got %+v", page.Items)
+	}
+	if !page.HasMore {
+		t.Errorf("expected HasMore served from the cached pre-filter value (true), got false")
+	}
+}
+
+// TestPerformersMerged_CacheMissFallsBackToLive proves an empty cache falls
+// through to today's exact live-merge behavior.
+func TestPerformersMerged_CacheMissFallsBackToLive(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(tpdbPerformerPage(999, [2]string{"live", "Live Performer"})))
+	})
+	fh := adultnewest.NewFeedHealth()
+	mux, _ := newAdultMuxWithCache(t, map[string]string{"tpdb": tpdb.URL}, fh, nil)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Live Performer" {
+		t.Fatalf("expected the live-merge result on a cache miss, got %+v", page.Items)
+	}
+}
+
+// TestPerformersMerged_IneligibleRequestsBypassCache proves page>PrecomputePages
+// and perPage!=20 requests always go live, even when a cache row happens to exist.
+func TestPerformersMerged_IneligibleRequestsBypassCache(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// meta.current_page=999 so no requested page (1 or 4) is ever treated as
+		// clamped — the live path returns "Live Performer" for any page.
+		w.Write([]byte(tpdbPerformerPage(999, [2]string{"live", "Live Performer"})))
+	})
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCache(t, map[string]string{"tpdb": tpdb.URL}, fh, nil)
+	sentinel := []apidto.MergedPerformerCard{{Name: "CACHED SENTINEL", Source: "tpdb", TPDBID: "sent"}}
+	putPerformerCache(t, store, 1, false, sentinel)
+	putPerformerCache(t, store, 4, false, sentinel) // a page-4 row the gate must ignore
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Eligible: page<=3 && perPage==20 → served from cache (the sentinel).
+	var hit apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &hit)
+	if len(hit.Items) != 1 || hit.Items[0].Name != "CACHED SENTINEL" {
+		t.Fatalf("an eligible request should be served from cache, got %+v", hit.Items)
+	}
+	// perPage != 20 → bypass the cache → live.
+	var byPerPage apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=10", &byPerPage)
+	if len(byPerPage.Items) != 1 || byPerPage.Items[0].Name != "Live Performer" {
+		t.Fatalf("perPage!=20 must bypass the cache and go live, got %+v", byPerPage.Items)
+	}
+	// page > PrecomputePages → bypass the cache even though a page-4 row exists → live.
+	var byPage apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=4&perPage=20", &byPage)
+	if len(byPage.Items) != 1 || byPage.Items[0].Name != "Live Performer" {
+		t.Fatalf("page>PrecomputePages must bypass the cache (never serve the page-4 sentinel) and go live, got %+v", byPage.Items)
+	}
+}
+
+// TestPerformersMerged_CacheHitHasMoreIsPreFilterStored is the AC4 guard on the
+// cache-hit path: HasMore is the stored pre-filter value, never recomputed from
+// the post-filter item count. The pool credits a name matching NEITHER cached
+// card, so the filter engages and drops both — yet HasMore must stay the stored
+// true, not become false off a now-zero count.
+func TestPerformersMerged_CacheHitHasMoreIsPreFilterStored(t *testing.T) {
+	fh := adultnewest.NewFeedHealth()
+	seed := []adultnewest.MatchedRelease{
+		{RowType: adultnewest.RowScene, EntityID: "sc1", EntitySource: "tpdb", EntityTitle: "Some Scene",
+			Performers: []string{"Nobody At All"}, BrowseConfirmed: true},
+	}
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, seed)
+	putPerformerCache(t, store, 1, true, []apidto.MergedPerformerCard{{Name: "Riley Reid"}, {Name: "Jane Doe"}})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &page)
+	if len(page.Items) != 0 {
+		t.Fatalf("expected both cached cards dropped by the live availability filter, got %+v", page.Items)
+	}
+	if !page.HasMore {
+		t.Errorf("HasMore must be the stored pre-filter value (true) even when every item was dropped, got false")
+	}
+}
+
+// TestPerformersMerged_CacheHitFeedHealthFlipNoPrecompute is the AC3 guard: a
+// feed-health flip changes which cached cards survive on the NEXT request, with
+// NO precompute run in between — proving the availability filter runs live
+// against the cached PRE-filter payload, not a baked-in filtered snapshot.
+func TestPerformersMerged_CacheHitFeedHealthFlipNoPrecompute(t *testing.T) {
+	now := time.Now()
+	fh := adultnewest.NewFeedHealth()
+	seed := []adultnewest.MatchedRelease{
+		// Riley: browse-confirmed → always available (keeps the pool non-empty so
+		// the filter never fails open).
+		{RowType: adultnewest.RowScene, EntityID: "sc1", EntitySource: "tpdb", EntityTitle: "Riley Scene",
+			Performers: []string{"Riley Reid"}, BrowseConfirmed: true},
+		// Jane: feed-only (feed 7) → available iff feed 7 is currently fresh.
+		{RowType: adultnewest.RowScene, EntityID: "sc2", EntitySource: "tpdb", EntityTitle: "Jane Scene",
+			Performers: []string{"Jane Doe"}, FeedID: 7, FeedItemKey: "http://feed/x.torrent", LastConfirmedSeen: now.Unix()},
+	}
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, seed)
+	putPerformerCache(t, store, 1, false, []apidto.MergedPerformerCard{{Name: "Riley Reid"}, {Name: "Jane Doe"}})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Feed 7 fresh → pool = {Riley, Jane} → both cached cards survive.
+	fh.SetHealthy(7, now)
+	var healthy apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &healthy)
+	if len(healthy.Items) != 2 {
+		t.Fatalf("with feed 7 fresh, expected both cached cards available, got %+v", healthy.Items)
+	}
+
+	// Flip feed 7 stale — NO precompute runs. Same cached payload, re-filtered live.
+	fh.MarkUnhealthy(7)
+	var stale apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &stale)
+	if len(stale.Items) != 1 || stale.Items[0].Name != "Riley Reid" {
+		t.Fatalf("after the feed-health flip, expected only Riley (browse-confirmed) to survive, got %+v", stale.Items)
+	}
+}
+
+// TestPerformersMerged_CacheHitEmptyPoolFailsOpen proves the empty-pool fail-open
+// floor still applies on the cache-hit path: with no pool rows, every cached card
+// is returned unfiltered.
+func TestPerformersMerged_CacheHitEmptyPoolFailsOpen(t *testing.T) {
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, nil)
+	putPerformerCache(t, store, 1, false, []apidto.MergedPerformerCard{
+		{Name: "Alpha"}, {Name: "Beta"}, {Name: "Gamma"},
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &page)
+	if len(page.Items) != 3 {
+		t.Fatalf("empty pool must fail open on the cache-hit path (all cards kept), got %+v", page.Items)
+	}
+}
+
+// TestStudiosMerged_CacheHitServesWithoutUpstream is the studios-row parity of
+// the performers cache-hit test.
+func TestStudiosMerged_CacheHitServesWithoutUpstream(t *testing.T) {
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, nil)
+	putStudioCache(t, store, 1, true, []apidto.MergedStudioCard{
+		{Name: "Vixen", Source: "merged", TPDBID: "t1", StashDBID: "s1"},
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedStudioPage
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?page=1&perPage=20", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Vixen" {
+		t.Fatalf("expected the cached studio served from cache (TPDB absent, so live would 400), got %+v", page.Items)
+	}
+	if !page.HasMore {
+		t.Errorf("expected HasMore served from the cached value (true), got false")
 	}
 }

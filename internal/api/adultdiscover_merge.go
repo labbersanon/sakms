@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
+	"github.com/labbersanon/sakms/internal/adultmerge"
+	"github.com/labbersanon/sakms/internal/adultmergecache"
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
@@ -32,20 +32,6 @@ import (
 // true in code rather than an assumption about two packages' private defaults.
 const mergedBrowsePerPage = 20
 
-// firstNonEmpty returns the first non-empty string in vals, or "" if all are
-// empty — the StashDB-first name/image preference the merge cards apply
-// (firstNonEmpty(stash.X, tpdb.X)). tpdbrest has an identical unexported
-// helper; this is package api's own copy rather than an exported dependency on
-// another client package for a two-line utility.
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 // hashSetHasAny reports whether any hash in candidates is present in set — the
 // phash-intersection test the merged scene drill-down uses to drop a StashDB
 // scene TPDB already carries. Reconstructed here (with dedupeStashScenesByTPDBHashes
@@ -58,133 +44,6 @@ func hashSetHasAny(set map[string]bool, candidates []string) bool {
 		}
 	}
 	return false
-}
-
-// mergePerformers fuzzy-pairs a TPDB performer page and a StashDB performer page
-// into a single merged-row card list (see the ralplan-merge-tpdb-stashbox plan's
-// Q1/Q3/Q5). It calls identify.PairPerformersByName (asymmetry-safe mutual-best
-// pairing at the tuned 0.6 threshold, single-sourced in internal/identify), then
-// for each pair decides collapse-vs-surface-both via identify.NearExactName:
-//   - near-exact names → one displayed name (firstNonEmpty(stash.Name, tpdb.Name),
-//     StashDB-canonical-first), NamesDiverged=false.
-//   - divergent names → surface BOTH (Name=stash.Name, AltName=tpdb.Name,
-//     NamesDiverged=true) so a possible false-positive merge is visible to the
-//     operator instead of being hidden behind one name.
-//
-// Paired image is StashDB-first (firstNonEmpty(stash.ImageURL, tpdb.Image)).
-// Cards are emitted TPDB-order-first (the spine), with unpaired StashDB
-// exclusives appended in StashDB order. An empty (nil) leg degrades to a pure
-// passthrough of the other leg's items as unpaired cards — never a panic, never
-// treating empty-as-error. This is exactly the steady state once TPDB's
-// out-of-range clamp-detection kicks in (BrowsePerformers returns nil past its
-// final page): the row keeps scrolling as pure StashDB.
-func mergePerformers(tpdb []tpdbrest.Performer, stash []stashbox.Performer) []apidto.MergedPerformerCard {
-	tNames := make([]string, len(tpdb))
-	for i, p := range tpdb {
-		tNames[i] = p.Name
-	}
-	sNames := make([]string, len(stash))
-	for i, p := range stash {
-		sNames[i] = p.Name
-	}
-	// A = TPDB (the spine), B = StashDB.
-	pairs := identify.PairPerformersByName(tNames, sNames)
-	stashForT := make(map[int]int, len(pairs))
-	pairedS := make([]bool, len(stash))
-	for _, p := range pairs {
-		stashForT[p.AIndex] = p.BIndex
-		pairedS[p.BIndex] = true
-	}
-
-	out := make([]apidto.MergedPerformerCard, 0, len(tpdb)+len(stash))
-	for i, t := range tpdb {
-		j, paired := stashForT[i]
-		if !paired {
-			out = append(out, apidto.MergedPerformerCard{
-				Name: t.Name, Image: t.Image, Source: "tpdb", TPDBID: t.ID,
-			})
-			continue
-		}
-		s := stash[j]
-		card := apidto.MergedPerformerCard{
-			Image: firstNonEmpty(s.ImageURL, t.Image), Source: "merged",
-			TPDBID: t.ID, StashDBID: s.ID,
-		}
-		if identify.NearExactName(t.Name, s.Name) {
-			card.Name = firstNonEmpty(s.Name, t.Name)
-		} else {
-			card.Name = s.Name
-			card.AltName = t.Name
-			card.NamesDiverged = true
-		}
-		out = append(out, card)
-	}
-	for j, s := range stash {
-		if pairedS[j] {
-			continue
-		}
-		out = append(out, apidto.MergedPerformerCard{
-			Name: s.Name, Image: s.ImageURL, Source: "stashdb", StashDBID: s.ID,
-		})
-	}
-	return out
-}
-
-// mergeStudios is mergePerformers' studio sibling — same pairing, collapse-vs-
-// surface-both, StashDB-first image (firstNonEmpty(stash.ImageURL, tpdb.Image),
-// note tpdbrest.Site's field is Image), TPDB-spine ordering, and empty-leg
-// passthrough contract. Kept as a parallel sibling function rather than a shared
-// generic over the two source types, per the repo's "no premature abstraction /
-// sibling functions over a forced-shared path" convention.
-func mergeStudios(tpdb []tpdbrest.Site, stash []stashbox.Studio) []apidto.MergedStudioCard {
-	tNames := make([]string, len(tpdb))
-	for i, s := range tpdb {
-		tNames[i] = s.Name
-	}
-	sNames := make([]string, len(stash))
-	for i, s := range stash {
-		sNames[i] = s.Name
-	}
-	pairs := identify.PairStudiosByName(tNames, sNames)
-	stashForT := make(map[int]int, len(pairs))
-	pairedS := make([]bool, len(stash))
-	for _, p := range pairs {
-		stashForT[p.AIndex] = p.BIndex
-		pairedS[p.BIndex] = true
-	}
-
-	out := make([]apidto.MergedStudioCard, 0, len(tpdb)+len(stash))
-	for i, t := range tpdb {
-		j, paired := stashForT[i]
-		if !paired {
-			out = append(out, apidto.MergedStudioCard{
-				Name: t.Name, Image: t.Image, Source: "tpdb", TPDBID: t.ID,
-			})
-			continue
-		}
-		s := stash[j]
-		card := apidto.MergedStudioCard{
-			Image: firstNonEmpty(s.ImageURL, t.Image), Source: "merged",
-			TPDBID: t.ID, StashDBID: s.ID,
-		}
-		if identify.NearExactName(t.Name, s.Name) {
-			card.Name = firstNonEmpty(s.Name, t.Name)
-		} else {
-			card.Name = s.Name
-			card.AltName = t.Name
-			card.NamesDiverged = true
-		}
-		out = append(out, card)
-	}
-	for j, s := range stash {
-		if pairedS[j] {
-			continue
-		}
-		out = append(out, apidto.MergedStudioCard{
-			Name: s.Name, Image: s.ImageURL, Source: "stashdb", StashDBID: s.ID,
-		})
-	}
-	return out
 }
 
 // dedupeStashScenesByTPDBHashes builds the merged, phash-deduped scene list a
@@ -351,34 +210,55 @@ func filterAvailableStudios(cards []apidto.MergedStudioCard, available []string)
 
 // adultPerformersMergedHandler backs Adult Discover's merged Performers row —
 // TPDB + StashDB performer pages fuzzy-deduped into one card list. TPDB is
-// REQUIRED (400 when unconfigured, matching every other adult TPDB handler);
-// StashDB is optional and degrades to TPDB-only (logged, never a request error)
-// when unconfigured or erroring.
+// REQUIRED on the live path (400 when unconfigured, matching every other adult
+// TPDB handler); StashDB is optional and degrades to TPDB-only (logged, never a
+// request error) when unconfigured or erroring. The concurrent fetch, fuzzy
+// merge, and PRE-filter HasMore derivation are single-sourced in
+// adultmerge.FetchAndMergePerformers, shared with the background precompute job.
 //
-// CONCURRENCY (Q4 footgun): the TPDB and StashDB legs MUST run concurrently.
-// BrowsePerformers runs its own bounded-concurrency image backfill internally,
-// so the TPDB leg is already latency-heavy — running the legs sequentially would
-// make total latency sum(legs) instead of max(legs). Clients are built BEFORE
-// the goroutines (store access isn't concurrency-safe to assume here) and only
-// the two upstream fetches run in parallel.
-//
-// EXHAUSTION: the response is a MergedPerformerPage{Items,HasMore} envelope
-// (2026-07-27, not a bare array — see that DTO's doc comment), because this
-// handler now runs a post-merge grabbable-availability hard filter
-// (filterAvailablePerformers) that can drop items from an already-fetched
-// page, breaking the old `batch.length < perPage` bare-array inference the
-// original G6/G6b proof relied on. HasMore is computed from PRE-filter
-// source lengths (`len(tpdbItems) >= perPage || len(stashItems) >= perPage`,
-// captured before the availability filter runs) — see that computation's own
-// comment for why it must never be derived from the post-filter merged
-// count. Both legs are still fetched at the SAME perPage (clamped up front,
-// see mergedBrowsePerPage), which is what makes "either source returned a
-// full page" a correct pre-filter "more may exist" signal. (A TPDB page past
-// its final one still comes back as an empty slice via BrowsePerformers'
-// clamp detection, so it behaves exactly like a genuine empty-200 here.)
-func adultPerformersMergedHandler(httpClient *http.Client, connStore *connections.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
+// READ CACHE: for the leading pages (page <= adultmergecache.PrecomputePages) at
+// the precomputed page size (perPage == mergedBrowsePerPage), the merged card
+// list is served from the background precompute cache instead of being computed
+// live. The cache stores the PRE-availability-filter list, so the availability
+// hard filter (availableNameSets + filterAvailablePerformers, unchanged) is
+// applied LIVE at read time against the decoded cards — feed-health flips are
+// reflected on the next request with no precompute run. HasMore comes straight
+// from the stored pre-filter value, never re-derived from a post-filter count.
+// A cache miss, a store/decode error, or an ineligible request (page beyond K,
+// or a non-default perPage) all fall through to today's exact live path below —
+// never an error, never an empty row.
+func adultPerformersMergedHandler(httpClient *http.Client, connStore *connections.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, cacheStore *adultmergecache.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		page, perPage := adultPagination(r)
+		if perPage <= 0 {
+			perPage = mergedBrowsePerPage
+		}
+
+		// A nil cacheStore means no cache is wired (production always wires one;
+		// some tests don't) — treat it like a miss and serve live, same fail-open
+		// contract as a store error below.
+		if cacheStore != nil && page <= adultmergecache.PrecomputePages && perPage == mergedBrowsePerPage {
+			if cached, found, err := cacheStore.Get(ctx, "performers", page, perPage); err != nil {
+				log.Printf("adult discover performers-merged: cache read failed, falling back to live merge: %v", err)
+			} else if found {
+				var cards []apidto.MergedPerformerCard
+				if err := json.Unmarshal(cached.Items, &cards); err != nil {
+					log.Printf("adult discover performers-merged: cached payload decode failed, falling back to live merge: %v", err)
+				} else {
+					performerNames, _ := availableNameSets(ctx, releaseStore, feedHealth)
+					cards = filterAvailablePerformers(cards, performerNames)
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(apidto.MergedPerformerPage{
+						Items:   cards,
+						HasMore: cached.HasMore,
+					})
+					return
+				}
+			}
+		}
+
+		// Live fallback — today's exact fetch-and-merge behavior.
 		tpdb, ok := adultTPDBClient(w, r, httpClient, connStore)
 		if !ok {
 			return // adultTPDBClient already wrote the 400/500.
@@ -388,53 +268,11 @@ func adultPerformersMergedHandler(httpClient *http.Client, connStore *connection
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		page, perPage := adultPagination(r)
-		if perPage <= 0 {
-			perPage = mergedBrowsePerPage
-		}
-
-		var (
-			tpdbItems  []tpdbrest.Performer
-			tpdbErr    error
-			stashItems []stashbox.Performer
-			stashErr   error
-			wg         sync.WaitGroup
-		)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			tpdbItems, tpdbErr = tpdb.BrowsePerformers(ctx, page, perPage)
-		}()
-		if hasStash {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				stashItems, stashErr = stash.QueryPerformers(ctx, page, perPage)
-			}()
-		}
-		wg.Wait()
-
-		if tpdbErr != nil {
-			http.Error(w, tpdbErr.Error(), http.StatusBadGateway)
+		merged, hasMore, err := adultmerge.FetchAndMergePerformers(ctx, tpdb, stash, hasStash, page, perPage)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		if hasStash && stashErr != nil {
-			log.Printf("adult discover performers-merged: stashdb query failed, degrading to tpdb-only: %v", stashErr)
-			stashItems = nil
-		}
-		// hasMore is derived from PRE-filter source lengths, captured here before
-		// the availability hard filter runs below — BrowsePerformers returns no
-		// hasMore flag (unlike BrowseSites, which walks internally and needs one;
-		// BrowsePerformers is a single call and clamp-detects past its final
-		// page), so a full page from either leg is this row's "more may exist"
-		// signal. Deliberately NOT derived from the post-filter merged count —
-		// that would reintroduce the exact premature-termination bug the
-		// Studios hasMore fix (see filterZeroSceneSites) exists to prevent: a
-		// page whose real items all happened to fail the availability filter
-		// would look like "the row is exhausted" when it isn't.
-		hasMore := len(tpdbItems) >= perPage || len(stashItems) >= perPage
-
-		merged := mergePerformers(tpdbItems, stashItems)
 		performerNames, _ := availableNameSets(ctx, releaseStore, feedHealth)
 		merged = filterAvailablePerformers(merged, performerNames)
 
@@ -446,70 +284,44 @@ func adultPerformersMergedHandler(httpClient *http.Client, connStore *connection
 	}
 }
 
-// filterZeroSceneSites checks every TPDB site's scene count concurrently
-// (bounded to 5 in flight, same rationale as filterByUSRelease's identical
-// pattern in discover.go) and drops entries with zero scenes attached.
-//
-// Why this exists (live-verified 2026-07-26): a user-reported check found two
-// /sites entries ("007xvision", "100% Brazil Productions") that TPDB's own
-// REST search finds, but that don't appear on TPDB's public website — neither
-// belongs to a known junk-storefront network (junkNetworkIDs in
-// internal/tpdbrest), so BrowseSites' existing filter doesn't catch them.
-// Sampling 24 non-storefront entries found the real signal: every one of 12
-// no-image entries had ZERO scenes (100%), vs 8 of 12 has-image entries with
-// real scene counts (2 to 2712) and only 4 with zero. A "studio" with no
-// scenes has nothing to show and isn't a useful Discover card, so this is a
-// direct, principled correctness signal — not a name or image heuristic.
-//
-// Scoped to ONLY the page-sized slice BrowseSites already returned for this
-// request, deliberately NOT the larger internal buffer BrowseSites may walk
-// through (see that method's doc) — an explicit, requested cost/precision
-// tradeoff: checking every walked candidate would mean up to
-// maxSitePagesPerRequest*perPage extra TPDB API calls per page load, the
-// same class of per-card fanout this app's CLAUDE.md permanently bans for
-// Discover (the "hundreds of concurrent indexer queries" incident). Checking
-// only the ~perPage items about to be displayed keeps this bounded to at
-// most perPage calls (5 at a time), at the cost of a page occasionally
-// returning fewer than perPage items even when the catalog isn't exhausted —
-// accepted, the same tradeoff class as BrowseSites' own walk cap.
-//
-// Fails OPEN on a per-item ScenesBySite error (logs and keeps the item,
-// rather than assuming zero scenes) — one transient TPDB hiccup among up to
-// perPage per-item calls must not hide a real studio.
-func filterZeroSceneSites(ctx context.Context, tpdb *tpdbrest.Client, sites []tpdbrest.Site) []tpdbrest.Site {
-	keep := make([]bool, len(sites))
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(5)
-	for i, s := range sites {
-		i, s := i, s
-		g.Go(func() error {
-			scenes, err := tpdb.ScenesBySite(gctx, s.ID, 1, 1)
-			if err != nil {
-				log.Printf("adult discover studios-merged: scene-count check failed for site %q, keeping it rather than assuming zero scenes: %v", s.ID, err)
-				keep[i] = true
-				return nil
-			}
-			keep[i] = len(scenes) > 0
-			return nil
-		})
-	}
-	_ = g.Wait() // every goroutine above always returns nil — see the fail-open note.
-	out := make([]tpdbrest.Site, 0, len(sites))
-	for i, s := range sites {
-		if keep[i] {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 // adultStudiosMergedHandler is adultPerformersMergedHandler's studios sibling —
-// identical concurrency, required-TPDB/optional-StashDB, no-truncation, and
-// exhaustion-coupling contract (see that handler's doc comment for the full
-// rationale), over BrowseSites + QueryStudios merged by mergeStudios.
-func adultStudiosMergedHandler(httpClient *http.Client, connStore *connections.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
+// same required-TPDB/optional-StashDB contract, same cache-read/live-fallback
+// shape (see that handler's doc comment for the full rationale). Its fetch+merge
+// core is single-sourced in adultmerge.FetchAndMergeStudios, which additionally
+// runs FilterZeroSceneSites over the TPDB leg and sources HasMore from
+// BrowseSites' explicit tpdbHasMore. Layer 3 (the grabbable-availability hard
+// filter, filterAvailableStudios) is applied LIVE at read time on both the cache
+// and live paths — source-agnostic, and it can never perturb the stored
+// pre-filter HasMore.
+func adultStudiosMergedHandler(httpClient *http.Client, connStore *connections.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, cacheStore *adultmergecache.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		page, perPage := adultPagination(r)
+		if perPage <= 0 {
+			perPage = mergedBrowsePerPage
+		}
+
+		if cacheStore != nil && page <= adultmergecache.PrecomputePages && perPage == mergedBrowsePerPage {
+			if cached, found, err := cacheStore.Get(ctx, "studios", page, perPage); err != nil {
+				log.Printf("adult discover studios-merged: cache read failed, falling back to live merge: %v", err)
+			} else if found {
+				var cards []apidto.MergedStudioCard
+				if err := json.Unmarshal(cached.Items, &cards); err != nil {
+					log.Printf("adult discover studios-merged: cached payload decode failed, falling back to live merge: %v", err)
+				} else {
+					_, studioNames := availableNameSets(ctx, releaseStore, feedHealth)
+					cards = filterAvailableStudios(cards, studioNames)
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(apidto.MergedStudioPage{
+						Items:   cards,
+						HasMore: cached.HasMore,
+					})
+					return
+				}
+			}
+		}
+
+		// Live fallback — today's exact fetch-and-merge behavior.
 		tpdb, ok := adultTPDBClient(w, r, httpClient, connStore)
 		if !ok {
 			return
@@ -519,62 +331,11 @@ func adultStudiosMergedHandler(httpClient *http.Client, connStore *connections.S
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		page, perPage := adultPagination(r)
-		if perPage <= 0 {
-			perPage = mergedBrowsePerPage
-		}
-
-		var (
-			tpdbItems   []tpdbrest.Site
-			tpdbHasMore bool
-			tpdbErr     error
-			stashItems  []stashbox.Studio
-			stashErr    error
-			wg          sync.WaitGroup
-		)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			tpdbItems, tpdbHasMore, tpdbErr = tpdb.BrowseSites(ctx, page, perPage)
-		}()
-		if hasStash {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				stashItems, stashErr = stash.QueryStudios(ctx, page, perPage)
-			}()
-		}
-		wg.Wait()
-
-		if tpdbErr != nil {
-			http.Error(w, tpdbErr.Error(), http.StatusBadGateway)
+		merged, hasMore, err := adultmerge.FetchAndMergeStudios(ctx, tpdb, stash, hasStash, page, perPage)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		if hasStash && stashErr != nil {
-			log.Printf("adult discover studios-merged: stashdb query failed, degrading to tpdb-only: %v", stashErr)
-			stashItems = nil
-		}
-		tpdbItems = filterZeroSceneSites(ctx, tpdb, tpdbItems)
-		// hasMore is sourced from tpdbHasMore (computed by BrowseSites BEFORE
-		// filterZeroSceneSites ran — see that method's doc) OR'd with StashDB's
-		// own length-based signal (StashDB has no junk filter, so "a full page
-		// came back" is already a valid "more may exist" signal for that leg —
-		// both legs are fetched at the SAME clamped perPage above, which this
-		// comparison depends on). Deliberately NOT inferred from
-		// len(mergeStudios(...)) or len(tpdbItems) post-filter: either would
-		// reintroduce the exact premature-termination bug filterZeroSceneSites'
-		// own doc comment warns about — a page whose real items all happened to
-		// be zero-scene would look like "the row is exhausted" when it isn't.
-		hasMore := tpdbHasMore || len(stashItems) >= perPage
-
-		merged := mergeStudios(tpdbItems, stashItems)
-		// Layer 3: the grabbable-availability hard filter, applied POST-merge
-		// (after layers 1-2 above, which already ran pre-merge on the TPDB leg
-		// only). This layer is source-agnostic — it also catches
-		// StashDB-exclusive studio cards layers 1-2 never see. See
-		// filterAvailableStudios' doc for the empty-pool fail-open floor and
-		// why this can never perturb hasMore (already computed above, from
-		// pre-any-filter source signals).
 		_, studioNames := availableNameSets(ctx, releaseStore, feedHealth)
 		merged = filterAvailableStudios(merged, studioNames)
 

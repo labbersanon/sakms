@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/labbersanon/sakms/internal/adultmergecache"
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/anthropic"
@@ -68,7 +69,7 @@ import (
 // feed URL fetched and parsed server-side, a separate concept from
 // slidersStore (TMDB-backed) and adultNewestRowStore (Prowlarr-scan-cache-
 // backed) even though its CRUD+reorder shape mirrors both.
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub) *http.ServeMux {
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, adultMergeCacheStore *adultmergecache.Store, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,
@@ -276,8 +277,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// literal path segments from the plain "performers"/"studios" browse rows
 	// above (no ServeMux conflict). TPDB required (400 when absent); StashDB
 	// optional (degrades to TPDB-only).
-	mux.HandleFunc("GET /api/modes/adult/performers-merged", adultPerformersMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth))
-	mux.HandleFunc("GET /api/modes/adult/studios-merged", adultStudiosMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth))
+	mux.HandleFunc("GET /api/modes/adult/performers-merged", adultPerformersMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth, adultMergeCacheStore))
+	mux.HandleFunc("GET /api/modes/adult/studios-merged", adultStudiosMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth, adultMergeCacheStore))
 	mux.HandleFunc("GET /api/modes/adult/discover/performers-merged/scenes", adultPerformerMergedScenesHandler(httpClient, connStore))
 	mux.HandleFunc("GET /api/modes/adult/discover/studios-merged/scenes", adultStudioMergedScenesHandler(httpClient, connStore))
 	// Adult "newest" rows (internal/adultnewest) — admin-defined rows backed

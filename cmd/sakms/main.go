@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/adultmergecache"
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/api"
@@ -158,6 +159,11 @@ func run() error {
 	// cheap in-memory health check plus the row's persisted last_confirmed_seen —
 	// no live probe. Constructed once here; injected into both.
 	feedHealth := adultnewest.NewFeedHealth()
+	// adultMergeCacheStore backs the on-by-default background precompute of Adult
+	// Discover's merged Performers/Studios rows (internal/adultmergecache) — a
+	// read cache the two merged handlers serve leading pages from; see the
+	// adultmergecache.Run start-call below.
+	adultMergeCacheStore := adultmergecache.New(sqlDB)
 	// entityStore is the DB-first entity cache for Adult filename parsing. It
 	// wraps the same sqlDB as every other store — no second connection needed.
 	entityStore := parseentity.NewSQLiteStore(sqlDB)
@@ -215,7 +221,7 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, adultMergeCacheStore, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -345,6 +351,18 @@ func run() error {
 	// per-source "Sync now" buttons. Gated OFF by default (interval 0). To
 	// remove entirely: delete internal/parseentity/schedule.go and this line.
 	go parseentity.Run(ctx, parseentity.LoadInterval(ctx, settingsStore), connStore, settingsStore, entityStore)
+
+	// Same deliberate exception as recheck/adultnewest above, but ON by default
+	// (see internal/adultmergecache's package doc + CLAUDE.md's 2026-07-23
+	// scan/propose/passive-flag scheduler carve-out): a background job that
+	// precomputes the PRE-availability-filter merged Performers/Studios card
+	// lists (pages 1..K) so Adult Discover's two merged rows serve instantly from
+	// cache instead of running the O(n×m) fuzzy merge live per request. Populates
+	// a read cache only — never mutates the library, never grabs; TPDB/StashDB
+	// only, never Prowlarr. Off only when the interval is explicitly set to 0. To
+	// remove entirely: delete internal/adultmergecache, this line, its NewMux
+	// param, the store construction above, and migration 0045.
+	go adultmergecache.Run(ctx, adultmergecache.LoadInterval(ctx, settingsStore), &http.Client{Timeout: outboundTimeout}, connStore, adultMergeCacheStore)
 
 	// Watch-folders: monitors each mode's library root folder for new content
 	// and triggers a Rename Scan automatically (never auto-Apply). Gated OFF

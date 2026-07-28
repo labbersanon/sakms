@@ -192,6 +192,27 @@ func TestBrowsePerformers_PaginatesWithoutSearchTerm(t *testing.T) {
 	}
 }
 
+// TestBrowsePerformers_DecodesGenderFromExtras guards the B1 decode step of
+// the gender-split Performers feature: TPDB's "extras.gender" free-form
+// string must decode into Performer.Gender verbatim (normalization happens
+// downstream in internal/adultmerge.normalizeGender, not here).
+func TestBrowsePerformers_DecodesGenderFromExtras(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Riley Reid","image":"http://cdn/p1.jpg","extras":{"gender":"female"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.BrowsePerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Gender != "female" {
+		t.Fatalf("expected Gender %q decoded from extras.gender, got %+v", "female", out)
+	}
+}
+
 // TestBrowsePerformers_PrefersPostersOverFlatFields guards the fix for a real
 // missing-poster bug found on this deployment's live data (2026-07-26): TPDB's
 // image/thumbnail/face fields are empty for a large share of real performers

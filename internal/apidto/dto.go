@@ -332,6 +332,10 @@ type MergedPerformerCard struct {
 	Source        string `json:"source"`
 	TPDBID        string `json:"tpdbId,omitempty"`
 	StashDBID     string `json:"stashdbId,omitempty"`
+	// Gender is server-normalized to "female"/"male"/"" — "" (or absent) means
+	// excluded from both sections by the read-time gender filter, mirroring
+	// the availability filter (the "one mixed cache entry" elegance, spec §3.6.6).
+	Gender string `json:"gender,omitempty"`
 }
 
 // MergedStudioCard is the studio analogue of MergedPerformerCard — one entry

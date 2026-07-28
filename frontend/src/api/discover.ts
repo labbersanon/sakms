@@ -410,12 +410,20 @@ export function fetchAdultPerformerScenes(
 // performer rows. Both source legs are fetched at the SAME perPage
 // server-side (plan G6b) — pass the same perPage PaginatedStrip uses for its
 // exhaustion check (defaults to 20).
+//
+// The optional gender param ("female" | "male") narrows the row to one
+// gender's performers server-side (the read-time gender filter on
+// MergedPerformerCard). Omitting it is backward compatible: no gender query
+// param is sent and the row returns performers of all genders exactly as
+// before.
 export function fetchMergedPerformers(
   page = 1,
+  gender?: "female" | "male",
   perPage = 20,
 ): Promise<MergedPerformerPage> {
+  const g = gender ? `&gender=${gender}` : "";
   return api<MergedPerformerPage>(
-    `/api/modes/adult/performers-merged?page=${page}&perPage=${perPage}`,
+    `/api/modes/adult/performers-merged?page=${page}&perPage=${perPage}${g}`,
   );
 }
 

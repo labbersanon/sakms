@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -771,5 +772,55 @@ func TestQueryPerformers_DecodesAndPaginates(t *testing.T) {
 	}
 	if out[1].ImageURL != "" {
 		t.Errorf("out[1].ImageURL = %q, want empty for no images", out[1].ImageURL)
+	}
+}
+
+// TestQueryPerformers_DecodesGender guards the B2 decode step of the
+// gender-split Performers feature: StashDB's "gender" field (its GenderEnum
+// returned as a string name, e.g. "FEMALE") must decode into Performer.Gender
+// verbatim — normalization happens downstream in
+// internal/adultmerge.normalizeGender, not here.
+func TestQueryPerformers_DecodesGender(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryPerformers":{"performers":[` +
+			`{"id":"pf1","name":"Riley","gender":"FEMALE","images":[]}]}}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.QueryPerformers(context.Background(), 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Gender != "FEMALE" {
+		t.Fatalf("expected Gender decoded from queryPerformers' gender field, got %+v", out)
+	}
+}
+
+// TestQueryPerformers_QuerySelectsGenderField guards the query-string edit
+// itself (not just the decode): the outgoing GraphQL query for QueryPerformers
+// must include "gender" in its selection set. A regression that reverted the
+// selection edit (while leaving Performer.Gender's json tag alone) would pass
+// TestQueryPerformers_DecodesGender's decode-level assertion vacuously (the
+// field would just always come back empty) — this test guards the query text
+// itself so that silent-revert case fails loudly instead.
+func TestQueryPerformers_QuerySelectsGenderField(t *testing.T) {
+	var gotQuery string
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryPerformers":{"performers":[]}}}`))
+	})
+	defer closeSrv()
+
+	if _, err := c.QueryPerformers(context.Background(), 1, 20); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "gender") {
+		t.Errorf("expected the outgoing QueryPerformers GraphQL query to select \"gender\", got %q", gotQuery)
 	}
 }

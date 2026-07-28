@@ -208,6 +208,28 @@ func filterAvailableStudios(cards []apidto.MergedStudioCard, available []string)
 	return out
 }
 
+// filterByGender keeps only cards whose normalized Gender equals gender, when
+// gender is "female" or "male". When gender == "" (no filter requested) the
+// cards pass through unchanged — read-time filtering, applied the same place
+// in the response pipeline as filterAvailablePerformers: the server drops
+// excluded cards before responding, HasMore stays the pre-filter mixed-catalog
+// value, and the client's counter only ever sees single-gender cards (spec
+// §3.1, §3.2). Deterministic (unlike the availability filter, which logs a
+// kept/dropped diagnostic to distinguish "sparse pool" from "filter bug"),
+// so no equivalent log line is needed here.
+func filterByGender(cards []apidto.MergedPerformerCard, gender string) []apidto.MergedPerformerCard {
+	if gender == "" {
+		return cards
+	}
+	out := cards[:0:0]
+	for _, c := range cards {
+		if c.Gender == gender {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // adultPerformersMergedHandler backs Adult Discover's merged Performers row —
 // TPDB + StashDB performer pages fuzzy-deduped into one card list. TPDB is
 // REQUIRED on the live path (400 when unconfigured, matching every other adult
@@ -234,6 +256,10 @@ func adultPerformersMergedHandler(httpClient *http.Client, connStore *connection
 		if perPage <= 0 {
 			perPage = mergedBrowsePerPage
 		}
+		gender := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("gender")))
+		if gender != "female" && gender != "male" {
+			gender = "" // lenient: unknown/absent → no filter, backward compatible
+		}
 
 		// A nil cacheStore means no cache is wired (production always wires one;
 		// some tests don't) — treat it like a miss and serve live, same fail-open
@@ -248,6 +274,7 @@ func adultPerformersMergedHandler(httpClient *http.Client, connStore *connection
 				} else {
 					performerNames, _ := availableNameSets(ctx, releaseStore, feedHealth)
 					cards = filterAvailablePerformers(cards, performerNames)
+					cards = filterByGender(cards, gender)
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(apidto.MergedPerformerPage{
 						Items:   cards,
@@ -275,6 +302,7 @@ func adultPerformersMergedHandler(httpClient *http.Client, connStore *connection
 		}
 		performerNames, _ := availableNameSets(ctx, releaseStore, feedHealth)
 		merged = filterAvailablePerformers(merged, performerNames)
+		merged = filterByGender(merged, gender)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(apidto.MergedPerformerPage{

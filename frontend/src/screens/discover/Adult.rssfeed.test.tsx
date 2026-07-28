@@ -133,11 +133,12 @@ describe("AdultDiscover — RSS feeds decoupled from the row editor", () => {
     expect(screen.queryByText("Feed C Disabled")).toBeNull();
     expect(screen.queryByText("Movie Feed")).toBeNull();
 
-    // Positioned AFTER all structural rows: Performers (the last structural row
-    // in default order) precedes Feed A in the DOM. Presence alone would pass
-    // even if the independent render path were mis-placed, so this asserts real
-    // document order.
-    const performers = screen.getByText("Performers");
+    // Positioned AFTER all structural rows: Male Performers (the last structural
+    // row in default order — the Performers block is now the Female+Male split)
+    // precedes Feed A in the DOM. Presence alone would pass even if the
+    // independent render path were mis-placed, so this asserts real document
+    // order.
+    const performers = screen.getByText("Male Performers");
     const newest = screen.getByText("My Newest Row");
     const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
     expect(performers.compareDocumentPosition(feedA) & FOLLOWING).toBeTruthy();

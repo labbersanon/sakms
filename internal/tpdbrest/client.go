@@ -435,9 +435,10 @@ func (c *Client) GetSceneByID(ctx context.Context, id string) (*Scene, error) {
 // from TPDB's several nullable image fields; may be empty (no art on file), so
 // consumers must degrade gracefully.
 type Performer struct {
-	ID    string
-	Name  string
-	Image string
+	ID     string
+	Name   string
+	Image  string
+	Gender string
 }
 
 // rawPerformer mirrors the fields this client consumes from a TPDB
@@ -454,12 +455,13 @@ type Performer struct {
 // back to the flat fields only when posters is empty (same shape as
 // toScene's Background.Large-first preference below).
 type rawPerformer struct {
-	ID        flexID           `json:"_id"`
-	Name      string           `json:"name"`
-	Image     string           `json:"image"`
-	Thumbnail string           `json:"thumbnail"`
-	Face      string           `json:"face"`
-	Posters   []rawPosterEntry `json:"posters"`
+	ID        flexID             `json:"_id"`
+	Name      string             `json:"name"`
+	Image     string             `json:"image"`
+	Thumbnail string             `json:"thumbnail"`
+	Face      string             `json:"face"`
+	Posters   []rawPosterEntry   `json:"posters"`
+	Extras    rawPerformerExtras `json:"extras"`
 }
 
 // rawPosterEntry mirrors one entry of a TPDB MediaResource — only url is
@@ -468,12 +470,20 @@ type rawPosterEntry struct {
 	URL string `json:"url"`
 }
 
+// rawPerformerExtras mirrors the only field this client consumes from a TPDB
+// performer's "extras" object. gender is a free-form lowercase string
+// ("female", "male", "transgender_female", ...) — value space is
+// documentation-modeled, normalized defensively downstream (adultmerge.normalizeGender).
+type rawPerformerExtras struct {
+	Gender string `json:"gender"`
+}
+
 func (rp rawPerformer) toPerformer() Performer {
 	posterURL := ""
 	if len(rp.Posters) > 0 {
 		posterURL = rp.Posters[0].URL
 	}
-	return Performer{ID: string(rp.ID), Name: rp.Name, Image: firstNonEmpty(posterURL, rp.Image, rp.Thumbnail, rp.Face)}
+	return Performer{ID: string(rp.ID), Name: rp.Name, Image: firstNonEmpty(posterURL, rp.Image, rp.Thumbnail, rp.Face), Gender: rp.Extras.Gender}
 }
 
 type performersResponse struct {

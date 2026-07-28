@@ -12,6 +12,7 @@ import {
   createResource,
   createSignal,
   on,
+  onCleanup,
   For,
   Show,
   Switch,
@@ -628,6 +629,12 @@ export function PaginatedStrip<T>(props: {
   // defaultStripPageSize, correct for every current caller. Override if a
   // future caller's backend page size ever differs.
   perPage?: number;
+  // infiniteScroll opts THIS strip into automatic IntersectionObserver-based
+  // load-on-scroll in place of the manual "Show more" button. Defaults to
+  // undefined/false — every existing caller is structurally unaffected: no
+  // observer is created and "Show more" renders exactly as today. Used ONLY by
+  // Adult Discover's merged Studios and gender-split Performers rows.
+  infiniteScroll?: boolean;
 }): JSX.Element {
   const [items, setItems] = createSignal<T[]>([]);
   const [page, setPage] = createSignal(0);
@@ -641,6 +648,29 @@ export function PaginatedStrip<T>(props: {
   // gets the full budget again.
   const [autoAdvanceCount, setAutoAdvanceCount] = createSignal(0);
   const maxAutoAdvance = 3;
+
+  // intersecting mirrors the trailing-edge sentinel's current in-view state
+  // under infiniteScroll. The IntersectionObserver callback ONLY writes this
+  // signal (it does not call load directly); a separate createEffect below
+  // reacts to the combination of this signal + loading() + canAdvance() and
+  // drives the actual loads. See that effect's comment for WHY this indirection
+  // is required (IntersectionObserver fires only on in/out-of-view TRANSITIONS,
+  // not continuously while an element stays visible). Defaults false and is
+  // reset to false on sentinel cleanup so a fresh sentinel starts clean.
+  const [intersecting, setIntersecting] = createSignal(false);
+
+  // autoLoading guards the infiniteScroll effect against starting a second,
+  // overlapping load operation while one is still running. loading() alone can't
+  // do this: the DE-2 auto-advance recursion wraps each hop in its own
+  // try/finally, so the innermost hop flips loading() false before the outer
+  // hops finish unwinding — a spurious mid-operation idle window the effect would
+  // otherwise treat as "done, fire the next one," double-loading pages. This flag
+  // is set true when the effect starts an operation and cleared only when that
+  // operation's whole promise (DE-2 chain included) settles, so the effect
+  // re-checks exactly once per completed operation. It is a signal (not a plain
+  // bool) so clearing it in the promise's .finally reactively re-runs the effect
+  // to drive the NEXT sparse-continuation load.
+  const [autoLoading, setAutoLoading] = createSignal(false);
 
   // load fetches one page and appends it. chainStart records items().length as
   // it was at the START of the current load-more operation (a top-level manual
@@ -765,6 +795,92 @@ export function PaginatedStrip<T>(props: {
   // before.
   const canAdvance = () => !exhausted() && !props.singlePage && page() > 0;
 
+  // Auto-load driver for infiniteScroll: fires load(false) whenever the sentinel
+  // is intersecting, no fetch is in flight, and the row can still advance. This
+  // effect re-runs whenever ANY of its tracked dependencies change — crucially,
+  // when a load completes and loading() flips back to false, it re-runs even
+  // though intersecting() itself did not change. If the sentinel is STILL
+  // intersecting at that point (the signal is still true from its last real
+  // callback, because a sparse append never scrolled it out of view), the
+  // condition is true again and the next page loads. That reactive re-check is
+  // what delivers "keep loading until the viewport fills or the catalog runs
+  // out" — it replaces the old, incorrect assumption that the IntersectionObserver
+  // would keep re-firing on its own while the sentinel stayed visible (it does
+  // not; it fires only on in/out-of-view transitions). The chain terminates when
+  // canAdvance() goes false (row exhausted / singlePage / reset to page 0) or a
+  // genuine observer callback sets intersecting() to false (sentinel actually
+  // scrolled out of view once enough pages filled the strip). Strips without
+  // infiniteScroll never construct an observer, so intersecting() stays false and
+  // this effect is permanently inert for them. autoLoading() gates re-entry
+  // across a whole operation (see its declaration) — without it the DE-2 chain's
+  // mid-operation loading() gaps would trigger overlapping duplicate loads.
+  createEffect(() => {
+    if (intersecting() && !loading() && !autoLoading() && canAdvance()) {
+      setAutoLoading(true);
+      void load(false).finally(() => setAutoLoading(false));
+    }
+  });
+
+  // scrollContainer is the horizontal overflow-x-auto strip, captured so it can
+  // serve as the IntersectionObserver root when infiniteScroll is on. It is
+  // assigned during the initial synchronous render; the sentinel that reads it
+  // can only mount after the first load(true) sets page() > 0 (canAdvance()),
+  // which happens in a later effect — so it is always defined by then.
+  let scrollContainer: HTMLDivElement | undefined;
+
+  // attachSentinel is a REF CALLBACK (deliberately NOT onMount) on the
+  // trailing-edge sentinel. The sentinel mounts/unmounts as canAdvance() flips
+  // — e.g. a reloadToken reset drops page() to 0, unmounting it, then load(true)
+  // sets page() to 1, mounting a FRESH element. A one-shot onMount would observe
+  // only the first sentinel and never re-observe the replacement. A ref callback
+  // re-runs for every fresh element instead. onCleanup, registered in the
+  // <Show> branch's reactive owner (Solid runs the ref via untrack, which keeps
+  // the Owner intact), disconnects the observer when that sentinel unmounts, so
+  // no observer ever outlives its element. Because this is the ONLY place an
+  // IntersectionObserver is constructed, a strip without infiniteScroll never
+  // creates one — the absent-prop path is completely inert.
+  const attachSentinel = (el: HTMLDivElement) => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // The callback only records the sentinel's latest in-view state into the
+        // intersecting() signal; the load-driving effect above reacts to it. It
+        // does NOT call load() here — doing so was a real dead-end bug (fixed
+        // 2026-07-28): IntersectionObserver invokes this callback only when the
+        // sentinel crosses the threshold (a TRANSITION into or out of view), not
+        // continuously while it stays visible. On the sparse merged Adult rows
+        // (as little as 1 item per fetched page), appending a page often doesn't
+        // move the sentinel out of view, so no second callback ever fired and the
+        // chain silently stopped even though canAdvance() was still true and
+        // there's no "Show more" fallback under infiniteScroll. Recording state +
+        // reacting in an effect makes the "keep loading until the viewport fills"
+        // behavior come from reactive re-evaluation after each load, not from a
+        // (false) assumption that the observer keeps re-firing on its own.
+        //
+        // Only one sentinel is ever observed by a given observer, so entries has
+        // one element in practice; take the last defensively.
+        const entry = entries[entries.length - 1];
+        if (entry) setIntersecting(entry.isIntersecting);
+      },
+      {
+        root: scrollContainer,
+        // Prefetch 400px before the trailing edge, matching
+        // Carousel.LOAD_MORE_THRESHOLD_PX.
+        rootMargin: "0px 400px 0px 0px",
+        threshold: 0,
+      },
+    );
+    observer.observe(el);
+    onCleanup(() => {
+      observer.disconnect();
+      // Reset so a fresh sentinel (e.g. after a reloadToken reset re-mounts a new
+      // element and constructs a new observer) starts from a clean not-in-view
+      // state until its own first real callback fires — a stale true from the
+      // prior sentinel must not leak in and auto-fire a load before the new
+      // sentinel has actually been observed intersecting.
+      setIntersecting(false);
+    });
+  };
+
   return (
     <section class="mt-6">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">
@@ -776,9 +892,12 @@ export function PaginatedStrip<T>(props: {
           <Muted>{loading() ? "Loading…" : "Nothing here yet."}</Muted>
         }
       >
-        <div class={props.containerClass ?? "flex items-stretch gap-3 overflow-x-auto pb-2"}>
+        <div ref={scrollContainer} class={props.containerClass ?? "flex items-stretch gap-3 overflow-x-auto pb-2"}>
           <For each={items()}>{(item) => props.children(item)}</For>
-          <Show when={canAdvance()}>
+          {/* Manual "Show more" — rendered EXCEPT when infiniteScroll is on.
+              With the prop absent this reduces to <Show when={canAdvance()}>,
+              reactively and DOM-identical to before. */}
+          <Show when={!props.infiniteScroll && canAdvance()}>
             <div class="flex w-28 shrink-0 items-center justify-center">
               <Button
                 class="!py-1 text-xs"
@@ -787,6 +906,20 @@ export function PaginatedStrip<T>(props: {
               >
                 {loading() ? "Loading…" : "Show more"}
               </Button>
+            </div>
+          </Show>
+          {/* Auto-load sentinel — only when infiniteScroll is on. The observer
+              is attached via attachSentinel's ref callback; while a fetch is in
+              flight it shows a small "Loading…" affordance at the trailing edge
+              (matching Carousel's), otherwise it is an empty sized target. */}
+          <Show when={props.infiniteScroll && canAdvance()}>
+            <div
+              ref={attachSentinel}
+              class="flex w-28 shrink-0 items-center justify-center"
+            >
+              <Show when={loading()}>
+                <Muted>Loading…</Muted>
+              </Show>
             </div>
           </Show>
         </div>

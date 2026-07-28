@@ -1200,3 +1200,97 @@ func TestStudiosMerged_CacheHitServesWithoutUpstream(t *testing.T) {
 		t.Errorf("expected HasMore served from the cached value (true), got false")
 	}
 }
+
+// --- ?gender= query param (B6 filterByGender wiring) ---
+
+// TestPerformersMerged_GenderFilter_CacheHit is the mandatory cache-hit
+// gender-filter proof: ?gender=female returns ONLY cards whose normalized
+// Gender is "female" (no male/unknown cards leak through), and HasMore stays
+// the cache's stored PRE-filter value (true, a mostly-Male "full page") even
+// though the gender filter itself drops 3 of the 4 cached cards — proving
+// HasMore is never recomputed post-filter. TPDB is deliberately left
+// unconfigured (the live path 400s without it), so a 200 response can only
+// mean this request was served from the cache.
+func TestPerformersMerged_GenderFilter_CacheHit(t *testing.T) {
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, nil)
+	putPerformerCache(t, store, 1, true, []apidto.MergedPerformerCard{
+		{Name: "Male One", Source: "tpdb", TPDBID: "m1", Gender: "male"},
+		{Name: "Male Two", Source: "tpdb", TPDBID: "m2", Gender: "male"},
+		{Name: "Female One", Source: "tpdb", TPDBID: "f1", Gender: "female"},
+		{Name: "Excluded One", Source: "tpdb", TPDBID: "x1", Gender: ""},
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20&gender=female", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Female One" {
+		t.Fatalf("expected only the Female card (no male/unknown cards present), got %+v", page.Items)
+	}
+	if !page.HasMore {
+		t.Errorf("expected HasMore to stay the stored pre-filter value (true) even though the gender filter dropped 3 of 4 cards, got false")
+	}
+}
+
+// TestPerformersMerged_GenderFilter_LiveFallback is the cache-miss/live-path
+// parity of the cache-hit test above: TPDB is configured (a real live merge
+// runs), ?gender=male returns only the male card, and HasMore stays the
+// pre-filter full-page signal (len(tpdbItems) >= perPage) even though the
+// gender filter drops 2 of the 3 fetched cards.
+func TestPerformersMerged_GenderFilter_LiveFallback(t *testing.T) {
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[` +
+			`{"_id":"t1","name":"Male Performer","image":"http://cdn/t1.jpg","extras":{"gender":"male"}},` +
+			`{"_id":"t2","name":"Female Performer","image":"http://cdn/t2.jpg","extras":{"gender":"female"}},` +
+			`{"_id":"t3","name":"Unknown Performer","image":"http://cdn/t3.jpg","extras":{"gender":"non_binary"}}` +
+			`],"meta":{"current_page":1}}`))
+	})
+	srv := httptest.NewServer(newAdultMux(t, map[string]string{"tpdb": tpdb.URL}))
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=3&gender=male", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Male Performer" {
+		t.Fatalf("expected only the Male card on the live path, got %+v", page.Items)
+	}
+	// A full TPDB page (3 items == perPage) means hasMore=true pre-filter --
+	// must survive even though the gender filter dropped 2 of 3 items.
+	if !page.HasMore {
+		t.Errorf("expected HasMore=true (pre-filter full-page signal) even though the gender filter dropped 2 of 3 cards, got false")
+	}
+}
+
+// TestPerformersMerged_GenderOmitted_BackwardCompatible proves that omitting
+// the gender query param entirely leaves the response untouched: every cached
+// card is returned, in original order, regardless of its own Gender value —
+// filterByGender's gender=="" branch is a pure passthrough, never a silent
+// filter, so a pre-B6 client that never sends ?gender at all sees byte-
+// identical behavior to today.
+func TestPerformersMerged_GenderOmitted_BackwardCompatible(t *testing.T) {
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, nil)
+	cards := []apidto.MergedPerformerCard{
+		{Name: "Male One", Source: "tpdb", TPDBID: "m1", Gender: "male"},
+		{Name: "Female One", Source: "tpdb", TPDBID: "f1", Gender: "female"},
+		{Name: "Excluded One", Source: "tpdb", TPDBID: "x1", Gender: ""},
+	}
+	putPerformerCache(t, store, 1, true, cards)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &page)
+	if len(page.Items) != len(cards) {
+		t.Fatalf("expected all %d cards unfiltered when gender is omitted, got %d: %+v", len(cards), len(page.Items), page.Items)
+	}
+	for i, c := range cards {
+		if page.Items[i].Name != c.Name || page.Items[i].Gender != c.Gender {
+			t.Errorf("card[%d] = %+v, want %+v (omitting gender must not perturb order/content)", i, page.Items[i], c)
+		}
+	}
+	if !page.HasMore {
+		t.Errorf("expected HasMore unchanged (true) when gender is omitted, got false")
+	}
+}

@@ -32,6 +32,7 @@ package adultmerge
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -56,6 +57,31 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// normalizeGender maps a raw upstream gender token (TPDB extras.gender free
+// string, or StashDB GenderEnum name) to the only two values the gender-split
+// Performers row surfaces: "female" or "male". Everything else — unset, empty,
+// "transgender_female", "transgender_male", "intersex", "non_binary",
+// "non-binary", "trans female", "unknown", or any unrecognized token —
+// normalizes to "" and is EXCLUDED from both sections by design (documented
+// simplification, not a silent guess).
+//
+// EXACT-MATCH after lower+trim ONLY. Never substring/Contains: "TRANSGENDER_FEMALE"
+// CONTAINS "female", so a Contains match would wrongly bucket a trans-female
+// performer as female. Exact match is the whole point — fail-safe default:
+// any non-exact value is excluded (hidden), never mis-bucketed. The upstream
+// value space is documentation-modeled, not live-verified; excluding by default
+// makes new/odd values fail safe.
+func normalizeGender(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "female":
+		return "female"
+	case "male":
+		return "male"
+	default:
+		return ""
+	}
+}
+
 // MergePerformers fuzzy-pairs a TPDB performer page and a StashDB performer page
 // into a single merged-row card list (see the ralplan-merge-tpdb-stashbox plan's
 // Q1/Q3/Q5). It calls identify.PairPerformersByName (asymmetry-safe mutual-best
@@ -74,6 +100,16 @@ func firstNonEmpty(vals ...string) string {
 // treating empty-as-error. This is exactly the steady state once TPDB's
 // out-of-range clamp-detection kicks in (BrowsePerformers returns nil past its
 // final page): the row keeps scrolling as pure StashDB.
+//
+// Every emitted card also carries a normalized Gender ("female"/"male"/"" via
+// normalizeGender). For a paired card, StashDB's raw gender wins over TPDB's
+// when picking which raw value to normalize (firstNonEmpty(s.Gender, t.Gender)
+// then normalizeGender) — e.g. StashDB=NON_BINARY + TPDB=Female normalizes
+// the StashDB value first, yielding "" (excluded), honoring StashDB's call
+// even though TPDB alone would have normalized to "female". Non-binary,
+// transgender, unknown, and any other non-exact-match token are excluded from
+// both the female and male sections by design (see normalizeGender) — this is
+// a documented simplification of a richer upstream value space, not a bug.
 func MergePerformers(tpdb []tpdbrest.Performer, stash []stashbox.Performer) []apidto.MergedPerformerCard {
 	tNames := make([]string, len(tpdb))
 	for i, p := range tpdb {
@@ -98,6 +134,7 @@ func MergePerformers(tpdb []tpdbrest.Performer, stash []stashbox.Performer) []ap
 		if !paired {
 			out = append(out, apidto.MergedPerformerCard{
 				Name: t.Name, Image: t.Image, Source: "tpdb", TPDBID: t.ID,
+				Gender: normalizeGender(t.Gender),
 			})
 			continue
 		}
@@ -113,6 +150,7 @@ func MergePerformers(tpdb []tpdbrest.Performer, stash []stashbox.Performer) []ap
 			card.AltName = t.Name
 			card.NamesDiverged = true
 		}
+		card.Gender = normalizeGender(firstNonEmpty(s.Gender, t.Gender))
 		out = append(out, card)
 	}
 	for j, s := range stash {
@@ -121,6 +159,7 @@ func MergePerformers(tpdb []tpdbrest.Performer, stash []stashbox.Performer) []ap
 		}
 		out = append(out, apidto.MergedPerformerCard{
 			Name: s.Name, Image: s.ImageURL, Source: "stashdb", StashDBID: s.ID,
+			Gender: normalizeGender(s.Gender),
 		})
 	}
 	return out

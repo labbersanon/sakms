@@ -670,6 +670,7 @@ export const AdultDiscover: Component<{
           reloadToken={reloadToken}
           load={(page) => fetchMergedStudios(page)}
           onError={setSetupError}
+          infiniteScroll
         >
           {(s) => (
             <EntityCard
@@ -692,31 +693,48 @@ export const AdultDiscover: Component<{
       );
     }
     if (key === "performers") {
+      // One reorderable "Performers" block (single useRowOrder key) split into
+      // two gender-scoped sections. Gender isn't shown on the card face — the
+      // section title conveys it — so both strips render the identical
+      // EntityCard mapping and share reloadToken/onError.
+      const performerCard = (p: MergedPerformerCard) => (
+        <EntityCard
+          kind="performer"
+          name={p.name}
+          altName={p.altName}
+          namesDiverged={p.namesDiverged}
+          image={p.image}
+          onSelect={() =>
+            setDrill({
+              kind: "performer",
+              name: p.name,
+              tpdbId: p.tpdbId,
+              stashdbId: p.stashdbId,
+            })
+          }
+        />
+      );
       return (
-        <PaginatedStrip<MergedPerformerCard>
-          title="Performers"
-          reloadToken={reloadToken}
-          load={(page) => fetchMergedPerformers(page)}
-          onError={setSetupError}
-        >
-          {(p) => (
-            <EntityCard
-              kind="performer"
-              name={p.name}
-              altName={p.altName}
-              namesDiverged={p.namesDiverged}
-              image={p.image}
-              onSelect={() =>
-                setDrill({
-                  kind: "performer",
-                  name: p.name,
-                  tpdbId: p.tpdbId,
-                  stashdbId: p.stashdbId,
-                })
-              }
-            />
-          )}
-        </PaginatedStrip>
+        <>
+          <PaginatedStrip<MergedPerformerCard>
+            title="Female Performers"
+            reloadToken={reloadToken}
+            load={(page) => fetchMergedPerformers(page, "female")}
+            onError={setSetupError}
+            infiniteScroll
+          >
+            {performerCard}
+          </PaginatedStrip>
+          <PaginatedStrip<MergedPerformerCard>
+            title="Male Performers"
+            reloadToken={reloadToken}
+            load={(page) => fetchMergedPerformers(page, "male")}
+            onError={setSetupError}
+            infiniteScroll
+          >
+            {performerCard}
+          </PaginatedStrip>
+        </>
       );
     }
     if (key.startsWith("newestrow:")) {

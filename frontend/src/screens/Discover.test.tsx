@@ -482,6 +482,9 @@ describe("Discover — Adult tab (row-based browse)", () => {
       stubFetch((url) => {
         if (url.includes("/api/modes/adult/studios"))
           return jsonResponse([studio({ id: "st1", name: "Vixen Studio" })]);
+        // A real performer has ONE gender, so it appears in exactly one strip:
+        // the Male strip is empty here and Jane Doe (female) renders once.
+        if (url.includes("gender=male")) return jsonResponse([]);
         if (url.includes("/api/modes/adult/performers"))
           return jsonResponse([
             performer({
@@ -499,8 +502,10 @@ describe("Discover — Adult tab (row-based browse)", () => {
 
     fireEvent.click(await screen.findByText("Adult"));
 
+    // Performers is now split into two gender-scoped strips (§3.7.2).
     expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(screen.getByText("Performers")).toBeInTheDocument();
+    expect(screen.getByText("Female Performers")).toBeInTheDocument();
+    expect(screen.getByText("Male Performers")).toBeInTheDocument();
 
     expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
     expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
@@ -646,8 +651,9 @@ describe("Discover — Adult tab (row-based browse)", () => {
     fireEvent.click(await screen.findByText("Drill Studio"));
     expect(await screen.findByText("Studio Only Scene")).toBeInTheDocument();
     expect(screen.getByText("Back to browse")).toBeInTheDocument();
-    // The rows are gone while drilled in.
-    expect(screen.queryByText("Performers")).not.toBeInTheDocument();
+    // The rows are gone while drilled in (the Performers block is now the two
+    // gender-split strips).
+    expect(screen.queryByText("Female Performers")).not.toBeInTheDocument();
     // The merged-scenes endpoint was hit with the card's id-pair.
     expect(
       fetchMock.mock.calls.some(([u]) => {
@@ -662,7 +668,7 @@ describe("Discover — Adult tab (row-based browse)", () => {
 
     // Back to browse restores the rows and drops the drill-down.
     fireEvent.click(screen.getByText("Back to browse"));
-    expect(await screen.findByText("Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
     expect(await screen.findByText("Drill Studio")).toBeInTheDocument();
     expect(screen.queryByText("Studio Only Scene")).not.toBeInTheDocument();
   });
@@ -674,6 +680,9 @@ describe("Discover — Adult tab (row-based browse)", () => {
     const fetchMock = stubFetch((url) => {
       if (url.includes("/api/modes/adult/discover/performers-merged/scenes"))
         return jsonResponse([scene({ id: "ps1", title: "Performer Only Scene" })]);
+      // Drill Performer is female here, so only the Female strip lists it — the
+      // Male strip is empty and the name resolves to a single card.
+      if (url.includes("gender=male")) return jsonResponse([]);
       if (url.includes("/api/modes/adult/performers-merged"))
         return jsonResponse([
           {
@@ -717,6 +726,11 @@ describe("Discover — Adult tab (row-based browse)", () => {
   it("Performers row: an availability-filtered empty page auto-advances instead of dead-ending", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/adult/performers-merged")) {
+        // Real Performer is female, so only the Female strip exercises the
+        // filtered-empty-then-real auto-advance; the Male strip is exhausted
+        // immediately so the name resolves to a single card.
+        if (url.includes("gender=male"))
+          return jsonResponse({ items: [], hasMore: false });
         if (url.includes("page=2"))
           return jsonResponse({
             items: [
@@ -752,10 +766,15 @@ describe("Discover — Adult tab (row-based browse)", () => {
   // items().length > 0 gate. The all-empty case still caps at exactly the same
   // fetch count as before the sparse-aware broadening (gained stays 0 < target
   // every page, so the cap is what stops it) -- this locks that in.
-  it("Performers row: caps auto-advance at 3 empty pages, leaving a reachable Show more control", async () => {
+  it("Performers row: caps auto-advance at 3 empty pages under infiniteScroll (bounded, no runaway loop)", async () => {
     const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/performers-merged"))
+      if (url.includes("/api/modes/adult/performers-merged")) {
+        // Male exhausts immediately; the Female strip is the pathologically
+        // sparse one whose every page filters fully empty (hasMore never false).
+        if (url.includes("gender=male"))
+          return jsonResponse({ items: [], hasMore: false });
         return jsonResponse({ items: [], hasMore: true });
+      }
       if (url.includes("/api/modes/adult/studios-merged"))
         return jsonResponse({ items: [], hasMore: false });
       const d = mainstreamDefaults(url);
@@ -765,13 +784,22 @@ describe("Discover — Adult tab (row-based browse)", () => {
 
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("Female Performers");
 
-    expect(await screen.findByText("Show more")).toBeInTheDocument();
-    const calls = fetchMock.mock.calls.filter(([u]) =>
-      String(u).includes("/api/modes/adult/performers-merged"),
-    );
-    // 1 initial load (page 1) + 3 bounded auto-advances (pages 2-4) = 4.
-    expect(calls.length).toBe(4);
+    // These strips use infiniteScroll, so there is no "Show more" button; the
+    // bounded auto-advance still fires on the initial load and MUST stop at the
+    // cap (1 initial page 1 + 3 auto-advances = 4) rather than looping forever
+    // on a catalog that never returns hasMore:false. Scope to the Female
+    // strip's own gender=female calls (the Male strip also hits
+    // performers-merged, once, before exhausting).
+    const femaleCalls = () =>
+      fetchMock.mock.calls.filter(([u]) => String(u).includes("gender=female"));
+    await vi.waitFor(() => expect(femaleCalls().length).toBe(4));
+
+    // The old click-driven "Show more" control is gone under infiniteScroll;
+    // the row stays advanceable via its scroll sentinel instead (the sentinel's
+    // observer-fired reachability is proven in shared.paginatedstrip.test.tsx).
+    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
   });
 
   // Sparse-page auto-advance (extends DE-2, 2026-07-27): the live Performers
@@ -785,9 +813,13 @@ describe("Discover — Adult tab (row-based browse)", () => {
   // = 4 one-item pages = 4 cards), not 1 -- and, since hasMore is still true and
   // the cap was hit before reaching a full perPage, still leave a reachable
   // manual "Show more" control.
-  it("Performers row: sparse 1-item pages auto-advance to ~a full page's worth, not one item, keeping Show more", async () => {
+  it("Performers row: sparse 1-item pages auto-advance to ~a full page's worth, not one item, under infiniteScroll", async () => {
     const fetchMock = stubFetch((url) => {
       if (url.includes("/api/modes/adult/performers-merged")) {
+        // Only the Female strip carries the sparse curated pool; the Male strip
+        // exhausts immediately so each `Sparse Performer N` name resolves once.
+        if (url.includes("gender=male"))
+          return jsonResponse({ items: [], hasMore: false });
         const page = Number(new URL(url, "http://x").searchParams.get("page") ?? "1");
         return jsonResponse({
           items: [
@@ -819,11 +851,12 @@ describe("Discover — Adult tab (row-based browse)", () => {
     expect(screen.getByText("Sparse Performer 1")).toBeInTheDocument();
     expect(screen.getByText("Sparse Performer 2")).toBeInTheDocument();
     expect(screen.getByText("Sparse Performer 3")).toBeInTheDocument();
-    // Cap hit at 4 fetches, hasMore still true -> the manual control stays.
-    expect(screen.getByText("Show more")).toBeInTheDocument();
+    // infiniteScroll: no manual "Show more" button renders; the row keeps
+    // advancing via its scroll sentinel once the cap is hit.
+    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
 
     const calls = fetchMock.mock.calls.filter(([u]) =>
-      String(u).includes("/api/modes/adult/performers-merged"),
+      String(u).includes("gender=female"),
     );
     // 1 initial load + 3 bounded auto-advances = 4, same budget as the
     // all-empty cap case above -- the trigger widened, the bound did not.
@@ -1509,7 +1542,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
     expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(await screen.findByText("Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
 
     // "Recently Added" → TPDB recently_created sort; rows give way to the grid.
     fireEvent.change(screen.getByLabelText("Sort"), {
@@ -1518,7 +1551,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
 
     expect(await screen.findByText("Sorted Scene")).toBeInTheDocument();
     expect(screen.queryByText("Studios")).not.toBeInTheDocument();
-    expect(screen.queryByText("Performers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Female Performers")).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([u]) =>
         String(u).includes("sortBy=recently_created"),
@@ -1530,7 +1563,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
       target: { value: "default" },
     });
     expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(await screen.findByText("Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
     expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
   });
 
@@ -1621,7 +1654,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     // grid — proving the sort was actually reset, not just hidden.
     fireEvent.click(screen.getByText("Clear"));
     expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(await screen.findByText("Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
     expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
     expect(screen.queryByText("Search Scene")).not.toBeInTheDocument();
   });

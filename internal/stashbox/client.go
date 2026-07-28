@@ -490,6 +490,15 @@ type Performer struct {
 	// search path (SearchPerformer) — both request images and collapse
 	// images[0].url via rawBrowsePerformer.
 	ImageURL string `json:"-"`
+	// Gender is populated ONLY by the browse path (QueryPerformers) — see
+	// queryPerformersQuery. StashDB returns its GenderEnum as its string
+	// name ("FEMALE", "TRANSGENDER_FEMALE", ...); decoded here as a plain
+	// string, normalized downstream (internal/adultmerge). The enum's full
+	// value space is documentation-modeled, not live-verified against a
+	// real performer record — schema/introspection confirms the field
+	// itself exists (see queryPerformersQuery's doc comment), not every
+	// value name.
+	Gender string `json:"-"`
 }
 
 // rawBrowsePerformer decodes QueryPerformers' images-carrying selection,
@@ -498,6 +507,7 @@ type Performer struct {
 type rawBrowsePerformer struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
+	Gender string `json:"gender"`
 	Images []struct {
 		URL string `json:"url"`
 	} `json:"images"`
@@ -508,12 +518,24 @@ func (p rawBrowsePerformer) toPerformer() Performer {
 	if len(p.Images) > 0 {
 		imageURL = p.Images[0].URL
 	}
-	return Performer{ID: p.ID, Name: p.Name, ImageURL: imageURL}
+	return Performer{ID: p.ID, Name: p.Name, ImageURL: imageURL, Gender: p.Gender}
 }
 
+// queryPerformersQuery selects gender alongside the existing fields. StashDB
+// returns GenderEnum as its string name ("FEMALE", "TRANSGENDER_FEMALE",
+// ...); value space is documentation-modeled, schema/live-verification
+// pending beyond confirming the field exists (see below) — normalized
+// downstream (internal/adultmerge.normalizeGender).
+//
+// Field existence live-verified 2026-07-28 via StashDB's public GraphQL
+// introspection (no auth needed, same as the POPULARITY sort precedent
+// above): `__type(name: "Performer")` lists a `gender` field of type
+// `GenderEnum`. A live unauthenticated queryPerformers call requesting
+// `gender` also passed GraphQL schema validation (failed only on "not
+// authorized", not an invalid-field error).
 const queryPerformersQuery = `query QueryPerformers($input: PerformerQueryInput!) {
   queryPerformers(input: $input) {
-    performers { id name images { url } }
+    performers { id name gender images { url } }
   }
 }`
 

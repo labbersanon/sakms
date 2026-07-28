@@ -68,6 +68,10 @@ describe("AdultDiscover — merged card drill routing", () => {
     const calls = stubFetch((url) => {
       if (url.includes("/performers-merged/scenes"))
         return jsonResponse([]);
+      // Paired Perf is female, so only the Female strip lists it; the Male
+      // strip is empty and the name resolves to a single card (a real
+      // performer only ever appears in one gender's strip).
+      if (url.includes("gender=male")) return jsonResponse([]);
       if (url.includes("/api/modes/adult/performers-merged"))
         return jsonResponse([
           {
@@ -110,6 +114,9 @@ describe("AdultDiscover — merged card drill routing", () => {
 describe("AdultDiscover — EntityCard divergent-name provenance surfacing", () => {
   it("renders BOTH labeled names on two line-clamped lines, not one shared truncate", async () => {
     stubFetch((url) => {
+      // Divergent-name performer is female → only the Female strip renders it,
+      // so "TPDB: TpdbName"/"StashDB: StashName" each resolve to one element.
+      if (url.includes("gender=male")) return jsonResponse([]);
       if (url.includes("/api/modes/adult/performers-merged"))
         return jsonResponse([
           {
@@ -173,5 +180,70 @@ describe("AdultDiscover — EntityCard non-diverged common-case regression", () 
     expect(screen.queryByText(/StashDB:/)).toBeNull();
     // The card is a real drill button even for a single-source card.
     expect(line.closest("button")).toBeTruthy();
+  });
+});
+
+describe("AdultDiscover — gender-split Performers rows (F2/F4)", () => {
+  it("renders one Studios strip + Female/Male Performers strips (each with its gender arg), no ungendered Performers strip", async () => {
+    // A local counting IntersectionObserver spy proves the merged strips opted
+    // into infiniteScroll (each live sentinel constructs one); afterEach's
+    // vi.unstubAllGlobals restores the setup's inert default.
+    let observerCount = 0;
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor() {
+          observerCount++;
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+        takeRecords() {
+          return [];
+        }
+      },
+    );
+
+    // Empty-but-hasMore envelopes keep each strip advanceable (sentinel live)
+    // without needing card fixtures — this test asserts structure, not content.
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/adult/performers-merged"))
+        return jsonResponse({ items: [], hasMore: true });
+      if (url.includes("/api/modes/adult/studios-merged"))
+        return jsonResponse({ items: [], hasMore: true });
+      return mounts(url);
+    });
+
+    render(() => <AdultDiscover />);
+
+    // The Performers block is two gender-scoped strips; Studios stays single.
+    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
+    expect(screen.getByText("Male Performers")).toBeInTheDocument();
+    expect(screen.getByText("Studios")).toBeInTheDocument();
+    // The old ungendered single "Performers" strip no longer exists.
+    expect(screen.queryByText("Performers")).toBeNull();
+
+    // Each Performers strip fetched its OWN gender leg; Studios fetched the
+    // merged (gender-blind) endpoint.
+    await vi.waitFor(() => {
+      expect(
+        calls.some(
+          (c) =>
+            c.url.includes("performers-merged") && c.url.includes("gender=female"),
+        ),
+      ).toBe(true);
+      expect(
+        calls.some(
+          (c) =>
+            c.url.includes("performers-merged") && c.url.includes("gender=male"),
+        ),
+      ).toBe(true);
+      expect(calls.some((c) => c.url.includes("studios-merged"))).toBe(true);
+    });
+
+    // infiniteScroll on all three merged strips: no manual "Show more" button,
+    // and each trailing-edge sentinel constructed an IntersectionObserver.
+    expect(screen.queryByText("Show more")).toBeNull();
+    await vi.waitFor(() => expect(observerCount).toBeGreaterThan(0));
   });
 });

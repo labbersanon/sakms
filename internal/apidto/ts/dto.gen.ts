@@ -341,6 +341,12 @@ export interface MergedPerformerCard {
   source: string;
   tpdbId?: string;
   stashdbId?: string;
+  /**
+   * Gender is server-normalized to "female"/"male"/"" — "" (or absent) means
+   * excluded from both sections by the read-time gender filter, mirroring
+   * the availability filter (the "one mixed cache entry" elegance, spec §3.6.6).
+   */
+  gender?: string;
 }
 /**
  * MergedStudioCard is the studio analogue of MergedPerformerCard — one entry

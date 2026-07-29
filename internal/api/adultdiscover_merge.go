@@ -238,7 +238,7 @@ func filterByGender(cards []apidto.MergedPerformerCard, gender string) []apidto.
 // merge, and PRE-filter HasMore derivation are single-sourced in
 // adultmerge.FetchAndMergePerformers, shared with the background precompute job.
 //
-// READ CACHE: for the leading pages (page <= adultmergecache.PrecomputePages) at
+// READ CACHE: for the leading pages (page <= adultmergecache.PrecomputePerformerPages) at
 // the precomputed page size (perPage == mergedBrowsePerPage), the merged card
 // list is served from the background precompute cache instead of being computed
 // live. The cache stores the PRE-availability-filter list, so the availability
@@ -264,7 +264,7 @@ func adultPerformersMergedHandler(httpClient *http.Client, connStore *connection
 		// A nil cacheStore means no cache is wired (production always wires one;
 		// some tests don't) — treat it like a miss and serve live, same fail-open
 		// contract as a store error below.
-		if cacheStore != nil && page <= adultmergecache.PrecomputePages && perPage == mergedBrowsePerPage {
+		if cacheStore != nil && page <= adultmergecache.PrecomputePerformerPages && perPage == mergedBrowsePerPage {
 			if cached, found, err := cacheStore.Get(ctx, "performers", page, perPage); err != nil {
 				log.Printf("adult discover performers-merged: cache read failed, falling back to live merge: %v", err)
 			} else if found {
@@ -329,7 +329,7 @@ func adultStudiosMergedHandler(httpClient *http.Client, connStore *connections.S
 			perPage = mergedBrowsePerPage
 		}
 
-		if cacheStore != nil && page <= adultmergecache.PrecomputePages && perPage == mergedBrowsePerPage {
+		if cacheStore != nil && page <= adultmergecache.PrecomputeStudioPages && perPage == mergedBrowsePerPage {
 			if cached, found, err := cacheStore.Get(ctx, "studios", page, perPage); err != nil {
 				log.Printf("adult discover studios-merged: cache read failed, falling back to live merge: %v", err)
 			} else if found {

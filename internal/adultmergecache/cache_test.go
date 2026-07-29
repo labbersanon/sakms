@@ -157,6 +157,33 @@ func TestLoadInterval(t *testing.T) {
 	}
 }
 
+func TestLoadImageCacheMaxBytes(t *testing.T) {
+	_, settingsStore, _ := newSchedulerStores(t)
+	ctx := context.Background()
+
+	// Genuinely unset → the 512 MB safe default (never "no cap").
+	if got := LoadImageCacheMaxBytes(ctx, settingsStore); got != defaultImageCacheMaxBytes {
+		t.Errorf("unset key: got %d, want %d", got, defaultImageCacheMaxBytes)
+	}
+	// A real positive integer overrides.
+	mustSet(t, settingsStore, ImageCacheMaxBytesSettingKey, "1048576")
+	if got := LoadImageCacheMaxBytes(ctx, settingsStore); got != 1048576 {
+		t.Errorf("1048576: got %d, want 1048576", got)
+	}
+	// Malformed → safe default (NOT off — a cap must never degrade to unbounded).
+	mustSet(t, settingsStore, ImageCacheMaxBytesSettingKey, "not-a-number")
+	if got := LoadImageCacheMaxBytes(ctx, settingsStore); got != defaultImageCacheMaxBytes {
+		t.Errorf("garbage value: got %d, want %d", got, defaultImageCacheMaxBytes)
+	}
+	// Zero/negative → safe default (a 0/negative cap would be nonsensical).
+	for _, v := range []string{"0", "-5"} {
+		mustSet(t, settingsStore, ImageCacheMaxBytesSettingKey, v)
+		if got := LoadImageCacheMaxBytes(ctx, settingsStore); got != defaultImageCacheMaxBytes {
+			t.Errorf("%q: got %d, want %d (safe default)", v, got, defaultImageCacheMaxBytes)
+		}
+	}
+}
+
 func TestRunCycle_WritesPrecomputePagesPerRowType(t *testing.T) {
 	connStore, _, store := newSchedulerStores(t)
 	ctx := context.Background()
@@ -167,21 +194,24 @@ func TestRunCycle_WritesPrecomputePagesPerRowType(t *testing.T) {
 	mustUpsert(t, connStore, "tpdb", tpdb.URL)
 	mustUpsert(t, connStore, "stashdb", stash.URL)
 
-	runCycle(ctx, &http.Client{}, connStore, store)
+	runCycle(ctx, &http.Client{}, connStore, store, nil, 0)
 
-	for _, rowType := range []string{"performers", "studios"} {
-		for page := 1; page <= PrecomputePages; page++ {
-			_, found, err := store.Get(ctx, rowType, page, cachePerPage)
+	for _, tc := range []struct {
+		rowType string
+		pages   int
+	}{{"performers", PrecomputePerformerPages}, {"studios", PrecomputeStudioPages}} {
+		for page := 1; page <= tc.pages; page++ {
+			_, found, err := store.Get(ctx, tc.rowType, page, cachePerPage)
 			if err != nil {
-				t.Fatalf("Get(%s,%d): %v", rowType, page, err)
+				t.Fatalf("Get(%s,%d): %v", tc.rowType, page, err)
 			}
 			if !found {
-				t.Errorf("expected %s page %d to be cached, got a miss", rowType, page)
+				t.Errorf("expected %s page %d to be cached, got a miss", tc.rowType, page)
 			}
 		}
-		// Nothing beyond K is precomputed.
-		if _, found, _ := store.Get(ctx, rowType, PrecomputePages+1, cachePerPage); found {
-			t.Errorf("expected %s page %d NOT cached (beyond PrecomputePages), got a hit", rowType, PrecomputePages+1)
+		// Nothing beyond the per-entity cap is precomputed.
+		if _, found, _ := store.Get(ctx, tc.rowType, tc.pages+1, cachePerPage); found {
+			t.Errorf("expected %s page %d NOT cached (beyond its per-entity cap), got a hit", tc.rowType, tc.pages+1)
 		}
 	}
 
@@ -206,7 +236,7 @@ func TestRunCycle_PerPageFaultIsolated(t *testing.T) {
 	mustUpsert(t, connStore, "tpdb", tpdb.URL)
 	mustUpsert(t, connStore, "stashdb", stash.URL)
 
-	runCycle(ctx, &http.Client{}, connStore, store)
+	runCycle(ctx, &http.Client{}, connStore, store, nil, 0)
 
 	// The failed page is skipped, not cached...
 	if _, found, _ := store.Get(ctx, "performers", 2, cachePerPage); found {
@@ -219,7 +249,7 @@ func TestRunCycle_PerPageFaultIsolated(t *testing.T) {
 		}
 	}
 	// Studios are an independent pipeline — unaffected by the performers fault.
-	for page := 1; page <= PrecomputePages; page++ {
+	for page := 1; page <= PrecomputeStudioPages; page++ {
 		if _, found, _ := store.Get(ctx, "studios", page, cachePerPage); !found {
 			t.Errorf("studios page %d must be cached (independent of the performers failure)", page)
 		}
@@ -229,12 +259,13 @@ func TestRunCycle_PerPageFaultIsolated(t *testing.T) {
 // TestPrecomputeStudios_ScenesBySiteBoundedConcurrency is the AC8 regression
 // guard. It instruments a fake TPDB whose /sites/{id}/scenes endpoint (the
 // ScenesBySite call FilterZeroSceneSites fans out) records the peak number of
-// concurrently in-flight calls across a full K-page precomputeStudios cycle. The
-// fixture returns a FULL page (20 sites) for every one of the 3 pages, so each
-// page's FilterZeroSceneSites genuinely fans out ScenesBySite bounded to 5.
-// Because pages are precomputed SEQUENTIALLY, the peak across the whole cycle
-// must stay ≤5. If the page loop were ever changed to run all 3 pages
-// concurrently, the peak would hit 3×5=15 and this test fails. The peak-≥2 floor
+// concurrently in-flight calls across a full precomputeStudios cycle
+// (PrecomputeStudioPages). The fixture returns a FULL page (20 sites) for raw
+// pages 1..3 and empty afterward, so each of those pages' FilterZeroSceneSites
+// genuinely fans out ScenesBySite bounded to 5 (later pages have no sites, hence
+// no fan-out). Because pages are precomputed SEQUENTIALLY, the peak across the
+// whole cycle must stay ≤5. If the page loop were ever changed to run pages
+// concurrently, the peak would exceed 5 and this test fails. The peak-≥2 floor
 // guards against a vacuous pass (a fixture where the fan-out never overlaps could
 // not catch a concurrency regression).
 func TestPrecomputeStudios_ScenesBySiteBoundedConcurrency(t *testing.T) {
@@ -290,7 +321,7 @@ func TestPrecomputeStudios_ScenesBySiteBoundedConcurrency(t *testing.T) {
 	// No stashdb connection is configured → studios precompute runs TPDB-only,
 	// isolating the ScenesBySite fan-out under test.
 
-	if err := precomputeStudios(ctx, &http.Client{}, connStore, store); err != nil {
+	if err := precomputeStudios(ctx, &http.Client{}, connStore, store, nil); err != nil {
 		t.Fatalf("precomputeStudios: %v", err)
 	}
 

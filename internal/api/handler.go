@@ -18,6 +18,7 @@ import (
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/gemini"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/imageproxy"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/openai"
@@ -68,8 +69,13 @@ import (
 // admin-defined raw RSS feed rows (see rss_feeds.go) — a per-row RSS 2.0
 // feed URL fetched and parsed server-side, a separate concept from
 // slidersStore (TMDB-backed) and adultNewestRowStore (Prowlarr-scan-cache-
-// backed) even though its CRUD+reorder shape mirrors both.
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, adultMergeCacheStore *adultmergecache.Store, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub) *http.ServeMux {
+// backed) even though its CRUD+reorder shape mirrors both. imageProxy is the
+// single process-lifetime *imageproxy.Proxy built once in main.go and shared
+// between imageProxyHandler (the request read path) and adultmergecache.Run
+// (the precompute write path) so both use the same in-memory LRU AND the same
+// durable on-disk store — a poster the precompute cycle warmed to disk is
+// served here with no upstream round-trip.
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, adultMergeCacheStore *adultmergecache.Store, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,
@@ -297,7 +303,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
 	// (see images.go / internal/imageproxy). Read-only, auth-gated like every
 	// route here.
-	mux.HandleFunc("GET /api/images/proxy", imageProxyHandler(httpClient))
+	mux.HandleFunc("GET /api/images/proxy", imageProxyHandler(imageProxy))
 	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tmdb-search", tmdbSearchHandler(httpClient, connStore, settingsStore))
 	// poster resolves a library card's TMDB poster art lazily, per card (the

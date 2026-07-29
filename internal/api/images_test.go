@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"github.com/labbersanon/sakms/internal/imageproxy"
 )
 
 // TestImageProxyHandler_StatusMapping verifies the handler's request-vs-gateway
@@ -14,7 +16,7 @@ import (
 // point at a fake upstream; here the production allowlist is in force, so only
 // the reject paths are exercisable without a real TMDB/TPDB host.
 func TestImageProxyHandler_StatusMapping(t *testing.T) {
-	srv := httptest.NewServer(imageProxyHandler(&http.Client{}))
+	srv := httptest.NewServer(imageProxyHandler(imageproxy.New(&http.Client{})))
 	defer srv.Close()
 
 	cases := []struct {

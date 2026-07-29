@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/imageproxy"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
@@ -631,7 +636,7 @@ func newAdultMuxWithPool(t *testing.T, conns map[string]string, fh *adultnewest.
 	}
 	t.Cleanup(func() { cacheDB.Close() })
 	adultMergeCacheStore := adultmergecache.New(cacheDB)
-	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, adultMergeCacheStore, rssFeedsStore, nil, nil, nil, nil, nil)
+	return NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, adultMergeCacheStore, rssFeedsStore, nil, nil, nil, nil, nil, nil)
 }
 
 // seedReleaseStore inserts rows into releaseStore, failing the test on error.
@@ -972,6 +977,19 @@ func TestStudiosMerged_AvailabilityFilterAppliesAfterZeroSceneLayer(t *testing.T
 // driven between requests); seed pre-loads the adult_newest_releases pool.
 func newAdultMuxWithCache(t *testing.T, conns map[string]string, fh *adultnewest.FeedHealth, seed []adultnewest.MatchedRelease) (*http.ServeMux, *adultmergecache.Store) {
 	t.Helper()
+	return newAdultMuxWithCacheAndClient(t, conns, fh, seed, testHTTPClient(), nil)
+}
+
+// newAdultMuxWithCacheAndClient is newAdultMuxWithCache plus caller-supplied
+// httpClient/imageProxy injection — the zero-egress test (US-10) needs to wire
+// its own always-erroring client and its own imageproxy.Proxy (pointed at a
+// pre-populated durable image store) into the SAME mux shape the cache-hit
+// tests above already build, rather than the fixed testHTTPClient()/nil
+// imageProxy those tests hardcode. newAdultMuxWithCache (above) now just
+// forwards to this with those two defaults, so every existing cache-hit test
+// keeps behaving byte-for-byte the same.
+func newAdultMuxWithCacheAndClient(t *testing.T, conns map[string]string, fh *adultnewest.FeedHealth, seed []adultnewest.MatchedRelease, httpClient *http.Client, imageProxy *imageproxy.Proxy) (*http.ServeMux, *adultmergecache.Store) {
+	t.Helper()
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	for service, u := range conns {
 		if err := connStore.Upsert(context.Background(), service, u, "key"); err != nil {
@@ -990,7 +1008,7 @@ func newAdultMuxWithCache(t *testing.T, conns map[string]string, fh *adultnewest
 	}
 	t.Cleanup(func() { cacheDB.Close() })
 	cacheStore := adultmergecache.New(cacheDB)
-	mux := NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, cacheStore, rssFeedsStore, nil, nil, nil, nil, nil)
+	mux := NewMux(httpClient, connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, cacheStore, rssFeedsStore, nil, nil, nil, nil, nil, imageProxy)
 	return mux, cacheStore
 }
 
@@ -1060,12 +1078,12 @@ func TestPerformersMerged_CacheMissFallsBackToLive(t *testing.T) {
 	}
 }
 
-// TestPerformersMerged_IneligibleRequestsBypassCache proves page>PrecomputePages
+// TestPerformersMerged_IneligibleRequestsBypassCache proves page>PrecomputePerformerPages
 // and perPage!=20 requests always go live, even when a cache row happens to exist.
 func TestPerformersMerged_IneligibleRequestsBypassCache(t *testing.T) {
 	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// meta.current_page=999 so no requested page (1 or 4) is ever treated as
+		// meta.current_page=999 so no requested page (1 or 26) is ever treated as
 		// clamped — the live path returns "Live Performer" for any page.
 		w.Write([]byte(tpdbPerformerPage(999, [2]string{"live", "Live Performer"})))
 	})
@@ -1073,11 +1091,12 @@ func TestPerformersMerged_IneligibleRequestsBypassCache(t *testing.T) {
 	mux, store := newAdultMuxWithCache(t, map[string]string{"tpdb": tpdb.URL}, fh, nil)
 	sentinel := []apidto.MergedPerformerCard{{Name: "CACHED SENTINEL", Source: "tpdb", TPDBID: "sent"}}
 	putPerformerCache(t, store, 1, false, sentinel)
-	putPerformerCache(t, store, 4, false, sentinel) // a page-4 row the gate must ignore
+	// A row one page beyond the performer cap the gate must ignore.
+	putPerformerCache(t, store, adultmergecache.PrecomputePerformerPages+1, false, sentinel)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// Eligible: page<=3 && perPage==20 → served from cache (the sentinel).
+	// Eligible: page<=PrecomputePerformerPages && perPage==20 → served from cache (the sentinel).
 	var hit apidto.MergedPerformerPage
 	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &hit)
 	if len(hit.Items) != 1 || hit.Items[0].Name != "CACHED SENTINEL" {
@@ -1089,11 +1108,12 @@ func TestPerformersMerged_IneligibleRequestsBypassCache(t *testing.T) {
 	if len(byPerPage.Items) != 1 || byPerPage.Items[0].Name != "Live Performer" {
 		t.Fatalf("perPage!=20 must bypass the cache and go live, got %+v", byPerPage.Items)
 	}
-	// page > PrecomputePages → bypass the cache even though a page-4 row exists → live.
+	// page > PrecomputePerformerPages → bypass the cache even though a beyond-cap row exists → live.
+	beyond := adultmergecache.PrecomputePerformerPages + 1
 	var byPage apidto.MergedPerformerPage
-	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=4&perPage=20", &byPage)
+	getJSON(t, fmt.Sprintf("%s/api/modes/adult/performers-merged?page=%d&perPage=20", srv.URL, beyond), &byPage)
 	if len(byPage.Items) != 1 || byPage.Items[0].Name != "Live Performer" {
-		t.Fatalf("page>PrecomputePages must bypass the cache (never serve the page-4 sentinel) and go live, got %+v", byPage.Items)
+		t.Fatalf("page>PrecomputePerformerPages must bypass the cache (never serve the beyond-cap sentinel) and go live, got %+v", byPage.Items)
 	}
 }
 
@@ -1292,5 +1312,278 @@ func TestPerformersMerged_GenderOmitted_BackwardCompatible(t *testing.T) {
 	}
 	if !page.HasMore {
 		t.Errorf("expected HasMore unchanged (true) when gender is omitted, got false")
+	}
+}
+
+// --- US-10: handler live-fallback + zero-egress (image pre-warm plan §4) ---
+
+// TestStudiosMerged_IneligibleRequestsBypassCache is
+// TestPerformersMerged_IneligibleRequestsBypassCache's studios sibling — no
+// equivalent existed for studios before this. Proves page>PrecomputeStudioPages
+// and perPage!=20 both bypass the cache and go live, even when a cache row
+// happens to exist at the requested key.
+func TestStudiosMerged_IneligibleRequestsBypassCache(t *testing.T) {
+	// BrowseSites (internal/tpdbrest) walks /sites cumulatively from raw page 1
+	// on every call, accumulating page*perPage legitimate (has-scenes) items
+	// before slicing out the requested logical page — see that method's doc.
+	// To reach a REAL item at logical page PrecomputeStudioPages+1 (perPage=20)
+	// the fixture must have at least (PrecomputeStudioPages+1)*20 items across
+	// enough raw pages, well under the 15-raw-page walk cap. 20 items/raw page
+	// covers it.
+	const perRawPage = 20
+	tpdb := fakeTPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/scenes") {
+			w.Write([]byte(`{"data":[{"_id":"sc1","title":"A Scene"}]}`)) // every site has scenes, none filtered
+			return
+		}
+		rawPage, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if rawPage < 1 {
+			rawPage = 1
+		}
+		var items strings.Builder
+		items.WriteString(`{"data":[`)
+		for i := 0; i < perRawPage; i++ {
+			idx := (rawPage-1)*perRawPage + i
+			if i > 0 {
+				items.WriteByte(',')
+			}
+			fmt.Fprintf(&items, `{"uuid":"live%d","name":"Live Studio %d"}`, idx, idx)
+		}
+		items.WriteString(`]}`)
+		w.Write([]byte(items.String()))
+	})
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCache(t, map[string]string{"tpdb": tpdb.URL}, fh, nil)
+	sentinel := []apidto.MergedStudioCard{{Name: "CACHED SENTINEL", Source: "tpdb", TPDBID: "sent"}}
+	putStudioCache(t, store, 1, false, sentinel)
+	// A row one page beyond the studio cap the gate must ignore.
+	putStudioCache(t, store, adultmergecache.PrecomputeStudioPages+1, false, sentinel)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Eligible: page<=PrecomputeStudioPages && perPage==20 → served from cache (the sentinel).
+	var hit apidto.MergedStudioPage
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?page=1&perPage=20", &hit)
+	if len(hit.Items) != 1 || hit.Items[0].Name != "CACHED SENTINEL" {
+		t.Fatalf("an eligible request should be served from cache, got %+v", hit.Items)
+	}
+	// perPage != 20 → bypass the cache → live.
+	var byPerPage apidto.MergedStudioPage
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?page=1&perPage=10", &byPerPage)
+	if len(byPerPage.Items) != 10 || !strings.HasPrefix(byPerPage.Items[0].Name, "Live Studio") {
+		t.Fatalf("perPage!=20 must bypass the cache and go live, got %+v", byPerPage.Items)
+	}
+	// page > PrecomputeStudioPages → bypass the cache even though a beyond-cap row exists → live.
+	beyond := adultmergecache.PrecomputeStudioPages + 1
+	var byPage apidto.MergedStudioPage
+	getJSON(t, fmt.Sprintf("%s/api/modes/adult/studios-merged?page=%d&perPage=20", srv.URL, beyond), &byPage)
+	if len(byPage.Items) != perRawPage || !strings.HasPrefix(byPage.Items[0].Name, "Live Studio") {
+		t.Fatalf("page>PrecomputeStudioPages must bypass the cache (never serve the beyond-cap sentinel) and go live, got %+v", byPage.Items)
+	}
+}
+
+// TestStudiosMerged_CacheHitAvailabilityFilterAppliesLive is
+// TestPerformersMerged_CacheHitHasMoreIsPreFilterStored's studios sibling — no
+// equivalent existed for studios before this (TestStudiosMerged_CacheHitServesWithoutUpstream
+// only exercises the empty-pool fail-open branch, which never proves the filter
+// actually engages on a cache hit). The pool credits a studio matching NEITHER
+// cached card, so filterAvailableStudios drops both — yet HasMore must stay the
+// stored true, not get recomputed from the now-zero post-filter count.
+func TestStudiosMerged_CacheHitAvailabilityFilterAppliesLive(t *testing.T) {
+	fh := adultnewest.NewFeedHealth()
+	seed := []adultnewest.MatchedRelease{
+		{RowType: adultnewest.RowScene, EntityID: "sc1", EntitySource: "tpdb", EntityTitle: "Some Scene",
+			EntityStudio: "Nobody's Studio At All", BrowseConfirmed: true},
+	}
+	mux, store := newAdultMuxWithCache(t, map[string]string{}, fh, seed)
+	putStudioCache(t, store, 1, true, []apidto.MergedStudioCard{{Name: "Vixen"}, {Name: "Blacked"}})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedStudioPage
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?page=1&perPage=20", &page)
+	if len(page.Items) != 0 {
+		t.Fatalf("expected both cached studio cards dropped by the live availability filter, got %+v", page.Items)
+	}
+	if !page.HasMore {
+		t.Errorf("HasMore must be the stored pre-filter value (true) even when every item was dropped, got false")
+	}
+}
+
+// countingFailTransport is an http.RoundTripper that errors on every single
+// call and atomically counts how many were attempted. Wired as the base
+// Transport for BOTH the httpClient NewMux uses to build the TPDB/StashDB
+// clients AND the *http.Client backing the imageproxy.Proxy passed as NewMux's
+// last argument — i.e. every outbound door the merged handlers or the image
+// proxy could possibly walk through. This is the structural proof the
+// zero-egress tests below rely on: a genuine egress attempt is a hard,
+// observable failure (both a non-2xx/error response AND calls()>0), not
+// something inferred from "the response looked plausible."
+type countingFailTransport struct {
+	calls int32
+}
+
+func (c *countingFailTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return nil, fmt.Errorf("countingFailTransport: outbound call attempted to %s (zero-egress violation)", r.URL)
+}
+
+func (c *countingFailTransport) callCount() int32 { return atomic.LoadInt32(&c.calls) }
+
+// TestPerformersMerged_ZeroEgressCoveredRowServesMetadataAndImages is AC#2, the
+// headline guarantee of the whole image-prewarm plan (§4 "Integration —
+// handler live-fallback + zero-egress"): for a covered row (page <=
+// PrecomputePerformerPages, perPage == the merged-browse default of 20),
+// BOTH the merged-row metadata cache (adultmergecache) AND the durable image
+// store (imageproxy) are pre-populated, then the request is served through
+// adultPerformersMergedHandler AND the image proxy handler with an outbound
+// client that errors on any Do/RoundTrip call — wired into the TPDB client,
+// the StashDB client, and the image proxy's own upstream client all at once
+// (see countingFailTransport's doc). TPDB and StashDB are deliberately
+// CONFIGURED (not just absent, unlike the weaker existing cache-hit tests) so
+// that IF the handler fell through to the live path it would actually attempt
+// an outbound call and fail loudly — a 200 with correct data plus a zero call
+// count is the only way this test can pass, not a side effect of the sources
+// being unreachable/unconfigured.
+func TestPerformersMerged_ZeroEgressCoveredRowServesMetadataAndImages(t *testing.T) {
+	const imgURL = "https://203.0.113.10/riley.jpg" // TEST-NET-3: public per net.IP, not private/loopback — no DNS needed (validate short-circuits on an IP literal).
+	const imgBody = "fake-jpeg-bytes-riley"
+	const imgContentType = "image/jpeg"
+
+	transport := &countingFailTransport{}
+	failingClient := &http.Client{Transport: transport}
+
+	durableDB, err := db.Open(filepath.Join(t.TempDir(), "durable.db"))
+	if err != nil {
+		t.Fatalf("opening durable-store db: %v", err)
+	}
+	t.Cleanup(func() { durableDB.Close() })
+	durable, err := imageproxy.NewDurableStore(durableDB, filepath.Join(t.TempDir(), "imagecache"))
+	if err != nil {
+		t.Fatalf("building durable store: %v", err)
+	}
+	if err := durable.Put(context.Background(), imgURL, imgContentType, []byte(imgBody)); err != nil {
+		t.Fatalf("pre-seeding durable image store: %v", err)
+	}
+	proxy := imageproxy.NewWithDurable(failingClient, durable)
+
+	fh := adultnewest.NewFeedHealth()
+	// TPDB/StashDB ARE configured (fixed-URL vars pointed at syntactically
+	// valid, never-actually-dialed hosts — countingFailTransport never opens a
+	// real connection regardless of the URL) so a would-be live fallback has
+	// somewhere to (fail to) reach.
+	mux, store := newAdultMuxWithCacheAndClient(t, map[string]string{
+		"tpdb":    "https://tpdb.invalid.example",
+		"stashdb": "https://stashdb.invalid.example",
+	}, fh, nil, failingClient, proxy)
+	putPerformerCache(t, store, 1, true, []apidto.MergedPerformerCard{
+		{Name: "Riley Reid", Source: "tpdb", TPDBID: "t1", Image: imgURL},
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// 1) Metadata: served complete and correct from the cache.
+	var page apidto.MergedPerformerPage
+	getJSON(t, srv.URL+"/api/modes/adult/performers-merged?page=1&perPage=20", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Riley Reid" || page.Items[0].Image != imgURL {
+		t.Fatalf("expected the full cached row (metadata) served, got %+v", page.Items)
+	}
+
+	// 2) Images: the SAME row's image is served from the durable store with
+	// real bytes and the stored content type — proving this isn't a
+	// metadata-only proof of zero egress (the plan explicitly calls this out
+	// as the failure mode to avoid).
+	imgResp, err := http.Get(srv.URL + "/api/images/proxy?url=" + url.QueryEscape(page.Items[0].Image))
+	if err != nil {
+		t.Fatalf("GET image proxy: %v", err)
+	}
+	defer imgResp.Body.Close()
+	if imgResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from the image proxy (durable-store hit), got %d", imgResp.StatusCode)
+	}
+	gotBody, err := io.ReadAll(imgResp.Body)
+	if err != nil {
+		t.Fatalf("reading image proxy body: %v", err)
+	}
+	if string(gotBody) != imgBody {
+		t.Fatalf("expected the exact pre-seeded image bytes, got %q", string(gotBody))
+	}
+	if ct := imgResp.Header.Get("Content-Type"); ct != imgContentType {
+		t.Errorf("expected Content-Type %q, got %q", imgContentType, ct)
+	}
+
+	// 3) The structural proof: not one outbound call was ever attempted,
+	// across metadata AND image serving, despite TPDB/StashDB/the image CDN
+	// all being reachable-in-principle through this same failing transport.
+	if got := transport.callCount(); got != 0 {
+		t.Fatalf("expected ZERO outbound calls for a covered row, countingFailTransport recorded %d", got)
+	}
+}
+
+// TestStudiosMerged_ZeroEgressCoveredRowServesMetadataAndImages is
+// TestPerformersMerged_ZeroEgressCoveredRowServesMetadataAndImages's studios
+// sibling — same AC#2 proof, at the shallower PrecomputeStudioPages cap and
+// through adultStudiosMergedHandler/filterAvailableStudios instead.
+func TestStudiosMerged_ZeroEgressCoveredRowServesMetadataAndImages(t *testing.T) {
+	const imgURL = "https://203.0.113.10/vixen.png"
+	const imgBody = "fake-png-bytes-vixen"
+	const imgContentType = "image/png"
+
+	transport := &countingFailTransport{}
+	failingClient := &http.Client{Transport: transport}
+
+	durableDB, err := db.Open(filepath.Join(t.TempDir(), "durable.db"))
+	if err != nil {
+		t.Fatalf("opening durable-store db: %v", err)
+	}
+	t.Cleanup(func() { durableDB.Close() })
+	durable, err := imageproxy.NewDurableStore(durableDB, filepath.Join(t.TempDir(), "imagecache"))
+	if err != nil {
+		t.Fatalf("building durable store: %v", err)
+	}
+	if err := durable.Put(context.Background(), imgURL, imgContentType, []byte(imgBody)); err != nil {
+		t.Fatalf("pre-seeding durable image store: %v", err)
+	}
+	proxy := imageproxy.NewWithDurable(failingClient, durable)
+
+	fh := adultnewest.NewFeedHealth()
+	mux, store := newAdultMuxWithCacheAndClient(t, map[string]string{
+		"tpdb":    "https://tpdb.invalid.example",
+		"stashdb": "https://stashdb.invalid.example",
+	}, fh, nil, failingClient, proxy)
+	putStudioCache(t, store, 1, true, []apidto.MergedStudioCard{
+		{Name: "Vixen", Source: "merged", TPDBID: "t1", StashDBID: "s1", Image: imgURL},
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var page apidto.MergedStudioPage
+	getJSON(t, srv.URL+"/api/modes/adult/studios-merged?page=1&perPage=20", &page)
+	if len(page.Items) != 1 || page.Items[0].Name != "Vixen" || page.Items[0].Image != imgURL {
+		t.Fatalf("expected the full cached row (metadata) served, got %+v", page.Items)
+	}
+
+	imgResp, err := http.Get(srv.URL + "/api/images/proxy?url=" + url.QueryEscape(page.Items[0].Image))
+	if err != nil {
+		t.Fatalf("GET image proxy: %v", err)
+	}
+	defer imgResp.Body.Close()
+	if imgResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from the image proxy (durable-store hit), got %d", imgResp.StatusCode)
+	}
+	gotBody, err := io.ReadAll(imgResp.Body)
+	if err != nil {
+		t.Fatalf("reading image proxy body: %v", err)
+	}
+	if string(gotBody) != imgBody {
+		t.Fatalf("expected the exact pre-seeded image bytes, got %q", string(gotBody))
+	}
+	if ct := imgResp.Header.Get("Content-Type"); ct != imgContentType {
+		t.Errorf("expected Content-Type %q, got %q", imgContentType, ct)
+	}
+
+	if got := transport.callCount(); got != 0 {
+		t.Fatalf("expected ZERO outbound calls for a covered row, countingFailTransport recorded %d", got)
 	}
 }

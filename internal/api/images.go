@@ -23,12 +23,14 @@ import (
 // is cleaner and less error-prone than reconstructing it from path segments
 // (and preserves upstream sizing query params like TPDB/imgix's ?w=&h=).
 //
-// The imageproxy.Proxy is built once here (constructor runs at mux-build time),
-// so its in-memory LRU cache is a process-lifetime singleton shared across
-// every request — a poster fetched during one grid render is not re-fetched
-// from TMDB/TPDB on the next.
-func imageProxyHandler(httpClient *http.Client) http.HandlerFunc {
-	proxy := imageproxy.New(httpClient)
+// The imageproxy.Proxy is now constructed ONCE in main.go and injected here
+// (rather than built at mux-build time from a bare httpClient), so the SAME
+// instance — its in-memory LRU cache AND its durable on-disk store — is shared
+// between this request path and the Adult precompute cycle
+// (adultmergecache.Run). A poster the precompute cycle warmed to disk is served
+// from disk here with no upstream round-trip; a poster fetched during one grid
+// render is not re-fetched from TMDB/TPDB on the next.
+func imageProxyHandler(proxy *imageproxy.Proxy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.Query().Get("url")
 		if raw == "" {

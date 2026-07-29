@@ -67,9 +67,12 @@ func precomputePerformers(ctx context.Context, httpClient *http.Client, connStor
 //
 // The sequential-pages iteration is load-bearing here: FetchAndMergeStudios'
 // FilterZeroSceneSites fans out ≤5 concurrent ScenesBySite calls PER PAGE, so
-// running pages sequentially keeps the peak concurrent fan-out across the whole
-// K-page cycle at ≤5 (running K pages at once would peak at K×5) — the plan's
-// AC8 bound, satisfied by construction.
+// running pages sequentially keeps the peak concurrent ScenesBySite fan-out
+// across the whole K-page cycle at ≤5 (running K pages at once would peak at
+// K×5). Keeping that ceiling at ≤5 is the invariant TPDB rate-limiting depends
+// on — it's what bounds the worst-case wait a concurrently-issued interactive
+// TPDB call can queue behind — so this ordering is satisfied by construction, not
+// by luck.
 func precomputeStudios(ctx context.Context, httpClient *http.Client, connStore *connections.Store, store *Store) error {
 	tpdb, err := buildTPDB(ctx, connStore, httpClient)
 	if err != nil {

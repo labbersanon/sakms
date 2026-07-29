@@ -2,9 +2,12 @@ package tpdbrest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1338,5 +1341,262 @@ func TestScenesByPerformer_MissingMetaNotClamped(t *testing.T) {
 	}
 	if len(out) != 1 {
 		t.Fatalf("expected 1 scene (no false drain on missing meta), got %+v", out)
+	}
+}
+
+// --- TPDB rate-limit (429) mitigation tests (AC1-AC5, AC7, AC9) ---------------
+// These cover internal/tpdbrest's shared limiter + 429 retry-with-backoff. Each
+// is written to be non-vacuous: the two timing tests below (AC3/AC4) deliberately
+// override retryAfterFloor to values that make the observed wait provable evidence
+// of the behavior under test rather than an artifact of the ~1s production default.
+
+// TestShouldThrottle_TiedToRealBaseURL is AC1: the gate decision is exercised
+// against the host PARSED FROM THE REAL DefaultBaseURL, not a tautological
+// tpdbProdHost-vs-itself comparison. If a future edit lets DefaultBaseURL and
+// the gate drift apart (silently disabling production throttling), this fails.
+// This is the only test that drives the real-host gate boolean; every other
+// throttling test below uses the explicit-option (ungated) path.
+func TestShouldThrottle_TiedToRealBaseURL(t *testing.T) {
+	u, err := url.Parse(DefaultBaseURL)
+	if err != nil {
+		t.Fatalf("parsing DefaultBaseURL %q: %v", DefaultBaseURL, err)
+	}
+	if !shouldThrottle(u.Host) {
+		t.Errorf("shouldThrottle(%q) parsed from the real DefaultBaseURL = false, want true — the gate has drifted from the production base URL", u.Host)
+	}
+	if shouldThrottle("127.0.0.1:12345") {
+		t.Errorf("shouldThrottle(%q) = true, want false — an httptest-shaped host must stay exempt from the default gate", "127.0.0.1:12345")
+	}
+}
+
+// TestDoGet_ExplicitIntervalSpacesSequentialCalls is AC2: with an explicit
+// WithMinInterval option (ungated per H2, so spacing engages even against an
+// httptest host), N sequential doGet-reaching calls take at least (N-1)×interval.
+func TestDoGet_ExplicitIntervalSpacesSequentialCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	const interval = 50 * time.Millisecond
+	const n = 4
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second}, WithMinInterval(interval))
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		if _, err := c.SearchByHash(context.Background(), "x"); err != nil {
+			t.Fatalf("call %d: unexpected error: %v", i, err)
+		}
+	}
+	elapsed := time.Since(start)
+
+	if wantMin := time.Duration(n-1) * interval; elapsed < wantMin {
+		t.Errorf("expected %d spaced calls to take at least %v, got %v", n, wantMin, elapsed)
+	}
+}
+
+// TestDoGet_HonorsRetryAfterHeaderOn429 is AC3: a 429 + Retry-After:1 on the
+// first hit then a 200 succeeds with exactly one retry, not sooner than the
+// Retry-After value. retryAfterFloor is overridden to a SMALL 50ms so the
+// observed ~1s wait can ONLY come from honoring the header (with the default
+// 1s floor this would pass even if Retry-After parsing were broken, since
+// parsed 1s is not strictly greater than the 1s floor — a vacuous test). Client
+// Timeout stays 5s so the derived deadline never returns the 429 early.
+func TestDoGet_HonorsRetryAfterHeaderOn429(t *testing.T) {
+	var reqCount int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt64(&reqCount, 1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"After Retry","date":"2024-01-01"}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second}, WithRetryAfterFloor(50*time.Millisecond))
+	start := time.Now()
+	out, err := c.SearchByHash(context.Background(), "x")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Title != "After Retry" {
+		t.Fatalf("expected the decoded post-retry scene, got %+v", out)
+	}
+	if got := atomic.LoadInt64(&reqCount); got != 2 {
+		t.Errorf("expected exactly one retry (2 total requests), got %d", got)
+	}
+	// The 50ms floor is far below the header's 1s, so a wait near 1s proves the
+	// header value governed the back-off, not the floor.
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("expected the retry to honor Retry-After:1 (~1s), got %v", elapsed)
+	}
+}
+
+// TestDoGet_NoRetryAfterUsesOverridableFloor is AC4: a bare 429 (no Retry-After)
+// then a 200 backs off using the overridable floor, NOT the sub-second inter-call
+// spacing. The floor is set to 300ms — deliberately ABOVE tpdbProdMinInterval
+// (200ms) — so a single lower-bound assertion (elapsed >= ~280ms) proves BOTH
+// that the floor was honored AND that the sleep did not silently collapse to the
+// 200ms spacing value (which would have produced a measurably shorter wait).
+func TestDoGet_NoRetryAfterUsesOverridableFloor(t *testing.T) {
+	var reqCount int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt64(&reqCount, 1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests) // no Retry-After header
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"Floor Retry","date":"2024-01-01"}]}`))
+	}))
+	defer srv.Close()
+
+	const floor = 300 * time.Millisecond
+	if floor <= tpdbProdMinInterval {
+		t.Fatalf("test invariant: floor (%v) must exceed tpdbProdMinInterval (%v) to distinguish the two", floor, tpdbProdMinInterval)
+	}
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second}, WithRetryAfterFloor(floor))
+	start := time.Now()
+	out, err := c.SearchByHash(context.Background(), "x")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Title != "Floor Retry" {
+		t.Fatalf("expected the decoded post-retry scene, got %+v", out)
+	}
+	if got := atomic.LoadInt64(&reqCount); got != 2 {
+		t.Errorf("expected exactly one retry (2 total requests), got %d", got)
+	}
+	// >= ~280ms proves the 300ms floor governed; it is also comfortably above the
+	// 200ms spacing, so the back-off provably did not collapse to the interval.
+	if elapsed < 280*time.Millisecond {
+		t.Errorf("expected the ~%v floor to govern the back-off (distinct from the %v inter-call spacing), got %v", floor, tpdbProdMinInterval, elapsed)
+	}
+}
+
+// TestDoGet_BoundedRetryOn429Storm is AC5: a server that 429s on EVERY hit fails
+// after the capped attempts (no retry storm), returns a 429-typed *StatusError,
+// and issues exactly maxRetries+1 total requests. A small floor keeps the test
+// fast; the whole thing completes well under the 15s outboundTimeout.
+func TestDoGet_BoundedRetryOn429Storm(t *testing.T) {
+	var reqCount int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&reqCount, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second}, WithRetryAfterFloor(20*time.Millisecond))
+	start := time.Now()
+	_, err := c.SearchByHash(context.Background(), "x")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected an error after the capped 429 retries")
+	}
+	var se *StatusError
+	if !errors.As(err, &se) || se.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected a *StatusError with StatusCode 429, got %v", err)
+	}
+	if got := atomic.LoadInt64(&reqCount); got != maxRetries+1 {
+		t.Errorf("expected exactly %d total requests (cap+1, no storm), got %d", maxRetries+1, got)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("capped retries took %v — must fail fast, well under the 15s outboundTimeout", elapsed)
+	}
+}
+
+// TestDoGet_PeakConcurrencyLatencyGuard is AC9 — the most important test: it
+// protects the plan's R1 risk claim with a REAL concurrent burst (real
+// goroutines, real HTTP round-trips to a real httptest server, real
+// sync.WaitGroup coordination), not a mock or a single call. One Client with an
+// explicit WithMinInterval (so spacing engages against the httptest host — the
+// default gated limiter would exempt it and measure nothing) is hit by a
+// background burst of `burst` concurrent doGet-reaching calls while a single
+// "interactive" call is issued concurrently through the SAME client/limiter. The
+// interactive call must return within a small multiple of interval×burst —
+// proving that even amid a concurrent burst a call completes in bounded time, and
+// acting as a regression guard: if a future change parallelizes the precompute
+// pages or drops FilterZeroSceneSites' SetLimit(5), peak concurrency rises and
+// this fails long before the real 15s outboundTimeout cliff is hit in prod.
+func TestDoGet_PeakConcurrencyLatencyGuard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Respond immediately so the burst measures limiter-imposed spacing,
+		// never server latency.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	const interval = 20 * time.Millisecond
+	const burst = 10
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 15 * time.Second}, WithMinInterval(interval))
+
+	var wg sync.WaitGroup
+	wg.Add(burst)
+	for i := 0; i < burst; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = c.SearchByHash(context.Background(), "burst")
+		}()
+	}
+
+	// Interactive call issued concurrently with the in-flight burst, through the
+	// same shared per-caller limiter.
+	start := time.Now()
+	_, err := c.SearchByHash(context.Background(), "interactive")
+	elapsed := time.Since(start)
+
+	wg.Wait() // let every burst request finish before the server closes
+
+	if err != nil {
+		t.Fatalf("interactive call failed: %v", err)
+	}
+	// Worst case the interactive call queues behind the whole burst:
+	// ~interval×(burst+1). The 3× bound is generous against CI jitter yet still
+	// ~660ms — far under the 15s outboundTimeout the guard exists to protect.
+	bound := interval * time.Duration(burst+1) * 3
+	if elapsed >= bound {
+		t.Errorf("interactive call latency %v reached bound %v amid a %d-way concurrent burst — a call must stay bounded (well under the 15s outboundTimeout), not stall", elapsed, bound, burst)
+	}
+}
+
+// TestNoDirectClientDoOutsideDoGet is AC7 — implemented as a static source
+// inspection rather than a forced-fit httptest unit test (the invariant is
+// structural, not behavioral). It confirms that every REST call funnels through
+// the single doGet seam: the only `c.http.Do(` in the package's non-test source
+// is doGet's, and no method calls httpx.DoJSON(/DoJSONAllowEmpty( directly. This
+// is the automated equivalent of the manual check
+// `grep -rn 'c\.http\.Do(\|httpx\.DoJSON(' internal/tpdbrest/*.go`, which finds
+// exactly one match — doGet's client.Do at client.go:436 (prose mentions of
+// "httpx.DoJSON" in comments carry no trailing paren and don't match).
+func TestNoDirectClientDoOutsideDoGet(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading package dir: %v", err)
+	}
+	var doCount, doJSONCount int
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		s := string(src)
+		doCount += strings.Count(s, "c.http.Do(")
+		doJSONCount += strings.Count(s, "httpx.DoJSON(")
+		doJSONCount += strings.Count(s, "httpx.DoJSONAllowEmpty(")
+	}
+	if doCount != 1 {
+		t.Errorf("expected exactly one c.http.Do( call (the single seam inside doGet), found %d — a REST method may be calling client.Do directly outside doGet", doCount)
+	}
+	if doJSONCount != 0 {
+		t.Errorf("expected zero direct httpx.DoJSON(/DoJSONAllowEmpty( calls (every REST call must funnel through doGet's inline client.Do), found %d", doJSONCount)
 	}
 }

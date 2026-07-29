@@ -7,30 +7,134 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/httpx"
+	"github.com/labbersanon/sakms/internal/throttle"
 )
+
+// tpdbProdHost is ThePornDB's real REST API hostname — the single source of
+// truth both DefaultBaseURL and the shared-limiter host gate derive from, so a
+// future domain change updates the base URL and the gate together and can't
+// silently disable production throttling by letting the two drift apart.
+const tpdbProdHost = "api.theporndb.net"
 
 // DefaultBaseURL is ThePornDB's single canonical REST API base (no trailing
 // slash — the client builds paths as baseURL + "/scenes"). TPDB is a fixed
 // public service, so callers hardcode this instead of a user-supplied
 // Connection.URL, mirroring the TPDBGraphQLURL precedent (internal/mode).
-// A var (not const) so tests can override it to point at an httptest fake.
-var DefaultBaseURL = "https://api.theporndb.net"
+// A var (not const) so tests can override it to point at an httptest fake;
+// derived from the tpdbProdHost const (never an independent literal) so the
+// host gate below always matches the real production base.
+var DefaultBaseURL = "https://" + tpdbProdHost
+
+// tpdbProdMinInterval is the process-wide minimum spacing between real-TPDB
+// REST calls, baked into sharedLimiter at package init. TPDB documents no
+// public rate limit, so this is a conservative empirical value (~5 req/s);
+// Retry-After (see doGet) is the real safety net. Tunable in this one place.
+const tpdbProdMinInterval = 200 * time.Millisecond
+
+// defaultRetryAfterFloor is the minimum sleep before retrying a 429 when the
+// response carries no usable Retry-After header. Deliberately DISTINCT from
+// tpdbProdMinInterval and ~1s: if the retry collapsed to the sub-second
+// inter-call spacing it would re-fire almost immediately, re-429, and exhaust
+// the cap in well under a second — giving no benefit in exactly the
+// no-header case it exists for. Overridable per-Client via WithRetryAfterFloor
+// so tests assert the floor's behavior without eating a real second per run.
+const defaultRetryAfterFloor = 1 * time.Second
+
+// maxRetries bounds how many times doGet re-issues a request after a 429 (so at
+// most maxRetries+1 total requests). Each retry re-acquires a limiter slot, so
+// retries are themselves rate-limited — a retry storm is structurally
+// impossible, not merely mitigated.
+const maxRetries = 2
+
+// sharedLimiter is the process-wide TPDB rate limiter every Client built with no
+// options uses. Constructed once at package init with the production interval
+// baked in — never reassigned, no exported setter — so there is no init-order
+// race and no mutable global to synchronize (throttle's own mutex is the only
+// lock). doGet gates its use on the real TPDB host (shouldThrottle), so every
+// production caller of DefaultBaseURL is spaced while httptest hosts stay exempt.
+var sharedLimiter = throttle.New(tpdbProdMinInterval)
 
 type Client struct {
 	baseURL string
 	apiKey  string
 	http    *http.Client
+	// limiter, when non-nil, is an explicit per-caller limiter installed via
+	// WithMinInterval. It spaces calls UNCONDITIONALLY (no host gate), so a
+	// caller that explicitly asks for throttling gets it everywhere it points,
+	// including an httptest host. When nil (the default, zero-option case) doGet
+	// falls back to the package sharedLimiter gated by shouldThrottle.
+	limiter *throttle.Throttle
+	// retryAfterFloor is the minimum 429 back-off when no Retry-After header is
+	// present. Defaults to defaultRetryAfterFloor; overridable via
+	// WithRetryAfterFloor.
+	retryAfterFloor time.Duration
 }
 
-func New(baseURL, apiKey string, httpClient *http.Client) *Client {
-	return &Client{baseURL: baseURL, apiKey: apiKey, http: httpClient}
+// Option customizes a Client at construction (functional-options pattern). New
+// is variadic so every existing call site keeps compiling with zero changes.
+type Option func(*Client)
+
+// WithMinInterval installs a per-caller rate limiter on this Client, distinct
+// from the shared default. Unlike the default shared limiter it is UNGATED —
+// it spaces every call regardless of host — which is what lets a test observe
+// spacing against a local httptest server. Pass 0 to opt out of throttling
+// entirely (a no-op limiter that also bypasses the shared gated one).
+func WithMinInterval(d time.Duration) Option {
+	return func(c *Client) { c.limiter = throttle.New(d) }
+}
+
+// WithRetryAfterFloor overrides the 429 no-header back-off floor (default
+// defaultRetryAfterFloor) — used by tests to assert floor behavior with a small
+// value instead of a real ~1s sleep.
+func WithRetryAfterFloor(d time.Duration) Option {
+	return func(c *Client) { c.retryAfterFloor = d }
+}
+
+func New(baseURL, apiKey string, httpClient *http.Client, opts ...Option) *Client {
+	c := &Client{
+		baseURL:         baseURL,
+		apiKey:          apiKey,
+		http:            httpClient,
+		retryAfterFloor: defaultRetryAfterFloor,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// shouldThrottle reports whether the default shared limiter should space a
+// request to host — true only for the real TPDB service. Kept a standalone pure
+// function so the gate decision is unit-testable in isolation, and compared
+// against the tpdbProdHost const (never the mutable DefaultBaseURL var) so a
+// test reassigning DefaultBaseURL to an httptest URL can't start throttling
+// 127.0.0.1 and break hermeticity.
+func shouldThrottle(host string) bool {
+	return host == tpdbProdHost
+}
+
+// StatusError is returned when TPDB responds with a non-2xx status. Its message
+// is text-equivalent to the previous httpx.DoJSON output
+// ("<host> returned status <N>") so no caller asserting on that text breaks;
+// StatusCode lets a caller/test detect a 429 specifically (the
+// capped-retry-exhaustion case).
+type StatusError struct {
+	Host       string
+	StatusCode int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s returned status %d", e.Host, e.StatusCode)
 }
 
 // Scene mirrors a subset of ThePornDB's REST scene response shape.
@@ -297,12 +401,120 @@ type scenesResponse struct {
 // below rather than every caller reaching into a shared /scenes endpoint.
 func (c *Client) doGet(ctx context.Context, path string, params url.Values, out any) error {
 	u := c.baseURL + path + "?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+
+	// Bound the whole retry loop (requests + back-off sleeps) by the client's
+	// own outbound timeout, so a large Retry-After can't stall a scheduler or
+	// interactive request far past that budget. Test clients pass Timeout==0
+	// (no derived deadline) → pure-ctx behavior is preserved.
+	if c.http.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.http.Timeout)
+		defer cancel()
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	return httpx.DoJSON(c.http, req, httpx.MaxResponseBodySize, out)
+
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return fmt.Errorf("building request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+		// Rate-limit before sending. An explicit per-caller limiter spaces every
+		// call regardless of host; the default shared limiter spaces only the
+		// real TPDB host, exempting httptest hosts (hermetic tests). Each retry
+		// re-enters this loop and re-acquires a slot, so retries are rate-limited.
+		if c.limiter != nil {
+			if err := c.limiter.Wait(ctx, req.URL.Host); err != nil {
+				return err
+			}
+		} else if shouldThrottle(req.URL.Host) {
+			if err := sharedLimiter.Wait(ctx, req.URL.Host); err != nil {
+				return err
+			}
+		}
+
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return fmt.Errorf("request to %s failed: %w", req.URL.Host, err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
+			sleep := c.retryAfterBackoff(resp)
+			resp.Body.Close()
+			// Don't sleep past the remaining budget — return the 429 now rather
+			// than block for a back-off that can't complete in time anyway.
+			if dl, ok := ctx.Deadline(); ok && time.Now().Add(sleep).After(dl) {
+				return &StatusError{Host: req.URL.Host, StatusCode: http.StatusTooManyRequests}
+			}
+			if err := sleepCtx(ctx, sleep); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return &StatusError{Host: req.URL.Host, StatusCode: resp.StatusCode}
+		}
+
+		// httpx has no decode-only helper (DoJSON/DoJSONAllowEmpty each do their
+		// own client.Do), so replicate its capped-body decode inline.
+		err = json.NewDecoder(io.LimitReader(resp.Body, httpx.MaxResponseBodySize)).Decode(out)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("decoding response from %s: %w", req.URL.Host, err)
+		}
+		return nil
+	}
+}
+
+// retryAfterBackoff is how long to wait before retrying a 429 —
+// max(parsed Retry-After, this Client's retryAfterFloor). A missing or
+// unparseable header yields 0 from parseRetryAfter, so the floor governs.
+func (c *Client) retryAfterBackoff(resp *http.Response) time.Duration {
+	if parsed := parseRetryAfter(resp.Header.Get("Retry-After")); parsed > c.retryAfterFloor {
+		return parsed
+	}
+	return c.retryAfterFloor
+}
+
+// parseRetryAfter reads an HTTP Retry-After value in either supported form —
+// delay-seconds (an integer) or an HTTP-date (RFC 7231) — returning the delay
+// as a duration, or 0 for an absent, past, or unparseable value (never an
+// error: an unparseable header just falls back to the floor).
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// sleepCtx blocks for d, honoring ctx cancellation (a cancelled/expired ctx
+// returns its error instead of sleeping out the full duration).
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *Client) get(ctx context.Context, params url.Values) ([]Scene, error) {

@@ -391,9 +391,20 @@ func enrichAdultRSSItemsFromPool(ctx context.Context, releaseStore *adultnewest.
 		if !ok {
 			continue
 		}
-		items[i].Title = m.EntityTitle
-		items[i].Studio = m.EntityStudio
-		items[i].Image = m.EntityImage
+		// Guard against a malformed pool row blanking a field that already had a
+		// raw fallback value (e.g. an empty EntityTitle would otherwise wipe the
+		// display Title and simultaneously break Phase 2's Title==ReleaseTitle
+		// "still raw" check, silently losing that item's second enrichment
+		// chance too).
+		if m.EntityTitle != "" {
+			items[i].Title = m.EntityTitle
+		}
+		if m.EntityStudio != "" {
+			items[i].Studio = m.EntityStudio
+		}
+		if m.EntityImage != "" {
+			items[i].Image = m.EntityImage
+		}
 	}
 }
 

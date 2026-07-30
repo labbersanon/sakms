@@ -7,9 +7,11 @@
 //      no enabled toggle, no delete) — feeds left knownKeys entirely, so they
 //      can never reach descriptorFor/RowEditor.
 //   2. Every OTHER row type is unaffected and still fully editable/reorderable
-//      in RowEditor: structural rows (Studios/Performers) keep their drag
-//      handle + Show/Hide toggle; the admin newest row keeps its drag handle +
-//      Enabled toggle + Delete.
+//      in RowEditor: structural rows (stash-box rows, the only structural kind
+//      left once the fixed Studios/Performers rows were replaced by
+//      RSS-derived admin newest rows — see US-6) keep their drag handle +
+//      Show/Hide toggle; the admin newest row keeps its drag handle + Enabled
+//      toggle + Delete.
 //   3. RssFeedRow still renders on the page for every ENABLED adult feed, on an
 //      independent path positioned AFTER all structural rows and ordered by the
 //      feed's own sort_order (a DOM-position check, not mere presence) —
@@ -42,8 +44,7 @@ const stubFetch = (override?: Override) => {
   vi.stubGlobal("fetch", fn);
 };
 
-// A single enabled admin newest row (the entity-row control group), plus the
-// always-present Studios/Performers structural rows (mocked empty).
+// A single enabled admin newest row (the entity-row control group).
 const newestRows = [
   {
     id: 1,
@@ -67,9 +68,16 @@ const feeds = [
 
 // mounts answers every fetch AdultDiscover fires on the plain browse view.
 // Substring-collision ordering matters: the two "/resolve" item endpoints share
-// a prefix with their own list endpoints, so they must be matched FIRST.
+// a prefix with their own list endpoints, so they must be matched FIRST. A
+// StashDB connection is configured so the screen has at least one STRUCTURAL
+// row (the fixed Studios/Performers rows are gone — see US-6 — so a
+// stash-box row is now the only structural-kind row left to exercise
+// "every other row type is unaffected").
 const mounts = (url: string): Response | undefined => {
-  if (url.includes("/api/connections")) return jsonResponse([]);
+  if (url.includes("/api/connections"))
+    return jsonResponse([
+      { service: "stashdb", url: "https://stashdb.example", hasApiKey: true, updatedAt: "2026-01-01T00:00:00Z" },
+    ]);
   if (url.includes("/api/discover/row-order/adult"))
     return jsonResponse({ keys: [] });
   if (url.includes("/api/discover/row-hidden/adult"))
@@ -77,10 +85,11 @@ const mounts = (url: string): Response | undefined => {
   // newest-row items (…/newest-rows/{id}/resolve) BEFORE the list endpoint.
   if (url.includes("/newest-rows/") && url.includes("/resolve"))
     return jsonResponse([]);
+  if (url.includes("/newest-rows/performer-genders")) return jsonResponse([]);
   if (url.includes("/api/modes/adult/newest-rows"))
     return jsonResponse(newestRows);
-  if (url.includes("/api/modes/adult/studios-merged")) return jsonResponse([]);
-  if (url.includes("/api/modes/adult/performers-merged")) return jsonResponse([]);
+  if (url.includes("/api/modes/adult/discover/stashdb/trending"))
+    return jsonResponse([]);
   // feed items (…/rss-feeds/{id}/resolve) BEFORE the list endpoint.
   if (url.includes("/rss-feeds/") && url.includes("/resolve"))
     return jsonResponse([]);
@@ -98,17 +107,17 @@ describe("AdultDiscover — RSS feeds decoupled from the row editor", () => {
 
     // The admin newest row (entity) is present in the editor and reorderable +
     // enable-toggleable — unchanged. Awaited first since it enters the editor
-    // only after its async newest-rows resource resolves (Studios/Performers
-    // are static knownKeys that render immediately).
+    // only after its async newest-rows resource resolves (the stash-box row
+    // is a static knownKeys entry that renders immediately once connections
+    // resolves).
     await screen.findByLabelText("Drag My Newest Row");
     expect(screen.getByLabelText("My Newest Row enabled")).toBeTruthy();
 
     // Structural rows are present in the editor and reorderable (drag handle) +
-    // toggleable (Show/Hide) — unchanged.
-    expect(screen.getByLabelText("Drag Studios")).toBeTruthy();
-    expect(screen.getByLabelText("Studios visible")).toBeTruthy();
-    expect(screen.getByLabelText("Drag Performers")).toBeTruthy();
-    expect(screen.getByLabelText("Performers visible")).toBeTruthy();
+    // toggleable (Show/Hide) — unchanged. StashDB Trending is the structural
+    // row exercised here now that the fixed Studios/Performers rows are gone.
+    expect(screen.getByLabelText("Drag StashDB Trending")).toBeTruthy();
+    expect(screen.getByLabelText("StashDB Trending visible")).toBeTruthy();
 
     // RSS feeds appear NOWHERE in the editor: no drag handle, no enabled toggle
     // for any feed (enabled, disabled, or non-adult). This is the central fix —
@@ -133,15 +142,15 @@ describe("AdultDiscover — RSS feeds decoupled from the row editor", () => {
     expect(screen.queryByText("Feed C Disabled")).toBeNull();
     expect(screen.queryByText("Movie Feed")).toBeNull();
 
-    // Positioned AFTER all structural rows: Male Performers (the last structural
-    // row in default order — the Performers block is now the Female+Male split)
-    // precedes Feed A in the DOM. Presence alone would pass even if the
-    // independent render path were mis-placed, so this asserts real document
-    // order.
-    const performers = screen.getByText("Male Performers");
+    // Positioned AFTER all structural rows: StashDB Trending (the only
+    // structural row in this fixture, now that the fixed Studios/Performers
+    // rows are gone — see US-6) precedes Feed A in the DOM. Presence alone
+    // would pass even if the independent render path were mis-placed, so this
+    // asserts real document order.
+    const stashboxRow = await screen.findByText("StashDB Trending");
     const newest = screen.getByText("My Newest Row");
     const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
-    expect(performers.compareDocumentPosition(feedA) & FOLLOWING).toBeTruthy();
+    expect(stashboxRow.compareDocumentPosition(feedA) & FOLLOWING).toBeTruthy();
     expect(newest.compareDocumentPosition(feedA) & FOLLOWING).toBeTruthy();
 
     // Feeds render in sort_order: Feed A (sortOrder 0) before Feed B (1).

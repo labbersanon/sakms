@@ -75,6 +75,16 @@ const adultCategory = 6000
 // package's doc comment).
 const maxNewPerCycle = 25
 
+// genderBackfillFailureThreshold is the gender backfill's consecutive-failure
+// circuit breaker (see backfillPerformerGenders), mirroring the now-deleted
+// adultmergecache/precompute.go's identical pattern: after this many
+// back-to-back PerformerGender errors, the backfill aborts for the rest of the
+// cycle rather than grinding through the whole NULL queue against boxes that
+// are clearly down. Every remaining row stays NULL (safe/resumable — retried
+// next boot poll), so a boot-time box outage becomes "do nothing this cycle,"
+// not "burn the whole queue to ''." A single success anywhere resets the count.
+const genderBackfillFailureThreshold = 20
+
 // FeedIntervalSettingKey holds the FEED pass's cadence, in whole seconds — a
 // deliberate new tunable, distinct from IntervalSettingKey (the 24h browse
 // pass). The feed pass runs on its own ticker with its own budget, which is what
@@ -314,6 +324,60 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 			log.Printf("adultnewest: marking release %q seen: %v", r.Title, err)
 		}
 	}
+
+	// Gender backfill — the LAST step of the cycle, after the browse pass, reusing
+	// THIS cycle's sess.Identify (no new Identifier/Throttle is constructed). That
+	// reuse is load-bearing: it shares the browse lane's single Throttle by
+	// construction, adding no independently-rate-limited concurrent lane to the
+	// external boxes. A separately-built Identifier here would double box load and
+	// recreate the exact failure shape this design exists to avoid.
+	if err := backfillPerformerGenders(ctx, sess.Identify, releaseStore); err != nil {
+		log.Printf("adultnewest: backfilling performer genders: %v", err)
+	}
+}
+
+// backfillPerformerGenders drains the NULL-gender performer work queue
+// (ReleaseStore.UngenderedPerformers) using the distinguishable
+// identify.Identifier.PerformerGender resolver. Its whole reason to exist is
+// the error-vs-no-match distinction PerformerImage cannot make:
+//
+//   - err != nil  → the boxes could not answer (throttle-abort/box error/all
+//     unreachable). LEAVE THE ROW NULL (never write '') so it retries next
+//     cycle, and bump the consecutive-failure counter.
+//   - err == nil  → a box was reached. Reset the counter and UpdateGender with
+//     g, which MAY be '' — a genuine "reached, no gender on file" negative that
+//     is safe to persist (such a performer is simply excluded from every
+//     gender-split view, matching the legacy merged-card behavior).
+//
+// The consecutive-failure circuit breaker (genderBackfillFailureThreshold)
+// aborts the whole pass once the boxes are clearly down, leaving every
+// remaining row NULL (safe/resumable) rather than churning the entire queue
+// against a dead box. A DB write failure is logged but does NOT trip the box
+// breaker (it isn't a box outage) and does NOT reset it either — the counter
+// tracks box reachability alone, and the row simply stays NULL to retry.
+func backfillPerformerGenders(ctx context.Context, id *identify.Identifier, releaseStore *ReleaseStore) error {
+	queue, err := releaseStore.UngenderedPerformers(ctx)
+	if err != nil {
+		return err
+	}
+	consecutiveFailures := 0
+	for _, row := range queue {
+		g, err := id.PerformerGender(ctx, row.Name)
+		if err != nil {
+			consecutiveFailures++
+			log.Printf("adultnewest: resolving gender for performer %q (id=%d): %v — left unresolved, will retry next cycle", row.Name, row.ID, err)
+			if consecutiveFailures >= genderBackfillFailureThreshold {
+				log.Printf("adultnewest: gender backfill aborted after %d consecutive failures — remaining performers stay unresolved for next cycle", consecutiveFailures)
+				return nil
+			}
+			continue
+		}
+		consecutiveFailures = 0
+		if err := releaseStore.UpdateGender(ctx, row.ID, g); err != nil {
+			log.Printf("adultnewest: updating gender for performer %q (id=%d): %v", row.Name, row.ID, err)
+		}
+	}
+	return nil
 }
 
 // processRelease identifies one Prowlarr release and writes every entity it
@@ -444,7 +508,7 @@ func identifyStudioPerformers(ctx context.Context, id *identify.Identifier, deta
 		if performer == "" {
 			continue
 		}
-		image, source := id.PerformerImage(ctx, performer)
+		image, source, gender := id.PerformerImage(ctx, performer)
 		if source == "" {
 			continue
 		}
@@ -454,6 +518,7 @@ func identifyStudioPerformers(ctx context.Context, id *identify.Identifier, deta
 			EntitySource:    source,
 			EntityTitle:     performer,
 			EntityImage:     image,
+			Gender:          gender,
 			BrowseConfirmed: true,
 		})
 	}
@@ -529,6 +594,11 @@ func toMatchedRelease(rowType RowType, m identify.MatchResult, releaseTitle stri
 		FirstSeenReleaseTitle: releaseTitle,
 		Genres:                genres,
 		Performers:            performers,
+		// Scene/Movie rows never carry gender (only RowPerformer rows do — see
+		// identifyStudioPerformers) — left explicit rather than relying on the
+		// zero value, since gender is otherwise easy to mistake as "not yet
+		// wired" here.
+		Gender: "",
 		// The browse pass is the explicit provenance signal D5's visibility gate
 		// depends on: every entity the cat-6000 browse pass identifies+confirms
 		// is browse-confirmed, so it stays visible regardless of any feed's

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/throttle"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
 
@@ -114,6 +117,87 @@ func fakeTPDB(t *testing.T, sites, performers map[string]bool) *httptest.Server 
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// fakeStashBox serves the two stash-box GraphQL queries identifyStudioPerformers'
+// StudioImage/PerformerImage calls issue — findStudio (matched on the "name"
+// variable) and searchPerformer (matched on the "term" variable) — routed by a
+// substring check on the outgoing query text (same "distinguish by query shape"
+// approach fakeTPDB uses via URL path). Used to prove US-3's gender threading
+// end-to-end through identifyStudioPerformers without a live network call.
+func fakeStashBox(t *testing.T, studioImages, performerGenders map[string]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "findStudio"):
+			name, _ := req.Variables["name"].(string)
+			if img, ok := studioImages[name]; ok {
+				fmt.Fprintf(w, `{"data":{"findStudio":{"id":"s1","name":%q,"images":[{"url":%q}]}}}`, name, img)
+				return
+			}
+			fmt.Fprint(w, `{"data":{"findStudio":null}}`)
+		case strings.Contains(req.Query, "searchPerformer"):
+			term, _ := req.Variables["term"].(string)
+			if gender, ok := performerGenders[term]; ok {
+				fmt.Fprintf(w, `{"data":{"searchPerformer":[{"id":"p1","name":%q,"gender":%q,"images":[{"url":"https://cdn/performer.jpg"}]}]}}`, term, gender)
+				return
+			}
+			fmt.Fprint(w, `{"data":{"searchPerformer":[]}}`)
+		default:
+			fmt.Fprint(w, `{"data":{}}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestIdentifyStudioPerformers_ThreadsGenderOnPerformerRowsOnly proves US-3's
+// gender threading (plan §2.4): a RowPerformer cache row carries the
+// normalized gender PerformerImage resolved, while its sibling RowStudio row
+// carries an empty gender (studios have no gender concept — StudioImage is
+// unchanged). identifyStudioPerformers is the SHARED function both the
+// browse pass (matchRelease) and the feed pass (processFeedItem) call
+// unmodified (F6) — testing it directly here proves both passes get this
+// behavior without duplicating the test against two callers.
+func TestIdentifyStudioPerformers_ThreadsGenderOnPerformerRowsOnly(t *testing.T) {
+	srv := fakeStashBox(t,
+		map[string]string{"Tushy": "https://cdn/tushy.jpg"},
+		map[string]string{"Riley Reid": "FEMALE"},
+	)
+	id := &identify.Identifier{
+		Boxes: identify.NewBoxSearcher(map[string]*stashbox.Client{
+			"stashdb": stashbox.New(stashbox.Config{Endpoint: srv.URL, APIKey: "k"}, &http.Client{Timeout: 5 * time.Second}),
+		}, nil),
+		Throttle: throttle.New(0),
+	}
+
+	detail := identify.DetailedMatch{StudioName: "Tushy", Performers: []string{"Riley Reid"}}
+	out := identifyStudioPerformers(context.Background(), id, detail)
+
+	if len(out) != 2 {
+		t.Fatalf("expected 1 studio row + 1 performer row, got %d: %+v", len(out), out)
+	}
+	var studioRow, performerRow *MatchedRelease
+	for i := range out {
+		switch out[i].RowType {
+		case RowStudio:
+			studioRow = &out[i]
+		case RowPerformer:
+			performerRow = &out[i]
+		}
+	}
+	if studioRow == nil || studioRow.Gender != "" {
+		t.Fatalf("expected RowStudio's Gender to be empty, got %+v", studioRow)
+	}
+	if performerRow == nil || performerRow.Gender != "female" {
+		t.Fatalf("expected RowPerformer's Gender to be the normalized 'female', got %+v", performerRow)
+	}
 }
 
 // TestRun_BrowseBootPollFiresBeforeInterval proves the browse pass now fires an

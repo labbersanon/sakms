@@ -312,10 +312,17 @@ func (id *Identifier) StudioImage(ctx context.Context, name string) (image, sour
 	return "", ""
 }
 
-// PerformerImage is StudioImage's performer analogue.
-func (id *Identifier) PerformerImage(ctx context.Context, name string) (image, source string) {
+// PerformerImage is StudioImage's performer analogue, with one addition:
+// gender is threaded from the matched box object's own Gender field
+// (normalized via normalizeGender), since a performer identity carries
+// gender where a studio never does — StudioImage is deliberately left
+// unchanged (studios have no gender concept). Every return path — including
+// the two "nothing found" failure paths — returns an empty gender alongside
+// the empty image/source, matching image/source's own all-empty-on-failure
+// contract.
+func (id *Identifier) PerformerImage(ctx context.Context, name string) (image, source, gender string) {
 	if name == "" {
-		return "", ""
+		return "", "", ""
 	}
 	for _, box := range []string{"stashdb", "fansdb"} {
 		client := id.Boxes.stashBoxes[box]
@@ -323,28 +330,126 @@ func (id *Identifier) PerformerImage(ctx context.Context, name string) (image, s
 			continue
 		}
 		if err := id.Throttle.Wait(ctx, box); err != nil {
-			return "", ""
+			return "", "", ""
 		}
 		candidates, err := client.SearchPerformer(ctx, name, 5)
 		if err == nil {
 			for _, p := range candidates {
 				if p.Name == name && p.ImageURL != "" {
-					return p.ImageURL, box
+					return p.ImageURL, box, normalizeGender(p.Gender)
 				}
 			}
 		}
 	}
 	if id.Boxes.tpdb != nil {
 		if err := id.Throttle.Wait(ctx, "tpdb"); err != nil {
-			return "", ""
+			return "", "", ""
 		}
 		if candidates, err := id.Boxes.tpdb.SearchPerformers(ctx, name); err == nil {
 			for _, p := range candidates {
 				if p.Name == name && p.Image != "" {
-					return p.Image, "tpdb"
+					return p.Image, "tpdb", normalizeGender(p.Gender)
 				}
 			}
 		}
 	}
-	return "", ""
+	return "", "", ""
+}
+
+// PerformerGender is PerformerImage's gender analogue, but with the one
+// distinction the gender backfill (internal/adultnewest) needs and
+// PerformerImage cannot provide: PerformerImage collapses ALL THREE outcomes
+// (throttle-abort, box error, genuine reached-but-no-match) to ("","",""), so
+// a caller can't tell a transient box outage apart from "this performer has no
+// gender on file." That ambiguity is fatal for a backfill that persists a
+// result: writing "" on a transient failure would burn a retryable row
+// permanently. So this resolver reports the two cases distinguishably:
+//
+//	(g,  nil)  g possibly "" → a box was REACHED and returned that gender
+//	                           ("" == reached, but no gender on file for this name)
+//	("", err)                → throttle-abort / box error / every box unreachable.
+//	                           NOT a negative answer — the caller MUST leave the row NULL.
+//
+// Per-box behavior mirrors PerformerImage's box-iteration loop exactly, only
+// the outcome semantics differ: a Throttle.Wait error returns ("", err)
+// immediately (a cancelled context must abort, not be read as "no gender"); a
+// Search error is remembered as lastErr and the next box is tried; a
+// name-matched candidate returns (normalizeGender(p.Gender), nil) — matched on
+// name ALONE (unlike PerformerImage, which additionally requires a non-empty
+// image, since gender, not art, is what this resolver is after); all boxes
+// reached with no match returns ("", nil); and if no box was ever reached
+// (every configured box errored) the remembered lastErr is returned so the
+// caller leaves the row NULL. The reached flag is what separates "reached, no
+// gender" (write "") from "never reached" (leave NULL): a mix (one box reached
+// with no match, another errored) counts as reached and returns ("", nil), and
+// the vacuous zero-configured-boxes case likewise returns ("", nil).
+func (id *Identifier) PerformerGender(ctx context.Context, name string) (gender string, err error) {
+	if name == "" {
+		return "", nil
+	}
+	var lastErr error
+	reached := false
+	for _, box := range []string{"stashdb", "fansdb"} {
+		client := id.Boxes.stashBoxes[box]
+		if client == nil {
+			continue
+		}
+		if err := id.Throttle.Wait(ctx, box); err != nil {
+			return "", err
+		}
+		candidates, err := client.SearchPerformer(ctx, name, 5)
+		if err != nil {
+			lastErr = err
+			continue // best-effort: remember and try the next box
+		}
+		reached = true
+		for _, p := range candidates {
+			if p.Name == name {
+				return normalizeGender(p.Gender), nil
+			}
+		}
+	}
+	if id.Boxes.tpdb != nil {
+		if err := id.Throttle.Wait(ctx, "tpdb"); err != nil {
+			return "", err
+		}
+		candidates, err := id.Boxes.tpdb.SearchPerformers(ctx, name)
+		if err != nil {
+			lastErr = err
+		} else {
+			reached = true
+			for _, p := range candidates {
+				if p.Name == name {
+					return normalizeGender(p.Gender), nil
+				}
+			}
+		}
+	}
+	if !reached && lastErr != nil {
+		return "", lastErr
+	}
+	return "", nil
+}
+
+// normalizeGender maps a raw upstream gender token (TPDB extras.gender free
+// string, or StashDB GenderEnum name) to "female" or "male" — everything
+// else (unset, empty, "transgender_female", "transgender_male", "intersex",
+// "non_binary", "non-binary", "trans female", "unknown", or any unrecognized
+// token) normalizes to "" and is excluded from any gender-split view by
+// design (documented simplification, not a silent guess). Lifted
+// byte-for-byte from internal/adultmerge.normalizeGender (that package is
+// deleted by a parallel US-2 story in this same redesign effort — this
+// helper is what replaces it) so downstream values match what the old
+// merged cards produced — same EXACT-MATCH-after-lower+trim contract, never
+// substring/Contains (see that function's original doc comment for the
+// "TRANSGENDER_FEMALE contains female" trap this guards against).
+func normalizeGender(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "female":
+		return "female"
+	case "male":
+		return "male"
+	default:
+		return ""
+	}
 }

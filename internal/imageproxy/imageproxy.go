@@ -189,7 +189,6 @@ type Image struct {
 type Proxy struct {
 	client            *http.Client
 	cache             *cache
-	durable           *DurableStore   // nil = today's exact behavior (opt-in, see NewWithDurable)
 	allowPrivateHosts map[string]bool // nil in production; test-only, see validate's doc
 }
 
@@ -204,19 +203,6 @@ func New(client *http.Client) *Proxy {
 		client: newGuardedClient(client, nil),
 		cache:  newCache(defaultCacheCap, defaultCacheTTL),
 	}
-}
-
-// NewWithDurable is New plus an optional durable store (see DurableStore): a
-// process-persistent, on-disk image cache the Adult precompute cycle warms
-// (FetchAndPersist) and the request path reads (Fetch) across restarts. durable
-// may be nil, in which case the returned Proxy behaves byte-for-byte like New's
-// — the durable path is fully opt-in, so callers/tests that don't wire one are
-// unaffected. The in-memory LRU and SSRF guardrail are identical either way
-// (this reuses New so that wiring stays in one place).
-func NewWithDurable(client *http.Client, durable *DurableStore) *Proxy {
-	p := New(client)
-	p.durable = durable
-	return p
 }
 
 // newGuardedClient returns a dedicated *http.Client for image fetching: a
@@ -261,19 +247,6 @@ func (p *Proxy) Fetch(ctx context.Context, raw string) (*Image, error) {
 	}
 	key := p.keyFor(u)
 
-	// Durable store (opt-in): a hit returns immediately with no network call.
-	// A durable Get error is a DB fault only — a missing/unreadable backing file
-	// self-heals to a clean miss inside Get — so it is treated as a miss here and
-	// falls through to the LRU/upstream path. A transient durable hiccup must
-	// never break image serving that the nil-durable path handles fine, and this
-	// keeps "durable miss → exactly one upstream call" honest. Fetch NEVER writes
-	// to the durable store (only FetchAndPersist does).
-	if p.durable != nil {
-		if body, ct, found, gErr := p.durable.Get(ctx, key); gErr == nil && found {
-			return &Image{Body: body, ContentType: ct, FromCache: true}, nil
-		}
-	}
-
 	if img, ok := p.cache.get(key); ok {
 		return &Image{Body: img.Body, ContentType: img.ContentType, FromCache: true}, nil
 	}
@@ -286,25 +259,17 @@ func (p *Proxy) Fetch(ctx context.Context, raw string) (*Image, error) {
 	return img, nil
 }
 
-// keyFor derives the single cache key both Fetch (read side) and
-// FetchAndPersist (write side) use for durable + in-memory lookups: the full
+// keyFor derives the in-memory cache key Fetch uses for lookups: the full
 // validated URL string (scheme+host+path+query, so two sizes of the same poster
-// don't collide). DurableStore.Get/Has/Put hash this internally (their own
-// shaOf) and store the raw URL as source_url provenance — so this MUST return
-// the URL string, never a precomputed sha, or the durable write-key and
-// read-key would diverge and source_url would hold a hash instead of a URL.
-// Routing both paths through this one helper is what guarantees they can never
-// key differently.
+// don't collide).
 func (p *Proxy) keyFor(u *url.URL) string {
 	return u.String()
 }
 
 // fetchUpstream performs the live upstream fetch for an already-validated URL:
 // HTTP GET → 2xx status + image/* content-type check → size-capped body read →
-// *Image. It does NO caching (neither the in-memory LRU nor the durable store) —
-// the caller decides what to do with the result, so Fetch and FetchAndPersist
-// share this SSRF/status/content-type/size logic verbatim without either's
-// caching policy leaking into the other.
+// *Image. It does NO caching — Fetch decides what to do with the result (it
+// populates the in-memory LRU on a successful fetch).
 func (p *Proxy) fetchUpstream(ctx context.Context, u *url.URL) (*Image, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -342,102 +307,4 @@ func (p *Proxy) fetchUpstream(ctx context.Context, u *url.URL) (*Image, error) {
 	}
 
 	return &Image{Body: body, ContentType: ct}, nil
-}
-
-// FetchAndPersist warms the durable store for a single upstream image URL — the
-// write side of the precompute cycle (US-4), the mirror of Fetch's read side.
-// It validates raw with the SAME method-internal validate Fetch uses (honoring
-// p.allowPrivateHosts, NOT the package-level Validate whose defaults hardcode
-// nil), so an httptest CDN on 127.0.0.1 passes the SSRF gate in integration
-// tests exactly as it does for Fetch. Flow:
-//
-//	if durable == nil { return nil }              // opt-in: no-op, error-free
-//	validate(raw)                                 // same SSRF guard as Fetch
-//	key := keyFor(u)
-//	if durable.Has(key) { return nil }            // incremental skip, no CDN fetch
-//	img := fetchUpstream(u)                        // same guarded path as Fetch
-//	durable.Put(key, img.ContentType, img.Body)
-//
-// The durable==nil short-circuit is FIRST so callers that never wired a durable
-// store can never be broken by this method (not even by a malformed URL) —
-// durable warming is opt-in infrastructure. Any validation/fetch/put error is
-// returned so the caller (precompute) can log-and-skip just that one item
-// without failing the page, entity type, or cycle. The Has-skip check lives here
-// (not in precompute) so key computation only ever happens on the method side
-// against the validated URL — precompute passes raw card.Image and never touches
-// keys, keeping the write-key/read-key invariant impossible to violate.
-func (p *Proxy) FetchAndPersist(ctx context.Context, raw string) error {
-	if p.durable == nil {
-		return nil
-	}
-	u, err := validate(ctx, raw, p.allowPrivateHosts)
-	if err != nil {
-		return err
-	}
-	key := p.keyFor(u)
-	if has, hErr := p.durable.Has(ctx, key); hErr == nil && has {
-		return nil
-	}
-	img, err := p.fetchUpstream(ctx, u)
-	if err != nil {
-		return err
-	}
-	return p.durable.Put(ctx, key, img.ContentType, img.Body)
-}
-
-// MaintainDurableResult reports one cycle-start durable-maintenance pass. The
-// three counts are the durable store's Reconcile drift tallies (for the cycle
-// log); TotalBytes is the walk-based on-disk usage after pruning; OverCap says
-// usage is still at/over the cap after PruneToCap ran — the signal the precompute
-// cycle uses to pause NEW image warming for the remainder of that cycle (metadata
-// caching is unaffected).
-type MaintainDurableResult struct {
-	StrayTemps  int
-	OrphanRows  int
-	OrphanFiles int
-	TotalBytes  int64
-	OverCap     bool
-}
-
-// MaintainDurable is the accessor the Adult precompute cycle calls at the START
-// OF EVERY runCycle (boot poll and every tick — §2.5) so the durable store's
-// self-heal + disk-cap enforcement live inside package imageproxy while the
-// DurableStore itself stays unexposed to callers. It is a no-op returning a zero
-// result when no durable store is wired (durable == nil), so the metadata-only
-// (nil-proxy) precompute path is unaffected.
-//
-// Sequence (adjacent walks, run once per cycle before any image warming):
-//
-//	Reconcile(ctx)         // delete stray temps, orphan rows, orphan files
-//	PruneToCap(ctx, cap)   // evict oldest LRU entries back under the cap
-//	TotalBytes(ctx)        // walk-based usage; OverCap = usage >= cap
-//
-// Reconcile ALWAYS runs (index/disk truth must hold every cycle); PruneToCap and
-// the OverCap decision only engage when capBytes > 0 (a non-positive cap means
-// "no cap" — never prune everything). DurableStore.Reconcile/TotalBytes each do
-// their own bounded tree walk (their shipped US-2 shape); calling them back-to-back
-// here keeps that cost to one maintenance step at cycle start over a tree the cap
-// already bounds.
-func (p *Proxy) MaintainDurable(ctx context.Context, capBytes int64) (MaintainDurableResult, error) {
-	var res MaintainDurableResult
-	if p.durable == nil {
-		return res, nil
-	}
-	strayTemps, orphanRows, orphanFiles, err := p.durable.Reconcile(ctx)
-	res.StrayTemps, res.OrphanRows, res.OrphanFiles = strayTemps, orphanRows, orphanFiles
-	if err != nil {
-		return res, err
-	}
-	if capBytes > 0 {
-		if err := p.durable.PruneToCap(ctx, capBytes); err != nil {
-			return res, err
-		}
-	}
-	total, err := p.durable.TotalBytes(ctx)
-	if err != nil {
-		return res, err
-	}
-	res.TotalBytes = total
-	res.OverCap = capBytes > 0 && total >= capBytes
-	return res, nil
 }

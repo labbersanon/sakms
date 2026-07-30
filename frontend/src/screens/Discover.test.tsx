@@ -477,50 +477,6 @@ describe("Discover — row-editor Edit mode", () => {
 });
 
 describe("Discover — Adult tab (row-based browse)", () => {
-  it("renders the Studios row and the Performers row with proxied art", async () => {
-    const { container } = (() => {
-      stubFetch((url) => {
-        if (url.includes("/api/modes/adult/studios"))
-          return jsonResponse([studio({ id: "st1", name: "Vixen Studio" })]);
-        // A real performer has ONE gender, so it appears in exactly one strip:
-        // the Male strip is empty here and Jane Doe (female) renders once.
-        if (url.includes("gender=male")) return jsonResponse([]);
-        if (url.includes("/api/modes/adult/performers"))
-          return jsonResponse([
-            performer({
-              id: "pf1",
-              name: "Jane Doe",
-              image: "https://cdn.theporndb.net/performers/jane.jpg",
-            }),
-          ]);
-        const d = mainstreamDefaults(url);
-        if (d) return d;
-        throw new Error("unexpected fetch: " + url);
-      });
-      return render(() => <Discover />);
-    })();
-
-    fireEvent.click(await screen.findByText("Adult"));
-
-    // Performers is now split into two gender-scoped strips (§3.7.2).
-    expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(screen.getByText("Female Performers")).toBeInTheDocument();
-    expect(screen.getByText("Male Performers")).toBeInTheDocument();
-
-    expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
-    expect(await screen.findByText("Jane Doe")).toBeInTheDocument();
-
-    // Every image (the studio logo + performer art) flows through the proxy;
-    // never hot-linked from TPDB's CDN.
-    const imgs = Array.from(container.querySelectorAll("img"));
-    expect(imgs.length).toBeGreaterThan(0);
-    for (const img of imgs) {
-      const src = img.getAttribute("src") ?? "";
-      expect(src.startsWith("/api/images/proxy?url=")).toBe(true);
-      expect(src.startsWith("https://cdn.theporndb.net")).toBe(false);
-    }
-  });
-
   it("appends the next page to an admin newest row on Show more (append, not replace)", async () => {
     // Page 1 returns a FULL page (20 items, matching PaginatedStrip's
     // exhaustion heuristic — see shared.tsx's defaultStripPageSize) so
@@ -597,271 +553,6 @@ describe("Discover — Adult tab (row-based browse)", () => {
     expect(screen.queryByText("Show more")).not.toBeInTheDocument();
   });
 
-  it("renders Studios/Performers as text tiles when they have no art", async () => {
-    const { container } = (() => {
-      stubFetch((url) => {
-        if (url.includes("/api/modes/adult/studios"))
-          return jsonResponse([studio({ id: "st1", name: "Art-less Studio", image: "" })]);
-        if (url.includes("/api/modes/adult/performers"))
-          return jsonResponse([performer({ id: "pf1", name: "Art-less Performer", image: "" })]);
-        const d = mainstreamDefaults(url);
-        if (d) return d;
-        throw new Error("unexpected fetch: " + url);
-      });
-      return render(() => <Discover />);
-    })();
-
-    fireEvent.click(await screen.findByText("Adult"));
-
-    // Blank art → the name renders via the text tile (and again as the card's
-    // name line, matching PosterCard's text-fallback shape), so findAllByText.
-    // No <img> anywhere (blank art + empty scene rows).
-    expect((await screen.findAllByText("Art-less Studio")).length).toBeGreaterThan(0);
-    expect((await screen.findAllByText("Art-less Performer")).length).toBeGreaterThan(0);
-    expect(container.querySelectorAll("img").length).toBe(0);
-  });
-
-  it("drills into a merged studio's scenes and returns to the rows via Back to browse", async () => {
-    // The Studios row is now the merged TPDB+StashDB row (fetchMergedStudios →
-    // /studios-merged); a card carries an id-pair, and drilling it hits the
-    // merged-scenes endpoint by that pair. /studios-merged/scenes is checked
-    // before /studios-merged (a substring of it).
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/studios-merged/scenes"))
-        return jsonResponse([scene({ id: "sc1", title: "Studio Only Scene" })]);
-      if (url.includes("/api/modes/adult/studios-merged"))
-        return jsonResponse([
-          {
-            name: "Drill Studio",
-            image: "https://cdn.theporndb.net/sites/drill.jpg",
-            source: "merged",
-            tpdbId: "st1",
-            stashdbId: "sd1",
-          },
-        ]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    // Click the studio card → drill-down replaces the rows with its scenes.
-    fireEvent.click(await screen.findByText("Drill Studio"));
-    expect(await screen.findByText("Studio Only Scene")).toBeInTheDocument();
-    expect(screen.getByText("Back to browse")).toBeInTheDocument();
-    // The rows are gone while drilled in (the Performers block is now the two
-    // gender-split strips).
-    expect(screen.queryByText("Female Performers")).not.toBeInTheDocument();
-    // The merged-scenes endpoint was hit with the card's id-pair.
-    expect(
-      fetchMock.mock.calls.some(([u]) => {
-        const s = String(u);
-        return (
-          s.includes("/api/modes/adult/discover/studios-merged/scenes") &&
-          s.includes("tpdbId=st1") &&
-          s.includes("stashdbId=sd1")
-        );
-      }),
-    ).toBe(true);
-
-    // Back to browse restores the rows and drops the drill-down.
-    fireEvent.click(screen.getByText("Back to browse"));
-    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
-    expect(await screen.findByText("Drill Studio")).toBeInTheDocument();
-    expect(screen.queryByText("Studio Only Scene")).not.toBeInTheDocument();
-  });
-
-  it("drills into a merged performer's scenes via the merged-scenes endpoint", async () => {
-    // The Performers row is the merged TPDB+StashDB row; a StashDB-only card
-    // (only stashdbId set) drills to the merged-scenes endpoint with just that
-    // id (the absent tpdbId is omitted from the query).
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/performers-merged/scenes"))
-        return jsonResponse([scene({ id: "ps1", title: "Performer Only Scene" })]);
-      // Drill Performer is female here, so only the Female strip lists it — the
-      // Male strip is empty and the name resolves to a single card.
-      if (url.includes("gender=male")) return jsonResponse([]);
-      if (url.includes("/api/modes/adult/performers-merged"))
-        return jsonResponse([
-          {
-            name: "Drill Performer",
-            image: "https://cdn.theporndb.net/performers/drill.jpg",
-            source: "stashdb",
-            stashdbId: "pf1",
-          },
-        ]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    fireEvent.click(await screen.findByText("Drill Performer"));
-    expect(await screen.findByText("Performer Only Scene")).toBeInTheDocument();
-    expect(screen.getByText("Back to browse")).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([u]) => {
-        const s = String(u);
-        return (
-          s.includes("/api/modes/adult/discover/performers-merged/scenes") &&
-          s.includes("stashdbId=pf1") &&
-          !s.includes("tpdbId=")
-        );
-      }),
-    ).toBe(true);
-  });
-
-  // Regression test for Decision DE (2026-07-27): the merged Performers row's
-  // new post-merge availability filter (Option B) can drop every item on a
-  // page while the underlying catalog still has more (hasMore=true). Before
-  // this fix, PaginatedStrip's "Show more" control was nested inside
-  // <Show when={items().length > 0}>, so an empty page hid the button along
-  // with the item list -- a dead end with no way to advance. Page 1 here
-  // comes back fully filtered-empty; page 2 has a real item. DE-2's bounded
-  // auto-advance should reach it with no manual click required.
-  it("Performers row: an availability-filtered empty page auto-advances instead of dead-ending", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/modes/adult/performers-merged")) {
-        // Real Performer is female, so only the Female strip exercises the
-        // filtered-empty-then-real auto-advance; the Male strip is exhausted
-        // immediately so the name resolves to a single card.
-        if (url.includes("gender=male"))
-          return jsonResponse({ items: [], hasMore: false });
-        if (url.includes("page=2"))
-          return jsonResponse({
-            items: [
-              {
-                name: "Real Performer",
-                image: "https://cdn.theporndb.net/performers/real.jpg",
-                source: "tpdb",
-                tpdbId: "pf-real",
-              },
-            ],
-            hasMore: false,
-          });
-        return jsonResponse({ items: [], hasMore: true });
-      }
-      if (url.includes("/api/modes/adult/studios-merged"))
-        return jsonResponse({ items: [], hasMore: false });
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    expect(await screen.findByText("Real Performer")).toBeInTheDocument();
-  });
-
-  // DE-2's auto-advance is bounded: a pathologically sparse catalog (every
-  // page filtered fully empty, hasMore never turns false) must not loop
-  // forever. After maxAutoAdvance (3) extra fetches the loop stops and hands
-  // control back to a manually-clickable "Show more" -- which the DE fix also
-  // makes reachable with zero items on screen, unlike the old
-  // items().length > 0 gate. The all-empty case still caps at exactly the same
-  // fetch count as before the sparse-aware broadening (gained stays 0 < target
-  // every page, so the cap is what stops it) -- this locks that in.
-  it("Performers row: caps auto-advance at 3 empty pages under infiniteScroll (bounded, no runaway loop)", async () => {
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/performers-merged")) {
-        // Male exhausts immediately; the Female strip is the pathologically
-        // sparse one whose every page filters fully empty (hasMore never false).
-        if (url.includes("gender=male"))
-          return jsonResponse({ items: [], hasMore: false });
-        return jsonResponse({ items: [], hasMore: true });
-      }
-      if (url.includes("/api/modes/adult/studios-merged"))
-        return jsonResponse({ items: [], hasMore: false });
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-    await screen.findByText("Female Performers");
-
-    // These strips use infiniteScroll, so there is no "Show more" button; the
-    // bounded auto-advance still fires on the initial load and MUST stop at the
-    // cap (1 initial page 1 + 3 auto-advances = 4) rather than looping forever
-    // on a catalog that never returns hasMore:false. Scope to the Female
-    // strip's own gender=female calls (the Male strip also hits
-    // performers-merged, once, before exhausting).
-    const femaleCalls = () =>
-      fetchMock.mock.calls.filter(([u]) => String(u).includes("gender=female"));
-    await vi.waitFor(() => expect(femaleCalls().length).toBe(4));
-
-    // The old click-driven "Show more" control is gone under infiniteScroll;
-    // the row stays advanceable via its scroll sentinel instead (the sentinel's
-    // observer-fired reachability is proven in shared.paginatedstrip.test.tsx).
-    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
-  });
-
-  // Sparse-page auto-advance (extends DE-2, 2026-07-27): the live Performers
-  // row returns pages of exactly ONE item each against the small curated
-  // identify pool (page 1 -> 1 item, page 2 -> 1 item, ... all hasMore=true) --
-  // never fully empty, so the old all-empty check never fired and the operator
-  // got exactly one new card per "Show more" click. The broadened trigger keeps
-  // auto-fetching while fewer than perPage (20) items have been gathered THIS
-  // operation, bounded by the same cap. So a single initial load should
-  // accumulate a page's worth (bounded: 1 initial fetch + up to 3 auto-advances
-  // = 4 one-item pages = 4 cards), not 1 -- and, since hasMore is still true and
-  // the cap was hit before reaching a full perPage, still leave a reachable
-  // manual "Show more" control.
-  it("Performers row: sparse 1-item pages auto-advance to ~a full page's worth, not one item, under infiniteScroll", async () => {
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/modes/adult/performers-merged")) {
-        // Only the Female strip carries the sparse curated pool; the Male strip
-        // exhausts immediately so each `Sparse Performer N` name resolves once.
-        if (url.includes("gender=male"))
-          return jsonResponse({ items: [], hasMore: false });
-        const page = Number(new URL(url, "http://x").searchParams.get("page") ?? "1");
-        return jsonResponse({
-          items: [
-            {
-              name: `Sparse Performer ${page}`,
-              image: `https://cdn.theporndb.net/performers/p${page}.jpg`,
-              source: "tpdb",
-              tpdbId: `pf-sparse-${page}`,
-            },
-          ],
-          hasMore: true,
-        });
-      }
-      if (url.includes("/api/modes/adult/studios-merged"))
-        return jsonResponse({ items: [], hasMore: false });
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    // Await the LAST page's card first so the whole async auto-advance chain
-    // has settled, then assert every earlier page's card is present too -- one
-    // card from each of the 4 one-item pages the single initial operation
-    // pulled, proving it did NOT stop after page 1 with a lone item.
-    expect(await screen.findByText("Sparse Performer 4")).toBeInTheDocument();
-    expect(screen.getByText("Sparse Performer 1")).toBeInTheDocument();
-    expect(screen.getByText("Sparse Performer 2")).toBeInTheDocument();
-    expect(screen.getByText("Sparse Performer 3")).toBeInTheDocument();
-    // infiniteScroll: no manual "Show more" button renders; the row keeps
-    // advancing via its scroll sentinel once the cap is hit.
-    expect(screen.queryByText("Show more")).not.toBeInTheDocument();
-
-    const calls = fetchMock.mock.calls.filter(([u]) =>
-      String(u).includes("gender=female"),
-    );
-    // 1 initial load + 3 bounded auto-advances = 4, same budget as the
-    // all-empty cap case above -- the trigger widened, the bound did not.
-    expect(calls.length).toBe(4);
-  });
 });
 
 // connectionSummary is the ConnectionSummary DTO factory this describe block
@@ -885,10 +576,14 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
 
-    // The always-present TPDB rows still render...
-    expect(await screen.findByText("Studios")).toBeInTheDocument();
-    // ...but no StashDB/FansDB row header ever appears, not even with an empty
-    // "Nothing here yet" placeholder.
+    // No newest-rows admin data in this fixture, so the browse view has
+    // nothing but the search bar/sort bar — confirm that quiescent state
+    // renders cleanly (no crash reading the empty-array resources) before
+    // asserting no StashDB/FansDB row header ever appears, not even with an
+    // empty "Nothing here yet" placeholder.
+    expect(
+      await screen.findByPlaceholderText("Search scenes by title…"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("StashDB Trending")).not.toBeInTheDocument();
     expect(screen.queryByText("StashDB Studios")).not.toBeInTheDocument();
     expect(screen.queryByText("StashDB Performers")).not.toBeInTheDocument();
@@ -898,7 +593,7 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     expect(screen.queryByText("FansDB Performers")).not.toBeInTheDocument();
   });
 
-  it("shows only StashDB's Trending scene row when stashdb is configured (its Studios/Performers rows are replaced by the merged rows)", async () => {
+  it("shows only StashDB's Trending scene row when stashdb is configured (StashDB has no dedicated Studios/Performers row at all)", async () => {
     stubFetch((url) => {
       if (url.includes("/api/connections"))
         return jsonResponse([connectionSummary("stashdb")]);
@@ -915,8 +610,8 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     // StashDB's scene row (Trending) survives (G2)...
     expect(await screen.findByText("StashDB Trending")).toBeInTheDocument();
     expect(await screen.findByText("StashDB Trend Scene")).toBeInTheDocument();
-    // ...but its dedicated Studios/Performers rows are gone — folded into the
-    // merged "Studios"/"Performers" rows (plan G1/G2).
+    // ...but StashDB has no dedicated Studios/Performers row at all (only
+    // FansDB does — see STASH_BOX_ORDERABLE_ROWS in Adult.tsx).
     expect(screen.queryByText("StashDB Studios")).not.toBeInTheDocument();
     expect(screen.queryByText("StashDB Performers")).not.toBeInTheDocument();
 
@@ -1071,7 +766,7 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
 });
 
 describe("Discover — Adult admin newest rows", () => {
-  it("renders enabled newest rows first (scene→grab-able card, performer→plain tile), filters disabled", async () => {
+  it("renders enabled newest rows first (scene→grab-able card, performer→drill-down tile), filters disabled", async () => {
     stubFetch((url) => {
       if (url.includes("/newest-rows/1/resolve"))
         return jsonResponse([
@@ -1085,6 +780,9 @@ describe("Discover — Adult admin newest rows", () => {
             rowType: "scene",
           },
         ]);
+      // The gender query param is appended (e.g. ?gender=female) but the row
+      // itself doesn't vary by leg for this fixture — return the one item
+      // regardless of which gender strip is asking.
       if (url.includes("/newest-rows/2/resolve"))
         return jsonResponse([
           {
@@ -1097,6 +795,11 @@ describe("Discover — Adult admin newest rows", () => {
             rowType: "performer",
           },
         ]);
+      // A Performer row renders one strip per discovered gender — without
+      // this, performerGenders() is empty and no strip (and no item) renders
+      // at all, by design (see renderRow's newestrow: branch doc comment).
+      if (url.includes("/newest-rows/performer-genders"))
+        return jsonResponse(["female"]);
       if (url.includes("/newest-rows"))
         return jsonResponse([
           { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
@@ -1111,31 +814,27 @@ describe("Discover — Adult admin newest rows", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
 
-    // Both enabled row headers render; the disabled one never does (filtered
-    // client-side, so its /resolve is never fetched either).
+    // Both enabled row headers render (the Performer row fans out to a
+    // "Female Performers" strip, the discovered gender's own title); the
+    // disabled one never does (filtered client-side, so its /resolve is
+    // never fetched either).
     expect(await screen.findByText("Newest Scenes")).toBeInTheDocument();
-    expect(await screen.findByText("Newest Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
     expect(screen.queryByText("Hidden Studios")).not.toBeInTheDocument();
+    expect(screen.queryByText("Newest Performers")).not.toBeInTheDocument();
 
     expect(await screen.findByText("Fresh Scene")).toBeInTheDocument();
     expect(await screen.findByText("Fresh Performer")).toBeInTheDocument();
 
     // A scene/movie row's card is grab-able (AdultCard); a performer/studio
-    // row's is a plain non-interactive tile (EntityCard — no Grab, no
-    // drill-down endpoint for this pipeline's matched entities).
+    // row's card has no Grab button — it drills into that entity's live
+    // scenes instead (EntityCard's onSelect, see the AdultDiscover — newest
+    // drill-down describe block below).
     const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[200px\\]") as HTMLElement;
     expect(within(sceneCard).getByText("Grab")).toBeInTheDocument();
     const perfCard = screen.getByText("Fresh Performer").closest(".w-\\[200px\\]") as HTMLElement;
     expect(within(perfCard).queryByText("Grab")).not.toBeInTheDocument();
-
-    // Newest rows lead the browse view — "Newest Scenes" precedes the fixed
-    // "Studios" catalog-browse row in DOM order.
-    const newestHeader = screen.getByText("Newest Scenes");
-    const studiosHeader = screen.getByText("Studios");
-    expect(
-      newestHeader.compareDocumentPosition(studiosHeader) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(screen.getByText("Fresh Performer").closest("button")).toBeTruthy();
   });
 
   it("a DISABLED newest row still appears in the row editor (as an entity row with an unchecked Enabled toggle), so it can be re-enabled", async () => {
@@ -1274,13 +973,17 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
 
   it("shows the TPDB pop-up (not TMDB's) when Adult's scene fetch reports tpdb not configured", async () => {
     stubFetchWithCalls((url) => {
-      if (
-        url.includes("/api/modes/adult/discover") ||
-        url.includes("/api/modes/adult/studios") ||
-        url.includes("/api/modes/adult/performers") ||
-        url.includes("/newest-rows")
-      )
-        return notConfigured("tpdb");
+      if (url.includes("/api/modes/adult/discover")) return notConfigured("tpdb");
+      // newestRowsData's own list fetch swallows its error (-> []), so the
+      // pop-up can't be triggered by the list call itself — return one
+      // enabled row whose /resolve then reports tpdb not configured, which
+      // DOES propagate via that PaginatedStrip's onError.
+      if (url.includes("/newest-rows/1/resolve")) return notConfigured("tpdb");
+      if (url.includes("/newest-rows/performer-genders")) return jsonResponse([]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -1530,10 +1233,16 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     const fetchMock = stubFetch((url) => {
       if (url.includes("sortBy=recently_created"))
         return jsonResponse([scene({ id: "srt1", title: "Sorted Scene" })]);
-      if (url.includes("/api/modes/adult/studios"))
-        return jsonResponse([studio({ id: "st1", name: "Vixen Studio" })]);
-      if (url.includes("/api/modes/adult/performers"))
-        return jsonResponse([performer({ id: "pf1", name: "A Performer" })]);
+      if (url.includes("/newest-rows/1/resolve"))
+        return jsonResponse([
+          { id: "st1", title: "Vixen Studio", studio: "", date: "", image: "https://cdn.theporndb.net/sites/vixen.jpg", source: "", rowType: "studio" },
+        ]);
+      if (url.includes("/newest-rows/performer-genders"))
+        return jsonResponse(["female"]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Studios", rowType: "studio", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -1542,7 +1251,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
     expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
 
     // "Recently Added" → TPDB recently_created sort; rows give way to the grid.
     fireEvent.change(screen.getByLabelText("Sort"), {
@@ -1550,8 +1259,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     });
 
     expect(await screen.findByText("Sorted Scene")).toBeInTheDocument();
-    expect(screen.queryByText("Studios")).not.toBeInTheDocument();
-    expect(screen.queryByText("Female Performers")).not.toBeInTheDocument();
+    expect(screen.queryByText("Vixen Studio")).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([u]) =>
         String(u).includes("sortBy=recently_created"),
@@ -1563,7 +1271,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
       target: { value: "default" },
     });
     expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
     expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
   });
 
@@ -1625,10 +1333,16 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
         return jsonResponse([scene({ id: "srt1", title: "Sorted Scene" })]);
       if (url.includes("/api/modes/adult/discover?q="))
         return jsonResponse([scene({ id: "sr1", title: "Search Scene" })]);
-      if (url.includes("/api/modes/adult/studios"))
-        return jsonResponse([studio({ id: "st1", name: "Vixen Studio" })]);
-      if (url.includes("/api/modes/adult/performers"))
-        return jsonResponse([performer({ id: "pf1", name: "A Performer" })]);
+      if (url.includes("/newest-rows/1/resolve"))
+        return jsonResponse([
+          { id: "st1", title: "Vixen Studio", studio: "", date: "", image: "https://cdn.theporndb.net/sites/vixen.jpg", source: "", rowType: "studio" },
+        ]);
+      if (url.includes("/newest-rows/performer-genders"))
+        return jsonResponse(["female"]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Studios", rowType: "studio", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -1654,7 +1368,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     // grid — proving the sort was actually reset, not just hidden.
     fireEvent.click(screen.getByText("Clear"));
     expect(await screen.findByText("Studios")).toBeInTheDocument();
-    expect(await screen.findByText("Female Performers")).toBeInTheDocument();
+    expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
     expect(screen.queryByText("Sorted Scene")).not.toBeInTheDocument();
     expect(screen.queryByText("Search Scene")).not.toBeInTheDocument();
   });

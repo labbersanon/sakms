@@ -12,10 +12,6 @@ import type {
   AdultDiscoverItem,
   AvailabilityPreview,
   DiscoverItem,
-  MergedPerformerCard,
-  MergedPerformerPage,
-  MergedStudioCard,
-  MergedStudioPage,
   PerformerSummary,
   PosterResponse,
   StudioSummary,
@@ -27,10 +23,6 @@ export type {
   AdultDiscoverItem,
   AvailabilityPreview,
   DiscoverItem,
-  MergedPerformerCard,
-  MergedPerformerPage,
-  MergedStudioCard,
-  MergedStudioPage,
   PerformerSummary,
   StudioSummary,
   TitleDetail,
@@ -398,90 +390,26 @@ export function fetchAdultPerformerScenes(
   );
 }
 
-// fetchMergedPerformers returns one page of the merged Performers row —
-// TPDB + StashDB performers fuzzy-paired and deduped server-side. Like
-// fetchMergedStudios, this returns a MergedPerformerPage envelope
-// ({items, hasMore}), NOT a bare array: the row passes through a server-side
-// availability filter (Option B) that can drop items from an already-fetched
-// page, so PaginatedStrip can no longer safely infer "no more results" from
-// batch.length < perPage — see MergedPerformerPage's doc comment (@dto) for
-// the full rationale. hasMore is computed server-side before that filter
-// runs. Replaces the separate TPDB (fetchAdultPerformers) and StashDB
-// performer rows. Both source legs are fetched at the SAME perPage
-// server-side (plan G6b) — pass the same perPage PaginatedStrip uses for its
-// exhaustion check (defaults to 20).
-//
-// The optional gender param ("female" | "male") narrows the row to one
-// gender's performers server-side (the read-time gender filter on
-// MergedPerformerCard). Omitting it is backward compatible: no gender query
-// param is sent and the row returns performers of all genders exactly as
-// before.
-export function fetchMergedPerformers(
-  page = 1,
-  gender?: "female" | "male",
-  perPage = 20,
-): Promise<MergedPerformerPage> {
-  const g = gender ? `&gender=${gender}` : "";
-  return api<MergedPerformerPage>(
-    `/api/modes/adult/performers-merged?page=${page}&perPage=${perPage}${g}`,
-  );
-}
-
-// fetchMergedStudios returns one page of the merged Studios row — TPDB sites +
-// StashDB studios fuzzy-paired and deduped server-side. Unlike
-// fetchMergedPerformers, this returns a MergedStudioPage envelope
-// ({items, hasMore}), NOT a bare array: the Studios row's TPDB leg passes
-// through a server-side zero-scene filter that can drop items from an
-// already-fetched page, so PaginatedStrip can no longer safely infer "no
-// more results" from batch.length < perPage — see MergedStudioPage's doc
-// comment (@dto) for the full rationale. hasMore is computed server-side
-// before that filter runs.
-export function fetchMergedStudios(
-  page = 1,
-  perPage = 20,
-): Promise<MergedStudioPage> {
-  return api<MergedStudioPage>(
-    `/api/modes/adult/studios-merged?page=${page}&perPage=${perPage}`,
-  );
-}
-
-// fetchMergedPerformerScenes is the merged-performer drill-down: one page of the
-// phash-deduped TPDB+StashDB scene list for a card's id-pair (GET /api/modes/
-// adult/discover/performers-merged/scenes). The browse-time pairing is
-// authoritative, so the card carries BOTH ids and this fetches from both known
-// sources directly — never re-running a fuzzy match at click time. At least one
-// of tpdbId/stashdbId must be present; each is sent only when non-empty (a
-// single-source card fetches just its one source). Scenes carry a per-scene
-// Source stamped server-side.
-export function fetchMergedPerformerScenes(
-  ids: { tpdbId?: string; stashdbId?: string },
-  page = 1,
-  perPage = 20,
+// fetchNewestEntityScenes is the RSS-derived Performers/Studios drill-down —
+// GET /api/modes/adult/discover/newest/entity-scenes?kind=&name=. Fires
+// exactly ONE live Prowlarr search (plus a best-effort RSS supplement)
+// server-side per call; the caller MUST only invoke this on an explicit
+// drill-down open, never automatically/per-scroll — see
+// internal/api/adultdiscover_newest_scenes.go and CLAUDE.md's "Discover
+// never queries Prowlarr" carve-out entry for this endpoint. The response is
+// a flat, already-complete result set (no true further pages behind it), so
+// the caller renders it with PaginatedStrip's singlePage prop rather than
+// re-querying on scroll. page is accepted for signature symmetry with every
+// other drill-down fetcher but is NOT sent to the backend, which has no page
+// param — singlePage means "Show more" never fires a second call.
+export function fetchNewestEntityScenes(
+  kind: "performer" | "studio",
+  name: string,
+  _page = 1,
 ): Promise<AdultDiscoverItem[]> {
-  const q = new URLSearchParams();
-  if (ids.tpdbId) q.set("tpdbId", ids.tpdbId);
-  if (ids.stashdbId) q.set("stashdbId", ids.stashdbId);
-  q.set("page", String(page));
-  q.set("perPage", String(perPage));
+  const q = new URLSearchParams({ kind, name });
   return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/discover/performers-merged/scenes?${q.toString()}`,
-  );
-}
-
-// fetchMergedStudioScenes is the merged-studio drill-down — same id-pair
-// contract as fetchMergedPerformerScenes, only the route differs.
-export function fetchMergedStudioScenes(
-  ids: { tpdbId?: string; stashdbId?: string },
-  page = 1,
-  perPage = 20,
-): Promise<AdultDiscoverItem[]> {
-  const q = new URLSearchParams();
-  if (ids.tpdbId) q.set("tpdbId", ids.tpdbId);
-  if (ids.stashdbId) q.set("stashdbId", ids.stashdbId);
-  q.set("page", String(page));
-  q.set("perPage", String(perPage));
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/discover/studios-merged/scenes?${q.toString()}`,
+    `/api/modes/adult/discover/newest/entity-scenes?${q.toString()}`,
   );
 }
 

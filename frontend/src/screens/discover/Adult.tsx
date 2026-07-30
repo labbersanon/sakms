@@ -1,14 +1,16 @@
 // AdultDiscover — the scene-shaped browse and its cards: a search bar over
-// the Prowlarr-matched "newest rows" (see fetchAdultNewestRows), a TPDB
-// Studios row, and a TPDB Performers row, plus optional StashDB/FansDB
-// scene/Studios/Performers rows shown only when that connection is
-// configured (see the STASH_BOX_ROWS and configuredServices doc comments
-// below). Searching swaps the rows for a plain result grid; clicking a
-// Studio/Performer card — TPDB or a stash-box (StashDB/FansDB) source —
-// drills down into a paginated grid of just that entity's scenes. A
-// stash-box drill threads its `box` through AdultDrill so the box-scoped
-// id hits its own catalog, never TPDB's (see EntityCard/AdultDrill).
-// Extracted from the original single-file Discover.tsx.
+// the Prowlarr-matched "newest rows" (see fetchAdultNewestRows) — including
+// the RSS-derived Performers/Studios admin rows, dynamically gender-split for
+// Performers (see the newestrow: branch in renderRow) — plus optional
+// StashDB/FansDB scene/Studios/Performers rows shown only when that
+// connection is configured (see the STASH_BOX_ROWS and configuredServices doc
+// comments below). Searching swaps the rows for a plain result grid; clicking
+// a Studio/Performer card — RSS-derived or a stash-box (StashDB/FansDB)
+// source — drills down into a paginated (stash-box) or single-page
+// (RSS-derived, live) grid of just that entity's scenes. A stash-box drill
+// threads its `box` through AdultDrill so the box-scoped id hits its own
+// catalog, never a different one (see EntityCard/AdultDrill). Extracted from
+// the original single-file Discover.tsx.
 //
 // Row order (inline row editor): the browse row block is driven by a merged,
 // operator-reorderable key list (see api/rowOrder.ts's mergeRowOrder). Two row
@@ -40,18 +42,13 @@ import {
 import {
   type AdultDiscoverItem,
   type AdultSortBy,
-  type MergedPerformerCard,
-  type MergedStudioCard,
   type PerformerSummary,
   type StashBox,
   type StudioSummary,
   fetchAdultDiscover,
   fetchAdultDiscoverMergedRecent,
   fetchAdultDiscoverSorted,
-  fetchMergedPerformerScenes,
-  fetchMergedPerformers,
-  fetchMergedStudioScenes,
-  fetchMergedStudios,
+  fetchNewestEntityScenes,
   fetchStashBoxPerformers,
   fetchStashBoxPerformerScenes,
   fetchStashBoxScenes,
@@ -66,6 +63,7 @@ import {
   deleteAdultNewestRow,
   fetchAdultNewestRowItems,
   fetchAdultNewestRows,
+  fetchPerformerGenders,
   updateAdultNewestRow,
 } from "../../api/adultNewestRows";
 import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
@@ -378,11 +376,11 @@ const STASH_BOX_ORDERABLE_ROWS: StashBoxOrderableRow[] = STASH_BOX_ROWS.flatMap(
       shape: "scenes" as const,
       sceneKind: sr.kind,
     })),
-    // Studios/Performers rows are generated ONLY for FansDB. StashDB's own
-    // studios/performers rows are replaced by the two merged "studios"/
-    // "performers" rows (TPDB + StashDB unified — see renderRow and the plan's
-    // G1/G2). StashDB's scene rows (e.g. Trending, above) and all of FansDB's
-    // rows are untouched.
+    // Studios/Performers rows are generated ONLY for FansDB. StashDB has no
+    // dedicated Studios/Performers row at all — its entities surface only via
+    // the RSS-derived newestrow: Performers/Studios rows once matched (see
+    // renderRow). StashDB's scene rows (e.g. Trending, above) and all of
+    // FansDB's rows are untouched.
     ...(row.box === "fansdb"
       ? [
           {
@@ -405,16 +403,17 @@ const STASH_BOX_ORDERABLE_ROWS: StashBoxOrderableRow[] = STASH_BOX_ROWS.flatMap(
 // AdultDrill is the active drill-down target — a discriminated union of two
 // shapes:
 //   - FansDB variant ({box, id}): a stash-box drill carrying the `(box, id)`
-//     identity a stash-box entity actually is, routed to the box-scoped fetcher.
-//     Unchanged from before this merge feature.
-//   - Merged variant ({tpdbId?, stashdbId?}): a merged Studios/Performers card's
-//     authoritative id-pair (at least one present). The drill loader fetches
-//     scenes from both known sources directly via the merged-scenes fetchers,
-//     never re-running a fuzzy match at click time (plan Q2/G8).
+//     identity a stash-box entity actually is, routed to the box-scoped
+//     fetcher. Unchanged from before this feature.
+//   - Newest variant ({source: "newest"}): a RSS-derived Performers/Studios
+//     admin-row card (see the newestrow: branch below). The drill loader
+//     fires the live entity-scenes handler (fetchNewestEntityScenes) by
+//     entity NAME (this pool has no stable box-scoped id, only a
+//     Prowlarr/RSS name match) — see internal/api/adultdiscover_newest_scenes.go.
 // The two are told apart by the presence of `box` (`"box" in d`).
 type AdultDrill =
   | { kind: "studio" | "performer"; name: string; box: StashBox; id: string }
-  | { kind: "studio" | "performer"; name: string; tpdbId?: string; stashdbId?: string };
+  | { kind: "studio" | "performer"; name: string; source: "newest" };
 
 // AdultDiscover is the scene-shaped browse, row-based like Mainstream: a search
 // bar over two ordered scene rows (Recently Released, Highest Rated), a Studios
@@ -525,6 +524,25 @@ export const AdultDiscover: Component<{
   const allNewestRows = () => newestRowsData() ?? [];
   const enabledNewestRows = () => allNewestRows().filter((r) => r.enabled);
 
+  // performerGenders is the dynamic gender-split (Option 5A) reference list —
+  // every distinct gender value actually present across cached Performer rows
+  // (sorted, non-empty). A "performer"-typed newestrow renders one
+  // PaginatedStrip per value here instead of one flat tile-strip, so a newly
+  // backfilled/matched gender produces a new strip automatically, no code
+  // change. Keyed on reloadToken for the same reasons newestRowsData is; the
+  // fetcher swallows its own error (-> []) for the same "don't crash the
+  // ErrorBoundary-less SPA on an optional list" reasoning documented on
+  // connections/newestRowsData above — an empty list here just means no
+  // gender strips render yet (fresh install / pre-backfill), not an error.
+  const [performerGendersData] = createResource(reloadToken, async () => {
+    try {
+      return await fetchPerformerGenders();
+    } catch {
+      return [];
+    }
+  });
+  const performerGenders = () => performerGendersData() ?? [];
+
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
     async (q): Promise<AdultDiscoverItem[]> => {
@@ -566,16 +584,15 @@ export const AdultDiscover: Component<{
 
   // knownKeys is every row this screen currently knows about. Default order
   // (an empty stored order, e.g. a fresh install) matches the page's
-  // original hardcoded row sequence exactly: newest rows, Studios,
-  // Performers, then any configured stash-box rows. RSS feeds are deliberately
-  // NOT included — they are decoupled from the row-order store entirely and
-  // render on their own sort_order-ordered path after all structural rows (so
-  // reordering structural rows can never silently relocate a feed row to the
-  // tail via mergeRowOrder's unknown-key append).
+  // original hardcoded row sequence exactly: newest rows (which now include
+  // the RSS-derived Performers/Studios admin rows themselves — see the
+  // newestrow: branch below), then any configured stash-box rows. RSS feeds
+  // are deliberately NOT included — they are decoupled from the row-order
+  // store entirely and render on their own sort_order-ordered path after all
+  // structural rows (so reordering structural rows can never silently
+  // relocate a feed row to the tail via mergeRowOrder's unknown-key append).
   const knownKeys = () => [
     ...allNewestRows().map((r) => `newestrow:${r.id}`),
-    "studios",
-    "performers",
     ...stashBoxKnownRows().map((r) => r.key),
   ];
 
@@ -590,12 +607,6 @@ export const AdultDiscover: Component<{
   const editError = () => rowOrderError() || rowActionError();
 
   const descriptorFor = (key: string): RowDescriptor | undefined => {
-    if (key === "studios") {
-      return { key, label: "Studios", kind: "structural", hidden: isHidden(key) };
-    }
-    if (key === "performers") {
-      return { key, label: "Performers", kind: "structural", hidden: isHidden(key) };
-    }
     if (key.startsWith("newestrow:")) {
       const id = Number(key.slice("newestrow:".length));
       const row = allNewestRows().find((r) => r.id === id);
@@ -663,106 +674,85 @@ export const AdultDiscover: Component<{
     });
 
   const renderRow = (key: string): JSX.Element => {
-    if (key === "studios") {
-      return (
-        <PaginatedStrip<MergedStudioCard>
-          title="Studios"
-          reloadToken={reloadToken}
-          load={(page) => fetchMergedStudios(page)}
-          onError={setSetupError}
-          infiniteScroll
-        >
-          {(s) => (
-            <EntityCard
-              kind="studio"
-              name={s.name}
-              altName={s.altName}
-              namesDiverged={s.namesDiverged}
-              image={s.image}
-              onSelect={() =>
-                setDrill({
-                  kind: "studio",
-                  name: s.name,
-                  tpdbId: s.tpdbId,
-                  stashdbId: s.stashdbId,
-                })
-              }
-            />
-          )}
-        </PaginatedStrip>
-      );
-    }
-    if (key === "performers") {
-      // One reorderable "Performers" block (single useRowOrder key) split into
-      // two gender-scoped sections. Gender isn't shown on the card face — the
-      // section title conveys it — so both strips render the identical
-      // EntityCard mapping and share reloadToken/onError.
-      const performerCard = (p: MergedPerformerCard) => (
-        <EntityCard
-          kind="performer"
-          name={p.name}
-          altName={p.altName}
-          namesDiverged={p.namesDiverged}
-          image={p.image}
-          onSelect={() =>
-            setDrill({
-              kind: "performer",
-              name: p.name,
-              tpdbId: p.tpdbId,
-              stashdbId: p.stashdbId,
-            })
-          }
-        />
-      );
-      return (
-        <>
-          <PaginatedStrip<MergedPerformerCard>
-            title="Female Performers"
-            reloadToken={reloadToken}
-            load={(page) => fetchMergedPerformers(page, "female")}
-            onError={setSetupError}
-            infiniteScroll
-          >
-            {performerCard}
-          </PaginatedStrip>
-          <PaginatedStrip<MergedPerformerCard>
-            title="Male Performers"
-            reloadToken={reloadToken}
-            load={(page) => fetchMergedPerformers(page, "male")}
-            onError={setSetupError}
-            infiniteScroll
-          >
-            {performerCard}
-          </PaginatedStrip>
-        </>
-      );
-    }
     if (key.startsWith("newestrow:")) {
       const id = Number(key.slice("newestrow:".length));
       const row = enabledNewestRows().find((r) => r.id === id)!;
-      return (
-        <PaginatedStrip<AdultNewestReleaseItem>
-          title={row.title}
-          reloadToken={reloadToken}
-          load={(page) => fetchAdultNewestRowItems(row.id, page)}
-          onError={setSetupError}
-        >
-          {(item) =>
-            row.rowType === "movie" || row.rowType === "scene" ? (
+
+      // Scene/Movie rows are unchanged: one strip of grabbable AdultCards.
+      if (row.rowType === "movie" || row.rowType === "scene") {
+        return (
+          <PaginatedStrip<AdultNewestReleaseItem>
+            title={row.title}
+            reloadToken={reloadToken}
+            load={(page) => fetchAdultNewestRowItems(row.id, page)}
+            onError={setSetupError}
+          >
+            {(item) => (
               <AdultCard
                 item={toAdultDiscoverItem(item)}
                 onGrab={setGrabTarget}
                 onDetail={setDetailTarget}
               />
-            ) : (
+            )}
+          </PaginatedStrip>
+        );
+      }
+
+      // Studio rows: a single strip, drill-down wired (Option 5A — Studios
+      // are never gender-split).
+      if (row.rowType === "studio") {
+        return (
+          <PaginatedStrip<AdultNewestReleaseItem>
+            title={row.title}
+            reloadToken={reloadToken}
+            load={(page) => fetchAdultNewestRowItems(row.id, page)}
+            onError={setSetupError}
+          >
+            {(item) => (
               <EntityCard
-                kind={row.rowType === "studio" ? "studio" : "performer"}
+                kind="studio"
                 name={item.title}
                 image={item.image}
+                onSelect={() =>
+                  setDrill({ kind: "studio", name: item.title, source: "newest" })
+                }
               />
-            )
-          }
-        </PaginatedStrip>
+            )}
+          </PaginatedStrip>
+        );
+      }
+
+      // Performer rows: dynamic gender-split (Option 5A) — one PaginatedStrip
+      // PER DISCOVERED gender value (performerGenders(), see above), each
+      // fetching only that gender's leg via fetchAdultNewestRowItems's
+      // optional gender param. Mirrors the old hardcoded single-key→two-strips
+      // fan-out, made dynamic: the row stays ONE reorderable useRowOrder key
+      // (`newestrow:${row.id}`), only the RENDERING fans out to N strips. No
+      // strip renders at all until the backfill/matching has populated at
+      // least one gender (empty performerGenders() → empty Fragment, matching
+      // the "starts sparse, grows forward" spec intent — not an error state).
+      return (
+        <For each={performerGenders()}>
+          {(gender) => (
+            <PaginatedStrip<AdultNewestReleaseItem>
+              title={`${gender.charAt(0).toUpperCase()}${gender.slice(1)} Performers`}
+              reloadToken={reloadToken}
+              load={(page) => fetchAdultNewestRowItems(row.id, page, gender)}
+              onError={setSetupError}
+            >
+              {(item) => (
+                <EntityCard
+                  kind="performer"
+                  name={item.title}
+                  image={item.image}
+                  onSelect={() =>
+                    setDrill({ kind: "performer", name: item.title, source: "newest" })
+                  }
+                />
+              )}
+            </PaginatedStrip>
+          )}
+        </For>
       );
     }
     if (key.startsWith("stashbox:")) {
@@ -952,23 +942,23 @@ export const AdultDiscover: Component<{
                   load={(page) => {
                     // Capture the drill once so TypeScript narrows the union on
                     // the `"box" in dd` guard. FansDB variant ({box, id}) →
-                    // box-scoped stash-box fetcher, unchanged. Merged variant
-                    // ({tpdbId?, stashdbId?}) → the merged-scenes fetcher, which
-                    // fetches from both known sources by the card's id-pair (no
-                    // click-time fuzzy match — plan Q2/G8).
+                    // box-scoped stash-box fetcher, unchanged, still paginated.
+                    // Newest variant ({source: "newest"}) → the live
+                    // entity-scenes handler by NAME (this pool has no stable
+                    // box-scoped id — see AdultDrill's doc comment); its
+                    // response is one already-complete result set, so
+                    // singlePage below suppresses "Show more" for it.
                     const dd = d();
                     if ("box" in dd) {
                       return dd.kind === "studio"
                         ? fetchStashBoxStudioScenes(dd.box, dd.id, page)
                         : fetchStashBoxPerformerScenes(dd.box, dd.id, page);
                     }
-                    const ids = { tpdbId: dd.tpdbId, stashdbId: dd.stashdbId };
-                    return dd.kind === "studio"
-                      ? fetchMergedStudioScenes(ids, page)
-                      : fetchMergedPerformerScenes(ids, page);
+                    return fetchNewestEntityScenes(dd.kind, dd.name, page);
                   }}
                   onError={setSetupError}
                   containerClass="flex flex-wrap gap-3"
+                  singlePage={!("box" in d())}
                 >
                   {(item) => (
                     <AdultCard

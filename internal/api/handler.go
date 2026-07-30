@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/labbersanon/sakms/internal/adultmergecache"
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/anthropic"
@@ -70,12 +69,11 @@ import (
 // feed URL fetched and parsed server-side, a separate concept from
 // slidersStore (TMDB-backed) and adultNewestRowStore (Prowlarr-scan-cache-
 // backed) even though its CRUD+reorder shape mirrors both. imageProxy is the
-// single process-lifetime *imageproxy.Proxy built once in main.go and shared
-// between imageProxyHandler (the request read path) and adultmergecache.Run
-// (the precompute write path) so both use the same in-memory LRU AND the same
-// durable on-disk store — a poster the precompute cycle warmed to disk is
-// served here with no upstream round-trip.
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, adultMergeCacheStore *adultmergecache.Store, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy) *http.ServeMux {
+// single process-lifetime *imageproxy.Proxy built once in main.go and used by
+// imageProxyHandler (the request read path) — an in-memory LRU over the live
+// upstream fetch, so a poster requested during one grid render is not
+// re-fetched from the same upstream host on the next.
+func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,
@@ -277,16 +275,6 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/modes/adult/studios/{id}/scenes", adultStudioScenesHandler(httpClient, connStore))
 	mux.HandleFunc("GET /api/modes/adult/performers", adultPerformersHandler(httpClient, connStore))
 	mux.HandleFunc("GET /api/modes/adult/performers/{id}/scenes", adultPerformerScenesHandler(httpClient, connStore))
-	// Merged Adult Discover rows (TPDB + StashDB fuzzy-deduped into one card
-	// list) and their pair-of-ids-routed, phash-deduped drill-downs — see
-	// adultdiscover_merge.go. "performers-merged"/"studios-merged" are distinct
-	// literal path segments from the plain "performers"/"studios" browse rows
-	// above (no ServeMux conflict). TPDB required (400 when absent); StashDB
-	// optional (degrades to TPDB-only).
-	mux.HandleFunc("GET /api/modes/adult/performers-merged", adultPerformersMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth, adultMergeCacheStore))
-	mux.HandleFunc("GET /api/modes/adult/studios-merged", adultStudiosMergedHandler(httpClient, connStore, adultNewestReleaseStore, feedHealth, adultMergeCacheStore))
-	mux.HandleFunc("GET /api/modes/adult/discover/performers-merged/scenes", adultPerformerMergedScenesHandler(httpClient, connStore))
-	mux.HandleFunc("GET /api/modes/adult/discover/studios-merged/scenes", adultStudioMergedScenesHandler(httpClient, connStore))
 	// Adult "newest" rows (internal/adultnewest) — admin-defined rows backed
 	// by a Prowlarr "newest releases" background scan matched to TPDB/
 	// StashDB/FansDB entities, cached and read-only at request time (see
@@ -299,6 +287,18 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/modes/adult/newest-rows/reorder", reorderAdultNewestRowsHandler(adultNewestRowStore))
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/{id}/resolve", resolveAdultNewestRowHandler(adultNewestRowStore, adultNewestReleaseStore, feedHealth))
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/genres", adultNewestGenresHandler(adultNewestReleaseStore))
+	// Dynamic gender-split reference list (Option 5A) — the distinct gender
+	// values actually present across cached Performer rows, backing one
+	// PaginatedStrip per value on the Adult Discover Performers row.
+	mux.HandleFunc("GET /api/modes/adult/newest-rows/performer-genders", adultNewestPerformerGendersHandler(adultNewestReleaseStore))
+	// Performers/Studios live drill-down: ONE Prowlarr.Search + best-effort
+	// enabled-Adult RSS feeds, fired only on an explicit operator open. The
+	// single deliberate, owner-approved exception to CLAUDE.md's "Discover
+	// never queries Prowlarr" rule (its second dated carve-out) — one call,
+	// one entity, pagination held inside the returned result set. Registered
+	// on the literal "adult" path so ServeMux prefers it over {mode}. See
+	// adultdiscover_newest_scenes.go.
+	mux.HandleFunc("GET /api/modes/adult/discover/newest/entity-scenes", adultNewestEntityScenesHandler(httpClient, connStore, settingsStore, rssFeedsStore))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
 	// (see images.go / internal/imageproxy). Read-only, auth-gated like every

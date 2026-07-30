@@ -227,3 +227,116 @@ func TestVerifyPerformers_EmptySliceReturnsEmptySlice(t *testing.T) {
 		t.Fatalf("got %+v, want empty", got)
 	}
 }
+
+// TestNormalizeGender is the exact-match table test for normalizeGender's
+// documented contract, ported byte-for-byte from
+// internal/adultmerge.normalizeGender's own TestNormalizeGender (that
+// package is deleted by a parallel US-2 story in this same redesign effort)
+// (US-3: the lifted helper must produce identical output to the legacy
+// function for the same inputs).
+func TestNormalizeGender(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"lowercase female", "female", "female"},
+		{"uppercase FEMALE", "FEMALE", "female"},
+		{"padded mixed-case Female", " Female ", "female"},
+		{"lowercase male", "male", "male"},
+		{"uppercase MALE", "MALE", "male"},
+		// The substring trap: "transgender_female" and "TRANSGENDER_MALE" both
+		// CONTAIN "female"/"male" as substrings. normalizeGender must use exact
+		// match after lower+trim, never strings.Contains — a Contains-based
+		// implementation would wrongly bucket these as female/male.
+		{"SubstringTrap_TransgenderFemale_ExcludedNotFemale", "transgender_female", ""},
+		{"transgender male excluded", "TRANSGENDER_MALE", ""},
+		{"intersex excluded", "intersex", ""},
+		{"non_binary excluded", "non_binary", ""},
+		{"non-binary (hyphen) excluded", "non-binary", ""},
+		{"trans female (space) excluded", "trans female", ""},
+		{"empty string excluded", "", ""},
+		{"unknown excluded", "unknown", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := normalizeGender(c.in); got != c.want {
+				t.Errorf("normalizeGender(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestPerformerImage_ThreadsGenderFromStashDB proves the new three-value
+// return threads gender from the matched StashDB Performer object — the
+// search-path gender fix (F5) plus the new return value, together.
+func TestPerformerImage_ThreadsGenderFromStashDB(t *testing.T) {
+	id := newIdentifierWithFakes(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"searchPerformer":[` +
+			`{"id":"p1","name":"Riley Reid","gender":"FEMALE","images":[{"url":"http://cdn/p1.jpg"}]}]}}`))
+	}, nil)
+
+	image, source, gender := id.PerformerImage(context.Background(), "Riley Reid")
+	if image != "http://cdn/p1.jpg" || source != "stashdb" || gender != "female" {
+		t.Fatalf("got (%q, %q, %q), want (http://cdn/p1.jpg, stashdb, female)", image, source, gender)
+	}
+}
+
+// TestPerformerImage_ThreadsGenderFromTPDB proves the TPDB fallback path
+// (no stash-box configured) also threads a normalized gender.
+func TestPerformerImage_ThreadsGenderFromTPDB(t *testing.T) {
+	id := &Identifier{
+		Boxes: newBoxSearcherWithFakes(t, nil, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Riley Reid","image":"http://cdn/p1.jpg","extras":{"gender":"female"}}]}`))
+		}),
+		Throttle: throttle.New(0),
+	}
+
+	image, source, gender := id.PerformerImage(context.Background(), "Riley Reid")
+	if image != "http://cdn/p1.jpg" || source != "tpdb" || gender != "female" {
+		t.Fatalf("got (%q, %q, %q), want (http://cdn/p1.jpg, tpdb, female)", image, source, gender)
+	}
+}
+
+// TestPerformerImage_NoMatchReturnsAllEmpty is a regression guard on the
+// all-empty-on-failure contract: a reached-but-no-match result must return
+// ("", "", "") across all three values, not just image/source.
+func TestPerformerImage_NoMatchReturnsAllEmpty(t *testing.T) {
+	id := newIdentifierWithFakes(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"searchPerformer":[]}}`))
+	}, nil)
+
+	image, source, gender := id.PerformerImage(context.Background(), "Nobody")
+	if image != "" || source != "" || gender != "" {
+		t.Fatalf("got (%q, %q, %q), want all-empty", image, source, gender)
+	}
+}
+
+// TestPerformerImage_EmptyNameReturnsAllEmpty guards the early-return branch
+// specifically, since it's a separate code path from the "no match" case
+// above.
+func TestPerformerImage_EmptyNameReturnsAllEmpty(t *testing.T) {
+	id := newIdentifierWithFakes(t, nil, nil)
+	image, source, gender := id.PerformerImage(context.Background(), "")
+	if image != "" || source != "" || gender != "" {
+		t.Fatalf("got (%q, %q, %q), want all-empty", image, source, gender)
+	}
+}
+
+// TestStudioImage_SignatureUnchanged is a regression guard: StudioImage must
+// keep its original two-value (image, source) return — studios have no
+// gender concept, and US-3 explicitly leaves this function untouched.
+func TestStudioImage_SignatureUnchanged(t *testing.T) {
+	id := newIdentifierWithFakes(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"findStudio":{"id":"s1","name":"Tushy","images":[{"url":"http://cdn/tushy.jpg"}]}}}`))
+	}, nil)
+
+	image, source := id.StudioImage(context.Background(), "Tushy")
+	if image != "http://cdn/tushy.jpg" || source != "stashdb" {
+		t.Fatalf("got (%q, %q), want (http://cdn/tushy.jpg, stashdb)", image, source)
+	}
+}

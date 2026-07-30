@@ -341,6 +341,54 @@ func TestSearchPerformer_EmptyResults(t *testing.T) {
 	}
 }
 
+// TestSearchPerformer_DecodesGender guards US-3's search-path gender fix
+// (F5): before searchPerformerQuery selected "gender", this always decoded
+// empty even though decode/mapping (rawBrowsePerformer.toPerformer) already
+// handled it — the browse path's TestQueryPerformers_DecodesGender is the
+// sibling proof for QueryPerformers.
+func TestSearchPerformer_DecodesGender(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"searchPerformer":[` +
+			`{"id":"p1","name":"Riley Reid","gender":"FEMALE","images":[]}]}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.SearchPerformer(context.Background(), "riley reid", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Gender != "FEMALE" {
+		t.Fatalf("expected Gender decoded from searchPerformer's gender field, got %+v", out)
+	}
+}
+
+// TestSearchPerformer_QuerySelectsGenderField guards the query-string edit
+// itself (not just the decode) — same rationale as
+// TestQueryPerformers_QuerySelectsGenderField's doc comment: a silent revert
+// of the searchPerformerQuery edit would pass a decode-only assertion
+// vacuously.
+func TestSearchPerformer_QuerySelectsGenderField(t *testing.T) {
+	var gotQuery string
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"searchPerformer":[]}}`))
+	})
+	defer closeSrv()
+
+	if _, err := c.SearchPerformer(context.Background(), "riley reid", 5); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "gender") {
+		t.Errorf("outgoing searchPerformer query does not select gender: %q", gotQuery)
+	}
+}
+
 func TestFindStudio_Found(t *testing.T) {
 	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

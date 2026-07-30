@@ -86,12 +86,20 @@ export function reorderAdultNewestRows(ids: number[]): Promise<void> {
 // only the pre-computed cache (never Prowlarr at request time; see the
 // handler's package doc). Also imported by the Discover-screen wiring later —
 // keep its name/shape stable.
+//
+// The optional gender param narrows a Performer row to one discovered gender
+// value (see fetchPerformerGenders) — the Adult Discover dynamic gender-split
+// strips each pass their own gender leg. Omitting it is backward compatible:
+// no gender query param is sent and the row returns items of every gender,
+// exactly as before.
 export function fetchAdultNewestRowItems(
   rowId: number,
   page = 1,
+  gender?: string,
 ): Promise<AdultNewestReleaseItem[]> {
+  const g = gender ? `&gender=${encodeURIComponent(gender)}` : "";
   return api<AdultNewestReleaseItem[]>(
-    `/api/modes/adult/newest-rows/${rowId}/resolve?page=${page}`,
+    `/api/modes/adult/newest-rows/${rowId}/resolve?page=${page}${g}`,
   );
 }
 
@@ -101,4 +109,15 @@ export function fetchAdultNewestRowItems(
 // /api/modes/adult/newest-rows/genres.
 export function fetchAdultNewestGenres(): Promise<string[]> {
   return api<string[]>("/api/modes/adult/newest-rows/genres");
+}
+
+// fetchPerformerGenders backs the Adult Discover dynamic gender-split
+// (Option 5A) — the distinct gender values actually present across cached
+// Performer rows, sorted, non-empty. GET
+// /api/modes/adult/newest-rows/performer-genders. One PaginatedStrip is
+// rendered per value this returns, so a newly-backfilled/matched gender
+// produces a new strip automatically, with no code change. Can be empty on a
+// fresh install / before the gender backfill has populated any rows.
+export function fetchPerformerGenders(): Promise<string[]> {
+  return api<string[]>("/api/modes/adult/newest-rows/performer-genders");
 }

@@ -596,7 +596,7 @@ func (c *Client) QueryPerformers(ctx context.Context, page, perPage int) ([]Perf
 }
 
 const searchPerformerQuery = `query SearchPerformer($term: String!, $limit: Int) {
-  searchPerformer(term: $term, limit: $limit) { id name images { url } }
+  searchPerformer(term: $term, limit: $limit) { id name gender images { url } }
 }`
 
 // SearchPerformer text-searches performers by name/alias. Similarity

@@ -68,6 +68,134 @@ func TestInsertAndList_RoundTripsMatchedRelease(t *testing.T) {
 	}
 }
 
+// TestInsertAndList_RoundTripsGender proves US-3's new Gender field survives
+// the cache round trip, same convention as
+// TestInsertAndList_RoundTripsMatchedRelease's other field checks.
+func TestInsertAndList_RoundTripsGender(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	m := MatchedRelease{
+		RowType: RowPerformer, EntityID: "performer-1", EntitySource: "stashdb",
+		EntityTitle: "Riley Reid", Gender: "female", BrowseConfirmed: true,
+	}
+	if err := s.Insert(ctx, m); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	list, err := s.List(ctx, RowPerformer, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].Gender != "female" {
+		t.Fatalf("expected Gender to round-trip as %q, got %+v", "female", list)
+	}
+}
+
+// TestInsertAndList_GenderNullReadsBackEmpty proves scanRelease tolerates a
+// NULL gender column (the state every pre-existing row is in immediately
+// after the 0047 migration, before the backfill drains it) — reading back as
+// Go's zero value "", not an error.
+func TestInsertAndList_GenderNullReadsBackEmpty(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	m := MatchedRelease{RowType: RowPerformer, EntityID: "performer-null", EntitySource: "stashdb", EntityTitle: "Pre-existing", BrowseConfirmed: true}
+	if err := s.Insert(ctx, m); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Insert always writes a concrete string (possibly ""), never NULL — force
+	// the column to NULL directly to simulate a row migrated in before the
+	// gender column existed.
+	if _, err := s.db.ExecContext(ctx, `UPDATE adult_newest_releases SET gender = NULL WHERE entity_id = 'performer-null'`); err != nil {
+		t.Fatalf("forcing gender NULL: %v", err)
+	}
+
+	list, err := s.List(ctx, RowPerformer, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].Gender != "" {
+		t.Fatalf("expected NULL gender to read back as empty string, got %+v", list)
+	}
+}
+
+// TestInsert_GenderOnConflict proves the ON CONFLICT gender rule (US-3): a
+// concrete incoming value overwrites a prior NULL or empty stored value, but
+// never overwrites a prior concrete value.
+func TestInsert_GenderOnConflict(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("concrete overwrites NULL", func(t *testing.T) {
+		s := newTestReleaseStore(t)
+		base := MatchedRelease{RowType: RowPerformer, EntityID: "p", EntitySource: "stashdb", EntityTitle: "P", BrowseConfirmed: true}
+		if err := s.Insert(ctx, base); err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE adult_newest_releases SET gender = NULL WHERE entity_id = 'p'`); err != nil {
+			t.Fatalf("forcing gender NULL: %v", err)
+		}
+
+		conflicting := base
+		conflicting.Gender = "female"
+		if err := s.Insert(ctx, conflicting); err != nil {
+			t.Fatalf("re-inserting: %v", err)
+		}
+
+		list, err := s.List(ctx, RowPerformer, "", 1, 20)
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		if len(list) != 1 || list[0].Gender != "female" {
+			t.Fatalf("expected NULL to be overwritten with the concrete incoming value, got %+v", list)
+		}
+	})
+
+	t.Run("concrete overwrites empty string", func(t *testing.T) {
+		s := newTestReleaseStore(t)
+		base := MatchedRelease{RowType: RowPerformer, EntityID: "p", EntitySource: "stashdb", EntityTitle: "P", Gender: "", BrowseConfirmed: true}
+		if err := s.Insert(ctx, base); err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+
+		conflicting := base
+		conflicting.Gender = "male"
+		if err := s.Insert(ctx, conflicting); err != nil {
+			t.Fatalf("re-inserting: %v", err)
+		}
+
+		list, err := s.List(ctx, RowPerformer, "", 1, 20)
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		if len(list) != 1 || list[0].Gender != "male" {
+			t.Fatalf("expected empty string to be overwritten with the concrete incoming value, got %+v", list)
+		}
+	})
+
+	t.Run("incoming value never overwrites an existing concrete value", func(t *testing.T) {
+		s := newTestReleaseStore(t)
+		base := MatchedRelease{RowType: RowPerformer, EntityID: "p", EntitySource: "stashdb", EntityTitle: "P", Gender: "female", BrowseConfirmed: true}
+		if err := s.Insert(ctx, base); err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+
+		conflicting := base
+		conflicting.Gender = "male"
+		if err := s.Insert(ctx, conflicting); err != nil {
+			t.Fatalf("re-inserting: %v", err)
+		}
+
+		list, err := s.List(ctx, RowPerformer, "", 1, 20)
+		if err != nil {
+			t.Fatalf("listing: %v", err)
+		}
+		if len(list) != 1 || list[0].Gender != "female" {
+			t.Fatalf("expected the existing concrete value to be preserved, got %+v", list)
+		}
+	})
+}
+
 func TestByFeedItemKeys_MapsPresentKeysAndSkipsAbsent(t *testing.T) {
 	s := newTestReleaseStore(t)
 	ctx := context.Background()
@@ -284,6 +412,95 @@ func TestDistinctGenres(t *testing.T) {
 			t.Errorf("expected sorted distinct genres %v, got %v", want, genres)
 			break
 		}
+	}
+}
+
+// TestDistinctPerformerGenders_ReturnsSortedNonEmptyValues covers US-6's
+// DistinctPerformerGenders: only RowPerformer rows count, NULL (unbackfilled)
+// and '' (reached, no gender on file) are both excluded, and a non-performer
+// row's gender (even if somehow non-empty) never contaminates the result.
+func TestDistinctPerformerGenders_ReturnsSortedNonEmptyValues(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	releases := []MatchedRelease{
+		{RowType: RowPerformer, EntityID: "p1", EntitySource: "tpdb", Gender: "male"},
+		{RowType: RowPerformer, EntityID: "p2", EntitySource: "tpdb", Gender: "female"},
+		{RowType: RowPerformer, EntityID: "p3", EntitySource: "tpdb", Gender: "male"},
+		// Reached-but-no-gender: excluded, not its own bucket.
+		{RowType: RowPerformer, EntityID: "p4", EntitySource: "tpdb", Gender: ""},
+		// Non-performer row with a (nonsensical but possible) gender value:
+		// must never contaminate the performer-only result.
+		{RowType: RowStudio, EntityID: "s1", EntitySource: "tpdb", Gender: "male"},
+	}
+	for _, r := range releases {
+		if err := s.Insert(ctx, r); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	genders, err := s.DistinctPerformerGenders(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"female", "male"}
+	if len(genders) != len(want) {
+		t.Fatalf("expected %v, got %v", want, genders)
+	}
+	for i, g := range want {
+		if genders[i] != g {
+			t.Errorf("expected sorted distinct performer genders %v, got %v", want, genders)
+			break
+		}
+	}
+}
+
+// TestListByGender_NarrowsToOneGender covers US-6's read-time gender filter
+// backing the Adult Discover dynamic gender-split: a concrete gender value
+// narrows to exactly that gender's rows; "" behaves identically to List (no
+// filter).
+func TestListByGender_NarrowsToOneGender(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	releases := []MatchedRelease{
+		{RowType: RowPerformer, EntityID: "p1", EntitySource: "tpdb", EntityTitle: "Alice", Gender: "female"},
+		{RowType: RowPerformer, EntityID: "p2", EntitySource: "tpdb", EntityTitle: "Bob", Gender: "male"},
+		{RowType: RowPerformer, EntityID: "p3", EntitySource: "tpdb", EntityTitle: "Carol", Gender: "female"},
+	}
+	for _, r := range releases {
+		if err := s.Insert(ctx, r); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	female, err := s.ListByGender(ctx, RowPerformer, "", "female", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(female) != 2 {
+		t.Fatalf("expected 2 female performers, got %d: %+v", len(female), female)
+	}
+	for _, m := range female {
+		if m.Gender != "female" {
+			t.Errorf("expected only female rows, got gender %q for %q", m.Gender, m.EntityTitle)
+		}
+	}
+
+	// Omitting the gender filter ("") behaves identically to List.
+	all, err := s.ListByGender(ctx, RowPerformer, "", "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected ListByGender with empty gender to return all 3 rows, got %d", len(all))
+	}
+	plain, err := s.List(ctx, RowPerformer, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plain) != len(all) {
+		t.Errorf("expected List and ListByGender(\"\") to agree, got %d vs %d", len(plain), len(all))
 	}
 }
 

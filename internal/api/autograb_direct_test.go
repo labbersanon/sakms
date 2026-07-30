@@ -24,7 +24,7 @@ func newAdultDirectGrabServer(t *testing.T) *httptest.Server {
 	if err := settingsStore.Set(context.Background(), adultLibraryRootFolderKey, "/adult"); err != nil {
 		t.Fatalf("setting adult root folder: %v", err)
 	}
-	mux := NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), nil, rssFeedsStore, nil, nil, dl, nil, nil, nil)
+	mux := NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv

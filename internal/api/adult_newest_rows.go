@@ -188,6 +188,7 @@ func toDTOReleaseItem(m adultnewest.MatchedRelease, feedHealth *adultnewest.Feed
 		ReleaseTitle:    m.FirstSeenReleaseTitle,
 		Genres:          m.Genres,
 		Performers:      m.Performers,
+		Gender:          m.Gender,
 	}
 	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
 		item.DownloadURL = url
@@ -201,6 +202,13 @@ func toDTOReleaseItem(m adultnewest.MatchedRelease, feedHealth *adultnewest.Feed
 // — reads the row's config, then lists matching cached releases for the
 // requested page. See this file's package doc for why this never touches
 // Prowlarr or the identify pipeline at request time.
+//
+// The optional ?gender= query param narrows the result to one gender's
+// performers (ReleaseStore.ListByGender) — the read-time filter the Adult
+// Discover dynamic gender-split strips use, one request per discovered
+// gender (see DistinctPerformerGenders). Omitting it is backward compatible:
+// ListByGender("") behaves identically to List, returning entities of every
+// gender exactly as before.
 func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -213,6 +221,7 @@ func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adu
 		if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
 			page = p
 		}
+		gender := r.URL.Query().Get("gender")
 
 		row, err := findAdultNewestRow(ctx, rowStore, id)
 		if err != nil {
@@ -224,7 +233,7 @@ func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adu
 			return
 		}
 
-		matches, err := releaseStore.List(ctx, row.RowType, row.GenreFilter, page, 0)
+		matches, err := releaseStore.ListByGender(ctx, row.RowType, row.GenreFilter, gender, page, 0)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -246,6 +255,24 @@ func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adu
 			items = append(items, toDTOReleaseItem(m, feedHealth, now))
 		}
 		writeJSON(w, items)
+	}
+}
+
+// adultNewestPerformerGendersHandler is GET
+// /api/modes/adult/newest-rows/performer-genders — the reference list backing
+// the Adult Discover dynamic gender-split (Option 5A): the frontend renders
+// one PaginatedStrip per value this returns, so a newly-backfilled/matched
+// gender produces a new strip automatically, with no code change. Sourced
+// from ReleaseStore.DistinctPerformerGenders (sorted, non-empty, non-null
+// only — see its doc comment).
+func adultNewestPerformerGendersHandler(releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		genders, err := releaseStore.DistinctPerformerGenders(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, genders)
 	}
 }
 

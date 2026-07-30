@@ -392,6 +392,24 @@ above, so don't drop them for convenience:
     future change makes this fire without an explicit click, or fires for
     more than the one clicked title, that's the rule being broken again —
     treat it the same way the original badge was treated.
+  - **Clarification, not a reversal (2026-07-30):** the Adult Discover
+    Performers/Studios live drill-down (`GET /api/modes/adult/discover/newest/entity-scenes`,
+    `internal/api/adultdiscover_newest_scenes.go`) does call Prowlarr, but this
+    is a narrow, bounded exception to the general "Discover never queries Prowlarr"
+    rule, not a loosening of it. The handler fires exactly once, for one entity
+    (a single performer or studio name), only when an operator explicitly opens
+    a drill-down card — the same trigger shape (explicit human action, one entity,
+    one query) as the detail popup's availability check (2026-07-14 entry above).
+    The returned result set is rendered with singlePage pagination (no per-scroll
+    re-query) and is honest about its sources (concurrent RSS feed best-effort results
+    + single Prowlarr search call, Image/Studio/Date/Rating fields left empty to
+    signal live-only limitations). This carve-out was owner-approved during
+    deep-interview round 6 as part of the larger Performers/Studios redesign
+    that replaced TPDB/StashDB-catalog-crawl rows with rows derived from
+    already-matched RSS/Prowlarr-browse scenes. If a future change makes this
+    fire without an explicit operator click, or for more than one entity per
+    request, or with per-scroll re-queries, that's the rule being broken again —
+    treat it the same way the original per-card badge was treated.
 
 - **Mainstream Discover — Seerr-parity expansion (2026-07-14)**: supersedes
   this section's earlier "paginated Trending/Popular rows" description —

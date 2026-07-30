@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/adultmergecache"
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/api"
@@ -160,28 +159,13 @@ func run() error {
 	// cheap in-memory health check plus the row's persisted last_confirmed_seen —
 	// no live probe. Constructed once here; injected into both.
 	feedHealth := adultnewest.NewFeedHealth()
-	// adultMergeCacheStore backs the on-by-default background precompute of Adult
-	// Discover's merged Performers/Studios rows (internal/adultmergecache) — a
-	// read cache the two merged handlers serve leading pages from; see the
-	// adultmergecache.Run start-call below.
-	adultMergeCacheStore := adultmergecache.New(sqlDB)
-	// imageDurable is the process-persistent, on-disk image cache backing the
-	// Adult Discover image pre-warm feature: bytes live as sharded files under
-	// <DataDir>/imagecache/, with a TEXT/INTEGER-only index in sqlDB (migration
-	// 0046). NewDurableStore MkdirAll's the base dir. To remove the feature
-	// entirely: delete internal/imageproxy/durable.go, migration 0046, the
-	// imagecache/ dir, and revert NewWithDurable→New plus the two injected params.
-	imageDurable, err := imageproxy.NewDurableStore(sqlDB, filepath.Join(cfg.DataDir, "imagecache"))
-	if err != nil {
-		return err
-	}
-	// imageProxy is built ONCE here and injected into BOTH consumers so they
-	// share one in-memory LRU AND one durable store: api.NewMux (the request read
-	// path, imageProxyHandler) and adultmergecache.Run (the precompute write path,
-	// FetchAndPersist). Reuses the same outboundTimeout-bounded client every other
-	// external client in this program uses. A poster the precompute cycle warms to
-	// disk is served from disk on the request path with zero upstream round-trips.
-	imageProxy := imageproxy.NewWithDurable(&http.Client{Timeout: outboundTimeout}, imageDurable)
+	// imageProxy is built ONCE here as a process-lifetime singleton and injected
+	// into api.NewMux (the request read path, imageProxyHandler). It is an
+	// in-memory LRU over the live upstream fetch — a poster requested during one
+	// grid render is not re-fetched from the same upstream host on the next.
+	// Reuses the same outboundTimeout-bounded client every other external client
+	// in this program uses.
+	imageProxy := imageproxy.New(&http.Client{Timeout: outboundTimeout})
 	// entityStore is the DB-first entity cache for Adult filename parsing. It
 	// wraps the same sqlDB as every other store — no second connection needed.
 	entityStore := parseentity.NewSQLiteStore(sqlDB)
@@ -239,7 +223,7 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, adultMergeCacheStore, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -369,23 +353,6 @@ func run() error {
 	// per-source "Sync now" buttons. Gated OFF by default (interval 0). To
 	// remove entirely: delete internal/parseentity/schedule.go and this line.
 	go parseentity.Run(ctx, parseentity.LoadInterval(ctx, settingsStore), connStore, settingsStore, entityStore)
-
-	// Same deliberate exception as recheck/adultnewest above, but ON by default
-	// (see internal/adultmergecache's package doc + CLAUDE.md's 2026-07-23
-	// scan/propose/passive-flag scheduler carve-out): a background job that
-	// precomputes the PRE-availability-filter merged Performers/Studios card
-	// lists (pages 1..K) so Adult Discover's two merged rows serve instantly from
-	// cache instead of running the O(n×m) fuzzy merge live per request. Populates
-	// a read cache only — never mutates the library, never grabs; TPDB/StashDB
-	// only, never Prowlarr. Off only when the interval is explicitly set to 0. To
-	// remove entirely: delete internal/adultmergecache, this line, its NewMux
-	// param, the store construction above, and migration 0045.
-	// imageProxy is the SAME shared durable-backed proxy injected into api.NewMux
-	// above — so the precompute cycle's FetchAndPersist writes warm the exact
-	// durable store imageProxyHandler reads on the request path. This "goes live"
-	// the disk-cap + per-cycle-Reconcile machinery (US-5) that ran dormant while
-	// the proxy was nil; LoadImageCacheMaxBytes resolves the 512 MB-default cap.
-	go adultmergecache.Run(ctx, adultmergecache.LoadInterval(ctx, settingsStore), adultmergecache.LoadImageCacheMaxBytes(ctx, settingsStore), &http.Client{Timeout: outboundTimeout}, connStore, adultMergeCacheStore, imageProxy)
 
 	// Watch-folders: monitors each mode's library root folder for new content
 	// and triggers a Rename Scan automatically (never auto-Apply). Gated OFF

@@ -27,6 +27,12 @@ type MatchedRelease struct {
 	EntityStudio string
 	EntityImage  string
 	EntityDate   string
+	// Gender is only ever meaningful for RowPerformer rows (see
+	// identifyStudioPerformers) — normalized to "female"/"male"/"" via
+	// internal/identify's normalizeGender helper (the same values the
+	// now-deleted legacy adultmerge.normalizeGender produced). Always ""
+	// for Scene/Movie/Studio rows, which have no gender concept.
+	Gender string
 	// EntityDurationSeconds is the matched entity's runtime, 0 if unknown —
 	// threaded through from identify.MatchResult.RuntimeSeconds. Always 0 for
 	// Studio/Performer rows (a runtime concept doesn't apply to them); real
@@ -193,9 +199,9 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO adult_newest_releases
 			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date,
-			 entity_duration_seconds, first_seen_release_title, genres, performers,
+			 entity_duration_seconds, first_seen_release_title, genres, performers, gender,
 			 download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(row_type, entity_source, entity_id) DO UPDATE SET
 			browse_confirmed  = MAX(adult_newest_releases.browse_confirmed, excluded.browse_confirmed),
 			download_url      = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
@@ -209,9 +215,11 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 			feed_item_key     = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
 			                    THEN excluded.feed_item_key     ELSE adult_newest_releases.feed_item_key     END,
 			last_confirmed_seen = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
-			                    THEN excluded.last_confirmed_seen ELSE adult_newest_releases.last_confirmed_seen END
+			                    THEN excluded.last_confirmed_seen ELSE adult_newest_releases.last_confirmed_seen END,
+			gender = CASE WHEN adult_newest_releases.gender IS NULL OR adult_newest_releases.gender = ''
+			                    THEN excluded.gender ELSE adult_newest_releases.gender END
 	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate,
-		m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON), string(performersJSON),
+		m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON), string(performersJSON), m.Gender,
 		m.DownloadURL, m.DownloadProtocol, m.SizeBytes, m.BrowseConfirmed, m.FeedID, m.FeedItemKey, m.LastConfirmedSeen)
 	if err != nil {
 		return fmt.Errorf("inserting matched entity %q: %w", m.EntityID, err)
@@ -250,6 +258,56 @@ func (s *ReleaseStore) RefreshLastConfirmedSeen(ctx context.Context, feedID int6
 	return nil
 }
 
+// UngenderedPerformers returns the performer rows whose gender is still
+// unresolved (NULL) — the gender backfill's work queue (see scan.go's
+// backfillPerformerGenders). Only pre-migration rows are ever NULL: every live
+// Insert writes a concrete string or '' (never NULL), so once this drains it
+// stays empty and the backfill step becomes a cheap no-op. entity_id holds the
+// performer's own name for a RowPerformer row (see identifyStudioPerformers),
+// which is what the resolver looks up. Ordered by id so a partial drain
+// (circuit breaker) and the next cycle's resume proceed in a deterministic
+// order.
+func (s *ReleaseStore) UngenderedPerformers(ctx context.Context) ([]struct {
+	ID   int
+	Name string
+}, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id FROM adult_newest_releases WHERE row_type = ? AND gender IS NULL ORDER BY id`,
+		string(RowPerformer))
+	if err != nil {
+		return nil, fmt.Errorf("listing ungendered performers: %w", err)
+	}
+	defer rows.Close()
+	var out []struct {
+		ID   int
+		Name string
+	}
+	for rows.Next() {
+		var r struct {
+			ID   int
+			Name string
+		}
+		if err := rows.Scan(&r.ID, &r.Name); err != nil {
+			return nil, fmt.Errorf("scanning ungendered performer: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UpdateGender writes a resolved gender onto one row by id — the backfill's
+// only write. Called only for a reached-box answer (a concrete value or a
+// genuine ''), never for a transient failure (see backfillPerformerGenders):
+// this is what promotes a row out of the NULL work queue, so it must never run
+// on an unresolved row.
+func (s *ReleaseStore) UpdateGender(ctx context.Context, id int, gender string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE adult_newest_releases SET gender = ? WHERE id = ?`, gender, id); err != nil {
+		return fmt.Errorf("updating gender for entity %d: %w", id, err)
+	}
+	return nil
+}
+
 // defaultResolvePerPage is List's page size when the caller passes a
 // non-positive per-page count — matches tpdbrest.defaultBrowsePerPage's
 // convention for the same reason (a sane Discover-grid-sized default).
@@ -258,7 +316,7 @@ const defaultResolvePerPage = 20
 // releaseColumns is the full SELECT column list shared by List/SearchScenes/
 // ListRecentScenes so every read scans the same shape via scanRelease — one
 // place to keep in sync with the schema (and with scanRelease's Scan order).
-const releaseColumns = `id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, performers, download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen, first_seen_at`
+const releaseColumns = `id, row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date, entity_duration_seconds, first_seen_release_title, genres, performers, gender, download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen, first_seen_at`
 
 // scanRelease decodes one row selected via releaseColumns into a MatchedRelease,
 // unmarshalling the JSON-encoded genres/performers arrays. Column order here
@@ -266,12 +324,22 @@ const releaseColumns = `id, row_type, entity_id, entity_source, entity_title, en
 func scanRelease(rows *sql.Rows) (MatchedRelease, error) {
 	var m MatchedRelease
 	var rowTypeStr, genresJSON, performersJSON string
+	// gender is NULLABLE (pre-existing rows from before the gender column
+	// existed read back NULL — see the migration's doc comment); every new
+	// insert writes a concrete string or '', never NULL, so a NULL here only
+	// ever means "not yet backfilled." sql.NullString lets a NULL scan into
+	// Gender="" without erroring, indistinguishable downstream from a
+	// genuinely-resolved-but-empty gender (both are "no gender to show" for
+	// display purposes; the backfill queue itself queries the raw column,
+	// not through this struct).
+	var genderNS sql.NullString
 	if err := rows.Scan(&m.ID, &rowTypeStr, &m.EntityID, &m.EntitySource, &m.EntityTitle, &m.EntityStudio,
-		&m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &m.FirstSeenReleaseTitle, &genresJSON, &performersJSON,
+		&m.EntityImage, &m.EntityDate, &m.EntityDurationSeconds, &m.FirstSeenReleaseTitle, &genresJSON, &performersJSON, &genderNS,
 		&m.DownloadURL, &m.DownloadProtocol, &m.SizeBytes, &m.BrowseConfirmed, &m.FeedID, &m.FeedItemKey,
 		&m.LastConfirmedSeen, &m.FirstSeenAt); err != nil {
 		return MatchedRelease{}, fmt.Errorf("scanning matched entity: %w", err)
 	}
+	m.Gender = genderNS.String
 	m.RowType = RowType(rowTypeStr)
 	if err := json.Unmarshal([]byte(genresJSON), &m.Genres); err != nil {
 		return MatchedRelease{}, fmt.Errorf("decoding genres for entity %d: %w", m.ID, err)
@@ -340,6 +408,24 @@ func (s *ReleaseStore) ByFeedItemKeys(ctx context.Context, keys []string) (map[s
 // simple, dependency-free, and fast enough at this scale; revisit only if
 // this table's size assumption changes.
 func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter string, page, perPage int) ([]MatchedRelease, error) {
+	return s.listFiltered(ctx, rowType, genreFilter, "", page, perPage)
+}
+
+// ListByGender is List's gender-narrowed sibling, used by the Adult
+// Discover dynamic gender-split Performers rows (resolveAdultNewestRowHandler's
+// optional ?gender= filter) — a concrete gender value ("female"/"male"/any
+// other normalized value) restricts the page to rows with exactly that
+// gender; "" behaves identically to List (no gender filter), so callers can
+// pass the raw query param through unconditionally. Meaningful only for
+// RowPerformer (the only row type with a real gender value — see
+// MatchedRelease.Gender's doc comment); passing it for another row type
+// simply matches nothing, since Scene/Movie/Studio rows are always written
+// with gender="".
+func (s *ReleaseStore) ListByGender(ctx context.Context, rowType RowType, genreFilter, gender string, page, perPage int) ([]MatchedRelease, error) {
+	return s.listFiltered(ctx, rowType, genreFilter, gender, page, perPage)
+}
+
+func (s *ReleaseStore) listFiltered(ctx context.Context, rowType RowType, genreFilter, gender string, page, perPage int) ([]MatchedRelease, error) {
 	if perPage <= 0 {
 		perPage = defaultResolvePerPage
 	}
@@ -355,6 +441,10 @@ func (s *ReleaseStore) List(ctx context.Context, rowType RowType, genreFilter st
 	if genreFilter != "" {
 		query += ` AND genres LIKE ?`
 		args = append(args, `%"`+genreFilter+`"%`)
+	}
+	if gender != "" {
+		query += ` AND gender = ?`
+		args = append(args, gender)
 	}
 	query += ` ORDER BY first_seen_at DESC LIMIT ? OFFSET ?`
 	args = append(args, perPage, offset)
@@ -538,6 +628,37 @@ func (s *ReleaseStore) DistinctGenres(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// DistinctPerformerGenders returns every distinct, non-empty gender value
+// present across RowPerformer rows, sorted — backs the Adult Discover dynamic
+// gender-split (Option 5A): the frontend renders one PaginatedStrip per value
+// this returns, so a newly-backfilled or newly-matched gender automatically
+// produces a new strip with no code change. Unlike DistinctGenres, gender is
+// a plain scalar column (not a JSON-encoded array), so this is a direct
+// DISTINCT query rather than a per-row decode+set loop. NULL (not yet
+// backfilled — see UngenderedPerformers) and '' (reached, no gender on file)
+// are both excluded, since neither is a value worth its own strip.
+func (s *ReleaseStore) DistinctPerformerGenders(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT gender FROM adult_newest_releases
+			WHERE row_type = ? AND gender IS NOT NULL AND gender != ''
+			ORDER BY gender`,
+		string(RowPerformer))
+	if err != nil {
+		return nil, fmt.Errorf("listing distinct performer genders: %w", err)
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			return nil, fmt.Errorf("scanning distinct performer gender: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // PurgeStale deletes matched-entity rows (adult_newest_releases, by

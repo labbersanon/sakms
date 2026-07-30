@@ -40,11 +40,33 @@ func Handler() http.Handler {
 		}
 
 		if existsAsFile(sub, r.URL.Path) {
+			setCacheControl(w, r.URL.Path)
 			http.ServeFileFS(w, r, sub, r.URL.Path)
 			return
 		}
+		setCacheControl(w, "index.html")
 		http.ServeFileFS(w, r, sub, "index.html")
 	})
+}
+
+// setCacheControl marks Vite's content-hashed bundle (assets/*, filename
+// changes on every build) safe for indefinite caching, and everything else
+// (index.html, favicon, unhashed images) no-store — the SPA shell must always
+// be revalidated so a returning client picks up references to the current
+// build's asset hashes rather than a stale bundle calling since-removed API
+// routes (real incident: a suspended mobile tab kept calling a deleted
+// /api/modes/adult/performers-merged route hours after a deploy that removed
+// it, because nothing forced the shell to refetch). no-cache is not a safer
+// middle ground here: embed.FS reports a fixed zero-value ModTime for every
+// file in every build, so a conditional GET against that fake Last-Modified
+// would always match and produce a false 304, silently reintroducing the same
+// staleness bug.
+func setCacheControl(w http.ResponseWriter, urlPath string) {
+	if strings.HasPrefix(path.Clean("/"+urlPath), "/assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
 }
 
 // existsAsFile reports whether urlPath resolves to a regular (non-directory)

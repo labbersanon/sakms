@@ -942,12 +942,15 @@ export const AdultDiscover: Component<{
                   load={(page) => {
                     // Capture the drill once so TypeScript narrows the union on
                     // the `"box" in dd` guard. FansDB variant ({box, id}) →
-                    // box-scoped stash-box fetcher, unchanged, still paginated.
+                    // box-scoped stash-box fetcher, unchanged, still paginated
+                    // (its own singlePage behavior — none — is untouched here).
                     // Newest variant ({source: "newest"}) → the live
                     // entity-scenes handler by NAME (this pool has no stable
                     // box-scoped id — see AdultDrill's doc comment); its
-                    // response is one already-complete result set, so
-                    // singlePage below suppresses "Show more" for it.
+                    // response is now a real {items, hasMore} envelope
+                    // (page=1 pool-only, page=2 Prowlarr-triggered on an
+                    // explicit "Show more" click), so it's paginated normally
+                    // like every other PaginatedStrip caller — no singlePage.
                     const dd = d();
                     if ("box" in dd) {
                       return dd.kind === "studio"
@@ -958,7 +961,20 @@ export const AdultDiscover: Component<{
                   }}
                   onError={setSetupError}
                   containerClass="flex flex-wrap gap-3"
-                  singlePage={!("box" in d())}
+                  // perPage=0 for the newest variant only (box variant keeps the
+                  // default 20, untouched): shared.tsx's DE-2 auto-advance chain
+                  // treats an envelope page shorter than perPage as "sparse,
+                  // fetch another page automatically" — correct for the merged
+                  // Studios/Performers rows it was built for (same source, just
+                  // paginated further), but WRONG here, since page 2 of this
+                  // drill isn't more of the same source, it's a live Prowlarr
+                  // search that must fire ONLY on an explicit "Show more" click
+                  // (CLAUDE.md's carve-out). target = props.perPage ?? 20; with
+                  // perPage=0, `items gained < target` is never true (gained is
+                  // never negative), so DE-2 never auto-fires page 2 on a
+                  // sparse/empty pool page 1 — the operator's click is what
+                  // triggers it, exactly once, matching the backend contract.
+                  perPage={"box" in d() ? undefined : 0}
                 >
                   {(item) => (
                     <AdultCard

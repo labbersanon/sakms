@@ -426,6 +426,32 @@ above, so don't drop them for convenience:
     where a confident match exists, with a raw-title/no-image fallback
     otherwise. Grab safety is unaffected — the grab query is built from
     `ReleaseTitle`, never the enriched display `Title`.
+  - **Trigger correction (2026-07-30, later same day):** the carve-out's
+    trigger shape moved from *automatic on drill-down open* to *explicit
+    Show More click* — the "fires exactly once on an explicit operator open"
+    wording above is superseded on that one point (the one-call-per-trigger,
+    one-entity, never-per-scroll/per-card invariants are all unchanged). The
+    handler now takes a `page` param (PaginatedStrip's `load(page)` contract):
+    `page=1` (the initial open) returns ONLY pool-joined items and fires ZERO
+    Prowlarr calls — and now DROPS any RSS item with no pool match instead of
+    showing it raw (adopting `resolveRssFeedHandler`'s established
+    drop-unmatched precedent; the earlier "keep unmatched RSS items raw"
+    carve-out is retired). `page>1` (an explicit Show More click) is what fires
+    the single Prowlarr search, checks a new release-level cache
+    (`adult_newest_scene_matches`, migration 0050) by download URL, runs
+    `identify.EnrichNewestScenes` only for cache misses (resolving against the
+    ONE box the pool already recorded in `entity_source`, via an exact-name
+    match mirroring `PerformerImage`/`StudioImage` — the earlier multi-box
+    fuzzy resolve with near-tie ambiguity decline is removed as unnecessary
+    once a specific entity's drill-down is open), and drops any still-unmatched
+    item. So the "one Prowlarr call per drill-down" exception is now "one
+    Prowlarr call per Show More click" — still exactly one call per explicit
+    operator action, still one entity, still never per-scroll/per-card. If a
+    future change makes `page>1` fire more than one Prowlarr search, or makes
+    `page=1` fire any, that's the rule being broken again — treat it the same
+    way the original per-card badge was treated. Response envelope for both
+    pages is `{items, hasMore}`; `page=1` HasMore is always true (Show More
+    always offered), `page>1` always false (Prowlarr doesn't paginate further).
 
 - **Mainstream Discover — Seerr-parity expansion (2026-07-14)**: supersedes
   this section's earlier "paginated Trending/Popular rows" description —

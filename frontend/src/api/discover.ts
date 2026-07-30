@@ -391,24 +391,26 @@ export function fetchAdultPerformerScenes(
 }
 
 // fetchNewestEntityScenes is the RSS-derived Performers/Studios drill-down —
-// GET /api/modes/adult/discover/newest/entity-scenes?kind=&name=. Fires
-// exactly ONE live Prowlarr search (plus a best-effort RSS supplement)
-// server-side per call; the caller MUST only invoke this on an explicit
-// drill-down open, never automatically/per-scroll — see
-// internal/api/adultdiscover_newest_scenes.go and CLAUDE.md's "Discover
-// never queries Prowlarr" carve-out entry for this endpoint. The response is
-// a flat, already-complete result set (no true further pages behind it), so
-// the caller renders it with PaginatedStrip's singlePage prop rather than
-// re-querying on scroll. page is accepted for signature symmetry with every
-// other drill-down fetcher but is NOT sent to the backend, which has no page
-// param — singlePage means "Show more" never fires a second call.
+// GET /api/modes/adult/discover/newest/entity-scenes?kind=&name=&page=. page=1
+// (drill-down open) returns only already-identified pool-matched items for
+// this entity — fast, no live search. page=2 (only reached when the operator
+// explicitly clicks "Show more") fires exactly ONE live Prowlarr search and
+// checks the release-level match cache before enriching — see
+// internal/api/adultdiscover_newest_scenes.go and CLAUDE.md's "Discover never
+// queries Prowlarr" carve-out entry for this endpoint (one call per explicit
+// Show More click, never automatically/per-scroll/per-card). The response is
+// the {items, hasMore} envelope PaginatedStrip's load prop already supports
+// (see the load type in screens/discover/shared.tsx): page=1's hasMore is
+// always true (so "Show more" is always offered, even from an empty pool —
+// that means the live search hasn't been tried yet, not a bug); page=2's
+// hasMore is always false (there is no page 3).
 export function fetchNewestEntityScenes(
   kind: "performer" | "studio",
   name: string,
-  _page = 1,
-): Promise<AdultDiscoverItem[]> {
-  const q = new URLSearchParams({ kind, name });
-  return api<AdultDiscoverItem[]>(
+  page = 1,
+): Promise<{ items: AdultDiscoverItem[]; hasMore: boolean }> {
+  const q = new URLSearchParams({ kind, name, page: String(page) });
+  return api<{ items: AdultDiscoverItem[]; hasMore: boolean }>(
     `/api/modes/adult/discover/newest/entity-scenes?${q.toString()}`,
   );
 }

@@ -16,9 +16,9 @@ import (
 // stashboxCounts tallies which stash-box GraphQL operation each fake request
 // carried, routed by the query text (all ops POST to the one endpoint).
 type stashboxCounts struct {
-	findStudio            int32
-	searchPerformer       int32
-	queryScenesByStudio   int32 // queryScenes with a "studios" filter in the body
+	findStudio             int32
+	searchPerformer        int32
+	queryScenesByStudio    int32 // queryScenes with a "studios" filter in the body
 	queryScenesByPerformer int32 // queryScenes with a "performers" filter in the body
 }
 
@@ -123,7 +123,7 @@ func TestEnrichNewestScenes_ThrottlesBeforeEveryCall(t *testing.T) {
 	)
 
 	start := time.Now()
-	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", []string{"Brazzers.Some.Scene.Title.XXX.1080p-GRP"})
+	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "stashdb", []string{"Brazzers.Some.Scene.Title.XXX.1080p-GRP"})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -139,10 +139,12 @@ func TestEnrichNewestScenes_ThrottlesBeforeEveryCall(t *testing.T) {
 	}
 }
 
-// TestEnrichNewestScenes_OboxesCallAccounting is the load-bearing budget
-// invariant: many release titles must still call each box's resolve + catalog
-// method AT MOST ONCE per drill — O(boxes), never O(items).
-func TestEnrichNewestScenes_OboxesCallAccounting(t *testing.T) {
+// TestEnrichNewestScenes_SingleBoxCallAccounting is the load-bearing budget
+// invariant: many release titles must still call the ONE known box's resolve +
+// catalog method AT MOST ONCE per drill — O(1), never O(items) — and NO OTHER
+// box is consulted (the box is passed in, not fanned out to). Both stashdb and
+// tpdb are configured, but the drill names stashdb, so tpdb must see zero calls.
+func TestEnrichNewestScenes_SingleBoxCallAccounting(t *testing.T) {
 	var sc stashboxCounts
 	var tc tpdbCounts
 	id := newEnricher(t, 0,
@@ -154,7 +156,7 @@ func TestEnrichNewestScenes_OboxesCallAccounting(t *testing.T) {
 	for i := 0; i < 25; i++ {
 		titles = append(titles, "Brazzers.Some.Scene.Title.XXX.1080p-GRP")
 	}
-	if _, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", titles); err != nil {
+	if _, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "stashdb", titles); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -164,99 +166,41 @@ func TestEnrichNewestScenes_OboxesCallAccounting(t *testing.T) {
 	if got := atomic.LoadInt32(&sc.queryScenesByStudio); got != 1 {
 		t.Errorf("QueryScenesByStudio: expected 1 call for 25 items, got %d", got)
 	}
-	if got := atomic.LoadInt32(&tc.searchSites); got != 1 {
-		t.Errorf("SearchSites: expected 1 call for 25 items, got %d", got)
+	// The non-drilled box must never be consulted.
+	if got := atomic.LoadInt32(&tc.searchSites); got != 0 {
+		t.Errorf("SearchSites: expected 0 calls for a stashdb drill, got %d", got)
 	}
-	if got := atomic.LoadInt32(&tc.scenesBySite); got != 1 {
-		t.Errorf("ScenesBySite: expected 1 call for 25 items, got %d", got)
+	if got := atomic.LoadInt32(&tc.scenesBySite); got != 0 {
+		t.Errorf("ScenesBySite: expected 0 calls for a stashdb drill, got %d", got)
 	}
 }
 
-// TestEnrichNewestScenes_NearTieDeclines proves the ambiguity guard: two
-// candidates BOTH clearing 0.6 within nameTieDelta of each other cause the
-// resolve to decline (no id), so that box fetches no catalog and the item stays
-// raw. Distinct from the low-score case below — here the best candidate is
-// ABOVE threshold; only the near-tie declines it.
-func TestEnrichNewestScenes_NearTieDeclines(t *testing.T) {
+// TestEnrichNewestScenes_NoExactMatchDrops proves the exact-name-only resolve:
+// a candidate whose name is NOT exactly the drill name yields no resolution, so
+// no catalog is fetched and every release is dropped (empty result). This is the
+// PerformerImage/StudioImage exact-match philosophy — no fuzzy threshold would
+// ever accept a near-name here.
+func TestEnrichNewestScenes_NoExactMatchDrops(t *testing.T) {
 	var sc stashboxCounts
-	// Drill "Riley Reid"; two candidates both fully contain it → both score 1.0
-	// (containment), a genuine delta-0 tie above the 0.6 bar.
 	id := newEnricher(t, 0,
 		stashboxFake(&sc, "",
-			`{"data":{"searchPerformer":[{"id":"p1","name":"Riley Reid X"},{"id":"p2","name":"Riley Reid Y"}]}}`,
+			`{"data":{"searchPerformer":[{"id":"p1","name":"Riley Reid X"}]}}`,
 			studioSceneJSON),
 		nil,
 	)
 
-	got, err := id.EnrichNewestScenes(context.Background(), "performer", "Riley Reid", []string{"Riley.Reid.Some.Scene.XXX-GRP"})
+	got, err := id.EnrichNewestScenes(context.Background(), "performer", "Riley Reid", "stashdb", []string{"Riley.Reid.Some.Scene.XXX-GRP"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("expected a near-tie to decline resolution (no matches), got %d", len(got))
+		t.Fatalf("expected no enrichment when no candidate name exactly matches, got %d matches", len(got))
 	}
 	if atomic.LoadInt32(&sc.searchPerformer) != 1 {
 		t.Errorf("expected the resolve search to still fire once, got %d", sc.searchPerformer)
 	}
 	if got := atomic.LoadInt32(&sc.queryScenesByPerformer); got != 0 {
-		t.Errorf("expected NO catalog fetch after an ambiguous resolve, got %d", got)
-	}
-}
-
-// TestEnrichNewestScenes_LowScoreDeclines proves the below-threshold guard: a
-// single candidate scoring < 0.6 is rejected, so no catalog is fetched. Kept
-// separate from the near-tie test — this one exercises the low-score branch.
-func TestEnrichNewestScenes_LowScoreDeclines(t *testing.T) {
-	var sc stashboxCounts
-	// "Riley Reid" vs "Riley Smith": 1 token overlap → jaccard 1/3 ≈ 0.33 < 0.6.
-	id := newEnricher(t, 0,
-		stashboxFake(&sc, "",
-			`{"data":{"searchPerformer":[{"id":"p1","name":"Riley Smith"}]}}`,
-			studioSceneJSON),
-		nil,
-	)
-
-	got, err := id.EnrichNewestScenes(context.Background(), "performer", "Riley Reid", []string{"Riley.Reid.Some.Scene.XXX-GRP"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("expected a low-scoring resolve to decline (no matches), got %d", len(got))
-	}
-	if got := atomic.LoadInt32(&sc.queryScenesByPerformer); got != 0 {
-		t.Errorf("expected NO catalog fetch after a low-score resolve, got %d", got)
-	}
-}
-
-// TestResolveCandidateID covers the object-keyed resolve helper's three
-// outcomes directly, including the score arithmetic the near-tie branch relies
-// on.
-func TestResolveCandidateID(t *testing.T) {
-	// Accepted: one clear winner above threshold, no near-tie.
-	id, name, _, outcome := resolveCandidateID("riley reid",
-		[]namedCandidate{{name: "Riley Reid", id: "p1"}, {name: "Totally Different", id: "p2"}}, performerMatchThreshold)
-	if id != "p1" || name != "Riley Reid" || outcome != "accepted" {
-		t.Errorf("accepted case: got id=%q name=%q outcome=%q", id, name, outcome)
-	}
-
-	// Ambiguous: two candidates both >= 0.6 within nameTieDelta.
-	id, _, _, outcome = resolveCandidateID("riley reid",
-		[]namedCandidate{{name: "Riley Reid X", id: "p1"}, {name: "Riley Reid Y", id: "p2"}}, performerMatchThreshold)
-	if id != "" || outcome != "declined-ambiguous" {
-		t.Errorf("ambiguous case: got id=%q outcome=%q", id, outcome)
-	}
-
-	// Low score: single candidate below threshold.
-	id, _, _, outcome = resolveCandidateID("riley reid",
-		[]namedCandidate{{name: "Riley Smith", id: "p1"}}, performerMatchThreshold)
-	if id != "" || outcome != "declined-low-score" {
-		t.Errorf("low-score case: got id=%q outcome=%q", id, outcome)
-	}
-
-	// No candidates: declines low-score with a zero score.
-	id, _, _, outcome = resolveCandidateID("riley reid", nil, performerMatchThreshold)
-	if id != "" || outcome != "declined-low-score" {
-		t.Errorf("empty case: got id=%q outcome=%q", id, outcome)
+		t.Errorf("expected NO catalog fetch after a no-exact-match resolve, got %d", got)
 	}
 }
 
@@ -293,7 +237,7 @@ func TestEnrichNewestScenes_NoResolveTPDBDuration(t *testing.T) {
 		Throttle: throttle.New(0),
 	}
 
-	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", []string{"Brazzers.Some.Scene.Title.XXX-GRP"})
+	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "tpdb", []string{"Brazzers.Some.Scene.Title.XXX-GRP"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -316,16 +260,37 @@ func TestEnrichNewestScenes_NoResolveTPDBDuration(t *testing.T) {
 	}
 }
 
-// TestEnrichNewestScenes_NoBoxesConfigured proves a clean no-op (empty map, no
-// error, no panic) when nothing is configured.
-func TestEnrichNewestScenes_NoBoxesConfigured(t *testing.T) {
+// TestEnrichNewestScenes_NoBoxConfigured proves a clean no-op (empty map, no
+// error, no panic) when the named box isn't configured.
+func TestEnrichNewestScenes_NoBoxConfigured(t *testing.T) {
 	id := &Identifier{Boxes: NewBoxSearcher(map[string]*stashbox.Client{}, nil), Throttle: throttle.New(0)}
-	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", []string{"Anything-GRP"})
+	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "stashdb", []string{"Anything-GRP"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("expected empty result with no boxes configured, got %+v", got)
+		t.Fatalf("expected empty result with no box configured, got %+v", got)
+	}
+}
+
+// TestEnrichNewestScenes_EmptyBox proves an empty box arg is a clean no-op — the
+// caller had no known box (no pool row), so nothing can be resolved and no
+// upstream call is made.
+func TestEnrichNewestScenes_EmptyBox(t *testing.T) {
+	var sc stashboxCounts
+	id := newEnricher(t, 0,
+		stashboxFake(&sc, `{"data":{"findStudio":{"id":"s1","name":"Brazzers"}}}`, "", studioSceneJSON),
+		nil,
+	)
+	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "", []string{"Brazzers.Scene-GRP"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty result for an empty box, got %+v", got)
+	}
+	if atomic.LoadInt32(&sc.findStudio) != 0 {
+		t.Errorf("expected zero upstream calls for an empty box, got %d FindStudio", sc.findStudio)
 	}
 }
 
@@ -340,7 +305,7 @@ func TestEnrichNewestScenes_StudioVsPerformerPath(t *testing.T) {
 				`{"data":{"searchPerformer":[]}}`, studioSceneJSON),
 			nil,
 		)
-		if _, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", []string{"x-GRP"}); err != nil {
+		if _, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "stashdb", []string{"x-GRP"}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if atomic.LoadInt32(&sc.findStudio) != 1 {
@@ -357,7 +322,7 @@ func TestEnrichNewestScenes_StudioVsPerformerPath(t *testing.T) {
 				`{"data":{"searchPerformer":[{"id":"p1","name":"Riley Reid"}]}}`, studioSceneJSON),
 			nil,
 		)
-		if _, err := id.EnrichNewestScenes(context.Background(), "performer", "Riley Reid", []string{"x-GRP"}); err != nil {
+		if _, err := id.EnrichNewestScenes(context.Background(), "performer", "Riley Reid", "stashdb", []string{"x-GRP"}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if atomic.LoadInt32(&sc.searchPerformer) != 1 {
@@ -372,46 +337,33 @@ func TestEnrichNewestScenes_StudioVsPerformerPath(t *testing.T) {
 	})
 }
 
-// TestEnrichNewestScenes_CrossBoxPrefersStashDB proves the deterministic
-// StashDB > TPDB merge: when a release matches in both boxes, the StashDB match
-// wins.
-func TestEnrichNewestScenes_CrossBoxPrefersStashDB(t *testing.T) {
-	var sc stashboxCounts
-	var tc tpdbCounts
-	id := newEnricher(t, 0,
-		stashboxFake(&sc, `{"data":{"findStudio":{"id":"s1","name":"Brazzers"}}}`, "", studioSceneJSON),
-		tpdbFake(&tc, `{"data":[{"uuid":"site1","name":"Brazzers"}]}`, "", tpdbStudioSceneJSON),
-	)
-
-	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", []string{"Brazzers.Some.Scene.Title.XXX-GRP"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	m, ok := got[0]
-	if !ok {
-		t.Fatalf("expected a match")
-	}
-	if m.Box != "stashdb" {
-		t.Errorf("expected StashDB to win the cross-box merge, got box=%q", m.Box)
-	}
-}
-
-// TestEnrichNewestScenes_BoxErrorNeverFails proves best-effort: a box that
-// errors on resolve contributes no catalog but never fails the call (and a
-// sibling box still enriches).
+// TestEnrichNewestScenes_BoxErrorNeverFails proves best-effort: the one known
+// box erroring on resolve contributes no catalog but never fails the call
+// (empty result, nil error).
 func TestEnrichNewestScenes_BoxErrorNeverFails(t *testing.T) {
-	var tc tpdbCounts
 	id := newEnricher(t, 0,
 		func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", http.StatusInternalServerError) },
-		tpdbFake(&tc, `{"data":[{"uuid":"site1","name":"Brazzers"}]}`, "", tpdbStudioSceneJSON),
+		nil,
 	)
 
-	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", []string{"Brazzers.Some.Scene.Title.XXX-GRP"})
+	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "stashdb", []string{"Brazzers.Some.Scene.Title.XXX-GRP"})
 	if err != nil {
 		t.Fatalf("a failing box must never fail the whole call, got %v", err)
 	}
-	// StashDB errored → TPDB still enriches.
-	if m, ok := got[0]; !ok || m.Box != "tpdb" {
-		t.Errorf("expected the surviving TPDB match, got %+v (ok=%v)", got[0], ok)
+	if len(got) != 0 {
+		t.Fatalf("expected empty result when the one box errors, got %+v", got)
+	}
+}
+
+// TestEnrichNewestScenes_NoBoxesConfigured proves a clean no-op when the box
+// searcher itself has nothing wired at all.
+func TestEnrichNewestScenes_NoBoxesConfigured(t *testing.T) {
+	id := &Identifier{Boxes: NewBoxSearcher(map[string]*stashbox.Client{}, nil), Throttle: throttle.New(0)}
+	got, err := id.EnrichNewestScenes(context.Background(), "studio", "Brazzers", "tpdb", []string{"Anything-GRP"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty result with no boxes configured, got %+v", got)
 	}
 }

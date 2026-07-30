@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -31,10 +32,10 @@ func newestScenesMux(t *testing.T) (*httptest.Server, *connectionsUpserter) {
 	return srv, &connectionsUpserter{connStore: connStore, rssFeedsStore: rssFeedsStore}
 }
 
-// newestScenesMuxWithReleaseStore is newestScenesMux's sibling for the Phase 1
-// pool-join tests below: it also returns the real *adultnewest.ReleaseStore
-// backing the mux, so a test can Insert a pool row into it before firing the
-// request.
+// newestScenesMuxWithReleaseStore is newestScenesMux's sibling for the tests
+// that seed the pool / release-level cache: it also returns the real
+// *adultnewest.ReleaseStore backing the mux, so a test can Insert a pool row (or
+// read the scene-match cache) before/after firing the request.
 func newestScenesMuxWithReleaseStore(t *testing.T) (*httptest.Server, *connectionsUpserter, *adultnewest.ReleaseStore) {
 	t.Helper()
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
@@ -44,10 +45,10 @@ func newestScenesMuxWithReleaseStore(t *testing.T) (*httptest.Server, *connectio
 }
 
 // brokenReleaseStore returns an *adultnewest.ReleaseStore wrapping an already-
-// CLOSED *sql.DB, so every query it runs (ByFeedItemKeys included) fails —
-// the pool-lookup-error test's way of injecting a failing store without a
-// mock/interface (ReleaseStore has none; this codebase's house pattern is a
-// concrete *Client/*Store over a real backend, see CLAUDE.md).
+// CLOSED *sql.DB, so every query it runs fails — the pool-lookup-error test's
+// way of injecting a failing store without a mock/interface (ReleaseStore has
+// none; this codebase's house pattern is a concrete *Client/*Store over a real
+// backend, see CLAUDE.md).
 func brokenReleaseStore(t *testing.T) *adultnewest.ReleaseStore {
 	t.Helper()
 	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "broken.db"))
@@ -63,7 +64,7 @@ func brokenReleaseStore(t *testing.T) *adultnewest.ReleaseStore {
 // connectionsUpserter is a tiny test helper bundling the two stores the
 // newest-scenes tests seed (a "prowlarr" connection and adult RSS feeds).
 type connectionsUpserter struct {
-	connStore     interface {
+	connStore interface {
 		Upsert(ctx context.Context, service, url, apiKey string) error
 	}
 	rssFeedsStore *rssfeeds.Store
@@ -101,17 +102,23 @@ func (u *connectionsUpserter) addAdultFeed(t *testing.T, title, feedURL string) 
 	}
 }
 
-func getNewestScenes(t *testing.T, base, kind, name string) (*http.Response, []apidto.AdultDiscoverItem) {
+// getNewestScenes fires the drill-down for one page and decodes the
+// {items, hasMore} envelope. page<1 means "omit the param" (exercise the
+// default-to-1 path).
+func getNewestScenes(t *testing.T, base, kind, name string, page int) (*http.Response, apidto.AdultNewestScenesPage) {
 	t.Helper()
 	u := base + "/api/modes/adult/discover/newest/entity-scenes?kind=" + url.QueryEscape(kind) + "&name=" + url.QueryEscape(name)
+	if page >= 1 {
+		u += "&page=" + strconv.Itoa(page)
+	}
 	resp, err := http.Get(u)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return resp, nil
+		return resp, apidto.AdultNewestScenesPage{}
 	}
-	var out []apidto.AdultDiscoverItem
+	var out apidto.AdultNewestScenesPage
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		resp.Body.Close()
 		t.Fatalf("decoding response: %v", err)
@@ -120,47 +127,158 @@ func getNewestScenes(t *testing.T, base, kind, name string) (*http.Response, []a
 	return resp, out
 }
 
-// TestAdultNewestEntityScenesHandler_OneProwlarrCall is the load-bearing
-// DELIBERATE-mode property: exactly ONE Prowlarr.Search per drill-down open,
-// proven against an httptest Prowlarr counting calls via an atomic counter —
-// not asserted by code reading. No RSS feeds are seeded, so the counter can
-// only ever see the single Search.
-func TestAdultNewestEntityScenesHandler_OneProwlarrCall(t *testing.T) {
+// seedStudioPoolBox inserts a Studio pool row so EntityBox(name) resolves to
+// entity_source — the "known box" the page>1 enrichment resolves against. Mirrors
+// scan.go's Studio row shape (entity_id == entity_title == the name).
+func seedStudioPoolBox(t *testing.T, store *adultnewest.ReleaseStore, name, source string) {
+	t.Helper()
+	if err := store.Insert(context.Background(), adultnewest.MatchedRelease{
+		RowType:         adultnewest.RowStudio,
+		EntityID:        name,
+		EntitySource:    source,
+		EntityTitle:     name,
+		BrowseConfirmed: true,
+	}); err != nil {
+		t.Fatalf("seeding studio pool box: %v", err)
+	}
+}
+
+// --- page=1: pool-only, zero Prowlarr ---------------------------------------
+
+// TestAdultNewestEntityScenesHandler_Page1NoProwlarr is the load-bearing
+// property of the reworked initial open: a plain page=1 request fires ZERO
+// Prowlarr searches, proven against an httptest Prowlarr counting calls.
+func TestAdultNewestEntityScenesHandler_Page1NoProwlarr(t *testing.T) {
 	var calls int32
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"Some.Performer.Scene.2023.1080p-GRP","indexer":"I","protocol":"torrent","size":900000000,"downloadUrl":"magnet:?xt=urn:btih:AAAA"}]`))
+		w.Write([]byte(`[{"guid":"1","title":"Some.Scene-GRP","protocol":"torrent","size":1,"downloadUrl":"magnet:x"}]`))
 	}))
 	defer prowlarr.Close()
 
 	srv, seed := newestScenesMux(t)
 	seed.setProwlarr(t, prowlarr.URL)
 
-	resp, out := getNewestScenes(t, srv.URL, "performer", "Some Performer")
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Some Performer", 0)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Fatalf("expected EXACTLY ONE Prowlarr.Search call, got %d", got)
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("expected ZERO Prowlarr calls on page=1, got %d", got)
 	}
-	if len(out) != 1 {
-		t.Fatalf("expected 1 mapped item, got %d (%+v)", len(out), out)
+	if !page.HasMore {
+		t.Errorf("expected page=1 HasMore=true (Show More always offered), got false")
 	}
-	if out[0].Source != "prowlarr" {
-		t.Errorf("expected Source=prowlarr, got %q", out[0].Source)
-	}
-	if out[0].Title != "Some.Performer.Scene.2023.1080p-GRP" || out[0].ReleaseTitle != out[0].Title {
-		t.Errorf("expected Title and ReleaseTitle both = release title, got Title=%q ReleaseTitle=%q", out[0].Title, out[0].ReleaseTitle)
-	}
-	if out[0].DownloadURL == "" || out[0].Protocol != "torrent" || out[0].SizeBytes != 900000000 {
-		t.Errorf("unexpected enclosure mapping: %+v", out[0])
-	}
-	// Live-only source consequence: metadata fields left at zero values.
-	if out[0].Image != "" || out[0].Studio != "" || out[0].Date != "" || out[0].Rating != 0 {
-		t.Errorf("expected Image/Studio/Date/Rating empty for a live-only source, got %+v", out[0])
+	if len(page.Items) != 0 {
+		t.Errorf("expected no items (no pool-matched RSS), got %d", len(page.Items))
 	}
 }
+
+// TestAdultNewestEntityScenesHandler_Page1DropsUnmatchedRSS proves page=1 shows
+// ONLY pool-matched RSS items — an item with no pool row is dropped entirely,
+// never shown raw (resolveRssFeedHandler's drop-unmatched precedent).
+func TestAdultNewestEntityScenesHandler_Page1DropsUnmatchedRSS(t *testing.T) {
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(`<?xml version="1.0"?><rss version="2.0"><channel>` +
+			`<item><title>Nova Pool Hit Scene</title><enclosure url="http://feed.invalid/hit.torrent" length="500"/></item>` +
+			`<item><title>Nova Pool Miss Scene</title><enclosure url="http://feed.invalid/miss.torrent" length="600"/></item>` +
+			`</channel></rss>`))
+	}))
+	defer feed.Close()
+
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
+	seed.addAdultFeed(t, "adult feed", feed.URL)
+
+	if err := releaseStore.Insert(context.Background(), adultnewest.MatchedRelease{
+		RowType:         adultnewest.RowScene,
+		EntityID:        "scene-nova-1",
+		EntitySource:    "tpdb",
+		EntityTitle:     "Resolved Nova Title",
+		EntityStudio:    "Resolved Nova Studio",
+		EntityImage:     "https://cdn/nova.jpg",
+		BrowseConfirmed: true,
+		FeedItemKey:     "http://feed.invalid/hit.torrent",
+	}); err != nil {
+		t.Fatalf("seeding pool: %v", err)
+	}
+
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Nova", 1)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("expected only the 1 pool-matched item (miss dropped), got %d (%+v)", len(page.Items), page.Items)
+	}
+	it := page.Items[0]
+	if it.DownloadURL != "http://feed.invalid/hit.torrent" {
+		t.Errorf("expected the pool-hit item, got %+v", it)
+	}
+	if it.Title != "Resolved Nova Title" || it.Studio != "Resolved Nova Studio" || it.Image != "https://cdn/nova.jpg" {
+		t.Errorf("expected pool-matched enrichment, got %+v", it)
+	}
+	// Grab-safety: enrichment must never touch the grab-bearing fields.
+	if it.ReleaseTitle != "Nova Pool Hit Scene" || it.SizeBytes != 500 || it.Protocol != "torrent" {
+		t.Errorf("expected grab-bearing fields unchanged (raw RSS), got %+v", it)
+	}
+}
+
+// TestAdultNewestEntityScenesHandler_Page1RSSFailureNeverFails asserts a failing
+// RSS feed is logged and dropped while page=1 still 200s (empty, HasMore true) —
+// RSS failure never fails the handler.
+func TestAdultNewestEntityScenesHandler_Page1RSSFailureNeverFails(t *testing.T) {
+	badFeed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "feed exploded", http.StatusInternalServerError)
+	}))
+	defer badFeed.Close()
+
+	srv, seed := newestScenesMux(t)
+	seed.addAdultFeed(t, "broken adult feed", badFeed.URL)
+
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Working", 1)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 despite the failing feed, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 0 || !page.HasMore {
+		t.Fatalf("expected empty items + HasMore true, got %+v hasMore=%v", page.Items, page.HasMore)
+	}
+}
+
+// TestAdultNewestEntityScenesHandler_Page1PoolLookupErrorKeepsRaw asserts a
+// failing pool lookup falls back to returning the raw RSS items unfiltered
+// (best-effort, mirroring resolveRssFeedHandler) rather than blanking the view.
+func TestAdultNewestEntityScenesHandler_Page1PoolLookupErrorKeepsRaw(t *testing.T) {
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		w.Write([]byte(`<?xml version="1.0"?><rss version="2.0"><channel>` +
+			`<item><title>Nova One</title><enclosure url="http://feed.invalid/1.torrent" length="1"/></item>` +
+			`<item><title>Nova Two</title><enclosure url="http://feed.invalid/2.torrent" length="2"/></item>` +
+			`</channel></rss>`))
+	}))
+	defer feed.Close()
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, _, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, brokenReleaseStore(t), testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	t.Cleanup(srv.Close)
+	seed := &connectionsUpserter{connStore: connStore, rssFeedsStore: rssFeedsStore}
+	seed.addAdultFeed(t, "adult feed", feed.URL)
+
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Nova", 1)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 despite the failing pool lookup, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected both raw RSS items kept on a pool-lookup error, got %d (%+v)", len(page.Items), page.Items)
+	}
+	for _, it := range page.Items {
+		if it.Studio != "" || it.Image != "" {
+			t.Errorf("expected raw/unenriched item on lookup error, got %+v", it)
+		}
+	}
+}
+
+// --- generic validation -----------------------------------------------------
 
 // TestAdultNewestEntityScenesHandler_MissingName asserts an empty name → 400.
 func TestAdultNewestEntityScenesHandler_MissingName(t *testing.T) {
@@ -175,12 +293,13 @@ func TestAdultNewestEntityScenesHandler_MissingName(t *testing.T) {
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_ProwlarrNotConfigured asserts the
-// standard configured-service error shape (400) when no prowlarr connection
-// exists — same shape searchHandler/discoverAvailabilityHandler return.
-func TestAdultNewestEntityScenesHandler_ProwlarrNotConfigured(t *testing.T) {
+// TestAdultNewestEntityScenesHandler_Page2ProwlarrNotConfigured asserts the
+// configured-service error shape (400) when a Show More (page>1) hits an
+// unconfigured Prowlarr. page=1 never needs Prowlarr, so the check moved to
+// page>1.
+func TestAdultNewestEntityScenesHandler_Page2ProwlarrNotConfigured(t *testing.T) {
 	srv, _ := newestScenesMux(t) // no prowlarr connection seeded
-	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/newest/entity-scenes?kind=studio&name=Brazzers")
+	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/newest/entity-scenes?kind=studio&name=Brazzers&page=2")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
@@ -190,9 +309,9 @@ func TestAdultNewestEntityScenesHandler_ProwlarrNotConfigured(t *testing.T) {
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_ProwlarrError502 asserts a Prowlarr error
-// surfaces as 502 (Search-screen error shape).
-func TestAdultNewestEntityScenesHandler_ProwlarrError502(t *testing.T) {
+// TestAdultNewestEntityScenesHandler_Page2ProwlarrError502 asserts a Prowlarr
+// error on page>1 surfaces as 502.
+func TestAdultNewestEntityScenesHandler_Page2ProwlarrError502(t *testing.T) {
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
@@ -201,7 +320,7 @@ func TestAdultNewestEntityScenesHandler_ProwlarrError502(t *testing.T) {
 	srv, seed := newestScenesMux(t)
 	seed.setProwlarr(t, prowlarr.URL)
 
-	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/newest/entity-scenes?kind=performer&name=Anyone")
+	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/newest/entity-scenes?kind=performer&name=Anyone&page=2")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
@@ -211,12 +330,10 @@ func TestAdultNewestEntityScenesHandler_ProwlarrError502(t *testing.T) {
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_NeverHangs is the second DELIBERATE-mode
-// property: against a Prowlarr that never responds, the handler still returns
-// within the outboundTimeout bound (proven by shrinking outboundTimeout, not by
-// waiting the production 15s). The fake server blocks until its request context
-// is cancelled, so httptest's Close() doesn't stall on cleanup.
-func TestAdultNewestEntityScenesHandler_NeverHangs(t *testing.T) {
+// TestAdultNewestEntityScenesHandler_Page2NeverHangs proves that against a
+// Prowlarr that never responds, page>1 still returns within the outboundTimeout
+// bound (proven by shrinking outboundTimeout, not by waiting the production 15s).
+func TestAdultNewestEntityScenesHandler_Page2NeverHangs(t *testing.T) {
 	orig := newestScenesOutboundTimeout
 	newestScenesOutboundTimeout = 300 * time.Millisecond
 	defer func() { newestScenesOutboundTimeout = orig }()
@@ -230,7 +347,7 @@ func TestAdultNewestEntityScenesHandler_NeverHangs(t *testing.T) {
 	seed.setProwlarr(t, prowlarr.URL)
 
 	start := time.Now()
-	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/newest/entity-scenes?kind=performer&name=Ghost")
+	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/newest/entity-scenes?kind=performer&name=Ghost&page=2")
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
@@ -240,282 +357,37 @@ func TestAdultNewestEntityScenesHandler_NeverHangs(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502 once the outboundTimeout fires, got %d", resp.StatusCode)
 	}
-	// Below 2s isolates the 300ms context bound from testHTTPClient's own 5s
-	// client-timeout fallback — so this passes ONLY when newestScenesOutboundTimeout
-	// actually fired, not when a regressed ctx wiring falls back to the 5s cap.
 	if elapsed > 2*time.Second {
 		t.Fatalf("handler did not return within the outboundTimeout bound: took %s", elapsed)
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_RSSFailureDropped asserts a failing RSS
-// feed is logged and dropped while the Prowlarr results still return — RSS
-// failure never fails the handler.
-func TestAdultNewestEntityScenesHandler_RSSFailureDropped(t *testing.T) {
-	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"Working.Release-GRP","indexer":"I","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:OK"}]`))
-	}))
-	defer prowlarr.Close()
+// --- page>1: Prowlarr + cache-checked enrichment ----------------------------
 
-	badFeed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "feed exploded", http.StatusInternalServerError)
-	}))
-	defer badFeed.Close()
-
-	srv, seed := newestScenesMux(t)
-	seed.setProwlarr(t, prowlarr.URL)
-	seed.addAdultFeed(t, "broken adult feed", badFeed.URL)
-
-	resp, out := getNewestScenes(t, srv.URL, "performer", "Working")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 despite the failing feed, got %d", resp.StatusCode)
-	}
-	if len(out) != 1 || out[0].Source != "prowlarr" {
-		t.Fatalf("expected the single Prowlarr result to survive the RSS failure, got %+v", out)
-	}
-}
-
-// TestAdultNewestEntityScenesHandler_RSSMatchAndDedupe covers two properties at
-// once: (1) a matching RSS item is included and mapped with Source=rss; (2) an
-// RSS item sharing a Prowlarr release's DownloadURL is deduped away, Prowlarr
-// winning the tie (listed first).
-func TestAdultNewestEntityScenesHandler_RSSMatchAndDedupe(t *testing.T) {
-	const sharedURL = "magnet:?xt=urn:btih:SHARED"
-	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"Nova Scene A","indexer":"I","protocol":"torrent","size":100,"downloadUrl":"` + sharedURL + `"}]`))
-	}))
-	defer prowlarr.Close()
-
-	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/xml")
-		w.Write([]byte(`<?xml version="1.0"?><rss version="2.0"><channel>` +
-			// duplicate of the Prowlarr release (same enclosure URL) — must dedupe
-			`<item><title>Nova duplicate</title><enclosure url="` + sharedURL + `" length="100"/></item>` +
-			// a genuine RSS-only match on the name
-			`<item><title>Nova Scene B RSS</title><enclosure url="http://feed.invalid/b.torrent" length="222"/></item>` +
-			// a non-matching item that must be filtered out
-			`<item><title>Unrelated Other</title><enclosure url="http://feed.invalid/x.torrent" length="333"/></item>` +
-			`</channel></rss>`))
-	}))
-	defer feed.Close()
-
-	srv, seed := newestScenesMux(t)
-	seed.setProwlarr(t, prowlarr.URL)
-	seed.addAdultFeed(t, "adult feed", feed.URL)
-
-	resp, out := getNewestScenes(t, srv.URL, "performer", "Nova")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	// Expect exactly two items: the Prowlarr release (deduped against the RSS
-	// duplicate) + the one RSS-only match. The non-matching item is filtered.
-	if len(out) != 2 {
-		t.Fatalf("expected 2 deduped items, got %d (%+v)", len(out), out)
-	}
-	if out[0].DownloadURL != sharedURL || out[0].Source != "prowlarr" {
-		t.Errorf("expected the shared-URL item to keep Prowlarr provenance, got %+v", out[0])
-	}
-	if out[1].Source != "rss" || out[1].SizeBytes != 222 || out[1].Protocol != "torrent" {
-		t.Errorf("expected the RSS-only match mapped with Source=rss, feed protocol, and its enclosure length, got %+v", out[1])
-	}
-}
-
-// poolHitFeedXML is a two-item RSS body used by the Phase 1 pool-join tests:
-// the first item's enclosure URL is the join key seeded into the pool; the
-// second has no pool row and must keep today's raw fallback.
-const poolHitFeedXML = `<?xml version="1.0"?>
-<rss version="2.0"><channel>
-<item>
-  <title>Nova Pool Hit Scene</title>
-  <link>https://example.com/details/hit</link>
-  <enclosure url="http://feed.invalid/hit.torrent" length="500" type="application/x-bittorrent"/>
-</item>
-<item>
-  <title>Nova Pool Miss Scene</title>
-  <link>https://example.com/details/miss</link>
-  <enclosure url="http://feed.invalid/miss.torrent" length="600" type="application/x-bittorrent"/>
-</item>
-</channel></rss>`
-
-// TestAdultNewestEntityScenesHandler_RSSPoolHit is the Phase 1 pool-join's
-// core property: an RSS item whose DownloadURL matches a row already in
-// adult_newest_releases (the background scan cycle's matched-entity pool)
-// gets Title/Studio/Image populated from that row, unconditionally — and the
-// grab-bearing fields (ReleaseTitle/DownloadURL/Protocol/SizeBytes) are left
-// exactly as the raw RSS item computed them.
-func TestAdultNewestEntityScenesHandler_RSSPoolHit(t *testing.T) {
-	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[]`))
-	}))
-	defer prowlarr.Close()
-
-	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(poolHitFeedXML))
-	}))
-	defer feed.Close()
-
-	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
-	seed.setProwlarr(t, prowlarr.URL)
-	seed.addAdultFeed(t, "adult feed", feed.URL)
-
-	if err := releaseStore.Insert(context.Background(), adultnewest.MatchedRelease{
-		RowType:         adultnewest.RowScene,
-		EntityID:        "scene-nova-1",
-		EntitySource:    "tpdb",
-		EntityTitle:     "Resolved Nova Title",
-		EntityStudio:    "Resolved Nova Studio",
-		EntityImage:     "https://cdn.theporndb.net/nova.jpg",
-		BrowseConfirmed: true,
-		FeedItemKey:     "http://feed.invalid/hit.torrent",
-	}); err != nil {
-		t.Fatalf("seeding pool: %v", err)
-	}
-
-	resp, out := getNewestScenes(t, srv.URL, "performer", "Nova")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	if len(out) != 2 {
-		t.Fatalf("expected 2 items (hit + miss, neither dropped), got %d (%+v)", len(out), out)
-	}
-
-	var hit, miss *apidto.AdultDiscoverItem
-	for i := range out {
-		switch out[i].DownloadURL {
-		case "http://feed.invalid/hit.torrent":
-			hit = &out[i]
-		case "http://feed.invalid/miss.torrent":
-			miss = &out[i]
-		}
-	}
-	if hit == nil || miss == nil {
-		t.Fatalf("expected both the hit and miss items present, got %+v", out)
-	}
-
-	if hit.Title != "Resolved Nova Title" || hit.Studio != "Resolved Nova Studio" || hit.Image != "https://cdn.theporndb.net/nova.jpg" {
-		t.Errorf("expected the pool-matched item enriched, got %+v", hit)
-	}
-	// Grab-safety: the pool join must never touch these fields — they must
-	// still carry exactly the raw RSS item's values.
-	if hit.ReleaseTitle != "Nova Pool Hit Scene" {
-		t.Errorf("expected ReleaseTitle unchanged (raw RSS title), got %q", hit.ReleaseTitle)
-	}
-	if hit.DownloadURL != "http://feed.invalid/hit.torrent" {
-		t.Errorf("expected DownloadURL unchanged, got %q", hit.DownloadURL)
-	}
-	if hit.Protocol != "torrent" {
-		t.Errorf("expected Protocol unchanged (feed protocol), got %q", hit.Protocol)
-	}
-	if hit.SizeBytes != 500 {
-		t.Errorf("expected SizeBytes unchanged (raw enclosure length), got %d", hit.SizeBytes)
-	}
-}
-
-// TestAdultNewestEntityScenesHandler_RSSPoolMiss asserts an RSS item with no
-// pool row keeps today's raw title/empty-image fallback AND is still present
-// in the response — unlike resolveRssFeedHandler's equivalent join
-// (rss_feeds.go), this drill-down must never drop an unmatched item.
-func TestAdultNewestEntityScenesHandler_RSSPoolMiss(t *testing.T) {
-	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[]`))
-	}))
-	defer prowlarr.Close()
-
-	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(poolHitFeedXML))
-	}))
-	defer feed.Close()
-
-	// No pool row seeded at all — both feed items must stay raw.
-	srv, seed, _ := newestScenesMuxWithReleaseStore(t)
-	seed.setProwlarr(t, prowlarr.URL)
-	seed.addAdultFeed(t, "adult feed", feed.URL)
-
-	resp, out := getNewestScenes(t, srv.URL, "performer", "Nova")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-	if len(out) != 2 {
-		t.Fatalf("expected 2 items, neither dropped for lack of a pool match, got %d (%+v)", len(out), out)
-	}
-	for _, it := range out {
-		if it.Studio != "" || it.Image != "" {
-			t.Errorf("expected no pool row to leave Studio/Image empty, got %+v", it)
-		}
-		if it.DownloadURL == "http://feed.invalid/miss.torrent" && it.Title != "Nova Pool Miss Scene" {
-			t.Errorf("expected the raw title preserved for the unmatched item, got %+v", it)
-		}
-	}
-}
-
-// TestAdultNewestEntityScenesHandler_RSSPoolLookupError asserts a failing
-// pool lookup is logged and every RSS item passes through raw/unenriched —
-// the handler still 200s with the Prowlarr results intact, matching this
-// handler's existing non-blocking contract.
-func TestAdultNewestEntityScenesHandler_RSSPoolLookupError(t *testing.T) {
-	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"Nova Prowlarr Release","indexer":"I","protocol":"torrent","size":900,"downloadUrl":"magnet:?xt=urn:btih:PROWL"}]`))
-	}))
-	defer prowlarr.Close()
-
-	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(poolHitFeedXML))
-	}))
-	defer feed.Close()
-
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, _, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, brokenReleaseStore(t), testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
-	t.Cleanup(srv.Close)
-	seed := &connectionsUpserter{connStore: connStore, rssFeedsStore: rssFeedsStore}
-	seed.setProwlarr(t, prowlarr.URL)
-	seed.addAdultFeed(t, "adult feed", feed.URL)
-
-	resp, out := getNewestScenes(t, srv.URL, "performer", "Nova")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 despite the failing pool lookup, got %d", resp.StatusCode)
-	}
-	if len(out) != 3 {
-		t.Fatalf("expected all 3 items (1 prowlarr + 2 rss) present and unenriched, got %d (%+v)", len(out), out)
-	}
-	for _, it := range out {
-		if it.Source == "prowlarr" {
-			if it.Title != "Nova Prowlarr Release" || it.DownloadURL != "magnet:?xt=urn:btih:PROWL" {
-				t.Errorf("expected the Prowlarr result intact, got %+v", it)
-			}
-			continue
-		}
-		if it.Studio != "" || it.Image != "" {
-			t.Errorf("expected every RSS item to pass through unenriched on a pool-lookup error, got %+v", it)
-		}
-		if it.DownloadURL == "http://feed.invalid/hit.torrent" && it.Title != "Nova Pool Hit Scene" {
-			t.Errorf("expected the raw title preserved (pool lookup failed, no enrichment applied), got %+v", it)
-		}
-	}
-}
-
-// tpdbStudioCatalogFake routes the TPDB REST endpoints the Phase-2 enrichment
-// uses for a studio drill: SearchSites (resolve) then ScenesBySite (catalog).
-// It also counts any GET /scenes/{id} (resolveTPDBDuration's re-fetch) so a
-// test can assert it never fires.
-func tpdbStudioCatalogFake(sceneByID *int32) http.HandlerFunc {
+// tpdbStudioCatalogFake routes the TPDB REST endpoints the page>1 enrichment
+// uses for a studio drill: SearchSites (resolve, exact-name) then ScenesBySite
+// (catalog). sitesCount/scenesCount (nil-safe) tally the resolve + catalog
+// fetches so a test can prove the cache short-circuit (a second page>1 makes
+// zero box calls). sceneByID counts any GET /scenes/{id} (must stay 0).
+func tpdbStudioCatalogFake(sitesCount, scenesCount, sceneByID *int32) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasPrefix(p, "/sites/") && strings.HasSuffix(p, "/scenes"):
+			if scenesCount != nil {
+				atomic.AddInt32(scenesCount, 1)
+			}
 			w.Write([]byte(`{"data":[{"_id":"tsc1","title":"Some Clean Scene Title","date":"2023-05-01","site":{"name":"Brazzers"},"image":"http://cdn/tsc1.jpg","duration":1500,"tags":[{"id":1,"name":"Anal"},{"id":2,"name":"Blonde"}],"performers":[{"name":"Riley Reid"},{"name":"Jane Doe"}]}]}`))
 		case strings.HasPrefix(p, "/scenes/"):
-			atomic.AddInt32(sceneByID, 1)
+			if sceneByID != nil {
+				atomic.AddInt32(sceneByID, 1)
+			}
 			w.Write([]byte(`{"data":{}}`))
 		case p == "/sites":
+			if sitesCount != nil {
+				atomic.AddInt32(sitesCount, 1)
+			}
 			w.Write([]byte(`{"data":[{"uuid":"site1","name":"Brazzers"}]}`))
 		default:
 			w.Write([]byte(`{"data":[]}`))
@@ -523,43 +395,49 @@ func tpdbStudioCatalogFake(sceneByID *int32) http.HandlerFunc {
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_Phase2MappingAndGrabSafety is the core
-// Phase-2 property at the handler layer: a Prowlarr-sourced raw release whose
-// scene is in the entity's TPDB catalog gets its display Title OVERWRITTEN with
-// the clean scene title and Image/Studio/Date/DurationSeconds/Genres/Performers
-// populated (Genres/Performers split on a literal comma, trimmed), while Rating
-// stays 0, Source stays "prowlarr", and the four grab-bearing fields
-// (ReleaseTitle/DownloadURL/Protocol/SizeBytes) are untouched — ReleaseTitle
-// still the raw, non-empty release string. resolveTPDBDuration must never fire.
-func TestAdultNewestEntityScenesHandler_Phase2MappingAndGrabSafety(t *testing.T) {
+// TestAdultNewestEntityScenesHandler_Page2MappingAndGrabSafety is the core
+// page>1 property: a Prowlarr-sourced raw release whose scene is in the entity's
+// TPDB catalog gets its display Title OVERWRITTEN with the clean scene title and
+// Image/Studio/Date/DurationSeconds/Genres/Performers populated, while Rating
+// stays 0, Source stays "prowlarr", and the four grab-bearing fields are
+// untouched. Exactly one Prowlarr call; HasMore=false. resolveTPDBDuration must
+// never fire.
+func TestAdultNewestEntityScenesHandler_Page2MappingAndGrabSafety(t *testing.T) {
 	origTPDB := tpdbrest.DefaultBaseURL
 	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
 
-	var sceneByID int32
-	tpdb := httptest.NewServer(tpdbStudioCatalogFake(&sceneByID))
+	var sceneByID, prowlarrCalls int32
+	tpdb := httptest.NewServer(tpdbStudioCatalogFake(nil, nil, &sceneByID))
 	defer tpdb.Close()
 	tpdbrest.DefaultBaseURL = tpdb.URL
 
 	const rawTitle = "Brazzers.Some.Clean.Scene.Title.XXX.1080p-GROUP"
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&prowlarrCalls, 1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"` + rawTitle + `","indexer":"I","protocol":"torrent","size":900000000,"downloadUrl":"magnet:?xt=urn:btih:GRAB"}]`))
+		w.Write([]byte(`[{"guid":"1","title":"` + rawTitle + `","protocol":"torrent","size":900000000,"downloadUrl":"magnet:?xt=urn:btih:GRAB"}]`))
 	}))
 	defer prowlarr.Close()
 
-	srv, seed := newestScenesMux(t)
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
 	seed.setProwlarr(t, prowlarr.URL)
 	seed.setTPDB(t)
+	seedStudioPoolBox(t, releaseStore, "Brazzers", "tpdb")
 
-	resp, out := getNewestScenes(t, srv.URL, "studio", "Brazzers")
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if len(out) != 1 {
-		t.Fatalf("expected 1 item, got %d (%+v)", len(out), out)
+	if got := atomic.LoadInt32(&prowlarrCalls); got != 1 {
+		t.Fatalf("expected EXACTLY ONE Prowlarr.Search, got %d", got)
 	}
-	it := out[0]
-
+	if page.HasMore {
+		t.Errorf("expected page=2 HasMore=false, got true")
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("expected 1 enriched item, got %d (%+v)", len(page.Items), page.Items)
+	}
+	it := page.Items[0]
 	if it.Title != "Some Clean Scene Title" {
 		t.Errorf("expected display Title OVERWRITTEN with the clean catalog title, got %q", it.Title)
 	}
@@ -567,66 +445,148 @@ func TestAdultNewestEntityScenesHandler_Phase2MappingAndGrabSafety(t *testing.T)
 		t.Errorf("expected Studio/Date/Image/DurationSeconds populated, got %+v", it)
 	}
 	if len(it.Genres) != 2 || it.Genres[0] != "Anal" || it.Genres[1] != "Blonde" {
-		t.Errorf("expected Genres split on bare comma + trimmed, got %#v", it.Genres)
+		t.Errorf("expected Genres split + trimmed, got %#v", it.Genres)
 	}
 	if len(it.Performers) != 2 || it.Performers[0] != "Riley Reid" || it.Performers[1] != "Jane Doe" {
-		t.Errorf("expected Performers split on bare comma + trimmed, got %#v", it.Performers)
+		t.Errorf("expected Performers split + trimmed, got %#v", it.Performers)
 	}
-	if it.Rating != 0 {
-		t.Errorf("MatchResult has no Rating field — expected Rating stays 0, got %v", it.Rating)
+	if it.Rating != 0 || it.Source != "prowlarr" {
+		t.Errorf("expected Rating 0 + Source prowlarr, got rating=%v source=%q", it.Rating, it.Source)
 	}
-	if it.Source != "prowlarr" {
-		t.Errorf("expected Source provenance unchanged (prowlarr), got %q", it.Source)
-	}
-	// Grab-safety: the four grab-bearing fields must be exactly the raw release's.
-	if it.ReleaseTitle != rawTitle {
-		t.Errorf("expected ReleaseTitle unchanged (raw, non-empty), got %q", it.ReleaseTitle)
-	}
-	if it.DownloadURL != "magnet:?xt=urn:btih:GRAB" || it.Protocol != "torrent" || it.SizeBytes != 900000000 {
-		t.Errorf("expected grab-bearing enclosure fields unchanged, got %+v", it)
+	if it.ReleaseTitle != rawTitle || it.DownloadURL != "magnet:?xt=urn:btih:GRAB" || it.Protocol != "torrent" || it.SizeBytes != 900000000 {
+		t.Errorf("expected grab-bearing fields unchanged, got %+v", it)
 	}
 	if atomic.LoadInt32(&sceneByID) != 0 {
-		t.Errorf("resolveTPDBDuration/GetSceneByID must never fire, got %d /scenes/{id} calls", sceneByID)
+		t.Errorf("resolveTPDBDuration/GetSceneByID must never fire, got %d calls", sceneByID)
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_Phase2StillOneProwlarrCall proves the
-// carve-out holds with enrichment active: exactly one Prowlarr.Search even
-// though the enrichment fires its own TPDB catalog calls.
-func TestAdultNewestEntityScenesHandler_Phase2StillOneProwlarrCall(t *testing.T) {
+// TestAdultNewestEntityScenesHandler_Page2CacheHitSkipsBoxFetch is US-2's cache
+// property: a SECOND page>1 request for the same entity + same Prowlarr result
+// hits the release-level cache for the already-matched release and does NOT
+// re-run the box resolve/catalog fetch — proven with a call-counting TPDB fake
+// across two sequential page>1 calls (catalog fetched once, not twice).
+func TestAdultNewestEntityScenesHandler_Page2CacheHitSkipsBoxFetch(t *testing.T) {
 	origTPDB := tpdbrest.DefaultBaseURL
 	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
 
-	var sceneByID int32
-	tpdb := httptest.NewServer(tpdbStudioCatalogFake(&sceneByID))
+	var sitesCount, scenesCount int32
+	tpdb := httptest.NewServer(tpdbStudioCatalogFake(&sitesCount, &scenesCount, nil))
 	defer tpdb.Close()
 	tpdbrest.DefaultBaseURL = tpdb.URL
 
-	var prowlarrCalls int32
+	const rawTitle = "Brazzers.Some.Clean.Scene.Title.XXX-GRP"
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&prowlarrCalls, 1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"Brazzers.Some.Clean.Scene.Title.XXX-GRP","indexer":"I","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:ONE"}]`))
+		w.Write([]byte(`[{"guid":"1","title":"` + rawTitle + `","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:CACHE"}]`))
 	}))
 	defer prowlarr.Close()
 
-	srv, seed := newestScenesMux(t)
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
 	seed.setProwlarr(t, prowlarr.URL)
 	seed.setTPDB(t)
+	seedStudioPoolBox(t, releaseStore, "Brazzers", "tpdb")
 
-	resp, _ := getNewestScenes(t, srv.URL, "studio", "Brazzers")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	// First page>1: cache miss → resolve + catalog fetch, match written to cache.
+	resp1, page1 := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first page=2: expected 200, got %d", resp1.StatusCode)
 	}
-	if got := atomic.LoadInt32(&prowlarrCalls); got != 1 {
-		t.Fatalf("expected EXACTLY ONE Prowlarr.Search with enrichment active, got %d", got)
+	if len(page1.Items) != 1 || page1.Items[0].Title != "Some Clean Scene Title" {
+		t.Fatalf("first page=2: expected the enriched item, got %+v", page1.Items)
+	}
+	if got := atomic.LoadInt32(&scenesCount); got != 1 {
+		t.Fatalf("first page=2: expected exactly 1 catalog fetch, got %d", got)
+	}
+	if got := atomic.LoadInt32(&sitesCount); got != 1 {
+		t.Fatalf("first page=2: expected exactly 1 resolve, got %d", got)
+	}
+
+	// Second page>1, same entity + same Prowlarr result: the cache hit means the
+	// box is NOT touched again.
+	resp2, page2 := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second page=2: expected 200, got %d", resp2.StatusCode)
+	}
+	if len(page2.Items) != 1 || page2.Items[0].Title != "Some Clean Scene Title" {
+		t.Fatalf("second page=2: expected the same enriched item from cache, got %+v", page2.Items)
+	}
+	// Grab-safety on the cache-hit path: the raw release title (the Grab query)
+	// must survive a cache reconstruction untouched.
+	if page2.Items[0].ReleaseTitle != rawTitle {
+		t.Errorf("second page=2: expected ReleaseTitle unchanged on cache hit, got %q", page2.Items[0].ReleaseTitle)
+	}
+	if got := atomic.LoadInt32(&scenesCount); got != 1 {
+		t.Errorf("second page=2: expected NO extra catalog fetch (cache hit), total got %d", got)
+	}
+	if got := atomic.LoadInt32(&sitesCount); got != 1 {
+		t.Errorf("second page=2: expected NO extra resolve (cache hit), total got %d", got)
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_Phase2FailureNeverFails proves a box that
-// errors on enrichment never fails the handler: the Prowlarr result still
-// returns, unmatched item at its raw fallback.
-func TestAdultNewestEntityScenesHandler_Phase2FailureNeverFails(t *testing.T) {
+// TestAdultNewestEntityScenesHandler_Page2NoPoolBoxDropsAll proves the graceful
+// no-known-box path: with no pool row for the drilled entity, page>1 has no box
+// to resolve against, so every Prowlarr item is dropped (empty, not an error).
+func TestAdultNewestEntityScenesHandler_Page2NoPoolBoxDropsAll(t *testing.T) {
+	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"guid":"1","title":"Brazzers.Some.Scene.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:NOBOX"}]`))
+	}))
+	defer prowlarr.Close()
+
+	// No pool row seeded → EntityBox returns "" → every miss dropped.
+	srv, seed, _ := newestScenesMuxWithReleaseStore(t)
+	seed.setProwlarr(t, prowlarr.URL)
+	seed.setTPDB(t)
+
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("expected all items dropped with no known box, got %d (%+v)", len(page.Items), page.Items)
+	}
+	if page.HasMore {
+		t.Errorf("expected HasMore=false on page=2, got true")
+	}
+}
+
+// TestAdultNewestEntityScenesHandler_Page2UnmatchedDropped proves an unmatched
+// Prowlarr item (its release title matches nothing in the box catalog) is
+// dropped from the page>1 response — never shown raw.
+func TestAdultNewestEntityScenesHandler_Page2UnmatchedDropped(t *testing.T) {
+	origTPDB := tpdbrest.DefaultBaseURL
+	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
+
+	tpdb := httptest.NewServer(tpdbStudioCatalogFake(nil, nil, nil))
+	defer tpdb.Close()
+	tpdbrest.DefaultBaseURL = tpdb.URL
+
+	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Title shares nothing with the catalog's "Some Clean Scene Title".
+		w.Write([]byte(`[{"guid":"1","title":"Totally.Unrelated.Nonsense.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:NOPE"}]`))
+	}))
+	defer prowlarr.Close()
+
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
+	seed.setProwlarr(t, prowlarr.URL)
+	seed.setTPDB(t)
+	seedStudioPoolBox(t, releaseStore, "Brazzers", "tpdb")
+
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("expected the unmatched item dropped, got %d (%+v)", len(page.Items), page.Items)
+	}
+}
+
+// TestAdultNewestEntityScenesHandler_Page2BoxFailureDropsAll proves a box that
+// errors on resolve never fails the handler: the item is simply dropped
+// (unmatched), the response 200s empty.
+func TestAdultNewestEntityScenesHandler_Page2BoxFailureDropsAll(t *testing.T) {
 	origStash := stashbox.StashDBURL
 	defer func() { stashbox.StashDBURL = origStash }()
 
@@ -636,31 +596,31 @@ func TestAdultNewestEntityScenesHandler_Phase2FailureNeverFails(t *testing.T) {
 	defer stash.Close()
 	stashbox.StashDBURL = stash.URL
 
-	const rawTitle = "Brazzers.Some.Scene.XXX-GRP"
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"` + rawTitle + `","indexer":"I","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:RAW"}]`))
+		w.Write([]byte(`[{"guid":"1","title":"Brazzers.Some.Scene.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:RAW"}]`))
 	}))
 	defer prowlarr.Close()
 
-	srv, seed := newestScenesMux(t)
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
 	seed.setProwlarr(t, prowlarr.URL)
 	seed.setStashdb(t)
+	seedStudioPoolBox(t, releaseStore, "Brazzers", "stashdb")
 
-	resp, out := getNewestScenes(t, srv.URL, "studio", "Brazzers")
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 despite the failing enrichment box, got %d", resp.StatusCode)
+		t.Fatalf("expected 200 despite the failing box, got %d", resp.StatusCode)
 	}
-	if len(out) != 1 || out[0].Title != rawTitle || out[0].Image != "" {
-		t.Fatalf("expected the raw item to survive unenriched, got %+v", out)
+	if len(page.Items) != 0 {
+		t.Fatalf("expected the unmatched item dropped on box failure, got %+v", page.Items)
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_Phase2TimeoutNeverFails proves the
+// TestAdultNewestEntityScenesHandler_Page2TimeoutNeverFails proves the
 // enrichment sub-timeout never hangs or fails the handler: against a box that
 // never responds, with newestScenesEnrichTimeout shrunk, the handler still 200s
-// promptly with the raw fallback.
-func TestAdultNewestEntityScenesHandler_Phase2TimeoutNeverFails(t *testing.T) {
+// promptly (the unmatched item dropped).
+func TestAdultNewestEntityScenesHandler_Page2TimeoutNeverFails(t *testing.T) {
 	origStash := stashbox.StashDBURL
 	origTimeout := newestScenesEnrichTimeout
 	defer func() {
@@ -669,13 +629,6 @@ func TestAdultNewestEntityScenesHandler_Phase2TimeoutNeverFails(t *testing.T) {
 	}()
 	newestScenesEnrichTimeout = 150 * time.Millisecond
 
-	// The handler blocks until either its request context is cancelled (the
-	// production path: the enrichment sub-timeout aborts the outbound stash
-	// call at ~150ms) OR the test's cleanup channel closes. The channel is the
-	// teardown safety net: a client-side context cancel aborts the outbound
-	// request immediately, but the httptest server may not observe the closed
-	// connection promptly, which would otherwise hang Close() on a leaked
-	// handler goroutine. defer-LIFO closes blockCh before stash.Close() runs.
 	blockCh := make(chan struct{})
 	stash := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -687,126 +640,27 @@ func TestAdultNewestEntityScenesHandler_Phase2TimeoutNeverFails(t *testing.T) {
 	defer close(blockCh)
 	stashbox.StashDBURL = stash.URL
 
-	const rawTitle = "Brazzers.Some.Scene.XXX-GRP"
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"` + rawTitle + `","indexer":"I","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:RAW"}]`))
+		w.Write([]byte(`[{"guid":"1","title":"Brazzers.Some.Scene.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:RAW"}]`))
 	}))
 	defer prowlarr.Close()
-
-	srv, seed := newestScenesMux(t)
-	seed.setProwlarr(t, prowlarr.URL)
-	seed.setStashdb(t)
-
-	start := time.Now()
-	resp, out := getNewestScenes(t, srv.URL, "studio", "Brazzers")
-	elapsed := time.Since(start)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 despite the hanging enrichment box, got %d", resp.StatusCode)
-	}
-	if len(out) != 1 || out[0].Title != rawTitle {
-		t.Fatalf("expected the raw item returned on enrichment timeout, got %+v", out)
-	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("handler did not return promptly under the enrichment sub-timeout: took %s", elapsed)
-	}
-}
-
-// TestAdultNewestEntityScenesHandler_Phase2SkipsPhase1Enriched is US-2's
-// scope invariant: Phase 2 runs ONLY on items Phase 1 left raw. A pool-hit
-// item (Phase 1 set its Title = EntityTitle) must NOT be re-matched and
-// clobbered by Phase 2 even when the entity's catalog contains a scene whose
-// title matches the pool item's RAW release string — while a sibling Prowlarr
-// item in the same response IS enriched (proving Phase 2 actually ran, so the
-// exclusion is real, not vacuous).
-func TestAdultNewestEntityScenesHandler_Phase2SkipsPhase1Enriched(t *testing.T) {
-	origTPDB := tpdbrest.DefaultBaseURL
-	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
-
-	// TPDB catalog carries TWO scenes: one matching the Prowlarr sibling's raw
-	// title, one matching the pool item's raw ReleaseTitle (the clobber bait).
-	tpdb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.HasPrefix(p, "/sites/") && strings.HasSuffix(p, "/scenes"):
-			w.Write([]byte(`{"data":[` +
-				`{"_id":"c1","title":"Some Clean Scene Title","site":{"name":"Brazzers"}},` +
-				`{"_id":"c2","title":"Pool Raw Scene","site":{"name":"Brazzers"}}` +
-				`]}`))
-		case p == "/sites":
-			w.Write([]byte(`{"data":[{"uuid":"site1","name":"Brazzers"}]}`))
-		default:
-			w.Write([]byte(`{"data":[]}`))
-		}
-	}))
-	defer tpdb.Close()
-	tpdbrest.DefaultBaseURL = tpdb.URL
-
-	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"Brazzers.Some.Clean.Scene.Title.XXX-GRP","indexer":"I","protocol":"torrent","size":100,"downloadUrl":"magnet:?xt=urn:btih:PROWL"}]`))
-	}))
-	defer prowlarr.Close()
-
-	// RSS item whose enclosure URL is the pool key; its raw title matches the
-	// "Pool Raw Scene" catalog entry, so Phase 2 WOULD clobber it if it wrongly
-	// ran on a Phase-1-enriched item.
-	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(`<?xml version="1.0"?><rss version="2.0"><channel>` +
-			`<item><title>Brazzers Pool Raw Scene XXX GRP</title><enclosure url="http://feed.invalid/pool.torrent" length="222"/></item>` +
-			`</channel></rss>`))
-	}))
-	defer feed.Close()
 
 	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
 	seed.setProwlarr(t, prowlarr.URL)
-	seed.setTPDB(t)
-	seed.addAdultFeed(t, "adult feed", feed.URL)
+	seed.setStashdb(t)
+	seedStudioPoolBox(t, releaseStore, "Brazzers", "stashdb")
 
-	if err := releaseStore.Insert(context.Background(), adultnewest.MatchedRelease{
-		RowType:         adultnewest.RowScene,
-		EntityID:        "pool-scene-1",
-		EntitySource:    "tpdb",
-		EntityTitle:     "Resolved Pool Title",
-		EntityStudio:    "Resolved Pool Studio",
-		EntityImage:     "https://cdn/pool.jpg",
-		BrowseConfirmed: true,
-		FeedItemKey:     "http://feed.invalid/pool.torrent",
-	}); err != nil {
-		t.Fatalf("seeding pool: %v", err)
-	}
-
-	resp, out := getNewestScenes(t, srv.URL, "studio", "Brazzers")
+	start := time.Now()
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	elapsed := time.Since(start)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+		t.Fatalf("expected 200 despite the hanging box, got %d", resp.StatusCode)
 	}
-	if len(out) != 2 {
-		t.Fatalf("expected 2 items (1 prowlarr + 1 pool-hit rss), got %d (%+v)", len(out), out)
+	if len(page.Items) != 0 {
+		t.Fatalf("expected the item dropped on enrichment timeout, got %+v", page.Items)
 	}
-
-	var poolItem, prowlItem *apidto.AdultDiscoverItem
-	for i := range out {
-		switch out[i].DownloadURL {
-		case "http://feed.invalid/pool.torrent":
-			poolItem = &out[i]
-		case "magnet:?xt=urn:btih:PROWL":
-			prowlItem = &out[i]
-		}
-	}
-	if poolItem == nil || prowlItem == nil {
-		t.Fatalf("expected both the pool-hit and Prowlarr items present, got %+v", out)
-	}
-
-	// The pool-hit item keeps its Phase-1 (exact-key, trustworthy) title — Phase 2
-	// must NOT clobber it with the lower-confidence "Pool Raw Scene" catalog match.
-	if poolItem.Title != "Resolved Pool Title" {
-		t.Errorf("Phase 2 clobbered a Phase-1-enriched item: got Title=%q, want %q", poolItem.Title, "Resolved Pool Title")
-	}
-	// The Prowlarr sibling WAS enriched — proves Phase 2 genuinely ran, so the
-	// pool item's exclusion is a real skip, not a vacuous no-op.
-	if prowlItem.Title != "Some Clean Scene Title" {
-		t.Errorf("expected the still-raw Prowlarr item enriched by Phase 2, got Title=%q", prowlItem.Title)
+	if elapsed > 3*time.Second {
+		t.Fatalf("handler did not return promptly under the enrichment sub-timeout: took %s", elapsed)
 	}
 }

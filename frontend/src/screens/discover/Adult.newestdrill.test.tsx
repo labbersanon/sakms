@@ -8,10 +8,12 @@
 //      drill-down wired via EntityCard's onSelect.
 //   3. Clicking a newestrow Performer/Studio card opens the EXISTING
 //      scene-list drill-down shell (not a new component), which calls
-//      fetchNewestEntityScenes and renders with singlePage — a full page's
-//      worth of items (20) must NOT produce a "Show more" control, proving
-//      singlePage actually suppresses pagination rather than the array just
-//      happening to be short.
+//      fetchNewestEntityScenes and renders it as a real paginated strip: page 1
+//      (pool-only) items show immediately with a "Show more" control always
+//      available (per the {items, hasMore} envelope contract — page 1's
+//      hasMore is always true, even for an empty pool), and clicking "Show
+//      more" fetches page 2 (Prowlarr-triggered), appends its items, and hides
+//      "Show more" afterward (page 2's hasMore is always false).
 //
 // Renders the exported AdultDiscover directly (same convention as
 // Adult.grab.test.tsx / Adult.rssfeed.test.tsx).
@@ -119,9 +121,12 @@ describe("AdultDiscover — Studio rows: single strip, drill-down wired", () => 
   it("renders one non-gender-split strip, with onSelect opening the newest drill-down", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/adult/discover/newest/entity-scenes"))
-        return jsonResponse([
-          { id: "sc1", title: "Drill Scene", studio: "Drill Studio", date: "2026-01-01", image: "https://cdn.theporndb.net/scenes/drill.jpg", durationSeconds: 0, rating: 0, source: "prowlarr", slug: "" },
-        ]);
+        return jsonResponse({
+          items: [
+            { id: "sc1", title: "Drill Scene", studio: "Drill Studio", date: "2026-01-01", image: "https://cdn.theporndb.net/scenes/drill.jpg", durationSeconds: 0, rating: 0, source: "prowlarr", slug: "" },
+          ],
+          hasMore: true,
+        });
       if (url.includes("/newest-rows/1/resolve"))
         return jsonResponse([
           { id: "st1", title: "Drill Studio", studio: "", date: "", image: "https://cdn.theporndb.net/sites/drill.jpg", source: "", rowType: "studio" },
@@ -144,7 +149,8 @@ describe("AdultDiscover — Studio rows: single strip, drill-down wired", () => 
     fireEvent.click(card.closest("button") as HTMLElement);
 
     // Opens the existing drill-down shell (not a new component): "Back to
-    // browse" + the entity's scenes, fetched via fetchNewestEntityScenes.
+    // browse" + the entity's page-1 (pool-only) scenes, fetched via
+    // fetchNewestEntityScenes with page=1.
     expect(await screen.findByText("Back to browse")).toBeInTheDocument();
     expect(await screen.findByText("Drill Scene")).toBeInTheDocument();
     expect(
@@ -153,30 +159,28 @@ describe("AdultDiscover — Studio rows: single strip, drill-down wired", () => 
         return (
           s.includes("/api/modes/adult/discover/newest/entity-scenes") &&
           s.includes("kind=studio") &&
-          s.includes("name=Drill+Studio")
+          s.includes("name=Drill+Studio") &&
+          s.includes("page=1")
         );
       }),
     ).toBe(true);
   });
 
-  it("renders with singlePage: a full 20-item page never shows a 'Show more' control", async () => {
-    // Non-empty image per item so each card renders an <img>, not the
-    // TextPoster text fallback (which would repeat the title as its own text
-    // node and give findByText two matches).
-    const fullPage = Array.from({ length: 20 }, (_, i) => ({
-      id: `s${i}`,
-      title: `Live Scene ${i}`,
-      studio: "Drill Studio",
-      date: "",
-      image: `https://cdn.theporndb.net/scenes/live${i}.jpg`,
-      durationSeconds: 0,
-      rating: 0,
-      source: "prowlarr",
-      slug: "",
-    }));
-    stubFetch((url) => {
-      if (url.includes("/api/modes/adult/discover/newest/entity-scenes"))
-        return jsonResponse(fullPage);
+  it("shows page-1 pool items with Show more available (even when page 1 is empty), then Show more fetches page 2, appends its items, and disappears", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/adult/discover/newest/entity-scenes")) {
+        if (url.includes("page=2")) {
+          return jsonResponse({
+            items: [
+              { id: "sc-live", title: "Live Scene", studio: "Drill Studio", date: "", image: "https://cdn.theporndb.net/scenes/live.jpg", durationSeconds: 0, rating: 0, source: "prowlarr", slug: "" },
+            ],
+            hasMore: false,
+          });
+        }
+        // page 1: pool has nothing yet for this entity — an empty items array
+        // with hasMore:true is correct (the live search hasn't run), not a bug.
+        return jsonResponse({ items: [], hasMore: true });
+      }
       if (url.includes("/newest-rows/1/resolve"))
         return jsonResponse([
           { id: "st1", title: "Drill Studio", studio: "", date: "", image: "https://cdn.theporndb.net/sites/drill.jpg", source: "", rowType: "studio" },
@@ -193,11 +197,29 @@ describe("AdultDiscover — Studio rows: single strip, drill-down wired", () => 
     const card = await screen.findByText("Drill Studio");
     fireEvent.click(card.closest("button") as HTMLElement);
 
-    expect(await screen.findByText("Live Scene 0")).toBeInTheDocument();
-    expect(screen.getByText("Live Scene 19")).toBeInTheDocument();
-    // A full 20-item batch would normally leave "Show more" reachable (see
-    // shared.tsx's exhaustion heuristic) — singlePage must suppress it
-    // regardless of batch size.
+    expect(await screen.findByText("Back to browse")).toBeInTheDocument();
+    // Page 1 came back empty, but "Show more" must still be reachable
+    // (hasMore:true on an empty page 1 is the documented contract).
+    const showMore = await screen.findByText("Show more");
+    expect(screen.queryByText("Live Scene")).toBeNull();
+
+    fireEvent.click(showMore);
+
+    // Page 2's item is appended…
+    expect(await screen.findByText("Live Scene")).toBeInTheDocument();
+    // …and "Show more" is gone now that hasMore:false.
     expect(screen.queryByText("Show more")).toBeNull();
+
+    expect(
+      calls.some((c) => {
+        const s = c.url;
+        return (
+          s.includes("/api/modes/adult/discover/newest/entity-scenes") &&
+          s.includes("kind=studio") &&
+          s.includes("name=Drill+Studio") &&
+          s.includes("page=2")
+        );
+      }),
+    ).toBe(true);
   });
 });

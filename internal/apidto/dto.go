@@ -268,6 +268,22 @@ type AdultDiscoverItem struct {
 	SizeBytes   int64  `json:"sizeBytes,omitempty"`
 }
 
+// AdultNewestScenesPage is the paginated envelope for the Adult "newest"
+// Performers/Studios drill-down
+// (GET /api/modes/adult/discover/newest/entity-scenes?kind=&name=&page=N),
+// matching PaginatedStrip's {items, hasMore} load(page) contract. page=1 (the
+// initial drill-down open) returns ONLY pool-matched items and fires NO Prowlarr
+// call, with HasMore always true — Show More is always offered at least once
+// (even for an entity the pool has zero items for right now, since Prowlarr
+// hasn't been tried yet). page>1 (an explicit Show More click) fires exactly one
+// Prowlarr search, returns its confidently-matched (freshly-enriched or cached)
+// results with unmatched items dropped, and HasMore always false — Prowlarr
+// doesn't paginate further, so there is no page 3.
+type AdultNewestScenesPage struct {
+	Items   []AdultDiscoverItem `json:"items"`
+	HasMore bool                `json:"hasMore"`
+}
+
 // StudioSummary is one entry in Adult Discover's Studios row
 // (GET /api/modes/adult/studios) — a TPDB site (studio) reduced to just what a
 // browse card and its drill-down link need. ID is the opaque TPDB site id (used

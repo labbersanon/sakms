@@ -410,6 +410,22 @@ above, so don't drop them for convenience:
     fire without an explicit operator click, or for more than one entity per
     request, or with per-scroll re-queries, that's the rule being broken again —
     treat it the same way the original per-card badge was treated.
+  - **Correction to the above (2026-07-30, same day):** "Image/Studio/Date/Rating
+    fields left empty to signal live-only limitations" is now stale — this
+    handler was enriched the same day, in two layers, neither of which adds a
+    second Prowlarr call (the one-call-per-open constraint above is unaffected):
+    (1) RSS-sourced results are joined against `adult_newest_releases` — a
+    local DB lookup against releases the background RSS scan cycle has already
+    identified, zero external calls; (2) any item that lookup misses (mostly
+    Prowlarr-sourced, since a live search has no pre-existing pool entry) goes
+    through `identify.EnrichNewestScenes` (`internal/identify/enrichnewest.go`):
+    fetch the drilled-into entity's own newest-scene catalog once per
+    configured box (StashDB/FansDB/TPDB), then match raw release titles
+    against that catalog locally (zero further network calls per comparison).
+    `Rating` still has no source and stays empty; everything else populates
+    where a confident match exists, with a raw-title/no-image fallback
+    otherwise. Grab safety is unaffected — the grab query is built from
+    `ReleaseTitle`, never the enriched display `Title`.
 
 - **Mainstream Discover — Seerr-parity expansion (2026-07-14)**: supersedes
   this section's earlier "paginated Trending/Popular rows" description —

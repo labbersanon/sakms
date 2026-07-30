@@ -3488,3 +3488,68 @@ logic; `rowOrder.test.ts` extended for `fetchRowHidden`/`saveRowHidden`; the
 ▲/▼ buttons (now asserts drag handles + a structural Show/Hide → row-hidden PUT),
 plus a new regression guard that a disabled newest row still appears in the
 editor. `pnpm typecheck`, `pnpm build`, and `pnpm test` (451 passing) all green.
+
+## 2026-07-30 — Adult Discover newest drill-down: poster + proper-title enrichment
+
+The Performers/Studios "newest" live drill-down (`internal/api/adultdiscover_newest_scenes.go`,
+part of the same-day RSS-derived redesign — see `CLAUDE.md`'s Discover-vs-Prowlarr
+carve-out section) shipped with `Image`/`Studio`/`Date`/`Rating` deliberately
+empty for every card, documented as an honest live-only limitation. A quick
+manual check surfaced this as worse in practice than intended — first design
+pass (ralplan, 4 Architect rounds + 1 Critic round, all recorded in
+`.omc/plans/adult-newest-drilldown-enrichment.md`) proposed a single live
+catalog-fetch-and-match mechanism for every item. Owner correction mid-review:
+most of a drill's items are RSS-sourced, and RSS-sourced releases are, for the
+most part, *already identified* by the background RSS scan cycle — they don't
+need any live matching at all, just a join against data this project already
+builds. Shipped as two layers instead of one:
+
+1. **RSS pool-join** (`fetchAdultRSSItems` in the same file): every RSS-sourced
+   item's download URL is batched into one `adultnewest.ReleaseStore.ByFeedItemKeys`
+   call — the exact same local-DB-only join `internal/api/rss_feeds.go`'s
+   `resolveRssFeedHandler` already uses for the pre-existing NZBGEEK/TORRENTS-style
+   RSS feed rows. Zero external calls, zero throttle cost, zero fuzzy-match risk
+   (keyed by exact URL). Unlike `resolveRssFeedHandler`, an unmatched item is kept
+   (not dropped) — the drill-down's job is to show every currently-available
+   release, including ones too new for the pool yet.
+2. **Catalog-fetch enrichment** (new `internal/identify/enrichnewest.go`,
+   `EnrichNewestScenes`): for whatever the pool join leaves raw — mostly
+   Prowlarr-sourced items, since a live search has no pool entry — resolves the
+   drilled-into performer/studio to each configured box's (StashDB/FansDB/TPDB)
+   catalog id, fetches that entity's newest scene catalog page once per box
+   (confirmed StashDB `sort:DATE direction:DESC`), then matches the raw release
+   titles against that already-fetched catalog locally (`maxSimilarity` at a
+   0.4 gate, zero further network calls per comparison), building a `MatchResult`
+   via the same `Scene → MatchResult` construction `SearchStashBox`/`SearchTPDB`
+   already use. A new object-keyed id-resolution helper (distinct from the
+   existing `bestMatch`, which returns a name, not an id) re-applies the
+   existing 0.6 confidence threshold to the winning candidate *object*, and
+   additionally **declines to resolve** when a second candidate is a near-tie
+   (within 0.05) with the winner — an entity mis-resolution here would fetch
+   the wrong person's whole catalog and mislabel every card in the drill, a
+   materially worse failure than a single wrong per-item match, so ambiguous
+   resolution backs off rather than guessing. Every upstream call is
+   `Throttle.Wait`-guarded; box pipelines run concurrently (`errgroup.SetLimit(3)`)
+   under a 6s sub-timeout inside the handler's existing 15s ceiling. Still
+   exactly one `Prowlarr.Search` call per drill-down open — the carve-out
+   this handler owns is unaffected. `Genres`/`Performers` populate from TPDB
+   catalog matches only (StashDB's catalog query doesn't select tags — a
+   verified, documented gap, not a bug); `Rating` has no source anywhere in
+   this path and stays empty. Grab safety: the enriched display `Title` is
+   never what the grab query uses (`ReleaseTitle` is, and is never touched).
+
+Both layers are strictly additive and best-effort — any failure, timeout, or
+no-boxes-configured install leaves the existing raw-title/no-image fallback
+untouched, never fails the handler.
+
+Tests: `internal/identify/enrichnewest_test.go` (new, 12 tests — throttle
+discipline, O(boxes) call accounting not O(items), near-tie decline distinct
+from low-score decline, containment matching, no unthrottled TPDB duration
+refetch, no-boxes no-op, studio-vs-performer routing, cross-box StashDB
+preference); `internal/api/adultdiscover_newest_scenes_test.go` extended
+(RSS pool-hit/-miss/-lookup-error, catalog-enrichment field mapping +
+grab-safety, still-exactly-one-Prowlarr-call, enrichment failure/timeout
+never fails the handler, Phase 1/Phase 2 coexistence). `go build`, `go vet`,
+and `go test ./... -race` (touched packages) all green; full suite has zero
+new failures beyond a pre-existing, unrelated `internal/sysinfo` GPU-detection
+gap.

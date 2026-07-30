@@ -298,7 +298,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// one entity, pagination held inside the returned result set. Registered
 	// on the literal "adult" path so ServeMux prefers it over {mode}. See
 	// adultdiscover_newest_scenes.go.
-	mux.HandleFunc("GET /api/modes/adult/discover/newest/entity-scenes", adultNewestEntityScenesHandler(httpClient, connStore, settingsStore, rssFeedsStore))
+	mux.HandleFunc("GET /api/modes/adult/discover/newest/entity-scenes", adultNewestEntityScenesHandler(httpClient, connStore, settingsStore, rssFeedsStore, adultNewestReleaseStore))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
 	// (see images.go / internal/imageproxy). Read-only, auth-gated like every

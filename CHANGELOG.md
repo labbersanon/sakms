@@ -3660,3 +3660,27 @@ change only touches page 1 (zero external calls); page>1's Prowlarr-search
 path and its timeout constant were untouched. Owner-approved: bumped
 `newestScenesOutboundTimeout` (`internal/api/adultdiscover_newest_scenes.go`)
 15s → 30s. No logic change; existing tests already override the var directly.
+
+## 2026-07-30 — Adult Discover drill-down: Show More timeout, the actual fix (the entry above didn't work)
+
+The 15s→30s bump above changed nothing observable — Wade hit the identical
+"Cory Chase" error again post-deploy, this time with Go's extra
+`(Client.Timeout exceeded while awaiting headers)` detail. That phrasing only
+appears when `http.Client.Timeout` itself fires, not a request context
+deadline, and was the tell: the handler's Prowlarr client actually came from
+the app-wide shared `*http.Client` built once in `cmd/sakms/main.go` with its
+own fixed `Timeout` (`outboundTimeout`, still 15s). `http.Client.Timeout`
+bounds the whole round trip independently of any context deadline — whichever
+is shorter wins — so the shared client's 15s kept firing first regardless of
+the context bump above. The previous fix was real code that compiled, passed
+tests, and deployed clean; it just didn't touch the binding constraint.
+
+Fixed by giving this handler its own dedicated `*http.Client{Timeout:
+newestScenesOutboundTimeout}` for its Show More `mode.Build` call instead of
+reusing the shared app-wide client, so the one var now genuinely bounds both
+the context and the client. `cmd/sakms/main.go`'s shared `outboundTimeout`
+constant is untouched — it also bounds downloads, image proxying, auth, and
+watch-folder scans, none of which should change for this. The handler's
+now-dead `httpClient` parameter was removed (and its `handler.go` call site
+updated) rather than left unused. `go build`, `go vet`, and a fresh
+`go test ./internal/api/... ./internal/adultnewest/... -race` all clean.

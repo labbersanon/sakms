@@ -89,6 +89,89 @@ func TestCreate_SeasonSpecifiedDefaultsFalse(t *testing.T) {
 	}
 }
 
+// mustCreateWithGID creates a grab and stamps its download GID — the shape the
+// grab handlers produce (Create, then SetDownloadGID once the download client
+// assigns the GID).
+func mustCreateWithGID(t *testing.T, s *Store, m mode.Mode, title, gid string) Grab {
+	t.Helper()
+	ctx := context.Background()
+	g, err := s.Create(ctx, Grab{Mode: m, Title: title, Indexer: "I", Protocol: "torrent", DownloadClient: "anacrolix", RootFolderPath: "/x"})
+	if err != nil {
+		t.Fatalf("creating grab %q: %v", title, err)
+	}
+	if err := s.SetDownloadGID(ctx, g.ID, gid); err != nil {
+		t.Fatalf("setting gid for %q: %v", title, err)
+	}
+	g.DownloadGID = gid
+	return g
+}
+
+// TestActiveByDownloadGID_FindsInFlightScopedByModeAndGID proves the guard
+// lookup is keyed on (mode, download_gid): it finds the in-flight grab for a
+// GID, does NOT conflate two distinct GIDs (so genuinely distinct downloads
+// never block each other), and is scoped per-mode.
+func TestActiveByDownloadGID_FindsInFlightScopedByModeAndGID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	a := mustCreateWithGID(t, s, mode.Movies, "Movie A", "gid-a")
+	b := mustCreateWithGID(t, s, mode.Movies, "Movie B", "gid-b")
+	c := mustCreateWithGID(t, s, mode.Series, "Show C", "gid-a") // same GID, different mode
+
+	got, err := s.ActiveByDownloadGID(ctx, mode.Movies, "gid-a")
+	if err != nil || got.ID != a.ID {
+		t.Errorf("expected grab %d for (movies, gid-a), got %+v err=%v", a.ID, got, err)
+	}
+	got, err = s.ActiveByDownloadGID(ctx, mode.Movies, "gid-b")
+	if err != nil || got.ID != b.ID {
+		t.Errorf("a distinct GID must not be conflated: expected grab %d for (movies, gid-b), got %+v err=%v", b.ID, got, err)
+	}
+	got, err = s.ActiveByDownloadGID(ctx, mode.Series, "gid-a")
+	if err != nil || got.ID != c.ID {
+		t.Errorf("expected mode scoping: grab %d for (series, gid-a), got %+v err=%v", c.ID, got, err)
+	}
+	if _, err := s.ActiveByDownloadGID(ctx, mode.Movies, "gid-none"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for an unknown GID, got %v", err)
+	}
+}
+
+// TestActiveByDownloadGID_IgnoresTerminalStates proves a grab that reached a
+// terminal state (imported or failed) no longer counts as active — a fresh
+// re-grab of that same release is legitimate and must not be blocked — while a
+// still-in-flight grab (including completed-but-not-yet-imported) does count.
+func TestActiveByDownloadGID_IgnoresTerminalStates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, st := range []Status{Imported, Failed} {
+		g := mustCreateWithGID(t, s, mode.Movies, "Movie "+string(st), "gid-"+string(st))
+		if err := s.UpdateStatus(ctx, g.ID, st); err != nil {
+			t.Fatalf("updating status to %s: %v", st, err)
+		}
+		if _, err := s.ActiveByDownloadGID(ctx, mode.Movies, "gid-"+string(st)); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a %s grab must not count as active (a fresh re-grab is legitimate), got %v", st, err)
+		}
+	}
+
+	g := mustCreateWithGID(t, s, mode.Movies, "Movie completed", "gid-completed")
+	if err := s.UpdateStatus(ctx, g.ID, Completed); err != nil {
+		t.Fatalf("updating status to completed: %v", err)
+	}
+	got, err := s.ActiveByDownloadGID(ctx, mode.Movies, "gid-completed")
+	if err != nil || got.ID != g.ID {
+		t.Errorf("a completed (not-yet-imported) grab must still count as active, got %+v err=%v", got, err)
+	}
+}
+
+// TestActiveByDownloadGID_EmptyGIDNotFound proves an empty GID is never a dedup
+// key (many grabs legitimately have download_gid='').
+func TestActiveByDownloadGID_EmptyGIDNotFound(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.ActiveByDownloadGID(context.Background(), mode.Movies, ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for an empty GID, got %v", err)
+	}
+}
+
 func TestGet_NotFound(t *testing.T) {
 	s := newTestStore(t)
 	_, err := s.Get(context.Background(), 999)

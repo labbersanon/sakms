@@ -105,6 +105,12 @@ type Manager struct {
 	// testMode is set by NewForTesting; gates AddTorrent's fake-GID path.
 	testMode    bool
 	testNextGID string
+	// testAutoIncrementGID makes AddTorrent return a unique GID per call
+	// (testNextGID + an incrementing counter) instead of a fixed one — models a
+	// download client assigning each distinct add its own handle, for multi-item
+	// batch tests where every item is a genuinely distinct download.
+	testAutoIncrementGID bool
+	testGIDSeq           int
 }
 
 // New constructs a Manager. The engine is not started until Start is called.
@@ -131,6 +137,12 @@ func NewForTesting(stagingDir string) *Manager {
 
 // SetTestNextGID configures what GID AddTorrent returns in test mode.
 func (m *Manager) SetTestNextGID(gid string) { m.testNextGID = gid }
+
+// EnableTestAutoGID makes AddTorrent return a unique GID per call in test mode
+// (the configured prefix plus an incrementing counter) rather than a fixed one.
+// Used by multi-item batch tests where every dispatched item is a distinct
+// download that must each get its own tracking row.
+func (m *Manager) EnableTestAutoGID() { m.testAutoIncrementGID = true }
 
 // SeedState injects a pre-existing download entry for tests — immediately
 // visible to List, FindByGID, and Subscribe.
@@ -199,11 +211,15 @@ func (m *Manager) Start(ctx context.Context) error {
 // assigned GID (the torrent's info-hash hex string).
 func (m *Manager) AddTorrent(ctx context.Context, uri string) (string, error) {
 	if m.testMode {
+		m.mu.Lock()
 		gid := m.testNextGID
 		if gid == "" {
 			gid = "test-gid"
 		}
-		m.mu.Lock()
+		if m.testAutoIncrementGID {
+			m.testGIDSeq++
+			gid = fmt.Sprintf("%s-%d", gid, m.testGIDSeq)
+		}
 		if _, exists := m.entries[gid]; !exists {
 			m.entries[gid] = &entry{status: "active"}
 		}

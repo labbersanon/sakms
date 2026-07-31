@@ -660,7 +660,15 @@ export const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> 
         >
           <Show when={result()}>
             {(r) => (
-              <Switch>
+              // The fallback branch handles the not-grabbed/not-a-pick-list
+              // outcome the backend's duplicate-grab guard returns
+              // ({grabbed:false, fallback:unset, message:"already grabbing
+              // this release"}) — without it the Switch would match nothing and
+              // render a blank modal, the "silent no-op" the guard exists to
+              // avoid. Rendered as an informational Muted note (an expected
+              // outcome, not a failure), the same way FallbackPickList surfaces
+              // its own response.message.
+              <Switch fallback={<Show when={r().message}><Muted>{r().message}</Muted></Show>}>
                 <Match when={r().grabbed}>
                   <div class="text-sm text-ok">{r().message}</div>
                   <Muted class="mt-1">

@@ -243,6 +243,40 @@ func (s *Store) GetByDownloadGID(ctx context.Context, gid string) (*Grab, error)
 	return &g, nil
 }
 
+// ActiveByDownloadGID returns an in-flight grab for m holding gid, or
+// ErrNotFound if none exists. It's the idempotency guard the grab handlers
+// consult before recording a new grab: a download client dedupes a torrent by
+// its infohash, so a repeat grab of the same release comes back with the SAME
+// download GID — recording a second grabs row for it would strand a duplicate
+// at 'queued' forever (only ONE row can ever win GetByDownloadGID's
+// first-row-only lookup when the download completes; the rest never get marked
+// imported). "Active" is deliberately status NOT IN ('imported','failed'): a
+// genuinely fresh re-grab AFTER a prior attempt reached a terminal state
+// (successfully imported, or failed) is legitimate and must NOT be blocked —
+// only a still-in-flight duplicate is. Returns the earliest such row (ORDER BY
+// id) so the guard is deterministic when duplicates already exist.
+func (s *Store) ActiveByDownloadGID(ctx context.Context, m mode.Mode, gid string) (*Grab, error) {
+	// An empty GID (grabs not routed through a GID-assigning client) would match
+	// every other such row arbitrarily — never treat "" as a dedup key.
+	if gid == "" {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
+		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason, created_at, updated_at
+		FROM grabs WHERE mode = ? AND download_gid = ? AND status NOT IN ('imported', 'failed')
+		ORDER BY id ASC LIMIT 1
+	`, string(m), gid)
+	g, err := scanGrab(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("loading active grab for download gid %q: %w", gid, err)
+	}
+	return &g, nil
+}
+
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, so scanGrab works
 // for List and Get alike.
 type rowScanner interface {

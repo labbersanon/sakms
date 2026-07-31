@@ -150,18 +150,23 @@ export const BulkResultModal: Component<{
                   classList={{
                     "text-ok": result.grabbed,
                     "text-accent": result.fallback,
+                    "text-muted": result.alreadyGrabbing,
                     "text-danger": !!result.error,
                   }}
                 >
                   <Switch>
                     <Match when={result.grabbed}>✓ Grabbed</Match>
                     <Match when={result.fallback}>Needs a pick</Match>
+                    <Match when={result.alreadyGrabbing}>Already grabbing</Match>
                     <Match when={result.error}>✗ Error</Match>
                   </Switch>
                 </span>
               </div>
               <Switch>
                 <Match when={result.grabbed}>
+                  <Muted>{result.message}</Muted>
+                </Match>
+                <Match when={result.alreadyGrabbing}>
                   <Muted>{result.message}</Muted>
                 </Match>
                 <Match when={result.error}>

@@ -89,7 +89,7 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 		sessions := make(map[mode.Mode]*mode.Session)
 		results := make([]apidto.AutoGrabBatchResult, 0, len(req.Items))
 
-		var grabbed, fellBack, errored int
+		var grabbed, fellBack, alreadyGrabbing, errored int
 		for i, item := range req.Items {
 			m := mode.Mode(item.Mode)
 			label := strings.TrimSpace(item.Request.Title)
@@ -138,7 +138,7 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 				continue
 			}
 
-			grab, fallback, candidates, message, err := grabOneBatchItem(ctx, sess, m, settingsStore, nzb, grabsStore, item.Request)
+			grab, fallback, itemAlreadyGrabbing, candidates, message, err := grabOneBatchItem(ctx, sess, m, settingsStore, nzb, grabsStore, item.Request)
 			switch {
 			case err != nil:
 				fail(err.Error())
@@ -149,6 +149,17 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 				results = append(results, res)
 				fellBack++
 				log.Printf("autoGrabBatch: item=%d mode=%q title=%q outcome=fallback candidates=%d", i, item.Mode, label, len(candidates))
+			case itemAlreadyGrabbing:
+				// Distinct from Grabbed: the idempotency guard found an in-flight
+				// grab for this exact download, so no new row was recorded. Not
+				// counted as a fresh grab (three-state-honesty: never fold one
+				// outcome into another).
+				res.AlreadyGrabbing = true
+				res.Grab = grab
+				res.Message = message
+				results = append(results, res)
+				alreadyGrabbing++
+				log.Printf("autoGrabBatch: item=%d mode=%q title=%q outcome=already_grabbing", i, item.Mode, label)
 			default:
 				res.Grabbed = true
 				res.Grab = grab
@@ -159,7 +170,7 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 			}
 		}
 
-		log.Printf("autoGrabBatch summary: requested=%d grabbed=%d fell_back=%d errored=%d", len(req.Items), grabbed, fellBack, errored)
+		log.Printf("autoGrabBatch summary: requested=%d grabbed=%d fell_back=%d already_grabbing=%d errored=%d", len(req.Items), grabbed, fellBack, alreadyGrabbing, errored)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(apidto.AutoGrabBatchResponse{Results: results})
@@ -182,20 +193,23 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 // requires Prowlarr (C1/D4). For every OTHER item the precondition still holds:
 // callers must have confirmed sess.Prowlarr (and, for non-Adult, sess.TMDB) is
 // non-nil.
-func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
+func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, alreadyGrabbing bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
 	// Direct-grab (C1/D4): dispatch the item's own enclosure straight to the
 	// download client, identical to the single handler's path — no Prowlarr.
 	if strings.TrimSpace(req.DownloadURL) != "" {
-		dto, _, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
+		dto, already, _, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
 		if err != nil {
-			return nil, false, nil, "", err
+			return nil, false, false, nil, "", err
 		}
-		return dto, false, nil, "grabbed " + req.Title, nil
+		if already {
+			return dto, false, true, nil, "already grabbing this release", nil
+		}
+		return dto, false, false, nil, "grabbed " + req.Title, nil
 	}
 
 	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, req)
 	if err != nil {
-		return nil, false, nil, "", err
+		return nil, false, false, nil, "", err
 	}
 
 	neutralizeSeasonPacks := m == mode.Series && runtimeSeconds > 0
@@ -205,18 +219,28 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, sett
 	// Fallback: nothing cleared the floor → hand back the ranked pick list, no
 	// grab attempted (never "grab the least-bad option").
 	if sel.Fallback {
-		return nil, true, rankedAutoGrabCandidates(sel, releases), "nothing cleared the quality floor automatically — pick one below", nil
+		return nil, true, false, rankedAutoGrabCandidates(sel, releases), "nothing cleared the quality floor automatically — pick one below", nil
 	}
 
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
 	if err != nil {
-		return nil, false, nil, "", err
+		return nil, false, false, nil, "", err
 	}
 	picked := releases[sel.PickIndex]
 
 	downloadClient, gid, _, err := dispatchToDownloadClient(ctx, sess, m, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
 	if err != nil {
-		return nil, false, nil, "", err
+		return nil, false, false, nil, "", err
+	}
+
+	// Idempotency guard: a repeat grab of the same release comes back with the
+	// SAME gid (the download client dedupes by infohash) — report the in-flight
+	// grab as its own distinct outcome instead of recording a duplicate row.
+	if existing, dup, _, err := activeGrabForGID(ctx, grabsStore, m, gid); dup || err != nil {
+		if err != nil {
+			return nil, false, false, nil, "", err
+		}
+		return existing, false, true, nil, "already grabbing this release", nil
 	}
 
 	created, err := grabsStore.Create(ctx, grabs.Grab{
@@ -226,15 +250,15 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, sett
 		DownloadClient: downloadClient, RootFolderPath: rootFolder,
 	})
 	if err != nil {
-		return nil, false, nil, "", err
+		return nil, false, false, nil, "", err
 	}
 	if gid != "" {
 		if err := grabsStore.SetDownloadGID(ctx, created.ID, gid); err != nil {
-			return nil, false, nil, "", err
+			return nil, false, false, nil, "", err
 		}
 		created.DownloadGID = gid
 	}
 
 	dto := toDTOGrab(created)
-	return &dto, false, nil, "auto-grabbed " + picked.Title, nil
+	return &dto, false, false, nil, "auto-grabbed " + picked.Title, nil
 }

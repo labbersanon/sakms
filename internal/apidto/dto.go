@@ -585,28 +585,34 @@ type AutoGrabBatchItem struct {
 	Request AutoGrabRequest `json:"request"`
 }
 
-// AutoGrabBatchResult is one item's THREE-STATE outcome (modeled on
-// AutoGrabResponse, NOT apply-batch's binary {OK,Error}):
-//   - Grabbed == true:  the item cleared the floor and was sent to the download
-//     client; Grab holds the recorded grab, Candidates empty.
-//   - Fallback == true: nothing auto-qualified; Candidates is the ranked manual
-//     pick list, no grab was attempted.
-//   - Error != "":      the item failed (unknown mode, unconfigured service,
-//     search error, ...); it was skipped and the batch continued.
+// AutoGrabBatchResult is one item's outcome (modeled on AutoGrabResponse, NOT
+// apply-batch's binary {OK,Error}). Exactly one state is set per item — the
+// classification never silently folds one into another:
+//   - Grabbed == true:         the item cleared the floor and was sent to the
+//     download client; Grab holds the recorded grab, Candidates empty.
+//   - Fallback == true:        nothing auto-qualified; Candidates is the ranked
+//     manual pick list, no grab was attempted.
+//   - AlreadyGrabbing == true: an in-flight grab for this exact download already
+//     existed (the idempotency guard — same infohash/GID), so no duplicate row
+//     was recorded; Grab holds the existing in-flight grab. NOT counted as a
+//     fresh Grabbed (it is neither a new acquisition nor a failure).
+//   - Error != "":             the item failed (unknown mode, unconfigured
+//     service, search error, ...); it was skipped and the batch continued.
 //
 // Index is the item's position in the submitted Items slice (stable even when
 // items are reordered for display); Label is a short human tag (the request
 // Title) for the results UI.
 type AutoGrabBatchResult struct {
-	Index      int                 `json:"index"`
-	Mode       string              `json:"mode"`
-	Label      string              `json:"label"`
-	Grabbed    bool                `json:"grabbed"`
-	Fallback   bool                `json:"fallback"`
-	Message    string              `json:"message,omitempty"`
-	Error      string              `json:"error,omitempty"`
-	Grab       *Grab               `json:"grab,omitempty"`
-	Candidates []AutoGrabCandidate `json:"candidates,omitempty"`
+	Index           int                 `json:"index"`
+	Mode            string              `json:"mode"`
+	Label           string              `json:"label"`
+	Grabbed         bool                `json:"grabbed"`
+	Fallback        bool                `json:"fallback"`
+	AlreadyGrabbing bool                `json:"alreadyGrabbing,omitempty"`
+	Message         string              `json:"message,omitempty"`
+	Error           string              `json:"error,omitempty"`
+	Grab            *Grab               `json:"grab,omitempty"`
+	Candidates      []AutoGrabCandidate `json:"candidates,omitempty"`
 }
 
 // AutoGrabBatchRequest is POST /api/autograb-batch's body — a flattened list of

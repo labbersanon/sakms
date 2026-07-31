@@ -164,6 +164,31 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
   });
 });
 
+describe("Discover auto-grab — duplicate grab (regression: guard response must not render a blank modal)", () => {
+  it("an 'already grabbing' response (grabbed:false, no fallback) renders the message, not an empty dialog", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
+      if (url.includes("/api/modes/movies/autograb"))
+        return jsonResponse({
+          grabbed: false,
+          fallback: false,
+          message: "already grabbing this release",
+        });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
+
+    expect(await screen.findByText("already grabbing this release")).toBeInTheDocument();
+    // Not stuck loading, and not a blank modal (the Switch must match a branch).
+    expect(screen.queryByText(/Searching and scoring/)).not.toBeInTheDocument();
+  });
+});
+
 describe("Discover auto-grab — error handling (regression: dialog must not get stuck on error)", () => {
   const plainTextError = (msg: string): Response =>
     new Response(msg, {

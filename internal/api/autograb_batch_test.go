@@ -84,6 +84,11 @@ const tinyMovieRelease = `[{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x26
 func batchTestServer(t *testing.T, dlGID string, hold time.Duration, respFor func(url.Values) (int, string)) (*httptest.Server, *prowlarrStats) {
 	t.Helper()
 	dl := newTestDownloader(dlGID, t.TempDir())
+	// Every batch item is a genuinely distinct download, so the fake client hands
+	// each dispatch its own GID (mirroring real aria2) — otherwise all items
+	// would share one GID and the idempotency guard would treat items 2..n as
+	// duplicates of item 1.
+	dl.EnableTestAutoGID()
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100) // 100 min = 6000 s
 	prowlarr, stats := fakeProwlarrTracking(t, hold, respFor)
 

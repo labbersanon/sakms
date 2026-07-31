@@ -95,6 +95,42 @@ describe("BulkResultModal", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("renders the already-grabbing state as its own distinct outcome, not a blank row or a fresh grab", () => {
+    // Regression: the idempotency guard's {alreadyGrabbing:true} response must
+    // match a Switch branch — without one the row renders blank (a silent
+    // no-op) — and must NOT be counted as a fresh grab in the header.
+    const dupItems: AutoGrabBatchItem[] = [
+      { mode: "movies", request: { title: "Duplicate Movie", tmdbId: 9 } },
+    ];
+    const dupResponse: AutoGrabBatchResponse = {
+      results: [
+        {
+          index: 0,
+          mode: "movies",
+          label: "Duplicate Movie",
+          grabbed: false,
+          fallback: false,
+          alreadyGrabbing: true,
+          message: "already grabbing this release",
+        },
+      ],
+    };
+    render(() => (
+      <BulkResultModal
+        items={dupItems}
+        response={dupResponse}
+        selectedCount={1}
+        onClose={() => {}}
+      />
+    ));
+
+    expect(screen.getByText("Already grabbing")).toBeInTheDocument();
+    expect(screen.getByText("already grabbing this release")).toBeInTheDocument();
+    // Not counted as a fresh grab.
+    expect(screen.getByText(/0 grabbed/)).toBeInTheDocument();
+    expect(screen.queryByText("✓ Grabbed")).not.toBeInTheDocument();
+  });
+
   it("groups errors and fallbacks before successes", () => {
     render(() => (
       <BulkResultModal

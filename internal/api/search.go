@@ -200,6 +200,18 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, settings
 			return
 		}
 
+		// Idempotency guard: the download client dedupes by infohash, so a repeat
+		// grab of the same release returns the SAME gid — don't record a duplicate
+		// grabs row. Surface a clear 409 the operator can act on, not a raw error.
+		if _, dup, status, err := activeGrabForGID(ctx, grabsStore, m, gid); dup || err != nil {
+			if err != nil {
+				http.Error(w, err.Error(), status)
+				return
+			}
+			http.Error(w, "already grabbing this release", http.StatusConflict)
+			return
+		}
+
 		created, err := grabsStore.Create(ctx, grabs.Grab{
 			Mode: m, Title: req.Title, TMDBID: req.TMDBID, TVDBID: req.TVDBID,
 			SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,

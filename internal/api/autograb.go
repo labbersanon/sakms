@@ -130,9 +130,13 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 		// stays as-is and only ever runs for the search path). The same enclosure
 		// rides the bulk path identically via grabOneBatchItem — one code path.
 		if strings.TrimSpace(req.DownloadURL) != "" {
-			dto, status, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
+			dto, alreadyGrabbing, status, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
 			if err != nil {
 				http.Error(w, err.Error(), status)
+				return
+			}
+			if alreadyGrabbing {
+				writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: false, Message: "already grabbing this release", Grab: dto})
 				return
 			}
 			writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: true, Message: "grabbed " + req.Title, Grab: dto})
@@ -189,6 +193,15 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 			return
 		}
 
+		if existing, dup, status, err := activeGrabForGID(ctx, grabsStore, m, gid); dup || err != nil {
+			if err != nil {
+				http.Error(w, err.Error(), status)
+				return
+			}
+			writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: false, Message: "already grabbing this release", Grab: existing})
+			return
+		}
+
 		created, err := grabsStore.Create(ctx, grabs.Grab{
 			Mode: m, Title: req.Title, TMDBID: req.TMDBID,
 			SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
@@ -224,14 +237,17 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 // server-side (a true one-click grab supplies only the enclosure + title), and
 // Indexer is stamped "feed" (there is no indexer search to name). Returns the
 // recorded grab DTO plus the HTTP status a caller should surface on error.
-func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (*apidto.Grab, int, error) {
+func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (dto *apidto.Grab, alreadyGrabbing bool, status int, err error) {
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
 	if err != nil {
-		return nil, http.StatusBadRequest, err
+		return nil, false, http.StatusBadRequest, err
 	}
 	downloadClient, gid, status, err := dispatchToDownloadClient(ctx, sess, m, nzb, req.DownloadProtocol, req.DownloadURL, req.Title)
 	if err != nil {
-		return nil, status, err
+		return nil, false, status, err
+	}
+	if existing, dup, status, err := activeGrabForGID(ctx, grabsStore, m, gid); dup || err != nil {
+		return existing, dup, status, err
 	}
 	created, err := grabsStore.Create(ctx, grabs.Grab{
 		Mode: m, Title: req.Title, TMDBID: req.TMDBID,
@@ -240,16 +256,40 @@ func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, s
 		DownloadClient: downloadClient, RootFolderPath: rootFolder,
 	})
 	if err != nil {
-		return nil, http.StatusInternalServerError, err
+		return nil, false, http.StatusInternalServerError, err
 	}
 	if gid != "" {
 		if err := grabsStore.SetDownloadGID(ctx, created.ID, gid); err != nil {
-			return nil, http.StatusInternalServerError, err
+			return nil, false, http.StatusInternalServerError, err
 		}
 		created.DownloadGID = gid
 	}
-	dto := toDTOGrab(created)
-	return &dto, http.StatusOK, nil
+	out := toDTOGrab(created)
+	return &out, false, http.StatusOK, nil
+}
+
+// activeGrabForGID is the shared idempotency guard every grab-recording path
+// runs after dispatch but before grabsStore.Create: a download client dedupes a
+// torrent by its infohash, so a repeat grab of the same release returns the SAME
+// gid, and recording a second grabs row for it would strand a duplicate at
+// 'queued' (grabs.Store.GetByDownloadGID is first-row-only, so only one row ever
+// gets marked imported on completion). When an in-flight grab already holds gid
+// it returns that grab's DTO with dup=true so the caller can report "already
+// grabbing this release" instead of creating a duplicate; a truly fresh gid
+// returns dup=false and the caller proceeds to Create. A prior grab that already
+// reached a terminal state (imported/failed) does NOT count — a legitimate
+// re-grab after a completed or failed download is allowed (see
+// grabs.Store.ActiveByDownloadGID).
+func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode, gid string) (dto *apidto.Grab, dup bool, status int, err error) {
+	existing, err := grabsStore.ActiveByDownloadGID(ctx, m, gid)
+	if err != nil {
+		if errors.Is(err, grabs.ErrNotFound) {
+			return nil, false, http.StatusOK, nil
+		}
+		return nil, false, http.StatusInternalServerError, err
+	}
+	out := toDTOGrab(*existing)
+	return &out, true, http.StatusOK, nil
 }
 
 // autoGrabSearch runs the per-mode Prowlarr search and resolves the known

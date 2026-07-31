@@ -3684,3 +3684,72 @@ watch-folder scans, none of which should change for this. The handler's
 now-dead `httpClient` parameter was removed (and its `handler.go` call site
 updated) rather than left unused. `go build`, `go vet`, and a fresh
 `go test ./internal/api/... ./internal/adultnewest/... -race` all clean.
+
+## 2026-07-30 — Prowlarr search: fix duplicate results on Adult Discover Show More, add dedup to manual Search
+
+Wade reported "duplicates in the prowlarr search," confirmed live via
+screenshot: a single performer's Show More search returned ~22 cards
+representing only ~3 distinct scenes, each repeated 5-7 times, same
+titles/posters. Grounded via a full `deep-interview` session (3 rounds, 20%
+final ambiguity) — confirmed scope covers both Adult Discover's drill-down
+Show More AND the regular manual Search screen (Movies/Series/Adult), that
+"duplicate" means literal/near-identical title repeats (not distinct quality
+variants, which stay separately ranked by `internal/quality`), and that
+winner selection should be highest-seeder/best-availability, not first-seen
+or quality-tier score.
+
+**Root cause:** the existing `dedupeAdultDiscoverItems` only compared
+normalized titles as a fallback when `DownloadURL` was empty, so two results
+with the same title but different non-empty `DownloadURL`s — the common case
+when multiple indexers return the same release — were never caught. The
+manual Search screen had no dedup logic at all.
+
+**Design, via a two-round Architect/Critic autopilot planning cycle before
+any code was written** (a genuine ITERATE→fix→re-approve loop, not a rubber
+stamp): the plan's first draft applied the new title-matching criterion to
+BOTH the Adult Discover pool (page 1) and Show More (page>1) paths. A Critic
+pass caught that page 1's pool (`adult_newest_releases`) is already
+entity-deduped upstream on `(row_type, entity_source, entity_id)`, so giving
+it a title criterion had pure downside — it could only wrongly merge two
+GENUINELY DISTINCT entities that happen to share a title, never catch a real
+duplicate (there are none to catch there), and the plan's own guard test
+couldn't detect that failure direction. Fixed by keying page-1 pool dedup on
+`DownloadURL` only. A second, separate design catch (from the same Architect
+planning pass): Show More's dedup runs *after* enrichment overwrites the
+display `Title` with a token-free catalog scene title, so keying on `Title`
+there would collapse genuinely distinct quality variants (1080p vs 2160p)
+that both matched the same catalog scene — fixed by keying Show More on
+`ReleaseTitle` instead, which enrichment never touches and which retains its
+resolution/source/codec tokens.
+
+**Implementation:**
+- New `internal/api/searchdedup.go`: generic `dedupeReleases[T any]`, matching
+  on EITHER non-empty `DownloadURL` OR non-empty normalized title as two
+  independent criteria (guarded on non-empty so empty-URL items never
+  wrongly collapse under a shared `""` key), keeping the highest-seeder
+  survivor (strict `>`, ties keep first occurrence, stable order). Whole-item
+  selection only — never mutates or reconstructs a field — so grab safety
+  (`ReleaseTitle`/`DownloadURL`/`Protocol`/`SizeBytes` preserved) is
+  structural, not incidental.
+- `internal/api/adultdiscover_newest_scenes.go`: `dedupeAdultDiscoverItems`
+  split into `dedupeAdultPoolItems` (page≤1, `DownloadURL` only) and
+  `dedupeAdultShowMoreItems` (page>1, `DownloadURL` + `ReleaseTitle` +
+  `Seeders`). `AdultDiscoverItem` gains a `Seeders` field (populated from
+  `rel.Seeders` in the Show More mapping); `ts/dto.gen.ts` regenerated via
+  `go run ./cmd/gendto`.
+- `internal/api/search.go`: dedup applied to raw Prowlarr releases before the
+  scoring loop, for all modes (Movies/Series/Adult) — this screen had zero
+  dedup before. Reuses `normalizeAdultQuery` deliberately (not a naming
+  accident — flagged in a code comment so a future Adult-motivated tweak to
+  that function doesn't silently change Movies/Series dedup behavior too).
+
+**Verification:** the critical `ReleaseTitle`-not-`Title` fix and the
+root-cause-gap test were independently confirmed real via a revert-check
+(temporarily reintroducing each bug, confirming the corresponding test
+fails, then restoring) — not just trusted from the implementer's report.
+`go build`/`go vet`/`go test ./... -race` clean on all touched packages (zero
+new failures beyond the pre-existing unrelated `internal/sysinfo` gap);
+`pnpm typecheck`/`build` clean. Phase 4 validation: Architect,
+security-reviewer (confirmed grab-safety holds even under an adversarial/
+malicious-indexer seeder-spoofing scenario), and code-reviewer all
+independently APPROVE.

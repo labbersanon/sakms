@@ -244,8 +244,12 @@ func TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized(t *testi
 // studio+title metadata includes tokens (e.g. TPDB's "S6:E10" episode
 // notation) real indexer release filenames never contain, so it can find
 // zero raw releases even when the exact release that matched the entity is
-// still available. When releaseTitle is present, it must be used verbatim
-// (normalized) instead of studio+title.
+// still available. When releaseTitle is present, it must be the source of the
+// query instead of studio+title — but now cleaned via
+// identify.CleanReleaseTitleForSearch (embedded date, XXX tag, resolution, and
+// trailing release group stripped) rather than passed verbatim, since a
+// verbatim noisy release title also fails to match (the 2026-07-31 Cory Chase
+// bug — see TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned).
 func TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle(t *testing.T) {
 	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
 
@@ -271,9 +275,56 @@ func TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle(
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	want := "Step Siblings Caught 26 06 01 Poppy Applegate XXX 1080p GROUP"
+	// Cleaned: date (26.06.01), the XXX tag, the 1080p resolution, and the
+	// trailing -GROUP are all stripped; the studio+title's "S6:E10"/"June 2026"
+	// tokens are absent, proving releaseTitle (not studio+title) is still the
+	// source.
+	want := "Step Siblings Caught Poppy Applegate"
 	if got := lastQuery.Get("query"); got != want {
-		t.Errorf("query sent to Prowlarr = %q, want the normalized releaseTitle %q (studio+title must not be used when releaseTitle is present)", got, want)
+		t.Errorf("query sent to Prowlarr = %q, want the cleaned releaseTitle %q (studio+title must not be used when releaseTitle is present)", got, want)
+	}
+}
+
+// TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned is the
+// regression test for the 2026-07-31 live bug: the Adult Discover detail popup
+// for "Cory Chase in Step Mom has One Wish - BBC Gangbang" (Taboo Heat) showed
+// every pill disabled because the pooled scene releaseTitle
+// ("TabooHeat.26.07.18.Cory.Chase.In.Step.Mom.Has.One.Wish.BBC.Gangbang.XXX.720p.HEVC.x265.PRT")
+// was used as the Prowlarr query verbatim. Confirmed live against the real
+// Prowlarr instance: that noisy query returned 18 OTHER Cory Chase/Taboo Heat
+// scenes and never the target, while the cleaned query below surfaced it. This
+// asserts the handler now sends the cleaned query (embedded date, XXX tag,
+// resolution/codec, and trailing release group all stripped; the glued studio
+// "TabooHeat" left intact — splitting it into "Taboo Heat" was verified to
+// match a different, wrong result set).
+func TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned(t *testing.T) {
+	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarr.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	reqURL := srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Taboo Heat") +
+		"&title=" + urlQueryEscape("Cory Chase in Step Mom has One Wish - BBC Gangbang") +
+		"&releaseTitle=" + urlQueryEscape("TabooHeat.26.07.18.Cory.Chase.In.Step.Mom.Has.One.Wish.BBC.Gangbang.XXX.720p.HEVC.x265.PRT") +
+		"&durationSeconds=1800"
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	want := "TabooHeat Cory Chase In Step Mom Has One Wish BBC Gangbang"
+	if got := lastQuery.Get("query"); got != want {
+		t.Errorf("query sent to Prowlarr = %q, want cleaned %q", got, want)
 	}
 }
 

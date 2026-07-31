@@ -573,7 +573,13 @@ func normalizeAdultQuery(s string) string {
 // should both mean "don't cache this" — see matchRelease's doc comment for
 // why this check exists at all.
 func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, releaseTitle string) bool {
-	query := normalizeAdultQuery(strings.TrimSpace(releaseTitle))
+	// Clean the raw scene-release title the same way autoGrabSearch does before
+	// querying Prowlarr, so this really does run the SAME search a later Grab
+	// click would (see identify.CleanReleaseTitleForSearch): a verbatim noisy
+	// release title matches a different, wrong set of releases than its cleaned
+	// form, so confirming availability on the noisy query would confirm a
+	// release the actual grab path can no longer find.
+	query := normalizeAdultQuery(identify.CleanReleaseTitleForSearch(strings.TrimSpace(releaseTitle)))
 	releases, err := prowlarrClient.Search(ctx, query, []int{adultCategory})
 	if err != nil {
 		return false

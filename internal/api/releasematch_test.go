@@ -107,6 +107,44 @@ func TestFilterReleases_FastPathTitleAndLanguage(t *testing.T) {
 	}
 }
 
+// TestFilterReleases_Adult_CoryChaseTargetSurvivesNoise proves the second half
+// of the 2026-07-31 fix's chain: once the cleaned Prowlarr query surfaces the
+// real target releases (proven live and in
+// TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned), the
+// deterministic fast-path filter must KEEP those targets — graded against the
+// popup's display title (the Adult card's scene title). That was the actual
+// break: the noisy query returned zero targets, so the grid had nothing to
+// grade. A clearly-unrelated title is the negative control confirming the
+// filter still discriminates (it is NOT asserted that every loosely-similar
+// Cory Chase step-mom scene is dropped — the filter legitimately keeps those
+// as weaker candidates; the fix only requires the target to be present). Uses
+// a nil AI client on purpose: the fast path is the gate that matters (AI
+// escalation only fires when the fast path keeps zero).
+func TestFilterReleases_Adult_CoryChaseTargetSurvivesNoise(t *testing.T) {
+	displayTitle := "Cory Chase in Step Mom has One Wish - BBC Gangbang"
+	targets := []prowlarr.Release{
+		{GUID: "t1", Title: "TabooHeat.26.07.18.Cory.Chase.In.Step.Mom.Has.One.Wish.BBC.Gangbang.XXX.720p.HEVC.x265.PRT", Protocol: prowlarr.Torrent},
+		{GUID: "t2", Title: "TabooHeat.26.07.18.Cory.Chase.In.Step.Mom.Has.One.Wish.BBC.Gangbang.XXX.2160p.MP4-Narcos", Protocol: prowlarr.Torrent},
+		{GUID: "t3", Title: "[TabooHeat] Cory Chase In Step Mom Has One Wish BBC Gangbang (26.07.18)[720p][x264][xFans].mp4", Protocol: prowlarr.Torrent},
+	}
+	control := prowlarr.Release{GUID: "control", Title: "The.Dark.Knight.2008.1080p.BluRay.x264-GROUP", Protocol: prowlarr.Torrent}
+
+	got := FilterReleases(context.Background(), append(append([]prowlarr.Release{}, targets...), control), displayTitle, mode.Adult, nil)
+
+	kept := map[string]bool{}
+	for _, r := range got {
+		kept[r.GUID] = true
+	}
+	for _, tgt := range targets {
+		if !kept[tgt.GUID] {
+			t.Errorf("target release %q was dropped by FilterReleases (should survive the title filter)", tgt.Title)
+		}
+	}
+	if kept[control.GUID] {
+		t.Errorf("unrelated control %q survived FilterReleases (filter should still discriminate)", control.Title)
+	}
+}
+
 // TestFilterReleases_AIEscalation_NilClientDegradesCleanly is the plan's
 // explicit nil-safety requirement: when the fast path keeps nothing AND no
 // AI client is configured, the filter must return zero candidates cleanly —

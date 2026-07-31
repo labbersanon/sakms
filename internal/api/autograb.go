@@ -15,6 +15,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
@@ -282,8 +283,17 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req ap
 		// Studio+Title when ReleaseTitle is empty — entities matched before
 		// this field existed, or a plain TPDB/StashDB/FansDB catalog browse
 		// item with no associated Prowlarr release to remember.
-		rawQuery := strings.TrimSpace(req.ReleaseTitle)
-		if rawQuery == "" {
+		// The pooled ReleaseTitle is a raw scene-release title (studio glued,
+		// embedded release date, trailing quality/codec/group suffix) — used
+		// verbatim it made Prowlarr return 18 unrelated Cory Chase/Taboo Heat
+		// scenes and never the target (confirmed live 2026-07-31), which is
+		// what left the Discover availability grid empty. CleanReleaseTitleForSearch
+		// strips that noise (see its doc); the Studio+Title fallback is already
+		// clean metadata, so it keeps its existing construction untouched.
+		var rawQuery string
+		if rt := strings.TrimSpace(req.ReleaseTitle); rt != "" {
+			rawQuery = identify.CleanReleaseTitleForSearch(rt)
+		} else {
 			rawQuery = strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
 		}
 		query := normalizeAdultQuery(rawQuery)

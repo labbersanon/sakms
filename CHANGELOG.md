@@ -3864,3 +3864,58 @@ only caller this change replaced with `fetchAdultSearch`) were fixed before
 merge. Live-verification of Component 1's real-world card-count collapse
 (the actual "Cory Chase" query, not just the fixture test) recorded below
 this entry once run against the deployed system.
+
+## 2026-07-31 — Adult Discover availability popup: fix noisy Prowlarr query missing real releases
+
+**Problem:** While live-testing the entry above, Wade found the Adult Discover
+detail popup for a real scene ("Cory Chase in Step Mom has One Wish - BBC
+Gangbang", Taboo Heat, 2026) showed all Resolution/Quality tier/Protocol pills
+disabled with nothing selectable, despite the release genuinely being
+available on a configured indexer. Routed through Ralph per this project's
+mandatory troubleshooting rule (not diagnosed ad hoc).
+
+**Root cause (confirmed via real production logs, `o2cli`, 2026-07-31 01:12-
+01:14 UTC):** the pooled scene's `releaseTitle` — a raw, dot-separated
+scene-release string with the studio and date glued to the title
+(`"TabooHeat.26.07.18.Cory.Chase.In.Step.Mom.Has.One.Wish.BBC.Gangbang.XXX.
+720p.HEVC.x265.PRT"`) — was sent to Prowlarr verbatim as the search query.
+Prowlarr returned 18 *other* Cory Chase/Taboo Heat releases and never the
+target; the existing title-similarity filter correctly rejected all 18
+(scores 0.00-0.167 against a 0.20 floor), leaving the availability grid
+empty — the backend and frontend were both behaving correctly given the
+data they had; the query itself was the defect.
+
+**Verification before any code was written:** empirically confirmed against
+the real, live Prowlarr instance (via SSH to server1) that a cleaner query —
+studio+title kept together but the embedded date and the entire trailing
+technical/release-group block stripped — surfaces the target release (18→3
+results, all 3 correct; a further-trimmed variant returned 7, including the
+2160p copy). Also confirmed via the actual matching code
+(`identify.FilterReleases`) that the cleaned target scores 1.000 against the
+popup's display title and survives the filter, so a cleaned query genuinely
+repopulates the pills end-to-end, not just the raw Prowlarr result.
+
+**Fix:** new `internal/identify.CleanReleaseTitleForSearch`, reusing five
+existing regexes in that package (only one new marker regex added) — strips
+bracketed groups, strips the embedded date token, then truncates at the
+first technical marker (resolution/codec/source/the Adult "XXX" tag) rather
+than removing tags in place, which is what's needed to drop the trailing
+release-group suffix a live-verified leftover `-Narcos`/`.PRT` was itself
+enough to block a match on. Wired into `internal/api/autograb.go`'s Adult
+query-building branch and `internal/adultnewest/scan.go`'s `confirmAvailable`
+(kept in sync so it "runs the same search a later Grab click would," per its
+own pre-existing doc comment). Movies/Series and the Studio+Title fallback
+path are untouched. Wade explicitly chose this fix (query-matching
+improvement) over an alternative (a manual fallback picker for empty grids)
+when asked directly.
+
+**Outcome:** regression tests lock the exact bug title's cleaned output, an
+already-clean-title pass-through case, a non-resolution-number guard against
+over-truncation, the handler-level cleaned query sent to Prowlarr, and the
+cleaned target surviving the real filter with a negative control. Independent
+architect review: APPROVE, no blocking findings (three documented, accepted
+heuristic limits: dotted-date-only matching, a low-probability "XXX as a real
+title word" truncation edge case, and pre-existing HD/SD/4K stripping
+behavior shared with `CleanStemForSearch`). Full-repo `go build`/`vet`/`test`
+and `pnpm typecheck`/`build`/`test` clean, zero new failures beyond the
+pre-existing unrelated `internal/sysinfo` gap.

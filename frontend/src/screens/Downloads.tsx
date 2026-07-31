@@ -14,13 +14,23 @@ import {
   type Component,
   For,
   Show,
+  createEffect,
+  createResource,
   createSignal,
   onCleanup,
   onMount,
 } from "solid-js";
 import type { Download } from "@dto";
-import { cancelDownload, pauseDownload, resumeDownload } from "../api/downloads";
+import {
+  bulkCancelDownloads,
+  cancelDownload,
+  fetchPauseState,
+  pauseDownload,
+  resumeDownload,
+  setPauseState,
+} from "../api/downloads";
 import { Button, ErrorText, Muted } from "../components/ui";
+import { useBulkSelection } from "./workflowHooks";
 
 // formatBps renders a bytes/sec value: <1024 → "X B/s", <1MB → "X KB/s",
 // else "X.X MB/s" (same scale as Dashboard's formatBps).
@@ -63,6 +73,8 @@ const ProgressBar: Component<{ percent: number }> = (props) => {
 const DownloadRow: Component<{
   dl: Download;
   onAction: (fn: () => Promise<void>) => void;
+  selected: boolean;
+  onToggle: () => void;
 }> = (props) => {
   const percent = () =>
     props.dl.totalLength > 0
@@ -70,10 +82,28 @@ const DownloadRow: Component<{
       : 0;
   const isPaused = () => props.dl.status === "paused";
   const isActive = () => props.dl.status === "active";
+  const isDone = () =>
+    props.dl.status === "complete" || props.dl.status === "error";
+
+  // Cancelling now also deletes the download's files server-side (the backend
+  // DELETE changed), so the confirm makes that explicit before firing.
+  const cancelWithConfirm = (): void => {
+    const name = props.dl.filename || props.dl.gid;
+    const verb = isDone() ? "Remove" : "Cancel";
+    if (!confirm(`${verb} “${name}” and delete its downloaded files from disk?`))
+      return;
+    props.onAction(() => cancelDownload(props.dl.gid));
+  };
 
   return (
     <li class="flex flex-col gap-2 rounded-md border border-border bg-surface p-3">
       <div class="flex items-center gap-3">
+        <input
+          type="checkbox"
+          aria-label={`Select ${props.dl.filename || props.dl.gid}`}
+          checked={props.selected}
+          onChange={props.onToggle}
+        />
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm text-fg" title={props.dl.filename}>
             {props.dl.filename || props.dl.gid}
@@ -110,10 +140,8 @@ const DownloadRow: Component<{
               Resume
             </Button>
           </Show>
-          <Button onClick={() => props.onAction(() => cancelDownload(props.dl.gid))}>
-            {props.dl.status === "complete" || props.dl.status === "error"
-              ? "Remove"
-              : "Cancel"}
+          <Button onClick={cancelWithConfirm}>
+            {isDone() ? "Remove" : "Cancel"}
           </Button>
         </div>
       </div>
@@ -128,6 +156,19 @@ export const Downloads: Component = () => {
   // hasData tracks whether at least one stream frame has arrived, so the empty
   // state ("No active downloads") doesn't flash before the first event.
   const [hasData, setHasData] = createSignal(false);
+  // Bulk selection keyed on the string gid (not the numeric proposal id the
+  // workflow screens use) — the generic useBulkSelection<string> supports it.
+  const selection = useBulkSelection<string>();
+
+  // Global pause: a single system-wide toggle, distinct from each row's per-item
+  // pause. Seeded once from the server, then driven locally as the operator
+  // flips it (the PUT returns the persisted state).
+  const [pauseData] = createResource(fetchPauseState);
+  const [paused, setPaused] = createSignal(false);
+  createEffect(() => {
+    const d = pauseData();
+    if (d) setPaused(d.paused);
+  });
 
   let es: EventSource | undefined;
 
@@ -160,8 +201,67 @@ export const Downloads: Component = () => {
     }
   };
 
+  const gids = (): string[] => downloads().map((d) => d.gid);
+  const allSelected = (): boolean => {
+    const all = gids();
+    return all.length > 0 && all.every((g) => selection.has(g));
+  };
+  const toggleSelectAll = (): void => {
+    if (allSelected()) selection.clear();
+    else selection.selectAll(gids());
+  };
+
+  // cancelSelected cancels every checked download in one batch call — each also
+  // deletes its files server-side, so it goes behind the same confirm. No
+  // refetch: the SSE stream reflects the removals on its next frame; only the
+  // selection is cleared.
+  const cancelSelected = (): void => {
+    const chosen = gids().filter((g) => selection.has(g));
+    if (chosen.length === 0) return;
+    if (
+      !confirm(
+        `Cancel ${chosen.length} selected download(s) and delete their files from disk?`,
+      )
+    )
+      return;
+    void runAction(async () => {
+      await bulkCancelDownloads(chosen);
+      selection.clear();
+    });
+  };
+
+  const togglePause = async (): Promise<void> => {
+    setActionError(null);
+    try {
+      const next = await setPauseState(!paused());
+      setPaused(next.paused);
+    } catch (err) {
+      setActionError((err as Error).message);
+    }
+  };
+
   return (
     <div>
+      {/* Global pause control + banner live OUTSIDE the queue-length gate below
+          on purpose: their whole point is blocking NEW grabs, which is exactly
+          when the live queue may be empty. */}
+      <div class="mb-3 flex items-center gap-3">
+        <Button variant={paused() ? "primary" : "secondary"} onClick={() => void togglePause()}>
+          {paused() ? "Resume all downloads" : "Pause all downloads"}
+        </Button>
+        <Show when={selection.size() > 0}>
+          <Button variant="primary" onClick={cancelSelected}>
+            Cancel Selected ({selection.size()})
+          </Button>
+        </Show>
+      </div>
+      <Show when={paused()}>
+        <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          Downloads are globally paused — active downloads are held and new
+          grabs are blocked until you resume.
+        </div>
+      </Show>
+
       <Show when={reconnecting()}>
         <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
           Connection lost — reconnecting…
@@ -179,9 +279,25 @@ export const Downloads: Component = () => {
           when={downloads().length > 0}
           fallback={<Muted>No active downloads</Muted>}
         >
+          <label class="mb-2 flex items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              aria-label="Select all"
+              checked={allSelected()}
+              onChange={toggleSelectAll}
+            />
+            Select all
+          </label>
           <ul class="flex flex-col gap-2">
             <For each={downloads()}>
-              {(dl) => <DownloadRow dl={dl} onAction={runAction} />}
+              {(dl) => (
+                <DownloadRow
+                  dl={dl}
+                  onAction={runAction}
+                  selected={selection.has(dl.gid)}
+                  onToggle={() => selection.toggle(dl.gid)}
+                />
+              )}
             </For>
           </ul>
         </Show>

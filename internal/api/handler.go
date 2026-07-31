@@ -329,11 +329,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
 	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore, libStore, prober))
-	// Request-status worklist: a cross-mode (NOT mode-scoped) rollup aggregated
-	// live from the tracked library + in-flight grabs, plus Series missing-
-	// episode counts. Pure read aggregation, no new table. Distinct from the
-	// per-mode /grabs log and the /downloads client status — see requests.go.
-	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore))
+	// Request-status worklist + its excluded-titles endpoints live on their own
+	// mux (api.NewRequestsMux), mounted in cmd/sakms/main.go — they need an
+	// *excludes.Store, a dependency NewMux doesn't carry (same precedent as
+	// NewRecheckTriggerMux). GET /api/requests moved there with them.
 
 	// Download queue: torrent (anacrolix) + usenet (NNTP) merged into one
 	// stream. GID routing: "nzb-" prefix → usenet engine, otherwise torrent.
@@ -350,6 +349,15 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("DELETE /api/downloads/{gid}", cancelDownloadHandler(dl, nzb))
 	mux.HandleFunc("POST /api/downloads/{gid}/pause", pauseDownloadHandler(dl, nzb))
 	mux.HandleFunc("POST /api/downloads/{gid}/resume", resumeDownloadHandler(dl, nzb))
+	// Bulk cancel: cancel (and delete files for) several downloads in one call,
+	// skip-and-continue per GID. Registered before the {gid} subtree is fine —
+	// "cancel-batch" is a distinct literal segment, not a {gid} value.
+	mux.HandleFunc("POST /api/downloads/cancel-batch", bulkCancelHandler(dl, nzb))
+	// Global download pause: a single system-wide toggle that pauses every active
+	// download AND blocks new grabs at the shared dispatch choke point (see
+	// dispatchToDownloadClient). Distinct from each row's per-item pause/resume.
+	mux.HandleFunc("GET /api/downloads/pause-state", getPauseStateHandler(settingsStore))
+	mux.HandleFunc("PUT /api/downloads/pause-state", putPauseStateHandler(settingsStore, dl, nzb))
 
 	// Unified downloader config (staging dir + concurrency knobs). The RPC
 	// token is auto-generated and stored via internal/secrets, never here.

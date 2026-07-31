@@ -29,6 +29,21 @@ const (
 	downloaderDefaultMaxConnections = 4
 )
 
+// downloadsGlobalPausedKey is the settings flag backing the system-wide download
+// pause toggle (GET/PUT /api/downloads/pause-state). It's a simple app-wide
+// bool, so it lives in the flat settings KV store — the established home for
+// one-off flags (see internal/settings' package doc) — rather than its own table.
+const downloadsGlobalPausedKey = "downloads_global_paused"
+
+// errDownloadsPaused is returned by dispatchToDownloadClient when the global
+// pause is on, so the frontend can distinguish "blocked because paused" from any
+// other grab failure. The frontend keys on this exact message (the codebase's
+// fixed-error-string convention — see Discover's GrabError matching), so the
+// "globally paused" token must stay stable; it deliberately does NOT reuse the
+// 409 grabHandler already gives for "already grabbing this release" (it surfaces
+// as 423 Locked instead — see dispatchToDownloadClient).
+var errDownloadsPaused = errors.New("downloads are globally paused — resume in the Downloads screen before grabbing new releases")
+
 // toDTODownload maps a downloader.Download to the wire DTO, deriving a display
 // filename (basename of the first file, GID fallback).
 func toDTODownload(d downloader.Download) apidto.Download {
@@ -216,6 +231,116 @@ func resumeDownloadHandler(dl *downloader.Manager, nzb *usenet.Manager) http.Han
 	return func(w http.ResponseWriter, r *http.Request) {
 		if routeGIDAction(w, r, dl, nzb, dl.Resume, nzb.Resume) {
 			w.WriteHeader(http.StatusNoContent)
+		}
+	}
+}
+
+// cancelOne routes a single GID to the correct engine's Cancel (same "nzb-"
+// prefix routing as routeGIDAction) and returns any error — the non-HTTP core
+// the bulk-cancel loop reuses so one item's failure can be recorded and skipped
+// rather than aborting the whole request.
+func cancelOne(dl *downloader.Manager, nzb *usenet.Manager, gid string) error {
+	if strings.HasPrefix(gid, "nzb-") {
+		if nzb == nil {
+			return errors.New("the usenet engine isn't running")
+		}
+		return nzb.Cancel(gid)
+	}
+	if dl == nil {
+		return errors.New("the download engine isn't running")
+	}
+	return dl.Cancel(gid)
+}
+
+// bulkCancelHandler backs POST /api/downloads/cancel-batch — cancel several
+// downloads (deleting their files, same as the per-item DELETE) in one call.
+// Reuses the per-GID Cancel methods in a loop with skip-and-continue semantics
+// (one item's failure never blocks the rest), matching this project's bulk-apply
+// convention. Always HTTP 200 (except the empty-body 400); per-item results
+// carry each GID's outcome.
+func bulkCancelHandler(dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if dl == nil && nzb == nil {
+			http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
+			return
+		}
+		var req apidto.BulkCancelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if len(req.GIDs) == 0 {
+			http.Error(w, "gids is required", http.StatusBadRequest)
+			return
+		}
+		results := make([]apidto.BulkCancelResultItem, 0, len(req.GIDs))
+		for _, gid := range req.GIDs {
+			res := apidto.BulkCancelResultItem{GID: gid}
+			if err := cancelOne(dl, nzb, gid); err != nil {
+				res.Error = err.Error()
+			} else {
+				res.OK = true
+			}
+			results = append(results, res)
+		}
+		writeJSON(w, apidto.BulkCancelResponse{Results: results})
+	}
+}
+
+// getPauseStateHandler returns the global download pause flag.
+func getPauseStateHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		paused, err := settingsStore.GetBool(r.Context(), downloadsGlobalPausedKey, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, apidto.DownloadPauseState{Paused: paused})
+	}
+}
+
+// putPauseStateHandler sets the global download pause flag. Setting it true
+// pauses every currently-active download (reusing each engine's per-item Pause,
+// best-effort/skip-and-continue) AND — via the gate in dispatchToDownloadClient
+// keyed on the same flag — blocks any new grab until it's set back to false.
+// Setting it false only lifts that gate: it does NOT auto-resume the downloads
+// this toggle paused (per-item Resume stays the operator's tool, and usenet has
+// no resume anyway — re-submit the NZB), scoped deliberately to the spec.
+func putPauseStateHandler(settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req apidto.DownloadPauseState
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+		if err := settingsStore.SetBool(ctx, downloadsGlobalPausedKey, req.Paused); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if req.Paused {
+			pauseAllActive(dl, nzb)
+		}
+		writeJSON(w, apidto.DownloadPauseState{Paused: req.Paused})
+	}
+}
+
+// pauseAllActive pauses every currently in-flight download across both engines,
+// best-effort: a per-item Pause failure (e.g. an entry that just completed) is
+// skipped, never fatal. nil engines are simply skipped.
+func pauseAllActive(dl *downloader.Manager, nzb *usenet.Manager) {
+	if dl != nil {
+		for _, d := range dl.List() {
+			if d.Status == "active" || d.Status == "waiting" {
+				_ = dl.Pause(d.GID)
+			}
+		}
+	}
+	if nzb != nil {
+		for _, d := range nzb.List() {
+			if d.Status == "active" {
+				_ = nzb.Pause(d.GID)
+			}
 		}
 	}
 }

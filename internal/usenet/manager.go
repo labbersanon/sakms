@@ -74,7 +74,7 @@ type Manager struct {
 	nextSubID   int
 
 	nextGID   atomic.Int64  // monotonic counter for "nzb-N" GID strings
-	semaphore chan struct{}  // limits concurrent downloads to pool.cfg.MaxConns
+	semaphore chan struct{} // limits concurrent downloads to pool.cfg.MaxConns
 }
 
 // Config parameterises a Manager.
@@ -149,7 +149,15 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 
 	gid := fmt.Sprintf("nzb-%d", m.nextGID.Add(1))
 
-	dlDir := filepath.Join(m.stagingDir, sanitizeName(name))
+	// SECURITY: key the per-download staging dir on the GID (nzb-<int>, no path
+	// separators or "..") — NOT sanitizeName(name). name is attacker-controlled
+	// (the raw Prowlarr release title / NZB X-DNZB-Name header) and sanitizeName
+	// only strips "/\\\x00", not "." / ".." — a name of exactly ".." would make
+	// this resolve to the PARENT of the staging dir, which Cancel would then
+	// os.RemoveAll. The GID is unique and traversal-free, so it's a safe path
+	// component and also gives each download its own dir (two same-named releases
+	// no longer collide, so cancelling one can't touch the other's files).
+	dlDir := filepath.Join(m.stagingDir, gid)
 	if err := os.MkdirAll(dlDir, 0o755); err != nil {
 		return "", fmt.Errorf("usenet: creating staging dir %s: %w", dlDir, err)
 	}
@@ -207,7 +215,17 @@ func (m *Manager) Resume(_ string) error {
 	return fmt.Errorf("usenet: resume is not supported; re-submit the NZB to restart")
 }
 
-// Cancel removes a download entirely (stops it and removes it from the queue).
+// Cancel removes a download entirely (stops it and removes it from the queue),
+// AND deletes the downloaded/partial file(s) it wrote to disk.
+//
+// File-deletion safety: unlike the torrent engine, every usenet download gets
+// its OWN per-download staging subdirectory, created in AddNZB as
+// filepath.Join(m.stagingDir, sanitizeName(name)) — that whole directory is
+// owned by this one download, so os.RemoveAll of it is safe and complete (it
+// can't take a sibling download's files). Guarded to never remove the root
+// staging dir or an empty path. cancel() is called first so the download
+// goroutine stops writing before the directory is removed (a narrow write-after-
+// remove race is benign — the goroutine errors out on the cancelled context).
 func (m *Manager) Cancel(gid string) error {
 	m.mu.Lock()
 	dl, ok := m.downloads[gid]
@@ -220,7 +238,29 @@ func (m *Manager) Cancel(gid string) error {
 		return fmt.Errorf("usenet: download not found: %s", gid)
 	}
 	dl.cancel()
+	m.deleteDownloadDir(dl.stagingDir)
 	return nil
+}
+
+// deleteDownloadDir best-effort removes a download's own per-download staging
+// subdirectory. Defense in depth: it only ever removes a directory that is
+// STRICTLY under the root staging dir — it refuses "", the staging root itself
+// (rel "."), and any path that escapes staging (rel ".." or "../…"). Combined
+// with the GID-keyed dir in AddNZB, this means no attacker-influenced value can
+// ever make this RemoveAll a parent or sibling of the staging root.
+func (m *Manager) deleteDownloadDir(dir string) {
+	if dir == "" {
+		return
+	}
+	staging := filepath.Clean(m.stagingDir)
+	clean := filepath.Clean(dir)
+	rel, err := filepath.Rel(staging, clean)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return
+	}
+	if err := os.RemoveAll(clean); err != nil {
+		log.Printf("usenet: deleting cancelled download dir %s: %v", clean, err)
+	}
 }
 
 // List returns a point-in-time snapshot of all known downloads.

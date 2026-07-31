@@ -1,24 +1,42 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 )
+
+// requestsTestStores builds grabs/library/excludes stores on one fresh db for
+// the Requests-worklist tests — self-contained rather than the shared
+// testStores tuple, since these tests need an *excludes.Store the tuple doesn't
+// carry (and adding it there would churn all 51 testStores call sites).
+func requestsTestStores(t *testing.T) (*grabs.Store, *library.Store, *excludes.Store) {
+	t.Helper()
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
+	if err != nil {
+		t.Fatalf("opening db: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	return grabs.New(sqlDB), library.New(sqlDB), excludes.New(sqlDB)
+}
 
 // TestRequestsHandler_AggregatesAndDedups exercises all four behaviors at once:
 // In-Library rows (Movies/Series/Adult), Series MissingCount, a Downloading row
 // for a grab with no tracked match, and the dedup where a tracked title that is
 // also actively grabbing collapses to one row with the grab status winning.
 func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
-	_, _, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	grabsStore, libStore, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
 	// Movie A — tracked AND actively grabbing (dedup → Downloading).
@@ -55,7 +73,7 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore))
+	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore, excludesStore))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -102,7 +120,7 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 // grab does not surface as Downloading (it's represented by its In-Library row
 // instead) — only in-flight statuses count.
 func TestRequestsHandler_ImportedGrabNotDownloading(t *testing.T) {
-	_, _, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	grabsStore, libStore, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
 	g, err := grabsStore.Create(ctx, grabs.Grab{Mode: mode.Movies, Title: "Done Movie", TMDBID: 700})
@@ -114,7 +132,7 @@ func TestRequestsHandler_ImportedGrabNotDownloading(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore))
+	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore, excludesStore))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -129,5 +147,159 @@ func TestRequestsHandler_ImportedGrabNotDownloading(t *testing.T) {
 	}
 	if len(out.Items) != 0 {
 		t.Errorf("an imported grab with no tracked item should surface nothing, got %+v", out.Items)
+	}
+}
+
+// TestRequestsHandler_ExcludedTitlesSuppressed proves an excluded title is
+// actually skipped by the live Requests aggregation — for BOTH an In-Library row
+// (keyed by TMDB id) and a standalone Downloading grab row (keyed by title for an
+// Adult scene with no TMDB id) — while a non-excluded sibling still surfaces.
+func TestRequestsHandler_ExcludedTitlesSuppressed(t *testing.T) {
+	grabsStore, libStore, excludesStore := requestsTestStores(t)
+	ctx := context.Background()
+
+	// Two tracked movies; one will be excluded by TMDB id, the other kept.
+	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 100, Title: "Excluded Movie", FilePath: "/m/x.mkv", RootFolderPath: "/m"}); err != nil {
+		t.Fatalf("upsert excluded movie: %v", err)
+	}
+	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 200, Title: "Kept Movie", FilePath: "/m/k.mkv", RootFolderPath: "/m"}); err != nil {
+		t.Fatalf("upsert kept movie: %v", err)
+	}
+	// An Adult grab (no TMDB id) that will be excluded by title.
+	if _, err := grabsStore.Create(ctx, grabs.Grab{Mode: mode.Adult, Title: "Excluded Scene"}); err != nil {
+		t.Fatalf("create adult grab: %v", err)
+	}
+
+	// Exclude the movie (by id) and the scene (by title).
+	if err := excludesStore.Add(ctx, "movies", 100, "Excluded Movie"); err != nil {
+		t.Fatalf("exclude movie: %v", err)
+	}
+	if err := excludesStore.Add(ctx, "adult", 0, "Excluded Scene"); err != nil {
+		t.Fatalf("exclude scene: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore, excludesStore))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/requests")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var out apidto.RequestStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	byTitle := map[string]apidto.RequestStatusItem{}
+	for _, it := range out.Items {
+		byTitle[it.Title] = it
+	}
+	if _, ok := byTitle["Excluded Movie"]; ok {
+		t.Errorf("excluded movie (by tmdb id) should be suppressed, got %+v", out.Items)
+	}
+	if _, ok := byTitle["Excluded Scene"]; ok {
+		t.Errorf("excluded scene (by title) should be suppressed, got %+v", out.Items)
+	}
+	if _, ok := byTitle["Kept Movie"]; !ok {
+		t.Errorf("non-excluded movie should still surface, got %+v", out.Items)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("expected exactly 1 surviving row (Kept Movie), got %d: %+v", len(out.Items), out.Items)
+	}
+}
+
+// TestExcludeTitle_SingleEndpoint proves POST /api/requests/exclude records a
+// valid title (204) and persists it, and rejects an item with no usable identity
+// (400) without persisting anything.
+func TestExcludeTitle_SingleEndpoint(t *testing.T) {
+	_, _, excludesStore := requestsTestStores(t)
+	ctx := context.Background()
+
+	mux := NewRequestsMux(grabs.New(nil), library.New(nil), excludesStore)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Valid → 204.
+	body, _ := json.Marshal(apidto.ExcludeTitleRequest{Mode: "movies", TMDBID: 7, Title: "Solo"})
+	resp, err := http.Post(srv.URL+"/api/requests/exclude", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("valid exclude should be 204, got %d", resp.StatusCode)
+	}
+
+	// Invalid (no mode, no id, no title) → 400.
+	bad, _ := json.Marshal(apidto.ExcludeTitleRequest{})
+	resp2, err := http.Post(srv.URL+"/api/requests/exclude", "application/json", bytes.NewReader(bad))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid exclude should be 400, got %d", resp2.StatusCode)
+	}
+
+	keys, err := excludesStore.Keys(ctx)
+	if err != nil {
+		t.Fatalf("keys: %v", err)
+	}
+	if len(keys) != 1 || !keys[excludes.Key("movies", 7, "Solo")] {
+		t.Errorf("only the valid exclusion should persist, got %+v", keys)
+	}
+}
+
+// TestExcludeTitlesBatch_SkipAndContinue proves the bulk exclude endpoint adds
+// multiple items and that one invalid item (no mode, no id, no title) is skipped
+// with an error while the valid siblings still succeed and persist.
+func TestExcludeTitlesBatch_SkipAndContinue(t *testing.T) {
+	_, _, excludesStore := requestsTestStores(t)
+	ctx := context.Background()
+
+	mux := NewRequestsMux(grabs.New(nil), library.New(nil), excludesStore)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body, _ := json.Marshal(apidto.ExcludeTitlesBatchRequest{Items: []apidto.ExcludeTitleRequest{
+		{Mode: "movies", TMDBID: 1, Title: "Alpha"},
+		{Mode: "", TMDBID: 0, Title: ""}, // invalid — no identity
+		{Mode: "adult", Title: "Gamma"},
+	}})
+	resp, err := http.Post(srv.URL+"/api/requests/exclude-batch", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out apidto.ExcludeTitlesBatchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Results) != 3 {
+		t.Fatalf("expected 3 per-item results, got %d: %+v", len(out.Results), out.Results)
+	}
+	if !out.Results[0].OK || !out.Results[2].OK {
+		t.Errorf("valid items 0 and 2 should succeed, got %+v", out.Results)
+	}
+	if out.Results[1].OK || out.Results[1].Error == "" {
+		t.Errorf("invalid item 1 should be skipped with an error, got %+v", out.Results[1])
+	}
+
+	// The two valid exclusions must have actually persisted.
+	keys, err := excludesStore.Keys(ctx)
+	if err != nil {
+		t.Fatalf("keys: %v", err)
+	}
+	if !keys[excludes.Key("movies", 1, "Alpha")] || !keys[excludes.Key("adult", 0, "Gamma")] {
+		t.Errorf("both valid exclusions should persist, got keys %+v", keys)
+	}
+	if len(keys) != 2 {
+		t.Errorf("only the 2 valid exclusions should persist, got %d", len(keys))
 	}
 }

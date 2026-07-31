@@ -228,7 +228,7 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, sett
 	}
 	picked := releases[sel.PickIndex]
 
-	downloadClient, gid, _, err := dispatchToDownloadClient(ctx, sess, m, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
+	downloadClient, gid, _, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
 	if err != nil {
 		return nil, false, false, nil, "", err
 	}

@@ -307,6 +307,42 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
   });
 });
 
+describe("Discover auto-grab — blocked by global pause (HTTP 423)", () => {
+  // The backend returns 423 with the fixed pause message when grabs are globally
+  // paused. It is a plain-text Go http.Error body (like the 400s above), so it
+  // is not a "not configured" case — GrabError falls through to a bare ErrorText,
+  // which must render the pause message clearly (and not leave the dialog stuck
+  // on the loading state). No new UI is built for this one case, by design.
+  const paused423 = (msg: string): Response =>
+    new Response(msg, {
+      status: 423,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+
+  it("surfaces the pause message when a grab is attempted while paused", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
+        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
+      if (url.includes("/api/modes/movies/autograb"))
+        return paused423(
+          "downloads are globally paused — resume in the Downloads screen before grabbing new releases\n",
+        );
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
+
+    expect(await screen.findByText(/globally paused/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/resume in the Downloads screen/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Searching and scoring/)).not.toBeInTheDocument();
+  });
+});
+
 describe("Discover auto-grab — Series (per-item picker gates the grab)", () => {
   it("a series card on the combined page reveals its picker first, then grabs the chosen episode", async () => {
     // Only the Trending Shows row has a card → the single "Grab" is the series

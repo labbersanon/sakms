@@ -187,7 +187,7 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 		}
 		picked := releases[sel.PickIndex]
 
-		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, sess, m, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
+		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
 		if err != nil {
 			http.Error(w, err.Error(), status)
 			return
@@ -242,7 +242,7 @@ func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, s
 	if err != nil {
 		return nil, false, http.StatusBadRequest, err
 	}
-	downloadClient, gid, status, err := dispatchToDownloadClient(ctx, sess, m, nzb, req.DownloadProtocol, req.DownloadURL, req.Title)
+	downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, req.DownloadProtocol, req.DownloadURL, req.Title)
 	if err != nil {
 		return nil, false, status, err
 	}

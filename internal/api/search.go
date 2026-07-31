@@ -194,7 +194,7 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, settings
 			return
 		}
 
-		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, sess, m, nzb, req.Protocol, req.DownloadURL, req.Title)
+		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, req.Protocol, req.DownloadURL, req.Title)
 		if err != nil {
 			http.Error(w, err.Error(), status)
 			return
@@ -250,7 +250,21 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, settings
 // usenet/NZB releases go to the native NNTP engine (internal/usenet).
 // Shared by the manual grabHandler and the auto-grab handler.
 // On failure it returns the HTTP status the caller should surface.
-func dispatchToDownloadClient(ctx context.Context, sess *mode.Session, m mode.Mode, nzb *usenet.Manager, protocol, downloadURL, title string) (downloadClient, gid string, status int, err error) {
+//
+// Global-pause gate: this is the ONE shared choke point every manual and
+// auto-grab dispatch flows through, so the system-wide pause check lives here
+// (once) rather than duplicated at each call site. When the pause flag is set it
+// short-circuits before touching either engine, returning errDownloadsPaused and
+// 423 Locked so the frontend can distinguish "blocked because paused" from any
+// other grab failure.
+func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store, sess *mode.Session, m mode.Mode, nzb *usenet.Manager, protocol, downloadURL, title string) (downloadClient, gid string, status int, err error) {
+	paused, err := settingsStore.GetBool(ctx, downloadsGlobalPausedKey, false)
+	if err != nil {
+		return "", "", http.StatusInternalServerError, err
+	}
+	if paused {
+		return "", "", http.StatusLocked, errDownloadsPaused
+	}
 	switch prowlarr.Protocol(protocol) {
 	case prowlarr.Torrent:
 		if sess.Downloader == nil {

@@ -7,11 +7,13 @@
 //   Pattern B — scan and act async wrappers: error capture, busy signal
 //   management, and post-success callbacks parameterized per screen.
 //
-//   Pattern C — bulk selection (useBulkSelection): a Set<number> of selected
-//   proposal ids backing the opt-in "Apply Selected" multi-select on Rename,
-//   Purge, and Dedup. Genuinely identical across those three (a set of ids with
-//   toggle/select-all/clear); Tag has no bulk-apply surface and does not use it.
-//   That 3-of-4 sharing is why it belongs here rather than triplicated inline.
+//   Pattern C — bulk selection (useBulkSelection): a reactive Set<K> of selected
+//   keys backing the opt-in "Apply/Remove Selected" multi-select. Rename, Purge,
+//   and Dedup key on the numeric proposal id (K = number, the default); the
+//   Downloads screen keys on the string gid and Requests on a synthetic
+//   mode:tmdbId:title string. Genuinely identical across all of them (a set of
+//   keys with toggle/select-all/clear), which is why it belongs here rather than
+//   copied inline. Tag has no bulk-apply surface and does not use it.
 //
 // Only these three patterns are here. Screen-specific logic (Purge allowlist
 // mutations, Dedup keepSel indexing, Rename re-pick panel, Tag draft map) is
@@ -124,27 +126,31 @@ export function useWorkflowActions(
   };
 }
 
-// Pattern C — bulk selection. A reactive Set<number> of selected proposal ids
-// plus the three mutations the "Apply Selected" affordance needs. Every mutation
-// assigns a NEW Set (never mutates in place) so SolidJS re-renders the checkbox
-// column and action bar — same discipline as Purge's applyingIds guard.
-export interface BulkSelection {
-  /** The current set of selected proposal ids (read to track reactively). */
-  selected: Accessor<ReadonlySet<number>>;
-  /** True if id is currently selected — reactive when read in JSX. */
-  has: (id: number) => boolean;
-  /** How many ids are selected (0 = hide the action bar). */
+// Pattern C — bulk selection. A reactive Set<K> of selected keys plus the three
+// mutations the "Apply/Remove Selected" affordance needs. Every mutation assigns
+// a NEW Set (never mutates in place) so SolidJS re-renders the checkbox column
+// and action bar — same discipline as Purge's applyingIds guard. K defaults to
+// `number` (Rename/Purge/Dedup key on the numeric proposal id, unchanged); the
+// Downloads screen keys on the string gid and Requests on a synthetic
+// mode:tmdbId:title string, which the generic parameter supports without a
+// second hook.
+export interface BulkSelection<K = number> {
+  /** The current set of selected keys (read to track reactively). */
+  selected: Accessor<ReadonlySet<K>>;
+  /** True if key is currently selected — reactive when read in JSX. */
+  has: (id: K) => boolean;
+  /** How many keys are selected (0 = hide the action bar). */
   size: Accessor<number>;
-  /** Add id if absent, remove it if present. */
-  toggle: (id: number) => void;
-  /** Replace the selection with exactly these ids (the select-all header). */
-  selectAll: (ids: number[]) => void;
+  /** Add key if absent, remove it if present. */
+  toggle: (id: K) => void;
+  /** Replace the selection with exactly these keys (the select-all header). */
+  selectAll: (ids: K[]) => void;
   /** Drop every selection — wired into mode-change, scan, and post-apply. */
   clear: () => void;
 }
 
-export function useBulkSelection(): BulkSelection {
-  const [selected, setSelected] = createSignal<ReadonlySet<number>>(new Set());
+export function useBulkSelection<K = number>(): BulkSelection<K> {
+  const [selected, setSelected] = createSignal<ReadonlySet<K>>(new Set());
   return {
     selected,
     has: (id) => selected().has(id),

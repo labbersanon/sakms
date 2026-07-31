@@ -783,6 +783,47 @@ export interface RequestStatusResponse {
   items: RequestStatusItem[];
 }
 /**
+ * ExcludeTitleRequest is POST /api/requests/exclude's body — permanently remove
+ * one title from the Requests worklist. TMDBID is preferred when the row has one;
+ * Title is required for an Adult scene (no TMDB id). At least one of TMDBID/Title
+ * must be set, alongside Mode ("movies"|"series"|"adult").
+ */
+export interface ExcludeTitleRequest {
+  mode: string;
+  tmdbId?: number /* int */;
+  title?: string;
+}
+/**
+ * ExcludeTitlesBatchRequest is POST /api/requests/exclude-batch's body — the
+ * bulk multi-select "remove selected" form. Each item is an independent
+ * ExcludeTitleRequest, applied per item with skip-and-continue semantics.
+ */
+export interface ExcludeTitlesBatchRequest {
+  items: ExcludeTitleRequest[];
+}
+/**
+ * ExcludeTitleResult is one item's outcome in a bulk exclude. OK true means it
+ * was recorded (or was already excluded — the operation is idempotent); OK false
+ * means it was skipped and Error explains why (the batch never aborts on one
+ * failure). Index is the item's position in the submitted Items slice; Mode/Title
+ * echo the request for the results UI.
+ */
+export interface ExcludeTitleResult {
+  index: number /* int */;
+  mode: string;
+  title?: string;
+  ok: boolean;
+  error?: string;
+}
+/**
+ * ExcludeTitlesBatchResponse is POST /api/requests/exclude-batch's response —
+ * always HTTP 200; per-item success/failure lives here in Results, one per
+ * submitted item in submission order.
+ */
+export interface ExcludeTitlesBatchResponse {
+  results: ExcludeTitleResult[];
+}
+/**
  * Candidate is one file in a Dedup proposal's duplicate group — the shape the
  * Dedup view (frontend/src/screens/Dedup.tsx) renders one table row from. A
  * CURATED subset of internal/proposals.Candidate: only the fields the view
@@ -1716,6 +1757,42 @@ export interface DownloaderConfig {
   stagingDir: string;
   maxConcurrent: number /* int */;
   maxConnections: number /* int */;
+}
+/**
+ * BulkCancelRequest is POST /api/downloads/cancel-batch's body — cancel several
+ * downloads (and delete their files, same as the per-item DELETE) in one call.
+ * Each GID is routed and cancelled independently with skip-and-continue
+ * semantics (one failure never blocks the rest).
+ */
+export interface BulkCancelRequest {
+  gids: string[];
+}
+/**
+ * BulkCancelResultItem is one GID's outcome. OK true means it was cancelled and
+ * its files deleted; OK false means it was skipped and Error explains why.
+ */
+export interface BulkCancelResultItem {
+  gid: string;
+  ok: boolean;
+  error?: string;
+}
+/**
+ * BulkCancelResponse is POST /api/downloads/cancel-batch's response — always
+ * HTTP 200; per-item success/failure lives here in Results, in request order.
+ */
+export interface BulkCancelResponse {
+  results: BulkCancelResultItem[];
+}
+/**
+ * DownloadPauseState is the global download pause toggle
+ * (GET/PUT /api/downloads/pause-state). When Paused is true every currently
+ * active download is paused AND every new grab is blocked at the shared dispatch
+ * choke point (internal/api/search.go's dispatchToDownloadClient) until it is set
+ * back to false. It is a single system-wide flag, distinct from each row's
+ * existing per-item pause/resume.
+ */
+export interface DownloadPauseState {
+  paused: boolean;
 }
 /**
  * NodeInfo is one connected (or recently disconnected) worker node as

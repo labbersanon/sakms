@@ -23,11 +23,18 @@ import {
   For,
   Show,
 } from "solid-js";
-import { type RequestStatusResponse, fetchRequests } from "../api/requests";
+import {
+  type ExcludeTitleRequest,
+  type RequestStatusResponse,
+  excludeTitle,
+  excludeTitlesBatch,
+  fetchRequests,
+} from "../api/requests";
 import type { DiscoverItem } from "../api/discover";
-import { ErrorText, Muted } from "../components/ui";
+import { Button, ErrorText, Muted } from "../components/ui";
 import { type GrabTarget, GrabDialog } from "./discover/shared";
 import { type DetailTarget, DetailPopup } from "./discover/DetailPopup";
+import { useBulkSelection } from "./workflowHooks";
 
 // RequestItem is one row of the response's Items array — the generated DTO's
 // element type (RequestStatusResponse.items[number]) rather than a re-declared
@@ -99,12 +106,34 @@ function detailTargetFor(item: RequestItem): DetailTarget | null {
   return { mode, item: discoverItem };
 }
 
+// keyOf is the selection key for a row — a synthetic mode:tmdbId:title string,
+// because a row's identity is that tuple (Adult rows all carry tmdbId 0, so the
+// bare id can't distinguish them). The generic useBulkSelection<string> holds
+// these keys; excludeReqFor maps a row back to its exclude body.
+function keyOf(item: RequestItem): string {
+  return `${item.mode}:${item.tmdbId}:${item.title}`;
+}
+
+// excludeReqFor builds one ExcludeTitleRequest from a row: TMDBID only when the
+// row actually has one (>0), Title always present — covers Movies/Series (by
+// tmdbId) and Adult (by title) in one shape, matching the DTO's "at least one of
+// TMDBID/Title" contract.
+function excludeReqFor(item: RequestItem): ExcludeTitleRequest {
+  return {
+    mode: item.mode,
+    tmdbId: item.tmdbId > 0 ? item.tmdbId : undefined,
+    title: item.title,
+  };
+}
+
 export const Requests: Component = () => {
   const [data, { refetch }] = createResource(fetchRequests);
   const [statusFilter, setStatusFilter] = createSignal<string | null>(null);
   const [modeFilter, setModeFilter] = createSignal<string | null>(null);
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
+  const [actionError, setActionError] = createSignal<string | null>(null);
+  const selection = useBulkSelection<string>();
 
   const items = () => data()?.items ?? [];
 
@@ -125,6 +154,59 @@ export const Requests: Component = () => {
   const openRow = (item: RequestItem) => {
     const target = detailTargetFor(item);
     if (target) setDetailTarget(target);
+  };
+
+  // Select-all acts on the currently-filtered rows (only what's on screen),
+  // mirroring Rename's pendingIds select-all.
+  const filteredKeys = (): string[] => filtered().map(keyOf);
+  const allSelected = (): boolean => {
+    const keys = filteredKeys();
+    return keys.length > 0 && keys.every((k) => selection.has(k));
+  };
+  const toggleSelectAll = (): void => {
+    if (allSelected()) selection.clear();
+    else selection.selectAll(filteredKeys());
+  };
+
+  // removeOne excludes a single row after the destructive-action confirm, then
+  // refetches so the now-suppressed title leaves the list (GET /api/requests
+  // filters excluded titles server-side).
+  const removeOne = async (item: RequestItem): Promise<void> => {
+    if (
+      !confirm(
+        `Permanently exclude “${item.title}” from Requests? It will stop appearing here — you can still grab it manually from Discover if you change your mind.`,
+      )
+    )
+      return;
+    setActionError(null);
+    try {
+      await excludeTitle(excludeReqFor(item));
+      selection.clear();
+      await refetch();
+    } catch (err) {
+      setActionError((err as Error).message);
+    }
+  };
+
+  // removeSelected excludes every checked row in one exclude-batch call, behind
+  // the same confirm, then clears the selection and refetches.
+  const removeSelected = async (): Promise<void> => {
+    const chosen = filtered().filter((i) => selection.has(keyOf(i)));
+    if (chosen.length === 0) return;
+    if (
+      !confirm(
+        `Permanently exclude ${chosen.length} selected title(s) from Requests? They will stop appearing here — you can still grab any of them manually from Discover if you change your mind.`,
+      )
+    )
+      return;
+    setActionError(null);
+    try {
+      await excludeTitlesBatch(chosen.map(excludeReqFor));
+      selection.clear();
+      await refetch();
+    } catch (err) {
+      setActionError((err as Error).message);
+    }
   };
 
   return (
@@ -149,11 +231,31 @@ export const Requests: Component = () => {
         </Show>
       </div>
 
+      <Show when={selection.size() > 0}>
+        <div class="mb-3">
+          <Button variant="primary" onClick={() => void removeSelected()}>
+            Remove Selected ({selection.size()})
+          </Button>
+        </div>
+      </Show>
+      <Show when={actionError()}>
+        <ErrorText>{actionError()}</ErrorText>
+      </Show>
+
       <Show when={!data.loading} fallback={<Muted>Loading…</Muted>}>
         <Show
           when={filtered().length > 0}
           fallback={<Muted>No requests match this filter.</Muted>}
         >
+          <label class="mb-2 flex items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              aria-label="Select all"
+              checked={allSelected()}
+              onChange={toggleSelectAll}
+            />
+            Select all
+          </label>
           <ul class="flex flex-col gap-2">
             <For each={filtered()}>
               {(item) => {
@@ -166,6 +268,13 @@ export const Requests: Component = () => {
                     }}
                     onClick={() => openRow(item)}
                   >
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${item.title}`}
+                      checked={selection.has(keyOf(item))}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => selection.toggle(keyOf(item))}
+                    />
                     <div class="min-w-0 flex-1">
                       <div class="truncate text-sm text-fg" title={item.title}>
                         {item.title}
@@ -181,6 +290,14 @@ export const Requests: Component = () => {
                     <span class="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
                       {item.status}
                     </span>
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void removeOne(item);
+                      }}
+                    >
+                      Remove
+                    </Button>
                   </li>
                 );
               }}

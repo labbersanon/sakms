@@ -797,6 +797,51 @@ type RequestStatusResponse struct {
 	Items []RequestStatusItem `json:"items"`
 }
 
+// --- Requests: excluded titles (permanent "remove") ------------------------
+//
+// A Requests row has no persisted identity (the worklist is derived on read), so
+// "remove" records a suppression keyed by mode + identity: TMDBID when present
+// (Movies/Series), else the Title (Adult scenes carry no TMDB id). The backend
+// derives the exact suppression key from these fields (see internal/excludes.Key)
+// — the client sends the same fields it already holds for the row.
+
+// ExcludeTitleRequest is POST /api/requests/exclude's body — permanently remove
+// one title from the Requests worklist. TMDBID is preferred when the row has one;
+// Title is required for an Adult scene (no TMDB id). At least one of TMDBID/Title
+// must be set, alongside Mode ("movies"|"series"|"adult").
+type ExcludeTitleRequest struct {
+	Mode   string `json:"mode"`
+	TMDBID int    `json:"tmdbId,omitempty"`
+	Title  string `json:"title,omitempty"`
+}
+
+// ExcludeTitlesBatchRequest is POST /api/requests/exclude-batch's body — the
+// bulk multi-select "remove selected" form. Each item is an independent
+// ExcludeTitleRequest, applied per item with skip-and-continue semantics.
+type ExcludeTitlesBatchRequest struct {
+	Items []ExcludeTitleRequest `json:"items"`
+}
+
+// ExcludeTitleResult is one item's outcome in a bulk exclude. OK true means it
+// was recorded (or was already excluded — the operation is idempotent); OK false
+// means it was skipped and Error explains why (the batch never aborts on one
+// failure). Index is the item's position in the submitted Items slice; Mode/Title
+// echo the request for the results UI.
+type ExcludeTitleResult struct {
+	Index int    `json:"index"`
+	Mode  string `json:"mode"`
+	Title string `json:"title,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// ExcludeTitlesBatchResponse is POST /api/requests/exclude-batch's response —
+// always HTTP 200; per-item success/failure lives here in Results, one per
+// submitted item in submission order.
+type ExcludeTitlesBatchResponse struct {
+	Results []ExcludeTitleResult `json:"results"`
+}
+
 // --- Review-queue proposals: Rename (Stage 3) -----------------------------
 //
 // The staged scan→propose→apply review queue backing the Rename workflow (and,
@@ -1778,6 +1823,40 @@ type DownloaderConfig struct {
 	StagingDir     string `json:"stagingDir"`
 	MaxConcurrent  int    `json:"maxConcurrent"`
 	MaxConnections int    `json:"maxConnections"`
+}
+
+// --- Downloads: bulk cancel + global pause ---------------------------------
+
+// BulkCancelRequest is POST /api/downloads/cancel-batch's body — cancel several
+// downloads (and delete their files, same as the per-item DELETE) in one call.
+// Each GID is routed and cancelled independently with skip-and-continue
+// semantics (one failure never blocks the rest).
+type BulkCancelRequest struct {
+	GIDs []string `json:"gids"`
+}
+
+// BulkCancelResultItem is one GID's outcome. OK true means it was cancelled and
+// its files deleted; OK false means it was skipped and Error explains why.
+type BulkCancelResultItem struct {
+	GID   string `json:"gid"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// BulkCancelResponse is POST /api/downloads/cancel-batch's response — always
+// HTTP 200; per-item success/failure lives here in Results, in request order.
+type BulkCancelResponse struct {
+	Results []BulkCancelResultItem `json:"results"`
+}
+
+// DownloadPauseState is the global download pause toggle
+// (GET/PUT /api/downloads/pause-state). When Paused is true every currently
+// active download is paused AND every new grab is blocked at the shared dispatch
+// choke point (internal/api/search.go's dispatchToDownloadClient) until it is set
+// back to false. It is a single system-wide flag, distinct from each row's
+// existing per-item pause/resume.
+type DownloadPauseState struct {
+	Paused bool `json:"paused"`
 }
 
 // --- Worker nodes (worker-node feature) -------------------------------------

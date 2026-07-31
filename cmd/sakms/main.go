@@ -24,6 +24,7 @@ import (
 	"github.com/labbersanon/sakms/internal/dedupscan"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/imageproxy"
 	"github.com/labbersanon/sakms/internal/library"
@@ -102,6 +103,10 @@ func run() error {
 	grabsStore := grabs.New(sqlDB)
 	libStore := library.New(sqlDB)
 	slidersStore := discoversliders.New(sqlDB)
+	// Excluded titles back the Requests "remove" feature (see api.NewRequestsMux).
+	// A dependency NewMux doesn't carry, so — like recheck's watchStore — it's
+	// threaded into its own mux mounted on `top` below, not through NewMux.
+	excludesStore := excludes.New(sqlDB)
 
 	// Unified downloader (internal/downloader): an anacrolix/torrent in-process
 	// BitTorrent engine. Constructed ONCE here as a process-lifetime singleton
@@ -264,6 +269,14 @@ func run() error {
 	recheckTriggerMux := api.NewRecheckTriggerMux(connStore, watchStore)
 	protectedRecheckTrigger := auth.Middleware(secretStore, authStore, recheckTriggerMux)
 
+	// Requests worklist + excluded-titles endpoints — its own mux because it
+	// needs excludesStore, a dependency NewMux doesn't carry (same precedent as
+	// recheckTriggerMux above). Mounted exact ("/api/requests", GET list) +
+	// subtree ("/api/requests/", POST exclude/exclude-batch) on top below, both
+	// beating the general "/api/" subtree.
+	requestsMux := api.NewRequestsMux(grabsStore, libStore, excludesStore)
+	protectedRequests := auth.Middleware(secretStore, authStore, requestsMux)
+
 	top := http.NewServeMux()
 	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
@@ -281,6 +294,8 @@ func run() error {
 	top.Handle("/api/apikey", protectedAPIKey)                           // exact match: GET status
 	top.Handle("/api/apikey/", protectedAPIKey)                          // subtree: POST .../regenerate
 	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)    // exact match: manual "Refresh now"
+	top.Handle("/api/requests", protectedRequests)                       // exact match: GET worklist (excluded-title-suppressed)
+	top.Handle("/api/requests/", protectedRequests)                      // subtree: POST exclude, exclude-batch
 	top.Handle("GET /api/nodes/pair", api.PairStreamHandler(pairingReg)) // no auth: pre-pairing SSE
 	top.Handle("/api/nodes", nodesMux)                                   // exact match: GET list (per-handler auth inside)
 	top.Handle("/api/nodes/", nodesMux)                                  // subtree: {id}/approve, /pending, /settings, etc.

@@ -3,7 +3,7 @@
 // (stubGlobal("fetch") + jsonResponse).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { RequestStatusItem, RequestStatusResponse } from "@dto";
 import { Requests } from "./Requests";
 
@@ -12,6 +12,29 @@ const jsonResponse = (obj: unknown): Response =>
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+
+// noContent mirrors the real POST /api/requests/exclude → 204 (api() returns
+// null on a 204, which excludeTitle types as void).
+const noContent = (): Response => new Response(null, { status: 204 });
+
+type Call = { url: string; method: string; body: unknown };
+
+// stubReqFetch captures every request so a test can assert exact exclude bodies,
+// mirroring Discover.grab.test.tsx's stubFetch harness.
+const stubReqFetch = (handler: (url: string) => Response): Call[] => {
+  const calls: Call[] = [];
+  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({
+      url,
+      method: (init?.method ?? "GET").toUpperCase(),
+      body: init?.body ? JSON.parse(init.body as string) : undefined,
+    });
+    return handler(url);
+  });
+  vi.stubGlobal("fetch", fn);
+  return calls;
+};
 
 const item = (over: Partial<RequestStatusItem> = {}): RequestStatusItem => ({
   mode: "movies",
@@ -101,6 +124,101 @@ describe("Requests", () => {
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     expect(screen.getByText("Owned Movie")).toBeInTheDocument();
     expect(screen.getByText("Grabbing Movie")).toBeInTheDocument();
+  });
+
+  it("single Remove calls the exclude endpoint with the correct body, after a confirm", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const calls = stubReqFetch((url) => {
+      if (url.includes("/api/requests/exclude")) return noContent();
+      if (url.includes("/api/requests"))
+        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 5 })] });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Owned Movie");
+    // The per-row Remove button (there is exactly one row).
+    fireEvent.click(screen.getByText("Remove"));
+
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.endsWith("/api/requests/exclude"))).toBe(
+        true,
+      ),
+    );
+    const exclude = calls.find((c) => c.url.endsWith("/api/requests/exclude"))!;
+    expect(exclude.method).toBe("POST");
+    expect(exclude.body).toMatchObject({
+      mode: "movies",
+      tmdbId: 5,
+      title: "Owned Movie",
+    });
+  });
+
+  it("does NOT call exclude when the confirm is cancelled", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    const calls = stubReqFetch((url) => {
+      if (url.includes("/api/requests/exclude")) return noContent();
+      if (url.includes("/api/requests"))
+        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 5 })] });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Owned Movie");
+    fireEvent.click(screen.getByText("Remove"));
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(calls.some((c) => c.url.includes("/api/requests/exclude"))).toBe(
+      false,
+    );
+  });
+
+  it("bulk Remove calls exclude-batch with all selected items", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const calls = stubReqFetch((url) => {
+      if (url.includes("/api/requests/exclude-batch"))
+        return jsonResponse({
+          results: [
+            { index: 0, mode: "movies", title: "Owned Movie", ok: true },
+            { index: 1, mode: "adult", title: "A Scene", ok: true },
+          ],
+        });
+      if (url.includes("/api/requests"))
+        return jsonResponse({
+          items: [
+            item({ title: "Owned Movie", tmdbId: 5 }),
+            item({ mode: "adult", title: "A Scene", tmdbId: 0 }),
+          ],
+        });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Owned Movie");
+
+    // Select both rows via each row's checkbox, then Remove Selected.
+    fireEvent.click(screen.getByLabelText("Select Owned Movie"));
+    fireEvent.click(screen.getByLabelText("Select A Scene"));
+    fireEvent.click(screen.getByRole("button", { name: /Remove Selected \(2\)/ }));
+
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.endsWith("/api/requests/exclude-batch")),
+      ).toBe(true),
+    );
+    const batch = calls.find((c) =>
+      c.url.endsWith("/api/requests/exclude-batch"),
+    )!;
+    expect(batch.method).toBe("POST");
+    // Adult row sends title only (tmdbId 0 dropped); movie sends tmdbId + title.
+    expect(batch.body).toEqual({
+      items: [
+        { mode: "movies", tmdbId: 5, title: "Owned Movie" },
+        { mode: "adult", title: "A Scene" },
+      ],
+    });
   });
 
   it("opens the DetailPopup for a Movies/Series row click", async () => {

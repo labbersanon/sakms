@@ -2,10 +2,9 @@ package api
 
 import (
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -45,9 +44,19 @@ var requestsModes = []mode.Mode{mode.Movies, mode.Series, mode.Adult}
 // no-bulk); /downloads is live download-client status. /requests ADDS the
 // cross-mode status rollup + missing-episode surfacing that neither provides —
 // it is a worklist, not a fourth grab log.
-func requestsHandler(grabsStore *grabs.Store, libStore *library.Store) http.HandlerFunc {
+func requestsHandler(grabsStore *grabs.Store, libStore *library.Store, excludesStore *excludes.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+
+		// Excluded titles are suppressed from the whole worklist regardless of
+		// which pass would surface them — a title an operator removed must never
+		// reappear as either an In-Library or a Downloading row. Keyed by the same
+		// requestKey both passes below use, so the match is exact-string.
+		excluded, err := excludesStore.Keys(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 		items := []apidto.RequestStatusItem{}
 		index := map[string]int{} // dedup key -> position in items
@@ -62,9 +71,12 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store) http.Hand
 					return
 				}
 				for _, it := range tracked {
-					row := apidto.RequestStatusItem{Mode: string(m), Title: it.Title, TMDBID: it.TMDBID, Status: "In Library"}
-					index[requestKey(m, it.TMDBID, it.Title)] = len(items)
-					items = append(items, row)
+					key := requestKey(m, it.TMDBID, it.Title)
+					if excluded[key] {
+						continue
+					}
+					index[key] = len(items)
+					items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: it.Title, TMDBID: it.TMDBID, Status: "In Library"})
 				}
 			case mode.Series:
 				seriesList, err := libStore.ListSeries(ctx)
@@ -73,14 +85,17 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store) http.Hand
 					return
 				}
 				for _, s := range seriesList {
+					key := requestKey(m, s.TMDBID, s.Title)
+					if excluded[key] {
+						continue
+					}
 					missing, err := libStore.MissingEpisodes(ctx, s.ID)
 					if err != nil {
 						http.Error(w, err.Error(), http.StatusInternalServerError)
 						return
 					}
-					row := apidto.RequestStatusItem{Mode: string(m), Title: s.Title, TMDBID: s.TMDBID, Status: "In Library", MissingCount: len(missing)}
-					index[requestKey(m, s.TMDBID, s.Title)] = len(items)
-					items = append(items, row)
+					index[key] = len(items)
+					items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: s.Title, TMDBID: s.TMDBID, Status: "In Library", MissingCount: len(missing)})
 				}
 			case mode.Adult:
 				scenes, err := libStore.ListScenes(ctx)
@@ -89,9 +104,12 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store) http.Hand
 					return
 				}
 				for _, sc := range scenes {
-					row := apidto.RequestStatusItem{Mode: string(m), Title: sc.Title, Status: "In Library"}
-					index[requestKey(m, 0, sc.Title)] = len(items)
-					items = append(items, row)
+					key := requestKey(m, 0, sc.Title)
+					if excluded[key] {
+						continue
+					}
+					index[key] = len(items)
+					items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: sc.Title, Status: "In Library"})
 				}
 			}
 		}
@@ -111,14 +129,16 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store) http.Hand
 					continue
 				}
 				key := requestKey(m, g.TMDBID, g.Title)
+				if excluded[key] {
+					continue
+				}
 				if pos, ok := index[key]; ok {
 					items[pos].Status = "Downloading"
 					items[pos].GrabID = g.ID
 					continue
 				}
-				row := apidto.RequestStatusItem{Mode: string(m), Title: g.Title, TMDBID: g.TMDBID, Status: "Downloading", GrabID: g.ID}
 				index[key] = len(items)
-				items = append(items, row)
+				items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: g.Title, TMDBID: g.TMDBID, Status: "Downloading", GrabID: g.ID})
 			}
 		}
 
@@ -128,12 +148,10 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store) http.Hand
 
 // requestKey is the dedup key for one title within a mode — TMDB id when
 // present (Movies/Series), else lowercased title (Adult scenes have no TMDB
-// id). Mode-prefixed so the same TMDB id in two modes never collides.
+// id). Delegates to excludes.Key so a stored exclusion key and a live row's key
+// are byte-identical (the exclusion suppression is an exact-string match).
 func requestKey(m mode.Mode, tmdbID int, title string) string {
-	if tmdbID > 0 {
-		return string(m) + ":tmdb:" + strconv.Itoa(tmdbID)
-	}
-	return string(m) + ":title:" + strings.ToLower(strings.TrimSpace(title))
+	return excludes.Key(string(m), tmdbID, title)
 }
 
 // isActiveGrab reports whether a grab is still in flight for the worklist —

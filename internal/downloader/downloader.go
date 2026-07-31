@@ -301,7 +301,20 @@ func (m *Manager) Resume(gid string) error {
 }
 
 // Cancel removes a download entirely from both the torrent client and the
-// in-memory state map (it will no longer appear in List).
+// in-memory state map (it will no longer appear in List), AND deletes the
+// downloaded/partial file(s) it wrote to disk.
+//
+// File-deletion safety: we delete each exact path this torrent declared
+// (e.files, computed from t.Files() after GotInfo), never a whole directory.
+// This is deliberately per-file rather than an os.RemoveAll of the download
+// dir: a single-file torrent writes directly into the SHARED staging dir
+// (removing that dir would take unrelated downloads with it), and a nested
+// multi-folder torrent's computeDir only names the first file's parent (a
+// RemoveAll there would both miss sibling folders and risk staging). Deleting
+// the declared paths is complete regardless of nesting and touches nothing this
+// torrent didn't own. Best-effort: a missing file (never started, already gone)
+// is not an error. Empty parent dirs left behind by a multi-file torrent are
+// pruned best-effort.
 func (m *Manager) Cancel(gid string) error {
 	m.mu.Lock()
 	e, ok := m.entries[gid]
@@ -310,12 +323,61 @@ func (m *Manager) Cancel(gid string) error {
 		return fmt.Errorf("download not found: %s", gid)
 	}
 	t := e.t
+	files := append([]string(nil), e.files...)
 	delete(m.entries, gid)
 	m.mu.Unlock()
 	if t != nil {
 		t.Drop()
 	}
+	m.deleteDownloadFiles(files)
 	return nil
+}
+
+// deleteDownloadFiles removes each declared file path and best-effort prunes any
+// now-empty parent directories up to (but never including) the staging dir. Only
+// directories strictly under the staging dir are pruned, and only when empty, so
+// a single file sitting directly in the shared staging dir never triggers a
+// directory removal.
+func (m *Manager) deleteDownloadFiles(files []string) {
+	staging := filepath.Clean(m.cfg.StagingDir)
+	for _, f := range files {
+		if f == "" {
+			continue
+		}
+		// SECURITY: e.files comes from anacrolix's File.Path(), which returns the
+		// RAW, unsanitized bencoded torrent path field (anacrolix only sanitizes
+		// at storage-WRITE time, not at this accessor). A malicious torrent can
+		// declare a path with "../" components that, after filepath.Join+Clean,
+		// escapes the staging dir. Refuse to os.Remove anything not STRICTLY under
+		// staging (rel ".." or "../…") — the same containment check the prune loop
+		// below uses — so a crafted torrent can never delete a file outside staging.
+		cleanF := filepath.Clean(f)
+		if rel, err := filepath.Rel(staging, cleanF); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			log.Printf("downloader: refusing to delete out-of-staging path %s", f)
+			continue
+		}
+		if err := os.Remove(cleanF); err != nil && !os.IsNotExist(err) {
+			log.Printf("downloader: deleting cancelled file %s: %v", cleanF, err)
+		}
+		// Prune now-empty per-torrent subfolders (a multi-file torrent's own
+		// directory), never the shared staging dir itself. os.Remove only
+		// succeeds on an empty dir, so a shared dir with other downloads is safe.
+		dir := filepath.Dir(cleanF)
+		for {
+			clean := filepath.Clean(dir)
+			if clean == staging || clean == "." || clean == string(filepath.Separator) {
+				break
+			}
+			rel, err := filepath.Rel(staging, clean)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				break // not under staging — don't touch
+			}
+			if err := os.Remove(clean); err != nil {
+				break // non-empty or gone — stop climbing
+			}
+			dir = filepath.Dir(clean)
+		}
+	}
 }
 
 // List returns a snapshot of all known downloads.

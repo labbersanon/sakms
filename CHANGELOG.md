@@ -3553,3 +3553,110 @@ never fails the handler, Phase 1/Phase 2 coexistence). `go build`, `go vet`,
 and `go test ./... -race` (touched packages) all green; full suite has zero
 new failures beyond a pre-existing, unrelated `internal/sysinfo` GPU-detection
 gap.
+
+## 2026-07-30 — Adult performer/studio pipeline: root-cause orphan fix, drill-down pool query, cleanup migration, ongoing browse-strip filter
+
+This is the fourth pass at the Performers/Studios browse-strip/drill-down
+area in as many days, and the one that finally addresses the actual root
+cause rather than another layer on top of it. Grounded via a full
+`deep-interview` session (3 rounds, 13.75% final ambiguity, all four
+components confirmed directly with the owner) after the third pass — a
+simplified single-known-box exact-match resolver plus an on-demand cache —
+still didn't match what was asked for: the owner's own framing, "if there's
+a database entry for the performer then you list the performer," made clear
+the browse strip should reflect `adult_newest_releases` truthfully, not
+patch around it.
+
+**Root cause found**: `internal/adultnewest/scan.go`'s `identifyStudioPerformers`
+was appended to the pool unconditionally after the match switch in both
+`matchRelease` (browse pass) and `processFeedItem` (feed pass), regardless
+of whether a scene/movie row was actually persisted alongside it. A
+confirmable studio/performer name produced a card even when nothing backed
+it — confirmed live via a real example ("Madison": a real StashDB-resolved
+performer with zero linked scenes in the pool).
+
+**Fix, four components**:
+1. **Prevention** — `identifyStudioPerformers`'s results are now only
+   appended inside the branch where a scene/movie row was actually created,
+   in both call sites. No regression to the working case (still creates
+   performer/studio rows normally when a scene/movie *is* persisted).
+2. **Drill-down rewrite** — page 1 of `adultNewestEntityScenesHandler` now
+   queries `adult_newest_releases` directly for scene/movie rows currently
+   linked to the entity (`ScenesLinkedToEntity`, new `ReleaseStore` method)
+   instead of a live RSS re-fetch-and-join — zero external calls, same as
+   before, but sourced from the pool's own already-identified data instead
+   of a live refetch. `rssFeedsStore` dropped from the handler's
+   dependencies (no longer needed); page>1 (Show More, Prowlarr + cache) is
+   unchanged.
+3. **Existing-orphan cleanup** — new migration `0051` deletes every existing
+   `row_type IN ('performer','studio')` row with zero linked scene/movie
+   rows, using the same matching logic as #2/#4. Owner-approved to delete
+   outright (no soft-delete, no retention) — irreversible by design, Down is
+   a documented no-op matching this project's established convention (cf.
+   `0049`).
+4. **Ongoing consistency** — `listFiltered` (the shared query backing the
+   Performers/Studios browse strip) now only returns performer/studio rows
+   that currently have at least one linked scene/movie row. This is a
+   live, ongoing check, not a one-time state — a row that later loses its
+   last linked scene stops appearing automatically, no future cleanup pass
+   needed. Added as owner-requested defense-in-depth on top of #1, not a
+   substitute for it (an earlier read-time-filter-only proposal was
+   explicitly rejected as "a patch to a real problem" when floated as an
+   alternative to the root-cause fix).
+
+**A real bug was caught during independent verification, before deploy**:
+an Architect review (fresh context, own build/test run, read the actual
+code rather than trusting the implementer's self-report) found that the
+three linkage sites' original byte-exact string match (`json_each(performers)
+je WHERE je.value = ?`, `entity_studio = ?`) compared two genuinely
+different sources for what's meant to be the same name — a scene row's
+`entity_studio`/`performers` come from the matched box scene object itself,
+while a performer/studio row's `entity_id` comes from the independently
+verified/normalized `detail.StudioName`/`detail.Performers` — and
+`internal/identify/identify_test.go`'s existing
+`TestIdentifyDetailed_SceneMatchAlsoReturnsCorrectedStudioAndPerformers`
+already proved these can diverge in casing alone (scene-side "Vixen Media"
+vs entity-side "vixen media"). A byte-exact join would have let migration
+`0051` wrongly delete legitimately-linked rows. Fixed by hardening all three
+linkage sites (`performerLinkPredicate`/`studioLinkPredicate` in
+`releases.go`, and migration `0051`'s raw SQL) to a case/whitespace-
+insensitive match (`TRIM(LOWER(...))`), and adding a new real-pipeline
+regression test (`TestMatchRelease_CaseDivergentStudioName_StillLinksToScene`)
+that drives the fix through the actual `matchRelease` → `IdentifyDetailed` →
+`identifyStudioPerformers` path rather than hand-built predicate inputs —
+confirmed to fail without the fix and pass with it. Before trusting any of
+this in the abstract, the actual blast radius was measured directly against
+the production DB: exact-match and case-insensitive orphan counts were
+identical (152/152 studios, 526/526 performers) — so on the real dataset,
+casing wasn't inflating the delete count; the hardening is real defense
+against future drift, not a correction of what already ran.
+
+Deployed: migration `0051` ran against production and deleted exactly the
+counts measured beforehand — 152 of 221 studio rows (69%) and 526 of 558
+performer rows (94%). The large fraction is not evidence of casing
+false-positives (ruled out above); it reflects that only 211 real scene rows
+are currently pooled against the pre-fix total of 779 performer/studio rows
+— most existing entity rows predated the current, much smaller scene pool
+under the old unconditional-append bug. Sampled orphan names before deleting
+(18 Lust, ATK Exotics, Bang Bus, Josie Rae, Veronica Diaz) confirmed these
+are genuine studio/performer names with no currently-linked scene, not
+parsing garbage — accurate per the owner's own stated intent, not a bug.
+
+`go build`, `go vet`, and `go test ./... -race` (touched packages: adultnewest,
+api, db, identify) all green; full suite has zero new failures beyond the
+same pre-existing, unrelated `internal/sysinfo` GPU-detection gap. No
+frontend files touched.
+
+## 2026-07-30 — Adult Discover drill-down: Show More Prowlarr timeout 15s → 30s
+
+Live-testing the deploy above, a Show More click on performer "Cory Chase"
+returned `context deadline exceeded`. Prowlarr's own logs (not sakms's — this
+error path returns via `http.Error` straight to the browser, never
+`log.Printf`, so it doesn't show up in the app's own log stream) confirmed
+the search legitimately fanned out to 6 configured indexers at once for
+category 6000, which can exceed a 15s client budget even when every indexer
+is healthy. Confirmed unrelated to the same-day orphan-fix deploy above — that
+change only touches page 1 (zero external calls); page>1's Prowlarr-search
+path and its timeout constant were untouched. Owner-approved: bumped
+`newestScenesOutboundTimeout` (`internal/api/adultdiscover_newest_scenes.go`)
+15s → 30s. No logic change; existing tests already override the var directly.

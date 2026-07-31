@@ -26,12 +26,19 @@ import (
 // exactly as mode.TPDBGraphQLURL is a var so tests can point it at a fake
 // server — nothing mutates it in production.
 //
-// 30s (not 15s): the page>1 Show More search fans out to every configured
-// indexer at once (confirmed live, 2026-07-30: a single search queried 6
-// indexers for category 6000), and a real search against that many indexers
-// can exceed 15s even when every indexer is healthy — a live "Cory Chase"
-// search hit the 15s budget and surfaced as a raw context-deadline-exceeded
-// error to the operator. Owner-approved bump, not a silent tolerance change.
+// This var backs BOTH the tctx context deadline below AND showMoreClient's
+// own http.Client.Timeout (see the mode.Build call site) — it must bound
+// both, not just the context. http.Client.Timeout caps the whole round trip
+// independently of any context deadline, whichever is shorter wins, so a
+// handler that only bumped the context while a shorter client-level Timeout
+// stayed in place would see no observable change. Confirmed the hard way,
+// live, 2026-07-30: an initial fix bumped only the context deadline 15s→30s;
+// the reused shared httpClient (main.go's outboundTimeout, still 15s) kept
+// firing first, so the operator saw the identical error again. Root cause:
+// page>1's Show More search fans out to every configured indexer at once (a
+// single "Cory Chase" search queried 6 indexers for category 6000), which can
+// legitimately exceed 15s even when every indexer is healthy. Owner-approved
+// bump to 30s, applied to both bounds this time.
 var newestScenesOutboundTimeout = 30 * time.Second
 
 // newestScenesEnrichTimeout bounds the page>1 catalog enrichment pass
@@ -84,7 +91,7 @@ var newestScenesEnrichTimeout = 6 * time.Second
 // to page-1's pooled rows (the enclosure is carried only while a row's feed is
 // fresh), exactly as the other pooled Adult Discover read paths do — all live on
 // stores already wired into NewMux.
-func adultNewestEntityScenesHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
+func adultNewestEntityScenesHandler(connStore *connections.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		q := r.URL.Query()
@@ -121,7 +128,22 @@ func adultNewestEntityScenesHandler(httpClient *http.Client, connStore *connecti
 
 		// Show More (page>1): exactly ONE Prowlarr search + cache-checked
 		// enrichment.
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, mode.Adult)
+		//
+		// Deliberately its own *http.Client, not the app-wide shared one
+		// (cmd/sakms/main.go's outboundTimeout, 15s, threaded through every
+		// other handler in this package) — that shared client's own
+		// http.Client.Timeout bounds the whole round trip independently of any
+		// context deadline, whichever is shorter wins, so reusing it here would
+		// silently cap this call at 15s regardless of newestScenesOutboundTimeout
+		// below (confirmed live, 2026-07-30: a context-deadline-only bump to 30s
+		// changed nothing, because the shared client's own 15s Timeout was the
+		// actual binding constraint the whole time, not the context). A client
+		// scoped to this handler avoids touching outboundTimeout globally —
+		// that constant also bounds downloads, image proxying, auth, and
+		// watch-folder scans, none of which should change because one
+		// drill-down's Prowlarr fan-out is slow.
+		showMoreClient := &http.Client{Timeout: newestScenesOutboundTimeout}
+		sess, err := mode.Build(ctx, connStore, settingsStore, showMoreClient, nil, mode.Adult)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

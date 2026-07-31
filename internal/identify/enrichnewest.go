@@ -221,6 +221,19 @@ func tpdbSceneToMatch(s tpdbrest.Scene) *MatchResult {
 	}
 }
 
+// MatchReleaseTitlesToCatalog is the exported entry point to this package's
+// local, zero-upstream-cost scene-title matcher (matchReleaseTitles) for
+// callers outside the entity-scoped EnrichNewestScenes path — e.g. Adult
+// catalog Search grouping its one Prowlarr search's raw releases against the
+// RSS pool's already-identified scenes (a caller-supplied catalog of
+// *MatchResult), pure-CPU, before any bounded box lookup. Reuses the SAME
+// primitive EnrichNewestScenes does (normalizeForSearch + maxSimilarity +
+// enrichTitleThreshold) rather than forking a second matcher. Returns, keyed by
+// releaseTitles index, the best confident catalog match per release.
+func MatchReleaseTitlesToCatalog(releaseTitles []string, catalog []*MatchResult) map[int]*MatchResult {
+	return matchReleaseTitles(releaseTitles, catalog)
+}
+
 // matchReleaseTitles matches each release title against the box's catalog using
 // the asymmetry-safe maxSimilarity (so release cruft matches a clean catalog
 // title via containment), keeping the best catalog scene per release index if

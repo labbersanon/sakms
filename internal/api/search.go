@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
@@ -26,21 +27,6 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
-
-// searchResult is one scored release Prowlarr found, for a human to pick
-// from — nothing here is persisted; internal/grabs is what tracks a release
-// once it's actually grabbed (see grabHandler).
-type searchResult struct {
-	GUID        string `json:"guid"`
-	Title       string `json:"title"`
-	Indexer     string `json:"indexer"`
-	Protocol    string `json:"protocol"`
-	Size        int64  `json:"size"`
-	Seeders     int    `json:"seeders"`
-	DownloadURL string `json:"downloadUrl"`
-	PublishDate string `json:"publishDate"`
-	Score       int    `json:"score"`
-}
 
 // categoriesForSearch restricts a search to m's Newznab category — the
 // 2000-range for Movies, the 5000-range for TV, the 6000-range (XXX) for
@@ -122,10 +108,10 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, settin
 			return
 		}
 		now := time.Now()
-		out := make([]searchResult, len(releases))
+		out := make([]apidto.SearchReleaseResult, len(releases))
 		for i, rel := range releases {
 			info := release.Parse(rel.Title)
-			out[i] = searchResult{
+			out[i] = apidto.SearchReleaseResult{
 				GUID: rel.GUID, Title: rel.Title, Indexer: rel.Indexer,
 				Protocol: string(rel.Protocol), Size: rel.Size, Seeders: rel.Seeders,
 				DownloadURL: rel.DownloadURL, PublishDate: rel.PublishDate,

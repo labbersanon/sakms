@@ -41,13 +41,15 @@ import {
 } from "solid-js";
 import {
   type AdultDiscoverItem,
+  type AdultSearchScenesPage,
   type AdultSortBy,
   type PerformerSummary,
+  type SearchReleaseResult,
   type StashBox,
   type StudioSummary,
-  fetchAdultDiscover,
   fetchAdultDiscoverMergedRecent,
   fetchAdultDiscoverSorted,
+  fetchAdultSearch,
   fetchNewestEntityScenes,
   fetchStashBoxPerformers,
   fetchStashBoxPerformerScenes,
@@ -72,6 +74,7 @@ import {
   ConfigureConnectionModal,
   GrabDialog,
   PaginatedStrip,
+  SearchReleasePicker,
   SelectCheckbox,
   TextPoster,
   notConfiguredService,
@@ -140,6 +143,12 @@ const AdultCard: Component<{
   item: AdultDiscoverItem;
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
+  // onOpenReleases, when passed (only by the catalog-Search result grid),
+  // reroutes the card's primary click to open the release picker (seeded with
+  // this scene's already-fetched variants) instead of DetailPopup AND suppresses
+  // the one-click Grab button (M3). Browse/drill-down call sites omit it, so
+  // their click→DetailPopup + Grab behavior is completely unchanged.
+  onOpenReleases?: () => void;
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -181,6 +190,10 @@ const AdultCard: Component<{
       selection?.toggle(sceneKey());
       return;
     }
+    if (props.onOpenReleases) {
+      props.onOpenReleases();
+      return;
+    }
     props.onDetail({ mode: "adult", item: props.item });
   };
   return (
@@ -207,11 +220,17 @@ const AdultCard: Component<{
         <div class="mt-1.5 truncate text-sm text-fg">{props.item.title}</div>
         <div class="truncate text-xs text-muted">{subtitle() || "—"}</div>
       </div>
-      <div class="mt-1.5">
-        <Button class="w-full !py-1 text-xs" onClick={grab}>
-          Grab
-        </Button>
-      </div>
+      {/* Searched scene cards (onOpenReleases set) have no one-click grab —
+          their primary click opens the release picker with the scene's
+          already-fetched variants (M3). Only suppress OUTSIDE select-mode so a
+          search grid's bulk-grab checkbox still works. */}
+      <Show when={!props.onOpenReleases || inSelect()}>
+        <div class="mt-1.5">
+          <Button class="w-full !py-1 text-xs" onClick={grab}>
+            Grab
+          </Button>
+        </div>
+      </Show>
     </div>
   );
 };
@@ -435,6 +454,12 @@ export const AdultDiscover: Component<{
 }> = (props) => {
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
+  // releasePicker is the catalog-Search release picker for a clicked searched
+  // scene card — seeded with that scene's already-fetched release variants, so
+  // it makes ZERO network calls. Browse/drill-down cards never set it.
+  const [releasePicker, setReleasePicker] = createSignal<
+    { title: string; releases: SearchReleaseResult[] } | null
+  >(null);
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
   const [reloadToken, setReloadToken] = createSignal(0);
@@ -545,17 +570,17 @@ export const AdultDiscover: Component<{
 
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
-    async (q): Promise<AdultDiscoverItem[]> => {
+    async (q): Promise<AdultSearchScenesPage> => {
       // A search error is surfaced the same way a row's is: handed to
       // setSetupError so a "tpdb isn't configured yet" failure raises the same
       // setup modal (the render's notConfiguredService gate decides modal vs.
       // plain error), instead of being swallowed into an empty "No scenes
       // found". One detection path for every Adult fetch, not two.
       try {
-        return await fetchAdultDiscover(q);
+        return await fetchAdultSearch(q);
       } catch (e) {
         setSetupError(e);
-        return [];
+        return { items: [], hasMore: false };
       }
     },
   );
@@ -995,16 +1020,22 @@ export const AdultDiscover: Component<{
           </h2>
           <Show when={!results.loading} fallback={<Muted>Searching…</Muted>}>
             <Show
-              when={(results()?.length ?? 0) > 0}
+              when={(results()?.items?.length ?? 0) > 0}
               fallback={<Muted>No scenes found.</Muted>}
             >
               <div class="flex flex-wrap gap-3">
-                <For each={results()}>
-                  {(item) => (
+                <For each={results()?.items}>
+                  {(s) => (
                     <AdultCard
-                      item={item}
+                      item={s.scene}
                       onGrab={setGrabTarget}
                       onDetail={setDetailTarget}
+                      onOpenReleases={() =>
+                        setReleasePicker({
+                          title: s.scene.title,
+                          releases: s.releases,
+                        })
+                      }
                     />
                   )}
                 </For>
@@ -1016,6 +1047,16 @@ export const AdultDiscover: Component<{
 
       <Show when={grabTarget()}>
         {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
+      </Show>
+      <Show when={releasePicker()}>
+        {(rp) => (
+          <SearchReleasePicker
+            mode="adult"
+            title={rp().title}
+            releases={rp().releases}
+            onClose={() => setReleasePicker(null)}
+          />
+        )}
       </Show>
       <Show when={detailTarget()}>
         {(t) => <DetailPopup target={t()} onClose={() => setDetailTarget(null)} />}

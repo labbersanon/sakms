@@ -14,7 +14,7 @@ import (
 )
 
 // adultScene is the Discover response shape for one TPDB scene — a stable,
-// lowercase-json DTO mirroring search.go's searchResult, so the frontend reads
+// lowercase-json DTO mirroring apidto.SearchReleaseResult's shape, so the frontend reads
 // item.id/item.title/item.studio/item.date the same way it reads TMDB's
 // lowercase-tagged tmdb.Item. tpdbrest.Scene itself carries NO json tags, so
 // encoding it raw would emit capitalized keys (ID/Title/Site/Date) the frontend

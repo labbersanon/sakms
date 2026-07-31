@@ -300,6 +300,53 @@ export interface AdultNewestScenesPage {
   hasMore: boolean;
 }
 /**
+ * SearchReleaseResult is one scored release the manual Search release-picker
+ * offers a human to pick from (GET /api/modes/{mode}/search for Movies/Series;
+ * carried inline per scene by AdultSearchScene for Adult). It mirrors the wire
+ * shape internal/api's searchHandler has always emitted — nothing here is
+ * persisted; internal/grabs tracks a release once it's actually grabbed (see
+ * grabHandler). The four grab-bearing fields (Title/Protocol/Size/DownloadURL)
+ * are exactly what Prowlarr returned, never mutated post-fetch (grab-safety).
+ */
+export interface SearchReleaseResult {
+  guid: string;
+  title: string;
+  indexer: string;
+  protocol: string;
+  size: number /* int64 */;
+  seeders: number /* int */;
+  downloadUrl: string;
+  publishDate: string;
+  score: number /* int */;
+}
+/**
+ * AdultSearchScene is one identified scene card in the Adult catalog-Search
+ * response — the scene identity (mirroring an Adult Discover card) plus its
+ * release variants carried INLINE, so clicking the card opens the release
+ * picker with zero further network calls (D4/D5 direct-grab enclosure for a
+ * fresh pooled scene, plus any Prowlarr releases whose raw title matched this
+ * scene). Quality variants of one scene are collapsed to a single card here,
+ * while Releases keeps each distinct variant individually selectable (the two
+ * deliberately-opposite dedup layers — see internal/api/searchdedup.go).
+ */
+export interface AdultSearchScene {
+  scene: AdultDiscoverItem;
+  releases: SearchReleaseResult[];
+}
+/**
+ * AdultSearchScenesPage is the Adult catalog-Search envelope
+ * (GET /api/modes/adult/search?q=&page=N), matching the {items, hasMore}
+ * load(page) contract the frontend's paginated strips use. page=1 (submit)
+ * fires exactly ONE bounded Prowlarr search and returns RSS-pool scenes plus
+ * Prowlarr-matched scenes; page>1 pages the RSS pool ONLY and fires ZERO
+ * further Prowlarr (one Prowlarr call per one explicit operator action — the
+ * action being search-submit for Adult).
+ */
+export interface AdultSearchScenesPage {
+  items: AdultSearchScene[];
+  hasMore: boolean;
+}
+/**
  * StudioSummary is one entry in Adult Discover's Studios row
  * (GET /api/modes/adult/studios) — a TPDB site (studio) reduced to just what a
  * browse card and its drill-down link need. ID is the opaque TPDB site id (used

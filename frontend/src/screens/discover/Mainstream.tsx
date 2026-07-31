@@ -43,6 +43,7 @@ import {
   ConfigureConnectionModal,
   GrabDialog,
   PaginatedStrip,
+  SearchReleasePicker,
   SelectCheckbox,
   TextPoster,
   notConfiguredService,
@@ -299,6 +300,12 @@ export const PosterCard: Component<{
   item: DiscoverItem;
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
+  // onOpenReleases, when passed (only by the catalog-Search result grid),
+  // reroutes the card's primary click to open the release picker instead of
+  // DetailPopup AND suppresses the one-click Grab button (M3 — searched cards
+  // have no auto-grab shortcut). Browse-row call sites omit it, so their
+  // click→DetailPopup + GrabButton behavior is completely unchanged.
+  onOpenReleases?: () => void;
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -325,6 +332,10 @@ export const PosterCard: Component<{
   const onBody = () => {
     if (inSelect()) {
       if (props.mode === "movies") selection?.toggle(movieKey());
+      return;
+    }
+    if (props.onOpenReleases) {
+      props.onOpenReleases();
       return;
     }
     props.onDetail({ mode: props.mode, item: props.item });
@@ -360,18 +371,24 @@ export const PosterCard: Component<{
           </Show>
         </div>
       </div>
-      {/* In select-mode a Series swaps its single-grab button for the
-          season-add UI; a Movie keeps its unchanged one-click Grab button (the
-          per-card single-item affordance the plan preserves). */}
-      <Show
-        when={inSelect() && props.mode === "series"}
-        fallback={
-          <div class="mt-1.5">
-            <GrabButton mode={props.mode} item={props.item} onGrab={props.onGrab} />
-          </div>
-        }
-      >
-        <SeriesSeasonSelect item={props.item} />
+      {/* Searched cards (onOpenReleases set) have no one-click grab — their
+          primary click opens the release picker instead (M3). Only suppress the
+          single-grab UI OUTSIDE select-mode, so bulk-grab select affordances
+          (movie checkbox / series chips) still render on a search grid. In
+          select-mode a Series swaps its single-grab button for the season-add
+          UI; a Movie keeps its unchanged one-click Grab button (the per-card
+          single-item affordance the plan preserves on browse rows). */}
+      <Show when={!props.onOpenReleases || inSelect()}>
+        <Show
+          when={inSelect() && props.mode === "series"}
+          fallback={
+            <div class="mt-1.5">
+              <GrabButton mode={props.mode} item={props.item} onGrab={props.onGrab} />
+            </div>
+          }
+        >
+          <SeriesSeasonSelect item={props.item} />
+        </Show>
       </Show>
     </div>
   );
@@ -633,6 +650,12 @@ export const MainstreamDiscover: Component<{
 }> = (props) => {
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
+  // releasePicker is the catalog-Search release picker for a clicked searched
+  // card (Movies/Series two-step: it fetches the one bounded Prowlarr search on
+  // open). Browse rows never set it — they open DetailPopup instead.
+  const [releasePicker, setReleasePicker] = createSignal<
+    { mode: "movies" | "series"; title: string; tmdbId: number } | null
+  >(null);
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
   const [reloadToken, setReloadToken] = createSignal(0);
@@ -1040,6 +1063,13 @@ export const MainstreamDiscover: Component<{
                       item={e.item}
                       onGrab={setGrabTarget}
                       onDetail={setDetailTarget}
+                      onOpenReleases={() =>
+                        setReleasePicker({
+                          mode: e.mode,
+                          title: e.item.title,
+                          tmdbId: e.item.id,
+                        })
+                      }
                     />
                   )}
                 </For>
@@ -1052,6 +1082,16 @@ export const MainstreamDiscover: Component<{
 
       <Show when={grabTarget()}>
         {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
+      </Show>
+      <Show when={releasePicker()}>
+        {(rp) => (
+          <SearchReleasePicker
+            mode={rp().mode}
+            title={rp().title}
+            tmdbId={rp().tmdbId}
+            onClose={() => setReleasePicker(null)}
+          />
+        )}
       </Show>
       {/* keyed: a "More like this" click swaps detailTarget from one truthy
           target to another. Without keyed, Solid updates props.target on the

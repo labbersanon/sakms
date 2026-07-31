@@ -1331,8 +1331,11 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     stubFetch((url) => {
       if (url.includes("sortBy=recently_created"))
         return jsonResponse([scene({ id: "srt1", title: "Sorted Scene" })]);
-      if (url.includes("/api/modes/adult/discover?q="))
-        return jsonResponse([scene({ id: "sr1", title: "Search Scene" })]);
+      if (url.includes("/api/modes/adult/search?"))
+        return jsonResponse({
+          items: [{ scene: scene({ id: "sr1", title: "Search Scene" }), releases: [] }],
+          hasMore: false,
+        });
       if (url.includes("/newest-rows/1/resolve"))
         return jsonResponse([
           { id: "st1", title: "Vixen Studio", studio: "", date: "", image: "https://cdn.theporndb.net/sites/vixen.jpg", source: "", rowType: "studio" },

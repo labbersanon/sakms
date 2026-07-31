@@ -3753,3 +3753,114 @@ new failures beyond the pre-existing unrelated `internal/sysinfo` gap);
 security-reviewer (confirmed grab-safety holds even under an adversarial/
 malicious-indexer seeder-spoofing scenario), and code-reviewer all
 independently APPROVE.
+
+## 2026-07-31 — Adult Discover Show More: collapse quality variants to one card per scene (reversing the 2026-07-30 ReleaseTitle-keyed design); Search screen redesigned as catalog-first with a release picker
+
+**This is a deliberate reversal, not a bug fix on top of the entry above.**
+The 2026-07-30 dedup fix (`e5f90cc`) worked exactly as designed and shipped:
+`dedupeAdultShowMoreItems` deliberately kept every quality/resolution variant
+of a scene as a separate card, keyed on `ReleaseTitle` specifically so a
+1080p and a 2160p copy of the same scene would both survive. Wade reported
+"still getting duplicates" after that deploy; a fresh screenshot showed the
+same visual pattern (repeated near-identical titles). Live log evidence
+confirmed the design was doing exactly what it was built to do — e.g. two
+`TabooHeat...House.XXX` releases, one `2160p` one `1080p`, both correctly
+surviving as separate cards under the old key. The design itself, not a bug
+in it, was what Wade didn't want: for this surface, ALL copies of a scene
+(any resolution, any repost, any indexer) should collapse to one card.
+
+**Root cause of yesterday's wrong design:** the 2026-07-30 spec's Round-1
+answer ("settings already has quality preferences for filtering") was read
+as "keep quality variants visible since preferences handle it elsewhere" —
+the more likely intended reading, confirmed today via a direct disambiguating
+question, was "my quality settings already pick what I want, so collapse to
+one card." Re-verified this time via `AskUserQuestion` before writing any
+code, rather than proceeding on the same kind of inference that produced the
+wrong design the first time.
+
+**Component 1 — one-line key change, ship first:**
+`dedupeAdultShowMoreItems` now keys on normalized enriched `Title` (the
+token-free catalog scene title `applyEnrichedFields` already sets) instead
+of raw `ReleaseTitle`. `Title` is never empty for a surviving item (unmatched
+items are dropped upstream; `Title` is initialized to the raw title, then
+overwritten only when a non-empty catalog match exists), so the criterion
+always fires and every quality/resolution/repost variant of one scene now
+shares an identical key and collapses to the highest-seeder survivor.
+`dedupeAdultPoolItems` (page 1) and the shared `internal/api/searchdedup.go`
+`dedupeReleases`/`releaseDedupKey` function are unchanged — only what this
+one call site populates `normalizedTitle` from changed. Grab safety
+(`ReleaseTitle`/`DownloadURL`/`Protocol`/`SizeBytes` of the survivor) is
+structural, not incidental, since `dedupeReleases` only ever selects whole
+items. Regression: the existing two-quality-variant test was inverted
+(renamed `TestAdultNewestShowMore_CollapsesQualityVariantsBySceneIdentity`)
+to assert the 1080p/2160p pair now collapses to one, higher-seeder survivor,
+with the survivor's grab fields verified byte-for-byte against the winning
+Prowlarr release.
+
+**Component 2 — Search screen redesigned as catalog-first (new feature, not
+originally scoped as part of the dedup investigation):** while diagnosing the
+above, Wade asked for the manual Search screen (previously a flat, zero-
+enrichment raw Prowlarr release list, revealed via investigation to have no
+frontend caller at all — orphaned) to be enriched like Mainstream Discover.
+A full deep-interview (6 rounds) resolved this into a genuinely different
+design per mode, confirmed directly with Wade rather than assumed:
+
+- **Movies/Series** — two-step, catalog-first: submitting a search hits the
+  existing TMDB `tmdb-search` endpoint (zero Prowlarr, unchanged), rendering
+  catalog cards. Clicking a card fires exactly one Prowlarr search (the
+  revived `searchHandler`, now returning generated `apidto.SearchReleaseResult`
+  instead of an unexported struct) and opens a release picker.
+- **Adult — one-shot, not catalog-first (a confirmed, deliberate divergence):**
+  an earlier draft would have pointed Adult search at live TPDB/StashDB
+  catalog search directly, which would have silently reversed a separate,
+  already-settled decision ("D4b" in `internal/api/adultdiscover.go`: Adult's
+  search bar deliberately searches the already-identified local pool, not the
+  live catalog). Caught by Critic review before any code was written, routed
+  back to Wade rather than decided unilaterally, and corrected: Adult search
+  (new `internal/api/search_catalog.go`, `GET /api/modes/adult/search`)
+  queries the RSS pool (`releaseStore.SearchScenes`, the existing D4b query)
+  AND fires exactly one bounded Prowlarr search together, on submit —
+  StashDB/TPDB/FansDB are used only to identify/enrich the combined results
+  into one card per scene (via `sess.Identify`, budget-capped at 12 external
+  lookups per request, pool-local matches preferred first at zero cost),
+  never as the primary lookup. Each scene card carries its release variants
+  inline, so clicking it needs no further network call. Page>1 pages the
+  pool only — zero further Prowlarr.
+- Both shapes satisfy "exactly one Prowlarr call per one explicit operator
+  action" — the triggering action differs by mode, deliberately.
+- The release picker (both modes) reuses the existing `dedupeReleases` dedup
+  from the 2026-07-30 fix, completely unchanged — quality variants stay
+  individually selectable there. This is the intentional opposite of
+  Component 1's collapse-to-one-card behavior at a different layer; the plan
+  explicitly flags the two as never-to-be-unified.
+- Searched cards lose their one-click auto-grab button (confirmed with
+  Wade); clicking now always opens the release picker. Browse-row cards
+  (Discover's carousels, Show More, entity drill-downs) are untouched —
+  regression-tested explicitly.
+- New DTOs `SearchReleaseResult`, `AdultSearchScene`, `AdultSearchScenesPage`
+  in `internal/apidto/dto.go`, generated into `ts/dto.gen.ts` via
+  `go run ./cmd/gendto` (confirmed generator-exact, zero hand-editing).
+
+**Process:** this went through a full deep-interview → autopilot pipeline,
+including a genuine two-round Architect/Critic ITERATE cycle at the planning
+stage — the first Critic pass caught the D4b-reversal risk and wrong Adult
+client-wiring (`mode.Session` has no raw TPDB/StashDB client fields) before
+any code was written, both routed back to Wade rather than assumed.
+
+**Verification:** independent full-repo `go build`/`go vet`/`go test ./...`
+and `pnpm typecheck`/`build`/`test` (486/486) sweep, zero regressions beyond
+the pre-existing unrelated `internal/sysinfo` GPU-detection gap (confirmed
+present on unmodified `main` via `git stash`, not introduced by this work).
+Phase 4: Architect (re-verified every claim against the actual diff, not
+executor self-reports — confirmed `searchdedup.go` has a genuinely empty
+`git diff`, confirmed `go run ./cmd/gendto` reproduces a zero-diff
+`dto.gen.ts`), security-reviewer (clean — parameterized SQL, encoded query
+params, JSX-escaped rendering, route behind the same auth middleware as
+every sibling route, no secrets logged/echoed, no new dependencies), and
+code-reviewer (APPROVE, 3 low findings) all independently APPROVE. One low
+finding (a stale doc comment in `adultdiscover.go` referencing the deleted
+`searchResult` type) and a dead-code removal (`fetchAdultDiscover`, whose
+only caller this change replaced with `fetchAdultSearch`) were fixed before
+merge. Live-verification of Component 1's real-world card-count collapse
+(the actual "Cory Chase" query, not just the fixture test) recorded below
+this entry once run against the deployed system.

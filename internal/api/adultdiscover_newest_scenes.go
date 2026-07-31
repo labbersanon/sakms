@@ -420,20 +420,42 @@ func dedupeAdultPoolItems(items []apidto.AdultDiscoverItem) []apidto.AdultDiscov
 	})
 }
 
+// Claude 2026-07-31: dedupeAdultShowMoreItems now keys normalizedTitle on the
+// enriched Title, not the raw ReleaseTitle — quality/resolution/repost variants
+// of the same scene now collapse to one card instead of showing as duplicates.
+// Reason: Show More (page>1) drill-down was showing a 2160p and a 1080p copy of
+// the identical scene as two separate cards, because the old key normalized
+// ReleaseTitle, whose raw tokens (resolution, group, release-format cruft) genuinely
+// differ between variants even though they're the same underlying scene. Keying on
+// Title (set post-enrichment to the token-free catalog scene title) collapses them.
+// Troubleshooting: if variants of one scene are still showing as separate cards,
+// confirm enrichNewestScenesShowMore (line ~181) ran before this and actually
+// matched — an unmatched item is dropped upstream, so Title is always the enriched
+// value by the time this runs; check whether the catalog match itself is failing,
+// not this dedup key.
+// Review if: a future change reintroduces a ReleaseTitle-keyed dedup need (e.g. if
+// unmatched items are ever kept here again) or SceneID becomes reliably populated
+// for web_search matches, which would be a more precise key than normalized Title.
+//
 // dedupeAdultShowMoreItems collapses the page>1 (Show More) response, keying on
-// DownloadURL OR normalized ReleaseTitle as two independent criteria, keeping the
-// highest-seeder survivor of each duplicate group. It normalizes ReleaseTitle,
-// NOT Title: dedup runs AFTER enrichment overwrites Title with the token-free
-// catalog scene title, so two genuinely distinct quality variants (e.g. 1080p vs
-// 2160p) of the same scene now share an identical Title — keying on Title would
-// collapse them and hide one resolution. ReleaseTitle keeps its raw tokens
-// (enrichment never touches it), so true cross-posts still collapse while
-// distinct-quality releases stay distinct. Always returns a non-nil slice.
+// DownloadURL OR the normalized ENRICHED Title (the token-free catalog scene title
+// enrichNewestScenesShowMore already set), NOT ReleaseTitle: within one entity's
+// drill-down we WANT every quality/resolution/repost variant of the same scene to
+// collapse to a single card. The highest-seeder survivor wins. Grab-safety is
+// preserved because dedupeReleases only ever selects whole items — the survivor's
+// ReleaseTitle/DownloadURL/Protocol/SizeBytes are exactly what Prowlarr returned,
+// never mutated. Accepted limitation: two genuinely distinct scenes that normalize
+// to the same Title (or a false enrichment match) could merge, hiding one — same
+// class of risk dedupeAdultPoolItems (page-1, above) avoids by keying on
+// DownloadURL only; accepted here because Show More is entity-scoped, collision is
+// rare, and collapsing variants is the whole point. dedupeAdultPoolItems (page-1)
+// stays DownloadURL-only and is unaffected by this change. Always returns a
+// non-nil slice.
 func dedupeAdultShowMoreItems(items []apidto.AdultDiscoverItem) []apidto.AdultDiscoverItem {
 	return dedupeReleases(items, func(it apidto.AdultDiscoverItem) releaseDedupKey {
 		return releaseDedupKey{
 			downloadURL:     it.DownloadURL,
-			normalizedTitle: normalizeAdultQuery(it.ReleaseTitle),
+			normalizedTitle: normalizeAdultQuery(it.Title),
 			seeders:         it.Seeders,
 		}
 	})

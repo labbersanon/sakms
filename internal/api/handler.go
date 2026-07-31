@@ -310,6 +310,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// library caches no poster path) — see posterHandler.
 	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/search", searchHandler(httpClient, connStore, settingsStore))
+	// Adult catalog-first Search: registered on the literal "adult" path so
+	// ServeMux prefers it over the {mode} wildcard above (same concrete-shadows-
+	// wildcard pattern as GET /api/modes/adult/discover). Movies/Series keep using
+	// the generic searchHandler; Adult's one-shot pool+one-Prowlarr flow is
+	// search_catalog.go's adultSearchHandler.
+	mux.HandleFunc("GET /api/modes/adult/search", adultSearchHandler(connStore, settingsStore, adultNewestReleaseStore, feedHealth))
 	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore, whStore))
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +
 	// bitrate-quality-floor scoring, then either grab the top qualifier or

@@ -10,10 +10,13 @@
 import { api } from "./client";
 import type {
   AdultDiscoverItem,
+  AdultSearchScene,
+  AdultSearchScenesPage,
   AvailabilityPreview,
   DiscoverItem,
   PerformerSummary,
   PosterResponse,
+  SearchReleaseResult,
   StudioSummary,
   TitleDetail,
   TrailerResponse,
@@ -21,9 +24,12 @@ import type {
 
 export type {
   AdultDiscoverItem,
+  AdultSearchScene,
+  AdultSearchScenesPage,
   AvailabilityPreview,
   DiscoverItem,
   PerformerSummary,
+  SearchReleaseResult,
   StudioSummary,
   TitleDetail,
 };
@@ -232,18 +238,39 @@ export function fetchTmdbSearch(
   );
 }
 
-// fetchAdultDiscover returns one page of TPDB's scene catalog (plain browse),
-// or a title search when query is non-empty. This is the search path — Adult
-// Discover's browse rows come from fetchAdultNewestRows/fetchMergedStudios/
-// fetchMergedPerformers instead (the old fixed Recently Released/Highest Rated
-// category rows were removed 2026-07-15, stale/redundant once the
-// Prowlarr-matched newest rows shipped).
-export function fetchAdultDiscover(query?: string): Promise<AdultDiscoverItem[]> {
-  const q = query?.trim();
-  const path = q
-    ? `/api/modes/adult/discover?q=${encodeURIComponent(q)}`
-    : `/api/modes/adult/discover`;
-  return api<AdultDiscoverItem[]>(path);
+// fetchReleaseOptions runs the Movies/Series catalog-Search release picker's one
+// bounded Prowlarr search for a chosen catalog title — GET /api/modes/{mode}/
+// search?q={title}. This is the step-2 "click a card → exactly ONE Prowlarr
+// search → flat release picker" call: fired once, only when the operator clicks
+// a searched card (never at the catalog step, never per-scroll/keystroke), the
+// same explicit-action trigger shape DetailPopup's availability check has. The
+// catalog step itself (fetchTmdbSearch above) still fires zero Prowlarr. Adult
+// does NOT use this — it carries its release variants inline (fetchAdultSearch).
+export function fetchReleaseOptions(
+  mode: Exclude<Mode, "adult">,
+  title: string,
+): Promise<SearchReleaseResult[]> {
+  return api<SearchReleaseResult[]>(
+    `/api/modes/${mode}/search?q=${encodeURIComponent(title)}`,
+  );
+}
+
+// fetchAdultSearch runs Adult's one-shot catalog Search — GET /api/modes/adult/
+// search?q=&page=N. Unlike Movies/Series' two-step flow, submitting an Adult
+// query returns one card per identified scene with its release variants carried
+// INLINE (AdultSearchScene.releases), so clicking a scene card opens the picker
+// with zero further network calls. page=1 (submit) fires exactly ONE bounded
+// Prowlarr search alongside the RSS-pool query; page>1 pages the pool only and
+// fires zero further Prowlarr (one Prowlarr call per one explicit operator
+// action — the action being search-submit for Adult). Adult Discover's browse
+// rows come from fetchAdultNewestRows/fetchMergedStudios/fetchMergedPerformers
+// instead — this is the search path only.
+export function fetchAdultSearch(
+  query: string,
+  page = 1,
+): Promise<AdultSearchScenesPage> {
+  const q = new URLSearchParams({ q: query, page: String(page) });
+  return api<AdultSearchScenesPage>(`/api/modes/adult/search?${q.toString()}`);
 }
 
 // AdultSortBy is the TPDB browse order fetchAdultDiscoverSorted passes through

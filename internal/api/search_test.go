@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/mode"
 )
@@ -73,7 +75,7 @@ func TestSearchHandler_ScoresAndSortsResults(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	var results []searchResult
+	var results []apidto.SearchReleaseResult
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
@@ -113,7 +115,7 @@ func TestSearchHandler_DedupsCrossPostsKeepsHighestSeeder(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	var results []searchResult
+	var results []apidto.SearchReleaseResult
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
@@ -148,12 +150,45 @@ func TestSearchHandler_DistinctQualityVariantsBothReturned(t *testing.T) {
 		t.Fatalf("GET failed: %v", err)
 	}
 	defer resp.Body.Close()
-	var results []searchResult
+	var results []apidto.SearchReleaseResult
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
 	if len(results) != 2 {
 		t.Fatalf("expected both distinct-quality variants returned, got %d (%+v)", len(results), results)
+	}
+}
+
+// TestSearchHandler_FiresExactlyOneProwlarrSearch is the release-picker's core
+// invariant (Movies/Series two-step): one card click ⇒ exactly ONE Prowlarr
+// search, never more (no per-scroll/per-render re-query).
+func TestSearchHandler_FiresExactlyOneProwlarrSearch(t *testing.T) {
+	var prowlarrCalls int32
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&prowlarrCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":1,"seeders":1,"downloadUrl":"http://x/1","publishDate":"2023-01-01"}]`))
+	}))
+	defer fake.Close()
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "prowlarr", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/search?q=Some+Movie")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&prowlarrCalls); got != 1 {
+		t.Fatalf("expected EXACTLY ONE Prowlarr.Search per search call, got %d", got)
 	}
 }
 

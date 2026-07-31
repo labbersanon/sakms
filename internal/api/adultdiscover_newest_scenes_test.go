@@ -616,7 +616,14 @@ func TestAdultNewestEntityScenesHandler_Page2BoxFailureDropsAll(t *testing.T) {
 // the enriched Title), BOTH must survive — hiding one resolution would violate
 // the spec's quality-variant constraint. If the wrapper keyed on Title, the two
 // same-Title items would collapse to one (the revert-check for this test).
-func TestAdultNewestShowMore_KeysOnReleaseTitleNotTitle(t *testing.T) {
+// TestAdultNewestShowMore_CollapsesQualityVariantsBySceneIdentity is the
+// 2026-07-31 fix's core regression guard: two quality/resolution variants of the
+// SAME scene (identical enriched Title, distinct raw ReleaseTitle/DownloadURL,
+// distinct Seeders) must now COLLAPSE to a single card — the higher-seeder
+// survivor — instead of both surviving as separate cards. Formerly
+// TestAdultNewestShowMore_KeysOnReleaseTitleNotTitle, which asserted the OLD
+// (pre-fix) behavior that both variants survived; inverted 2026-07-31.
+func TestAdultNewestShowMore_CollapsesQualityVariantsBySceneIdentity(t *testing.T) {
 	origTPDB := tpdbrest.DefaultBaseURL
 	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
 
@@ -644,18 +651,17 @@ func TestAdultNewestShowMore_KeysOnReleaseTitleNotTitle(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if len(page.Items) != 2 {
-		t.Fatalf("expected BOTH distinct-quality variants to survive (keyed on ReleaseTitle), got %d (%+v)", len(page.Items), page.Items)
+	if len(page.Items) != 1 {
+		t.Fatalf("expected the two quality variants to COLLAPSE to 1 (keyed on enriched Title), got %d (%+v)", len(page.Items), page.Items)
 	}
-	for _, it := range page.Items {
-		if it.Title != "Some Clean Scene Title" {
-			t.Errorf("expected both items enriched to the identical clean Title, got %q", it.Title)
-		}
+	it := page.Items[0]
+	if it.Title != "Some Clean Scene Title" {
+		t.Errorf("expected the survivor enriched to the clean catalog Title, got %q", it.Title)
 	}
-	// The two survivors must be the two distinct raw releases, unchanged.
-	gotRelease := map[string]bool{page.Items[0].ReleaseTitle: true, page.Items[1].ReleaseTitle: true}
-	if !gotRelease[raw1080] || !gotRelease[raw2160] {
-		t.Errorf("expected both distinct ReleaseTitles preserved, got %+v", gotRelease)
+	// The higher-seeder (9, the 2160p release) must survive, with its raw
+	// grab-bearing fields exactly as Prowlarr returned them (grab-safety).
+	if it.ReleaseTitle != raw2160 || it.DownloadURL != "magnet:?xt=urn:btih:BBB" || it.Protocol != "torrent" || it.SizeBytes != 900000000 {
+		t.Errorf("expected the higher-seeder (2160p) survivor's raw fields unchanged, got %+v", it)
 	}
 }
 

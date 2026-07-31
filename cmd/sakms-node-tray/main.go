@@ -172,6 +172,36 @@ func (t *trayUI) applyStatus(s *statusResponse, err error) {
 		scopes = s.MediaRootScopes
 	}
 
+	// Re-assert the icon/tooltip for the current state on every poll tick,
+	// unconditionally — not just on a state change. fyne.io/systray's
+	// SetIcon/SetTooltip silently no-op if called before nativeStart() has
+	// finished connecting to DBus (instance.props still nil), which can
+	// happen when this callback's very first call races systray's own DBus
+	// setup during a slow/congested boot. Re-issuing these calls every 3s is
+	// idempotent and cheap, so the display self-heals within one tick once
+	// instance.props becomes non-nil, regardless of who won that race.
+	switch state {
+	case "pending":
+		systray.SetIcon(iconAmber())
+		if code != "" {
+			systray.SetTooltip("Pairing code: " + code + " — approve in Settings → Nodes")
+		} else {
+			systray.SetTooltip("sakms-node — waiting to pair")
+		}
+
+	case "connected":
+		systray.SetIcon(iconGreen())
+		systray.SetTooltip("sakms-node — connected")
+
+	default: // "disconnected" or daemon unreachable
+		systray.SetIcon(iconRed())
+		if err != nil {
+			systray.SetTooltip("sakms-node — not running")
+		} else {
+			systray.SetTooltip("sakms-node — disconnected")
+		}
+	}
+
 	key := statusKey(state, code, warning, scopes)
 	if key == t.lastKey {
 		return
@@ -181,9 +211,7 @@ func (t *trayUI) applyStatus(s *statusResponse, err error) {
 
 	switch state {
 	case "pending":
-		systray.SetIcon(iconAmber())
 		if code != "" {
-			systray.SetTooltip("Pairing code: " + code + " — approve in Settings → Nodes")
 			t.mStatus.SetTitle("Pairing code: " + code)
 			t.mCopy.Show()
 			if t.notifiedCode != code {
@@ -192,25 +220,19 @@ func (t *trayUI) applyStatus(s *statusResponse, err error) {
 					"Code: "+code+" — approve in Settings → Nodes")
 			}
 		} else {
-			systray.SetTooltip("sakms-node — waiting to pair")
 			t.mStatus.SetTitle("Waiting to pair…")
 			t.mCopy.Hide()
 		}
 
 	case "connected":
-		systray.SetIcon(iconGreen())
-		systray.SetTooltip("sakms-node — connected")
 		t.mStatus.SetTitle("Connected")
 		t.mCopy.Hide()
 		t.notifiedCode = ""
 
 	default: // "disconnected" or daemon unreachable
-		systray.SetIcon(iconRed())
 		if err != nil {
-			systray.SetTooltip("sakms-node — not running")
 			t.mStatus.SetTitle("Daemon not running")
 		} else {
-			systray.SetTooltip("sakms-node — disconnected")
 			t.mStatus.SetTitle("Disconnected")
 		}
 		t.mCopy.Hide()

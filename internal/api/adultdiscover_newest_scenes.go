@@ -25,7 +25,14 @@ import (
 // the handler returns within the bound against a Prowlarr that never responds,
 // exactly as mode.TPDBGraphQLURL is a var so tests can point it at a fake
 // server — nothing mutates it in production.
-var newestScenesOutboundTimeout = 15 * time.Second
+//
+// 30s (not 15s): the page>1 Show More search fans out to every configured
+// indexer at once (confirmed live, 2026-07-30: a single search queried 6
+// indexers for category 6000), and a real search against that many indexers
+// can exceed 15s even when every indexer is healthy — a live "Cory Chase"
+// search hit the 15s budget and surfaced as a raw context-deadline-exceeded
+// error to the operator. Owner-approved bump, not a silent tolerance change.
+var newestScenesOutboundTimeout = 30 * time.Second
 
 // newestScenesEnrichTimeout bounds the page>1 catalog enrichment pass
 // (identify.EnrichNewestScenes) — a child of the outboundTimeout-bounded tctx,

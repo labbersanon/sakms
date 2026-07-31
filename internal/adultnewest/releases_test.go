@@ -3,6 +3,7 @@ package adultnewest
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,26 @@ func newTestReleaseStore(t *testing.T) *ReleaseStore {
 	t.Cleanup(func() { sqlDB.Close() })
 
 	return NewReleaseStore(sqlDB)
+}
+
+// linkScene inserts a minimal scene row that links the given studio (via
+// entity_studio) and performer names (via its performers array) — the
+// precondition US-4's listFiltered now requires before a performer/studio row is
+// returned by List/ListByGender. The link keys on entity_id, which for a
+// performer/studio row is the name itself, so pass the entity_id values the
+// performer/studio rows under test use. studio may be "" (link performers only).
+func linkScene(t *testing.T, s *ReleaseStore, studio string, performers ...string) {
+	t.Helper()
+	if err := s.Insert(context.Background(), MatchedRelease{
+		RowType:      RowScene,
+		EntityID:     "linkscene:" + studio + ":" + strings.Join(performers, ","),
+		EntitySource: "tpdb",
+		EntityTitle:  "Link Scene",
+		EntityStudio: studio,
+		Performers:   performers,
+	}); err != nil {
+		t.Fatalf("seeding link scene: %v", err)
+	}
 }
 
 func TestInsertAndList_RoundTripsMatchedRelease(t *testing.T) {
@@ -82,6 +103,8 @@ func TestInsertAndList_RoundTripsGender(t *testing.T) {
 	if err := s.Insert(ctx, m); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// US-4: a performer only lists while it has a linked scene.
+	linkScene(t, s, "", "performer-1")
 
 	list, err := s.List(ctx, RowPerformer, "", 1, 20)
 	if err != nil {
@@ -104,6 +127,9 @@ func TestInsertAndList_GenderNullReadsBackEmpty(t *testing.T) {
 	if err := s.Insert(ctx, m); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// US-4: a performer only lists (and thus round-trips through scanRelease's
+	// NULL-gender handling) while it has a linked scene.
+	linkScene(t, s, "", "performer-null")
 	// Insert always writes a concrete string (possibly ""), never NULL — force
 	// the column to NULL directly to simulate a row migrated in before the
 	// gender column existed.
@@ -132,6 +158,7 @@ func TestInsert_GenderOnConflict(t *testing.T) {
 		if err := s.Insert(ctx, base); err != nil {
 			t.Fatalf("seeding: %v", err)
 		}
+		linkScene(t, s, "", "p") // US-4: performer only lists with a linked scene
 		if _, err := s.db.ExecContext(ctx, `UPDATE adult_newest_releases SET gender = NULL WHERE entity_id = 'p'`); err != nil {
 			t.Fatalf("forcing gender NULL: %v", err)
 		}
@@ -157,6 +184,7 @@ func TestInsert_GenderOnConflict(t *testing.T) {
 		if err := s.Insert(ctx, base); err != nil {
 			t.Fatalf("seeding: %v", err)
 		}
+		linkScene(t, s, "", "p") // US-4: performer only lists with a linked scene
 
 		conflicting := base
 		conflicting.Gender = "male"
@@ -179,6 +207,7 @@ func TestInsert_GenderOnConflict(t *testing.T) {
 		if err := s.Insert(ctx, base); err != nil {
 			t.Fatalf("seeding: %v", err)
 		}
+		linkScene(t, s, "", "p") // US-4: performer only lists with a linked scene
 
 		conflicting := base
 		conflicting.Gender = "male"
@@ -308,7 +337,9 @@ func TestList_FiltersByRowTypeAndGenre(t *testing.T) {
 	ctx := context.Background()
 
 	releases := []MatchedRelease{
-		{RowType: RowScene, EntityID: "1", EntitySource: "tpdb", EntityTitle: "Scene A", Genres: []string{"Anal Fetish"}},
+		// Scene A's entity_studio links the "3" studio row below, so US-4's
+		// filter keeps that studio listable — without inflating the scene count.
+		{RowType: RowScene, EntityID: "1", EntitySource: "tpdb", EntityTitle: "Scene A", EntityStudio: "3", Genres: []string{"Anal Fetish"}},
 		{RowType: RowScene, EntityID: "2", EntitySource: "tpdb", EntityTitle: "Scene B", Genres: []string{"MILF"}},
 		{RowType: RowStudio, EntityID: "3", EntitySource: "tpdb", EntityTitle: "Studio A", Genres: []string{"Anal Fetish"}},
 	}
@@ -340,6 +371,170 @@ func TestList_FiltersByRowTypeAndGenre(t *testing.T) {
 	}
 	if len(studioResults) != 1 || studioResults[0].EntityTitle != "Studio A" {
 		t.Errorf("expected 1 studio result, got %+v", studioResults)
+	}
+}
+
+// TestList_HidesPerformerStudioWithoutLinkedScene is US-4's core proof: a
+// performer/studio row with ZERO linked scene/movie rows is not returned by List,
+// even though the row still physically exists in the table; the same row starts
+// appearing the moment a linked scene exists, and stops again if that scene is
+// removed (the check is live, not a one-time flag). Scene/Movie listings are
+// unaffected by the filter.
+func TestList_HidesPerformerStudioWithoutLinkedScene(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	// An orphan performer + orphan studio (no linked scene) and a linked pair.
+	rows := []MatchedRelease{
+		{RowType: RowPerformer, EntityID: "Madison", EntitySource: "stashdb", EntityTitle: "Madison", BrowseConfirmed: true},
+		{RowType: RowPerformer, EntityID: "Riley Reid", EntitySource: "stashdb", EntityTitle: "Riley Reid", BrowseConfirmed: true},
+		{RowType: RowStudio, EntityID: "Ghost Studio", EntitySource: "tpdb", EntityTitle: "Ghost Studio", BrowseConfirmed: true},
+		{RowType: RowStudio, EntityID: "Brazzers", EntitySource: "tpdb", EntityTitle: "Brazzers", BrowseConfirmed: true},
+	}
+	for _, r := range rows {
+		if err := s.Insert(ctx, r); err != nil {
+			t.Fatalf("seeding %q: %v", r.EntityID, err)
+		}
+	}
+
+	// Before any scene: every performer/studio is orphaned → List returns none.
+	assertListLen := func(what string, rowType RowType, want int) {
+		t.Helper()
+		got, err := s.List(ctx, rowType, "", 1, 50)
+		if err != nil {
+			t.Fatalf("listing %s: %v", what, err)
+		}
+		if len(got) != want {
+			t.Fatalf("%s: expected %d rows, got %d (%+v)", what, want, len(got), got)
+		}
+	}
+	assertListLen("orphan performers", RowPerformer, 0)
+	assertListLen("orphan studios", RowStudio, 0)
+
+	// A scene crediting only "Riley Reid" / "Brazzers" links exactly those two.
+	if err := s.Insert(ctx, MatchedRelease{
+		RowType: RowScene, EntityID: "sc-1", EntitySource: "tpdb", EntityTitle: "A Scene",
+		EntityStudio: "Brazzers", Performers: []string{"Riley Reid"},
+	}); err != nil {
+		t.Fatalf("seeding linked scene: %v", err)
+	}
+
+	perfs, err := s.List(ctx, RowPerformer, "", 1, 50)
+	if err != nil {
+		t.Fatalf("listing performers: %v", err)
+	}
+	if len(perfs) != 1 || perfs[0].EntityID != "Riley Reid" {
+		t.Fatalf("expected only the linked performer Riley Reid, got %+v", perfs)
+	}
+	studios, err := s.List(ctx, RowStudio, "", 1, 50)
+	if err != nil {
+		t.Fatalf("listing studios: %v", err)
+	}
+	if len(studios) != 1 || studios[0].EntityID != "Brazzers" {
+		t.Fatalf("expected only the linked studio Brazzers, got %+v", studios)
+	}
+
+	// The orphan rows still physically exist — the filter is a live read-time
+	// check, not a deletion. Prove they're present in the raw table.
+	var orphanCount int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM adult_newest_releases WHERE entity_id IN ('Madison','Ghost Studio')`,
+	).Scan(&orphanCount); err != nil {
+		t.Fatalf("counting orphan rows: %v", err)
+	}
+	if orphanCount != 2 {
+		t.Fatalf("expected the 2 orphan rows to still physically exist, got %d", orphanCount)
+	}
+
+	// Exact match, not substring: a scene crediting "Madison River" must NOT
+	// resurrect the performer "Madison".
+	if err := s.Insert(ctx, MatchedRelease{
+		RowType: RowScene, EntityID: "sc-2", EntitySource: "tpdb", EntityTitle: "Another",
+		Performers: []string{"Madison River"},
+	}); err != nil {
+		t.Fatalf("seeding near-miss scene: %v", err)
+	}
+	assertListLen("performers after near-miss link", RowPerformer, 1)
+
+	// Removing the only linking scene makes Riley Reid orphaned again (live check).
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM adult_newest_releases WHERE entity_id = 'sc-1'`); err != nil {
+		t.Fatalf("removing linked scene: %v", err)
+	}
+	assertListLen("performers after unlink", RowPerformer, 0)
+	assertListLen("studios after unlink", RowStudio, 0)
+
+	// Scene/Movie listings are never affected by the performer/studio filter —
+	// sc-2 remains listable (sc-1 was deleted above, leaving one scene).
+	scenes, err := s.List(ctx, RowScene, "", 1, 50)
+	if err != nil {
+		t.Fatalf("listing scenes: %v", err)
+	}
+	if len(scenes) != 1 || scenes[0].EntityID != "sc-2" {
+		t.Fatalf("expected scene listing unaffected by the filter, got %+v", scenes)
+	}
+}
+
+// TestScenesLinkedToEntity covers US-2's drill-down page-1 query: it returns the
+// scene/movie rows linked to a performer (exact json_each match) or studio (exact
+// entity_studio match), excludes non-linked scenes, is exact-not-substring, and
+// returns empty for an unknown kind.
+func TestScenesLinkedToEntity(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	rows := []MatchedRelease{
+		{RowType: RowScene, EntityID: "sc-riley", EntitySource: "tpdb", EntityTitle: "Riley Scene",
+			EntityStudio: "Brazzers", Performers: []string{"Riley Reid", "Jane Doe"}},
+		{RowType: RowMovie, EntityID: "mv-riley", EntitySource: "tpdb", EntityTitle: "Riley Movie",
+			EntityStudio: "Other Studio", Performers: []string{"Riley Reid"}},
+		{RowType: RowScene, EntityID: "sc-other", EntitySource: "tpdb", EntityTitle: "Unrelated Scene",
+			EntityStudio: "Nope", Performers: []string{"Someone Else"}},
+		// A performer row itself must never be returned by a scene query.
+		{RowType: RowPerformer, EntityID: "Riley Reid", EntitySource: "stashdb", EntityTitle: "Riley Reid"},
+	}
+	for _, r := range rows {
+		if err := s.Insert(ctx, r); err != nil {
+			t.Fatalf("seeding %q: %v", r.EntityID, err)
+		}
+	}
+
+	perfScenes, err := s.ScenesLinkedToEntity(ctx, RowPerformer, "Riley Reid")
+	if err != nil {
+		t.Fatalf("ScenesLinkedToEntity performer: %v", err)
+	}
+	if len(perfScenes) != 2 {
+		t.Fatalf("expected 2 scene/movie rows for Riley Reid, got %d (%+v)", len(perfScenes), perfScenes)
+	}
+	for _, m := range perfScenes {
+		if m.RowType != RowScene && m.RowType != RowMovie {
+			t.Errorf("expected only scene/movie rows, got %q", m.RowType)
+		}
+	}
+
+	studioScenes, err := s.ScenesLinkedToEntity(ctx, RowStudio, "Brazzers")
+	if err != nil {
+		t.Fatalf("ScenesLinkedToEntity studio: %v", err)
+	}
+	if len(studioScenes) != 1 || studioScenes[0].EntityID != "sc-riley" {
+		t.Fatalf("expected only the Brazzers scene, got %+v", studioScenes)
+	}
+
+	// Exact match, not substring.
+	near, err := s.ScenesLinkedToEntity(ctx, RowPerformer, "Riley")
+	if err != nil {
+		t.Fatalf("ScenesLinkedToEntity near-miss: %v", err)
+	}
+	if len(near) != 0 {
+		t.Fatalf("expected no substring match for 'Riley', got %+v", near)
+	}
+
+	// Unknown kind returns empty, not an error.
+	unknown, err := s.ScenesLinkedToEntity(ctx, RowScene, "Riley Reid")
+	if err != nil {
+		t.Fatalf("ScenesLinkedToEntity unknown kind: %v", err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("expected empty for a non-performer/studio kind, got %+v", unknown)
 	}
 }
 
@@ -473,6 +668,9 @@ func TestListByGender_NarrowsToOneGender(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
+	// US-4: each performer only lists while it has a linked scene — one scene
+	// crediting all three suffices.
+	linkScene(t, s, "", "p1", "p2", "p3")
 
 	female, err := s.ListByGender(ctx, RowPerformer, "", "female", 1, 20)
 	if err != nil {

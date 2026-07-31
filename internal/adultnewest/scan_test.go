@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -520,6 +521,66 @@ func TestRunCycle_SeenReleaseIsNotReprocessed(t *testing.T) {
 	}
 }
 
+// rawEntityTitles reads entity_title values straight from the table for a row
+// type, ORDER BY entity_title — bypassing List's US-4 linked-scene filter so a
+// US-1 test can assert exactly which performer/studio ROWS physically exist,
+// independent of whether they'd currently list. s.db is reachable in-package.
+func rawEntityTitles(t *testing.T, s *ReleaseStore, rowType RowType) []string {
+	t.Helper()
+	rows, err := s.db.QueryContext(context.Background(),
+		`SELECT entity_title FROM adult_newest_releases WHERE row_type = ? ORDER BY entity_title`, string(rowType))
+	if err != nil {
+		t.Fatalf("reading raw %s rows: %v", rowType, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			t.Fatalf("scanning raw %s row: %v", rowType, err)
+		}
+		out = append(out, title)
+	}
+	return out
+}
+
+// tpdbSceneStudioPerformerFake serves a TPDB REST instance that returns a scene
+// for the given scene title (so a scene ROW is created), confirms each name in
+// sites/performers, and returns empty /movies. Used by the US-1 tests that need
+// the identify pipeline to actually persist a scene row so the studio/performer
+// append path fires.
+func tpdbSceneStudioPerformerFake(t *testing.T, sceneTitle string, sites, performers map[string]bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("q")
+		switch r.URL.Path {
+		case "/scenes":
+			if q == sceneTitle {
+				fmt.Fprintf(w, `{"data":[{"_id":"scene1","title":%q,"site":{"name":"Real Studio"},"date":"2020-01-01","duration":1800}]}`, sceneTitle)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		case "/sites":
+			if sites[q] {
+				fmt.Fprintf(w, `{"data":[{"_id":1,"name":%q,"logo":"https://cdn.theporndb.net/sites/fake-logo.png"}]}`, q)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		case "/performers":
+			if performers[q] {
+				fmt.Fprintf(w, `{"data":[{"_id":1,"name":%q,"image":"https://cdn.theporndb.net/performer/fake.jpg"}]}`, q)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // TestRunCycle_UnconfirmedStudioAndPerformerGuessesAreSkipped is the
 // regression test for a real bug caught live in production during this
 // feature's own deploy verification: a real scan produced Studio/Performer
@@ -530,11 +591,17 @@ func TestRunCycle_SeenReleaseIsNotReprocessed(t *testing.T) {
 // doc comments) because nothing in any configured database confirmed them.
 // Only a name StudioImage/PerformerImage can actually confirm (i.e. finds a
 // real image for) should ever become a cached Studio/Performer row.
+//
+// Post-US-1 this test also proves the working case is unregressed: a scene IS
+// matched here (so the studio/performer append path fires), and the confirmed
+// studio/performer are still cached exactly as before. Asserted via the raw
+// table (rawEntityTitles) so the check is about which rows exist, decoupled from
+// US-4's list-time linked-scene filter.
 func TestRunCycle_UnconfirmedStudioAndPerformerGuessesAreSkipped(t *testing.T) {
 	connStore, settingsStore, releaseStore := newTestScanStores(t)
 	ctx := context.Background()
 
-	tpdb := fakeTPDB(t,
+	tpdb := tpdbSceneStudioPerformerFake(t, "Some Scene Title",
 		map[string]bool{"Real Studio": true},
 		map[string]bool{"Real Performer": true},
 	)
@@ -553,20 +620,62 @@ func TestRunCycle_UnconfirmedStudioAndPerformerGuessesAreSkipped(t *testing.T) {
 
 	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
 
-	studios, err := releaseStore.List(ctx, RowStudio, "", 1, 20)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// A scene row was persisted, so the studio/performer append path ran.
+	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 1 {
+		t.Fatalf("expected the confirmed scene to be cached, got %v", got)
 	}
-	if len(studios) != 1 || studios[0].EntityTitle != "Real Studio" {
-		t.Errorf("expected only the confirmed studio to be cached, got %+v", studios)
+	if got := rawEntityTitles(t, releaseStore, RowStudio); len(got) != 1 || got[0] != "Real Studio" {
+		t.Errorf("expected only the confirmed studio to be cached, got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowPerformer); len(got) != 1 || got[0] != "Real Performer" {
+		t.Errorf("expected only the confirmed performer (Garbage Fragment skipped), got %v", got)
+	}
+}
+
+// TestMatchRelease_NoSceneRow_SkipsStudioPerformer is US-1's core orphan-
+// prevention proof for the browse pass: when the identify pipeline confirms a
+// studio+performer but NO scene/movie row is persisted (no scene match and no
+// movie-catalog fallback), zero performer/studio rows are created — even though
+// identifyStudioPerformers itself would have found a valid image for both. Before
+// the fix these were appended unconditionally, producing the orphaned cards this
+// whole effort exists to eliminate.
+func TestMatchRelease_NoSceneRow_SkipsStudioPerformer(t *testing.T) {
+	connStore, settingsStore, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	// /scenes and /movies always empty → no scene/movie row is ever persisted —
+	// but /sites and /performers DO confirm the names, so identifyStudioPerformers
+	// would (pre-fix) have produced orphaned rows.
+	tpdb := fakeTPDB(t,
+		map[string]bool{"Real Studio": true},
+		map[string]bool{"Real Performer": true},
+	)
+	overrideTPDBBaseURL(t, tpdb.URL)
+	if err := connStore.Upsert(ctx, "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("configuring tpdb: %v", err)
 	}
 
-	performers, err := releaseStore.List(ctx, RowPerformer, "", 1, 20)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	ollama := fakeOllama(t, `{"studio":"Real Studio","title":"Some Scene Title","performers":["Real Performer"]}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	prow := fakeProwlarr(t, `[{"guid":"g-noscene","title":"Real.Studio.Some.Scene.Title.Real.Performer.XXX","protocol":"torrent","seeders":5}]`)
+	if err := connStore.Upsert(ctx, "prowlarr", prow.URL, "key"); err != nil {
+		t.Fatalf("configuring prowlarr: %v", err)
 	}
-	if len(performers) != 1 || performers[0].EntityTitle != "Real Performer" {
-		t.Errorf("expected only the confirmed performer to be cached (Garbage Fragment must be skipped), got %+v", performers)
+
+	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+
+	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 0 {
+		t.Errorf("expected no scene row, got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowMovie); len(got) != 0 {
+		t.Errorf("expected no movie row, got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowStudio); len(got) != 0 {
+		t.Errorf("expected NO studio row when no scene/movie was persisted (US-1), got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowPerformer); len(got) != 0 {
+		t.Errorf("expected NO performer row when no scene/movie was persisted (US-1), got %v", got)
 	}
 }
 
@@ -712,5 +821,135 @@ func TestMatchRelease_SceneMatchWithConfirmedRelease_IsCached(t *testing.T) {
 	}
 	if scenes[0].FirstSeenReleaseTitle != "Some.Studio.Some.Scene.Title.XXX.1080p" {
 		t.Errorf("FirstSeenReleaseTitle = %q, want the raw release title that triggered the match", scenes[0].FirstSeenReleaseTitle)
+	}
+}
+
+// TestMatchRelease_CaseDivergentStudioName_StillLinksToScene is the
+// end-to-end proof (real matchRelease pipeline, not hand-constructed
+// predicate inputs) for the case/whitespace-insensitive join hardening in
+// performerLinkPredicate/studioLinkPredicate (releases.go) and migration
+// 0051. A scene row's entity_studio and a studio row's entity_id come from
+// two genuinely different sources inside the SAME identify pipeline run:
+//   - the matched scene object's own site name (toMatchedRelease's m.Studio,
+//     here "Vixen Media", from a live-shaped TPDB /scenes response) — see
+//     identify.MatchResult.Studio.
+//   - verifyStudio's independent normalized-fallback guess (detail.StudioName,
+//     here lowercase "vixen media") when TPDB's /sites search finds no match
+//     for the AI's raw guess — the exact divergence
+//     TestIdentifyDetailed_SceneMatchAlsoReturnsCorrectedStudioAndPerformers
+//     (internal/identify/identify_test.go) proves happens for real.
+//
+// Neither IdentifyDetailed nor matchRelease reconciles the casing between
+// these two sources, so before the TRIM(LOWER(...)) hardening, a
+// byte-exact join would treat the studio row as unlinked from its own
+// triggering scene — silently hiding it from the US-4 browse-strip filter
+// and from the US-2 drill-down (ScenesLinkedToEntity). This test drives the
+// full chain (AI parse -> verifyStudio -> TPDB scene search ->
+// confirmAvailable -> identifyStudioPerformers) via runCycle and asserts the
+// join actually holds despite the casing difference. If
+// studioLinkPredicate/performerLinkPredicate are reverted to a byte-exact
+// `=` comparison, this test fails.
+func TestMatchRelease_CaseDivergentStudioName_StillLinksToScene(t *testing.T) {
+	connStore, settingsStore, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	const sceneTitle = "Some Scene Title"
+	const sceneStudio = "Vixen Media"    // scene's own site name -> toMatchedRelease's EntityStudio
+	const fallbackStudio = "vixen media" // verifyStudio's normalized-fallback -> detail.StudioName
+
+	// The TPDB fake distinguishes verifyStudio's OWN /sites lookup for
+	// fallbackStudio (must come back empty, forcing the normalized-fallback
+	// path rather than a box-canonical name) from identifyStudioPerformers'
+	// LATER StudioImage confirmation lookup for that same (already-fallback)
+	// name, which must succeed — otherwise no studio row is ever cached at
+	// all, and this test couldn't prove anything about its linkage. Both
+	// calls query the identical string ("vixen media"), so a call counter is
+	// what distinguishes them, matching the real pipeline's call order.
+	var sitesCallsMu sync.Mutex
+	sitesCalls := 0
+	tpdb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("q")
+		switch r.URL.Path {
+		case "/scenes":
+			if q == sceneTitle {
+				fmt.Fprintf(w, `{"data":[{"_id":"scene1","title":%q,"site":{"name":%q},"date":"2020-01-01","duration":1800}]}`, sceneTitle, sceneStudio)
+				return
+			}
+			fmt.Fprint(w, `{"data":[]}`)
+		case "/sites":
+			if q != fallbackStudio {
+				fmt.Fprint(w, `{"data":[]}`)
+				return
+			}
+			sitesCallsMu.Lock()
+			sitesCalls++
+			call := sitesCalls
+			sitesCallsMu.Unlock()
+			if call == 1 {
+				// verifyStudio's own lookup: no match, so it falls through
+				// to rejectNonStudioGuess(cleaned) instead of a box-canonical
+				// name.
+				fmt.Fprint(w, `{"data":[]}`)
+				return
+			}
+			// identifyStudioPerformers' later StudioImage confirmation call:
+			// DOES find an entity for the fallback name — this is what lets
+			// a studio row get cached at all, carrying the divergent casing.
+			fmt.Fprintf(w, `{"data":[{"_id":1,"name":%q,"logo":"https://cdn.theporndb.net/sites/fake-logo.png"}]}`, fallbackStudio)
+		default:
+			fmt.Fprint(w, `{"data":[]}`)
+		}
+	}))
+	t.Cleanup(tpdb.Close)
+	overrideTPDBBaseURL(t, tpdb.URL)
+	if err := connStore.Upsert(ctx, "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("configuring tpdb: %v", err)
+	}
+
+	ollama := fakeOllama(t, `{"studio":"vixen.media","title":"Some Scene Title","performers":[]}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	prow := fakeProwlarr(t, `[{"guid":"g-case","title":"Vixen.Media.Some.Scene.Title.XXX.1080p","protocol":"torrent","seeders":5}]`)
+	if err := connStore.Upsert(ctx, "prowlarr", prow.URL, "key"); err != nil {
+		t.Fatalf("configuring prowlarr: %v", err)
+	}
+
+	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+
+	scenes, err := releaseStore.List(ctx, RowScene, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scenes) != 1 || scenes[0].EntityStudio != sceneStudio {
+		t.Fatalf("expected one scene cached with EntityStudio %q, got %+v", sceneStudio, scenes)
+	}
+
+	// Bypass the US-4 linkage filter to confirm the studio ROW itself exists
+	// with the divergent-case entity_id, independent of whether it currently
+	// links/lists.
+	if got := rawEntityTitles(t, releaseStore, RowStudio); len(got) != 1 || got[0] != fallbackStudio {
+		t.Fatalf("expected one studio row with the divergent-case fallback name %q, got %v", fallbackStudio, got)
+	}
+
+	// The critical assertion: the case-divergent join actually links the
+	// studio to its triggering scene.
+	linked, err := releaseStore.ScenesLinkedToEntity(ctx, RowStudio, fallbackStudio)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(linked) != 1 || linked[0].EntityStudio != sceneStudio {
+		t.Fatalf("expected ScenesLinkedToEntity(%q) to return the scene despite the casing difference, got %+v", fallbackStudio, linked)
+	}
+
+	// And the US-4 browse-strip listing (List, not the raw-table bypass
+	// above) must include the studio row too — proving it isn't hidden by
+	// the live linkage filter despite the casing difference.
+	studios, err := releaseStore.List(ctx, RowStudio, "", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(studios) != 1 || studios[0].EntityID != fallbackStudio {
+		t.Fatalf("expected the studio to survive the US-4 browse-strip linkage filter despite the casing difference, got %+v", studios)
 	}
 }

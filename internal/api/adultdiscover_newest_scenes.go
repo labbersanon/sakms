@@ -6,18 +6,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mode"
-	"github.com/labbersanon/sakms/internal/rssfeed"
-	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -43,19 +38,6 @@ var newestScenesOutboundTimeout = 15 * time.Second
 // production.
 var newestScenesEnrichTimeout = 6 * time.Second
 
-// rssFeedTimeout is the tight per-feed ceiling for the supplementary RSS fetch
-// — deliberately shorter than outboundTimeout so one slow feed can't consume
-// the whole handler's budget. Each feed's context is still a child of the
-// outboundTimeout-bounded context, so this is capped by whichever deadline is
-// nearer (min of the two), never additive.
-const rssFeedTimeout = 5 * time.Second
-
-// rssFeedConcurrency bounds how many adult RSS feeds are fetched at once —
-// matches the "bounded concurrency" convention this codebase already uses for
-// fan-out (see discover_detail.go's errgroup soft-fail), never an unbounded
-// goroutine-per-feed fan-out.
-const rssFeedConcurrency = 5
-
 // adultNewestEntityScenesHandler backs the Performers/Studios drill-down —
 // GET /api/modes/adult/discover/newest/entity-scenes?kind={performer|studio}&name={name}&page={N}.
 //
@@ -63,14 +45,15 @@ const rssFeedConcurrency = 5
 // never queries Prowlarr, full stop" rule (see that file's dated carve-out for
 // this handler). The trigger shape is on-demand, not automatic:
 //
-//   - page<=1 (the initial drill-down open): returns ONLY pool-joined items and
-//     fires ZERO Prowlarr calls. The enabled Adult RSS feeds are fetched and
-//     joined against the identify pipeline's matched-entity pool
-//     (adult_newest_releases); an item with NO pool match is DROPPED, never
-//     shown raw — the same drop-unmatched precedent resolveRssFeedHandler
-//     (rss_feeds.go) already established, so the drill-down never displays an
-//     unverified title. HasMore is always true, so Show More is always offered
-//     at least once (even for an entity the pool has nothing for yet).
+//   - page<=1 (the initial drill-down open): returns ONLY pooled scene/movie
+//     rows currently LINKED to the drilled entity and fires ZERO external calls
+//     (no Prowlarr, no live RSS re-fetch). The matched-entity pool
+//     (adult_newest_releases) is queried directly for scene/movie rows linked to
+//     this performer/studio (US-2): a performer via an exact json_each match on a
+//     scene's performers array, a studio via an exact entity_studio match — the
+//     same linkage definition the browse-strip filter and the 0051 cleanup use.
+//     HasMore is always true, so Show More is always offered at least once (even
+//     for an entity the pool has nothing for yet).
 //   - page>1 (an explicit operator Show More click): fires EXACTLY ONE
 //     Prowlarr.Search, for ONE entity. Each raw Prowlarr result is first checked
 //     against the release-level cache (adult_newest_scene_matches) by download
@@ -90,9 +73,11 @@ const rssFeedConcurrency = 5
 // settingsStore is threaded through because mode.Build requires it (KidsRoot/AI
 // wiring). releaseStore is the Adult identify pipeline's matched-entity pool
 // (adult_newest_releases) plus the release-level match cache
-// (adult_newest_scene_matches) — both live on the same *adultnewest.ReleaseStore
-// already wired into NewMux, so this adds no NewMux-signature churn.
-func adultNewestEntityScenesHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, rssFeedsStore *rssfeeds.Store, releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
+// (adult_newest_scene_matches). feedHealth applies the D5 direct-grab exposure
+// to page-1's pooled rows (the enclosure is carried only while a row's feed is
+// fresh), exactly as the other pooled Adult Discover read paths do — all live on
+// stores already wired into NewMux.
+func adultNewestEntityScenesHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		q := r.URL.Query()
@@ -102,20 +87,28 @@ func adultNewestEntityScenesHandler(httpClient *http.Client, connStore *connecti
 			http.Error(w, "name is required", http.StatusBadRequest)
 			return
 		}
-		// kind (performer|studio) selects which pool row_type's entity_source
-		// (known box) the page>1 enrichment resolves against, and labels which
-		// drill-down was opened for logging.
+		// kind (performer|studio) selects which pool row_type this drill-down
+		// queries (page 1) / resolves the known box against (page>1), and labels
+		// which drill-down was opened for logging.
 		kind := q.Get("kind")
 		page := parseNewestPage(q.Get("page"))
 
 		if page <= 1 {
-			// Initial open: pool-only, zero Prowlarr calls. Bound the RSS fetch
-			// so a hung feed can't stall the endpoint.
-			tctx, cancel := context.WithTimeout(ctx, newestScenesOutboundTimeout)
-			defer cancel()
-			items := fetchAdultRSSItems(tctx, httpClient, rssFeedsStore, releaseStore, name)
-			deduped := dedupeAdultDiscoverItems(items)
-			writeJSON(w, apidto.AdultNewestScenesPage{Items: deduped, HasMore: true})
+			// Initial open: query the pool directly for scene/movie rows linked to
+			// this entity — zero external calls (US-2). A lookup error degrades to
+			// an empty page (still 200, HasMore true) rather than failing the
+			// drill-down, mirroring the old RSS path's best-effort contract.
+			scenes, err := releaseStore.ScenesLinkedToEntity(ctx, adultnewest.RowType(kind), name)
+			if err != nil {
+				log.Printf("adult newest entity-scenes: querying linked pool scenes for kind=%q name=%q (returning empty): %v", kind, name, err)
+				scenes = nil
+			}
+			now := time.Now()
+			items := make([]apidto.AdultDiscoverItem, 0, len(scenes))
+			for _, m := range scenes {
+				items = append(items, poolReleaseToDiscoverItem(m, feedHealth, now))
+			}
+			writeJSON(w, apidto.AdultNewestScenesPage{Items: dedupeAdultDiscoverItems(items), HasMore: true})
 			return
 		}
 
@@ -351,143 +344,35 @@ func splitCommaTrim(s string) []string {
 	return out
 }
 
-// fetchAdultRSSItems fetches every enabled Adult-target RSS feed concurrently
-// (bounded to rssFeedConcurrency) with a tight per-feed timeout, keeping only
-// items whose Title contains name case-insensitively, maps them to
-// apidto.AdultDiscoverItem (Source "rss"), then joins them against the Adult
-// identify pipeline's matched-entity pool (adult_newest_releases) via
-// poolMatchedAdultRSSItems — keeping ONLY pool-matched items. It is best-effort
-// by contract: listing or fetching a feed can fail and is logged + dropped,
-// never returned as an error.
-func fetchAdultRSSItems(ctx context.Context, httpClient *http.Client, rssFeedsStore *rssfeeds.Store, releaseStore *adultnewest.ReleaseStore, name string) []apidto.AdultDiscoverItem {
-	feeds, err := rssFeedsStore.List(ctx)
-	if err != nil {
-		log.Printf("adult newest entity-scenes: listing RSS feeds failed (dropping RSS supplement): %v", err)
-		return nil
+// poolReleaseToDiscoverItem maps a pooled scene/movie MatchedRelease (page 1's
+// data source, US-2) into the drill-down's wire item. It applies the same D5
+// direct-grab exposure as adultdiscover.go's poolReleaseToAdultScene: the
+// enclosure (downloadUrl/protocol/sizeBytes) is carried ONLY while the row's feed
+// is currently fresh (feedHealth.DirectGrabURL), never straight from the raw
+// column — so a scene whose feed is stale falls back to the ReleaseTitle-driven
+// Prowlarr grab. It deliberately does NOT apply writePooledScenes' Available
+// visibility gate: US-2/US-4 define a linked scene by EXISTENCE, and availability-
+// gating the drill-down while the browse strip only requires linkage would create
+// a strip-vs-drilldown asymmetry.
+func poolReleaseToDiscoverItem(m adultnewest.MatchedRelease, feedHealth *adultnewest.FeedHealth, now time.Time) apidto.AdultDiscoverItem {
+	it := apidto.AdultDiscoverItem{
+		ID:              m.EntityID,
+		Title:           m.EntityTitle,
+		Studio:          m.EntityStudio,
+		Date:            m.EntityDate,
+		Image:           m.EntityImage,
+		DurationSeconds: m.EntityDurationSeconds,
+		Source:          m.EntitySource,
+		Genres:          m.Genres,
+		Performers:      m.Performers,
+		ReleaseTitle:    m.FirstSeenReleaseTitle,
 	}
-
-	needle := strings.ToLower(name)
-
-	// Plain errgroup (not WithContext): every goroutine returns nil so a single
-	// feed failure never cancels its siblings — the soft-fail fan-out pattern
-	// discover_detail.go uses. SetLimit caps concurrent feed fetches.
-	var (
-		g   errgroup.Group
-		mu  sync.Mutex
-		out []apidto.AdultDiscoverItem
-	)
-	g.SetLimit(rssFeedConcurrency)
-
-	for _, feed := range feeds {
-		if feed.Target != rssfeeds.TargetAdult || !feed.Enabled {
-			continue
-		}
-		feed := feed
-		g.Go(func() error {
-			fctx, cancel := context.WithTimeout(ctx, rssFeedTimeout)
-			defer cancel()
-
-			fetched, err := rssfeed.FetchItems(fctx, httpClient, feed.FeedURL)
-			if err != nil {
-				log.Printf("adult newest entity-scenes: RSS feed %q (id=%d) failed, dropping its results: %v", feed.Title, feed.ID, err)
-				return nil
-			}
-
-			var matched []apidto.AdultDiscoverItem
-			for _, it := range fetched {
-				if !strings.Contains(strings.ToLower(it.Title), needle) {
-					continue
-				}
-				// EnclosureURL, falling back to Link — matches
-				// resolveRssFeedHandler's downloadURL computation
-				// (rss_feeds.go) exactly, so a degenerate no-enclosure item
-				// still gets a real, joinable key instead of always being "".
-				downloadURL := it.EnclosureURL
-				if downloadURL == "" {
-					downloadURL = it.Link
-				}
-				matched = append(matched, apidto.AdultDiscoverItem{
-					Title:        it.Title,
-					ReleaseTitle: it.Title,
-					DownloadURL:  downloadURL,
-					Protocol:     string(feed.Protocol),
-					SizeBytes:    it.EnclosureLength,
-					Source:       "rss",
-				})
-			}
-			if len(matched) > 0 {
-				mu.Lock()
-				out = append(out, matched...)
-				mu.Unlock()
-			}
-			return nil
-		})
+	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
+		it.DownloadURL = url
+		it.Protocol = m.DownloadProtocol
+		it.SizeBytes = m.SizeBytes
 	}
-	_ = g.Wait() // every goroutine returns nil — see the soft-fail note above.
-
-	return poolMatchedAdultRSSItems(ctx, releaseStore, out)
-}
-
-// poolMatchedAdultRSSItems joins items against the Adult identify pipeline's
-// matched-entity pool (adult_newest_releases) by DownloadURL — the same
-// feed_item_key the background RSS scan cycle stores for a matched release
-// (scan.go's feedItemKey, EnclosureURL-then-Link). A matched item gets Title
-// (overwritten), Studio, and Image populated from the pool row's
-// EntityTitle/EntityStudio/EntityImage — unconditionally, since this is an
-// exact-key match, not a fuzzy one.
-//
-// Unmatched items are DROPPED — this reverses the prior "keep unmatched RSS
-// items raw" carve-out and adopts resolveRssFeedHandler's established
-// drop-unmatched precedent (rss_feeds.go), so the drill-down never shows an
-// unverified title. Best-effort on a hard lookup error, however: rather than
-// blanking the whole view on a transient DB hiccup, the raw items are returned
-// unfiltered (the same fall-back resolveRssFeedHandler makes). ReleaseTitle/
-// DownloadURL/Protocol/SizeBytes are never touched — only Title/Studio/Image.
-func poolMatchedAdultRSSItems(ctx context.Context, releaseStore *adultnewest.ReleaseStore, items []apidto.AdultDiscoverItem) []apidto.AdultDiscoverItem {
-	if releaseStore == nil || len(items) == 0 {
-		return items
-	}
-	keys := make([]string, 0, len(items))
-	for _, it := range items {
-		if it.DownloadURL != "" {
-			keys = append(keys, it.DownloadURL)
-		}
-	}
-	if len(keys) == 0 {
-		// Nothing joinable → nothing verifiable → drop all (never show raw).
-		return nil
-	}
-	matches, err := releaseStore.ByFeedItemKeys(ctx, keys)
-	if err != nil {
-		// Best-effort: a transient pool-join hiccup shouldn't blank the whole
-		// drill-down, so log and return the raw items unfiltered rather than
-		// dropping everything — mirrors resolveRssFeedHandler's error path.
-		log.Printf("adult newest entity-scenes: enriching RSS items against adult pool: %v", err)
-		return items
-	}
-	// Standard in-place filter — filtered[j] is only ever written from items[i]
-	// with j <= i, so reusing items' backing array is safe.
-	filtered := items[:0]
-	for i := range items {
-		m, ok := matches[items[i].DownloadURL]
-		if !ok {
-			continue
-		}
-		// Guard against a malformed pool row blanking a field that already had a
-		// raw fallback value (e.g. an empty EntityTitle would otherwise wipe the
-		// display Title).
-		if m.EntityTitle != "" {
-			items[i].Title = m.EntityTitle
-		}
-		if m.EntityStudio != "" {
-			items[i].Studio = m.EntityStudio
-		}
-		if m.EntityImage != "" {
-			items[i].Image = m.EntityImage
-		}
-		filtered = append(filtered, items[i])
-	}
-	return filtered
+	return it
 }
 
 // dedupeAdultDiscoverItems removes duplicates keyed by DownloadURL, falling

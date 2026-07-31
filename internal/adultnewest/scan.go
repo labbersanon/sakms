@@ -406,10 +406,17 @@ func processRelease(ctx context.Context, id *identify.Identifier, prowlarrClient
 // after using them to build the scene search term) are captured too — see
 // identify.Identifier.IdentifyDetailed's doc comment — each getting its own
 // Studio/Performer cache entry (with its own poster art, fetched via
-// id.StudioImage/PerformerImage) independent of whether the scene match
-// itself succeeded, since a release's studio/performer identity can be
-// confidently derived even when the specific scene isn't in any configured
-// database yet.
+// id.StudioImage/PerformerImage).
+//
+// US-1 orphan prevention (2026-07-30): those Studio/Performer rows are appended
+// ONLY inside the branch that actually persisted a scene/movie row to out — i.e.
+// only when confirmAvailable succeeded in the detail.Scene case, or in the
+// movie-catalog fallback — never unconditionally after the switch. Previously
+// they were appended regardless, which produced orphaned Studio/Performer cards
+// with zero linked scenes whenever the scene/movie itself wasn't cached (the root
+// cause the deep-interview spec was scoped against). A studio/performer identity a
+// release can confidently derive is worthless as a Discover card if no scene of
+// theirs was actually surfaced alongside it.
 //
 // Scene/Movie rows additionally require confirmAvailable to pass before
 // being cached — found live in production, 2026-07-15: this pipeline
@@ -449,6 +456,12 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		}
 		if confirmAvailable(ctx, prowlarrClient, r.Title) {
 			out = append(out, toMatchedRelease(rowType, *detail.Scene, r.Title))
+			// Studio/Performer side-entities are appended ONLY here, inside the
+			// branch that actually persisted a scene/movie row — never
+			// unconditionally after the switch (US-1 orphan prevention). A
+			// confirmable studio/performer name whose triggering scene never
+			// became a row must not leave an orphaned card behind.
+			out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 		}
 	default:
 		// No scene match — try TPDB's movie catalog directly before giving
@@ -460,11 +473,13 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, r.Title); err == nil && movie != nil {
 			if confirmAvailable(ctx, prowlarrClient, r.Title) {
 				out = append(out, toMatchedRelease(RowMovie, *movie, r.Title))
+				// Same US-1 gate as the scene branch: only append the
+				// studio/performer rows now that a movie row was persisted.
+				out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 			}
 		}
 	}
 
-	out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 	return out, nil
 }
 
@@ -745,6 +760,13 @@ func runFeedCycle(ctx context.Context, httpClient *http.Client, connStore *conne
 // plus its studio/performers (browse-confirmed, no enclosure, shared with the
 // browse pass). The D3 upsert merges browse_confirmed, so if the browse pass
 // already confirmed this entity that fact is preserved. No confirmAvailable.
+//
+// US-1 orphan prevention (2026-07-30): as in matchRelease, the studio/performer
+// rows are appended ONLY inside the branch that actually persisted a scene/movie
+// row (here that's simply "a scene or a movie was found," since the feed pass has
+// no confirmAvailable gate), never unconditionally after the switch — so a feed
+// item that resolves to a confirmable studio/performer but no scene/movie leaves
+// no orphaned card behind.
 func processFeedItem(ctx context.Context, id *identify.Identifier, releaseStore *ReleaseStore, f rssfeeds.Feed, it rssfeed.Item, key string, nowUnix int64) error {
 	detail, err := id.IdentifyDetailed(ctx, it.Title, "")
 	if err != nil {
@@ -765,14 +787,20 @@ func processFeedItem(ctx context.Context, id *identify.Identifier, releaseStore 
 			rowType = RowMovie
 		}
 		out = append(out, toFeedMatchedRelease(rowType, *detail.Scene, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
+		// US-1 orphan prevention: studio/performer side-entities are appended
+		// ONLY inside the branch that actually persisted a scene/movie row (the
+		// feed pass has no confirmAvailable gate, so "a scene/movie was found" is
+		// the whole condition here), never unconditionally after the switch.
+		out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 	default:
 		// No scene match — try TPDB's movie catalog directly, same lighter-weight
 		// fallback the browse pass uses.
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, it.Title); err == nil && movie != nil {
 			out = append(out, toFeedMatchedRelease(RowMovie, *movie, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
+			// Same US-1 gate as the scene branch above.
+			out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 		}
 	}
-	out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 
 	for _, m := range out {
 		if err := releaseStore.Insert(ctx, m); err != nil {

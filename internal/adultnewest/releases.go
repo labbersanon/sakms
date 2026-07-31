@@ -425,6 +425,110 @@ func (s *ReleaseStore) ListByGender(ctx context.Context, rowType RowType, genreF
 	return s.listFiltered(ctx, rowType, genreFilter, gender, page, perPage)
 }
 
+// --- Shared "has a linked scene" logic (US-1..US-4) -------------------------
+//
+// A performer/studio row is only justified by a scene/movie row that references
+// it. The ONE definition of "linked", reused everywhere so the four stories can
+// never drift into subtly-different SQL:
+//
+//   - performer: some scene/movie row whose performers JSON array contains a
+//     case/whitespace-insensitive match of the performer's name (via json_each
+//     — not a substring/LIKE, still a full-name match).
+//   - studio: some scene/movie row whose entity_studio case/whitespace-
+//     insensitively equals the studio's name.
+//
+// Case/whitespace-insensitive (not byte-exact) because a scene row's
+// entity_studio/performers come from the matched box scene object itself
+// (identify.MatchResult, e.g. "Vixen Media"), while a performer/studio row's
+// entity_id comes from the independent verifyStudio/verifyPerformers
+// normalized-guess-or-canonical result (e.g. "vixen media") — two genuinely
+// different sources for what is meant to be the same name, confirmed to
+// diverge in casing by identify_test.go's
+// TestIdentifyDetailed_SceneMatchAlsoReturnsCorrectedStudioAndPerformers. A
+// byte-exact join would silently treat that as "not linked."
+//
+// "The name" is always the entity's entity_id column, which for a
+// performer/studio row holds the name itself (see scan.go's
+// identifyStudioPerformers). These helpers back ScenesLinkedToEntity (US-2's
+// drill-down) and listFiltered's browse-strip filter (US-4); migration 0051's
+// cleanup (US-3) hand-mirrors the same predicates in raw SQL, since a goose
+// migration can't call Go — keep the two in sync if this definition ever changes.
+
+// performerLinkPredicate is the boolean SQL predicate that is true when the
+// scene/movie row referenced by sceneAlias lists the performer named by nameExpr
+// in its performers JSON array (case/whitespace-insensitive json_each match).
+// nameExpr is a raw SQL expression: a "?" placeholder (forward query) or a
+// correlated column reference (browse-strip EXISTS filter).
+func performerLinkPredicate(sceneAlias, nameExpr string) string {
+	return `EXISTS (SELECT 1 FROM json_each(` + sceneAlias + `.performers) je WHERE TRIM(LOWER(je.value)) = TRIM(LOWER(` + nameExpr + `)))`
+}
+
+// studioLinkPredicate is performerLinkPredicate's studio counterpart: true when
+// the scene/movie row referenced by sceneAlias has entity_studio
+// case/whitespace-insensitively equal to nameExpr.
+func studioLinkPredicate(sceneAlias, nameExpr string) string {
+	return `TRIM(LOWER(` + sceneAlias + `.entity_studio)) = TRIM(LOWER(` + nameExpr + `))`
+}
+
+// entityHasLinkedSceneFilter returns the correlated EXISTS predicate listFiltered
+// appends for a performer/studio browse-strip listing (US-4): true when at least
+// one scene/movie row is currently linked to the outer row (matched by its
+// entity_id). It is a LIVE check — a performer/studio that later loses its last
+// linked scene silently stops listing, no cleanup pass needed. Returns "" for
+// scene/movie (and any other) row types, which are never filtered by linkage.
+func entityHasLinkedSceneFilter(rowType RowType) string {
+	var link string
+	switch rowType {
+	case RowPerformer:
+		link = performerLinkPredicate("sc", "adult_newest_releases.entity_id")
+	case RowStudio:
+		link = studioLinkPredicate("sc", "adult_newest_releases.entity_id")
+	default:
+		return ""
+	}
+	return `EXISTS (SELECT 1 FROM adult_newest_releases sc WHERE sc.row_type IN ('scene', 'movie') AND ` + link + `)`
+}
+
+// ScenesLinkedToEntity returns every pooled scene/movie row currently linked to
+// the named performer or studio, newest first — the data source for the
+// drill-down's page 1 (US-2), replacing the former live RSS re-fetch+join. It is
+// deliberately UNPAGINATED: the pool is bounded by design (scan cadence + 6-month
+// purge), the drill-down's page>1 switches to the live Prowlarr path, so there is
+// no pool "page 2" to offset into. Uses the shared performer/studio link
+// predicates (exact json_each / entity_studio match), so it agrees byte-for-byte
+// with listFiltered's browse-strip filter and migration 0051's cleanup. An
+// unknown kind returns an empty slice, not an error.
+func (s *ReleaseStore) ScenesLinkedToEntity(ctx context.Context, kind RowType, name string) ([]MatchedRelease, error) {
+	var link string
+	switch kind {
+	case RowPerformer:
+		link = performerLinkPredicate("adult_newest_releases", "?")
+	case RowStudio:
+		link = studioLinkPredicate("adult_newest_releases", "?")
+	default:
+		return []MatchedRelease{}, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT `+releaseColumns+`
+		FROM adult_newest_releases
+		WHERE row_type IN ('scene', 'movie') AND `+link+`
+		ORDER BY first_seen_at DESC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("listing scenes linked to %q: %w", name, err)
+	}
+	defer rows.Close()
+
+	out := []MatchedRelease{}
+	for rows.Next() {
+		m, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *ReleaseStore) listFiltered(ctx context.Context, rowType RowType, genreFilter, gender string, page, perPage int) ([]MatchedRelease, error) {
 	if perPage <= 0 {
 		perPage = defaultResolvePerPage
@@ -438,6 +542,12 @@ func (s *ReleaseStore) listFiltered(ctx context.Context, rowType RowType, genreF
 		FROM adult_newest_releases
 		WHERE row_type = ?`
 	args := []any{string(rowType)}
+	// US-4: a performer/studio browse-strip row is only listed while it currently
+	// has >=1 linked scene/movie row. Scene/Movie listings are unaffected (the
+	// helper returns "" for them).
+	if f := entityHasLinkedSceneFilter(rowType); f != "" {
+		query += ` AND ` + f
+	}
 	if genreFilter != "" {
 		query += ` AND genres LIKE ?`
 		args = append(args, `%"`+genreFilter+`"%`)

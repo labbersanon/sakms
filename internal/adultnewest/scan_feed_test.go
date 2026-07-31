@@ -155,6 +155,88 @@ func TestRunFeedCycle_RefreshesFullWindowLastSeen(t *testing.T) {
 	}
 }
 
+// adultFeedBody builds a one-item RSS 2.0 feed whose item carries the given
+// title and a torrent enclosure — lets the US-1 feed tests control the title the
+// identify pipeline parses.
+func adultFeedBody(title string) string {
+	return `<?xml version="1.0"?><rss version="2.0"><channel>` +
+		`<item><title>` + title + `</title>` +
+		`<link>https://example.com/details/1</link>` +
+		`<enclosure url="https://example.com/fetch/1.torrent" length="2048"/></item>` +
+		`</channel></rss>`
+}
+
+// TestProcessFeedItem_NoSceneRow_SkipsStudioPerformer is US-1's orphan-prevention
+// proof for the FEED pass: when a feed item resolves to a confirmable
+// studio+performer but NO scene/movie row is persisted (/scenes and /movies both
+// empty), zero performer/studio rows are created — the same gate as the browse
+// pass, at processFeedItem's own call site.
+func TestProcessFeedItem_NoSceneRow_SkipsStudioPerformer(t *testing.T) {
+	connStore, settingsStore, releaseStore, rssFeedsStore := newTestFeedStores(t)
+	ctx := context.Background()
+
+	// /scenes + /movies empty → no scene/movie row; /sites + /performers confirm
+	// the names, so identifyStudioPerformers would (pre-fix) orphan them.
+	tpdb := fakeTPDB(t, map[string]bool{"Real Studio": true}, map[string]bool{"Real Performer": true})
+	overrideTPDBBaseURL(t, tpdb.URL)
+	if err := connStore.Upsert(ctx, "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("configuring tpdb: %v", err)
+	}
+	ollama := fakeOllama(t, `{"studio":"Real Studio","title":"Some Scene Title","performers":["Real Performer"]}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	feedSrv := fakeRSSFeed(t, adultFeedBody("Real.Studio.Some.Scene.Title.Real.Performer.XXX.1080p"), nil)
+	if _, err := rssFeedsStore.Create(ctx, "Adult Feed", feedSrv.URL, rssfeeds.TargetAdult, rssfeeds.Torrent, true); err != nil {
+		t.Fatalf("creating feed: %v", err)
+	}
+
+	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
+
+	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 0 {
+		t.Errorf("expected no scene row, got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowStudio); len(got) != 0 {
+		t.Errorf("expected NO studio row when no scene/movie persisted (US-1, feed pass), got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowPerformer); len(got) != 0 {
+		t.Errorf("expected NO performer row when no scene/movie persisted (US-1, feed pass), got %v", got)
+	}
+}
+
+// TestProcessFeedItem_SceneRow_CreatesStudioPerformer is the positive counterpart:
+// when the feed pass DOES persist a scene row, the confirmed studio/performer
+// rows are still created alongside it — no regression to the working case.
+func TestProcessFeedItem_SceneRow_CreatesStudioPerformer(t *testing.T) {
+	connStore, settingsStore, releaseStore, rssFeedsStore := newTestFeedStores(t)
+	ctx := context.Background()
+
+	tpdb := tpdbSceneStudioPerformerFake(t, "Some Scene Title",
+		map[string]bool{"Real Studio": true}, map[string]bool{"Real Performer": true})
+	overrideTPDBBaseURL(t, tpdb.URL)
+	if err := connStore.Upsert(ctx, "tpdb", tpdb.URL, "key"); err != nil {
+		t.Fatalf("configuring tpdb: %v", err)
+	}
+	ollama := fakeOllama(t, `{"studio":"Real Studio","title":"Some Scene Title","performers":["Real Performer","Garbage Fragment"]}`)
+	configureAI(t, ctx, connStore, settingsStore, ollama.URL)
+
+	feedSrv := fakeRSSFeed(t, adultFeedBody("Real.Studio.Some.Scene.Title.Real.Performer.XXX.1080p"), nil)
+	if _, err := rssFeedsStore.Create(ctx, "Adult Feed", feedSrv.URL, rssfeeds.TargetAdult, rssfeeds.Torrent, true); err != nil {
+		t.Fatalf("creating feed: %v", err)
+	}
+
+	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
+
+	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 1 {
+		t.Fatalf("expected the scene row to be persisted, got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowStudio); len(got) != 1 || got[0] != "Real Studio" {
+		t.Errorf("expected the confirmed studio cached alongside the scene, got %v", got)
+	}
+	if got := rawEntityTitles(t, releaseStore, RowPerformer); len(got) != 1 || got[0] != "Real Performer" {
+		t.Errorf("expected only the confirmed performer (Garbage Fragment skipped), got %v", got)
+	}
+}
+
 // TestRun_FeedBootPollFiresBeforeInterval proves D7's immediate boot poll: with
 // a long feed interval, the feed is still polled at t≈0 (before the first tick),
 // so feed content isn't invisible for a whole interval after a restart.

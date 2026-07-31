@@ -95,13 +95,6 @@ func (u *connectionsUpserter) setTPDB(t *testing.T) {
 	}
 }
 
-func (u *connectionsUpserter) addAdultFeed(t *testing.T, title, feedURL string) {
-	t.Helper()
-	if _, err := u.rssFeedsStore.Create(context.Background(), title, feedURL, rssfeeds.TargetAdult, rssfeeds.Torrent, true); err != nil {
-		t.Fatalf("seeding adult RSS feed: %v", err)
-	}
-}
-
 // getNewestScenes fires the drill-down for one page and decodes the
 // {items, hasMore} envelope. page<1 means "omit the param" (exercise the
 // default-to-1 path).
@@ -143,138 +136,134 @@ func seedStudioPoolBox(t *testing.T, store *adultnewest.ReleaseStore, name, sour
 	}
 }
 
-// --- page=1: pool-only, zero Prowlarr ---------------------------------------
+// --- page=1: direct pool query, zero external calls -------------------------
 
-// TestAdultNewestEntityScenesHandler_Page1NoProwlarr is the load-bearing
-// property of the reworked initial open: a plain page=1 request fires ZERO
-// Prowlarr searches, proven against an httptest Prowlarr counting calls.
-func TestAdultNewestEntityScenesHandler_Page1NoProwlarr(t *testing.T) {
-	var calls int32
+// seedLinkedScene inserts a scene pool row that credits the given studio (via
+// entity_studio) and performers, so a performer/studio drill-down's page-1 pool
+// query returns it. Mirrors scan.go's pooled scene shape.
+func seedLinkedScene(t *testing.T, store *adultnewest.ReleaseStore, id, title, studio, image, releaseTitle string, performers ...string) {
+	t.Helper()
+	if err := store.Insert(context.Background(), adultnewest.MatchedRelease{
+		RowType:               adultnewest.RowScene,
+		EntityID:              id,
+		EntitySource:          "tpdb",
+		EntityTitle:           title,
+		EntityStudio:          studio,
+		EntityImage:           image,
+		FirstSeenReleaseTitle: releaseTitle,
+		Performers:            performers,
+		BrowseConfirmed:       true,
+	}); err != nil {
+		t.Fatalf("seeding linked scene %q: %v", id, err)
+	}
+}
+
+// TestAdultNewestEntityScenesHandler_Page1QueriesPoolZeroExternal is the
+// load-bearing property of the reworked initial open (US-2): page=1 queries the
+// matched-entity pool directly for scenes linked to the drilled entity and fires
+// ZERO external calls (no Prowlarr, no RSS), proven against a Prowlarr server
+// counting calls. The linked scene's pool fields map onto the wire item.
+func TestAdultNewestEntityScenesHandler_Page1QueriesPoolZeroExternal(t *testing.T) {
+	var prowlarrCalls int32
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
+		atomic.AddInt32(&prowlarrCalls, 1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"guid":"1","title":"Some.Scene-GRP","protocol":"torrent","size":1,"downloadUrl":"magnet:x"}]`))
+		w.Write([]byte(`[]`))
 	}))
 	defer prowlarr.Close()
 
-	srv, seed := newestScenesMux(t)
-	seed.setProwlarr(t, prowlarr.URL)
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
+	seed.setProwlarr(t, prowlarr.URL) // present but must never be touched on page 1
 
-	resp, page := getNewestScenes(t, srv.URL, "performer", "Some Performer", 0)
+	seedLinkedScene(t, releaseStore, "sc-nova", "Resolved Nova Title", "Nova Studio",
+		"https://cdn/nova.jpg", "Nova.Raw.Release.XXX-GRP", "Nova")
+
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Nova", 0)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if got := atomic.LoadInt32(&calls); got != 0 {
+	if got := atomic.LoadInt32(&prowlarrCalls); got != 0 {
 		t.Fatalf("expected ZERO Prowlarr calls on page=1, got %d", got)
 	}
 	if !page.HasMore {
 		t.Errorf("expected page=1 HasMore=true (Show More always offered), got false")
 	}
-	if len(page.Items) != 0 {
-		t.Errorf("expected no items (no pool-matched RSS), got %d", len(page.Items))
+	if len(page.Items) != 1 {
+		t.Fatalf("expected the 1 linked pool scene, got %d (%+v)", len(page.Items), page.Items)
+	}
+	it := page.Items[0]
+	if it.Title != "Resolved Nova Title" || it.Studio != "Nova Studio" || it.Image != "https://cdn/nova.jpg" {
+		t.Errorf("expected pool row mapped onto the item, got %+v", it)
+	}
+	if it.ReleaseTitle != "Nova.Raw.Release.XXX-GRP" {
+		t.Errorf("expected the grab-bearing ReleaseTitle from the pool row, got %q", it.ReleaseTitle)
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_Page1DropsUnmatchedRSS proves page=1 shows
-// ONLY pool-matched RSS items — an item with no pool row is dropped entirely,
-// never shown raw (resolveRssFeedHandler's drop-unmatched precedent).
-func TestAdultNewestEntityScenesHandler_Page1DropsUnmatchedRSS(t *testing.T) {
-	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(`<?xml version="1.0"?><rss version="2.0"><channel>` +
-			`<item><title>Nova Pool Hit Scene</title><enclosure url="http://feed.invalid/hit.torrent" length="500"/></item>` +
-			`<item><title>Nova Pool Miss Scene</title><enclosure url="http://feed.invalid/miss.torrent" length="600"/></item>` +
-			`</channel></rss>`))
-	}))
-	defer feed.Close()
+// TestAdultNewestEntityScenesHandler_Page1StudioLinkage proves the studio
+// drill-down uses the entity_studio exact-match linkage (not performers).
+func TestAdultNewestEntityScenesHandler_Page1StudioLinkage(t *testing.T) {
+	srv, _, releaseStore := newestScenesMuxWithReleaseStore(t)
 
-	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
-	seed.addAdultFeed(t, "adult feed", feed.URL)
+	seedLinkedScene(t, releaseStore, "sc-brazz", "Brazzers Scene", "Brazzers", "", "Brazzers.Raw-GRP", "Some Performer")
+	seedLinkedScene(t, releaseStore, "sc-other", "Other Scene", "Other Studio", "", "Other.Raw-GRP", "Some Performer")
 
-	if err := releaseStore.Insert(context.Background(), adultnewest.MatchedRelease{
-		RowType:         adultnewest.RowScene,
-		EntityID:        "scene-nova-1",
-		EntitySource:    "tpdb",
-		EntityTitle:     "Resolved Nova Title",
-		EntityStudio:    "Resolved Nova Studio",
-		EntityImage:     "https://cdn/nova.jpg",
-		BrowseConfirmed: true,
-		FeedItemKey:     "http://feed.invalid/hit.torrent",
-	}); err != nil {
-		t.Fatalf("seeding pool: %v", err)
-	}
-
-	resp, page := getNewestScenes(t, srv.URL, "performer", "Nova", 1)
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 1)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if len(page.Items) != 1 {
-		t.Fatalf("expected only the 1 pool-matched item (miss dropped), got %d (%+v)", len(page.Items), page.Items)
-	}
-	it := page.Items[0]
-	if it.DownloadURL != "http://feed.invalid/hit.torrent" {
-		t.Errorf("expected the pool-hit item, got %+v", it)
-	}
-	if it.Title != "Resolved Nova Title" || it.Studio != "Resolved Nova Studio" || it.Image != "https://cdn/nova.jpg" {
-		t.Errorf("expected pool-matched enrichment, got %+v", it)
-	}
-	// Grab-safety: enrichment must never touch the grab-bearing fields.
-	if it.ReleaseTitle != "Nova Pool Hit Scene" || it.SizeBytes != 500 || it.Protocol != "torrent" {
-		t.Errorf("expected grab-bearing fields unchanged (raw RSS), got %+v", it)
+	if len(page.Items) != 1 || page.Items[0].Title != "Brazzers Scene" {
+		t.Fatalf("expected only the Brazzers-linked scene, got %+v", page.Items)
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_Page1RSSFailureNeverFails asserts a failing
-// RSS feed is logged and dropped while page=1 still 200s (empty, HasMore true) —
-// RSS failure never fails the handler.
-func TestAdultNewestEntityScenesHandler_Page1RSSFailureNeverFails(t *testing.T) {
-	badFeed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "feed exploded", http.StatusInternalServerError)
-	}))
-	defer badFeed.Close()
+// TestAdultNewestEntityScenesHandler_Page1NoLinkedScenesEmpty proves an entity
+// with no linked scene returns an empty page (still 200, HasMore true) and makes
+// zero external calls.
+func TestAdultNewestEntityScenesHandler_Page1NoLinkedScenesEmpty(t *testing.T) {
+	srv, _, releaseStore := newestScenesMuxWithReleaseStore(t)
+	// A scene exists but credits a different performer.
+	seedLinkedScene(t, releaseStore, "sc-x", "X", "Studio", "", "X.Raw-GRP", "Someone Else")
 
-	srv, seed := newestScenesMux(t)
-	seed.addAdultFeed(t, "broken adult feed", badFeed.URL)
-
-	resp, page := getNewestScenes(t, srv.URL, "performer", "Working", 1)
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Nobody", 1)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 despite the failing feed, got %d", resp.StatusCode)
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	if len(page.Items) != 0 || !page.HasMore {
 		t.Fatalf("expected empty items + HasMore true, got %+v hasMore=%v", page.Items, page.HasMore)
 	}
 }
 
-// TestAdultNewestEntityScenesHandler_Page1PoolLookupErrorKeepsRaw asserts a
-// failing pool lookup falls back to returning the raw RSS items unfiltered
-// (best-effort, mirroring resolveRssFeedHandler) rather than blanking the view.
-func TestAdultNewestEntityScenesHandler_Page1PoolLookupErrorKeepsRaw(t *testing.T) {
-	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		w.Write([]byte(`<?xml version="1.0"?><rss version="2.0"><channel>` +
-			`<item><title>Nova One</title><enclosure url="http://feed.invalid/1.torrent" length="1"/></item>` +
-			`<item><title>Nova Two</title><enclosure url="http://feed.invalid/2.torrent" length="2"/></item>` +
-			`</channel></rss>`))
-	}))
-	defer feed.Close()
+// TestAdultNewestEntityScenesHandler_Page1ExactMatchNotSubstring proves the
+// linkage is an exact match: a scene crediting "Madison River" does not surface
+// for a "Madison" drill-down.
+func TestAdultNewestEntityScenesHandler_Page1ExactMatchNotSubstring(t *testing.T) {
+	srv, _, releaseStore := newestScenesMuxWithReleaseStore(t)
+	seedLinkedScene(t, releaseStore, "sc-mr", "River Scene", "Studio", "", "River.Raw-GRP", "Madison River")
 
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Madison", 1)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("expected no substring match for 'Madison', got %+v", page.Items)
+	}
+}
+
+// TestAdultNewestEntityScenesHandler_Page1PoolErrorReturnsEmpty asserts a failing
+// pool query degrades to an empty page (still 200, HasMore true), never failing
+// the drill-down — best-effort, mirroring the old RSS path's contract.
+func TestAdultNewestEntityScenesHandler_Page1PoolErrorReturnsEmpty(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, _, rssFeedsStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, brokenReleaseStore(t), testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
-	seed := &connectionsUpserter{connStore: connStore, rssFeedsStore: rssFeedsStore}
-	seed.addAdultFeed(t, "adult feed", feed.URL)
 
 	resp, page := getNewestScenes(t, srv.URL, "performer", "Nova", 1)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 despite the failing pool lookup, got %d", resp.StatusCode)
+		t.Fatalf("expected 200 despite the failing pool query, got %d", resp.StatusCode)
 	}
-	if len(page.Items) != 2 {
-		t.Fatalf("expected both raw RSS items kept on a pool-lookup error, got %d (%+v)", len(page.Items), page.Items)
-	}
-	for _, it := range page.Items {
-		if it.Studio != "" || it.Image != "" {
-			t.Errorf("expected raw/unenriched item on lookup error, got %+v", it)
-		}
+	if len(page.Items) != 0 || !page.HasMore {
+		t.Fatalf("expected empty items + HasMore true on a pool error, got %+v hasMore=%v", page.Items, page.HasMore)
 	}
 }
 

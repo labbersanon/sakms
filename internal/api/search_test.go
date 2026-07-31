@@ -85,6 +85,78 @@ func TestSearchHandler_ScoresAndSortsResults(t *testing.T) {
 	}
 }
 
+// TestSearchHandler_DedupsCrossPostsKeepsHighestSeeder proves the manual Search
+// screen now dedups (it had none before): two releases with the same title but
+// different non-empty download URLs and different seeders — the confirmed
+// root-cause cross-post case — collapse to exactly one result, the higher-seeder
+// one. Run in a NON-Adult mode (Movies) to cover the spec's "applies universally"
+// constraint beyond Adult.
+func TestSearchHandler_DedupsCrossPostsKeepsHighestSeeder(t *testing.T) {
+	fake := fakeProwlarr(t, `[
+		{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":1,"seeders":3,"downloadUrl":"http://x/1","publishDate":"2023-01-01"},
+		{"guid":"2","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"J","protocol":"torrent","size":1,"seeders":9,"downloadUrl":"http://y/2","publishDate":"2023-01-01"}
+	]`)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "prowlarr", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/search?q=Some+Movie")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var results []searchResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected the cross-post duplicates collapsed to 1 result, got %d (%+v)", len(results), results)
+	}
+	if results[0].Seeders != 9 || results[0].GUID != "2" {
+		t.Errorf("expected the higher-seeder (9) cross-post to survive, got %+v", results[0])
+	}
+}
+
+// TestSearchHandler_DistinctQualityVariantsBothReturned guards against
+// over-collapsing on the Search path: two releases with genuinely different
+// resolution tokens (1080p vs 2160p) are distinct pickable options and must both
+// be returned and scored.
+func TestSearchHandler_DistinctQualityVariantsBothReturned(t *testing.T) {
+	fake := fakeProwlarr(t, `[
+		{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":1,"seeders":3,"downloadUrl":"http://x/1","publishDate":"2023-01-01"},
+		{"guid":"2","title":"Some.Movie.2023.2160p.WEB-DL.x265-GROUP","indexer":"J","protocol":"torrent","size":2,"seeders":3,"downloadUrl":"http://y/2","publishDate":"2023-01-01"}
+	]`)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if err := connStore.Upsert(context.Background(), "prowlarr", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/search?q=Some+Movie")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var results []searchResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected both distinct-quality variants returned, got %d (%+v)", len(results), results)
+	}
+}
+
 func TestSearchHandler_RequiresQuery(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))

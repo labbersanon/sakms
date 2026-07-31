@@ -266,6 +266,11 @@ type AdultDiscoverItem struct {
 	DownloadURL string `json:"downloadUrl,omitempty"`
 	Protocol    string `json:"protocol,omitempty"`
 	SizeBytes   int64  `json:"sizeBytes,omitempty"`
+	// Seeders is the Prowlarr seeder count for a Show More (page>1) result,
+	// used server-side for duplicate winner-selection before the item is
+	// returned. Pool-sourced (page-1) items leave it 0 (no Prowlarr seeder
+	// data). omitempty to match this struct's optional-field cluster.
+	Seeders int `json:"seeders,omitempty"`
 }
 
 // AdultNewestScenesPage is the paginated envelope for the Adult "newest"

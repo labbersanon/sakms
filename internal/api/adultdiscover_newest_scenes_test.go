@@ -605,6 +605,120 @@ func TestAdultNewestEntityScenesHandler_Page2BoxFailureDropsAll(t *testing.T) {
 	}
 }
 
+// --- dedup call-site tests (section B) --------------------------------------
+
+// TestAdultNewestShowMore_KeysOnReleaseTitleNotTitle is the CRITICAL CONCERN 1
+// test, driven end-to-end through the real Show More handler. Two raw Prowlarr
+// releases that are DISTINCT quality variants (1080p vs 2160p) of the SAME
+// catalog scene both enrich to the identical token-free display Title ("Some
+// Clean Scene Title") but keep DISTINCT ReleaseTitles (raw, token-bearing) and
+// distinct download URLs. Because the Show More wrapper keys on ReleaseTitle (not
+// the enriched Title), BOTH must survive — hiding one resolution would violate
+// the spec's quality-variant constraint. If the wrapper keyed on Title, the two
+// same-Title items would collapse to one (the revert-check for this test).
+func TestAdultNewestShowMore_KeysOnReleaseTitleNotTitle(t *testing.T) {
+	origTPDB := tpdbrest.DefaultBaseURL
+	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
+
+	tpdb := httptest.NewServer(tpdbStudioCatalogFake(nil, nil, nil))
+	defer tpdb.Close()
+	tpdbrest.DefaultBaseURL = tpdb.URL
+
+	const raw1080 = "Brazzers.Some.Clean.Scene.Title.XXX.1080p-GROUP"
+	const raw2160 = "Brazzers.Some.Clean.Scene.Title.XXX.2160p-GROUP"
+	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{"guid":"1","title":"` + raw1080 + `","protocol":"torrent","size":900000000,"seeders":5,"downloadUrl":"magnet:?xt=urn:btih:AAA"},
+			{"guid":"2","title":"` + raw2160 + `","protocol":"torrent","size":900000000,"seeders":9,"downloadUrl":"magnet:?xt=urn:btih:BBB"}
+		]`))
+	}))
+	defer prowlarr.Close()
+
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
+	seed.setProwlarr(t, prowlarr.URL)
+	seed.setTPDB(t)
+	seedStudioPoolBox(t, releaseStore, "Brazzers", "tpdb")
+
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected BOTH distinct-quality variants to survive (keyed on ReleaseTitle), got %d (%+v)", len(page.Items), page.Items)
+	}
+	for _, it := range page.Items {
+		if it.Title != "Some Clean Scene Title" {
+			t.Errorf("expected both items enriched to the identical clean Title, got %q", it.Title)
+		}
+	}
+	// The two survivors must be the two distinct raw releases, unchanged.
+	gotRelease := map[string]bool{page.Items[0].ReleaseTitle: true, page.Items[1].ReleaseTitle: true}
+	if !gotRelease[raw1080] || !gotRelease[raw2160] {
+		t.Errorf("expected both distinct ReleaseTitles preserved, got %+v", gotRelease)
+	}
+}
+
+// TestAdultNewestShowMore_RootCauseAndWinner exercises the Show More wrapper
+// directly: two post-enrichment items sharing an identical ReleaseTitle but with
+// DIFFERENT non-empty download URLs and different Seeders collapse to one — the
+// higher-seeder survivor. This is the confirmed root-cause gap (both survive
+// today) on the Show More path.
+func TestAdultNewestShowMore_RootCauseAndWinner(t *testing.T) {
+	items := []apidto.AdultDiscoverItem{
+		{Title: "Clean Title", ReleaseTitle: "Same.Raw.Release-GRP", DownloadURL: "magnet:?xt=urn:btih:AAA", Seeders: 3},
+		{Title: "Clean Title", ReleaseTitle: "Same.Raw.Release-GRP", DownloadURL: "magnet:?xt=urn:btih:BBB", Seeders: 9},
+	}
+	out := dedupeAdultShowMoreItems(items)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 survivor for same-ReleaseTitle cross-posts, got %d (%+v)", len(out), out)
+	}
+	if out[0].Seeders != 9 || out[0].DownloadURL != "magnet:?xt=urn:btih:BBB" {
+		t.Errorf("expected the higher-seeder (9) survivor, got %+v", out[0])
+	}
+}
+
+// TestAdultNewestPool_URLMatchStillCollapses is the CONCERN 2 guard, direction 1:
+// the page-1 pool wrapper still collapses two items that share the same non-empty
+// DownloadURL, exactly as before. Seeder tie-break is a no-op on this path (pool
+// Seeders is always 0), so the first occurrence survives.
+func TestAdultNewestPool_URLMatchStillCollapses(t *testing.T) {
+	items := []apidto.AdultDiscoverItem{
+		{ID: "e1", Title: "Title One", DownloadURL: "magnet:?xt=urn:btih:SAME"},
+		{ID: "e2", Title: "Title Two", DownloadURL: "magnet:?xt=urn:btih:SAME"},
+	}
+	out := dedupeAdultPoolItems(items)
+	if len(out) != 1 {
+		t.Fatalf("expected the same-URL pool items to collapse to 1, got %d (%+v)", len(out), out)
+	}
+	if out[0].ID != "e1" {
+		t.Errorf("expected the first occurrence to survive (seeder tie-break is a no-op), got %+v", out[0])
+	}
+}
+
+// TestAdultNewestPool_DistinctEntitiesSameTitleNotCollapsed is the CONCERN 2
+// guard, direction 2 (the Critic's required new-direction test), driven through
+// the real page-1 handler. Two DIFFERENT pool entities (distinct entity_id) that
+// credit the same performer and happen to share an identical Title string, both
+// with empty DownloadURL (feed not fresh — the harness's natural pool state),
+// must BOTH survive — proving the page-1 pool wrapper NEVER title-matches, so two
+// distinct scenes are never wrongly hidden from the drill-down.
+func TestAdultNewestPool_DistinctEntitiesSameTitleNotCollapsed(t *testing.T) {
+	srv, _, releaseStore := newestScenesMuxWithReleaseStore(t)
+
+	// Same Title + same credited performer, DISTINCT entity_id, no DownloadURL.
+	seedLinkedScene(t, releaseStore, "sc-dup-1", "Identical Scene Title", "Studio A", "", "First.Raw.Release-GRP", "Nova")
+	seedLinkedScene(t, releaseStore, "sc-dup-2", "Identical Scene Title", "Studio B", "", "Second.Raw.Release-GRP", "Nova")
+
+	resp, page := getNewestScenes(t, srv.URL, "performer", "Nova", 1)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected BOTH distinct same-title entities to survive on page 1, got %d (%+v)", len(page.Items), page.Items)
+	}
+}
+
 // TestAdultNewestEntityScenesHandler_Page2TimeoutNeverFails proves the
 // enrichment sub-timeout never hangs or fails the handler: against a box that
 // never responds, with newestScenesEnrichTimeout shrunk, the handler still 200s

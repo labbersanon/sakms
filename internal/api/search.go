@@ -97,6 +97,25 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, settin
 			return
 		}
 
+		// Collapse duplicate releases (the same release cross-posted to multiple
+		// indexers) BEFORE scoring, keeping the highest-seeder survivor of each
+		// group. Applies to all modes — the handler is mode-agnostic. Title here
+		// is the raw pre-scoring release string, so it carries resolution/source/
+		// codec tokens and normalizes safely without collapsing quality variants.
+		//
+		// normalizeAdultQuery's name is a holdover from its original Adult-only
+		// use (internal/api/autograb.go) — reused here deliberately, not by
+		// accident, since it already does exactly what dedup needs (strip
+		// punctuation, preserve alphanumeric tokens). A future Adult-motivated
+		// tweak to it would also change dedup behavior here for Movies/Series.
+		releases = dedupeReleases(releases, func(rel prowlarr.Release) releaseDedupKey {
+			return releaseDedupKey{
+				downloadURL:     rel.DownloadURL,
+				normalizedTitle: normalizeAdultQuery(rel.Title),
+				seeders:         rel.Seeders,
+			}
+		})
+
 		prefs, err := searchQualityProfile(ctx, settingsStore, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

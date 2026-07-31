@@ -122,7 +122,7 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, settingsStore 
 			for _, m := range scenes {
 				items = append(items, poolReleaseToDiscoverItem(m, feedHealth, now))
 			}
-			writeJSON(w, apidto.AdultNewestScenesPage{Items: dedupeAdultDiscoverItems(items), HasMore: true})
+			writeJSON(w, apidto.AdultNewestScenesPage{Items: dedupeAdultPoolItems(items), HasMore: true})
 			return
 		}
 
@@ -173,12 +173,13 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, settingsStore 
 				DownloadURL:  rel.DownloadURL,
 				Protocol:     string(rel.Protocol),
 				SizeBytes:    rel.Size,
+				Seeders:      rel.Seeders,
 				Source:       "prowlarr",
 			})
 		}
 
 		matched := enrichNewestScenesShowMore(tctx, sess.Identify, releaseStore, kind, name, items)
-		deduped := dedupeAdultDiscoverItems(matched)
+		deduped := dedupeAdultShowMoreItems(matched)
 		writeJSON(w, apidto.AdultNewestScenesPage{Items: deduped, HasMore: false})
 	}
 }
@@ -404,24 +405,36 @@ func poolReleaseToDiscoverItem(m adultnewest.MatchedRelease, feedHealth *adultne
 	return it
 }
 
-// dedupeAdultDiscoverItems removes duplicates keyed by DownloadURL, falling
-// back to the normalized Title when a DownloadURL is somehow empty. First
-// occurrence wins. Always returns a non-nil slice so an empty result encodes as
-// a flat [] JSON array, never null — the shape the scene-list drill-down UI
-// shell consumes.
-func dedupeAdultDiscoverItems(items []apidto.AdultDiscoverItem) []apidto.AdultDiscoverItem {
-	out := make([]apidto.AdultDiscoverItem, 0, len(items))
-	seen := make(map[string]bool, len(items))
-	for _, it := range items {
-		key := it.DownloadURL
-		if key == "" {
-			key = normalizeAdultQuery(it.Title)
+// dedupeAdultPoolItems collapses the page-1 pool response, keying ONLY on
+// DownloadURL — the normalized-title criterion is deliberately never populated
+// for this call site, so it can never fire. The pool (adult_newest_releases) is
+// already entity-deduped upstream on (row_type, entity_source, entity_id), so it
+// has no cross-post duplicates for a title criterion to catch; giving page-1 an
+// independent title match could only merge two GENUINELY DISTINCT entities that
+// happen to share a normalized title, silently hiding one from the drill-down.
+// Seeder tie-break is a permanent no-op here (pool Seeders is always 0). Always
+// returns a non-nil slice so an empty result encodes as a flat [] JSON array.
+func dedupeAdultPoolItems(items []apidto.AdultDiscoverItem) []apidto.AdultDiscoverItem {
+	return dedupeReleases(items, func(it apidto.AdultDiscoverItem) releaseDedupKey {
+		return releaseDedupKey{downloadURL: it.DownloadURL}
+	})
+}
+
+// dedupeAdultShowMoreItems collapses the page>1 (Show More) response, keying on
+// DownloadURL OR normalized ReleaseTitle as two independent criteria, keeping the
+// highest-seeder survivor of each duplicate group. It normalizes ReleaseTitle,
+// NOT Title: dedup runs AFTER enrichment overwrites Title with the token-free
+// catalog scene title, so two genuinely distinct quality variants (e.g. 1080p vs
+// 2160p) of the same scene now share an identical Title — keying on Title would
+// collapse them and hide one resolution. ReleaseTitle keeps its raw tokens
+// (enrichment never touches it), so true cross-posts still collapse while
+// distinct-quality releases stay distinct. Always returns a non-nil slice.
+func dedupeAdultShowMoreItems(items []apidto.AdultDiscoverItem) []apidto.AdultDiscoverItem {
+	return dedupeReleases(items, func(it apidto.AdultDiscoverItem) releaseDedupKey {
+		return releaseDedupKey{
+			downloadURL:     it.DownloadURL,
+			normalizedTitle: normalizeAdultQuery(it.ReleaseTitle),
+			seeders:         it.Seeders,
 		}
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, it)
-	}
-	return out
+	})
 }

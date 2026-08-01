@@ -1,9 +1,8 @@
 // The authed app shell. Past auth it renders a LEFT SIDEBAR (Dashboard /
-// Discover / Library / Downloads / Grabs / Requests / Organize / Tag /
-// Collections / Settings, each an icon + label) beside the client-side
-// router; the landing view is Discover. The sidebar collapses to icon-only
-// and persists that choice in localStorage. The router must never claim an
-// /api/* path (see APP_ROUTES).
+// Discover / Library / Queue / Organize / Tag / Collections / Settings, each
+// an icon + label) beside the client-side router; the landing view is
+// Discover. The sidebar collapses to icon-only and persists that choice in
+// localStorage. The router must never claim an /api/* path (see APP_ROUTES).
 //
 // LAYOUT (2026-07-14 mobile-responsive pass): the shell root is a fixed-height
 // flex row (`h-screen overflow-hidden`) with exactly one scroll region — the
@@ -40,9 +39,7 @@ import { fetchAdultModeEnabled } from "../api/settings";
 import { Dashboard } from "./Dashboard";
 import { Discover } from "./Discover";
 import { Library } from "./Library";
-import { Downloads } from "./Downloads";
-import { Grabs } from "./Grabs";
-import { Requests } from "./Requests";
+import { Queue } from "./Queue";
 import { Organize } from "./Organize";
 import { Tag } from "./Tag";
 import { Collections } from "./Collections";
@@ -53,7 +50,7 @@ import { BrowserNotifications } from "../components/BrowserNotifications";
 // serves. Guardrail #2 / requirement #7: the router must NEVER claim any
 // /api/* path (the OIDC callback /api/auth/oidc/callback is a real server
 // route). A unit test asserts none of these start with "/api".
-export const APP_ROUTES = ["/dashboard", "/", "/discover", "/library", "/downloads", "/grabs", "/requests", "/organize", "/tag", "/collections", "/settings"] as const;
+export const APP_ROUTES = ["/dashboard", "/", "/discover", "/library", "/queue", "/organize", "/tag", "/collections", "/settings"] as const;
 
 // SIDEBAR_COLLAPSED_KEY persists the sidebar's collapsed/expanded choice across
 // reloads. A single boolean is enough ("true" = collapsed).
@@ -152,25 +149,11 @@ const IconLibrary: Component = () => (
     <path d="m16.5 5.5 3.5 1-3.5 13-3.5-1z" />
   </svg>
 );
-const IconDownloads: Component = () => (
+const IconQueue: Component = () => (
   <svg {...svgProps}>
     <path d="M12 3v10" />
     <path d="m8 11 4 4 4-4" />
     <path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2" />
-  </svg>
-);
-const IconGrabs: Component = () => (
-  <svg {...svgProps}>
-    <path d="M12 3v12" />
-    <path d="m7 10 5 5 5-5" />
-    <path d="M4 20h16" />
-  </svg>
-);
-const IconRequests: Component = () => (
-  <svg {...svgProps}>
-    <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
-    <rect x="9" y="3" width="6" height="4" rx="1" />
-    <path d="m9 14 2 2 4-4" />
   </svg>
 );
 const IconRename: Component = () => (
@@ -216,9 +199,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
   { href: "/discover", label: "Discover", icon: IconDiscover },
   { href: "/library", label: "Library", icon: IconLibrary },
-  { href: "/downloads", label: "Downloads", icon: IconDownloads },
-  { href: "/grabs", label: "Grabs", icon: IconGrabs },
-  { href: "/requests", label: "Requests", icon: IconRequests },
+  { href: "/queue", label: "Queue", icon: IconQueue },
   { href: "/organize", label: "Organize", icon: IconRename },
   { href: "/tag", label: "Tag", icon: IconTag },
   { href: "/collections", label: "Collections", icon: IconCollections },
@@ -466,9 +447,7 @@ export const AppShell: Component<{
       <Route path="/dashboard" component={Dashboard} />
       <Route path="/discover" component={Discover} />
       <Route path="/library" component={Library} />
-      <Route path="/downloads" component={Downloads} />
-      <Route path="/grabs" component={Grabs} />
-      <Route path="/requests" component={Requests} />
+      <Route path="/queue" component={Queue} />
       <Route path="/organize" component={Organize} />
       <Route path="/tag" component={Tag} />
       <Route path="/collections" component={Collections} />

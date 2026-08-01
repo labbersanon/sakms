@@ -4017,3 +4017,77 @@ Spec: `.omc/specs/deep-interview-storage-allocation-breakdown.md` (~9% ambiguity
   2. **Adult mode's Dashboard cells are informational only.** The Library screen is Movies/Series only by design (spec non-goal 1), so Adult cells render disabled and non-clickable, providing visibility into Adult storage allocation without a broken navigation target.
 
 **Outcome:** Wave 1 (Go backend) and Wave 2 (frontend) implementation complete. Full-repo QA green (`go build`/`go vet`/`go test ./...`, `tsc --noEmit`/`vitest run`/`vite build` — 560/560 frontend tests, only the pre-existing unrelated `internal/sysinfo` GPU-hardware tests failing). Phase 4 validation (architect + security-reviewer + code-reviewer, all three routed per this codebase's "amends already-shipped code" elevated-review convention) returned APPROVE from all three, with a small set of required/recommended fixes applied post-review: visible disabled styling added to Adult Dashboard cells (previously `aria-disabled`-only), `EpisodeTiersBySeries` realigned to the aggregation's per-file dedup so a series can't appear in a tier's Library drill-down that its own Dashboard cell doesn't count, plus assorted doc-accuracy corrections (this entry included).
+
+## 2026-08-01 — Queue sidebar grouping: Downloads/Requests/Grabs become one entry
+
+Spec: `.omc/specs/deep-interview-queue-navigation-grouping.md` (~9.5% ambiguity,
+PASSED). Plan: `.omc/plans/autopilot-impl-queue-navigation-grouping.md`
+(Architect + Critic reviewed, APPROVE WITH CORRECTIONS, corrections applied
+before any code was written). Frontend-only: no Go changes, no API changes, no
+migrations.
+
+**What changed.** The three former top-level routes `/downloads`, `/grabs`, and
+`/requests` — each with its own sidebar entry — collapse into a single **Queue**
+entry at `/queue`. A new thin wrapper, `frontend/src/screens/Queue.tsx`, renders
+them as client-side tabs in the order **Downloads → Requests → Grabs**, with
+Downloads as the default. The sidebar goes 10 entries → 8; `APP_ROUTES` goes
+11 → 9. Nothing inside `Downloads.tsx` / `Requests.tsx` / `Grabs.tsx` was
+touched — their own test suites pass **unmodified**, which is the check that the
+change stayed at its mount point.
+
+**This is the same move `Organize.tsx` already made for Rename/Purge/Dedup, and
+`Queue.tsx` is deliberately a near-line-for-line mirror of it** rather than a
+fresh design or a shared abstraction extracted from the two. Same
+`createPersistedString` persistence (`sakms.queue.tab`, mirroring
+`sakms.organize.tab`), same sanitize-without-rewriting property (an unrecognized
+stored value displays the Downloads fallback but does NOT overwrite localStorage
+until the operator actually picks a tab), same single shadowing
+`ScreenTabsContext.Provider value={undefined}` wrapping all three children. Per
+CLAUDE.md's "no premature abstraction" convention, the duplication between the
+two wrappers is the intended outcome — keeping them diffable side by side is
+worth more than a shared helper for two callers.
+
+**The shadowing Provider is the load-bearing piece, and only ONE child needs
+it.** The embedded `Grabs` renders `ModeTabs`, which registers Movies/Series/
+Adult with the app shell's SINGLE tab slot and mounts *after* Queue — so left
+alone it would clobber Queue's own Downloads/Requests/Grabs bar and hide the
+switcher entirely. Shadowed, `ModeTabs` finds no shell setter and falls back to
+rendering its bar inline in the body. `Downloads` and `Requests` render neither
+`ModeTabs` nor `ScreenTabs` at all (verified), so the Provider is a no-op for
+them; it still wraps all three, matching `Organize.tsx` exactly. The
+corresponding test asserts the shell slot **after** the click that actually
+mounts Grabs — an assertion that stops before that click proves nothing — and
+was negative-controlled: with the Provider removed it fails, with it in place it
+passes.
+
+**Clean removal, no redirects, no aliases.** The `<Route path="*">` NotFound
+fallback already handles a stale bookmark to `/downloads`, so nothing extra was
+added. `IconDownloads` was renamed to `IconQueue` (glyph unchanged) and
+`IconGrabs`/`IconRequests` were deleted outright per the repo's "no dead code
+left behind" convention — `noUnusedLocals: true` makes leaving them a build
+failure, not a lint nit. A download-arrow glyph for a group that also holds
+Requests and Grabs is slightly imprecise; accepted deliberately, since Downloads
+is the default sub-tab and it matches what the operator lands on.
+
+**Note on tab order:** Downloads/Requests/Grabs is *not* the old sidebar order
+(Downloads/Grabs/Requests) — the spec reorders on purpose. Separately,
+`docs/ROADMAP.md` item 4 carries a 2026-07-31 amendment swapping Grabs for
+Calendar as tab 3; that is Phase 4 scope, deliberately deferred per
+`.omc/plans/roadmap-implementation-sequencing.md:104-106`, which adjudicated
+this exact question and rejected building against a Calendar screen that hasn't
+landed yet. The Grabs order here is intentional, not an oversight.
+
+Doc-only edits in the same change: `AppShell.tsx`'s file header (it enumerated
+the old 10-entry sidebar) and `Requests.tsx:4-7`'s prose header (it described
+`/grabs` and `/downloads` as sibling *routes*, now reworded to name the tabs) —
+both would otherwise have gone stale, which is exactly the silently-reversed-
+reasoning failure this project's comment standard guards against.
+
+**Outcome:** `pnpm typecheck`, `pnpm test`, and `pnpm build` all green —
+570/570 frontend tests passing across 48 files, including 8 new `Queue.test.tsx`
+cases and a new `routing.test.ts` assertion that machine-checks the route shape
+(`/queue` present, all three former routes absent) rather than leaving it
+eyeballed. Post-implementation greps for `/downloads`, `/grabs`, `/requests`
+across `frontend/src` confirm the AppShell rows are gone and every surviving hit
+is a backend API path, a test fetch stub, or an unrelated FolderPicker/Settings
+filesystem fixture.

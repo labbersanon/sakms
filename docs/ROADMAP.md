@@ -1059,19 +1059,24 @@ numbered below by original idea order, not interview order.
      first, then fan out *retrieval* across subscriptions. Nothing in the
      spec is lost under that reading — the full per-criterion mapping is in
      `CLAUDE.md`'s AMENDED 2026-08-01 note and the `CHANGELOG.md` entry.
-4. **Grabs/Requests/Downloads grouped under a side tab** — spec ready:
+4. **Grabs/Requests/Downloads grouped under a side tab** — **shipped 2026-08-01**:
    `.omc/specs/deep-interview-queue-navigation-grouping.md` (~9.5%
    ambiguity, PASSED). New sidebar entry "Queue" (Downloads → Requests →
    Grabs sub-tabs, Downloads default), reusing `Organize.tsx`'s exact
    existing client-side-tabs pattern — no new nav mechanism, no
-   URL-addressable sub-routes. Pure navigation restructuring; builds
-   directly on the companion spec below.
-   - **AMENDED by item 8's Calendar spec (2026-07-31, same session)**:
-     item 8's Calendar sub-tab replaces Grabs entirely — the sub-tab order
-     becomes Downloads → Requests → **Calendar**, not Downloads → Requests
-     → Grabs as originally specced here. The standalone Grabs
-     screen/route retires once Calendar's History view ships. Implement
-     the amended order, not this entry's original one.
+   URL-addressable sub-routes. Pure navigation restructuring; built
+   directly on the companion spec below, which shipped earlier the same
+   session.
+   - **Shipped with the ORIGINAL Grabs order, not item 8's amended Calendar
+     order — deliberately, not by oversight.** Item 8's Calendar spec is
+     still unbuilt as of this ship date, so building against it directly
+     would have meant designing against a screen that doesn't exist yet
+     (see `.omc/plans/roadmap-implementation-sequencing.md:104-106`, which
+     explicitly adjudicated this exact tradeoff and rejected pulling
+     Calendar forward). **The Grabs → Calendar swap described below remains
+     a real, pending amendment** — whoever implements item 8's Calendar
+     spec must still perform it as that spec's own scope, not assume it
+     already happened.
    - **Directly builds on an already-passed, still-unbuilt companion
      spec**: `.omc/specs/deep-interview-requests-downloads-remove.md` (9.5%
      ambiguity, PASSED, generated same day 2026-07-31, predates this

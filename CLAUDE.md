@@ -653,6 +653,31 @@ above, so don't drop them for convenience:
     Adult an equivalent entry point — see
     `.omc/plans/autopilot-impl-library-sidebar-tab.md` §2 and
     `docs/ROADMAP.md` item 12 for the full reasoning.
+  - **Queue sidebar grouping added (2026-08-01)** — the three former top-level
+    routes `/downloads`, `/grabs`, `/requests` (each with its own sidebar entry)
+    are now client-side tabs under ONE **Queue** entry at `/queue`, via a new
+    thin wrapper `frontend/src/screens/Queue.tsx`. Sidebar 10 entries → 8;
+    `APP_ROUTES` 11 → 9. Removal is clean — no redirects, no route aliases; the
+    `<Route path="*">` NotFound fallback handles stale bookmarks, and
+    `IconGrabs`/`IconRequests` were deleted outright (`IconDownloads` renamed to
+    `IconQueue`) per this repo's "no dead code left behind" convention.
+    `Downloads.tsx`/`Requests.tsx`/`Grabs.tsx` are internally untouched and
+    their own suites pass unmodified. **`Queue.tsx` is deliberately a
+    near-line-for-line mirror of `Organize.tsx`, not a shared abstraction
+    extracted from the two** — same `createPersistedString` persistence
+    (`sakms.queue.tab`), same sanitize-for-display-without-rewriting fallback,
+    same single shadowing `ScreenTabsContext.Provider value={undefined}`
+    wrapping all three children. That duplication is intended per the
+    no-premature-abstraction convention; don't "fix" it by hoisting a shared
+    helper for two callers. The Provider is load-bearing for exactly one child:
+    the embedded `Grabs` renders `ModeTabs`, which would otherwise clobber
+    Queue's own tab bar in the shell's single tab slot (`Downloads`/`Requests`
+    render no `ModeTabs`/`ScreenTabs` at all). **Tab order is
+    Downloads → Requests → Grabs, deliberately NOT the old sidebar order** —
+    and `docs/ROADMAP.md` item 4's 2026-07-31 amendment swapping Grabs for
+    Calendar as tab 3 is Phase 4 scope, deferred on purpose per
+    `.omc/plans/roadmap-implementation-sequencing.md:104-106`. See
+    `.omc/plans/autopilot-impl-queue-navigation-grouping.md`.
 
 - **Mainstream Discover — Seerr-parity expansion (2026-07-14)**: supersedes
   this section's earlier "paginated Trending/Popular rows" description —

@@ -1,10 +1,11 @@
 // Requests — a cross-mode request-status WORKLIST (F4), not a fourth grab view.
 //
-// What it adds over the two existing, deliberately-narrow screens:
-//   - /grabs     is a raw, per-mode grab log (one mode at a time, read-only).
-//   - /downloads is the live download-client queue status.
+// What it adds over the two existing, deliberately-narrow sibling tabs (all
+// three live under the Queue sidebar entry):
+//   - the Grabs tab is a raw, per-mode grab log (one mode at a time, read-only).
+//   - the Downloads tab is the live download-client queue status.
 // Neither rolls up state ACROSS modes, and neither surfaces what's still
-// MISSING. /requests does both: one row per title spanning Movies/Series/Adult,
+// MISSING. The Requests tab does both: one row per title spanning Movies/Series/Adult,
 // each tagged In Library (tracked) / Downloading (an active grab) / Missing
 // (Series episodes TMDB knows about but that aren't on disk yet), with a
 // missing-episode count. It is pure derive-on-read aggregation (GET /api/requests)

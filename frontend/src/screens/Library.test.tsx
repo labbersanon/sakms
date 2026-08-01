@@ -3,8 +3,15 @@
 // "Tag — grid view" describe (poster render + detail open, add tag, remove tag,
 // title search, mode-switch clears selection); a sixth case from that describe,
 // the Grid/Table toggle, did NOT migrate — it went away with the toggle itself.
-// Three are new: the genre filter, the added-date sort, and the
-// Adult-is-not-offered guard.
+// Four groups are new: the genre filter, the added-date sort, the
+// Adult-is-not-offered guard, and the quality-tier deep link + filter.
+//
+// EVERY case here mounts through renderLibrary, not a bare <Library />: the
+// shell reads its ?mode=/?tier= deep link with useSearchParams, which throws
+// outside a <Router>. The wrapper was added and proven green against the
+// pre-existing cases BEFORE useSearchParams existed in Library.tsx, so the
+// harness change is isolated from the feature change — no pre-existing
+// assertion changed meaning, it just runs inside a router now.
 //
 // The two load-bearing assertions here:
 //   1. Tag-editing mechanics are IDENTICAL to Tag's — the detail panel's add and
@@ -20,6 +27,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import type { TagEntry, TrackedItem } from "@dto";
 import { Library } from "./Library";
 
@@ -58,6 +66,22 @@ const item = (over: Partial<TrackedItem>): TrackedItem => ({
   tags: [],
   ...over,
 });
+
+// renderLibrary mounts Library inside a router at `url`. EVERY case here needs
+// the wrapper, not just the deep-link ones: Library's shell reads its mode/tier
+// deep link with useSearchParams, which THROWS outside a <Router>. A fresh
+// createMemoryHistory per render is deliberate over history.pushState — jsdom's
+// window.location is shared for the whole file, so a pushed query string would
+// leak into whatever case ran next.
+const renderLibrary = (url = "/library") => {
+  const history = createMemoryHistory();
+  history.set({ value: url, replace: true });
+  return render(() => (
+    <MemoryRouter history={history}>
+      <Route path="/library" component={Library} />
+    </MemoryRouter>
+  ));
+};
 
 afterEach(() => {
   // Unmount SolidJS components FIRST so pending createResource re-fetches
@@ -108,7 +132,7 @@ const inception = (over: Partial<TrackedItem> = {}): TrackedItem =>
 describe("Library — grid and detail panel (migrated from Tag)", () => {
   it("renders poster cards and opens the detail panel on click", async () => {
     stubFetch(makeHandler([inception()]));
-    render(() => <Library />);
+    renderLibrary();
 
     // Card is a button with aria-label = title.
     const card = await screen.findByRole("button", { name: "Inception" });
@@ -139,7 +163,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Library />);
+    renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
 
     const addInput = await screen.findByLabelText("Add tag to Inception");
@@ -163,7 +187,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       }),
     );
 
-    render(() => <Library />);
+    renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
       expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
@@ -185,7 +209,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       ]),
     );
 
-    render(() => <Library />);
+    renderLibrary();
     expect(await screen.findByRole("button", { name: "Inception" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Interstellar" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "The Matrix" })).toBeInTheDocument();
@@ -208,7 +232,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       }),
     );
 
-    render(() => <Library />);
+    renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
       expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
@@ -233,7 +257,7 @@ describe("Library — genre filter (new capability)", () => {
 
   it("narrows the grid to one genre and All genres restores it", async () => {
     stubFetch(makeHandler(catalog));
-    render(() => <Library />);
+    renderLibrary();
     await screen.findByRole("button", { name: "Inception" });
 
     // Unfiltered: every item renders, including the one with no genres.
@@ -265,7 +289,7 @@ describe("Library — genre filter (new capability)", () => {
 
   it("shows a no-matches message distinct from the nothing-tracked one", async () => {
     stubFetch(makeHandler(catalog));
-    render(() => <Library />);
+    renderLibrary();
     await screen.findByRole("button", { name: "Inception" });
 
     fireEvent.input(screen.getByPlaceholderText("Search titles…"), {
@@ -298,7 +322,7 @@ describe("Library — added-date sort (new capability)", () => {
 
   it("defaults to the server's title order and reorders on Newest first", async () => {
     stubFetch(makeHandler(byDate));
-    render(() => <Library />);
+    renderLibrary();
     await screen.findByRole("button", { name: "Alpha" });
 
     // Guards titlesInOrder() against a selector regression that silently
@@ -320,10 +344,147 @@ describe("Library — added-date sort (new capability)", () => {
   });
 });
 
+describe("Library — quality-tier deep link and filter", () => {
+  // qualityTiers is a []string on every TrackedItem: one element for a Movie,
+  // the DISTINCT set of its episodes' tiers for a Series. The backend folds an
+  // uncaptured quality_tier ('') to a literal "unknown" ENTRY rather than
+  // omitting the field, so "unknown" is matched here by plain string equality
+  // like any other tier — the filter needs no empty/missing special case.
+  const tieredMovies = [
+    item({ id: 1, title: "Lossless Movie", tmdbId: 1, qualityTiers: ["lossless"] }),
+    item({ id: 2, title: "High Movie", tmdbId: 2, qualityTiers: ["high"] }),
+    item({ id: 3, title: "Unbackfilled Movie", tmdbId: 3, qualityTiers: ["unknown"] }),
+  ];
+  const tieredSeries = [
+    item({ id: 71, title: "Mixed Show", tmdbId: 71, qualityTiers: ["high", "lossless"] }),
+    item({ id: 72, title: "Medium Show", tmdbId: 72, qualityTiers: ["medium"] }),
+  ];
+  const tierSelect = () => screen.getByLabelText("Quality tier") as HTMLSelectElement;
+
+  it("seeds mode and tier from the query params", async () => {
+    stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
+    renderLibrary("/library?mode=series&tier=lossless");
+
+    // The load-bearing proof that mode was seeded is the rendered PAYLOAD — a
+    // Series item is present and no Movies item is. The tab bar marks its
+    // active tab with a class rather than an ARIA attribute, so the class
+    // check below is corroboration, not the primary assertion.
+    expect(await screen.findByRole("button", { name: "Mixed Show" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Lossless Movie" })).toBeNull();
+    expect(screen.getByText("Series").className).toContain("bg-accent");
+
+    // ...and only the linked tier is listed.
+    expect(screen.queryByRole("button", { name: "Medium Show" })).toBeNull();
+  });
+
+  it("shows the incoming tier in a visible, clearable select", async () => {
+    stubFetch(makeHandler(tieredMovies));
+    renderLibrary("/library?mode=movies&tier=lossless");
+
+    await screen.findByRole("button", { name: "Lossless Movie" });
+    expect(tierSelect().value).toBe("lossless");
+    expect(screen.queryByRole("button", { name: "High Movie" })).toBeNull();
+
+    // Clearing it restores the full list — the deep link is a seed, not a lock.
+    fireEvent.change(tierSelect(), { target: { value: "" } });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "High Movie" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Unbackfilled Movie" }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("matches a series if ANY of its episode tiers matches", async () => {
+    stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
+    renderLibrary("/library?mode=series&tier=high");
+
+    // Mixed Show's episodes span high AND lossless, so it belongs to both
+    // drill-downs — includes() over the whole set, never a single-value compare.
+    expect(await screen.findByRole("button", { name: "Mixed Show" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Medium Show" })).toBeNull();
+
+    fireEvent.change(tierSelect(), { target: { value: "lossless" } });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Mixed Show" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("button", { name: "Medium Show" })).toBeNull();
+  });
+
+  // Library has no Adult mode at all (LibraryMode excludes it), so a hand-typed
+  // or stale URL must degrade to Movies rather than break the screen.
+  for (const bogus of ["adult", "not-a-mode"]) {
+    it(`falls back to Movies for ?mode=${bogus}`, async () => {
+      const calls = stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
+      renderLibrary(`/library?mode=${bogus}`);
+
+      expect(
+        await screen.findByRole("button", { name: "Lossless Movie" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Mixed Show" })).toBeNull();
+      expect(screen.getByText("Movies").className).toContain("bg-accent");
+      expect(calls.some((c) => c.url.includes("/api/modes/adult"))).toBe(false);
+    });
+  }
+
+  it("clears the incoming tier filter when the tab changes", async () => {
+    stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
+    renderLibrary("/library?mode=movies&tier=lossless");
+
+    // resetOnModeChange is a { defer: true } effect, so it must NOT fire on
+    // mount — if it did, the deep-linked tier would be gone before the grid
+    // ever rendered and this first block would fail.
+    await screen.findByRole("button", { name: "Lossless Movie" });
+    expect(screen.queryByRole("button", { name: "High Movie" })).toBeNull();
+    expect(tierSelect().value).toBe("lossless");
+
+    // An actual tab click DOES fire it. Medium Show carries neither the linked
+    // tier nor any tier the movies grid used, so its appearance is the proof
+    // the filter was cleared rather than merely re-evaluated.
+    fireEvent.click(screen.getByText("Series"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Medium Show" })).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Mixed Show" })).toBeInTheDocument();
+    expect(tierSelect().value).toBe("");
+  });
+
+  // Guards the one branch this screen adds beyond the plan's literal
+  // `createSignal(props.initialTier ?? "")`: an unrecognized tier is folded to
+  // "" rather than seeded verbatim. Seeding it verbatim would leave the
+  // <select> reading "All tiers" (no matching <option> to bind to) while the
+  // grid stayed filtered to nothing — a control displaying a value it isn't
+  // filtering by, which is exactly what "visible and clearable" rules out.
+  it("folds an unrecognized tier param to no filter at all", async () => {
+    stubFetch(makeHandler(tieredMovies));
+    renderLibrary("/library?mode=movies&tier=bogus");
+
+    expect(await screen.findByRole("button", { name: "Lossless Movie" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "High Movie" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Unbackfilled Movie" }),
+    ).toBeInTheDocument();
+    expect(tierSelect().value).toBe("");
+  });
+
+  it("shows unbackfilled items when filtering by the Unknown tier", async () => {
+    stubFetch(makeHandler(tieredMovies));
+    renderLibrary("/library?mode=movies&tier=unknown");
+
+    // The Dashboard's Unknown cell is clickable and can be nonzero, so its
+    // drill-down must not land on a silently empty grid.
+    expect(
+      await screen.findByRole("button", { name: "Unbackfilled Movie" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Lossless Movie" })).toBeNull();
+    expect(tierSelect().value).toBe("unknown");
+  });
+});
+
 describe("Library — Adult is not offered (Acceptance Criterion 7)", () => {
   it("renders Movies and Series tabs only — never an Adult tab", async () => {
     const calls = stubFetch(makeHandler([inception()]));
-    render(() => <Library />);
+    renderLibrary();
     await screen.findByRole("button", { name: "Inception" });
 
     expect(screen.getByText("Movies")).toBeInTheDocument();

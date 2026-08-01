@@ -535,7 +535,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			}
 			if newStatus == grabs.Completed {
 				contentPath := downloadContentPath(nzbItem.Files, nzbItem.Dir, nzb.StagingDir())
-				changes, err := importGrabContent(ctx, libStore, g, contentPath)
+				changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusBadGateway)
 					return
@@ -586,7 +586,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 		newStatus := classifyDownloadState(dlItem.Status, nil)
 		if newStatus == grabs.Completed {
 			contentPath := downloadContentPath(dlItem.Files, dlItem.Dir, dl.StagingDir())
-			changes, err := importGrabContent(ctx, libStore, g, contentPath)
+			changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return

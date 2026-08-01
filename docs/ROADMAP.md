@@ -1402,21 +1402,64 @@ Identified 2026-07-24 during the same OmniMedia comparison above. Extends
 the existing System dashboard (`internal/sysinfo`, shipped 2026-07-17)
 rather than replacing it.
 - **Storage allocation breakdown by media type and quality tier** —
-  **spec ready 2026-08-01**:
-  `.omc/specs/deep-interview-storage-allocation-breakdown.md` (~9%
-  ambiguity, PASSED). **Correction to this entry's own original text**:
-  "using data already tracked in `internal/library`/`internal/quality`, no
-  new collection needed" was false — verified against live code that no
-  per-file size and no per-item quality tier exist anywhere today. This is
-  real new instrumentation, not a query-only feature: size + tier get
-  captured at Apply/Grab time going forward (new DB columns), a one-time
-  backfill job resolves both for the existing library (size via
-  `os.Stat`, tier via a 3-step fallback: exact grab-record match →
-  filename inference → "Unknown"), and a new Dashboard.tsx section shows
-  the Movies/Series/Adult × tier grid with drill-down. Drill-down is
-  explicitly gated on the "Library sidebar tab" item (item 12, above)
-  shipping first — implement that one before this one, or ship this with
-  drill-down stubbed.
+  **shipped 2026-08-01** (frontend + backend, fully integrated with Library
+  sidebar tab's drill-down). Dashboard.tsx gained a new Storage Allocation
+  Breakdown section (a table with Movies/Series/Adult rows and quality-tier
+  columns including "Unknown"), backed by real per-item size and quality-tier
+  data — both now captured at Apply/Grab time going forward via migration
+  `0055_library_size_tier.sql`.
+
+  **CORRECTED 2026-08-01 — this entry's original claim "using data already
+  tracked in `internal/library`/`internal/quality`, no new collection
+  needed" was false and has been retracted.** Verified against live code that
+  no per-file size and no per-item quality tier exist anywhere prior to this
+  work. This was real new instrumentation, not a query-only feature. The
+  actual scope:
+  - **Size capture**: `os.Stat` on the file once relocated/imported at
+    Apply/Grab time, stored in new `size` column on `library_items`/
+    `library_episodes`/`library_scenes`.
+  - **Quality tier capture**: at grab/relocate time, stored in new
+    `quality_tier` column, populated from **the mode's currently-configured
+    quality tier setting** (the same value `autoGrabTier` already reads for
+    search scoring) — **not** `grabs.quality_profile_id`. That field was
+    investigated and found dead: it's written only from a frontend request
+    field zero callers ever send, so every row has it at `0` with no
+    meaningful mapping onto a tier. Stored semantics: "the tier preference in
+    force when this file entered the library," not a measured property of
+    the file.
+  - **Backfill for pre-existing items**: a one-time boot-time goroutine
+    (launched after the HTTP server starts listening, so a stale/disconnected
+    mount can't hang boot) — size via `os.Stat` on existing `FilePath`s; tier
+    via a **2-step** fallback chain (the spec's original 3-step design
+    assumed a grab-record match step that turned out to be dead for the same
+    `quality_profile_id` reason above, and was dropped): (1) filename
+    inference — `release.Parse()` against the file's path **relative to its
+    root folder** (not just the basename, since SAK's renamer strips quality
+    tokens from filenames but a season-pack parent directory may still carry
+    them) + a new `quality.InferTier` reverse-lookup against
+    `internal/quality`'s tier definitions, (2) explicit "Unknown" tier bucket.
+  - **Dashboard endpoint**: `GET /api/admin/storage-allocation` — one grouped
+    SQL query (no per-request disk I/O or external calls) aggregating
+    size/tier from the stored columns into a dense 3×5 grid (movies/series/adult
+    × low/medium/high/lossless/unknown).
+  - **Drill-down**: Movies/Series cells are clickable and drill into a
+    filtered item list in the Library sidebar tab (item 12, above) — a
+    cross-spec dependency that now ships together. Adult cells are not
+    clickable (see limitation 2 below).
+
+  **Two accepted limitations** (non-blocking, documented):
+  1. **Well-Renamed libraries backfill mostly to "Unknown" tier** — SAK's
+     renamer strips quality tokens from filenames during relocation, so only
+     un-Renamed/freshly-grabbed files (or season-pack parent directories)
+     carry inferable quality tokens for the filename-inference fallback
+     step. This is the spec's own explicitly-accepted outcome, not a bug —
+     "Unknown" is a first-class, honestly-labelled bucket, not a blank.
+  2. **Adult mode's Dashboard cells are informational only** — the Library
+     screen was deliberately scoped to Movies/Series only (per its own spec),
+     so the Adult row's drill-down cells cannot open a filtered item view (no
+     Adult Library exists to open). Cells render with disabled styling and
+     no click handler, providing operator visibility into Adult storage
+     allocation without a broken navigation target.
 - **Propose-only pruning rules** — **spec ready 2026-08-01**:
   `.omc/specs/deep-interview-pruning-rules.md` (~9% ambiguity, PASSED).
   **Hard dependency, not yet implementable**: this spec is explicitly

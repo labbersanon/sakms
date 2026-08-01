@@ -18,18 +18,18 @@ import (
 // Item, there's no Mode field: this table only ever holds Series, so the
 // omission is deliberate, not an oversight.
 type Series struct {
-	ID             int64    `json:"id"`
-	TMDBID         int      `json:"tmdbId"`
-	TVDBID         int      `json:"tvdbId,omitempty"`
-	Title          string   `json:"title"`
-	Year           int      `json:"year,omitempty"`
-	RootFolderPath string   `json:"rootFolderPath"`
+	ID             int64  `json:"id"`
+	TMDBID         int    `json:"tmdbId"`
+	TVDBID         int    `json:"tvdbId,omitempty"`
+	Title          string `json:"title"`
+	Year           int    `json:"year,omitempty"`
+	RootFolderPath string `json:"rootFolderPath"`
 	// Genres and Cast are populated at Apply time from the proposal's TMDB
 	// enrichment. Empty for series applied before this feature landed.
-	Genres         []string `json:"genres,omitempty"`
-	Cast           []string `json:"cast,omitempty"`
-	CreatedAt      string   `json:"createdAt"`
-	UpdatedAt      string   `json:"updatedAt"`
+	Genres    []string `json:"genres,omitempty"`
+	Cast      []string `json:"cast,omitempty"`
+	CreatedAt string   `json:"createdAt"`
+	UpdatedAt string   `json:"updatedAt"`
 }
 
 // Episode is one canonical episode of a Series, whether or not it's
@@ -45,6 +45,17 @@ type Episode struct {
 	Title         string `json:"title,omitempty"`
 	AirDate       string `json:"airDate,omitempty"`
 	FilePath      string `json:"filePath"`
+	// Size is the byte size of the file at FilePath, captured via os.Stat when
+	// the row was written. 0 means "not captured yet" (a row predating this
+	// column that the boot-time backfill hasn't reached). Deliberately NOT
+	// PHashFileSize: that field is a cache-validation key allowed to go stale
+	// on purpose so a replaced file is detected, which is the opposite of what
+	// a storage total needs.
+	Size int64 `json:"size,omitempty"`
+	// QualityTier is the quality.Tier preference in force when this file
+	// entered the library. "" means "not captured yet"; "unknown" means the
+	// backfill ran and could not determine one (an accepted permanent state).
+	QualityTier string `json:"qualityTier,omitempty"`
 	// PHash is the SAK-computed perceptual hash of this episode's video file,
 	// cached so Dedup decodes each tracked file once rather than every Scan.
 	// PHashFileSize/PHashFileMTime are the file-identity key it's valid for:
@@ -166,8 +177,8 @@ func (s *Store) DeleteSeries(ctx context.Context, seriesID int64) error {
 // exactly mirroring how Upsert's idempotent shape works for Item.
 func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) {
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, size, quality_tier)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
 			title = excluded.title,
 			air_date = excluded.air_date,
@@ -175,9 +186,11 @@ func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) 
 			phash = excluded.phash,
 			phash_file_size = excluded.phash_file_size,
 			phash_file_mtime = excluded.phash_file_mtime,
+			size = excluded.size,
+			quality_tier = excluded.quality_tier,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		RETURNING id, created_at, updated_at
-	`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime)
+	`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime, ep.Size, ep.QualityTier)
 
 	if err := row.Scan(&ep.ID, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 		return Episode{}, fmt.Errorf("upserting episode s%de%d for series %d: %w", ep.SeasonNumber, ep.EpisodeNumber, ep.SeriesID, err)
@@ -209,8 +222,8 @@ func (s *Store) UpsertEpisodes(ctx context.Context, eps []Episode) ([]Episode, e
 	out := make([]Episode, len(eps))
 	for i, ep := range eps {
 		row := tx.QueryRowContext(ctx, `
-			INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, size, quality_tier)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
 				title = excluded.title,
 				air_date = excluded.air_date,
@@ -218,9 +231,11 @@ func (s *Store) UpsertEpisodes(ctx context.Context, eps []Episode) ([]Episode, e
 				phash = excluded.phash,
 				phash_file_size = excluded.phash_file_size,
 				phash_file_mtime = excluded.phash_file_mtime,
+				size = excluded.size,
+				quality_tier = excluded.quality_tier,
 				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 			RETURNING id, created_at, updated_at
-		`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime)
+		`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime, ep.Size, ep.QualityTier)
 		if err := row.Scan(&ep.ID, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("upserting episode s%de%d for series %d: %w", ep.SeasonNumber, ep.EpisodeNumber, ep.SeriesID, err)
 		}
@@ -259,7 +274,7 @@ func (s *Store) UpdateEpisodePHash(ctx context.Context, id int64, phash string, 
 // Scan) before overwriting it with a freshly-relocated file.
 func (s *Store) GetEpisode(ctx context.Context, seriesID int64, seasonNumber, episodeNumber int) (*Episode, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
+		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier
 		FROM library_episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?
 	`, seriesID, seasonNumber, episodeNumber)
 	ep, err := scanEpisode(row)
@@ -309,7 +324,7 @@ func (s *Store) CountEpisodesByFilePath(ctx context.Context, filePath string) (i
 // episode number.
 func (s *Store) ListEpisodes(ctx context.Context, seriesID int64) ([]Episode, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
+		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier
 		FROM library_episodes WHERE series_id = ? ORDER BY season_number, episode_number
 	`, seriesID)
 	if err != nil {
@@ -334,7 +349,7 @@ func (s *Store) ListEpisodes(ctx context.Context, seriesID int64) ([]Episode, er
 // the Sonarr importer/Rename's ScanLibrarySeries instead of inferred.
 func (s *Store) MissingEpisodes(ctx context.Context, seriesID int64) ([]Episode, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
+		SELECT id, series_id, season_number, episode_number, title, air_date, file_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier
 		FROM library_episodes WHERE series_id = ? AND file_path = '' ORDER BY season_number, episode_number
 	`, seriesID)
 	if err != nil {
@@ -349,6 +364,73 @@ func (s *Store) MissingEpisodes(ctx context.Context, seriesID int64) ([]Episode,
 			return nil, fmt.Errorf("scanning episode: %w", err)
 		}
 		out = append(out, ep)
+	}
+	return out, rows.Err()
+}
+
+// EpisodeTiersBySeries returns each series' distinct episode-FILE quality
+// tiers, keyed by series id, sorted — for the tracked-item list's tier filter,
+// which needs a series to match ANY tier its episodes were grabbed at
+// (episodes land at different times under different settings, so forcing one
+// value per series would be a fabricated majority vote).
+//
+// ONE query rather than one per series: listTrackedHandler already does a
+// per-item Tags() lookup, and a second N+1 on the same route is not worth
+// adding.
+//
+// The inner GROUP BY series_id, file_path + MAX(quality_tier) is load-bearing
+// and must stay in lockstep with storageAllocationQuery's series subquery,
+// which does exactly the same collapse. A Dashboard Storage Allocation tier
+// cell DRILLS DOWN into the list this function filters, so the two must agree
+// on which tier bucket a series belongs to. Several library_episodes rows can
+// share one physical file (a S01E01-E02 double episode, a season pack broken
+// into slots), and UpsertEpisode — the single-row writer internal/dedup uses —
+// can leave two such rows momentarily divergent. Flattened back to a bare
+// SELECT DISTINCT, this function would report the series under BOTH tiers
+// while the aggregation counted it under only MAX(quality_tier)'s — clicking
+// the other cell would then list a series that cell never counted. Note the
+// return semantics that follow from this: these are the distinct tiers of the
+// series' episode FILES, not of its episode ROWS.
+//
+// The empty-string tier is folded to "unknown" here, deliberately WITHOUT a
+// filter excluding it — the two stored sentinels stay distinct, and both land
+// in the same display bucket:
+//
+//	quality_tier = ''        -> never processed
+//	quality_tier = 'unknown' -> processed, chain concluded Unknown
+//
+// The Dashboard's Storage Allocation grid folds both into one visible,
+// clickable Unknown cell, so excluding the never-processed rows here would
+// make that cell drill down to an empty list. The fold is display-only — the
+// stored value is untouched, which is what keeps BackfillSizeAndTier
+// idempotent.
+//
+// Episodes with an empty file_path are excluded: they are the deliberate
+// "TMDB knows about this episode, it isn't tracked yet" rows and have no
+// quality to report.
+func (s *Store) EpisodeTiersBySeries(ctx context.Context) (map[int64][]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT series_id, tier
+		  FROM (SELECT series_id, file_path,
+		               CASE WHEN MAX(quality_tier) = '' THEN 'unknown' ELSE MAX(quality_tier) END AS tier
+		          FROM library_episodes
+		         WHERE file_path != ''
+		         GROUP BY series_id, file_path) AS episode_files
+		 ORDER BY series_id, tier
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing episode quality tiers: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64][]string{}
+	for rows.Next() {
+		var seriesID int64
+		var tier string
+		if err := rows.Scan(&seriesID, &tier); err != nil {
+			return nil, fmt.Errorf("scanning episode quality tier: %w", err)
+		}
+		out[seriesID] = append(out[seriesID], tier)
 	}
 	return out, rows.Err()
 }
@@ -438,7 +520,7 @@ func scanEpisode(row rowScanner) (Episode, error) {
 	var ep Episode
 	err := row.Scan(&ep.ID, &ep.SeriesID, &ep.SeasonNumber, &ep.EpisodeNumber,
 		&ep.Title, &ep.AirDate, &ep.FilePath, &ep.PHash, &ep.PHashFileSize, &ep.PHashFileMTime,
-		&ep.CreatedAt, &ep.UpdatedAt)
+		&ep.CreatedAt, &ep.UpdatedAt, &ep.Size, &ep.QualityTier)
 	return ep, err
 }
 

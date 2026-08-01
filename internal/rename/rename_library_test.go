@@ -346,7 +346,7 @@ func TestApplyLibrary_RelocatesFileAndRecordsInLibrary(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Some Movie", TMDBID: 453, Year: 2020,
 		SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin, "lossless")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -370,6 +370,17 @@ func TestApplyLibrary_RelocatesFileAndRecordsInLibrary(t *testing.T) {
 		t.Errorf("unexpected library item: %+v", item)
 	}
 
+	// Capture-at-write: the row records the moved file's real byte size and the
+	// tier the caller resolved, so the storage breakdown never has to stat the
+	// filesystem at read time. Size is stat'd at destPath (post-move), not the
+	// source, and must be the real file's bytes rather than 0.
+	if want := int64(len("fake video data")); item.Size != want {
+		t.Errorf("expected Size %d (the moved file's real bytes), got %d", want, item.Size)
+	}
+	if item.QualityTier != "lossless" {
+		t.Errorf("expected QualityTier %q, got %q", "lossless", item.QualityTier)
+	}
+
 	// Row 1 (player-rescan-notify plan): the Deleted side is the resolved
 	// VIDEO FILE (sourcePath here, since it's the file directly, not a
 	// wrapping directory), never p.SourcePath re-derived some other way;
@@ -383,7 +394,7 @@ func TestApplyLibrary_RelocatesFileAndRecordsInLibrary(t *testing.T) {
 func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, _, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin); err == nil {
+		if _, _, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin, ""); err == nil {
 			t.Errorf("expected ApplyLibrary to refuse a %q proposal", status)
 		}
 	}
@@ -412,7 +423,7 @@ func TestApplyLibrary_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Movie", TMDBID: 1,
 		SourcePath: sourcePath, RootFolderPath: base,
 	}
-	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin)
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

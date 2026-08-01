@@ -5,10 +5,14 @@
 // originally documented to be.
 //
 // Layout, top to bottom: a Movies/Series tab bar over a filter row (title search
-// | genre | sort) and a poster grid; selecting a card slides a DetailPanel in at
-// w-72 showing genres/cast/tags. Tag mutations in the panel go through the same
-// addTag/removeTag + act() path Tag's table uses — only the entry point changed,
-// not the mechanics.
+// | genre | quality tier | sort) and a poster grid; selecting a card slides a
+// DetailPanel in at w-72 showing genres/cast/tags. Tag mutations in the panel go
+// through the same addTag/removeTag + act() path Tag's table uses — only the
+// entry point changed, not the mechanics.
+//
+// The mode and tier are ALSO seedable from the URL (/library?mode=…&tier=…),
+// which is what the Dashboard's storage-allocation cells link into. That is a
+// one-shot seed at mount, not a two-way binding — see the Library shell below.
 //
 // ADULT IS DELIBERATELY EXCLUDED (spec Non-Goal 1). Adult keeps its own table
 // view at /tag with all three mode tabs; this screen uses ScreenTabs over a local
@@ -29,6 +33,7 @@ import {
   For,
   Show,
 } from "solid-js";
+import { useSearchParams } from "@solidjs/router";
 import type { Mode } from "../api/discover";
 import { fetchTitlePoster, tmdbPoster } from "../api/discover";
 import {
@@ -66,6 +71,14 @@ const LIBRARY_MODES: TabDef[] = [
 // ORDER BY title (no client-side re-sort — SQLite's collation is authoritative);
 // "added" sorts by createdAt descending, newest first.
 type SortKey = "title" | "added";
+
+// TIER_VALUES is the closed quality-tier vocabulary TrackedItem.qualityTiers
+// uses. Deliberately a fixed list rather than derived from the loaded items the
+// way genreOptions is: a Dashboard deep link's incoming tier must render in the
+// <select> immediately, and a derived list would have no matching <option>
+// until the fetch resolved — silently snapping the control back to "All tiers"
+// while the grid stayed filtered.
+const TIER_VALUES = ["low", "medium", "high", "lossless", "unknown"];
 
 const selectClass =
   "rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent";
@@ -286,7 +299,9 @@ const DetailPanel: Component<{
 // LibraryView is one mode's catalog grid. Keyed on props.mode so both resources
 // refetch when the shell switches tabs. vocab + tracked load in parallel — vocab
 // only feeds the DetailPanel's add-tag autocomplete.
-const LibraryView: Component<{ mode: LibraryMode }> = (props) => {
+const LibraryView: Component<{ mode: LibraryMode; initialTier?: string }> = (
+  props,
+) => {
   const [vocab, { refetch: refetchVocab }] = createResource(
     () => props.mode,
     (m) => fetchTagVocabulary(m),
@@ -302,6 +317,10 @@ const LibraryView: Component<{ mode: LibraryMode }> = (props) => {
   const [search, setSearch] = createSignal("");
   // genre filters the grid to one genre; "" means all genres.
   const [genre, setGenre] = createSignal("");
+  // tier filters the grid to one quality tier; "" means all tiers. Seeded from
+  // the shell's ?tier= deep link (a Dashboard storage cell), then plain local
+  // state like every other filter here.
+  const [tier, setTier] = createSignal(props.initialTier ?? "");
   // sort orders the grid; "title" keeps the server's order.
   const [sort, setSort] = createSignal<SortKey>("title");
   // detailDraft is the add-tag input value in the DetailPanel.
@@ -316,9 +335,11 @@ const LibraryView: Component<{ mode: LibraryMode }> = (props) => {
   };
 
   // Library has no scan button — omit scanFn. The mode-change reset clears the
-  // selection, the search, the detail draft AND the genre (a genre that exists
-  // for Movies may not exist for Series, which would silently empty the grid).
-  // Sort is mode-independent, so it survives a tab switch.
+  // selection, the search, the detail draft, the genre (a genre that exists
+  // for Movies may not exist for Series, which would silently empty the grid)
+  // AND the tier — including one that arrived as a ?tier= deep link, which is
+  // scoped to the mode it was linked for. Sort is mode-independent, so it
+  // survives a tab switch.
   const { actionError, act } = useWorkflowActions(
     () => props.mode,
     {
@@ -327,6 +348,7 @@ const LibraryView: Component<{ mode: LibraryMode }> = (props) => {
         setSearch("");
         setDetailDraft("");
         setGenre("");
+        setTier("");
       },
       refetch: refresh,
     },
@@ -355,15 +377,24 @@ const LibraryView: Component<{ mode: LibraryMode }> = (props) => {
   };
 
   // visibleItems is the whole client-side pipeline: title search → genre filter
-  // → sort. Items with no genres survive whenever no genre is selected (the
-  // early return) — genre enrichment postdates some tracked rows, and those must
-  // not vanish from an unfiltered grid.
+  // → tier filter → sort. Items with no genres survive whenever no genre is
+  // selected (the early return) — genre enrichment postdates some tracked rows,
+  // and those must not vanish from an unfiltered grid.
+  //
+  // The tier predicate is plain string matching with no "unknown" special case:
+  // the backend already folds an uncaptured quality_tier ('') to a literal
+  // "unknown" entry in qualityTiers, so a Dashboard Unknown cell's drill-down
+  // matches those rows the same way any other tier does. A series carries the
+  // DISTINCT set of its episodes' tiers, so includes() is also what makes it
+  // match if ANY episode qualifies.
   const visibleItems = () => {
     const q = search().trim().toLowerCase();
     const g = genre();
+    const t = tier();
     let items = tracked() ?? [];
     if (q) items = items.filter((item) => item.title.toLowerCase().includes(q));
     if (g) items = items.filter((item) => (item.genres ?? []).includes(g));
+    if (t) items = items.filter((item) => (item.qualityTiers ?? []).includes(t));
     if (sort() === "added") {
       // Copy before sorting — `items` may still be the resource's own array.
       // createdAt is fixed-width ISO-8601 UTC, so lexicographic descending IS
@@ -444,6 +475,35 @@ const LibraryView: Component<{ mode: LibraryMode }> = (props) => {
                 </For>
               </select>
             </div>
+            {/* Quality tier — the visible, clearable control behind the
+                Dashboard storage-allocation drill-down. Options are rendered
+                from TIER_VALUES, a module-level const resolved before first
+                render — unlike genreOptions() above, which is derived from the
+                fetched items — so the seeded value still always has an option
+                to bind to. */}
+            <div class="flex flex-col">
+              <label class={labelClass} for="library-tier">
+                Quality tier
+              </label>
+              <select
+                id="library-tier"
+                class={`mt-1 ${selectClass}`}
+                value={tier()}
+                onChange={(e) => {
+                  setTier(e.currentTarget.value);
+                  setSelectedId(null);
+                }}
+              >
+                <option value="">All tiers</option>
+                <For each={TIER_VALUES}>
+                  {(t) => (
+                    <option value={t}>
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </option>
+                  )}
+                </For>
+              </select>
+            </div>
             <div class="flex flex-col">
               <label class={labelClass} for="library-sort">
                 Sort
@@ -517,7 +577,23 @@ const LibraryView: Component<{ mode: LibraryMode }> = (props) => {
 // Library is the mode-switching shell: a Movies/Series tab bar (never Adult)
 // over the matching mode's catalog grid.
 export const Library: Component = () => {
-  const [mode, setMode] = createSignal<LibraryMode>("movies");
+  // ?mode= and ?tier= SEED the initial view only — a Dashboard storage-allocation
+  // cell links here as /library?mode=movies&tier=lossless. Read once, at mount,
+  // and deliberately NOT kept in sync with the URL afterwards: two-way binding
+  // would fight resetOnModeChange (which clears the filters on a tab click) and
+  // would make every tab click rewrite the URL. From here it's local state.
+  const [params] = useSearchParams();
+  // Anything that isn't "series" falls back to Movies. Library has no Adult mode
+  // (LibraryMode excludes it), so a hand-typed ?mode=adult must not break the
+  // screen.
+  const initialMode: LibraryMode = params.mode === "series" ? "series" : "movies";
+  // An unrecognized tier folds to "" so the <select> can never display a value
+  // it isn't actually filtering by.
+  const initialTier =
+    typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
+      ? params.tier
+      : "";
+  const [mode, setMode] = createSignal<LibraryMode>(initialMode);
   return (
     <div>
       <ScreenTabs
@@ -525,7 +601,7 @@ export const Library: Component = () => {
         current={mode}
         onSelect={(id) => setMode(id as LibraryMode)}
       />
-      <LibraryView mode={mode()} />
+      <LibraryView mode={mode()} initialTier={initialTier} />
     </div>
   );
 };

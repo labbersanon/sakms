@@ -397,7 +397,15 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 // .omc/plans/dedup-ux-refine.md AC6/AC10). Nil/empty means single-keep, the
 // original behavior. keepAll (track nothing) stays a distinct third state and
 // is never combined with this (rejected upstream by validateApplyRequest).
-func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool) (itemID int64, changes []mode.PathChange, err error) {
+//
+// tier is the operator's configured quality tier for this mode, recorded on
+// the winner's library row alongside its size. Dedup captures both even though
+// the feature's ACs only name Apply/Grab time: a Dedup Apply replaces the
+// tracked file with a different one, so leaving the old size on the row is
+// exactly the UI-vs-filesystem drift this project's Mission declares the bar
+// against. Plain string, not a settings lookup — this package deliberately
+// does not import internal/settings; the internal/api caller resolves it.
+func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool, tier string) (itemID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -458,6 +466,8 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	item, err := libStore.Upsert(ctx, library.Item{
 		Mode: mode.Movies, TMDBID: p.TMDBID, Title: p.Title,
 		FilePath: winner.Path, RootFolderPath: p.RootFolderPath,
+		// Reuses winnerSize from the fileIdentity stat above — zero new I/O.
+		Size: winnerSize, QualityTier: tier,
 		PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
 	})
 	if err != nil {
@@ -683,7 +693,11 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 // Only the primary is tracked (UpsertEpisode); additional keepers are kept but
 // not recorded (see .omc/plans/dedup-ux-refine.md AC6/AC10/AC11). keepAll (track
 // nothing) stays a distinct third state, never combined with this.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool) (episodeID int64, changes []mode.PathChange, err error) {
+//
+// tier is the operator's configured quality tier for this mode — see
+// ApplyLibrary for why Dedup captures size/tier at all and why it's a plain
+// string parameter.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool, tier string) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -769,6 +783,8 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
 		SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: p.EpisodeNumber,
 		Title: title, AirDate: airDate, FilePath: winner.Path,
+		// Reuses winnerSize from the fileIdentity stat above — zero new I/O.
+		Size: winnerSize, QualityTier: tier,
 		PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
 	})
 	if err != nil {

@@ -1280,6 +1280,7 @@ type TrackedItem struct {
 	Genres         []string `json:"genres,omitempty"`
 	Cast           []string `json:"cast,omitempty"`
 	CreatedAt      string   `json:"createdAt,omitempty"`
+	QualityTiers   []string `json:"qualityTiers,omitempty"`
 }
 
 // CollectionSummary is one entry from GET /api/modes/movies/collections —
@@ -1288,6 +1289,43 @@ type CollectionSummary struct {
 	TMDBCollectionID int    `json:"tmdbCollectionId"`
 	Name             string `json:"name"`
 	Count            int    `json:"count"`
+}
+
+// StorageAllocationCell is one (mode, tier) intersection of the Dashboard's
+// Storage Allocation grid. Cells with nothing behind them are still sent, as
+// zeroes, so the frontend never has to invent a missing cell.
+type StorageAllocationCell struct {
+	Tier       string `json:"tier"` // low|medium|high|lossless|unknown
+	TotalBytes int64  `json:"totalBytes"`
+	ItemCount  int    `json:"itemCount"`
+}
+
+// StorageAllocationRow is one mode's full tier axis. Cells is ALWAYS
+// len(Tiers) == 5, in the fixed StorageAllocation.Tiers order.
+//
+// RowItemCount is the sum of the row's cell counts. For Series it can exceed
+// the number of distinct series: a series whose episodes span two tiers is
+// counted in each of those two cells, which is what makes each cell's count
+// reconcile with the drill-down it links to. RowTotalBytes never
+// double-counts — a file belongs to exactly one tier group.
+type StorageAllocationRow struct {
+	Mode          string                  `json:"mode"` // movies|series|adult
+	Cells         []StorageAllocationCell `json:"cells"`
+	RowTotalBytes int64                   `json:"rowTotalBytes"`
+	RowItemCount  int                     `json:"rowItemCount"`
+}
+
+// StorageAllocation is GET /api/admin/storage-allocation's response: a dense
+// mode x tier grid of the tracked library's byte totals and item counts. Rows
+// is always len 3 (movies, series, adult, in that order) and Tiers is always
+// the fixed 5-tier axis, so the table's shape is a constant.
+//
+// Every number here comes from one grouped SQL query over columns captured at
+// write time — the endpoint does NO disk I/O and makes NO external calls.
+type StorageAllocation struct {
+	Rows            []StorageAllocationRow `json:"rows"`
+	Tiers           []string               `json:"tiers"`
+	GrandTotalBytes int64                  `json:"grandTotalBytes"`
 }
 
 // --- Stage 4: Settings + Advanced Settings ---------------------------------

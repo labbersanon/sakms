@@ -42,7 +42,7 @@ func TestApplyLibrary_MultiKeep_AdditionalKeeperSurvivesUntracked_Movies(t *test
 		},
 	}
 	keep := 0
-	id, changes, err := ApplyLibrary(ctx, libStore, p, &keep, []int{1}, false)
+	id, changes, err := ApplyLibrary(ctx, libStore, p, &keep, []int{1}, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestApplyLibrarySeries_MultiKeep_AdditionalKeeperSurvivesUntracked(t *testi
 		},
 	}
 	keep := 0
-	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, &keep, []int{1}, false)
+	id, changes, err := ApplyLibrarySeries(ctx, libStore, p, &keep, []int{1}, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestApplyLibraryAdult_MultiKeep_AlreadyTrackedAdditionalKeeperStaysTracked(
 		},
 	}
 	keep := 0
-	id, changes, err := ApplyLibraryAdult(ctx, libStore, p, &keep, []int{1}, false)
+	id, changes, err := ApplyLibraryAdult(ctx, libStore, p, &keep, []int{1}, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestApplyLibrarySeries_MultiKeep_ComposesWithSharedFileGuard(t *testing.T) 
 		},
 	}
 	keep := 0
-	_, changes, err := ApplyLibrarySeries(ctx, libStore, p, &keep, []int{1}, false)
+	_, changes, err := ApplyLibrarySeries(ctx, libStore, p, &keep, []int{1}, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestApplyLibrary_KeepAllVsCheckAll_DifferentUpsertOutcomes(t *testing.T) {
 				{Label: "b", Path: b},
 			},
 		}
-		id, changes, err := ApplyLibrary(ctx, libStore, p, nil, nil, true)
+		id, changes, err := ApplyLibrary(ctx, libStore, p, nil, nil, true, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -393,7 +393,7 @@ func TestApplyLibrary_KeepAllVsCheckAll_DifferentUpsertOutcomes(t *testing.T) {
 			},
 		}
 		keep := 0
-		id, changes, err := ApplyLibrary(ctx, libStore, p, &keep, []int{1}, false)
+		id, changes, err := ApplyLibrary(ctx, libStore, p, &keep, []int{1}, false, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

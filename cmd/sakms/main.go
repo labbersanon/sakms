@@ -424,6 +424,40 @@ func run() error {
 	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, allowStore, libStore, prober, phashDispatcher, videoDispatcher, entityStore)
 	scanschedule.Run(ctx, scanScheduler, settingsStore, dedupHub)
 
+	// One-shot backfill of the size/quality_tier columns added in migration
+	// 0055, for library rows that predate them. This is NOT a seventh
+	// scheduler and must not be counted as one in CLAUDE.md's enumeration:
+	// it has no interval, no toggle and no re-trigger, it runs exactly once
+	// per boot, and it is a cheap no-op once every tracked row is captured.
+	//
+	// Deliberately started in a goroutine AFTER ListenAndServe, unlike
+	// rssfeeds.BackfillEncryption / serviceconn.BackfillUsenetURL above,
+	// which are called synchronously before it. Those two touch only DB rows
+	// and finish in microseconds; this one os.Stats every tracked file, so a
+	// stale or disconnected CIFS/NFS mount blocks on the syscall. Running
+	// synchronously, that would hang boot and the app would never serve;
+	// backgrounded, the same stale mount degrades one Dashboard section
+	// instead. Uses the signal-driven ctx so SIGTERM stops the sweep between
+	// rows rather than waiting the whole run out — a cancelled run returns
+	// its partial summary with a nil error and the next boot resumes.
+	go func() {
+		summary, err := libStore.BackfillSizeAndTier(ctx)
+		if err != nil {
+			log.Printf("library: size/tier backfill failed: %v", err)
+			return
+		}
+		if summary.Scanned == 0 {
+			return
+		}
+		// Per-bucket counts are the operator's only visibility into the real
+		// tier distribution. Expect mostly "unknown" on a library SAK has
+		// already Renamed — the naming schemes strip every quality token, so
+		// there is nothing left on disk to infer from. That is the accepted
+		// outcome, not a failure.
+		log.Printf("library: size/tier backfill captured %d rows (%d sized, %d unstattable); tiers %v",
+			summary.Scanned, summary.SizedOK, summary.SizeFailed, summary.ByTier)
+	}()
+
 	select {
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {

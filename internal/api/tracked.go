@@ -32,6 +32,18 @@ import (
 // the Adult branch below) — Adult has no Library grid to sort, and leaving
 // it zero (omitted, since it's omitempty) keeps Adult's wire response
 // byte-identical to before this field existed.
+//
+// QualityTiers is additive too, backing the Library screen's tier filter and
+// the Dashboard Storage Allocation grid's drill-down. It is a SLICE, not a
+// single value, because a series genuinely has more than one: its episodes are
+// grabbed at different times under different tier settings, and collapsing that
+// to one value would be a fabricated majority vote. Movies carry a 1-element
+// slice; Adult is left empty (Adult isn't browsable in Library — its tag CRUD
+// table in Tag.tsx has no tier filter to honor). A stored "" (a row the
+// boot-time backfill hasn't reached) folds to "unknown" here rather than being
+// omitted: the Dashboard grid folds "" into the same visible, clickable Unknown
+// cell, so omitting it would make that cell drill down to an empty list. The
+// fold is display-only — the stored "" is untouched.
 type libraryTrackedItem struct {
 	ID             int64    `json:"id"`
 	Title          string   `json:"title"`
@@ -42,6 +54,7 @@ type libraryTrackedItem struct {
 	Genres         []string `json:"genres,omitempty"`
 	Cast           []string `json:"cast,omitempty"`
 	CreatedAt      string   `json:"createdAt,omitempty"`
+	QualityTiers   []string `json:"qualityTiers,omitempty"`
 }
 
 // listTrackedHandler returns every item {mode} currently tracks — straight
@@ -70,7 +83,15 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year, CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast, CreatedAt: item.CreatedAt}
+				// A movie has exactly one file, so exactly one tier — but a
+				// never-captured "" folds to "unknown" rather than being
+				// omitted, so the Dashboard's clickable Unknown cell drills
+				// down to these rows instead of an empty list.
+				tier := item.QualityTier
+				if tier == "" {
+					tier = "unknown"
+				}
+				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year, CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast, CreatedAt: item.CreatedAt, QualityTiers: []string{tier}}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
@@ -82,6 +103,17 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			// One query for every series' distinct episode tiers, hoisted out
+			// of the loop — this route already does a per-item SeriesTags()
+			// lookup and a second N+1 on it isn't worth adding. A series with
+			// no episodes on disk simply has no entry, so its QualityTiers
+			// stays nil (omitted), matching the fact that it contributes
+			// nothing to the Storage Allocation grid either.
+			tiersBySeries, err := libStore.EpisodeTiersBySeries(ctx)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			out := make([]libraryTrackedItem, len(series))
 			for i, s := range series {
 				tags, err := libStore.SeriesTags(ctx, s.ID)
@@ -89,7 +121,7 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year, Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt}
+				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year, Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt, QualityTiers: tiersBySeries[s.ID]}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
@@ -116,7 +148,10 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 				// CreatedAt deliberately left unset here (see the type's doc
 				// comment) — Scene.CreatedAt exists but Adult has no Library
 				// grid to sort by it, and omitting it keeps this response
-				// byte-identical to before the field existed.
+				// byte-identical to before the field existed. QualityTiers is
+				// left unset for the same reason: Adult isn't browsable in
+				// Library, so there's no tier filter for it to feed, and the
+				// Dashboard's Adult cells are deliberately non-clickable.
 				out[i] = libraryTrackedItem{ID: sc.ID, Title: sc.Title, Tags: tags}
 			}
 			w.Header().Set("Content-Type", "application/json")

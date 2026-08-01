@@ -351,7 +351,14 @@ func RelocateMovie(sourcePath, destRoot, title string, year, tmdbID int, preset 
 // still reports the committed file move to the caller for
 // Session.NotifyPlayers — the physical relocate already happened by then
 // and must not go unnotified (partial-success rule, player-rescan-notify).
-func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset) (itemID int64, changes []mode.PathChange, err error) {
+//
+// tier is the operator's configured quality tier for this mode, recorded on
+// the library row as "the tier preference in force when this file entered the
+// library". It's a plain string rather than a quality.Tier or a settings
+// lookup because this package deliberately does not import internal/settings
+// or internal/quality — the internal/api caller, which already holds the
+// settings store, resolves it (see autoGrabTier).
+func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset, tier string) (itemID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -375,6 +382,7 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	item, err := libStore.Upsert(ctx, library.Item{
 		Mode: mode.Movies, TMDBID: p.TMDBID, Title: p.Title, Year: p.Year,
 		FilePath: destPath, RootFolderPath: p.RootFolderPath,
+		Size: library.FileSize(destPath), QualityTier: tier,
 		Genres: p.Genres, Cast: p.Cast,
 	})
 	if err != nil {
@@ -824,7 +832,10 @@ func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, 
 // still reports the committed file move to the caller for
 // Session.NotifyPlayers — the physical relocate already happened by then
 // and must not go unnotified (partial-success rule, player-rescan-notify).
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset) (episodeID int64, changes []mode.PathChange, err error) {
+//
+// tier is the operator's configured quality tier for this mode — see
+// ApplyLibrary for why it's a plain string parameter rather than a lookup.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset, tier string) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -864,6 +875,11 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 	// again by a later Scan — with episode 2's row still missing and
 	// unrecoverable. Atomic writes mean a partial failure commits nothing,
 	// so a re-Scan can still discover and correctly resolve the file.
+	// One physical file, so one stat: every Episode row a bundled multi-episode
+	// file produces carries that file's FULL size, not a share of it. The
+	// storage aggregation de-duplicates by file_path rather than dividing, so
+	// splitting the bytes here would under-report the file.
+	movedSize := library.FileSize(moved)
 	toUpsert := make([]library.Episode, 0, 1+len(p.ExtraEpisodeNumbers))
 	for _, episodeNumber := range allEpisodeNumbers {
 		epTitle, epAirDate := "", ""
@@ -875,6 +891,7 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		toUpsert = append(toUpsert, library.Episode{
 			SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: episodeNumber,
 			Title: epTitle, AirDate: epAirDate, FilePath: moved,
+			Size: movedSize, QualityTier: tier,
 		})
 	}
 	upserted, err := libStore.UpsertEpisodes(ctx, toUpsert)

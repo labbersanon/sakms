@@ -81,6 +81,70 @@ func sourcesFor(t Tier) []string {
 	}
 }
 
+// InferTier guesses which Tier a parsed release most likely belongs to, by
+// reverse-mapping its source (and, where the source alone is ambiguous, its
+// codec) against the tier definitions sourcesFor/codecsFor express. Used
+// ONLY by the one-time size/tier backfill (internal/library) to reconstruct
+// a tier for items that entered the library before the tier column existed
+// — never on a scoring path, where the operator's configured tier is
+// authoritative and no guessing is wanted. ok is false when nothing matches
+// confidently; the caller records "unknown" rather than inventing a value.
+//
+// Two things this deliberately does NOT do:
+//
+//   - It never consults Resolution. This package's doc comment is explicit
+//     that tier and resolution are independent settings and that conflating
+//     them was a mistake; a reverse mapping that reintroduced the
+//     conflation would be reintroducing the bug.
+//   - It never maps a bare "bluray" to Lossless. sourcesFor(Lossless)
+//     lists bluray, but so does High's list (release.DefaultProfile().
+//     PreferredSources), so the source alone cannot discriminate a
+//     remux-quality Blu-ray rip from an ordinary re-encode. High is the
+//     conservative default for that case, which is why High is reachable
+//     here only via bluray+non-x265 — see
+//     TestInferTierNeverReturnsHighForNonBlurayInput, which pins that
+//     property so a future edit cannot make High common (or impossible)
+//     unnoticed.
+//
+// Honest note on the two tie-breaks below, since neither is derivable from
+// sourcesFor/codecsFor and a future reader will look for a derivation:
+// codecsFor(Lossless) returns nil (no codec preference at all), so
+// bluray+x265 -> Lossless is a chosen convention for "someone deliberately
+// spent an efficient codec on a Blu-ray source," not a lookup; and dvdrip
+// does appear in DefaultProfile().PreferredSources, so dvdrip -> Low is
+// likewise a convention (it is the most-compressed shape release.Parse
+// recognizes), not an exclusion derived from the tier lists.
+func InferTier(info release.Info) (Tier, bool) {
+	switch info.Source {
+	case "remux":
+		// Unique to sourcesFor(Lossless) — the one unambiguous signal.
+		return Lossless, true
+	case "bluray":
+		if info.Codec == "x265" {
+			return Lossless, true
+		}
+		return High, true
+	case "webrip", "hdtv":
+		// Both head sourcesFor(Low); Low is also the only tier with a codec
+		// preference (codecsFor(Low) == ["x265"]), so an x265 pairing is the
+		// closest inferable Low signal and anything else falls to Medium.
+		if info.Codec == "x265" {
+			return Low, true
+		}
+		return Medium, true
+	case "web-dl", "web":
+		// web-dl heads sourcesFor(Medium).
+		return Medium, true
+	case "dvdrip":
+		return Low, true
+	default:
+		// Only reachable for Source == "" (an unrecognized/unparseable
+		// title): the seven cases above cover every label release.Parse can
+		// emit. The caller records "unknown".
+		return "", false
+	}
+}
+
 // codecsFor expresses a per-tier codec preference. Low prefers x265 (more
 // efficient compression — a smaller file at a given visual quality, the
 // closest analogue to "lower bitrate" a release title can actually

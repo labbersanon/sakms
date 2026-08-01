@@ -245,7 +245,10 @@ func adultSceneIdentity(res *identify.MatchResult, err error) (box, sceneID, ite
 // ON CONFLICT(box, scene_id) on the primary, which never touches its row — see
 // .omc/plans/dedup-ux-refine.md AC6/AC10 Adult variant). keepAll (track nothing)
 // stays a distinct third state, never combined with this.
-func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool) (sceneID int64, changes []mode.PathChange, err error) {
+//
+// tier is the operator's configured adult_quality_tier — see ApplyLibrary for
+// why Dedup captures size/tier at all and why it's a plain string parameter.
+func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals.Proposal, keepIndex *int, additionalKeepIndices []int, keepAll bool, tier string) (sceneID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -310,6 +313,8 @@ func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals
 		Box: p.GiveBackBox, SceneID: p.GiveBackSceneID,
 		Title: p.Title, Studio: p.Studio, Date: p.Date,
 		FilePath: winner.Path, RootFolderPath: p.RootFolderPath,
+		// Reuses winnerSize from the fileIdentity stat above — zero new I/O.
+		Size: winnerSize, QualityTier: tier,
 		PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
 	})
 	if err != nil {

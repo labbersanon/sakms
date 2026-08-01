@@ -394,7 +394,7 @@ func TestApplyLibrarySeries_RelocatesIntoSeasonFolderAndPreservesMetadata(t *tes
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin)
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestApplyLibrarySeries_LogicalSplitCreatesOneEpisodeRowPerNumber(t *testing
 		SeasonNumber: 1, EpisodeNumber: 1, ExtraEpisodeNumbers: []int{2},
 		SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin)
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin, "medium")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -504,6 +504,18 @@ func TestApplyLibrarySeries_LogicalSplitCreatesOneEpisodeRowPerNumber(t *testing
 		t.Errorf("expected episode 2's existing metadata to be preserved, not blanked, got %+v", ep2)
 	}
 
+	// Capture-at-write under logical episode-splitting: BOTH rows carry the
+	// one physical file's FULL size, not a half share each. The storage
+	// aggregation de-duplicates by file_path, so dividing here would
+	// under-report the file; asserting both rows pins that contract.
+	wantSize := int64(len("fake video data"))
+	if ep1.Size != wantSize || ep2.Size != wantSize {
+		t.Errorf("expected both split rows to carry the file's full size %d, got ep1=%d ep2=%d", wantSize, ep1.Size, ep2.Size)
+	}
+	if ep1.QualityTier != "medium" || ep2.QualityTier != "medium" {
+		t.Errorf("expected both split rows to record the resolved tier, got ep1=%q ep2=%q", ep1.QualityTier, ep2.QualityTier)
+	}
+
 	// Only one relocate happened — exactly one Deleted+Created pair, not two.
 	want := []mode.PathChange{{Path: sourcePath, Kind: mode.Deleted}, {Path: wantDest, Kind: mode.Created}}
 	if len(changes) != 2 || changes[0] != want[0] || changes[1] != want[1] {
@@ -534,7 +546,7 @@ func TestApplyLibrarySeries_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: base,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin)
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -581,7 +593,7 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	if _, _, err := ApplyLibrarySeries(ctx, libStore, p, naming.Legacy); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, p, naming.Legacy, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -594,7 +606,7 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin); err == nil {
+		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin, ""); err == nil {
 			t.Errorf("expected ApplyLibrarySeries to refuse a %q proposal", status)
 		}
 	}

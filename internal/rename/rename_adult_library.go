@@ -175,7 +175,23 @@ func buildAdultLibraryProposal(
 // changes is a named return so a post-move failure (e.g. UpsertScene) still
 // reports the committed file move to the caller for Session.NotifyPlayers —
 // the physical relocate already happened by then (partial-success rule).
-func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, p proposals.Proposal) (sceneID int64, fingerprintSubmitted bool, changes []mode.PathChange, err error) {
+//
+// tier is the operator's configured adult_quality_tier, recorded on the scene
+// row. Plain string, not a settings lookup, because this package deliberately
+// does not import internal/settings — the internal/api caller resolves it.
+//
+// ACCEPTED IMPRECISION, deliberate — do not "fix" this by adding a
+// grabs.quality_tier column: for Adult, this is the tier in force at APPLY
+// time, not at grab time. importGrabContent's mode.Adult branch writes no
+// library row at all (an Adult grab carries no (box, scene_id) identity yet —
+// see that branch's own rationale), so this Apply is the FIRST write of the
+// scene, and it reads whatever adult_quality_tier is set right now. If an
+// operator changes that setting between the grab landing and this Apply
+// running, the recorded tier is the new one. Movies/Series don't have this
+// window because their rows are written at import. The only thing that would
+// close it is a schema column on grabs existing solely for this window, which
+// is exactly the premature abstraction CLAUDE.md bans.
+func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, p proposals.Proposal, tier string) (sceneID int64, fingerprintSubmitted bool, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, false, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -215,6 +231,11 @@ func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *librar
 		Box: p.GiveBackBox, SceneID: p.GiveBackSceneID,
 		Title: p.Title, Studio: p.Studio, Date: p.Date,
 		FilePath: destPath, RootFolderPath: p.RootFolderPath,
+		// Reuses the fileSize stat'd just above — Size and PHashFileSize hold
+		// the same bytes here but mean different things (PHashFileSize is a
+		// cache-validation key allowed to go stale; Size is the storage total),
+		// so they are written as separate fields rather than one shared column.
+		Size: fileSize, QualityTier: tier,
 		PHash: p.PHash, PHashFileSize: fileSize, PHashFileMTime: fileMTime,
 	})
 	if err != nil {

@@ -148,7 +148,7 @@ func TestApplyLibraryAdult_RelocatesAndRecordsScene(t *testing.T) {
 		SourcePath: sourcePath, RootFolderPath: root,
 	}
 
-	sceneID, _, changes, err := ApplyLibraryAdult(context.Background(), sess, libStore, p)
+	sceneID, _, changes, err := ApplyLibraryAdult(context.Background(), sess, libStore, p, "high")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,6 +175,18 @@ func TestApplyLibraryAdult_RelocatesAndRecordsScene(t *testing.T) {
 		t.Errorf("expected the phash file-identity key to be populated, got size=%d mtime=%q", scene.PHashFileSize, scene.PHashFileMTime)
 	}
 
+	// Capture-at-write: Size reuses the same stat PHashFileSize already needed
+	// (zero extra I/O) but is a separate column — PHashFileSize is a
+	// cache-validation key deliberately allowed to go stale, Size is not.
+	if want := int64(len("fake video data")); scene.Size != want {
+		t.Errorf("expected Size %d (the moved file's real bytes), got %d", want, scene.Size)
+	}
+	// Adult records the tier in force at APPLY time, not grab time — the grab
+	// path writes no scene row at all (see ApplyLibraryAdult's doc comment).
+	if scene.QualityTier != "high" {
+		t.Errorf("expected QualityTier %q, got %q", "high", scene.QualityTier)
+	}
+
 	want := []mode.PathChange{{Path: sourcePath, Kind: mode.Deleted}, {Path: wantDest, Kind: mode.Created}}
 	if len(changes) != 2 || changes[0] != want[0] || changes[1] != want[1] {
 		t.Errorf("expected changes %+v, got %+v", want, changes)
@@ -185,7 +197,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{})
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, proposals.Proposal{Status: status}); err == nil {
+		if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, proposals.Proposal{Status: status}, ""); err == nil {
 			t.Errorf("expected ApplyLibraryAdult to refuse a %q proposal", status)
 		}
 	}
@@ -194,7 +206,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibraryAdult_RefusesProposalWithoutSceneIdentifier(t *testing.T) {
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{})
 	p := proposals.Proposal{ID: 1, Status: proposals.Pending, Title: "No Identity", SourcePath: "/tmp/x.mp4", RootFolderPath: "/tmp"}
-	if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p); err == nil {
+	if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p, ""); err == nil {
 		t.Fatal("expected ApplyLibraryAdult to refuse a proposal with no (box, scene_id) identity")
 	}
 }
@@ -215,7 +227,7 @@ func TestApplyLibraryAdult_FiresFingerprintGiveBack(t *testing.T) {
 		SourcePath: sourcePath, RootFolderPath: root,
 	}
 
-	_, submitted, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p)
+	_, submitted, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +263,7 @@ func TestScanLibraryAdult_ThenApply_RoundTrip(t *testing.T) {
 		t.Fatalf("expected one Pending proposal from the scan, got %+v", got)
 	}
 
-	sceneID, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, got[0])
+	sceneID, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, got[0], "")
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}

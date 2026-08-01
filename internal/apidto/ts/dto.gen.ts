@@ -1205,6 +1205,7 @@ export interface TrackedItem {
   genres?: string[];
   cast?: string[];
   createdAt?: string;
+  qualityTiers?: string[];
 }
 /**
  * CollectionSummary is one entry from GET /api/modes/movies/collections —
@@ -1214,6 +1215,44 @@ export interface CollectionSummary {
   tmdbCollectionId: number /* int */;
   name: string;
   count: number /* int */;
+}
+/**
+ * StorageAllocationCell is one (mode, tier) intersection of the Dashboard's
+ * Storage Allocation grid. Cells with nothing behind them are still sent, as
+ * zeroes, so the frontend never has to invent a missing cell.
+ */
+export interface StorageAllocationCell {
+  tier: string; // low|medium|high|lossless|unknown
+  totalBytes: number /* int64 */;
+  itemCount: number /* int */;
+}
+/**
+ * StorageAllocationRow is one mode's full tier axis. Cells is ALWAYS
+ * len(Tiers) == 5, in the fixed StorageAllocation.Tiers order.
+ * RowItemCount is the sum of the row's cell counts. For Series it can exceed
+ * the number of distinct series: a series whose episodes span two tiers is
+ * counted in each of those two cells, which is what makes each cell's count
+ * reconcile with the drill-down it links to. RowTotalBytes never
+ * double-counts — a file belongs to exactly one tier group.
+ */
+export interface StorageAllocationRow {
+  mode: string; // movies|series|adult
+  cells: StorageAllocationCell[];
+  rowTotalBytes: number /* int64 */;
+  rowItemCount: number /* int */;
+}
+/**
+ * StorageAllocation is GET /api/admin/storage-allocation's response: a dense
+ * mode x tier grid of the tracked library's byte totals and item counts. Rows
+ * is always len 3 (movies, series, adult, in that order) and Tiers is always
+ * the fixed 5-tier axis, so the table's shape is a constant.
+ * Every number here comes from one grouped SQL query over columns captured at
+ * write time — the endpoint does NO disk I/O and makes NO external calls.
+ */
+export interface StorageAllocation {
+  rows: StorageAllocationRow[];
+  tiers: string[];
+  grandTotalBytes: number /* int64 */;
 }
 /**
  * ConnectionTestRequest is POST /api/connections/test's body — enough to

@@ -438,6 +438,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Entity cache admin — counts, per-source sync state, on-demand sync triggers
 	mux.HandleFunc("GET /api/admin/entity-sync", entitySyncStatusHandler(entityStore))
 	mux.HandleFunc("POST /api/admin/entity-sync/{source}", triggerEntitySyncHandler(entityStore, connStore, settingsStore, httpClient))
+	// Tracked-library size/count grid split by mode and quality tier, for the
+	// Dashboard's Storage Allocation table. Pure DB read — see the handler's
+	// doc comment for why it takes libStore and nothing else.
+	mux.HandleFunc("GET /api/admin/storage-allocation", storageAllocationHandler(libStore))
 	// Live container/host resource metrics streamed as server-sent events for
 	// the System Dashboard (internal/sysinfo reads cgroups v2 + /proc).
 	mux.HandleFunc("GET /api/admin/sysinfo/stream", sysinfoStreamHandler(

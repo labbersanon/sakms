@@ -393,6 +393,12 @@ func TestCheckImportHandler_QBittorrentCompleted_PerformsImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// Capture-at-write reads the SAME per-mode tier setting Search and
+	// auto-grab already read (autoGrabTier), so seed it and assert it lands on
+	// the imported row below.
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Movies), "lossless"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil))
 	defer srv.Close()
@@ -426,6 +432,16 @@ func TestCheckImportHandler_QBittorrentCompleted_PerformsImport(t *testing.T) {
 	}
 	if item.Title != "Some Movie" || item.FilePath != wantPath {
 		t.Errorf("unexpected library item: %+v", item)
+	}
+	// Capture-at-write on the grab-import path. Size must be the resolved
+	// VIDEO FILE's bytes: Relocate moved a whole directory here, and
+	// library.FileSize reports 0 for a directory — a nonzero value is what
+	// proves the size was stat'd at videoPath rather than movedPath.
+	if want := int64(len("fake video")); item.Size != want {
+		t.Errorf("expected Size %d (the resolved video file's real bytes, not the wrapping directory), got %d", want, item.Size)
+	}
+	if item.QualityTier != "lossless" {
+		t.Errorf("expected QualityTier %q (the configured movies_quality_tier), got %q", "lossless", item.QualityTier)
 	}
 }
 

@@ -55,7 +55,7 @@ func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.St
 			return
 		}
 
-		changes, err := importGrabContent(ctx, libStore, g, contentPath)
+		changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
 		if err != nil {
 			log.Printf("downloader import: grab %d (gid %s): %v", g.ID, gid, err)
 			return
@@ -140,7 +140,7 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			return
 		}
 
-		changes, err := importGrabContent(ctx, libStore, g, contentPath)
+		changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
 		if err != nil {
 			log.Printf("usenet import: grab %d (gid %s): %v", g.ID, gid, err)
 			return
@@ -178,7 +178,15 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 // added a second, non-HTTP caller (the background completion callback), which
 // is exactly the "second real caller justifies the extraction" bar this
 // project's conventions set for pulling logic out of a handler.
-func importGrabContent(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath string) ([]mode.PathChange, error) {
+//
+// tier is the operator's configured quality tier for g.Mode, recorded on every
+// library row this import writes as "the tier preference in force when this
+// file entered the library". Every caller resolves it the same way, with
+// string(autoGrabTier(ctx, settingsStore, g.Mode)) — the same per-mode setting
+// Search and auto-grab already read to build the search profile. Note the
+// mode.Adult branch writes no row, so tier is unused there (see that branch,
+// and rename.ApplyLibraryAdult's documented grab-to-Apply window).
+func importGrabContent(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string) ([]mode.PathChange, error) {
 	movedPath, err := rename.Relocate(contentPath, g.RootFolderPath)
 	if err != nil {
 		return nil, fmt.Errorf("download completed but import failed: %w", err)
@@ -199,6 +207,9 @@ func importGrabContent(ctx context.Context, libStore *library.Store, g *grabs.Gr
 		if _, err := libStore.Upsert(ctx, library.Item{
 			Mode: mode.Movies, TMDBID: g.TMDBID, Title: g.Title,
 			FilePath: videoPath, RootFolderPath: g.RootFolderPath,
+			// videoPath, not movedPath: Relocate can leave a wrapping directory,
+			// and library.FileSize reports 0 for one.
+			Size: library.FileSize(videoPath), QualityTier: tier,
 		}); err != nil {
 			return nil, fmt.Errorf("file relocated but recording it in the library failed: %w", err)
 		}
@@ -234,9 +245,15 @@ func importGrabContent(ctx context.Context, libStore *library.Store, g *grabs.Gr
 			// (e.g. "S01E01-E02") relocates as ONE file but must record an
 			// Episode row for EVERY number it contains. One Created PathChange
 			// per physical file still, not per episode row.
+			//
+			// One physical file, so one stat: every row that file produces
+			// carries its FULL size, not a share of it. The storage aggregation
+			// de-duplicates by file_path rather than dividing.
+			videoSize := library.FileSize(videoPath)
 			for _, episode := range episodes {
 				if _, err := libStore.UpsertEpisode(ctx, library.Episode{
 					SeriesID: series.ID, SeasonNumber: season, EpisodeNumber: episode, FilePath: videoPath,
+					Size: videoSize, QualityTier: tier,
 				}); err != nil {
 					return nil, fmt.Errorf("file relocated but recording episode s%de%d failed: %w", season, episode, err)
 				}

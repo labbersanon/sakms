@@ -9,6 +9,11 @@
 // The backend emits its first data event ~2s after connect (after its initial
 // sample pair), so the loading state is expected on first mount.
 //
+// One section is NOT SSE-fed: Storage Allocation reads
+// GET /api/admin/storage-allocation through createResource, and is deliberately
+// mounted OUTSIDE the <Show when={snap()}> gate so it paints on its own data
+// instead of waiting for a metrics frame that may never arrive.
+//
 // Layout is a 3-column grid (CPU + GPUs left, Memory/Network/Container middle,
 // aggregate Disk I/O right) followed by a full-width Storage Mounts section: a
 // responsive multi-column grid of compact used/free donut tiles, one per mount,
@@ -21,13 +26,16 @@
 
 import {
   type Component,
+  createResource,
   createSignal,
   For,
   onCleanup,
   onMount,
   Show,
 } from "solid-js";
-import type { SysinfoSnapshot } from "@dto";
+import { A } from "@solidjs/router";
+import type { StorageAllocationCell, SysinfoSnapshot } from "@dto";
+import { fetchStorageAllocation } from "../api/storage";
 import { Card, Muted } from "../components/ui";
 
 // formatBps renders a bytes/sec value: <1024 → "X B/s", <1MB → "X KB/s",
@@ -41,6 +49,28 @@ function formatBps(bps: number): string {
 // formatGB renders a byte count as gibibytes with one decimal.
 function formatGB(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+// formatSize renders a byte count on the full unit ladder — formatGB above is
+// too coarse for the Storage Allocation table, where a multi-TB library reads
+// "4096.0 GB". Duplicated from discover/RssFeedCard.tsx rather than extracted:
+// four independent module-local byte formatters already exist across screens,
+// and a shared helper would touch four unrelated files.
+function formatSize(bytes: number | undefined): string {
+  if (!bytes) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+// titleCase labels the mode/tier axis values, which arrive lowercase.
+function titleCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // formatGbps renders an aggregate disk throughput for the Disk I/O gauge label:
@@ -256,6 +286,63 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
   );
 };
 
+// AllocCell renders one mode x tier cell of the Storage Allocation table: the
+// group's byte total on one line, its item count beneath. An empty group is a
+// muted em-dash rather than "0 B / 0 items".
+//
+// Movies and Series cells drill into the Library screen's filtered list. Adult
+// cells never do — Library.tsx's LibraryMode excludes Adult by design, so a
+// link would misdirect rather than filter; they render as non-interactive text
+// carrying the reason instead. That text is dimmed with opacity (NOT text-muted:
+// body()'s own text-fg on the size line wins the cascade over a colour class on
+// the wrapper, but opacity applies to the whole subtree and can't be overridden)
+// so the cell reads as disabled at rest, not just to assistive tech.
+const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
+  props,
+) => {
+  // formatSize returns "" at 0 bytes, but size 0 is also the backend's "not
+  // captured yet" sentinel — a group with real items and no recorded bytes
+  // still shows its count rather than a blank line.
+  const body = () => (
+    <>
+      <span class="block text-fg">
+        {formatSize(props.cell.totalBytes) || "0 B"}
+      </span>
+      <span class="block text-xs text-muted">{props.cell.itemCount} items</span>
+    </>
+  );
+  return (
+    <Show
+      when={props.cell.itemCount > 0}
+      fallback={
+        <span class="text-muted" aria-disabled="true">
+          —
+        </span>
+      }
+    >
+      <Show
+        when={props.mode !== "adult"}
+        fallback={
+          <span
+            class="block cursor-not-allowed opacity-50"
+            aria-disabled="true"
+            title="Adult isn't browsable in Library yet"
+          >
+            {body()}
+          </span>
+        }
+      >
+        <A
+          href={`/library?mode=${props.mode}&tier=${props.cell.tier}`}
+          class="block hover:text-accent"
+        >
+          {body()}
+        </A>
+      </Show>
+    </Show>
+  );
+};
+
 export const Dashboard: Component = () => {
   const [snap, setSnap] = createSignal<SysinfoSnapshot | null>(null);
   // history keeps the last 60 snapshots for the CPU/Network sparklines.
@@ -265,6 +352,13 @@ export const Dashboard: Component = () => {
   // separate from the transport-level reconnecting notice: the connection is
   // still alive, but a metric read failed server-side.
   const [error, setError] = createSignal<string | null>(null);
+  // alloc is this screen's only REST call — everything above is SSE-fed.
+  const [alloc] = createResource(fetchStorageAllocation);
+  // allocError is read INSTEAD of alloc(), never alongside it: a Solid resource
+  // re-throws on read once its fetcher has errored, and an uncaught throw
+  // mid-render leaves the section stuck (the GrabDialog bug, see CLAUDE.md).
+  const allocError = () =>
+    (alloc.error as Error | undefined)?.message || "request failed";
 
   let es: EventSource | undefined;
 
@@ -480,6 +574,100 @@ export const Dashboard: Component = () => {
           </>
         )}
       </Show>
+
+      {/* Storage Allocation — REST-backed (GET /api/admin/storage-allocation),
+          deliberately OUTSIDE the <Show when={snap()}> gate above: it has its
+          own data source, so it must not wait on an SSE metrics frame that a
+          stalled stream may never deliver. */}
+      <div class="mt-4">
+        <h2 class="mb-2 px-2 text-sm font-semibold text-fg">
+          Storage Allocation
+        </h2>
+
+        <Show when={alloc.error}>
+          <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+            Storage allocation unavailable — {allocError()}
+          </div>
+        </Show>
+
+        <Show when={!alloc.error}>
+          <Show
+            when={alloc()}
+            fallback={<Muted>Loading storage allocation…</Muted>}
+          >
+            {(a) => (
+              <div class="overflow-x-auto rounded-xl border border-border bg-surface p-4">
+                <table class="w-full text-left text-sm">
+                  <thead>
+                    <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
+                      <th class="px-2 py-2 font-medium" scope="col">
+                        Mode
+                      </th>
+                      <For each={a().tiers}>
+                        {(tier) => (
+                          <th class="px-2 py-2 font-medium" scope="col">
+                            {titleCase(tier)}
+                          </th>
+                        )}
+                      </For>
+                      <th class="px-2 py-2 font-medium" scope="col">
+                        Total
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <For each={a().rows}>
+                      {(row) => (
+                        <tr class="border-b border-border/60 align-top">
+                          <th
+                            class="px-2 py-2 font-medium text-fg"
+                            scope="row"
+                          >
+                            {titleCase(row.mode)}
+                          </th>
+                          <For each={row.cells}>
+                            {(cell) => (
+                              <td class="px-2 py-2">
+                                <AllocCell mode={row.mode} cell={cell} />
+                              </td>
+                            )}
+                          </For>
+                          {/* Series only: RowItemCount sums each tier cell's
+                              DISTINCT-series count, so a show whose episodes
+                              span two tiers is counted in both — deliberate
+                              (each cell reconciles with its own drill-down),
+                              but the total needs to say so. Movies/Adult items
+                              hold one tier each, so they can't overlap. */}
+                          <td
+                            class="px-2 py-2"
+                            title={
+                              row.mode === "series"
+                                ? "A series spanning multiple quality tiers is counted in each, so this total can exceed the number of distinct series."
+                                : undefined
+                            }
+                          >
+                            <Show
+                              when={row.rowItemCount > 0}
+                              fallback={<span class="text-muted">—</span>}
+                            >
+                              <span class="block text-fg">
+                                {formatSize(row.rowTotalBytes) || "0 B"}
+                              </span>
+                              <span class="block text-xs text-muted">
+                                {row.rowItemCount} items
+                              </span>
+                            </Show>
+                          </td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Show>
+        </Show>
+      </div>
     </div>
   );
 };

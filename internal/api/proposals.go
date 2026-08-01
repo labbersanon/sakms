@@ -263,8 +263,15 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			if err != nil {
 				return nil, err
 			}
+			// Same read-it-fresh-at-Apply-time reasoning as preset above: the
+			// tier recorded on the library row is the preference in force when
+			// the file entered the library, so it's resolved here rather than
+			// frozen into the Proposal at Scan time. internal/rename and
+			// internal/dedup take it as a plain string — neither imports
+			// internal/settings, and neither should start.
+			tier := string(autoGrabTier(ctx, settingsStore, p.Mode))
 			if p.Mode == mode.Movies {
-				itemID, changes, err := rename.ApplyLibrary(ctx, libStore, p, preset)
+				itemID, changes, err := rename.ApplyLibrary(ctx, libStore, p, preset, tier)
 				if err != nil {
 					return changes, err
 				}
@@ -273,7 +280,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 				}
 				return changes, propStore.MarkApplied(ctx, p.ID, int(itemID))
 			}
-			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, p, preset)
+			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, p, preset, tier)
 			if err != nil {
 				return changes, err
 			}
@@ -286,7 +293,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			// before the error check so a post-move UpsertScene failure still
 			// notifies Stash of what physically moved (partial-success rule,
 			// same as the Movies/Series library path).
-			sceneID, fingerprintSubmitted, changes, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p)
+			sceneID, fingerprintSubmitted, changes, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p, string(autoGrabTier(ctx, settingsStore, p.Mode)))
 			if err != nil {
 				return changes, err
 			}
@@ -326,19 +333,19 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 	case proposals.Dedup:
 		switch p.Mode {
 		case mode.Movies:
-			itemID, changes, err := dedup.ApplyLibrary(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll)
+			itemID, changes, err := dedup.ApplyLibrary(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll, string(autoGrabTier(ctx, settingsStore, p.Mode)))
 			if err != nil {
 				return changes, err
 			}
 			return changes, propStore.MarkApplied(ctx, p.ID, int(itemID))
 		case mode.Series:
-			episodeID, changes, err := dedup.ApplyLibrarySeries(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll)
+			episodeID, changes, err := dedup.ApplyLibrarySeries(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll, string(autoGrabTier(ctx, settingsStore, p.Mode)))
 			if err != nil {
 				return changes, err
 			}
 			return changes, propStore.MarkApplied(ctx, p.ID, int(episodeID))
 		case mode.Adult:
-			sceneID, changes, err := dedup.ApplyLibraryAdult(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll)
+			sceneID, changes, err := dedup.ApplyLibraryAdult(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll, string(autoGrabTier(ctx, settingsStore, p.Mode)))
 			if err != nil {
 				return changes, err
 			}

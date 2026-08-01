@@ -105,3 +105,82 @@ func TestProfileFor_LowVsLosslessScoreDifferentlyAtSameResolution(t *testing.T) 
 		t.Error("expected Lossless to prefer the remux release over the WEBRip")
 	}
 }
+
+func TestInferTier(t *testing.T) {
+	// The full reverse-mapping contract. Note bluray's two rows: a bare
+	// bluray is NOT Lossless (High's own source list contains bluray too, so
+	// the source alone cannot discriminate a remux-quality rip from a
+	// re-encode) — High is the deliberate conservative default there.
+	cases := []struct {
+		name     string
+		info     release.Info
+		wantTier Tier
+		wantOK   bool
+	}{
+		{"remux is unambiguously lossless", release.Info{Source: "remux"}, Lossless, true},
+		{"bluray+x265 reads as a lossless-intent encode", release.Info{Source: "bluray", Codec: "x265"}, Lossless, true},
+		{"bare bluray is ambiguous and defaults to high", release.Info{Source: "bluray"}, High, true},
+		{"bluray+x264 stays high and ignores resolution", release.Info{Source: "bluray", Codec: "x264", Resolution: 720}, High, true},
+		{"webrip+x265 is low", release.Info{Source: "webrip", Codec: "x265"}, Low, true},
+		{"webrip+x264 is medium", release.Info{Source: "webrip", Codec: "x264"}, Medium, true},
+		{"hdtv+x265 is low", release.Info{Source: "hdtv", Codec: "x265"}, Low, true},
+		{"hdtv without a codec is medium", release.Info{Source: "hdtv"}, Medium, true},
+		{"web-dl is medium", release.Info{Source: "web-dl"}, Medium, true},
+		{"web is medium", release.Info{Source: "web"}, Medium, true},
+		{"dvdrip is low", release.Info{Source: "dvdrip"}, Low, true},
+		{"an unrecognized source is not inferable", release.Info{}, "", false},
+		{"resolution alone never infers a tier", release.Info{Resolution: 2160}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTier, gotOK := InferTier(tc.info)
+			if gotOK != tc.wantOK {
+				t.Fatalf("InferTier(%+v) ok = %v, want %v", tc.info, gotOK, tc.wantOK)
+			}
+			if gotOK && gotTier != tc.wantTier {
+				t.Errorf("InferTier(%+v) = %q, want %q", tc.info, gotTier, tc.wantTier)
+			}
+		})
+	}
+}
+
+func TestInferTierNeverConsultsResolution(t *testing.T) {
+	// Tier and resolution are independent settings (see this package's doc
+	// comment — conflating them was a mistake). Every resolution at a fixed
+	// source/codec must infer the identical tier.
+	for _, res := range []int{0, 480, 720, 1080, 2160} {
+		for _, src := range []string{"remux", "bluray", "webrip", "hdtv", "web-dl", "web", "dvdrip"} {
+			base, baseOK := InferTier(release.Info{Source: src})
+			got, gotOK := InferTier(release.Info{Source: src, Resolution: res})
+			if got != base || gotOK != baseOK {
+				t.Errorf("source %q: resolution %d changed the inferred tier (%q,%v -> %q,%v)", src, res, base, baseOK, got, gotOK)
+			}
+		}
+	}
+}
+
+func TestInferTierNeverReturnsHighForNonBlurayInput(t *testing.T) {
+	// High is reachable from InferTier ONLY via the bluray+non-x265 path.
+	// That is a deliberate property, not an oversight: High's own source list
+	// is release.DefaultProfile().PreferredSources — the full unfiltered
+	// default list, which discriminates nothing — so it is the conservative
+	// fallback for the one genuinely ambiguous source, never a general
+	// bucket. Pinned in a test rather than a comment so a future edit to the
+	// mapping table cannot silently make High common (or unreachable).
+	otherSources := []string{"remux", "webrip", "hdtv", "web-dl", "web", "dvdrip", ""}
+	codecs := []string{"x264", "x265", ""}
+	for _, src := range otherSources {
+		for _, codec := range codecs {
+			info := release.Info{Source: src, Codec: codec}
+			if tier, ok := InferTier(info); ok && tier == High {
+				t.Errorf("InferTier(%+v) returned High; High must be reachable only via bluray+non-x265", info)
+			}
+		}
+	}
+
+	// ...and the bluray path really does reach it, so the sweep above is
+	// asserting a boundary rather than a vacuous truth.
+	if tier, ok := InferTier(release.Info{Source: "bluray"}); !ok || tier != High {
+		t.Fatalf("expected bare bluray to reach High, got (%q, %v)", tier, ok)
+	}
+}

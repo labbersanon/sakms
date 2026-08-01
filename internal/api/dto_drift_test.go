@@ -66,6 +66,19 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"repickProposalRequest/RepickRequest", repickProposalRequest{}, apidto.RepickRequest{}},
 		{"libraryTagEntry/TagEntry", libraryTagEntry{}, apidto.TagEntry{}},
 		{"libraryTrackedItem/TrackedItem", libraryTrackedItem{}, apidto.TrackedItem{}},
+		// storage_allocation.go
+		{"storageAllocationCell/StorageAllocationCell", storageAllocationCell{}, apidto.StorageAllocationCell{}},
+		// storageAllocationRow/storageAllocationResponse are excluded for the
+		// same reason applyBatchRequest is: each has a nested named-type field
+		// ([]storageAllocationCell vs []apidto.StorageAllocationCell), whose
+		// f.Type.String() differs by package name by construction, so a
+		// structural compare can never match. Their remaining fields (mode,
+		// rowTotalBytes, rowItemCount on the row; rows, tiers, grandTotalBytes
+		// on the response) are NOT independently drift-checked anywhere —
+		// TestStorageAllocation_ReturnsDenseGrid decodes into this package's
+		// own storageAllocationResponse, which cannot detect a divergence
+		// against apidto.StorageAllocation. If either struct's JSON field
+		// names are ever edited on only one side, nothing here will catch it.
 		// settings.go
 		{"aiModelResponse/AIModelResponse", aiModelResponse{}, apidto.AIModelResponse{}},
 		{"aiModelRequest/AIModelRequest", aiModelRequest{}, apidto.AIModelRequest{}},

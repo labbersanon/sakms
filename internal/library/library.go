@@ -48,6 +48,17 @@ type Item struct {
 	Year           int       `json:"year,omitempty"`
 	FilePath       string    `json:"filePath"`
 	RootFolderPath string    `json:"rootFolderPath"`
+	// Size is the byte size of the file at FilePath, captured via os.Stat when
+	// the row was written. 0 means "not captured yet" (a row predating this
+	// column that the boot-time backfill hasn't reached). Deliberately NOT
+	// PHashFileSize: that field is a cache-validation key allowed to go stale
+	// on purpose so a replaced file is detected, which is the opposite of what
+	// a storage total needs.
+	Size int64 `json:"size,omitempty"`
+	// QualityTier is the quality.Tier preference in force when this file
+	// entered the library. "" means "not captured yet"; "unknown" means the
+	// backfill ran and could not determine one (an accepted permanent state).
+	QualityTier string `json:"qualityTier,omitempty"`
 	// PHash is the SAK-computed perceptual hash of this item's video file,
 	// cached so Dedup decodes each tracked file once rather than every Scan.
 	// PHashFileSize/PHashFileMTime are the file-identity key it's valid for:
@@ -96,8 +107,8 @@ func (s *Store) Upsert(ctx context.Context, item Item) (Item, error) {
 		return Item{}, fmt.Errorf("encoding cast for %q: %w", item.Title, err)
 	}
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO library_items (mode, tmdb_id, title, year, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, genres, "cast")
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO library_items (mode, tmdb_id, title, year, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, genres, "cast", size, quality_tier)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(mode, tmdb_id) DO UPDATE SET
 			title = excluded.title,
 			year = excluded.year,
@@ -108,9 +119,11 @@ func (s *Store) Upsert(ctx context.Context, item Item) (Item, error) {
 			phash_file_mtime = excluded.phash_file_mtime,
 			genres = excluded.genres,
 			"cast" = excluded."cast",
+			size = excluded.size,
+			quality_tier = excluded.quality_tier,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		RETURNING id, created_at, updated_at
-	`, string(item.Mode), item.TMDBID, item.Title, item.Year, item.FilePath, item.RootFolderPath, item.PHash, item.PHashFileSize, item.PHashFileMTime, genresJSON, castJSON)
+	`, string(item.Mode), item.TMDBID, item.Title, item.Year, item.FilePath, item.RootFolderPath, item.PHash, item.PHashFileSize, item.PHashFileMTime, genresJSON, castJSON, item.Size, item.QualityTier)
 
 	if err := row.Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return Item{}, fmt.Errorf("upserting library item %q: %w", item.Title, err)
@@ -143,7 +156,8 @@ func (s *Store) List(ctx context.Context, m mode.Mode) ([]Item, error) {
 		SELECT li.id, li.mode, li.tmdb_id, li.title, li.year, li.file_path, li.root_folder_path,
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
-		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]')
+		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
+		       li.size, li.quality_tier
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.mode = ? ORDER BY li.title
@@ -170,7 +184,8 @@ func (s *Store) Get(ctx context.Context, id int64) (*Item, error) {
 		SELECT li.id, li.mode, li.tmdb_id, li.title, li.year, li.file_path, li.root_folder_path,
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
-		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]')
+		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
+		       li.size, li.quality_tier
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.id = ?
@@ -193,7 +208,8 @@ func (s *Store) GetByTMDBID(ctx context.Context, m mode.Mode, tmdbID int) (*Item
 		SELECT li.id, li.mode, li.tmdb_id, li.title, li.year, li.file_path, li.root_folder_path,
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
-		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]')
+		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
+		       li.size, li.quality_tier
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.mode = ? AND li.tmdb_id = ?
@@ -374,7 +390,8 @@ func scanItem(row rowScanner) (Item, error) {
 		&item.PHash, &item.PHashFileSize, &item.PHashFileMTime,
 		&item.CreatedAt, &item.UpdatedAt,
 		&item.TMDBCollectionID, &item.CollectionName,
-		&genresJSON, &castJSON); err != nil {
+		&genresJSON, &castJSON,
+		&item.Size, &item.QualityTier); err != nil {
 		return Item{}, err
 	}
 	item.Mode = mode.Mode(m)
@@ -513,6 +530,27 @@ func dirIsLeafEntry(path string, known map[string]bool) (bool, error) {
 var videoExts = map[string]bool{
 	".mkv": true, ".mp4": true, ".avi": true, ".m4v": true,
 	".ts": true, ".wmv": true, ".mov": true, ".webm": true,
+}
+
+// FileSize returns the byte size of the video file at path, or 0 if it
+// can't be stat'd. Never an error: no caller should fail an
+// otherwise-successful file move over it.
+//
+// Be clear-eyed about what the 0 costs, though — it is NOT picked up later.
+// A capture-forward write always records a non-empty quality_tier (its source,
+// autoGrabTier, falls back to quality.Default and never returns ""), while
+// BackfillSizeAndTier only reads rows still carrying the empty-string tier
+// sentinel — so a row where only the size failed to capture is permanently
+// excluded from the backfill and will never be revisited. Recovery is the
+// same manual DB edit
+// BackfillSizeAndTier's doc already names as the only refresh mechanism (reset
+// both columns to their uncaptured values); no re-run trigger exists.
+func FileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return 0
+	}
+	return info.Size()
 }
 
 // ResolveVideoFile resolves path to an actual video file: itself, if it's

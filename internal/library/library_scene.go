@@ -26,6 +26,17 @@ type Scene struct {
 	Date           string `json:"date,omitempty"`
 	FilePath       string `json:"filePath"`
 	RootFolderPath string `json:"rootFolderPath"`
+	// Size is the byte size of the file at FilePath, captured via os.Stat when
+	// the row was written. 0 means "not captured yet" (a row predating this
+	// column that the boot-time backfill hasn't reached). Deliberately NOT
+	// PHashFileSize: that field is a cache-validation key allowed to go stale
+	// on purpose so a replaced file is detected, which is the opposite of what
+	// a storage total needs.
+	Size int64 `json:"size,omitempty"`
+	// QualityTier is the quality.Tier preference in force when this file
+	// entered the library. "" means "not captured yet"; "unknown" means the
+	// backfill ran and could not determine one (an accepted permanent state).
+	QualityTier string `json:"qualityTier,omitempty"`
 	// PHash is the SAK-computed perceptual hash of this scene's video file,
 	// cached so Dedup decodes each tracked file once rather than every Scan.
 	// PHashFileSize/PHashFileMTime are the file-identity key it's valid for:
@@ -47,8 +58,8 @@ type Scene struct {
 // I have" shape, used by Rename/Search's get-or-create-by-identity calls.
 func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO library_scenes (box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO library_scenes (box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, size, quality_tier)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(box, scene_id) DO UPDATE SET
 			title = excluded.title,
 			studio = excluded.studio,
@@ -58,9 +69,11 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 			phash = excluded.phash,
 			phash_file_size = excluded.phash_file_size,
 			phash_file_mtime = excluded.phash_file_mtime,
+			size = excluded.size,
+			quality_tier = excluded.quality_tier,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		RETURNING id, created_at, updated_at
-	`, scene.Box, scene.SceneID, scene.Title, scene.Studio, scene.Date, scene.FilePath, scene.RootFolderPath, scene.PHash, scene.PHashFileSize, scene.PHashFileMTime)
+	`, scene.Box, scene.SceneID, scene.Title, scene.Studio, scene.Date, scene.FilePath, scene.RootFolderPath, scene.PHash, scene.PHashFileSize, scene.PHashFileMTime, scene.Size, scene.QualityTier)
 
 	if err := row.Scan(&scene.ID, &scene.CreatedAt, &scene.UpdatedAt); err != nil {
 		return Scene{}, fmt.Errorf("upserting scene %q: %w", scene.Title, err)
@@ -74,7 +87,7 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 // key swapped.
 func (s *Store) GetScene(ctx context.Context, box, sceneID string) (*Scene, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier
 		FROM library_scenes WHERE box = ? AND scene_id = ?
 	`, box, sceneID)
 	scene, err := scanScene(row)
@@ -90,7 +103,7 @@ func (s *Store) GetScene(ctx context.Context, box, sceneID string) (*Scene, erro
 // ListScenes returns every tracked scene, ordered by title.
 func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier
 		FROM library_scenes ORDER BY title
 	`)
 	if err != nil {
@@ -217,6 +230,7 @@ func scanScene(row rowScanner) (Scene, error) {
 	err := row.Scan(&scene.ID, &scene.Box, &scene.SceneID, &scene.Title, &scene.Studio, &scene.Date,
 		&scene.FilePath, &scene.RootFolderPath,
 		&scene.PHash, &scene.PHashFileSize, &scene.PHashFileMTime,
-		&scene.CreatedAt, &scene.UpdatedAt)
+		&scene.CreatedAt, &scene.UpdatedAt,
+		&scene.Size, &scene.QualityTier)
 	return scene, err
 }

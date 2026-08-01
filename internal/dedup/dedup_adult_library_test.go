@@ -245,7 +245,7 @@ func TestApplyLibraryAdult_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T)
 			{Label: "loser", Path: loserPath},
 		},
 	}
-	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false)
+	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestApplyLibraryAdult_WinnerIsOrphan_DeletesTrackedLoserAndRegistersWinner(
 			{Label: "winner", Path: winnerPath, Winner: true},
 		},
 	}
-	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false)
+	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false, "medium")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,6 +307,20 @@ func TestApplyLibraryAdult_WinnerIsOrphan_DeletesTrackedLoserAndRegistersWinner(
 	}
 	if scene.FilePath != winnerPath || scene.ID != id {
 		t.Errorf("expected the registered scene to point at the winner (%q, id=%d), got %+v", winnerPath, id, scene)
+	}
+
+	// Capture-at-write on Adult's Dedup path: Size must be the WINNER's real
+	// bytes (reusing the fileIdentity stat, zero extra I/O), not the deleted
+	// loser's. Size and PHashFileSize hold the same value here but are distinct
+	// columns — PHashFileSize is a cache-validation key deliberately allowed to
+	// go stale, Size is a storage total that must not.
+	if info, err := os.Stat(winnerPath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	} else if scene.Size != info.Size() {
+		t.Errorf("expected Size %d (the winner's real bytes), got %d", info.Size(), scene.Size)
+	}
+	if scene.QualityTier != "medium" {
+		t.Errorf("expected QualityTier %q, got %q", "medium", scene.QualityTier)
 	}
 	if len(changes) != 1 || changes[0].Path != trackedFile || changes[0].Kind != mode.Deleted {
 		t.Errorf("expected exactly one Deleted PathChange for %q, got %+v", trackedFile, changes)
@@ -332,7 +346,7 @@ func TestApplyLibraryAdult_KeepAll_NoMutation(t *testing.T) {
 			{Label: "b", Path: loserPath},
 		},
 	}
-	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, true)
+	id, changes, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, true, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +367,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 		Status:     proposals.Applied,
 		Candidates: []proposals.Candidate{{Path: "/a.mkv"}, {Path: "/b.mkv"}},
 	}
-	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false); err == nil {
+	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false, ""); err == nil {
 		t.Fatal("expected ApplyLibraryAdult to refuse an already-applied proposal")
 	}
 }
@@ -361,7 +375,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibraryAdult_RejectsFewerThanTwoCandidates(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	p := proposals.Proposal{Status: proposals.Pending, Candidates: []proposals.Candidate{{Path: "/a.mkv"}}}
-	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false); err == nil {
+	if _, _, err := ApplyLibraryAdult(context.Background(), libStore, p, nil, nil, false, ""); err == nil {
 		t.Fatal("expected ApplyLibraryAdult to refuse a proposal with fewer than 2 candidates")
 	}
 }

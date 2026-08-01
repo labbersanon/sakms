@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -467,5 +468,86 @@ func TestUpdateEpisodePHash_UpdatesInPlaceAndNoOpOnMissing(t *testing.T) {
 
 	if err := s.UpdateEpisodePHash(ctx, 999999, "x", 1, "y"); err != nil {
 		t.Errorf("expected updating a nonexistent id to be a no-op, got %v", err)
+	}
+}
+
+// TestEpisodeTiersBySeries_DedupesSharedFilePathWithDivergentRows pins the
+// agreement between this function and storageAllocationQuery's series
+// subquery — see TestStorageAllocationDeduplicatesMultiEpisodeFilesWithDivergentRows
+// for the same state seeded against the aggregation side. Two episode rows can
+// legitimately share one physical file with divergent tiers (UpsertEpisode is
+// a single-row writer), and the aggregation collapses them via
+// GROUP BY series_id, file_path + MAX(quality_tier). If this function used a
+// bare SELECT DISTINCT it would report the series under BOTH tiers, so a
+// Dashboard cell for the losing tier would drill down to a list containing a
+// series that cell never counted.
+func TestEpisodeTiersBySeries_DedupesSharedFilePathWithDivergentRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 10, Title: "A Show", Year: 2019, RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	// Two DIFFERENT episode slots, ONE physical file, divergent tiers.
+	const sharedPath = "/tv/A Show/A Show S01E01-E02.mkv"
+	if _, err := s.UpsertEpisode(ctx, Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1,
+		FilePath: sharedPath, Size: 1_000, QualityTier: "high",
+	}); err != nil {
+		t.Fatalf("seeding episode 1: %v", err)
+	}
+	if _, err := s.UpsertEpisode(ctx, Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2,
+		FilePath: sharedPath, Size: 2_000, QualityTier: "medium",
+	}); err != nil {
+		t.Fatalf("seeding episode 2: %v", err)
+	}
+
+	tiers, err := s.EpisodeTiersBySeries(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// MAX(quality_tier) = 'medium' ('m' > 'h') — exactly the bucket the
+	// aggregation counts this series in, and nothing else.
+	want := []string{"medium"}
+	if !reflect.DeepEqual(tiers[series.ID], want) {
+		t.Errorf("expected the shared file collapsed to %v (the aggregation's MAX), got %v", want, tiers[series.ID])
+	}
+}
+
+// TestEpisodeTiersBySeries_KeepsDistinctTiersAcrossDifferentFiles is the guard
+// on the other side of the dedup above: the collapse is per file_path, NOT per
+// series. A series whose episodes really do sit at two tiers must still match
+// the filter for both — a GROUP BY series_id with one MAX would silently
+// flatten every series to a single tier and break the tier filter wholesale.
+func TestEpisodeTiersBySeries_KeepsDistinctTiersAcrossDifferentFiles(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 11, Title: "Another Show", Year: 2019, RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	if _, err := s.UpsertEpisode(ctx, Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1,
+		FilePath: "/tv/Another Show/s01e01.mkv", Size: 1_000, QualityTier: "high",
+	}); err != nil {
+		t.Fatalf("seeding episode 1: %v", err)
+	}
+	if _, err := s.UpsertEpisode(ctx, Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2,
+		FilePath: "/tv/Another Show/s01e02.mkv", Size: 2_000, QualityTier: "medium",
+	}); err != nil {
+		t.Fatalf("seeding episode 2: %v", err)
+	}
+
+	tiers, err := s.EpisodeTiersBySeries(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"high", "medium"}
+	if !reflect.DeepEqual(tiers[series.ID], want) {
+		t.Errorf("expected both tiers (two distinct files) %v, got %v", want, tiers[series.ID])
 	}
 }

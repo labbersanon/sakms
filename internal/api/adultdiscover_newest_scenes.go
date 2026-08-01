@@ -13,6 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -91,7 +92,7 @@ var newestScenesEnrichTimeout = 6 * time.Second
 // to page-1's pooled rows (the enclosure is carried only while a row's feed is
 // fresh), exactly as the other pooled Adult Discover read paths do — all live on
 // stores already wired into NewMux.
-func adultNewestEntityScenesHandler(connStore *connections.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
+func adultNewestEntityScenesHandler(connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		q := r.URL.Query()
@@ -143,7 +144,7 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, settingsStore 
 		// watch-folder scans, none of which should change because one
 		// drill-down's Prowlarr fan-out is slow.
 		showMoreClient := &http.Client{Timeout: newestScenesOutboundTimeout}
-		sess, err := mode.Build(ctx, connStore, settingsStore, showMoreClient, nil, mode.Adult)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, showMoreClient, nil, mode.Adult)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

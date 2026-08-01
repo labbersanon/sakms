@@ -21,6 +21,7 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/trakt"
 )
@@ -77,6 +78,17 @@ func testVideoHasher(t *testing.T) constantVideoHasher {
 // tests do — handler tests exercise the real stack, not a mock.
 func testStores(t *testing.T) (*connections.Store, *proposals.Store, *allowlist.Store, *settings.Store, *grabs.Store, *library.Store, *discoversliders.Store, *trakt.Store, *adultnewest.Store, *adultnewest.ReleaseStore, *rssfeeds.Store) {
 	t.Helper()
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore, _ := testStoresWithRegistry(t)
+	return connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore
+}
+
+// testStoresWithRegistry is testStores plus the service-connection registry
+// store, built against the SAME database. Only the handful of tests that need
+// a real registry row use it: media players moved out of connections.Store
+// into internal/serviceconn, so seeding a "jellyfin" connections row no longer
+// produces a player — mode.Build sources sess.Players from the registry.
+func testStoresWithRegistry(t *testing.T) (*connections.Store, *proposals.Store, *allowlist.Store, *settings.Store, *grabs.Store, *library.Store, *discoversliders.Store, *trakt.Store, *adultnewest.Store, *adultnewest.ReleaseStore, *rssfeeds.Store, *serviceconn.Store) {
+	t.Helper()
 	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
 	if err != nil {
 		t.Fatalf("opening db: %v", err)
@@ -86,7 +98,27 @@ func testStores(t *testing.T) (*connections.Store, *proposals.Store, *allowlist.
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)
 	}
-	return connections.New(sqlDB, secretStore), proposals.New(sqlDB), allowlist.New(sqlDB), settings.New(sqlDB), grabs.New(sqlDB), library.New(sqlDB), discoversliders.New(sqlDB), trakt.NewStore(sqlDB, secretStore), adultnewest.New(sqlDB), adultnewest.NewReleaseStore(sqlDB), rssfeeds.NewStore(sqlDB, secretStore)
+	return connections.New(sqlDB, secretStore), proposals.New(sqlDB), allowlist.New(sqlDB), settings.New(sqlDB), grabs.New(sqlDB, secretStore), library.New(sqlDB), discoversliders.New(sqlDB), trakt.NewStore(sqlDB, secretStore), adultnewest.New(sqlDB), adultnewest.NewReleaseStore(sqlDB), rssfeeds.NewStore(sqlDB, secretStore), serviceconn.NewStore(sqlDB, secretStore)
+}
+
+// seedJellyfinPlayer registers url as an ENABLED Jellyfin player assigned to
+// modes — the registry replacement for the
+// connStore.Upsert(ctx, "jellyfin", url, key) one-liner these tests used before
+// players became multi-connection. Pass every mode the notify is expected on;
+// a player assigned to no mode is never returned by PlayersForMode.
+func seedJellyfinPlayer(t *testing.T, scStore *serviceconn.Store, url, apiKey string, modes ...string) {
+	t.Helper()
+	if _, err := scStore.Create(context.Background(), serviceconn.Connection{
+		Kind:     serviceconn.KindPlayer,
+		Provider: serviceconn.ProviderJellyfin,
+		Label:    "test jellyfin",
+		URL:      url,
+		Secret:   apiKey,
+		Enabled:  true,
+		Modes:    modes,
+	}); err != nil {
+		t.Fatalf("seeding registry jellyfin player: %v", err)
+	}
 }
 
 // testFeedHealth builds a fresh adultnewest.FeedHealth for NewMux — every
@@ -112,7 +144,7 @@ func TestConnectionsTestHandler_EndToEnd(t *testing.T) {
 	defer fakeJellyfin.Close()
 
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	sakSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	sakSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer sakSrv.Close()
 
 	reqBody, _ := json.Marshal(ConnectionTestRequest{
@@ -138,7 +170,7 @@ func TestConnectionsTestHandler_EndToEnd(t *testing.T) {
 
 func TestConnectionsTestHandler_MalformedBody(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/connections/test", "application/json", bytes.NewReader([]byte("not json")))
@@ -158,7 +190,7 @@ func TestConnectionsTestHandler_MalformedBody(t *testing.T) {
 // isolation.
 func TestConnectionsCRUD_EndToEnd(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	// Save a connection.
@@ -254,7 +286,7 @@ func assertOnlyFixedURLSynthetics(t *testing.T, list []connections.Summary, exce
 // key field untouched) must preserve the stored secret, not wipe it.
 func TestUpsertConnectionHandler_OmittedAPIKeyPreservesSecret(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	if err := connStore.Upsert(context.Background(), "radarr", "http://old:7878", "my-secret-key"); err != nil {
@@ -290,7 +322,7 @@ func TestUpsertConnectionHandler_OmittedAPIKeyPreservesSecret(t *testing.T) {
 // secret (e.g. switching a service to one that needs no key).
 func TestUpsertConnectionHandler_ExplicitEmptyAPIKeyClearsSecret(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	if err := connStore.Upsert(context.Background(), "radarr", "http://radarr:7878", "my-secret-key"); err != nil {

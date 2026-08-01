@@ -10,6 +10,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
@@ -33,7 +34,7 @@ import (
 // first non-nil return) is deliberately used: with every goroutine returning
 // nil, there is no cancellation to reason about, and the sibling sub-calls
 // all complete even when one fails.
-func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		if m != mode.Movies && m != mode.Series {
@@ -47,7 +48,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -298,7 +299,7 @@ func mapDiscoverItems(in []tmdb.Item) []apidto.DiscoverItem {
 // calendar's whole point is to show upcoming/unreleased titles) and leaves
 // SortBy unset so the "newest" sort's own dateField.lte=today cap can't
 // collide with the `to` bound.
-func discoverCalendarHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverCalendarHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		if m != mode.Movies && m != mode.Series {
@@ -313,7 +314,7 @@ func discoverCalendarHandler(httpClient *http.Client, connStore *connections.Sto
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

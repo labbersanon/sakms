@@ -126,6 +126,34 @@ function excludeReqFor(item: RequestItem): ExcludeTitleRequest {
   };
 }
 
+// retryDuration renders a millisecond delta as a short human span ("6h",
+// "2d") for the retry countdown line — never a raw ISO timestamp.
+function retryDuration(ms: number): string {
+  const hours = Math.round(ms / (60 * 60 * 1000));
+  if (hours < 1) return "under an hour";
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+// retryBlurb turns a Pending Retry row's retryAfter/retryReason into one
+// human-readable line, e.g. "Retrying in 6h — no candidate cleared the
+// quality floor". The backend's RetryAfter (a UTC sqliteTimeLayout string)
+// and RetryReason are independent fields — a freshly parked row can have a
+// reason with no scheduled time yet, or vice versa — so each is optional
+// here too. Returns null when there's nothing to show.
+function retryBlurb(item: RequestItem): string | null {
+  if (item.status !== "Pending Retry") return null;
+  const parts: string[] = [];
+  if (item.retryAfter) {
+    const ms = new Date(item.retryAfter).getTime() - Date.now();
+    if (!Number.isNaN(ms)) {
+      parts.push(ms <= 0 ? "Retry due" : `Retrying in ${retryDuration(ms)}`);
+    }
+  }
+  if (item.retryReason) parts.push(item.retryReason);
+  return parts.length > 0 ? parts.join(" — ") : null;
+}
+
 export const Requests: Component = () => {
   const [data, { refetch }] = createResource(fetchRequests);
   const [statusFilter, setStatusFilter] = createSignal<string | null>(null);
@@ -286,8 +314,17 @@ export const Requests: Component = () => {
                           {item.missingCount} missing
                         </Show>
                       </div>
+                      <Show when={retryBlurb(item)}>
+                        {(blurb) => <div class="text-xs text-warn">{blurb()}</div>}
+                      </Show>
                     </div>
-                    <span class="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[11px]"
+                      classList={{
+                        "bg-warn/20 text-warn": item.status === "Pending Retry",
+                        "bg-surface-2 text-muted": item.status !== "Pending Retry",
+                      }}
+                    >
                       {item.status}
                     </span>
                     <Button

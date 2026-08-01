@@ -87,6 +87,48 @@ auto-Applied. The "manual by default, don't build speculative scheduling
 ahead of proven manual usage" principle stands unchanged for anything new;
 what's corrected is only the factual "none exists" claim, not the policy.
 
+**CORRECTED 2026-08-01 — the Scan-only claim in the AMENDED 2026-07-23 note
+above is now FALSE, and the scheduler enumeration in it was already
+incomplete. Both are corrected here rather than quietly extended, the same
+way that note itself corrected the one before it (see
+`.omc/plans/autopilot-impl-connections-elimination.md`, `docs/ROADMAP.md`
+item 3, and `CHANGELOG.md`).** The superseded sentence, quoted verbatim so a
+future session can find it: *"So the corrected statement is: scheduler
+infrastructure DOES exist, but every scheduler in it is Scan/propose/
+passive-flag only — the staged-for-approval invariant above is fully
+preserved, nothing is auto-Applied."* Two things in it are wrong now:
+
+- **It is no longer Scan/propose-only.** The Usenet multi-subscription work
+  adds `internal/api`'s `RunUsenetRetry` (`internal/api/usenetretry.go`,
+  launched from `cmd/sakms/main.go`), the **first scheduler in this codebase
+  that actually DISPATCHES DOWNLOADS** rather than proposing something for a
+  human to approve. Each cycle sweeps in-flight usenet grabs for
+  asynchronous retrieval failures and re-runs the full auto-grab pipeline
+  for every `pending_retry` row that is due — and a re-search that finds a
+  qualifying release dispatches it to the download client with no human in
+  the loop. This is the deliberate, bounded auto-grab exception documented
+  in full under **Staged-for-approval** below (AMENDED 2026-08-01), not an
+  oversight and not a general loosening: every OTHER scheduler here is still
+  Scan/propose/passive-flag only, and this one is bounded by an
+  off-by-default toggle it re-checks on every single cycle. So the corrected
+  statement is: **scheduler infrastructure exists, and all of it is
+  Scan/propose-only EXCEPT `RunUsenetRetry`, whose dispatch authority is
+  itself gated by `usenet_autograb_enabled` (default off).**
+- **The count was stale before this work and is stale twice over now.**
+  There are **six** interval-driven schedulers live today, five of which
+  predate this work: `internal/recheck`, `internal/adultnewest`,
+  **`internal/parseentity`** (entity-cache sync — omitted from the 2026-07-23
+  enumeration entirely, which is why that note says "three predate … adds a
+  fourth"), `internal/api`'s `RunWatchFolders`, and `internal/scanschedule`.
+  `RunUsenetRetry` is the sixth. **The ordinals in `main.go`'s own launch
+  comments ("the fourth", "the fifth") inherit the same omission and are not
+  authoritative** — `internal/api/usenetretry.go`'s file doc deliberately
+  declines to pick a number for exactly this reason. Count the launch block
+  in `main.go` rather than trusting any prose ordinal, this one included —
+  and note that `scanschedule.Run` is not a bare `go` statement (it starts
+  one goroutine per workflow internally), which is part of why it is easy to
+  miss when counting.
+
 (Bulk apply, added 2026-07-17, is a same-screen multi-select of
 already-reviewed Pending proposals — see the amended engineering-convention
 note below. It doesn't change this section: there is still no automation,
@@ -153,6 +195,144 @@ above, so don't drop them for convenience:
     Selection is cleared on tab/route change and any selected-but-no-
     longer-rendered card is dropped before the request is built, so a
     stale selection can never fire a live grab of the wrong title.
+  - **AMENDED 2026-08-01 — bounded unattended Usenet auto-grab exception (a
+    third, deliberate, documented reversal; see `docs/ROADMAP.md`'s
+    "Eliminate Connections tab; Usenet multi-subscription settings" entry
+    (item 3) and `CHANGELOG.md`).** This one is **structurally different
+    from both exceptions above, and the difference is the whole reason it
+    needs its own bounds**: bulk-apply acts on already-reviewed Pending
+    proposals staged by a prior Scan (a review step precedes the batch);
+    bulk-grab has no staging step but the operator's own click *is* the
+    approval. **This exception has no human action in the loop at all.**
+    When it fires — from the 24h retry cycle in
+    `internal/api/usenetretry.go` — nobody clicked anything, nobody
+    reviewed anything, and a release is dispatched to a download client on
+    the system's own initiative. That is a genuine reversal of
+    staged-for-approval for one narrow path, not a reinterpretation of it.
+
+    **What bounds it instead of a human, all four enforced in code, not by
+    convention:**
+    1. **An off-by-default global toggle, `usenet_autograb_enabled`**
+       (`PUT /api/settings/usenet-autograb-enabled`, Settings → Usenet).
+       Every install starts with unattended auto-grab OFF, and the retry
+       scheduler's own opt-in gate (`usenet_retry_interval_seconds`, written
+       server-side as a coupled side effect of that toggle: on → 86400,
+       off → 0) means the loop does not even start until the operator turns
+       it on. (The interval is read at boot, same as every other scheduler
+       here, so switching the toggle ON takes effect on restart; switching it
+       OFF stops a running loop on its next tick, and `RunAutoGrab` refuses
+       every unattended trigger immediately regardless. Worth knowing before
+       writing UI copy that promises instant effect.) The gate is enforced in
+       exactly ONE place — inside
+       `RunAutoGrab` (`internal/api/autograb_shared.go`) — so no trigger can
+       route around it. Discover's shipped one-click Grab
+       (`TriggerOperator`) is the deliberate exemption and stays **ungated**:
+       the operator's click is still the approval, per the 2026-07-24
+       amendment above. Gating it would silently break a live feature.
+    2. **A qualification predicate that refuses to grab an ungradeable
+       release.** Scoring uses `autograb.Select`, not
+       `release.ScoreCandidate`, specifically because only the former can
+       express "nothing qualified" (`Selection.Fallback` /
+       `PickIndex == -1`, driven by `Grade.Qualified`). A candidate whose
+       size or runtime is unknown is graded not-qualified and is never
+       dispatched — Series season packs (runtime 0 by design) and Adult
+       items with no duration therefore never auto-grab, by construction.
+       **Do not "fix" this by loosening the floor**; the conservative refusal
+       IS the bound.
+    3. **No grab without a scored match, under any condition, including
+       retry.** A retry re-runs the whole pipeline from the Prowlarr search
+       through `autograb.Select`; it never re-dispatches a cached winner and
+       never has a "just take the best available" fallback. `RunAutoGrab` is
+       the single scoring-and-dispatch path for every trigger
+       (`TriggerOperator` / `TriggerRequest` / `TriggerRetry`, plus the
+       reserved-but-unimplemented `TriggerAirDate`), so "retry never
+       bypasses scoring" is true by construction rather than by review.
+    4. **A permanent-failure path that does not retry, and a cap on the one
+       that does.** A 451 `ErrArticleRemoved` (DMCA takedown) is terminal:
+       `classifyDownloadState` maps it straight to `failed` and it is never
+       re-searched. A 430 `ErrArticleNotFound` from every configured
+       subscription, and any other unclassified/transient failure (a dial
+       timeout, a decode error), are both treated as retryable — corrected
+       2026-08-01 after a Phase-4 review found the original transient-error
+       path was silently terminal despite a test asserting otherwise (see
+       `internal/api/search.go`'s `classifyDownloadState`). This does not
+       widen the safety envelope: the toggle, the qualification predicate,
+       and "no grab without a scored match" are all unchanged — only which
+       failures get another attempt. And retries are capped —
+       `grabs.maxRetryAttempts = 5`, after which the row becomes `failed`
+       with an explaining reason, so a permanently ungradeable item
+       terminates instead of being worked forever.
+
+    **Honest scope note, verified against the shipped code rather than
+    predicted:** the toggle-ON Search hook (`runToggleGatedSearch`, reached
+    from both `GET /api/modes/{mode}/search` and
+    `GET /api/modes/adult/search`) **can never actually auto-grab.** Both
+    routes carry only `?q=`, so `RuntimeSeconds` is 0 in every mode there,
+    and `autograb.GradeCandidate` short-circuits on
+    `SizeBytes <= 0 || RuntimeSeconds <= 0` *before* reaching the Lossless
+    remux/bluray bypass — so not even a remux qualifies on that path. Every
+    toggle-ON search parks a `pending_retry` row instead. (The implementation
+    plan predicted "only a Lossless-source release can auto-grab here"; that
+    prediction was wrong, and the truth is *more* bounded, not less.) The
+    rows this feature can genuinely convert into an unattended dispatch are
+    the ones the retry loop's GID sweep parks — real, already-dispatched
+    grabs carrying a real TMDB id and runtime. For Search-hook rows the
+    retry loop provides *termination* (via the attempt cap), not eventual
+    success. Both facts are load-bearing before anyone "improves" this: the
+    unattended dispatch surface is narrower than the toggle's name suggests.
+
+    It is still NOT a queue-wide "grab everything", not cross-mode
+    auto-approval, and not a loosening of staged-for-approval anywhere else
+    — Rename/Purge/Dedup/Tag Apply, and every non-usenet grab path, are
+    completely untouched.
+
+    - **Documented spec deviation, recorded in the same amendment because a
+      future session will look for it here: "queried in parallel" was
+      reinterpreted as a RETRIEVAL-stage fan-out, not a search-stage one.**
+      The spec literally said *"all configured subscriptions are queried in
+      parallel (no priority ordering)… Results are ranked via the codebase's
+      existing scoring mechanism."* Read literally, that asks each Usenet
+      subscription to return searchable results to be scored. **That is not
+      implementable, because NNTP has no search verb** — an NNTP server
+      offers `ARTICLE`/`BODY` retrieval by message-ID and nothing else
+      (`internal/usenet/pool.go`), and header enumeration is an
+      indexer-scale operation, which is exactly what Prowlarr already is.
+      Neither scorer has a single field an NNTP server could populate
+      (`release.Candidate` and `autograb.Candidate` both take release
+      metadata: title, size, resolution, codec, seeders, publish date).
+      What was built instead is a **two-stage pipeline**: ONE Prowlarr
+      search produces the usenet candidates → `autograb.Select` scores them
+      and picks a winner (or refuses) → the winner's NZB is parsed to
+      segments → **the fan-out across subscriptions happens at segment
+      RETRIEVAL.** This is also the real-world reason an operator runs
+      multiple providers — differing retention and takedown coverage, i.e.
+      article *availability*, which is a retrieval concern, not a search
+      one. Nothing in the spec is lost: "no priority ordering" holds
+      (there is no priority field, no reorder UI, and no ranked-chain
+      concept anywhere — `frontend/src/screens/settings/Usenet.tsx`
+      documents this as a thing the page must never grow); "ranked via the
+      existing scoring mechanism" holds (`autograb.Select`, an existing
+      scorer, not a new one); "highest-scored candidate auto-downloads with
+      no human review step" holds; "no match → stays pending, retries every
+      24h" holds at *either* stage — no qualifying candidate, or no
+      subscription holding the articles, both park the same
+      `pending_retry` row; and "retry never bypasses scoring" holds because
+      the retry restarts at the Prowlarr search.
+      **Precision worth having, since one in-code comment overstates it:**
+      per-segment subscription probing is *sequential fallback*, not
+      simultaneous — `fetchSegmentAny` tries pools in turn until one holds
+      the article, deliberately, because probing every server at once would
+      download N copies of one article body for N times the bandwidth and
+      connection consumption. The concurrency is across *segments* (an
+      `errgroup` limited to the summed `MaxConns` of all enabled
+      subscriptions), so multiple subscriptions genuinely do serve one
+      download simultaneously, and every enabled subscription is tried for
+      every segment. Read "queried in parallel" as **"every enabled
+      subscription is tried for every segment, with no configurable
+      priority, and segment fetches run concurrently across all of them"** —
+      that is what ships. `Usenet.tsx`'s header comment says "queried in
+      parallel with no ordering at all", which is right about the *ordering*
+      and loose about the *parallelism*.
 - **Secrets encrypted at rest** (`internal/secrets`, a locally generated
   key file, not an OS keychain — the primary deployment target is a
   headless container with no keychain to use).
@@ -452,6 +632,27 @@ above, so don't drop them for convenience:
     way the original per-card badge was treated. Response envelope for both
     pages is `{items, hasMore}`; `page=1` HasMore is always true (Show More
     always offered), `page>1` always false (Prowlarr doesn't paginate further).
+  - **Library sidebar tab added (2026-08-01)** — a new `frontend/src/screens/Library.tsx`
+    (own sidebar entry, `/library` route) is now the tracked-catalog browsing
+    screen for Movies/Series (title search, genre filter, added-date sort via
+    the newly-exposed `createdAt` field). `Tag.tsx` narrowed in the same change
+    to pure tag-CRUD — its browsing grid was deleted, `PosterCard`/`DetailPanel`
+    moved to Library verbatim. **Tag deliberately still has its own direct
+    sidebar entry, not drill-in-only from Library.** This looks like it
+    contradicts the spec's own AC5 ("Tag no longer a standalone browsing entry
+    point") but is the resolution to a genuine internal contradiction between
+    that AC and AC7 ("Adult's table view completely unchanged"): Movies/Series
+    got a real separate Library screen to browse into, but Adult never did —
+    Adult's tag-CRUD table has always lived inside `Tag.tsx` itself (Adult is
+    explicitly out of scope for Library, per Non-Goal 1), so `Tag.tsx` is the
+    *only* screen that reaches it. Removing Tag from the sidebar would make
+    Adult's tag CRUD unreachable outright. Wade confirmed keeping Tag in the
+    sidebar for all three modes rather than either breaking Adult access or
+    building Adult a redundant second table screen the spec never asked for.
+    **Do not "fix" this by removing Tag's sidebar entry** without first giving
+    Adult an equivalent entry point — see
+    `.omc/plans/autopilot-impl-library-sidebar-tab.md` §2 and
+    `docs/ROADMAP.md` item 12 for the full reasoning.
 
 - **Mainstream Discover — Seerr-parity expansion (2026-07-14)**: supersedes
   this section's earlier "paginated Trending/Popular rows" description —

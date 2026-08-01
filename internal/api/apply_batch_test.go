@@ -98,7 +98,7 @@ func TestApplyBatch_PartialFailure_SkipsAndContinues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyBatchRequest{Items: []applyBatchItem{
@@ -176,12 +176,10 @@ func TestApplyBatch_CombinedNotify_OneCallBothItemsChanges(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
 		{Status: proposals.Pending, SourceName: "First", SourcePath: src1, RootFolderPath: destRoot, Title: "First Movie", TMDBID: 101, Year: 2020},
@@ -191,7 +189,7 @@ func TestApplyBatch_CombinedNotify_OneCallBothItemsChanges(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyBatchRequest{Items: []applyBatchItem{
@@ -266,12 +264,10 @@ func TestApplyBatch_CommittedItemErrors_ChangesStillInCombinedNotify(t *testing.
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	connStore, propStore, _, settingsStore, _, libStore, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
 		{Status: proposals.Pending, SourceName: "First", SourcePath: src1, RootFolderPath: destRoot, Title: "First Movie", TMDBID: 201, Year: 2020},
@@ -286,7 +282,7 @@ func TestApplyBatch_CommittedItemErrors_ChangesStillInCombinedNotify(t *testing.
 	// its file has already moved.
 	failStore := markAppliedFailStore{Store: propStore, failID: saved[1].ID}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(testHTTPClient(), connStore, settingsStore, failStore, libStore, nil))
+	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(testHTTPClient(), connStore, scStore, settingsStore, failStore, libStore, nil))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

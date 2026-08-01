@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +20,9 @@ import (
 	"github.com/labbersanon/sakms/internal/gemini"
 	"github.com/labbersanon/sakms/internal/jellyfin"
 	"github.com/labbersanon/sakms/internal/openai"
+	"github.com/labbersanon/sakms/internal/plex"
 	"github.com/labbersanon/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/stashapi"
 	"github.com/labbersanon/sakms/internal/stashbox"
@@ -78,7 +81,7 @@ func newTestStores(t *testing.T) (*connections.Store, *settings.Store) {
 func TestBuild_Movies_NoServarrConnectionRequired(t *testing.T) {
 	store, settingsStore := newTestStores(t)
 
-	sess, err := Build(context.Background(), store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	sess, err := Build(context.Background(), store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +99,7 @@ func TestBuild_Movies_NoServarrConnectionRequired(t *testing.T) {
 func TestBuild_Series_NoServarrConnectionRequired(t *testing.T) {
 	store, settingsStore := newTestStores(t)
 
-	sess, err := Build(context.Background(), store, settingsStore, &http.Client{Timeout: time.Second}, nil, Series)
+	sess, err := Build(context.Background(), store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Series)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +121,7 @@ func TestBuild_Series_NoServarrConnectionRequired(t *testing.T) {
 func TestBuild_Adult_NoServarrConnectionRequired(t *testing.T) {
 	store, settingsStore := newTestStores(t)
 
-	sess, err := Build(context.Background(), store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(context.Background(), store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +144,7 @@ func TestBuild_Adult_ServarrAlwaysNil(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -152,7 +155,7 @@ func TestBuild_Adult_ServarrAlwaysNil(t *testing.T) {
 
 func TestBuild_UnknownMode(t *testing.T) {
 	store, settingsStore := newTestStores(t)
-	_, err := Build(context.Background(), store, settingsStore, &http.Client{}, nil, Mode("bogus"))
+	_, err := Build(context.Background(), store, nil, settingsStore, &http.Client{}, nil, Mode("bogus"))
 	if err == nil {
 		t.Fatal("expected an error for an unknown mode")
 	}
@@ -172,7 +175,7 @@ func TestBuild_AdultOnlyWhisparr_IdentifyBuiltWithoutAI(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +198,7 @@ func TestBuild_AdultNoStashConnection_SessionStashNil(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -216,7 +219,7 @@ func TestBuild_AdultStashConnectionConfigured_PopulatesSessionStash(t *testing.T
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -258,7 +261,7 @@ func TestBuild_AdultSettingsStoreError_Propagates(t *testing.T) {
 		t.Fatalf("dropping settings table: %v", err)
 	}
 
-	_, err = Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	_, err = Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err == nil {
 		t.Fatal("expected a real settings-store error to propagate, got nil")
 	}
@@ -281,7 +284,7 @@ func TestBuild_AdultOllamaConnButNoModelSetting_IdentifyBuiltAINil(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,7 +321,7 @@ func TestBuild_AdultWithIdentificationConnections_PopulatesIdentify(t *testing.T
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -408,7 +411,7 @@ func TestBuild_AdultIdentifierIsFunctional(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -445,7 +448,7 @@ func TestBuild_MainstreamAI_NilWithoutOllamaConnection(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -467,7 +470,7 @@ func TestBuild_MainstreamAI_NilWithoutModelSetting(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -500,7 +503,7 @@ func TestBuild_MainstreamAI_PopulatedWhenConfigured(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, m)
+			sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, m)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -575,7 +578,7 @@ func TestBuild_AIClient_UsesConfiguredProvider(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Movies)
+			sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Movies)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -653,7 +656,7 @@ func TestBuild_AIClient_CloudProvidersIgnoreStoredConnectionURL(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Movies)
+			sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Movies)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -693,7 +696,7 @@ func TestBuild_Brave_IgnoresStoredConnectionURL(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: 5 * time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -733,7 +736,7 @@ func TestBuild_AIClient_UnknownProviderErrors(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	_, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	_, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err == nil {
 		t.Fatal("expected an error for an unrecognized ai_provider value")
 	}
@@ -769,7 +772,7 @@ func TestBuild_AIClient_ProviderStoreError_Propagates(t *testing.T) {
 		t.Fatalf("dropping settings table: %v", err)
 	}
 
-	_, err = Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	_, err = Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err == nil {
 		t.Fatal("expected a real settings-store error to propagate, got nil")
 	}
@@ -793,7 +796,7 @@ func TestBuild_KidsRootPath_DefaultsEmpty(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, m)
+			sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, m)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -822,7 +825,7 @@ func TestBuild_KidsRootPath_ReadsPerModeSetting(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	moviesSess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	moviesSess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -830,7 +833,7 @@ func TestBuild_KidsRootPath_ReadsPerModeSetting(t *testing.T) {
 		t.Errorf("got %q", moviesSess.KidsRootPath)
 	}
 
-	seriesSess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Series)
+	seriesSess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Series)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -848,7 +851,7 @@ func TestBuild_KidsRootPath_NotApplicableToAdult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Adult)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -867,7 +870,7 @@ func TestBuild_DownloadPipeline_NilWhenUnconfigured(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -893,7 +896,7 @@ func TestBuild_SearchPipeline_PopulatedWhenConfigured(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -924,7 +927,7 @@ func TestBuild_TMDB_PopulatedWhenConfigured(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sess, err := Build(ctx, store, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	sess, err := Build(ctx, store, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -977,10 +980,11 @@ func writeTestJSON(t *testing.T, w http.ResponseWriter, v any) {
 
 // --- Session.NotifyPlayers (Slice 2 of player-rescan-notify) ---
 
-// TestNotifyPlayers_JellyfinPOSTShape confirms a session with only
-// sess.Jellyfin set sends exactly one POST to /Library/Media/Updated with
-// the MediaBrowser auth header and the two updates translated verbatim
-// (Acceptance #1).
+// TestNotifyPlayers_JellyfinPOSTShape confirms a session with a single
+// Jellyfin player sends exactly one POST to /Library/Media/Updated with the
+// MediaBrowser auth header and the two updates translated verbatim
+// (Acceptance #1). *jellyfin.Client satisfies PlayerNotifier directly, so no
+// adapter sits between the batch and the wire here.
 func TestNotifyPlayers_JellyfinPOSTShape(t *testing.T) {
 	var calls int
 	var gotPath, gotAuth string
@@ -996,7 +1000,7 @@ func TestNotifyPlayers_JellyfinPOSTShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sess := &Session{Jellyfin: jellyfin.New(jellyfin.Config{URL: srv.URL, APIKey: "jf-key"}, &http.Client{Timeout: time.Second})}
+	sess := &Session{Players: []Player{{ID: 1, Label: "test-jellyfin", Notifier: jellyfin.New(jellyfin.Config{URL: srv.URL, APIKey: "jf-key"}, &http.Client{Timeout: time.Second})}}}
 	sess.NotifyPlayers(context.Background(), []PathChange{
 		{Path: "/media/old.mkv", Kind: Deleted},
 		{Path: "/media/new.mkv", Kind: Created},
@@ -1121,7 +1125,7 @@ func TestNotifyPlayers_StashSplit_RenameShapedBatchScansNewAndCleansOld(t *testi
 }
 
 // TestNotifyPlayers_BothClientsNil_NoOp confirms a session with neither
-// Jellyfin nor Stash configured is a safe no-op — no panic, no outbound
+// players nor Stash configured is a safe no-op — no panic, no outbound
 // calls possible since neither client exists (Acceptance #4, Edge #6).
 func TestNotifyPlayers_BothClientsNil_NoOp(t *testing.T) {
 	sess := &Session{}
@@ -1143,8 +1147,8 @@ func TestNotifyPlayers_EmptyChanges_NoOutboundCalls(t *testing.T) {
 	defer stashSrv.Close()
 
 	sess := &Session{
-		Jellyfin: jellyfin.New(jellyfin.Config{URL: jfSrv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second}),
-		Stash:    stashapi.New(stashapi.Config{URL: stashSrv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second}),
+		Players: []Player{{ID: 1, Label: "test-jellyfin", Notifier: jellyfin.New(jellyfin.Config{URL: jfSrv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second})}},
+		Stash:   stashapi.New(stashapi.Config{URL: stashSrv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second}),
 	}
 	sess.NotifyPlayers(context.Background(), nil)
 	sess.NotifyPlayers(context.Background(), []PathChange{})
@@ -1163,7 +1167,7 @@ func TestNotifyPlayers_ExactPath_NeverRootFolderPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sess := &Session{Jellyfin: jellyfin.New(jellyfin.Config{URL: srv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second})}
+	sess := &Session{Players: []Player{{ID: 1, Label: "test-jellyfin", Notifier: jellyfin.New(jellyfin.Config{URL: srv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second})}}}
 	sess.NotifyPlayers(context.Background(), []PathChange{{Path: "/media/Movies/Some Movie (2020)/movie.mkv", Kind: Created}})
 
 	if strings.Contains(rawBody, "RootFolderPath") {
@@ -1184,7 +1188,7 @@ func TestNotifyPlayers_BestEffort_JellyfinFailureLogsAndReturns(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sess := &Session{Jellyfin: jellyfin.New(jellyfin.Config{URL: srv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second})}
+	sess := &Session{Players: []Player{{ID: 1, Label: "test-jellyfin", Notifier: jellyfin.New(jellyfin.Config{URL: srv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second})}}}
 	// Reaching the end of this call without panicking/blocking IS the
 	// assertion: NotifyPlayers never returns an error and never propagates
 	// the player's failure to the caller.
@@ -1225,5 +1229,231 @@ func TestNotifyPlayers_BestEffort_StashScanFailureStillCleans(t *testing.T) {
 
 	if cleanCalls != 1 {
 		t.Fatalf("expected metadataClean to still fire even though metadataScan failed, got %d clean calls", cleanCalls)
+	}
+}
+
+// --- Session.Players: the multi-player registry fan-out ---
+
+// newTestPlayerStores builds a connections.Store, settings.Store and
+// serviceconn.Store over ONE database, so a Build test can seed registry
+// players and singleton connections against the same install.
+func newTestPlayerStores(t *testing.T) (*connections.Store, *serviceconn.Store, *settings.Store) {
+	t.Helper()
+	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
+	if err != nil {
+		t.Fatalf("opening db: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	secretStore, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("building secret store: %v", err)
+	}
+	return connections.New(sqlDB, secretStore), serviceconn.NewStore(sqlDB, secretStore), settings.New(sqlDB)
+}
+
+// seedPlayer inserts one enabled registry player and returns its row.
+func seedPlayer(t *testing.T, store *serviceconn.Store, provider serviceconn.Provider, label, url string, modes ...string) *serviceconn.Connection {
+	t.Helper()
+	c, err := store.Create(context.Background(), serviceconn.Connection{
+		Kind: serviceconn.KindPlayer, Provider: provider, Label: label,
+		URL: url, Secret: "k", Enabled: true, Modes: modes,
+	})
+	if err != nil {
+		t.Fatalf("seeding %s player %q: %v", provider, label, err)
+	}
+	return c
+}
+
+// countingPlayerServer is a fake player endpoint that counts requests and
+// answers with status.
+func countingPlayerServer(t *testing.T, status int) (*httptest.Server, func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
+}
+
+// TestBuild_NoAssignedPlayers_NotifyIsSafeNoOp is the zero-player case: a mode
+// with nothing assigned in the registry builds an empty Players slice, and
+// NotifyPlayers over it neither panics nor makes a call.
+func TestBuild_NoAssignedPlayers_NotifyIsSafeNoOp(t *testing.T) {
+	store, scStore, settingsStore := newTestPlayerStores(t)
+	// A player exists, but is assigned to another mode entirely.
+	srv, calls := countingPlayerServer(t, http.StatusNoContent)
+	seedPlayer(t, scStore, serviceconn.ProviderJellyfin, "series only", srv.URL, "series")
+
+	sess, err := Build(context.Background(), store, scStore, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sess.Players) != 0 {
+		t.Fatalf("expected no players for a mode with nothing assigned, got %d", len(sess.Players))
+	}
+
+	sess.NotifyPlayers(context.Background(), []PathChange{{Path: "/media/f.mkv", Kind: Created}})
+	if calls() != 0 {
+		t.Errorf("expected zero outbound calls, got %d", calls())
+	}
+}
+
+// TestBuild_DisabledPlayerNotIncluded proves the enabled flag is honoured at
+// Build time, not just in the UI.
+func TestBuild_DisabledPlayerNotIncluded(t *testing.T) {
+	store, scStore, settingsStore := newTestPlayerStores(t)
+	srv, _ := countingPlayerServer(t, http.StatusNoContent)
+	c := seedPlayer(t, scStore, serviceconn.ProviderJellyfin, "off", srv.URL, "movies")
+	c.Enabled = false
+	if _, err := scStore.Update(context.Background(), c.ID, *c, nil); err != nil {
+		t.Fatalf("disabling player: %v", err)
+	}
+
+	sess, err := Build(context.Background(), store, scStore, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sess.Players) != 0 {
+		t.Fatalf("expected a disabled player to be excluded, got %d", len(sess.Players))
+	}
+}
+
+// TestNotifyPlayers_TwoAssignedPlayers_BothNotified is the core fan-out
+// assertion: two players assigned to the same mode each receive the batch.
+func TestNotifyPlayers_TwoAssignedPlayers_BothNotified(t *testing.T) {
+	store, scStore, settingsStore := newTestPlayerStores(t)
+	srvA, callsA := countingPlayerServer(t, http.StatusNoContent)
+	srvB, callsB := countingPlayerServer(t, http.StatusNoContent)
+	seedPlayer(t, scStore, serviceconn.ProviderJellyfin, "living room", srvA.URL, "movies")
+	seedPlayer(t, scStore, serviceconn.ProviderEmby, "basement", srvB.URL, "movies")
+
+	sess, err := Build(context.Background(), store, scStore, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sess.Players) != 2 {
+		t.Fatalf("expected 2 players, got %d", len(sess.Players))
+	}
+
+	sess.NotifyPlayers(context.Background(), []PathChange{{Path: "/media/f.mkv", Kind: Created}})
+	if callsA() != 1 || callsB() != 1 {
+		t.Errorf("expected both players notified exactly once, got jellyfin=%d emby=%d", callsA(), callsB())
+	}
+}
+
+// TestNotifyPlayers_OneFailingPlayer_OtherStillNotified is the spec AC that a
+// down player never fails the operation that triggered the notify: the healthy
+// player is still notified and NotifyPlayers still returns (it has no error to
+// return by construction).
+func TestNotifyPlayers_OneFailingPlayer_OtherStillNotified(t *testing.T) {
+	store, scStore, settingsStore := newTestPlayerStores(t)
+	dead, deadCalls := countingPlayerServer(t, http.StatusInternalServerError)
+	healthy, healthyCalls := countingPlayerServer(t, http.StatusNoContent)
+	// The failing one sorts first, so a sequential implementation that bailed
+	// on the first error would leave the healthy one un-notified.
+	seedPlayer(t, scStore, serviceconn.ProviderJellyfin, "dead", dead.URL, "movies")
+	seedPlayer(t, scStore, serviceconn.ProviderJellyfin, "healthy", healthy.URL, "movies")
+
+	sess, err := Build(context.Background(), store, scStore, settingsStore, &http.Client{Timeout: time.Second}, nil, Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess.NotifyPlayers(context.Background(), []PathChange{{Path: "/media/f.mkv", Kind: Created}})
+	if deadCalls() != 1 {
+		t.Errorf("expected the failing player to have been tried once, got %d", deadCalls())
+	}
+	if healthyCalls() != 1 {
+		t.Errorf("expected the healthy player to be notified despite the other failing, got %d", healthyCalls())
+	}
+}
+
+// TestNotifyPlayers_PlayersAndStashBothFire pins the deliberate decision that
+// registry players and Stash are not alternatives — a mode with both
+// configured notifies both, with no precedence between them.
+func TestNotifyPlayers_PlayersAndStashBothFire(t *testing.T) {
+	playerSrv, playerCalls := countingPlayerServer(t, http.StatusNoContent)
+	rec := &stashRecorder{}
+	sess := &Session{
+		Players: []Player{{ID: 1, Label: "jf", Notifier: jellyfin.New(jellyfin.Config{URL: playerSrv.URL, APIKey: "k"}, &http.Client{Timeout: time.Second})}},
+		Stash:   newStashRecorderClient(t, rec),
+	}
+
+	sess.NotifyPlayers(context.Background(), []PathChange{{Path: "/media/f.mkv", Kind: Created}})
+
+	if playerCalls() != 1 {
+		t.Errorf("expected the registry player to be notified, got %d calls", playerCalls())
+	}
+	if len(rec.scanCalls) != 1 {
+		t.Errorf("expected Stash to be notified too, got %d scan calls", len(rec.scanCalls))
+	}
+}
+
+// TestPlexPlayer_RefreshesEachPathOnce covers the Plex adapter's per-path
+// loop: Plex has no batch endpoint, so one batch of N distinct paths becomes N
+// section-resolve + refresh pairs, and a duplicated path is only refreshed
+// once.
+func TestPlexPlayer_RefreshesEachPathOnce(t *testing.T) {
+	var mu sync.Mutex
+	var refreshed []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/library/sections":
+			writeTestJSON(t, w, map[string]any{"MediaContainer": map[string]any{
+				"Directory": []map[string]any{{
+					"key": "1", "title": "Movies", "type": "movie",
+					"Location": []map[string]any{{"path": "/media"}},
+				}},
+			}})
+		case strings.HasSuffix(r.URL.Path, "/refresh"):
+			mu.Lock()
+			refreshed = append(refreshed, r.URL.Query().Get("path"))
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected plex request: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := plexPlayer{plex.New(plex.Config{URL: srv.URL, Token: "t"}, &http.Client{Timeout: time.Second})}
+	err := p.NotifyMediaUpdated(context.Background(), []jellyfin.MediaUpdate{
+		{Path: "/media/old.mkv", UpdateType: "Deleted"},
+		{Path: "/media/new.mkv", UpdateType: "Created"},
+		{Path: "/media/new.mkv", UpdateType: "Modified"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(refreshed) != 2 || refreshed[0] != "/media/old.mkv" || refreshed[1] != "/media/new.mkv" {
+		t.Errorf("expected each distinct path refreshed exactly once, got %+v", refreshed)
+	}
+}
+
+// TestPlexPlayer_ExpiredContextSkipsRemaining pins the partial-refresh-and-
+// move-on decision: once the notify budget is spent the remaining paths are
+// skipped and reported, not forced through.
+func TestPlexPlayer_ExpiredContextSkipsRemaining(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("no plex request should be made with an already-expired context: %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	p := plexPlayer{plex.New(plex.Config{URL: srv.URL, Token: "t"}, &http.Client{Timeout: time.Second})}
+	err := p.NotifyMediaUpdated(ctx, []jellyfin.MediaUpdate{{Path: "/media/a.mkv", UpdateType: "Created"}})
+	if err == nil || !strings.Contains(err.Error(), "skipped") {
+		t.Errorf("expected an error reporting the skipped paths, got %v", err)
 	}
 }

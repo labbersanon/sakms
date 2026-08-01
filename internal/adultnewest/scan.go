@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/rssfeed"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -160,7 +161,7 @@ func LoadInterval(ctx context.Context, settingsStore *settings.Store) time.Durat
 // interval defaults to defaultIntervalHours, not off (see
 // IntervalSettingKey's doc comment), so this job runs out of the box unlike
 // every other background job in this codebase.
-func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth) {
+func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth) {
 	feedInterval := LoadFeedInterval(ctx, settingsStore)
 	if interval <= 0 && feedInterval <= 0 {
 		return // opt-in gate: both passes off, honoring "manual first"
@@ -185,7 +186,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 		// original "manual-first, no boot poll" shape produced a real bug (the
 		// pass never ran, degrading every Adult identify's match quality).
 		// Mirrors the feed pass's boot poll below.
-		runCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore)
+		runCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, entityStore)
 	}
 
 	var feedTicker *time.Ticker
@@ -204,7 +205,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 		// note was reversed on 2026-07-25: that shape produced a real bug in this
 		// fast-redeploy deployment (the browse pass never actually ran, since its
 		// 24h ticker never survived to fire between redeploys).
-		runFeedCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
+		runFeedCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
 	}
 
 	for {
@@ -226,7 +227,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 				interval = cur
 				browseTicker.Reset(cur)
 			}
-			runCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore)
+			runCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, entityStore)
 		case <-feedC:
 			cur := LoadFeedInterval(ctx, settingsStore)
 			if cur <= 0 {
@@ -242,7 +243,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 				feedInterval = cur
 				feedTicker.Reset(cur)
 			}
-			runFeedCycle(ctx, httpClient, connStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
+			runFeedCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
 		}
 	}
 }
@@ -253,7 +254,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 // rest of the codebase: a missing Prowlarr/Identify config skips the whole
 // pass (nothing to scan with/against), and a single release's processing
 // failure is logged and skipped without aborting the others.
-func runCycle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore) {
+func runCycle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore) {
 	// Purged independent of whether Prowlarr/Identify are configured right
 	// now — cleaning up months-old cache entries shouldn't depend on the
 	// feature being actively scannable at this exact moment (e.g. a
@@ -264,7 +265,7 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 		log.Printf("adultnewest: purged %d stale matched entities (older than %d months)", n, staleAfterMonths)
 	}
 
-	sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, mode.Adult)
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult)
 	if err != nil {
 		log.Printf("adultnewest: building adult session: %v", err)
 		return
@@ -674,7 +675,7 @@ func feedItemKey(feedID int, it rssfeed.Item) string {
 // unhealthy and skips it, never aborting the others. Strictly sequential (no
 // concurrency), preserving the "Discover never queries Prowlarr / no fan-out"
 // safety shape. No confirmAvailable call for feed items (D4).
-func runFeedCycle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth) {
+func runFeedCycle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth) {
 	feeds, err := rssFeedsStore.List(ctx)
 	if err != nil {
 		log.Printf("adultnewest: listing rss feeds for feed pass: %v", err)
@@ -698,7 +699,7 @@ func runFeedCycle(ctx context.Context, httpClient *http.Client, connStore *conne
 	// Build one Adult session for the identify pipeline (no Prowlarr needed — a
 	// feed item's enclosure is its own availability proof). Same entity-store
 	// injection + parsing-backend gate as runCycle.
-	sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, mode.Adult)
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult)
 	if err != nil {
 		log.Printf("adultnewest: building adult session for feed pass: %v", err)
 		return

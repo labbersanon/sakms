@@ -51,6 +51,25 @@ type Override = (
 // override the handful it actually cares about.
 function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/connections")) return jsonResponse([]);
+  // The multi-connection registry (migration 0053) that backs BOTH the Usenet
+  // page's subscriptions and Advanced -> API Connections' media players. Two
+  // separate createResource(fetchServiceConnections) calls hit this on a single
+  // Advanced-tab render (SubscriptionsCard and MediaPlayersCard each own one),
+  // so any call-counting assertion must filter by method, never assume one GET.
+  // NOTE the ordering dependency with the line above: "/api/service-connections"
+  // does NOT contain the substring "/api/connections", so the singleton-table
+  // branch can't swallow it — but a future rename of either route could break
+  // that, and the symptom would be an empty registry, not an error.
+  if (url.includes("/api/service-connections")) return jsonResponse([]);
+  // The auto-grab toggle's own setting. Answered as OFF here because off IS the
+  // default and the whole point (a staged-for-approval exception must never be
+  // on unless an operator turned it on). Before this line existed, a GET here
+  // fell through to the 204 default -> api() returns null -> the Usenet page's
+  // fetchUsenetAutoGrabEnabled threw on null.enabled and every test rendered the
+  // toggle in its load-error state; the load-error tests below now opt INTO
+  // that with an explicit error override instead.
+  if (url.includes("/api/settings/usenet-autograb-enabled"))
+    return jsonResponse({ enabled: false });
   if (url.includes("/api/netscan/known")) return jsonResponse([]);
   if (url.includes("/api/apikey"))
     return jsonResponse({ hasKey: false, source: "none" });
@@ -176,25 +195,168 @@ const renderSettingsWithAdultMode = () => {
   return render(() => <Harness />);
 };
 
-// goToSection clicks a section tab OR (for "AI") the Connections tab's own
-// inline Connections/AI sub-tab — AI is no longer a top-level SECTION_TABS
-// entry, it's folded into Connections (see ConnectionsTab.tsx). This still
-// works unmodified for every existing "AI" call site: Connections is the
-// default outer tab, so its inner sub-tab bar (and thus the "AI" button) is
-// already mounted at a fresh render — callers just shouldn't navigate away
-// from Connections first and then call goToSection("AI"), since the inner
-// sub-tab bar wouldn't be mounted at that point. Buttons are queried by
-// role+name so they never collide with a Card's <legend> of the same text
-// (legends aren't buttons) nor with the Movies/Series/Adult mode buttons.
+// goToSection clicks a top-level section tab. AI is a real SECTION_TABS entry
+// again (it was briefly folded in as a Connections sub-tab); there is no
+// Connections tab any more at all — its rows were redistributed to the section
+// each one belongs to. Buttons are queried by role+name so they never collide
+// with a Card's <legend> of the same text (legends aren't buttons) nor with the
+// Movies/Series/Adult mode buttons.
+// Scoped to the section tab bar itself, not the whole screen: several section
+// names also occur as button labels inside a section's own body — most sharply
+// "Usenet", which is both a tab and one of the quality-prefs protocol pills on
+// the (default) Library tab. "Auth" is unique screen-wide, so its tab button's
+// parent is a reliable handle on the bar.
+const sectionTabBar = () =>
+  within(screen.getByRole("button", { name: "Auth" }).parentElement!);
 const goToSection = (
-  name: "Connections" | "Auth" | "AI" | "Library" | "Advanced" | "UI",
-) => fireEvent.click(screen.getByRole("button", { name }));
+  name: "Auth" | "AI" | "Library" | "Usenet" | "Advanced" | "UI",
+) => fireEvent.click(sectionTabBar().getByRole("button", { name }));
 
 // clickSectionSave clicks the one section-level Save button per tab. The batched-
-// save refactor consolidated the former per-row / per-card Save buttons into it;
-// each tab (Connections, AI, Library-per-mode, Advanced) now has exactly one.
+// save refactor consolidated the former per-row / per-card Save buttons into it.
+// Only usable on a tab that renders exactly ONE Save button (AI, Library, and
+// Usenet — UsenetSection wraps BOTH its cards in one SectionSave, and every child
+// there is batched, so neither the subscription rows nor the auto-grab toggle
+// renders a Save of its own). The Advanced tab has several, so its connection
+// rows use clickAPISectionSave / clickMediaPlayersSave below.
 const clickSectionSave = () =>
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+// clickAPISectionSave scopes the click to the "API Connections" card's own
+// SectionSave button. Prowlarr/Stash live on the Advanced tab now, which also
+// renders the Global cards' standalone Save buttons and the per-mode Advanced
+// Settings SectionSave — same disambiguation problem, and same scoped-lookup
+// solution, as clickAdvancedSectionSave further down.
+const clickAPISectionSave = () => {
+  const apiCard = screen.getByText(/^API Connections/).closest("div")!;
+  fireEvent.click(within(apiCard).getByRole("button", { name: "Save" }));
+};
+
+// clickTraktSave scopes the click to the Trakt card's own SectionSave button.
+// Trakt lives on the UI tab now, beside the Discover slider/RSS editors, which
+// render Save buttons of their own — same disambiguation problem, same scoped
+// lookup, as clickAPISectionSave. The card and its section Save button are
+// siblings inside a wrapper div (SectionSave renders children then the button),
+// so the scope is the card's parent.
+const clickTraktSave = () => {
+  const traktCard = screen.getByText("Trakt (Watchlist)").closest("div")!;
+  fireEvent.click(
+    within(traktCard.parentElement!).getByRole("button", { name: "Save" }),
+  );
+};
+
+// goToAPIConnections opens the Advanced tab, where the Prowlarr/Stash singleton
+// connection rows now live (Advanced -> API Connections, rendered above the mode
+// selector because they are global, not per-mode).
+const goToAPIConnections = () => goToSection("Advanced");
+
+// goToLibraryConnections opens the Library tab's metadata-source rows for a
+// mode: TMDB under Movies, TVDB under Series, StashDB/FansDB/TPDB under Adult.
+// Movies is the default mode, so it needs no second click.
+const goToLibraryConnections = async (mode?: "Series" | "Adult") => {
+  goToSection("Library");
+  // The Adult mode button only exists once the adult-mode resource resolves, so
+  // this waits rather than assuming it is on screen at first paint.
+  if (mode) fireEvent.click(await screen.findByRole("button", { name: mode }));
+};
+
+// --- service_connections registry helpers (Usenet subscriptions + players) ---
+
+// clickMediaPlayersSave scopes the click to the "Media players" card's own
+// SectionSave button. MediaPlayersCard sits on the Advanced tab beside the API
+// Connections card, the Global cards' standalone Saves and the per-mode Advanced
+// SectionSave — same disambiguation problem, same scoped lookup, as
+// clickAPISectionSave. Card renders <div><h3>{title}</h3>…</div>, so the title
+// text's closest div IS the card.
+const clickMediaPlayersSave = () => {
+  const card = screen.getByText("Media players").closest("div")!;
+  fireEvent.click(within(card).getByRole("button", { name: "Save" }));
+};
+
+const mediaPlayersSaveButton = () =>
+  within(screen.getByText("Media players").closest("div")!).getByRole("button", {
+    name: "Save",
+  }) as HTMLButtonElement;
+
+// registryRow scopes queries to the one subscription/player row an input belongs
+// to. Both SubscriptionRow and PlayerRow wrap themselves in
+// `div.rounded.border.border-border.p-3`, and neither field grid nor label
+// wrapper carries `rounded`, so the nearest `div.rounded` ancestor is the row.
+// Needed because Test/Delete render once PER ROW — a bare getByText("Delete")
+// is ambiguous the moment a second subscription or player exists, which is the
+// entire point of this registry.
+const registryRow = (input: HTMLElement) =>
+  within(input.closest("div.rounded") as HTMLElement);
+
+// usenetConn / playerConn build ServiceConnectionSummary fixtures. Every field
+// the components read at MOUNT is spelled out (rather than left to `?? default`)
+// because both row types seed their local draft from props.conn exactly once —
+// an implicit undefined would silently become a different value than the one the
+// assertion later reads back. `modes` is always explicit on a player for the
+// same reason: sameModes() decides whether the second /modes request fires at
+// all, so an ambiguous baseline makes that assertion unreadable.
+const usenetConn = (over: Record<string, unknown> = {}) => ({
+  id: 1,
+  kind: "usenet",
+  provider: "nntp",
+  label: "Eweka",
+  enabled: true,
+  sortOrder: 0,
+  host: "news.eweka.nl",
+  port: 563,
+  tls: true,
+  username: "wade",
+  maxConns: 8,
+  hasSecret: true,
+  secretSuffix: "6789",
+  modes: [] as string[],
+  createdAt: "2026-07-30T00:00:00Z",
+  updatedAt: "2026-07-30T00:00:00Z",
+  ...over,
+});
+
+const playerConn = (over: Record<string, unknown> = {}) => ({
+  id: 7,
+  kind: "player",
+  provider: "jellyfin",
+  label: "Living room",
+  enabled: true,
+  sortOrder: 0,
+  url: "http://jellyfin:8096",
+  hasSecret: true,
+  secretSuffix: "wxyz",
+  modes: ["movies"],
+  createdAt: "2026-07-30T00:00:00Z",
+  updatedAt: "2026-07-30T00:00:00Z",
+  ...over,
+});
+
+// registryFetch answers GET /api/service-connections with a fixed list. Scoped
+// with `!url.includes("/test")` so the POST test routes
+// (/api/service-connections/test and /{id}/test) still fall through to
+// stubFetch's own handling, mirroring the `/api/connections` overrides above.
+const registryFetch =
+  (rows: unknown[]): Override =>
+  (url) => {
+    if (url.includes("/api/service-connections") && !url.includes("/test"))
+      return jsonResponse(rows);
+    return undefined;
+  };
+
+// registryPuts / registryModePuts split the two requests a player save makes.
+// `/api/service-connections/7` is a prefix of `/api/service-connections/7/modes`,
+// so a plain includes() would count the mode request as a field request too —
+// the endsWith split is what keeps "exactly one field PUT, zero mode PUTs"
+// (the sameModes guard) an honest assertion rather than a tautology.
+const registryPuts = (calls: Call[]) =>
+  calls.filter(
+    (c) =>
+      c.method === "PUT" &&
+      c.url.includes("/api/service-connections/") &&
+      !c.url.endsWith("/modes"),
+  );
+const registryModePuts = (calls: Call[]) =>
+  calls.filter((c) => c.method === "PUT" && c.url.endsWith("/modes"));
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -286,6 +448,7 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     });
 
     renderSettings();
+    goToAPIConnections();
     const urlInput = (await screen.findByLabelText(
       "prowlarr URL",
     )) as HTMLInputElement;
@@ -294,7 +457,7 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     fireEvent.input(urlInput, { target: { value: "http://prowlarr:9999" } });
     // One section Save button commits the dirty row; only prowlarr was edited,
     // so only its PUT fires — still built by that row's own body logic.
-    clickSectionSave();
+    clickAPISectionSave();
 
     await waitFor(() =>
       expect(
@@ -327,9 +490,10 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     });
 
     renderSettings();
+    goToAPIConnections();
     const keyInput = await screen.findByLabelText("prowlarr API key");
     fireEvent.input(keyInput, { target: { value: "sk-rotated" } });
-    clickSectionSave();
+    clickAPISectionSave();
 
     await waitFor(() =>
       expect(calls.some((c) => c.method === "PUT")).toBe(true),
@@ -366,6 +530,8 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     });
 
     renderSettings();
+    // Both rows live in Advanced -> API Connections, under one SectionSave.
+    goToAPIConnections();
     // Edit ONLY prowlarr's URL (key untouched) and ONLY stash's key.
     const prowlarrUrl = (await screen.findByLabelText(
       "prowlarr URL",
@@ -375,7 +541,7 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     fireEvent.input(stashKey, { target: { value: "sk-stash" } });
 
     // ONE section Save commits both dirty rows in a single click.
-    clickSectionSave();
+    clickAPISectionSave();
     await waitFor(() =>
       expect(
         calls.filter(
@@ -423,7 +589,8 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
   it("no longer lists the AI provider / Brave rows (moved to the AI tab)", async () => {
     stubFetch();
     renderSettings();
-    // Connections is the default tab; a still-listed service confirms it mounted.
+    goToAPIConnections();
+    // A still-listed service confirms the section mounted.
     expect(await screen.findByLabelText("prowlarr URL")).toBeInTheDocument();
     for (const moved of ["ollama", "openai", "gemini", "anthropic", "brave"]) {
       expect(screen.queryByLabelText(`${moved} URL`)).toBeNull();
@@ -433,14 +600,30 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
   it("renders no URL input for fixed-public-API rows (tmdb/stashdb/fansdb/tpdb), only their API Key", async () => {
     stubFetch();
     renderSettings();
-    // A URL-required service still shows a URL input.
-    expect(await screen.findByLabelText("prowlarr URL")).toBeInTheDocument();
-    for (const fixed of ["tmdb", "stashdb", "fansdb", "tpdb"]) {
+    // The fixed-URL metadata sources are split across Library's modes now:
+    // tmdb under Movies (the default), stashdb/fansdb/tpdb under Adult.
+    await goToLibraryConnections();
+    expect(await screen.findByLabelText("tmdb API key")).toBeInTheDocument();
+    expect(screen.queryByLabelText("tmdb URL")).toBeNull();
+
+    // Series gets TVDB and ONLY TVDB — the assertion that tmdb is gone is what
+    // proves the per-mode split, rather than merely that a row rendered.
+    await goToLibraryConnections("Series");
+    expect(await screen.findByLabelText("tvdb API key")).toBeInTheDocument();
+    expect(screen.queryByLabelText("tvdb URL")).toBeNull();
+    expect(screen.queryByLabelText("tmdb API key")).toBeNull();
+
+    await goToLibraryConnections("Adult");
+    for (const fixed of ["stashdb", "fansdb", "tpdb"]) {
       // No URL input for these fixed-URL services...
       expect(screen.queryByLabelText(`${fixed} URL`)).toBeNull();
       // ...but their API Key field is still present, so the row is usable.
-      expect(screen.getByLabelText(`${fixed} API key`)).toBeInTheDocument();
+      expect(await screen.findByLabelText(`${fixed} API key`)).toBeInTheDocument();
     }
+
+    // A URL-required service still shows a URL input.
+    goToAPIConnections();
+    expect(await screen.findByLabelText("prowlarr URL")).toBeInTheDocument();
   });
 
   it("Delete calls DELETE for that service", async () => {
@@ -458,6 +641,7 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     const urlInput = await screen.findByLabelText("prowlarr URL");
     const row = (urlInput as HTMLElement).closest("tr")!;
     fireEvent.click(within(row).getByText("Delete"));
@@ -489,6 +673,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     // The hint block renders inside the prowlarr row.
     const urlInput = (await screen.findByLabelText(
       "prowlarr URL",
@@ -496,7 +681,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
     const row = urlInput.closest("tr")!;
     fireEvent.click(within(row).getByText("Use this URL"));
     expect(urlInput.value).toBe("http://prowlarr:9696");
-    clickSectionSave();
+    clickAPISectionSave();
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     const put = calls.find((c) => c.method === "PUT")!;
     expect(put.body).toEqual({ url: "http://prowlarr:9696", apiKey: "" });
@@ -517,6 +702,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     const urlInput = (await screen.findByLabelText(
       "prowlarr URL",
     )) as HTMLInputElement;
@@ -530,7 +716,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
         (screen.getByLabelText("prowlarr API key") as HTMLInputElement).value,
       ).toBe("fetched-key"),
     );
-    clickSectionSave();
+    clickAPISectionSave();
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     const put = calls.find((c) => c.method === "PUT")!;
     // The fetched key survives the three-state gate because Fetch marks touched.
@@ -568,6 +754,7 @@ describe("Connections — auto-test-all on mount + red-tint", () => {
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     const keyInput = (await screen.findByLabelText(
       "prowlarr API key",
     )) as HTMLInputElement;
@@ -588,6 +775,7 @@ describe("Connections — auto-test-all on mount + red-tint", () => {
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     const keyInput = (await screen.findByLabelText(
       "prowlarr API key",
     )) as HTMLInputElement;
@@ -607,6 +795,7 @@ describe("Connections — auto-test-all on mount + red-tint", () => {
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     const keyInput = (await screen.findByLabelText(
       "prowlarr API key",
     )) as HTMLInputElement;
@@ -636,6 +825,7 @@ describe("Connections — auto-test-all on mount + red-tint", () => {
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     const keyInput = (await screen.findByLabelText(
       "prowlarr API key",
     )) as HTMLInputElement;
@@ -664,6 +854,7 @@ describe("Connections — auto-test-all on mount + red-tint", () => {
       return undefined;
     });
     renderSettings();
+    goToAPIConnections();
     const urlInput = (await screen.findByLabelText(
       "prowlarr URL",
     )) as HTMLInputElement;
@@ -674,7 +865,7 @@ describe("Connections — auto-test-all on mount + red-tint", () => {
     // Edit + batched Save → onChanged → refetch → conns() re-resolves → the
     // auto-test effect runs again (proving it's hooked off conns(), not mount).
     fireEvent.input(urlInput, { target: { value: "http://prowlarr:9999" } });
-    clickSectionSave();
+    clickAPISectionSave();
     await waitFor(() => expect(countStored()).toBeGreaterThan(before));
   });
 });
@@ -722,9 +913,10 @@ describe("Trakt connection section", () => {
   it("saving credentials without touching the secret omits clientSecret", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("UI");
     const clientIdInput = await screen.findByLabelText("Trakt client ID");
     fireEvent.input(clientIdInput, { target: { value: "my-client-id" } });
-    clickSectionSave();
+    clickTraktSave();
     await waitFor(() =>
       expect(
         calls.some(
@@ -741,13 +933,14 @@ describe("Trakt connection section", () => {
   it("saving with a secret entered sends clientSecret", async () => {
     const calls = stubFetch();
     renderSettings();
+    goToSection("UI");
     fireEvent.input(await screen.findByLabelText("Trakt client ID"), {
       target: { value: "my-client-id" },
     });
     fireEvent.input(screen.getByLabelText("Trakt client secret"), {
       target: { value: "my-secret" },
     });
-    clickSectionSave();
+    clickTraktSave();
     await waitFor(() =>
       expect(calls.some((c) => c.method === "PUT")).toBe(true),
     );
@@ -763,6 +956,7 @@ describe("Trakt connection section", () => {
   it("Connect is disabled until credentials are configured", async () => {
     stubFetch();
     renderSettings();
+    goToSection("UI");
     expect(await screen.findByText("Connect")).toBeDisabled();
   });
 
@@ -780,6 +974,7 @@ describe("Trakt connection section", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("UI");
     const connectBtn = await screen.findByText("Connect");
     fireEvent.click(connectBtn);
     expect(await screen.findByText("ABCD-1234")).toBeInTheDocument();
@@ -814,6 +1009,7 @@ describe("Trakt connection section", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("UI");
     fireEvent.click(await screen.findByText("Connect"));
     await screen.findByText("ABCD-1234");
     // Advance past one poll interval (5s) so the scheduled poll fires.
@@ -833,6 +1029,7 @@ describe("Trakt connection section", () => {
       return undefined;
     });
     renderSettings();
+    goToSection("UI");
     fireEvent.click(await screen.findByText("Disconnect"));
     await waitFor(() =>
       expect(
@@ -1215,10 +1412,16 @@ describe("Library root-folder Test button", () => {
       "Library root folder",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "/media/movies" } });
+    // Scoped to the "<Mode> library" card: the Metadata sources card on this
+    // same tab gives every connection row its own "Test" button, so a bare
+    // "Test" query is no longer unique here.
+    const libraryCard = screen.getByText(/^Movies library/).closest("div")!;
+    const clickRootFolderTest = () =>
+      fireEvent.click(within(libraryCard).getByRole("button", { name: "Test" }));
 
     // Test #1 fails → red-tint AND the endpoint's human-readable error shows
     // (this endpoint's errors are safe to surface, unlike the connection test).
-    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    clickRootFolderTest();
     await waitFor(() => expect(input.className).toContain("border-danger"));
     expect(await screen.findByText("path does not exist")).toBeInTheDocument();
     const testCall = calls.find(
@@ -1229,7 +1432,7 @@ describe("Library root-folder Test button", () => {
     expect(testCall.body).toEqual({ path: "/media/movies" });
 
     // Test #2 passes → tint clears.
-    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    clickRootFolderTest();
     await waitFor(() =>
       expect(input.className).not.toContain("border-danger"),
     );
@@ -1903,18 +2106,19 @@ describe("Adult mode disable switch", () => {
     expect(putCalls[1]!.body).toEqual({ intervalSeconds: 0 });
   });
 
-  it("propagates live (no page reload): disabling from Global hides stash/stashdb/fansdb/tpdb in Connections", async () => {
+  it("propagates live (no page reload): disabling from Global hides stash, and takes StashDB/FansDB/TPDB with the Adult mode itself", async () => {
     stubFetch(adultModeFetch(true).override);
     renderSettingsWithAdultMode();
-    // Connections is already the default section at mount — no navigation
-    // click needed (and clicking "Connections" here would be ambiguous: its
-    // own inner Connections/AI sub-tab button shares the same name).
+    // The Adult-only connection rows now sit in two places: stashdb/fansdb/tpdb
+    // under Library -> Adult, and stash under Advanced -> API Connections.
+    await goToLibraryConnections("Adult");
     expect(await screen.findByText("stashdb")).toBeInTheDocument();
-    expect(screen.getByText("stash")).toBeInTheDocument();
     expect(screen.getByText("fansdb")).toBeInTheDocument();
     expect(screen.getByText("tpdb")).toBeInTheDocument();
 
-    goToSection("Advanced");
+    goToAPIConnections();
+    expect(await screen.findByText("stash")).toBeInTheDocument();
+
     await openDisableDialog();
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     await waitFor(() =>
@@ -1924,20 +2128,22 @@ describe("Adult mode disable switch", () => {
       ).toBe(false),
     );
 
-    goToSection("Connections");
-    // Re-navigating remounts ConnectionsTabSection, which re-fetches
-    // /api/connections — wait for that to resolve. The Adult-only rows'
-    // absence is asserted via waitFor too: the remount's very first paint can
-    // land before adultEnabled() has settled (a real, brief reactive-settle
-    // window on a fresh mount, not a bug in the filter itself — it always
-    // converges to the correct filtered list).
-    expect(await screen.findByText("prowlarr")).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText("stashdb")).toBeNull());
-    expect(screen.queryByText("stash")).toBeNull();
+    // stash disappears from the very tab the switch was flipped on — live, with
+    // no remount and no page reload. prowlarr, which is not Adult-only, stays.
+    await waitFor(() => expect(screen.queryByText("stash")).toBeNull());
+    expect(screen.getByText("prowlarr")).toBeInTheDocument();
+
+    // The other three are unreachable rather than merely hidden: Library's mode
+    // selector drops the Adult mode entirely, so there is no longer a route to
+    // the card that holds them. Non-Adult-exclusive rows stay.
+    goToSection("Library");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Adult" })).toBeNull(),
+    );
+    expect(await screen.findByText("tmdb")).toBeInTheDocument();
+    expect(screen.queryByText("stashdb")).toBeNull();
     expect(screen.queryByText("fansdb")).toBeNull();
     expect(screen.queryByText("tpdb")).toBeNull();
-    // Non-Adult-exclusive services stay.
-    expect(screen.getByText("tmdb")).toBeInTheDocument();
   });
 
   it("mode-fallback: a screen with Adult selected falls back to Movies when disabled from elsewhere", async () => {
@@ -2127,21 +2333,44 @@ describe("Advanced Settings", () => {
 // --- Section tabs (layout: one section on screen at a time) ----------------
 
 describe("Section tabs", () => {
-  it("defaults to Connections and hides every other section", async () => {
+  it("defaults to Library and hides every other section", async () => {
     stubFetch();
     renderSettings();
-    // Connections table is on screen at mount (its column header is unique).
-    expect(await screen.findByText("API Key / Password")).toBeInTheDocument();
+    // Library is the default tab now that Connections is gone: its root-folder
+    // field is on screen at mount, alongside the metadata-source connection
+    // rows that moved into it.
+    expect(
+      await screen.findByLabelText("Library root folder"),
+    ).toBeInTheDocument();
+    expect(await screen.findByLabelText("tmdb API key")).toBeInTheDocument();
     // The signature control of each other section is absent.
     expect(screen.queryByText("Switch to this mode")).toBeNull(); // Auth
     expect(screen.queryByPlaceholderText(/qwen2.5vl/)).toBeNull(); // AI
-    expect(screen.queryByLabelText("Library root folder")).toBeNull(); // Library
+    expect(screen.queryByLabelText("prowlarr URL")).toBeNull(); // Advanced -> API
+    expect(screen.queryByText("Subscriptions")).toBeNull(); // Usenet
     expect(
       screen.queryByLabelText("Monitored title refresh interval — global"),
     ).toBeNull(); // Global
   });
 
-  it("UI tab shows the Discover subsection with Mainstream/Adult sub-tabs, hiding Connections", async () => {
+  it("has no Connections tab at all", async () => {
+    stubFetch();
+    renderSettings();
+    await screen.findByLabelText("Library root folder");
+    expect(screen.queryByRole("button", { name: "Connections" })).toBeNull();
+  });
+
+  it("Usenet is its own top-level tab", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("Usenet");
+    expect(await screen.findByText("Subscriptions")).toBeInTheDocument();
+    expect(screen.getByText("Auto-grab")).toBeInTheDocument();
+    // Library is no longer mounted.
+    expect(screen.queryByLabelText("Library root folder")).toBeNull();
+  });
+
+  it("UI tab shows the Discover subsection with Mainstream/Adult sub-tabs, plus Trakt, hiding Library", async () => {
     stubFetch();
     renderSettings();
     goToSection("UI");
@@ -2151,8 +2380,10 @@ describe("Section tabs", () => {
     expect(screen.getByText("Discover")).toBeInTheDocument();
     expect(screen.getByText("Mainstream")).toBeInTheDocument();
     expect(screen.getByText("Adult")).toBeInTheDocument();
-    // Connections is no longer mounted.
-    expect(screen.queryByText("API Key / Password")).toBeNull();
+    // Trakt moved here, next to the other Discover-shaping controls.
+    expect(screen.getByLabelText("Trakt client ID")).toBeInTheDocument();
+    // Library is no longer mounted.
+    expect(screen.queryByLabelText("Library root folder")).toBeNull();
   });
 
   it("UI tab's inner Adult sub-tab swaps the slider editor for the Adult-newest-row editor", async () => {
@@ -2294,14 +2525,19 @@ describe("UI tab — inner Discover sub-tabs do not hijack the shell tab slot", 
 
     // Settings registers SECTION_TABS with the shell slot at mount: the section
     // tabs — NOT any Mainstream/Adult — are what the shell draws. Scoped to the
-    // shell slot specifically: the Connections tab's OWN inline Connections/AI
-    // sub-tab bar (ConnectionsTab.tsx) also renders a "Connections" button in
-    // the body, so an unscoped query would match both.
+    // shell slot specifically, because the body renders inner tab bars of its
+    // own (the UI tab's Mainstream/Adult bar, the Library/Advanced mode
+    // selector) whose buttons an unscoped query could pick up.
     expect(
-      await shellSlot().findByRole("button", { name: "Connections" }),
+      await shellSlot().findByRole("button", { name: "Usenet" }),
     ).toBeInTheDocument();
     expect(shellSlot().getByText("UI")).toBeInTheDocument();
     expect(shellSlot().getByText("Library")).toBeInTheDocument();
+    // AI's promotion out of the old Connections nesting is a claim about the
+    // SHELL-registered tab set specifically, not just about some button being
+    // on screen — so it is asserted here rather than only in the body.
+    expect(shellSlot().getByText("AI")).toBeInTheDocument();
+    expect(shellSlot().queryByText("Connections")).toBeNull();
     expect(shellSlot().queryByText("Mainstream")).toBeNull();
 
     // Navigate to the UI tab via the shell-registered section tab. Its inner
@@ -2319,13 +2555,881 @@ describe("UI tab — inner Discover sub-tabs do not hijack the shell tab slot", 
     // Shell slot still holds the section tabs, unchanged...
     expect(shellSlot().getByText("UI")).toBeInTheDocument();
     expect(shellSlot().getByText("Library")).toBeInTheDocument();
-    expect(shellSlot().getByText("Connections")).toBeInTheDocument();
+    expect(shellSlot().getByText("Usenet")).toBeInTheDocument();
     // ...and never adopted the inner sub-tab labels.
     expect(shellSlot().queryByText("Mainstream")).toBeNull();
   });
 });
 
 // --- No bulk actions (Acceptance Criterion 6) ------------------------------
+
+// --- Usenet page: multi-subscription CRUD (AC 10) --------------------------
+//
+// The Usenet subscriptions half of the `service_connections` registry
+// (migration 0053), which replaced the singleton `connections` PRIMARY
+// KEY(service) shape for the two service classes an operator can have more than
+// one of. What these tests are really pinning down is that "more than one" is
+// real: several subscriptions co-exist, each with its OWN draft state, its own
+// PUT to its own id route, and its own Delete — never a merged payload and
+// never a shared row.
+
+describe("Usenet subscriptions — multi-subscription CRUD", () => {
+  const twoSubscriptions = [
+    usenetConn(),
+    usenetConn({
+      id: 2,
+      label: "Newshosting",
+      host: "news.newshosting.com",
+      port: 119,
+      tls: false,
+      username: "w2",
+      maxConns: 0,
+      hasSecret: false,
+      secretSuffix: "",
+    }),
+  ];
+
+  it("renders every configured subscription, each seeded from its own row", async () => {
+    stubFetch(registryFetch(twoSubscriptions));
+    renderSettings();
+    goToSection("Usenet");
+    const host1 = (await screen.findByLabelText(
+      "Subscription 1 host",
+    )) as HTMLInputElement;
+    const host2 = screen.getByLabelText(
+      "Subscription 2 host",
+    ) as HTMLInputElement;
+    expect(host1.value).toBe("news.eweka.nl");
+    expect(host2.value).toBe("news.newshosting.com");
+    // The full field set is what earns this page its own tab rather than a
+    // ConnectionRow — so assert the fields ConnectionRow does NOT have, per row.
+    expect(
+      (screen.getByLabelText("Subscription 1 port") as HTMLInputElement).value,
+    ).toBe("563");
+    expect(
+      (screen.getByLabelText("Subscription 2 port") as HTMLInputElement).value,
+    ).toBe("119");
+    expect(
+      (screen.getByLabelText("Subscription 1 TLS") as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText("Subscription 2 TLS") as HTMLInputElement).checked,
+    ).toBe(false);
+    expect(
+      (screen.getByLabelText("Subscription 1 max connections") as HTMLInputElement)
+        .value,
+    ).toBe("8");
+    expect(
+      (screen.getByLabelText("Subscription 1 username") as HTMLInputElement).value,
+    ).toBe("wade");
+  });
+
+  it("says there is no priority order, and offers no priority field or reorder control", async () => {
+    // Usenet.tsx's #1 "must never grow" invariant: every enabled subscription is
+    // tried with NO priority ordering, so a ranked chain would be a behaviour
+    // change, not a convenience. The explanatory copy is asserted alongside the
+    // absent controls because the copy is what stops a future session from
+    // "fixing" the missing reorder buttons.
+    stubFetch(registryFetch(twoSubscriptions));
+    renderSettings();
+    goToSection("Usenet");
+    await screen.findByLabelText("Subscription 1 host");
+    expect(screen.getByText(/there is no priority order/i)).toBeInTheDocument();
+    // No priority/order form control anywhere on the page...
+    expect(screen.queryByLabelText(/priority/i)).toBeNull();
+    expect(screen.queryByLabelText(/sort order/i)).toBeNull();
+    // ...and no reorder affordance, under any of the shapes one would take.
+    for (const name of [
+      /move up/i,
+      /move down/i,
+      /reorder/i,
+      /^↑$/,
+      /^↓$/,
+    ] as const) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
+  it("Add subscription POSTs the whole NNTP field set with a plain secret", async () => {
+    const calls = stubFetch(registryFetch([]));
+    renderSettings();
+    goToSection("Usenet");
+    // The empty-state copy confirms the list resolved before the Add form opens.
+    expect(
+      await screen.findByText("No subscriptions configured yet."),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add subscription" }),
+    );
+    fireEvent.input(await screen.findByLabelText("New subscription label"), {
+      target: { value: "Newshosting" },
+    });
+    fireEvent.input(screen.getByLabelText("New subscription host"), {
+      target: { value: "news.newshosting.com" },
+    });
+    // Add's own "Add subscription" button replaces the card's opener (they are
+    // the two branches of one <Show>), so this stays unambiguous.
+    fireEvent.click(screen.getByRole("button", { name: "Add subscription" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "POST" && c.url.endsWith("/api/service-connections"),
+        ),
+      ).toBe(true),
+    );
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/api/service-connections"),
+    )!;
+    // Create takes a PLAIN secret — a brand-new row has no stored one to
+    // preserve, so "" here means "no password", never "clear the stored one".
+    expect(post.body).toEqual({
+      kind: "usenet",
+      provider: "nntp",
+      label: "Newshosting",
+      enabled: true,
+      host: "news.newshosting.com",
+      port: 563,
+      tls: true,
+      maxConns: 0,
+      username: "",
+      secret: "",
+    });
+  });
+
+  it("the batched Save PUTs only the edited subscription, to its own id route", async () => {
+    const calls = stubFetch(registryFetch(twoSubscriptions));
+    renderSettings();
+    goToSection("Usenet");
+    const host1 = (await screen.findByLabelText(
+      "Subscription 1 host",
+    )) as HTMLInputElement;
+    fireEvent.input(host1, { target: { value: "news2.eweka.nl" } });
+    // One Save button on this tab drives both cards (see clickSectionSave).
+    clickSectionSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    const put = registryPuts(calls)[0]!;
+    expect(put.url).toContain("/api/service-connections/1");
+    expect(put.body).toEqual({
+      kind: "usenet",
+      provider: "nntp",
+      label: "Eweka",
+      enabled: true,
+      host: "news2.eweka.nl",
+      port: 563,
+      tls: true,
+      maxConns: 8,
+      username: "wade",
+    });
+    // Subscription 2 was untouched, so it never fired at all.
+    expect(
+      calls.some((c) => c.url.includes("/api/service-connections/2")),
+    ).toBe(false);
+  });
+
+  it("Delete removes exactly the row it was clicked in", async () => {
+    const calls = stubFetch(registryFetch(twoSubscriptions));
+    renderSettings();
+    goToSection("Usenet");
+    await screen.findByLabelText("Subscription 1 host");
+    const host2 = screen.getByLabelText("Subscription 2 host");
+    // Delete/Test render once PER ROW — the scoped lookup is the whole point.
+    fireEvent.click(registryRow(host2).getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "DELETE" &&
+            c.url.endsWith("/api/service-connections/2"),
+        ),
+      ).toBe(true),
+    );
+    expect(
+      calls.some(
+        (c) =>
+          c.method === "DELETE" && c.url.endsWith("/api/service-connections/1"),
+      ),
+    ).toBe(false);
+  });
+});
+
+// --- Usenet subscriptions: three-state secret through the UI ---------------
+//
+// The registry's own copy of Guardrail #5 / Acceptance Criterion 5, asserted
+// exactly the way the singleton Connections table's version above is: the
+// property must be ABSENT from the parsed request body, not merely undefined.
+// A configured subscription's password input is blank (the stored secret is
+// never sent back to the client), so an untouched blank that reached the wire
+// as `secret: ""` would silently WIPE a working provider password.
+
+describe("Usenet subscriptions — three-state secret semantics through the UI", () => {
+  it("saving after editing ONLY the host OMITS secret from the PUT body", async () => {
+    const calls = stubFetch(registryFetch([usenetConn()]));
+    renderSettings();
+    goToSection("Usenet");
+    const host = (await screen.findByLabelText(
+      "Subscription 1 host",
+    )) as HTMLInputElement;
+    // The stored password is redacted to hasSecret/secretSuffix, so the input
+    // shows the "unchanged (••••6789)" placeholder and holds no value.
+    expect(
+      (screen.getByLabelText("Subscription 1 password") as HTMLInputElement)
+        .placeholder,
+    ).toContain("6789");
+    fireEvent.input(host, { target: { value: "news2.eweka.nl" } });
+    clickSectionSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    expect(registryPuts(calls)[0]!.body).not.toHaveProperty("secret");
+  });
+
+  it("typing a password sends it as the replacement secret", async () => {
+    const calls = stubFetch(registryFetch([usenetConn()]));
+    renderSettings();
+    goToSection("Usenet");
+    const secret = await screen.findByLabelText("Subscription 1 password");
+    fireEvent.input(secret, { target: { value: "rotated-pass" } });
+    clickSectionSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    expect(
+      (registryPuts(calls)[0]!.body as { secret?: string }).secret,
+    ).toBe("rotated-pass");
+  });
+
+  it("typing then clearing the password sends an explicit empty secret (the deliberate clear)", async () => {
+    const calls = stubFetch(registryFetch([usenetConn()]));
+    renderSettings();
+    goToSection("Usenet");
+    const secret = await screen.findByLabelText("Subscription 1 password");
+    fireEvent.input(secret, { target: { value: "x" } });
+    fireEvent.input(secret, { target: { value: "" } });
+    clickSectionSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    const body = registryPuts(calls)[0]!.body as { secret?: string };
+    // Present-and-empty, which is the backend's "clear it" signal — the one
+    // case where "" on the wire is correct rather than catastrophic.
+    expect(body).toHaveProperty("secret");
+    expect(body.secret).toBe("");
+  });
+
+  it("a subscription with no stored secret sends a blank one, so a no-auth provider can still save", async () => {
+    const calls = stubFetch(
+      registryFetch([usenetConn({ hasSecret: false, secretSuffix: "" })]),
+    );
+    renderSettings();
+    goToSection("Usenet");
+    const host = (await screen.findByLabelText(
+      "Subscription 1 host",
+    )) as HTMLInputElement;
+    fireEvent.input(host, { target: { value: "news2.eweka.nl" } });
+    clickSectionSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    const body = registryPuts(calls)[0]!.body as { secret?: string };
+    expect(body).toHaveProperty("secret");
+    expect(body.secret).toBe("");
+  });
+});
+
+// --- Usenet page: the auto-grab toggle (AC 12) -----------------------------
+//
+// The UI surface of a deliberate staged-for-approval exception, so the copy is
+// as load-bearing as the behaviour and gets asserted alongside it.
+
+describe("Usenet auto-grab toggle", () => {
+  // goToUsenet returns the toggle itself. Note the checkbox EXISTS the moment
+  // AutoGrabCard mounts, but its checked/disabled state only reflects the
+  // fetched value once onMount's promise settles — so every caller below waits
+  // on the specific state it cares about rather than reading it immediately.
+  const goToUsenet = async () => {
+    goToSection("Usenet");
+    return (await screen.findByLabelText(
+      "Enable auto-grab",
+    )) as HTMLInputElement;
+  };
+
+  it("is OFF by default", async () => {
+    stubFetch();
+    renderSettings();
+    const cb = await goToUsenet();
+    // Not merely unchecked — also NOT disabled, which is what distinguishes a
+    // real "off" from the load-error state further down (where it is also
+    // unchecked, but for an entirely different reason).
+    await waitFor(() => expect(cb.disabled).toBe(false));
+    expect(cb.checked).toBe(false);
+  });
+
+  it("reflects a stored ON value", async () => {
+    stubFetch((url, init) => {
+      if (
+        url.includes("/api/settings/usenet-autograb-enabled") &&
+        (init?.method ?? "GET").toUpperCase() === "GET"
+      )
+        return jsonResponse({ enabled: true });
+      return undefined;
+    });
+    renderSettings();
+    const cb = await goToUsenet();
+    await waitFor(() => expect(cb.checked).toBe(true));
+  });
+
+  it("turning it on fires exactly ONE PUT and never touches the retry-interval route", async () => {
+    // The cadence coupling (on -> 86400s, off -> 0) is server-side, inside this
+    // same PUT, precisely so the toggle and the interval can't disagree. A
+    // second client request to /api/settings/usenet-retry-interval would break
+    // that single source of truth — so its ABSENCE is the real assertion here.
+    const calls = stubFetch();
+    renderSettings();
+    const cb = await goToUsenet();
+    await waitFor(() => expect(cb.disabled).toBe(false));
+    fireEvent.click(cb);
+    clickSectionSave();
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/settings/usenet-autograb-enabled"),
+        ),
+      ).toBe(true),
+    );
+    const puts = calls.filter(
+      (c) =>
+        c.method === "PUT" &&
+        c.url.includes("/api/settings/usenet-autograb-enabled"),
+    );
+    expect(puts).toHaveLength(1);
+    expect(puts[0]!.body).toEqual({ enabled: true });
+    expect(
+      calls.some((c) => c.url.includes("/api/settings/usenet-retry-interval")),
+    ).toBe(false);
+  });
+
+  it("turning it back off fires the off PUT, same single-request shape", async () => {
+    const calls = stubFetch((url, init) => {
+      if (
+        url.includes("/api/settings/usenet-autograb-enabled") &&
+        (init?.method ?? "GET").toUpperCase() === "GET"
+      )
+        return jsonResponse({ enabled: true });
+      return undefined;
+    });
+    renderSettings();
+    const cb = await goToUsenet();
+    await waitFor(() => expect(cb.checked).toBe(true));
+    fireEvent.click(cb);
+    clickSectionSave();
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/settings/usenet-autograb-enabled"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) =>
+        c.method === "PUT" &&
+        c.url.includes("/api/settings/usenet-autograb-enabled"),
+    )!;
+    expect(put.body).toEqual({ enabled: false });
+    expect(
+      calls.some((c) => c.url.includes("/api/settings/usenet-retry-interval")),
+    ).toBe(false);
+  });
+
+  it("a failed setting fetch disables the toggle and surfaces the real error, leaving it off", async () => {
+    // loadError is scoped to THIS card: the subscriptions list beside it must
+    // still render, and the toggle must show its honest default (off) rather
+    // than an optimistic or indeterminate state. The route itself is always
+    // registered (internal/api/handler.go), so this simulates a generic
+    // transient failure — not a "feature doesn't exist yet" response — and the
+    // UI is expected to surface that real error message, not a canned one.
+    stubFetch((url, init) => {
+      if (
+        url.includes("/api/settings/usenet-autograb-enabled") &&
+        (init?.method ?? "GET").toUpperCase() === "GET"
+      )
+        return errorResponse(500, "temporary failure in name resolution");
+      if (url.includes("/api/service-connections") && !url.includes("/test"))
+        return jsonResponse([usenetConn()]);
+      return undefined;
+    });
+    renderSettings();
+    const cb = await goToUsenet();
+    await waitFor(() => expect(cb.disabled).toBe(true));
+    expect(cb.checked).toBe(false);
+    expect(
+      screen.getByText(/temporary failure in name resolution/i),
+    ).toBeInTheDocument();
+    // The sibling card is unaffected.
+    expect(screen.getByLabelText("Subscription 1 host")).toBeInTheDocument();
+  });
+
+  it("states plainly that it downloads without review, and that the retry loop needs a restart", async () => {
+    stubFetch();
+    renderSettings();
+    await goToUsenet();
+    // The no-review sentence is the documented obligation for this exception:
+    // it must not be softened into "automatically" or "hands-free".
+    expect(
+      screen.getByText(/SAK grabs it without asking you first/i),
+    ).toBeInTheDocument();
+    // ...and the honest caveat that toggling on does NOT start the 24-hour
+    // retry loop in the running process.
+    expect(
+      screen.getByText(/only starts after the next restart/i),
+    ).toBeInTheDocument();
+  });
+});
+
+// --- Media player registry (AC 7 + AC 8) -----------------------------------
+//
+// The player half of the same registry. Two things are specific to it and
+// covered nowhere else: the FIXED Jellyfin/Emby/Plex provider enum (never a
+// freeform type field), and per-connection mode assignment, which needs a
+// SECOND request because ServiceConnectionUpdateRequest has no modes field and
+// the backend's Store.Update ignores incoming modes by contract.
+
+describe("Media players — registry CRUD", () => {
+  const threePlayers = [
+    playerConn(),
+    playerConn({
+      id: 8,
+      provider: "emby",
+      label: "Bedroom",
+      url: "http://emby:8096",
+      modes: ["series"],
+    }),
+    playerConn({
+      id: 9,
+      provider: "plex",
+      label: "Office",
+      url: "http://plex:32400",
+      modes: ["movies", "adult"],
+      hasSecret: false,
+      secretSuffix: "",
+    }),
+  ];
+
+  it("renders one row per player with its own provider and mode assignment", async () => {
+    stubFetch(registryFetch(threePlayers));
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByLabelText("Player 7 URL");
+    // All three providers coexist — the registry is many-rows, not one-per-kind.
+    expect(
+      (screen.getByLabelText("Player 7 provider") as HTMLSelectElement).value,
+    ).toBe("jellyfin");
+    expect(
+      (screen.getByLabelText("Player 8 provider") as HTMLSelectElement).value,
+    ).toBe("emby");
+    expect(
+      (screen.getByLabelText("Player 9 provider") as HTMLSelectElement).value,
+    ).toBe("plex");
+    // Mode assignment is many-to-many with no exclusivity: Movies has two
+    // players here (7 and 9) and Adult has one, which must not warn or conflict.
+    expect(
+      (screen.getByLabelText("Player 7 Movies") as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText("Player 7 Series") as HTMLInputElement).checked,
+    ).toBe(false);
+    expect(
+      (screen.getByLabelText("Player 8 Series") as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText("Player 9 Movies") as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(
+      (screen.getByLabelText("Player 9 Adult") as HTMLInputElement).checked,
+    ).toBe(true);
+  });
+
+  it("Add player POSTs kind=player with the chosen provider and its modes in ONE request", async () => {
+    const calls = stubFetch(registryFetch([]));
+    renderSettings();
+    goToSection("Advanced");
+    expect(
+      await screen.findByText("No media players configured yet."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add player" }));
+    fireEvent.input(await screen.findByLabelText("New player label"), {
+      target: { value: "Basement" },
+    });
+    fireEvent.change(screen.getByLabelText("New player provider"), {
+      target: { value: "emby" },
+    });
+    fireEvent.input(screen.getByLabelText("New player URL"), {
+      target: { value: "http://emby:8096" },
+    });
+    fireEvent.click(screen.getByLabelText("New player Movies"));
+    fireEvent.click(screen.getByRole("button", { name: "Add player" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "POST" && c.url.endsWith("/api/service-connections"),
+        ),
+      ).toBe(true),
+    );
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/api/service-connections"),
+    )!;
+    // modes is honoured on CREATE only; every later change goes through the
+    // /modes route (see the two-request tests below).
+    expect(post.body).toEqual({
+      kind: "player",
+      provider: "emby",
+      label: "Basement",
+      enabled: true,
+      url: "http://emby:8096",
+      secret: "",
+      modes: ["movies"],
+    });
+    // No second request: create doesn't need the /modes route.
+    expect(registryModePuts(calls)).toHaveLength(0);
+  });
+
+  it("Add player refuses a blank URL client-side, firing no request", async () => {
+    const calls = stubFetch(registryFetch([]));
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByText("No media players configured yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Add player" }));
+    fireEvent.input(await screen.findByLabelText("New player label"), {
+      target: { value: "Nowhere" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add player" }));
+    expect(await screen.findByText("URL is required")).toBeInTheDocument();
+    expect(
+      calls.some(
+        (c) => c.method === "POST" && c.url.endsWith("/api/service-connections"),
+      ),
+    ).toBe(false);
+  });
+
+  it("editing a Plex row PUTs only that row, to its own id route", async () => {
+    const calls = stubFetch(registryFetch(threePlayers));
+    renderSettings();
+    goToSection("Advanced");
+    const label = (await screen.findByLabelText(
+      "Player 9 label",
+    )) as HTMLInputElement;
+    fireEvent.input(label, { target: { value: "Office (Plex)" } });
+    clickMediaPlayersSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    const put = registryPuts(calls)[0]!;
+    expect(put.url).toContain("/api/service-connections/9");
+    expect(put.body).toEqual({
+      kind: "player",
+      provider: "plex",
+      label: "Office (Plex)",
+      enabled: true,
+      url: "http://plex:32400",
+      // No stored secret on this fixture, so a blank one is sent rather than
+      // omitted — a no-auth row must stay savable.
+      secret: "",
+    });
+    expect(
+      calls.some((c) => c.url.includes("/api/service-connections/7")),
+    ).toBe(false);
+  });
+
+  it("Delete removes exactly the player row it was clicked in", async () => {
+    const calls = stubFetch(registryFetch(threePlayers));
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByLabelText("Player 7 URL");
+    const embyUrl = screen.getByLabelText("Player 8 URL");
+    fireEvent.click(registryRow(embyUrl).getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "DELETE" &&
+            c.url.endsWith("/api/service-connections/8"),
+        ),
+      ).toBe(true),
+    );
+    for (const other of ["7", "9"]) {
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "DELETE" &&
+            c.url.endsWith(`/api/service-connections/${other}`),
+        ),
+      ).toBe(false);
+    }
+  });
+});
+
+// --- Media players: the two-request mode-assignment pattern (AC 8) ---------
+
+describe("Media players — mode assignment is a SECOND request", () => {
+  it("a field-only edit fires the field PUT and NO /modes request (the sameModes guard)", async () => {
+    // Without this guard every save would re-POST an unchanged assignment. It's
+    // asserted as a negative because a redundant /modes write is invisible in
+    // the UI — the checkboxes look identical either way.
+    const calls = stubFetch(registryFetch([playerConn({ modes: ["movies"] })]));
+    renderSettings();
+    goToSection("Advanced");
+    const label = (await screen.findByLabelText(
+      "Player 7 label",
+    )) as HTMLInputElement;
+    fireEvent.input(label, { target: { value: "Den" } });
+    clickMediaPlayersSave();
+    // Waiting on the row's own success status (not just the field PUT) proves
+    // save() ran PAST the modes branch — otherwise this would race and pass
+    // even if the /modes request were about to fire.
+    expect(await screen.findByText("✓ saved")).toBeInTheDocument();
+    expect(registryPuts(calls)).toHaveLength(1);
+    expect(registryModePuts(calls)).toHaveLength(0);
+  });
+
+  it("a mode change fires the field PUT FIRST, then the FULL replacement assignment to /modes", async () => {
+    const calls = stubFetch(registryFetch([playerConn({ modes: ["movies"] })]));
+    renderSettings();
+    goToSection("Advanced");
+    const series = (await screen.findByLabelText(
+      "Player 7 Series",
+    )) as HTMLInputElement;
+    fireEvent.click(series);
+    clickMediaPlayersSave();
+    await waitFor(() => expect(registryModePuts(calls).length).toBe(1));
+    // The field PUT always fires; the modes PUT is the conditional extra.
+    expect(registryPuts(calls)).toHaveLength(1);
+    // A FULL replace, never a per-mode toggle — matching Store.SetModes.
+    expect(registryModePuts(calls)[0]!.body).toEqual({
+      modes: ["movies", "series"],
+    });
+    expect(registryModePuts(calls)[0]!.url).toContain(
+      "/api/service-connections/7/modes",
+    );
+    // Order matters: the field update must land before the assignment, so a
+    // failed field write never leaves modes pointing at a half-saved row.
+    expect(calls.indexOf(registryPuts(calls)[0]!)).toBeLessThan(
+      calls.indexOf(registryModePuts(calls)[0]!),
+    );
+  });
+
+  it("unchecking every mode sends an empty assignment rather than skipping the request", async () => {
+    const calls = stubFetch(registryFetch([playerConn({ modes: ["movies"] })]));
+    renderSettings();
+    goToSection("Advanced");
+    const movies = (await screen.findByLabelText(
+      "Player 7 Movies",
+    )) as HTMLInputElement;
+    fireEvent.click(movies);
+    clickMediaPlayersSave();
+    await waitFor(() => expect(registryModePuts(calls).length).toBe(1));
+    // 0 players for a mode is a valid state, so "notify nobody" must be
+    // persistable — sameModes() must not read [] as "unchanged".
+    expect(registryModePuts(calls)[0]!.body).toEqual({ modes: [] });
+  });
+
+  it("PARTIAL FAILURE: the field update succeeds, /modes fails, and the row keeps its unpersisted checkboxes", async () => {
+    // The honest-failure case the two-request pattern makes possible. There is
+    // no transaction across the two calls, so a /modes failure leaves the row's
+    // fields persisted and its assignment NOT persisted. What must not happen
+    // is the row quietly reporting success or snapping the checkboxes back to
+    // the stored value as if nothing was attempted: save() rethrows before
+    // props.onChanged(), so no refetch runs and the local (unsaved) checkbox
+    // state stays on screen next to a visible error.
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/service-connections") && !url.includes("/test")) {
+        if (url.endsWith("/modes") && init?.method === "PUT")
+          return errorResponse(500, "modes update failed");
+        if ((init?.method ?? "GET").toUpperCase() === "GET")
+          return jsonResponse([playerConn({ modes: ["movies"] })]);
+      }
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Advanced");
+    const series = (await screen.findByLabelText(
+      "Player 7 Series",
+    )) as HTMLInputElement;
+    fireEvent.click(series);
+    clickMediaPlayersSave();
+
+    // The row surfaces the real server message, not a generic failure.
+    expect(await screen.findByText("modes update failed")).toBeInTheDocument();
+    // Both requests were attempted, in order — the field one really did land.
+    expect(registryPuts(calls)).toHaveLength(1);
+    expect(registryModePuts(calls)).toHaveLength(1);
+    // The checkbox still shows what the operator asked for, NOT the stored
+    // ["movies"] — no refetch ran, because save() threw first.
+    expect(series.checked).toBe(true);
+    // And the row is still dirty, so the section Save stays clickable to retry.
+    expect(mediaPlayersSaveButton().disabled).toBe(false);
+    // The section-level summary names the row that failed rather than swallowing
+    // it. Awaited separately from the row's own status above: the row sets its
+    // message inside the catch, BEFORE rethrowing, so SectionSave's allSettled
+    // summary lands a microtask later.
+    expect(await screen.findByText(/failed: Living room/)).toBeInTheDocument();
+  });
+});
+
+// --- Media players: three-state secret through the UI ----------------------
+
+describe("Media players — three-state secret semantics through the UI", () => {
+  it("saving after editing ONLY the URL OMITS secret from the PUT body", async () => {
+    const calls = stubFetch(registryFetch([playerConn()]));
+    renderSettings();
+    goToSection("Advanced");
+    const url = (await screen.findByLabelText("Player 7 URL")) as HTMLInputElement;
+    expect(
+      (screen.getByLabelText("Player 7 API key") as HTMLInputElement).placeholder,
+    ).toContain("wxyz");
+    fireEvent.input(url, { target: { value: "http://jellyfin:8920" } });
+    clickMediaPlayersSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    const body = registryPuts(calls)[0]!.body;
+    expect(body).not.toHaveProperty("secret");
+    expect(body).toEqual({
+      kind: "player",
+      provider: "jellyfin",
+      label: "Living room",
+      enabled: true,
+      url: "http://jellyfin:8920",
+    });
+  });
+
+  it("typing an API key sends it as the replacement secret", async () => {
+    const calls = stubFetch(registryFetch([playerConn()]));
+    renderSettings();
+    goToSection("Advanced");
+    const key = await screen.findByLabelText("Player 7 API key");
+    fireEvent.input(key, { target: { value: "jf-rotated" } });
+    clickMediaPlayersSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    expect((registryPuts(calls)[0]!.body as { secret?: string }).secret).toBe(
+      "jf-rotated",
+    );
+  });
+
+  it("typing then clearing the API key sends an explicit empty secret (the deliberate clear)", async () => {
+    const calls = stubFetch(registryFetch([playerConn()]));
+    renderSettings();
+    goToSection("Advanced");
+    const key = await screen.findByLabelText("Player 7 API key");
+    fireEvent.input(key, { target: { value: "x" } });
+    fireEvent.input(key, { target: { value: "" } });
+    clickMediaPlayersSave();
+    await waitFor(() => expect(registryPuts(calls).length).toBe(1));
+    const body = registryPuts(calls)[0]!.body as { secret?: string };
+    expect(body).toHaveProperty("secret");
+    expect(body.secret).toBe("");
+  });
+});
+
+// --- Trakt's new home: UI -> Discover, and nowhere else (AC 5) -------------
+//
+// The Trakt component's OWN logic (device flow, three-state secret, disconnect)
+// is covered by the "Trakt connection section" suite above, which already runs
+// through goToSection("UI"). What was untested is the relocation itself — that
+// Trakt is reachable ONLY from there, and is not a leftover connection row in
+// any of the sections the old Connections table's contents were split across.
+
+describe("Trakt lives in UI -> Discover, not in any connections table", () => {
+  it("renders on the UI tab and on no other section", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByLabelText("prowlarr URL");
+    expect(screen.queryByLabelText("Trakt client ID")).toBeNull();
+    expect(screen.queryByText("Trakt (Watchlist)")).toBeNull();
+
+    goToSection("Usenet");
+    await screen.findByText("Subscriptions");
+    expect(screen.queryByLabelText("Trakt client ID")).toBeNull();
+
+    goToSection("Library");
+    await screen.findByLabelText("Library root folder");
+    expect(screen.queryByLabelText("Trakt client ID")).toBeNull();
+
+    goToSection("UI");
+    expect(
+      await screen.findByLabelText("Trakt client ID"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Trakt (Watchlist)")).toBeInTheDocument();
+  });
+
+  it("is not a `trakt` row in the singleton connections table anywhere", async () => {
+    // Trakt has its own credential/OAuth surface, never a ConnectionRow — so
+    // neither the Advanced API table nor Library's metadata sources may grow a
+    // "trakt URL"/"trakt API key" pair as a side effect of the redistribution.
+    stubFetch();
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByLabelText("prowlarr URL");
+    expect(screen.queryByLabelText("trakt URL")).toBeNull();
+    expect(screen.queryByLabelText("trakt API key")).toBeNull();
+    await goToLibraryConnections();
+    expect(await screen.findByLabelText("tmdb API key")).toBeInTheDocument();
+    expect(screen.queryByLabelText("trakt API key")).toBeNull();
+  });
+
+  it("still saves credentials from its new home (the relocation changed no behaviour)", async () => {
+    const calls = stubFetch();
+    renderSettings();
+    goToSection("UI");
+    fireEvent.input(await screen.findByLabelText("Trakt client ID"), {
+      target: { value: "relocated-client-id" },
+    });
+    fireEvent.input(screen.getByLabelText("Trakt client secret"), {
+      target: { value: "relocated-secret" },
+    });
+    clickTraktSave();
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "PUT" && c.url.includes("/api/trakt/credentials"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) => c.method === "PUT" && c.url.includes("/api/trakt/credentials"),
+    )!;
+    expect(put.body).toEqual({
+      clientId: "relocated-client-id",
+      clientSecret: "relocated-secret",
+    });
+  });
+});
+
+// --- AI promoted out of the Connections nesting (AC 6) ---------------------
+
+describe("AI is its own top-level section tab", () => {
+  it("sits in the section tab bar, with no Connections tab or sub-tab to reach it through", async () => {
+    stubFetch();
+    renderSettings();
+    await screen.findByLabelText("Library root folder");
+    // A real SECTION_TABS entry, reachable in ONE click from any other section.
+    expect(
+      sectionTabBar().getByRole("button", { name: "AI" }),
+    ).toBeInTheDocument();
+    expect(
+      sectionTabBar().queryByRole("button", { name: "Connections" }),
+    ).toBeNull();
+    goToSection("AI");
+    expect(await screen.findByLabelText("AI provider")).toBeInTheDocument();
+    // Exactly one "AI" button screen-wide: the section tab. If AI were still a
+    // sub-tab, its inner Connections/AI pill bar would render a second one.
+    expect(screen.getAllByRole("button", { name: "AI" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Connections" })).toBeNull();
+  });
+
+  it("carries its own connection rows with it, without an intermediate sub-tab click", async () => {
+    stubFetch();
+    renderSettings();
+    goToSection("AI");
+    // The AI-provider and Brave rows are on the tab itself — one click, no
+    // nested navigation — while the API-section rows stay behind on Advanced.
+    expect(await screen.findByLabelText("ollama URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("brave API key")).toBeInTheDocument();
+    expect(screen.queryByLabelText("prowlarr URL")).toBeNull();
+    expect(screen.queryByText("Media players")).toBeNull();
+  });
+});
 
 describe("Settings — no bulk-action affordances", () => {
   it("has no save-all / apply-all across the whole view", async () => {

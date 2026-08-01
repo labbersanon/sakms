@@ -7,9 +7,11 @@ import (
 	"net/http"
 
 	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/emby"
 	"github.com/labbersanon/sakms/internal/jellyfin"
 	"github.com/labbersanon/sakms/internal/nzbget"
 	"github.com/labbersanon/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/plex"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/qbittorrent"
 	"github.com/labbersanon/sakms/internal/stashapi"
@@ -25,7 +27,10 @@ import (
 // read-only call against it — the same thing Settings' "Test connection"
 // button does. Nothing here is persisted.
 type ConnectionTestRequest struct {
-	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "nntp" | "tmdb" | "tvdb" | "trakt"
+	// Service is a singleton connections service name OR, on the registry test
+	// routes, a serviceconn.Provider — the two vocabularies overlap on
+	// "jellyfin" deliberately (one dispatch, two callers).
+	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "nntp" | "tmdb" | "tvdb" | "trakt"
 	URL      string `json:"url"`
 	Username string `json:"username,omitempty"` // only qbittorrent/nzbget use this
 	APIKey   string `json:"apiKey,omitempty"`
@@ -57,6 +62,16 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 		return testStash(ctx, httpClient, req)
 	case "jellyfin":
 		return testJellyfin(ctx, httpClient, req)
+	// Emby and Plex are registry providers (internal/serviceconn), not
+	// singleton `connections` services — they are reached through
+	// POST /api/service-connections/test and .../{id}/test, which funnel a
+	// player row's provider/url/secret into this same switch rather than
+	// carrying a second copy of the per-provider dispatch. Jellyfin's case
+	// above serves both callers for the same reason.
+	case "emby":
+		return testEmby(ctx, httpClient, req)
+	case "plex":
+		return testPlex(ctx, httpClient, req)
 	case "stashdb", "fansdb":
 		// Fixed public stash-box endpoints — the URL is the hardcoded per-name
 		// constant, never req.URL (the UI collects no URL for these).
@@ -116,6 +131,42 @@ func testStash(ctx context.Context, httpClient *http.Client, req ConnectionTestR
 func testJellyfin(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	c := jellyfin.New(jellyfin.Config{URL: req.URL, APIKey: req.APIKey}, httpClient)
 	if err := c.Ping(ctx); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+// testEmby expects req.URL to point at Emby's base URL and req.APIKey to be an
+// Emby API key. Deliberately NOT routed through testJellyfin despite the shared
+// fork ancestry: the two servers authenticate differently (Emby's X-Emby-Token
+// vs. Jellyfin's MediaBrowser Token scheme, which Jellyfin's own controller
+// rejects the legacy header for), so testing one with the other's client would
+// report a working instance as unreachable.
+func testEmby(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := emby.New(emby.Config{URL: req.URL, APIKey: req.APIKey}, httpClient)
+	if err := c.Ping(ctx); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+// testPlex expects req.URL to point at the Plex Media Server base URL. The
+// generic APIKey field carries the X-Plex-Token — Plex's credential is a token,
+// not an API key, but ConnectionTestRequest has one secret field and every other
+// provider reaches it the same way (see testTrakt's identical note for
+// client_id).
+//
+// Deliberately calls Sections, not Ping: Ping hits Plex's unauthenticated
+// /identity endpoint (see plex.Client.Ping's doc), so it would report success
+// for a reachable server even with a wrong/missing token — exactly the kind
+// of false-positive Test button this project's Test-connection contract
+// exists to prevent (every other case in this file, e.g. testStash's
+// AllTags, testProwlarr's Search, calls a real token-gated endpoint for the
+// same reason). Sections is a read-only, side-effect-free listing call that
+// is token-gated, so a bad token now genuinely fails the test.
+func testPlex(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := plex.New(plex.Config{URL: req.URL, Token: req.APIKey}, httpClient)
+	if _, err := c.Sections(ctx); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}
 	return ConnectionTestResult{OK: true}
@@ -211,6 +262,18 @@ func testNNTP(_ context.Context, req ConnectionTestRequest) ConnectionTestResult
 	}
 	cfg.Username = req.Username
 	cfg.Password = req.APIKey
+	if err := usenet.TestConnect(cfg); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+// testNNTPServer is testNNTP for an already-host/port/tls-shaped subscription —
+// what the registry stores. It cannot go through TestConnection: that switch is
+// keyed on a URL-shaped ConnectionTestRequest, and a registry usenet row has no
+// URL to parse (migration 0053 copies the legacy one, then BackfillUsenetURL
+// normalizes it into host/port/tls and blanks it).
+func testNNTPServer(cfg usenet.ServerConfig) ConnectionTestResult {
 	if err := usenet.TestConnect(cfg); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}

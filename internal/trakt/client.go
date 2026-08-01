@@ -160,7 +160,7 @@ func (c *Client) Ping(ctx context.Context) error {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("request to %s failed: %w", req.URL.Host, err)
+		return httpx.WrapTransportError(req.URL.Host, err)
 	}
 	defer resp.Body.Close()
 

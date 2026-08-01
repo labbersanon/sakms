@@ -181,6 +181,13 @@ export interface ModeStatus {
  */
 export interface SetupStatusResponse {
   modes: ModeStatus[];
+  /**
+   * JellyfinConfigured keeps its JSON field name for the frontend, but as
+   * of the service-connections registry (internal/serviceconn) it means "at
+   * least one media player of any provider (Jellyfin/Emby/Plex) is
+   * registered" — not literally Jellyfin only. Renaming the wire field is
+   * unnecessary churn for a purely additive meaning broadening.
+   */
   jellyfinConfigured: boolean;
   ollamaConfigured: boolean;
   dismissed: boolean;
@@ -440,6 +447,118 @@ export interface ConnectionUpsertRequest {
   apiKey?: string;
 }
 /**
+ * ServiceConnectionSummary is one registry row as exposed over the API — the
+ * secret is never round-tripped, only whether one is set and its last 4
+ * characters (HasSecret/SecretSuffix), mirroring ConnectionSummary's
+ * HasAPIKey/KeySuffix convention. GET /api/service-connections returns a
+ * list of these.
+ */
+export interface ServiceConnectionSummary {
+  id: number /* int64 */;
+  kind: string; // "usenet" | "player"
+  provider: string; // "nntp" | "jellyfin" | "emby" | "plex"
+  label: string;
+  enabled: boolean;
+  sortOrder: number /* int */;
+  url?: string;
+  host?: string;
+  port?: number /* int */;
+  tls?: boolean;
+  maxConns?: number /* int */;
+  username?: string;
+  hasSecret: boolean;
+  secretSuffix?: string;
+  modes: string[]; // player rows only; always empty for usenet
+  createdAt: string;
+  updatedAt: string;
+}
+/**
+ * ServiceConnectionCreateRequest is POST /api/service-connections's body.
+ * Secret is not three-state here (there is no stored secret to preserve on a
+ * brand-new row, so "absent" and "empty" both simply mean "none") but is
+ * still a pointer, matching the handler's actual decode target
+ * (serviceConnectionRequest.Secret in internal/api/serviceconns.go) and
+ * serviceConnectionRequest's own doc comment on why: json.Decode needs a
+ * pointer to tell "field absent" apart from "field present as empty string",
+ * even though on create both are handled identically. Modes only applies to
+ * player rows (serviceconn.Store.Create writes it via replaceModes); leave it
+ * empty/omitted for a usenet row.
+ */
+export interface ServiceConnectionCreateRequest {
+  kind: string;
+  provider: string;
+  label?: string;
+  enabled: boolean;
+  url?: string;
+  host?: string;
+  port?: number /* int */;
+  tls?: boolean;
+  maxConns?: number /* int */;
+  username?: string;
+  secret?: string;
+  modes?: string[];
+}
+/**
+ * ServiceConnectionUpdateRequest is PUT /api/service-connections/{id}'s body.
+ * sort_order and mode assignment are NOT editable here — sort_order has its
+ * own reorder endpoint precedent and modes are ServiceConnectionModesRequest's
+ * job, mirroring serviceconn.Store.Update's own division of labor (Update
+ * ignores incoming Modes; SetModes owns them).
+ * Secret follows the same three-state rule as ConnectionUpsertRequest.APIKey
+ * above (see that field's doc comment and README.md's "Three-state secret
+ * mapping rule" section): field ABSENT (nil) preserves the stored secret,
+ * present as "" clears it, present non-empty replaces it.
+ */
+export interface ServiceConnectionUpdateRequest {
+  kind: string;
+  provider: string;
+  label?: string;
+  enabled: boolean;
+  url?: string;
+  host?: string;
+  port?: number /* int */;
+  tls?: boolean;
+  maxConns?: number /* int */;
+  username?: string;
+  secret?: string;
+}
+/**
+ * ServiceConnectionModesRequest is PUT /api/service-connections/{id}/modes's
+ * body — the sole way to change which modes a player row is assigned to
+ * (serviceconn.Store.SetModes replaces the assignment wholesale). Rejected by
+ * the Store for a usenet row (only player connections carry modes).
+ */
+export interface ServiceConnectionModesRequest {
+  modes: string[];
+}
+/**
+ * ServiceConnectionTestRequest is POST /api/service-connections/test's body —
+ * enough to construct a client and make one real, read-only call against it,
+ * the registry-row twin of ConnectionTestRequest (internal/api/connections.go)
+ * for the two multi-connection kinds. Nothing here is persisted. Like
+ * ServiceConnectionCreateRequest, URL is player-shaped and Host/Port/TLS are
+ * usenet-shaped — the caller populates whichever set matches Provider.
+ */
+export interface ServiceConnectionTestRequest {
+  provider: string; // "nntp" | "jellyfin" | "emby" | "plex"
+  url?: string;
+  host?: string;
+  port?: number /* int */;
+  tls?: boolean;
+  username?: string;
+  secret?: string;
+}
+/**
+ * ServiceConnectionTestResult reports whether the test call succeeded. A
+ * false OK with a populated Error is the normal, expected shape for "wrong
+ * URL" or "wrong key" — not a server-side failure. Mirrors
+ * ConnectionTestResult's shape exactly.
+ */
+export interface ServiceConnectionTestResult {
+  ok: boolean;
+  error?: string;
+}
+/**
  * Grab mirrors internal/grabs.Grab's exact wire shape — the record SAK keeps
  * for one release it has sent to a download client. Exposed here so the
  * frontend's Grabs view and the auto-grab response share one generated
@@ -469,6 +588,18 @@ export interface Grab {
   rootFolderPath: string;
   flaggedForReview?: boolean;
   flagReason?: string;
+  /**
+   * RetryAfter/RetryCount/RetryReason are the PendingRetry state — set only
+   * when Status == "pending_retry" (grabs.Grab.SetPendingRetry clears them
+   * back to zero for every other status). RetryAfter is an RFC3339Nano UTC
+   * timestamp string (grabs.FormatTime), not a Unix number, matching
+   * CreatedAt/UpdatedAt's convention. Mirrors grabs.Grab's own JSON tags
+   * exactly (internal/grabs/grabs.go) — added here so the Requests screen
+   * (FE-5, a later wave) has a DTO to render against.
+   */
+  retryAfter?: string;
+  retryCount?: number /* int */;
+  retryReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -571,6 +702,40 @@ export interface AutoGrabResponse {
   message: string;
   grab?: Grab;
   candidates?: AutoGrabCandidate[];
+}
+/**
+ * SearchAutoGrabOutcome is the toggle-ON response shape for a gated Usenet
+ * search — GET /api/modes/{mode}/search (Movies/Series) and
+ * GET /api/modes/adult/search (Adult), both routed through the shared
+ * runToggleGatedSearch (§2.3.1 of the connections-elimination plan) — used
+ * in place of the toggle-OFF candidate-list shapes
+ * ([]SearchReleaseResult / AdultSearchScenesPage) whenever
+ * usenet_autograb_enabled is on. The SAME shape covers all three modes.
+ * A toggle-ON response is never a candidate list: the endpoint has already
+ * picked (or definitively failed to pick) on the caller's behalf, so there
+ * is nothing left to manually choose from.
+ *   - AutoGrabbed == true:  a candidate cleared the quality floor and was
+ *     dispatched through the same dispatchToDownloadClient path RunAutoGrab
+ *     always uses. Outcome is "grabbed".
+ *   - AutoGrabbed == false, Outcome == "pending_retry": nothing cleared the
+ *     floor; a pending_retry grabs row was created (or an existing GID-less
+ *     row for the same identity was updated — see FindPendingRetry/GRAB-1)
+ *     so the 24h retry sweep (BE-7) can pick it up later. Reason explains
+ *     why (e.g. "no candidate cleared the quality floor").
+ *   - AutoGrabbed == false, Outcome == "failed": the row's retry budget was
+ *     exhausted (SetPendingRetry's retry_count exceeded maxRetryAttempts and
+ *     flipped the row to Failed) rather than parked for another retry —
+ *     reported honestly as "failed", never as a lingering "pending_retry".
+ * GrabID is populated in every outcome — it identifies the grabs row created
+ * or updated by this call, whether that row ended up Downloading/Completed
+ * (grabbed) or PendingRetry/Failed.
+ */
+export interface SearchAutoGrabOutcome {
+  autoGrabbed: boolean;
+  outcome: string; // "grabbed" | "pending_retry" | "failed"
+  grabId: number /* int64 */;
+  title: string;
+  reason?: string;
 }
 /**
  * AutoGrabBatchItem is one entry in an AutoGrabBatchRequest: a mode plus the
@@ -774,6 +939,15 @@ export interface RequestStatusItem {
   status: string;
   grabId: number /* int64 */;
   missingCount: number /* int */;
+  /**
+   * RetryAfter/RetryReason are set only when Status is "Pending Retry" —
+   * mirroring the grab row's own grabs.Grab.RetryAfter/RetryReason (see
+   * Grab above) so the Requests screen can show why a title has no
+   * qualifying candidate yet and when the next re-search runs, instead of
+   * the bare "Pending Retry" label alone.
+   */
+  retryAfter?: string;
+  retryReason?: string;
 }
 /**
  * RequestStatusResponse is GET /api/requests's response — one row per title
@@ -1016,6 +1190,10 @@ export interface TagEntry {
  * TmdbId to lazily fetch each card's poster + availability and to drive
  * auto-grab; Year is display-only. The Tag picker (this type's original
  * caller) ignores both.
+ * CreatedAt is another additive field, present only for Movies/Series so the
+ * frontend's Library screen can offer an added-date sort. It is absent for
+ * Adult scenes — Adult has no Library grid to sort, and omitting it keeps
+ * Adult's wire response byte-identical to before this field existed.
  */
 export interface TrackedItem {
   id: number /* int64 */;
@@ -1026,6 +1204,7 @@ export interface TrackedItem {
   collectionName?: string;
   genres?: string[];
   cast?: string[];
+  createdAt?: string;
 }
 /**
  * CollectionSummary is one entry from GET /api/modes/movies/collections —
@@ -1756,6 +1935,13 @@ export interface Download {
 export interface DownloaderConfig {
   stagingDir: string;
   maxConcurrent: number /* int */;
+  /**
+   * MaxConnections applies to the torrent engine ONLY. Usenet connection
+   * counts are per-subscription (serviceconn.Connection.MaxConns /
+   * ServiceConnectionSummary.MaxConns above, one value per registered NNTP
+   * server), not a single global figure — this field has no effect on
+   * Usenet downloads.
+   */
   maxConnections: number /* int */;
 }
 /**

@@ -36,6 +36,7 @@ import {
 import { AdultModeContext, Button, Muted } from "../../components/ui";
 import { Card, SaveStatus, useSaveStatus } from "./shared";
 import { DurationSetting } from "./Advanced";
+import { APISection } from "./APISection";
 
 // RecheckTriggerButton is the manual "Refresh now" action for the
 // monitored-title refresh — an immediate, always-available fire-and-forget
@@ -455,8 +456,14 @@ const AdultModeSection: Component = () => {
   );
 };
 
+// APISection is composed in here rather than into AdvancedSection because
+// Prowlarr/Stash/media players are global, not per-mode — GlobalSection renders
+// ABOVE the Advanced tab's mode selector, which is the correct semantic for
+// them. It leads the fragment: connection setup is what an operator most often
+// comes to this tab for.
 export const GlobalSection: Component = () => (
   <>
+    <APISection />
     <AdultModeSection />
     <RecheckSection />
     <EntityDatabaseSection />

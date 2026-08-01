@@ -103,7 +103,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body, out any) (int,
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("request to %s failed: %w", req.URL.Host, err)
+		return 0, httpx.WrapTransportError(req.URL.Host, err)
 	}
 	defer resp.Body.Close()
 

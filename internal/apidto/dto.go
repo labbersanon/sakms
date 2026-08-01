@@ -170,11 +170,16 @@ type ModeStatus struct {
 // model over what's already configured, driving whether the setup wizard
 // shows itself at all and which of its steps it can skip.
 type SetupStatusResponse struct {
-	Modes              []ModeStatus `json:"modes"`
-	JellyfinConfigured bool         `json:"jellyfinConfigured"`
-	OllamaConfigured   bool         `json:"ollamaConfigured"`
-	Dismissed          bool         `json:"dismissed"`
-	AnyConfigured      bool         `json:"anyConfigured"`
+	Modes []ModeStatus `json:"modes"`
+	// JellyfinConfigured keeps its JSON field name for the frontend, but as
+	// of the service-connections registry (internal/serviceconn) it means "at
+	// least one media player of any provider (Jellyfin/Emby/Plex) is
+	// registered" — not literally Jellyfin only. Renaming the wire field is
+	// unnecessary churn for a purely additive meaning broadening.
+	JellyfinConfigured bool `json:"jellyfinConfigured"`
+	OllamaConfigured   bool `json:"ollamaConfigured"`
+	Dismissed          bool `json:"dismissed"`
+	AnyConfigured      bool `json:"anyConfigured"`
 }
 
 // DismissSetupRequest is PUT /api/setup/dismissed's body.
@@ -426,6 +431,129 @@ type ConnectionUpsertRequest struct {
 	APIKey   *string `json:"apiKey,omitempty"`
 }
 
+// --- Service connections registry (multi-connection: usenet + players) ----
+//
+// Mirrors internal/serviceconn's Connection/Summary — the registry that
+// replaced the old singleton `connections` rows for the two services an
+// operator can configure MORE THAN ONE of: Usenet (NNTP) subscriptions and
+// media players (Jellyfin/Emby/Plex). See internal/serviceconn's package doc
+// for why this is a split, not a replacement, of ConnectionSummary/
+// ConnectionUpsertRequest above — those two stay exactly as they are and keep
+// serving the surviving singleton services (TMDB, TVDB, StashDB, FansDB,
+// TPDB, Trakt, Prowlarr, Ollama, Stash, ...).
+//
+// Every DTO in this block splits its shape fields by Kind, matching
+// serviceconn.Connection's own convention: URL is player-shaped; Host/Port/
+// TLS/MaxConns are usenet-shaped; Username applies to both; the field that
+// doesn't apply to a given Kind/Provider is simply left zero.
+
+// ServiceConnectionSummary is one registry row as exposed over the API — the
+// secret is never round-tripped, only whether one is set and its last 4
+// characters (HasSecret/SecretSuffix), mirroring ConnectionSummary's
+// HasAPIKey/KeySuffix convention. GET /api/service-connections returns a
+// list of these.
+type ServiceConnectionSummary struct {
+	ID           int64    `json:"id"`
+	Kind         string   `json:"kind"`     // "usenet" | "player"
+	Provider     string   `json:"provider"` // "nntp" | "jellyfin" | "emby" | "plex"
+	Label        string   `json:"label"`
+	Enabled      bool     `json:"enabled"`
+	SortOrder    int      `json:"sortOrder"`
+	URL          string   `json:"url,omitempty"`
+	Host         string   `json:"host,omitempty"`
+	Port         int      `json:"port,omitempty"`
+	TLS          bool     `json:"tls,omitempty"`
+	MaxConns     int      `json:"maxConns,omitempty"`
+	Username     string   `json:"username,omitempty"`
+	HasSecret    bool     `json:"hasSecret"`
+	SecretSuffix string   `json:"secretSuffix,omitempty"`
+	Modes        []string `json:"modes"` // player rows only; always empty for usenet
+	CreatedAt    string   `json:"createdAt"`
+	UpdatedAt    string   `json:"updatedAt"`
+}
+
+// ServiceConnectionCreateRequest is POST /api/service-connections's body.
+// Secret is not three-state here (there is no stored secret to preserve on a
+// brand-new row, so "absent" and "empty" both simply mean "none") but is
+// still a pointer, matching the handler's actual decode target
+// (serviceConnectionRequest.Secret in internal/api/serviceconns.go) and
+// serviceConnectionRequest's own doc comment on why: json.Decode needs a
+// pointer to tell "field absent" apart from "field present as empty string",
+// even though on create both are handled identically. Modes only applies to
+// player rows (serviceconn.Store.Create writes it via replaceModes); leave it
+// empty/omitted for a usenet row.
+type ServiceConnectionCreateRequest struct {
+	Kind     string   `json:"kind"`
+	Provider string   `json:"provider"`
+	Label    string   `json:"label,omitempty"`
+	Enabled  bool     `json:"enabled"`
+	URL      string   `json:"url,omitempty"`
+	Host     string   `json:"host,omitempty"`
+	Port     int      `json:"port,omitempty"`
+	TLS      bool     `json:"tls,omitempty"`
+	MaxConns int      `json:"maxConns,omitempty"`
+	Username string   `json:"username,omitempty"`
+	Secret   *string  `json:"secret,omitempty"`
+	Modes    []string `json:"modes,omitempty"`
+}
+
+// ServiceConnectionUpdateRequest is PUT /api/service-connections/{id}'s body.
+// sort_order and mode assignment are NOT editable here — sort_order has its
+// own reorder endpoint precedent and modes are ServiceConnectionModesRequest's
+// job, mirroring serviceconn.Store.Update's own division of labor (Update
+// ignores incoming Modes; SetModes owns them).
+//
+// Secret follows the same three-state rule as ConnectionUpsertRequest.APIKey
+// above (see that field's doc comment and README.md's "Three-state secret
+// mapping rule" section): field ABSENT (nil) preserves the stored secret,
+// present as "" clears it, present non-empty replaces it.
+type ServiceConnectionUpdateRequest struct {
+	Kind     string  `json:"kind"`
+	Provider string  `json:"provider"`
+	Label    string  `json:"label,omitempty"`
+	Enabled  bool    `json:"enabled"`
+	URL      string  `json:"url,omitempty"`
+	Host     string  `json:"host,omitempty"`
+	Port     int     `json:"port,omitempty"`
+	TLS      bool    `json:"tls,omitempty"`
+	MaxConns int     `json:"maxConns,omitempty"`
+	Username string  `json:"username,omitempty"`
+	Secret   *string `json:"secret,omitempty"`
+}
+
+// ServiceConnectionModesRequest is PUT /api/service-connections/{id}/modes's
+// body — the sole way to change which modes a player row is assigned to
+// (serviceconn.Store.SetModes replaces the assignment wholesale). Rejected by
+// the Store for a usenet row (only player connections carry modes).
+type ServiceConnectionModesRequest struct {
+	Modes []string `json:"modes"`
+}
+
+// ServiceConnectionTestRequest is POST /api/service-connections/test's body —
+// enough to construct a client and make one real, read-only call against it,
+// the registry-row twin of ConnectionTestRequest (internal/api/connections.go)
+// for the two multi-connection kinds. Nothing here is persisted. Like
+// ServiceConnectionCreateRequest, URL is player-shaped and Host/Port/TLS are
+// usenet-shaped — the caller populates whichever set matches Provider.
+type ServiceConnectionTestRequest struct {
+	Provider string `json:"provider"` // "nntp" | "jellyfin" | "emby" | "plex"
+	URL      string `json:"url,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	TLS      bool   `json:"tls,omitempty"`
+	Username string `json:"username,omitempty"`
+	Secret   string `json:"secret,omitempty"`
+}
+
+// ServiceConnectionTestResult reports whether the test call succeeded. A
+// false OK with a populated Error is the normal, expected shape for "wrong
+// URL" or "wrong key" — not a server-side failure. Mirrors
+// ConnectionTestResult's shape exactly.
+type ServiceConnectionTestResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
 // --- Stage 2: auto-grab (Discover becomes mutating) ------------------------
 
 // Grab mirrors internal/grabs.Grab's exact wire shape — the record SAK keeps
@@ -457,8 +585,18 @@ type Grab struct {
 	RootFolderPath   string `json:"rootFolderPath"`
 	FlaggedForReview bool   `json:"flaggedForReview,omitempty"`
 	FlagReason       string `json:"flagReason,omitempty"`
-	CreatedAt        string `json:"createdAt"`
-	UpdatedAt        string `json:"updatedAt"`
+	// RetryAfter/RetryCount/RetryReason are the PendingRetry state — set only
+	// when Status == "pending_retry" (grabs.Grab.SetPendingRetry clears them
+	// back to zero for every other status). RetryAfter is an RFC3339Nano UTC
+	// timestamp string (grabs.FormatTime), not a Unix number, matching
+	// CreatedAt/UpdatedAt's convention. Mirrors grabs.Grab's own JSON tags
+	// exactly (internal/grabs/grabs.go) — added here so the Requests screen
+	// (FE-5, a later wave) has a DTO to render against.
+	RetryAfter  string `json:"retryAfter,omitempty"`
+	RetryCount  int    `json:"retryCount,omitempty"`
+	RetryReason string `json:"retryReason,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 // AutoGrabRequest is POST /api/modes/{mode}/autograb's body — Discover's
@@ -556,6 +694,42 @@ type AutoGrabResponse struct {
 	Message    string              `json:"message"`
 	Grab       *Grab               `json:"grab,omitempty"`
 	Candidates []AutoGrabCandidate `json:"candidates,omitempty"`
+}
+
+// SearchAutoGrabOutcome is the toggle-ON response shape for a gated Usenet
+// search — GET /api/modes/{mode}/search (Movies/Series) and
+// GET /api/modes/adult/search (Adult), both routed through the shared
+// runToggleGatedSearch (§2.3.1 of the connections-elimination plan) — used
+// in place of the toggle-OFF candidate-list shapes
+// ([]SearchReleaseResult / AdultSearchScenesPage) whenever
+// usenet_autograb_enabled is on. The SAME shape covers all three modes.
+//
+// A toggle-ON response is never a candidate list: the endpoint has already
+// picked (or definitively failed to pick) on the caller's behalf, so there
+// is nothing left to manually choose from.
+//
+//   - AutoGrabbed == true:  a candidate cleared the quality floor and was
+//     dispatched through the same dispatchToDownloadClient path RunAutoGrab
+//     always uses. Outcome is "grabbed".
+//   - AutoGrabbed == false, Outcome == "pending_retry": nothing cleared the
+//     floor; a pending_retry grabs row was created (or an existing GID-less
+//     row for the same identity was updated — see FindPendingRetry/GRAB-1)
+//     so the 24h retry sweep (BE-7) can pick it up later. Reason explains
+//     why (e.g. "no candidate cleared the quality floor").
+//   - AutoGrabbed == false, Outcome == "failed": the row's retry budget was
+//     exhausted (SetPendingRetry's retry_count exceeded maxRetryAttempts and
+//     flipped the row to Failed) rather than parked for another retry —
+//     reported honestly as "failed", never as a lingering "pending_retry".
+//
+// GrabID is populated in every outcome — it identifies the grabs row created
+// or updated by this call, whether that row ended up Downloading/Completed
+// (grabbed) or PendingRetry/Failed.
+type SearchAutoGrabOutcome struct {
+	AutoGrabbed bool   `json:"autoGrabbed"`
+	Outcome     string `json:"outcome"` // "grabbed" | "pending_retry" | "failed"
+	GrabID      int64  `json:"grabId"`
+	Title       string `json:"title"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // --- Discover bulk auto-grab: bounded multi-select exception ------------------
@@ -789,6 +963,13 @@ type RequestStatusItem struct {
 	Status       string `json:"status"`
 	GrabID       int64  `json:"grabId"`
 	MissingCount int    `json:"missingCount"`
+	// RetryAfter/RetryReason are set only when Status is "Pending Retry" —
+	// mirroring the grab row's own grabs.Grab.RetryAfter/RetryReason (see
+	// Grab above) so the Requests screen can show why a title has no
+	// qualifying candidate yet and when the next re-search runs, instead of
+	// the bare "Pending Retry" label alone.
+	RetryAfter  string `json:"retryAfter,omitempty"`
+	RetryReason string `json:"retryReason,omitempty"`
 }
 
 // RequestStatusResponse is GET /api/requests's response — one row per title
@@ -1084,6 +1265,11 @@ type TagEntry struct {
 // TmdbId to lazily fetch each card's poster + availability and to drive
 // auto-grab; Year is display-only. The Tag picker (this type's original
 // caller) ignores both.
+//
+// CreatedAt is another additive field, present only for Movies/Series so the
+// frontend's Library screen can offer an added-date sort. It is absent for
+// Adult scenes — Adult has no Library grid to sort, and omitting it keeps
+// Adult's wire response byte-identical to before this field existed.
 type TrackedItem struct {
 	ID             int64    `json:"id"`
 	Title          string   `json:"title"`
@@ -1093,6 +1279,7 @@ type TrackedItem struct {
 	CollectionName string   `json:"collectionName,omitempty"`
 	Genres         []string `json:"genres,omitempty"`
 	Cast           []string `json:"cast,omitempty"`
+	CreatedAt      string   `json:"createdAt,omitempty"`
 }
 
 // CollectionSummary is one entry from GET /api/modes/movies/collections —
@@ -1820,9 +2007,14 @@ type Download struct {
 // DownloaderConfig is the unified downloader's operator-tunable settings
 // (GET/PUT /api/downloader/config).
 type DownloaderConfig struct {
-	StagingDir     string `json:"stagingDir"`
-	MaxConcurrent  int    `json:"maxConcurrent"`
-	MaxConnections int    `json:"maxConnections"`
+	StagingDir    string `json:"stagingDir"`
+	MaxConcurrent int    `json:"maxConcurrent"`
+	// MaxConnections applies to the torrent engine ONLY. Usenet connection
+	// counts are per-subscription (serviceconn.Connection.MaxConns /
+	// ServiceConnectionSummary.MaxConns above, one value per registered NNTP
+	// server), not a single global figure — this field has no effect on
+	// Usenet downloads.
+	MaxConnections int `json:"maxConnections"`
 }
 
 // --- Downloads: bulk cancel + global pause ---------------------------------

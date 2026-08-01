@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -59,7 +60,7 @@ var discoverAvailabilityTiers = []quality.Tier{quality.Low, quality.Medium, qual
 // card). This handler therefore requires a `title` query param for every
 // mode (Adult already needed one per the plan) rather than issuing a second
 // TMDB call purely to recover a title the frontend already has in hand.
-func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -71,7 +72,7 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

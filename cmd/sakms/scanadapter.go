@@ -39,6 +39,7 @@ import (
 	"github.com/labbersanon/sakms/internal/purge"
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/scanschedule"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -51,6 +52,7 @@ import (
 type scanAdapter struct {
 	httpClient    *http.Client
 	connStore     *connections.Store
+	scStore       *serviceconn.Store
 	settingsStore *settings.Store
 	propStore     *proposals.Store
 	allowStore    *allowlist.Store
@@ -63,10 +65,11 @@ type scanAdapter struct {
 
 // newScanAdapter wires the scheduler's Scanner from the same stores main.go
 // already constructed for NewMux.
-func newScanAdapter(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store, prober *mediainfo.Prober, phashHasher, videoHasher *nodes.Dispatcher, entityStore parseentity.EntityStore) *scanAdapter {
+func newScanAdapter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store, prober *mediainfo.Prober, phashHasher, videoHasher *nodes.Dispatcher, entityStore parseentity.EntityStore) *scanAdapter {
 	return &scanAdapter{
 		httpClient:    httpClient,
 		connStore:     connStore,
+		scStore:       scStore,
 		settingsStore: settingsStore,
 		propStore:     propStore,
 		allowStore:    allowStore,
@@ -103,7 +106,7 @@ func (a *scanAdapter) rootFolder(ctx context.Context, m mode.Mode) (string, erro
 // identical to renameScanHandler / scanFromWatcher, minus the HTTP shell. Never
 // Applies.
 func (a *scanAdapter) ScanRename(ctx context.Context, m mode.Mode) error {
-	sess, err := mode.Build(ctx, a.connStore, a.settingsStore, a.httpClient, nil, m)
+	sess, err := mode.Build(ctx, a.connStore, a.scStore, a.settingsStore, a.httpClient, nil, m)
 	if err != nil {
 		return err
 	}
@@ -198,7 +201,7 @@ func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
 // intended, see that function's doc. Eager VMAF touches only the vmaf_scores
 // cache, never proposals.
 func (a *scanAdapter) ScanDedup(ctx context.Context, m mode.Mode, eagerVMAF bool) error {
-	sess, err := mode.Build(ctx, a.connStore, a.settingsStore, a.httpClient, nil, m)
+	sess, err := mode.Build(ctx, a.connStore, a.scStore, a.settingsStore, a.httpClient, nil, m)
 	if err != nil {
 		return err
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
@@ -101,7 +102,12 @@ func minSeedersFor(m mode.Mode) int {
 // MaxBatchGrabItems). It reuses this exact pipeline (grabOneBatchItem) per item;
 // each item is still a single one-release grab, just looped under one request.
 // This handler and its "exactly one add" tests are unchanged.
-func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
+//
+// Since the RunAutoGrab extraction it is a thin wrapper around that shared
+// mechanism, called with TriggerOperator — the one UNGATED trigger. The
+// usenet_autograb_enabled toggle must never apply here: this feature already
+// ships, and the operator's click is the approval.
+func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -116,7 +122,7 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, dl, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -153,78 +159,39 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, sett
 			return
 		}
 
-		releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, req)
+		out, err := RunAutoGrab(ctx, AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore}, sess, AutoGrabRequest{
+			Mode: m, Title: req.Title, TMDBID: req.TMDBID,
+			Season: req.SeasonNumber, Episode: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
+			Studio: req.Studio, ReleaseTitle: req.ReleaseTitle, DurationSeconds: req.DurationSeconds,
+			Trigger: TriggerOperator,
+		})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			http.Error(w, err.Error(), out.Status)
 			return
 		}
 
-		// A real per-episode runtime (Series single-episode grab) mustn't be
-		// applied to season packs the indexer returned for the episode query —
-		// neutralize those so they can't over-qualify (see buildAutoGrabCandidates).
-		neutralizeSeasonPacks := m == mode.Series && runtimeSeconds > 0
-		candidates := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
-		sel := autograb.Select(candidates, autoGrabTier(ctx, settingsStore, m), minSeedersFor(m))
-
 		// Fallback: nothing cleared the floor → hand back the ranked pick list
 		// (best bitrate score first, the same score that rejected them all).
-		if sel.Fallback {
+		// TriggerOperator deliberately parks NO pending_retry row here: a human
+		// is looking at this list and picks one.
+		if out.NoMatch {
 			writeAutoGrabJSON(w, apidto.AutoGrabResponse{
 				Fallback:   true,
 				Message:    "nothing cleared the quality floor automatically — pick one below",
-				Candidates: rankedAutoGrabCandidates(sel, releases),
+				Candidates: rankedAutoGrabCandidates(out.Selection, out.Releases),
 			})
 			return
 		}
 
-		// Qualified: send exactly the one top-scored release to the download
-		// client and record it. Root folder is resolved server-side — a true
-		// one-click grab supplies only the title.
-		rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		picked := releases[sel.PickIndex]
-
-		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
-		if err != nil {
-			http.Error(w, err.Error(), status)
+		if out.AlreadyGrabbing {
+			writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: false, Message: "already grabbing this release", Grab: out.Grab})
 			return
 		}
 
-		if existing, dup, status, err := activeGrabForGID(ctx, grabsStore, m, gid); dup || err != nil {
-			if err != nil {
-				http.Error(w, err.Error(), status)
-				return
-			}
-			writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: false, Message: "already grabbing this release", Grab: existing})
-			return
-		}
-
-		created, err := grabsStore.Create(ctx, grabs.Grab{
-			Mode: m, Title: req.Title, TMDBID: req.TMDBID,
-			SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
-			Indexer: picked.Indexer, Protocol: string(picked.Protocol),
-			DownloadClient: downloadClient, RootFolderPath: rootFolder,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if gid != "" {
-			if err := grabsStore.SetDownloadGID(ctx, created.ID, gid); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			created.DownloadGID = gid
-		}
-
-		dto := toDTOGrab(created)
 		writeAutoGrabJSON(w, apidto.AutoGrabResponse{
 			Grabbed: true,
-			Message: "auto-grabbed " + picked.Title,
-			Grab:    &dto,
+			Message: "auto-grabbed " + out.Releases[out.Selection.PickIndex].Title,
+			Grab:    out.Grab,
 		})
 	}
 }
@@ -254,6 +221,12 @@ func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, s
 		SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
 		Indexer: "feed", Protocol: req.DownloadProtocol,
 		DownloadClient: downloadClient, RootFolderPath: rootFolder,
+		// DownloadURL: a feed item has no TMDB/Prowlarr identity to re-search
+		// from — its enclosure URL is its ONLY provenance (see grabs.Grab.
+		// DownloadURL's doc comment). Without it, an async retrieval failure
+		// parks a pending_retry row (internal/api/search.go's checkImportHandler
+		// -> parkGrabForRetry) with nothing for the retry scheduler to resubmit.
+		DownloadURL: req.DownloadURL,
 	})
 	if err != nil {
 		return nil, false, http.StatusInternalServerError, err

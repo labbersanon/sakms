@@ -221,6 +221,88 @@ describe("Requests", () => {
     });
   });
 
+  it("renders a Pending Retry row's retryAfter/retryReason as a human-readable line", async () => {
+    const inSixHours = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    stubRequests({
+      items: [
+        item({
+          title: "No Match Movie",
+          tmdbId: 9,
+          status: "Pending Retry",
+          retryAfter: inSixHours,
+          retryReason: "no candidate cleared the quality floor",
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+
+    expect(await screen.findByText("No Match Movie")).toBeInTheDocument();
+    // Status badge reads the honest state, not "Downloading" (there are two
+    // "Pending Retry" texts on screen — the filter chip button and the row's
+    // status badge span — so scope to the non-button one).
+    expect(
+      screen.getByText("Pending Retry", { selector: "span" }),
+    ).toBeInTheDocument();
+    // Human-readable countdown + reason, never a raw ISO timestamp.
+    expect(
+      screen.getByText(/Retrying in 6h — no candidate cleared the quality floor/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(inSixHours)).not.toBeInTheDocument();
+  });
+
+  it("renders a Pending Retry row with only a reason (no scheduled retryAfter yet)", async () => {
+    stubRequests({
+      items: [
+        item({
+          title: "No Match Movie",
+          tmdbId: 9,
+          status: "Pending Retry",
+          retryReason: "no candidate cleared the quality floor",
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+
+    expect(await screen.findByText("No Match Movie")).toBeInTheDocument();
+    expect(
+      screen.getByText("no candidate cleared the quality floor"),
+    ).toBeInTheDocument();
+  });
+
+  it("a Pending Retry row is still excludable via Remove", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const calls = stubReqFetch((url) => {
+      if (url.includes("/api/requests/exclude")) return noContent();
+      if (url.includes("/api/requests"))
+        return jsonResponse({
+          items: [
+            item({
+              title: "No Match Movie",
+              tmdbId: 9,
+              status: "Pending Retry",
+              retryReason: "no candidate cleared the quality floor",
+            }),
+          ],
+        });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("No Match Movie");
+    fireEvent.click(screen.getByText("Remove"));
+
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.endsWith("/api/requests/exclude"))).toBe(
+        true,
+      ),
+    );
+    const exclude = calls.find((c) => c.url.endsWith("/api/requests/exclude"))!;
+    expect(exclude.body).toMatchObject({ mode: "movies", tmdbId: 9 });
+  });
+
   it("opens the DetailPopup for a Movies/Series row click", async () => {
     // Row click mounts DetailPopup, which fires its own detail/availability/
     // trailer/quality-prefs fetches — stub them benignly so nothing throws.

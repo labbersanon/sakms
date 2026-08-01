@@ -29,7 +29,7 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/adult/tracked")
@@ -47,6 +47,14 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	if len(got) != 1 || got[0].Title != "Some Scene" || len(got[0].Tags) != 1 || got[0].Tags[0] != "favorite" {
 		t.Fatalf("unexpected response: %+v", got)
 	}
+	// CreatedAt is deliberately left unpopulated for Adult (see
+	// libraryTrackedItem's doc comment) — Adult has no Library grid to sort,
+	// and omitting it (omitempty) keeps this response byte-identical to
+	// before the field existed. Locked in here so a future "consistency"
+	// edit trips this test.
+	if got[0].CreatedAt != "" {
+		t.Fatalf("expected createdAt to be omitted for Adult, got %q", got[0].CreatedAt)
+	}
 }
 
 // TestListTracked_Adult_EmptyWhenNoScenes proves Adult needs no *arr
@@ -54,7 +62,7 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 // not a 400 (the old Whisparr-missing behavior).
 func TestListTracked_Adult_EmptyWhenNoScenes(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/adult/tracked")
@@ -88,7 +96,7 @@ func TestListTracked_Movies_ReturnsLibraryItemsWithLabelTags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/tracked")
@@ -112,6 +120,11 @@ func TestListTracked_Movies_ReturnsLibraryItemsWithLabelTags(t *testing.T) {
 	if got[0].TMDBID != 453 || got[0].Year != 2001 {
 		t.Fatalf("expected tmdbId 453 / year 2001 on the tracked item, got %+v", got[0])
 	}
+	// CreatedAt is populated for Movies (Library's added-date sort relies on
+	// this being non-empty).
+	if got[0].CreatedAt == "" {
+		t.Fatalf("expected createdAt to be populated for Movies, got %+v", got[0])
+	}
 }
 
 // TestListTracked_Series_ReturnsLibrarySeriesWithLabelTags proves Series
@@ -128,7 +141,7 @@ func TestListTracked_Series_ReturnsLibrarySeriesWithLabelTags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/series/tracked")
@@ -148,5 +161,58 @@ func TestListTracked_Series_ReturnsLibrarySeriesWithLabelTags(t *testing.T) {
 	}
 	if got[0].TMDBID != 555 || got[0].Year != 2019 {
 		t.Fatalf("expected tmdbId 555 / year 2019 on the tracked series, got %+v", got[0])
+	}
+	// CreatedAt is populated for Series too (Library's added-date sort
+	// relies on this being non-empty).
+	if got[0].CreatedAt == "" {
+		t.Fatalf("expected createdAt to be populated for Series, got %+v", got[0])
+	}
+}
+
+// TestListTracked_CreatedAt_IsLexicographicallySortable proves the property
+// Library.tsx's "Newest first" sort relies on: two items upserted in
+// insertion order have createdAt values whose plain string (lexicographic)
+// comparison matches that insertion order. created_at is written by
+// strftime('%Y-%m-%dT%H:%M:%fZ', 'now') (internal/library/library.go), a
+// fixed-width, zero-padded ISO-8601-with-milliseconds format, which is
+// lexicographically sortable by construction. Tolerant of a same-millisecond
+// tie (<=, not <) rather than sleeping between inserts — sleeping would make
+// this test slower and flakier under a loaded CI runner for no real gain,
+// since a tie is the correctly-handled case (§3.2: ties are acceptable, item
+// order among them is unspecified), not a failure.
+func TestListTracked_CreatedAt_IsLexicographicallySortable(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	first, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 100, Title: "First", Year: 2000, RootFolderPath: "/movies"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	second, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 200, Title: "Second", Year: 2001, RootFolderPath: "/movies"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/tracked")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var got []libraryTrackedItem
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	byID := map[int64]string{}
+	for _, item := range got {
+		byID[item.ID] = item.CreatedAt
+	}
+	firstCreatedAt, secondCreatedAt := byID[first.ID], byID[second.ID]
+	if firstCreatedAt == "" || secondCreatedAt == "" {
+		t.Fatalf("expected both items to have createdAt populated, got first=%q second=%q", firstCreatedAt, secondCreatedAt)
+	}
+	if firstCreatedAt > secondCreatedAt {
+		t.Fatalf("expected first-inserted item's createdAt (%q) to sort <= second-inserted item's createdAt (%q)", firstCreatedAt, secondCreatedAt)
 	}
 }

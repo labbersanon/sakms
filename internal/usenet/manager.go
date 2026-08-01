@@ -2,6 +2,7 @@ package usenet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -32,6 +33,13 @@ type Download struct {
 	Connections     int64    // always 0; reserved for interface parity with torrent downloads
 	Files           []string // absolute paths of assembled files (populated on complete)
 	ErrorMessage    string
+	// Err is the unflattened retrieval failure, Go-side only — it is never
+	// serialised (the api layer maps this struct field-by-field into
+	// apidto.Download, which carries ErrorMessage for the UI). Callers use
+	// errors.Is to tell a permanent ErrArticleRemoved (451 DMCA takedown, never
+	// retry) apart from a retryable ErrArticleNotFound (430 from every
+	// subscription) or a transient dial failure. Nil unless Status == "error".
+	Err error
 }
 
 // dlState is the mutable runtime state of one usenet download. All fields
@@ -42,6 +50,7 @@ type dlState struct {
 	stagingDir string
 	status     string
 	errorMsg   string
+	err        error // classified retrieval failure; surfaced as Download.Err
 	files      []string
 	cancel     context.CancelFunc
 
@@ -56,49 +65,175 @@ type dlState struct {
 
 // Manager is the Usenet download engine. It starts NZB downloads, tracks
 // their progress, and fans out queue snapshots to SSE subscribers. It is a
-// process-lifetime singleton constructed once in cmd/sakms/main.go.
-//
-// Staged delivery: the Manager is built and can be exercised directly, but
-// the dispatch path in internal/api/search.go still returns 400 for usenet
-// grabs. The 400 stub is removed when the Manager is fully wired (Stage 2).
+// process-lifetime singleton constructed once in cmd/sakms/main.go; its set of
+// NNTP server pools is reconfigurable at runtime via SetSubscriptions, so a
+// subscription can be added or edited without restarting.
 type Manager struct {
-	pool       *pool
 	httpClient *http.Client
 	stagingDir string
 	onComplete func(gid string, files []string)
-	startCtx   context.Context // set by Start; nil until then
+	startCtx   context.Context // set by Start under mu; nil until then
 
 	mu          sync.Mutex
+	pools       []*pool // one per enabled subscription; swapped by SetSubscriptions
 	downloads   map[string]*dlState
 	subscribers map[int]chan []Download
 	nextSubID   int
+	// semaphore caps concurrent downloads at the summed MaxConns of the current
+	// pool set. It is a field rather than a constant-sized channel because
+	// SetSubscriptions changes that sum; runDownload captures the channel it
+	// acquired from so a swap never releases into the wrong one.
+	semaphore chan struct{}
 
-	nextGID   atomic.Int64  // monotonic counter for "nzb-N" GID strings
-	semaphore chan struct{} // limits concurrent downloads to pool.cfg.MaxConns
+	nextGID atomic.Int64 // monotonic counter for "nzb-N" GID strings
 }
 
 // Config parameterises a Manager.
 type Config struct {
-	Server     ServerConfig
+	// Server is the legacy single-server field, kept so existing callers keep
+	// working. When Servers is empty and Server has a Host, New treats it as a
+	// one-element Servers. Prefer Servers for new code.
+	Server ServerConfig
+	// Servers is the set of enabled Usenet subscriptions. Segment retrieval
+	// falls back across them in order.
+	Servers    []ServerConfig
 	StagingDir string
 	HTTPClient *http.Client
 }
 
-// New constructs a Manager for the given NNTP server configuration.
-// The engine is not started until Start is called.
+// New constructs a Manager for the given NNTP server configuration(s).
+// A Manager with zero servers is valid — it accepts no downloads until
+// SetSubscriptions supplies one. The engine is not started until Start is called.
 func New(cfg Config) *Manager {
-	maxConns := cfg.Server.MaxConns
-	if maxConns < 1 {
-		maxConns = 4
+	servers := cfg.Servers
+	if len(servers) == 0 && cfg.Server.Host != "" {
+		servers = []ServerConfig{cfg.Server}
 	}
-	return &Manager{
-		pool:        newPool(cfg.Server),
+	m := &Manager{
 		httpClient:  cfg.HTTPClient,
 		stagingDir:  cfg.StagingDir,
 		downloads:   map[string]*dlState{},
 		subscribers: map[int]chan []Download{},
-		semaphore:   make(chan struct{}, maxConns),
 	}
+	m.pools = newPools(servers)
+	m.semaphore = make(chan struct{}, concurrencyBudget(m.pools))
+	return m
+}
+
+// newPools builds one pool per server config.
+func newPools(servers []ServerConfig) []*pool {
+	pools := make([]*pool, 0, len(servers))
+	for _, s := range servers {
+		pools = append(pools, newPool(s))
+	}
+	return pools
+}
+
+// concurrencyBudget is the summed per-server connection allowance across pools,
+// with each server's MaxConns <= 0 substituted by defaultMaxConnsPerServer and
+// the total clamped to at least 1. The clamp matters: a zero budget would make
+// errgroup.SetLimit(0) block every segment fetch forever, and would give the
+// download semaphore a capacity of zero, which deadlocks every download.
+func concurrencyBudget(pools []*pool) int {
+	total := 0
+	for _, p := range pools {
+		total += effectiveMaxConns(p.cfg)
+	}
+	if total < 1 {
+		total = 1
+	}
+	return total
+}
+
+// SetSubscriptions swaps the Manager's pool set so an operator can add, edit or
+// remove a Usenet subscription without restarting the process. Pools whose
+// config is unchanged are reused (their idle connections survive); pools no
+// longer configured are closed.
+//
+// Safe to call while downloads are in flight. A retired pool's close() only
+// terminates connections sitting idle in it — a connection checked out by an
+// in-flight fetch is untouched and is terminated by pool.put when that fetch
+// returns it (see the comment on pool.put). An in-flight download that has
+// already read m.pools continues against the old set for its current segment
+// and picks up the new set on the next one.
+//
+// The download semaphore is replaced too, since the budget changes with the
+// pool set. Downloads already holding a token release into the channel they
+// took it from, so during the overlap up to (held + newCapacity) downloads can
+// run concurrently. That is transient and benign; it is not a leak.
+func (m *Manager) SetSubscriptions(cfgs []ServerConfig) {
+	fresh := make([]*pool, 0, len(cfgs))
+
+	m.mu.Lock()
+	existing := m.pools
+	keep := make([]bool, len(existing))
+	for _, c := range cfgs {
+		reused := false
+		for i, p := range existing {
+			if !keep[i] && p.cfg == c {
+				fresh = append(fresh, p)
+				keep[i] = true
+				reused = true
+				break
+			}
+		}
+		if !reused {
+			fresh = append(fresh, newPool(c))
+		}
+	}
+	var retired []*pool
+	for i, p := range existing {
+		if !keep[i] {
+			retired = append(retired, p)
+		}
+	}
+	m.pools = fresh
+	m.semaphore = make(chan struct{}, concurrencyBudget(fresh))
+	m.mu.Unlock()
+
+	// close() does network I/O — never hold m.mu across it.
+	for _, p := range retired {
+		p.close()
+	}
+}
+
+// HasSubscriptions reports whether any Usenet subscription is configured.
+//
+// This is the pre-flight guard the dispatch path uses before accepting a usenet
+// grab. The Manager is constructed unconditionally at boot (so it is never nil
+// and SetSubscriptions can configure it later), which means a nil check is no
+// longer the right question — "are there any pools?" is.
+func (m *Manager) HasSubscriptions() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.pools) > 0
+}
+
+// currentPools returns a snapshot of the pool set. m.pools is mutable, so every
+// read must go through here rather than touching the field directly.
+func (m *Manager) currentPools() []*pool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*pool(nil), m.pools...)
+}
+
+// baseContext returns the context in-flight downloads derive from: Start's
+// context once Start has run, so shutdown cancellation propagates, otherwise
+// context.Background().
+func (m *Manager) baseContext() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.startCtx == nil {
+		return context.Background()
+	}
+	return m.startCtx
+}
+
+// currentSemaphore returns the download semaphore in force right now.
+func (m *Manager) currentSemaphore() chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.semaphore
 }
 
 // SetOnComplete wires the completion callback. Safe to call before Start.
@@ -112,14 +247,20 @@ func (m *Manager) StagingDir() string { return m.stagingDir }
 // Start runs the 500 ms progress-poll loop and blocks until ctx is cancelled.
 // Intended to run as `go m.Start(ctx)`.
 func (m *Manager) Start(ctx context.Context) {
+	// Guarded: AddNZB reads startCtx from the caller's goroutine, and with
+	// SetSubscriptions the Manager is now genuinely mutated while Start runs.
+	m.mu.Lock()
 	m.startCtx = ctx
+	m.mu.Unlock()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var prev []Download
 	for {
 		select {
 		case <-ctx.Done():
-			m.pool.close()
+			for _, p := range m.currentPools() {
+				p.close()
+			}
 			return
 		case <-ticker.C:
 			snap := m.snapshot()
@@ -171,10 +312,7 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 
 	// Derive from startCtx so shutdown cancellation propagates to in-flight
 	// downloads. Fall back to context.Background() if Start hasn't been called.
-	base := m.startCtx
-	if base == nil {
-		base = context.Background()
-	}
+	base := m.baseContext()
 	dlCtx, cancel := context.WithCancel(base)
 	dl := &dlState{
 		gid:        gid,
@@ -300,10 +438,14 @@ func (m *Manager) Subscribe() (<-chan []Download, func()) {
 // pipeline: download all segments → assemble files → optional par2 repair →
 // fire onComplete callback.
 func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb *NZB) {
-	// Acquire semaphore slot before heavy work so at most MaxConns downloads
-	// fetch segments concurrently, preventing account connection-limit overruns.
-	m.semaphore <- struct{}{}
-	defer func() { <-m.semaphore }()
+	// Acquire a semaphore slot before heavy work so at most the summed MaxConns
+	// of the configured subscriptions' downloads fetch segments concurrently,
+	// preventing account connection-limit overruns. The channel is captured
+	// locally so a concurrent SetSubscriptions swap releases into the same one
+	// the token came from.
+	sem := m.currentSemaphore()
+	sem <- struct{}{}
+	defer func() { <-sem }()
 
 	files, err := m.downloadAll(ctx, gid, dl, nzb)
 	if err != nil {
@@ -311,6 +453,13 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
 			dl.errorMsg = err.Error()
+			// Keep the wrapped error itself, not just its text, so a caller can
+			// errors.Is a permanent ErrArticleRemoved apart from everything
+			// else. Only ErrArticleRemoved is terminal downstream: api's
+			// classifyDownloadState treats an ErrArticleNotFound AND any
+			// unclassified error (a dial or decode failure) alike as
+			// retryable, since neither proves the article is really gone.
+			dl.err = err
 		}
 		m.mu.Unlock()
 		return
@@ -341,10 +490,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 
 // downloadAll downloads every file in the NZB and returns the assembled paths.
 func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb *NZB) ([]string, error) {
-	maxConc := m.pool.cfg.MaxConns
-	if maxConc < 1 {
-		maxConc = 4
-	}
+	maxConc := concurrencyBudget(m.currentPools())
 	var paths []string
 	for _, nzbFile := range nzb.Files {
 		path, err := m.assembleFile(ctx, gid, dl, nzbFile, maxConc)
@@ -369,14 +515,8 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	sort.Slice(segs, func(i, j int) bool { return segs[i].Number < segs[j].Number })
 
 	// Fetch segment 1 first to learn the filename and total file size from the
-	// yEnc =ybegin header. The connection is returned to the pool before we
-	// proceed, so later concurrent fetches can reuse it.
-	c, err := m.pool.get()
-	if err != nil {
-		return "", err
-	}
-	first, err := fetchSegment(c, segs[0].MsgID)
-	m.pool.put(c, err == nil)
+	// yEnc =ybegin header.
+	first, err := m.fetchSegmentAny(segs[0].MsgID)
 	if err != nil {
 		return "", fmt.Errorf("segment 1: %w", err)
 	}
@@ -409,12 +549,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		for _, seg := range segs[1:] {
 			seg := seg
 			g.Go(func() error {
-				conn, err := m.pool.get()
-				if err != nil {
-					return err
-				}
-				res, err := fetchSegment(conn, seg.MsgID)
-				m.pool.put(conn, err == nil)
+				res, err := m.fetchSegmentAny(seg.MsgID)
 				if err != nil {
 					return fmt.Errorf("segment %d: %w", seg.Number, err)
 				}
@@ -431,6 +566,83 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	return outPath, nil
+}
+
+// ErrNoSubscriptions is returned when a retrieval is attempted with no Usenet
+// subscription configured.
+var ErrNoSubscriptions = errors.New("usenet: no Usenet subscriptions are configured")
+
+// fetchSegmentAny retrieves one article, falling back across the configured
+// subscriptions until one of them has it.
+//
+// Fallback is per-SEGMENT and SEQUENTIAL. Per-segment (rather than picking one
+// server for a whole download) is the only granularity that copes with partial
+// retention across providers, which is the entire reason an operator configures
+// more than one. Sequential (rather than probing every server at once) avoids
+// downloading the same article body N times — N times the bandwidth and N times
+// the per-provider connection consumption, for one usable copy.
+//
+// Error precedence when every pool fails:
+//   - every pool answered 430          -> ErrArticleNotFound (retryable)
+//   - only 430/451, at least one 451   -> ErrArticleRemoved (permanent)
+//   - anything else (dial, decode, …)  -> that error UNWRAPPED and
+//     unclassified, since a server we could not reach tells us nothing about
+//     whether it holds the article
+//
+// A classification mistake costs a retry rather than a lost download, but only
+// because of what happens downstream: ErrArticleRemoved is the ONLY error api's
+// classifyDownloadState treats as terminal. An unclassified error returned here
+// is retried, not failed — so returning the raw transport error (rather than
+// guessing 430 vs. 451) is the safe answer, including in the mixed case where
+// one provider answered 451 and another was simply unreachable.
+func (m *Manager) fetchSegmentAny(msgID string) (segmentResult, error) {
+	pools := m.currentPools()
+	if len(pools) == 0 {
+		return segmentResult{}, ErrNoSubscriptions
+	}
+
+	allNotFound := true
+	sawRemoved := false
+	var otherErr error
+
+	for _, p := range pools {
+		conn, err := p.get()
+		if err != nil {
+			allNotFound = false
+			if otherErr == nil {
+				otherErr = err
+			}
+			continue
+		}
+		res, err := fetchSegment(conn, msgID)
+		p.put(conn, err == nil)
+		if err == nil {
+			return res, nil
+		}
+		switch {
+		case errors.Is(err, ErrArticleNotFound):
+			// This provider does not carry it; try the next.
+		case errors.Is(err, ErrArticleRemoved):
+			allNotFound = false
+			sawRemoved = true
+		default:
+			allNotFound = false
+			if otherErr == nil {
+				otherErr = err
+			}
+		}
+	}
+
+	switch {
+	case allNotFound:
+		return segmentResult{}, ErrArticleNotFound
+	case otherErr != nil:
+		return segmentResult{}, otherErr
+	case sawRemoved:
+		return segmentResult{}, ErrArticleRemoved
+	default:
+		return segmentResult{}, ErrArticleNotFound
+	}
 }
 
 // addCompleted adds n to dl.completed under Manager.mu.
@@ -470,6 +682,7 @@ func (m *Manager) snapshot() []Download {
 			DownloadSpeed:   speed,
 			Files:           dl.files,
 			ErrorMessage:    dl.errorMsg,
+			Err:             dl.err,
 		})
 	}
 	return out

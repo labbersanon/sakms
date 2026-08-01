@@ -83,8 +83,8 @@ func detailMux(t *testing.T, tmdbURL string) *http.ServeMux {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(testHTTPClient(), connStore, settingsStore))
-	mux.HandleFunc("GET /api/modes/{mode}/discover/calendar", discoverCalendarHandler(testHTTPClient(), connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(testHTTPClient(), connStore, nil, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/calendar", discoverCalendarHandler(testHTTPClient(), connStore, nil, settingsStore))
 	return mux
 }
 

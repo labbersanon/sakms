@@ -241,7 +241,7 @@ func TestRun_BrowseBootPollFiresBeforeInterval(t *testing.T) {
 
 	// A one-hour browse interval: if the boot poll didn't fire, Prowlarr would
 	// not be queried for an hour — the test would time out at 2s instead.
-	go Run(ctx, time.Hour, connStore, settingsStore, releaseStore, nil, nil, NewFeedHealth())
+	go Run(ctx, time.Hour, connStore, nil, settingsStore, releaseStore, nil, nil, NewFeedHealth())
 
 	select {
 	case <-hit:
@@ -403,7 +403,7 @@ func TestRunCycle_NoProwlarrConfigured_SkipsCleanly(t *testing.T) {
 	connStore, settingsStore, releaseStore := newTestScanStores(t)
 	ctx := context.Background()
 
-	runCycle(ctx, &http.Client{Timeout: time.Second}, connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, &http.Client{Timeout: time.Second}, connStore, nil, settingsStore, releaseStore, nil)
 
 	list, err := releaseStore.List(ctx, RowScene, "", 1, 20)
 	if err != nil {
@@ -427,7 +427,7 @@ func TestRunCycle_ProwlarrConfiguredButNoAI_SkipsCleanly(t *testing.T) {
 		t.Fatalf("configuring prowlarr: %v", err)
 	}
 
-	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prow.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	list, err := releaseStore.List(ctx, RowScene, "", 1, 20)
 	if err != nil {
@@ -463,7 +463,7 @@ func TestRunCycle_UnmatchedReleaseIsMarkedSeenButNotCached(t *testing.T) {
 		t.Fatalf("configuring prowlarr: %v", err)
 	}
 
-	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prow.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	list, err := releaseStore.List(ctx, RowScene, "", 1, 20)
 	if err != nil {
@@ -510,7 +510,7 @@ func TestRunCycle_SeenReleaseIsNotReprocessed(t *testing.T) {
 
 	// Must not panic or error out despite the identify pipeline being
 	// configured to fail every call — the seen release should never reach it.
-	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prow.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	list, err := releaseStore.List(ctx, RowScene, "", 1, 20)
 	if err != nil {
@@ -618,7 +618,7 @@ func TestRunCycle_UnconfirmedStudioAndPerformerGuessesAreSkipped(t *testing.T) {
 		t.Fatalf("configuring prowlarr: %v", err)
 	}
 
-	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prow.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	// A scene row was persisted, so the studio/performer append path ran.
 	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 1 {
@@ -663,7 +663,7 @@ func TestMatchRelease_NoSceneRow_SkipsStudioPerformer(t *testing.T) {
 		t.Fatalf("configuring prowlarr: %v", err)
 	}
 
-	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prow.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 0 {
 		t.Errorf("expected no scene row, got %v", got)
@@ -741,7 +741,7 @@ func TestMatchRelease_SceneMatchWithNoConfirmedRelease_IsNotCached(t *testing.T)
 		t.Fatalf("configuring prowlarr: %v", err)
 	}
 
-	runCycle(ctx, prowlarrSrv.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prowlarrSrv.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	scenes, err := releaseStore.List(ctx, RowScene, "", 1, 20)
 	if err != nil {
@@ -810,7 +810,7 @@ func TestMatchRelease_SceneMatchWithConfirmedRelease_IsCached(t *testing.T) {
 		t.Fatalf("configuring prowlarr: %v", err)
 	}
 
-	runCycle(ctx, prowlarrSrv.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prowlarrSrv.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	scenes, err := releaseStore.List(ctx, RowScene, "", 1, 20)
 	if err != nil {
@@ -915,7 +915,7 @@ func TestMatchRelease_CaseDivergentStudioName_StillLinksToScene(t *testing.T) {
 		t.Fatalf("configuring prowlarr: %v", err)
 	}
 
-	runCycle(ctx, prow.Client(), connStore, settingsStore, releaseStore, nil)
+	runCycle(ctx, prow.Client(), connStore, nil, settingsStore, releaseStore, nil)
 
 	scenes, err := releaseStore.List(ctx, RowScene, "", 1, 20)
 	if err != nil {

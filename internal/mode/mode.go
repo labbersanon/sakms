@@ -12,21 +12,25 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/anthropic"
 	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/emby"
 	"github.com/labbersanon/sakms/internal/gemini"
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/jellyfin"
 	"github.com/labbersanon/sakms/internal/nzbget"
 	"github.com/labbersanon/sakms/internal/ollama"
 	"github.com/labbersanon/sakms/internal/openai"
+	"github.com/labbersanon/sakms/internal/plex"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/qbittorrent"
 	"github.com/labbersanon/sakms/internal/servarr"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/stashapi"
 	"github.com/labbersanon/sakms/internal/stashbox"
@@ -222,29 +226,133 @@ type Session struct {
 	// unchanged when this is nil. Consumers must nil-check before use.
 	Stash *stashapi.Client
 
-	// Jellyfin is a Jellyfin instance's targeted media-refresh client
-	// (internal/jellyfin), populated ONLY for Movies/Series mode and ONLY
-	// when a "jellyfin" connection is configured; nil otherwise — including
-	// for every Adult session, which notifies Stash instead (see Stash
-	// above). Used by NotifyPlayers to poke Jellyfin's library index after a
-	// file op. Purely additive: nothing in Movies/Series' existing
-	// workflows requires this to be non-nil. Consumers must nil-check
-	// before use.
-	Jellyfin *jellyfin.Client
+	// Players is every ENABLED media player in the service-connection
+	// registry (internal/serviceconn) that the operator has assigned to
+	// s.Mode — a Jellyfin/Emby/Plex instance whose library index gets a
+	// targeted rescan poke after a file op (see NotifyPlayers). Replaces the
+	// old single hardcoded Jellyfin=Movies/Series field: assignment is now
+	// many-to-many with no exclusivity, so a mode can have zero, one, or
+	// several players, in any mode including Adult. Empty when nothing is
+	// assigned — purely additive, no workflow requires a player.
+	//
+	// Players and Stash are NOT alternatives. Stash deliberately stays out of
+	// this registry (it needs the RescanPaths/CleanMetadata split below, which
+	// no player interface can express), so a mode with both configured
+	// notifies both. Do not add a precedence rule between them.
+	Players []Player
+}
+
+// PlayerNotifier is the one contract a downstream media player must satisfy
+// to receive SAK's post-file-op rescan pokes. Three genuinely different
+// concrete backends (Jellyfin, Emby, Plex) must be iterated in one loop,
+// which is not expressible in Go without an interface — the explicit
+// carve-out in CLAUDE.md's "no interfaces for external clients" rule. The
+// client packages themselves stay interface-free per the house pattern; the
+// adapters below live here instead.
+//
+// jellyfin.MediaUpdate is reused as the shared wire shape rather than
+// inventing a fourth one; the Emby and Plex adapters translate from it.
+type PlayerNotifier interface {
+	NotifyMediaUpdated(ctx context.Context, updates []jellyfin.MediaUpdate) error
+}
+
+// Player is one registry player bound to its live client. ID and Label come
+// straight from the registry row so a failed notify names WHICH player broke
+// — the whole reason this is a struct rather than a bare PlayerNotifier.
+type Player struct {
+	ID       int64
+	Label    string
+	Notifier PlayerNotifier
+}
+
+// embyPlayer adapts *emby.Client to PlayerNotifier. emby.MediaUpdate and
+// jellyfin.MediaUpdate are deliberately separate identical types (neither
+// sibling client package imports the other), so this translates field for
+// field.
+type embyPlayer struct{ c *emby.Client }
+
+func (e embyPlayer) NotifyMediaUpdated(ctx context.Context, updates []jellyfin.MediaUpdate) error {
+	out := make([]emby.MediaUpdate, len(updates))
+	for i, u := range updates {
+		out[i] = emby.MediaUpdate{Path: u.Path, UpdateType: u.UpdateType}
+	}
+	return e.c.NotifyMediaUpdated(ctx, out)
+}
+
+// plexPlayer adapts *plex.Client to PlayerNotifier. Plex has no batch
+// media-update endpoint at all — it scans per library section, so
+// plex.RefreshPath takes exactly one path (and internally fetches the section
+// list to resolve it, making a batch of N paths cost 2N round trips). This
+// adapter therefore loops, and the loop is deliberately bounded by the caller's
+// context:
+//
+//   - Duplicate paths are collapsed first, so a rename's Deleted+Created pair
+//     under one directory does not pay twice for the same path.
+//   - Before each refresh the context is checked; once NotifyPlayers'
+//     playerNotifyTimeout budget is spent the remaining paths are SKIPPED, not
+//     forced through. Partial-refresh-and-move-on is correct here: notify is
+//     best-effort by construction (NotifyPlayers never returns an error, and
+//     the file op it follows has already committed), and a player's index being
+//     briefly stale is strictly better than every other player's notify being
+//     delayed behind Plex's serial fan-out.
+//   - How much was skipped or failed is reported in the returned error so it
+//     lands in NotifyPlayers' log rather than disappearing.
+//
+// HONESTY NOTE (house "unverified assumptions" convention): Deleted paths are
+// passed to RefreshPath exactly like Created/Modified ones. A path-scoped Plex
+// scan of a path that no longer exists is ASSUMED to make Plex notice the
+// removal; that is not confirmed against a live Plex instance, and Plex has no
+// documented delete-specific verb equivalent to Stash's CleanMetadata.
+type plexPlayer struct{ c *plex.Client }
+
+func (p plexPlayer) NotifyMediaUpdated(ctx context.Context, updates []jellyfin.MediaUpdate) error {
+	seen := make(map[string]bool, len(updates))
+	var failed, skipped int
+	var firstErr error
+	for _, u := range updates {
+		if u.Path == "" || seen[u.Path] {
+			continue
+		}
+		seen[u.Path] = true
+		if ctx.Err() != nil {
+			skipped++
+			continue
+		}
+		if err := p.c.RefreshPath(ctx, u.Path); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	switch {
+	case failed > 0 && skipped > 0:
+		return fmt.Errorf("plex: %d path(s) failed to refresh and %d skipped once the notify deadline expired; first failure: %w", failed, skipped, firstErr)
+	case failed > 0:
+		return fmt.Errorf("plex: %d path(s) failed to refresh; first failure: %w", failed, firstErr)
+	case skipped > 0:
+		return fmt.Errorf("plex: %d path(s) skipped once the notify deadline expired", skipped)
+	}
+	return nil
 }
 
 // Build constructs a Session for m from whatever connections are currently
-// configured in store. Returns an error only if m isn't one of the three
-// known modes (the sole hard requirement) — no mode requires a *arr
-// connection anymore.
+// configured — the singleton services in store, plus every media player in
+// the multi-connection registry (scStore) assigned to m. Returns an error
+// only if m isn't one of the three known modes (the sole hard requirement) —
+// no mode requires a *arr connection anymore.
 //
 // SAK owns its own library for all three modes now (internal/library) instead
 // of proxying Radarr/Sonarr/Whisparr, so sess.Servarr stays nil for every
 // mode. What Build still wires per-mode is the tolerant, optional clientry:
 // Adult's identification pipeline (sess.Identify) and local Stash notify
-// client (sess.Stash), Movies/Series' Jellyfin notify client (sess.Jellyfin),
-// and the shared search/download pipeline — each left nil when unconfigured.
-func Build(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client, dl *downloader.Manager, m Mode) (*Session, error) {
+// client (sess.Stash), the registry's assigned media players (sess.Players),
+// and the shared search/download pipeline — each left nil/empty when
+// unconfigured.
+//
+// scStore may be nil, which simply yields no players (see buildPlayers) —
+// the same tolerance every other optional client here already has.
+func Build(ctx context.Context, store *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client, dl *downloader.Manager, m Mode) (*Session, error) {
 	sess := &Session{Mode: m, Downloader: dl}
 
 	// Every mode owns its own library now — Movies/Series since their Radarr/
@@ -286,13 +394,11 @@ func Build(ctx context.Context, store *connections.Store, settingsStore *setting
 		sess.Stash = stash
 	}
 
-	if m != Adult {
-		jf, err := buildJellyfinClient(ctx, store, httpClient)
-		if err != nil {
-			return nil, fmt.Errorf("mode %q: building jellyfin client: %w", m, err)
-		}
-		sess.Jellyfin = jf
+	players, err := buildPlayers(ctx, scStore, httpClient, m)
+	if err != nil {
+		return nil, fmt.Errorf("mode %q: building players: %w", m, err)
 	}
+	sess.Players = players
 
 	if err := buildSearchPipeline(ctx, store, httpClient, sess); err != nil {
 		return nil, fmt.Errorf("mode %q: building download pipeline: %w", m, err)
@@ -354,20 +460,48 @@ func buildStashClient(ctx context.Context, store *connections.Store, httpClient 
 	return stashapi.New(stashapi.Config{URL: conn.URL, APIKey: conn.APIKey}, httpClient), nil
 }
 
-// buildJellyfinClient wires the Jellyfin targeted-rescan client from the
-// "jellyfin" connection. Tolerant: nil, nil if unconfigured. Built only for
-// Movies/Series — Adult notifies Stash instead (see buildStashClient), a
-// hardcoded per-mode scoping (CLAUDE.md Mission / the player-rescan-notify
-// design note), not a user-facing toggle.
-func buildJellyfinClient(ctx context.Context, store *connections.Store, httpClient *http.Client) (*jellyfin.Client, error) {
-	conn, err := optionalConn(ctx, store, "jellyfin")
+// buildPlayers wires one live client per ENABLED registry player assigned to
+// m, replacing the old hardcoded "Jellyfin for Movies/Series only" scoping
+// with the operator's own many-to-many mode assignment. Every mode — Adult
+// included — can now have players.
+//
+// Tolerant like every other optional client here: a nil scStore (tests, and
+// any caller predating the registry) and a mode with nothing assigned both
+// yield no players rather than an error. Note PlayersForMode would panic on a
+// nil Store, so the nil check must stay ahead of it.
+//
+// A row whose provider isn't one of the three known players is skipped with a
+// log line rather than failing the whole Build — the registry validates
+// provider on write, so reaching this branch means data written by an older
+// or newer schema, which must not take an Apply down with it.
+func buildPlayers(ctx context.Context, scStore *serviceconn.Store, httpClient *http.Client, m Mode) ([]Player, error) {
+	if scStore == nil {
+		return nil, nil
+	}
+	conns, err := scStore.PlayersForMode(ctx, string(m))
 	if err != nil {
 		return nil, err
 	}
-	if conn == nil {
-		return nil, nil
+	players := make([]Player, 0, len(conns))
+	for _, c := range conns {
+		var notifier PlayerNotifier
+		switch c.Provider {
+		case serviceconn.ProviderJellyfin:
+			// *jellyfin.Client satisfies PlayerNotifier natively — its
+			// NotifyMediaUpdated already has exactly this signature, so it
+			// needs no adapter.
+			notifier = jellyfin.New(jellyfin.Config{URL: c.URL, APIKey: c.Secret}, httpClient)
+		case serviceconn.ProviderEmby:
+			notifier = embyPlayer{emby.New(emby.Config{URL: c.URL, APIKey: c.Secret}, httpClient)}
+		case serviceconn.ProviderPlex:
+			notifier = plexPlayer{plex.New(plex.Config{URL: c.URL, Token: c.Secret}, httpClient)}
+		default:
+			log.Printf("mode %q: registry player %d (%q) has unsupported provider %q — skipped", m, c.ID, c.Label, c.Provider)
+			continue
+		}
+		players = append(players, Player{ID: c.ID, Label: c.Label, Notifier: notifier})
 	}
-	return jellyfin.New(jellyfin.Config{URL: conn.URL, APIKey: conn.APIKey}, httpClient), nil
+	return players, nil
 }
 
 // buildAIClient assembles the one AI client every AI-assisted feature shares
@@ -502,12 +636,18 @@ func buildIdentifier(ctx context.Context, store *connections.Store, settingsStor
 // Apply request, not a correctness knob.
 const playerNotifyTimeout = 8 * time.Second
 
-// NotifyPlayers tells s's configured downstream player (exactly one of
-// s.Jellyfin/s.Stash is ever non-nil for a given mode — see Build's
-// hardcoded per-mode scoping) that changes just committed to disk. NEVER
-// returns an error: a player being unreachable must not fail SAK's own
-// Apply, which has already fully committed by the time this is called —
-// every failure path here is log-only, best-effort.
+// NotifyPlayers tells every downstream player s is configured with about
+// changes just committed to disk: each registry player assigned to s.Mode
+// (s.Players, fanned out IN PARALLEL so one slow instance never delays the
+// others), and then Stash. NEVER returns an error: a player being unreachable
+// must not fail SAK's own Apply, which has already fully committed by the time
+// this is called — every failure path here is log-only, best-effort. That is
+// also why the fan-out uses a plain WaitGroup and not errgroup: there is no
+// error to propagate, and one player failing must never cancel another's
+// notify.
+//
+// Players and Stash both fire when both are configured — they are not
+// alternatives and there is no precedence between them (see Session.Players).
 //
 // Deletes route to Stash's CleanMetadata (never ScanPaths/RescanPaths) and
 // Created/Modified route to the phash-free RescanPaths — this split is the
@@ -535,10 +675,19 @@ func (s *Session) NotifyPlayers(ctx context.Context, changes []PathChange) {
 	nctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), playerNotifyTimeout)
 	defer cancel()
 
-	if s.Jellyfin != nil {
-		if err := s.Jellyfin.NotifyMediaUpdated(nctx, toJellyfinUpdates(changes)); err != nil {
-			log.Printf("jellyfin rescan notify (best-effort) failed: %v", err)
+	if len(s.Players) > 0 {
+		updates := toJellyfinUpdates(changes)
+		var wg sync.WaitGroup
+		for _, p := range s.Players {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := p.Notifier.NotifyMediaUpdated(nctx, updates); err != nil {
+					log.Printf("player %d (%q) rescan notify (best-effort) failed: %v", p.ID, p.Label, err)
+				}
+			}()
 		}
+		wg.Wait()
 	}
 	if s.Stash != nil {
 		scan := pathsWhere(changes, Created, Modified)

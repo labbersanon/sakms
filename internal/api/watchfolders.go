@@ -20,6 +20,7 @@ import (
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -58,7 +59,7 @@ func pollInterval(ctx context.Context, s *settings.Store) time.Duration {
 // appear in the Rename queue and still require a human Apply click. Never
 // auto-Apply. Must be launched as a goroutine from main.go and cancelled via
 // ctx when the server shuts down.
-func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore) {
+func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore) {
 	for {
 		d := pollInterval(ctx, settingsStore)
 
@@ -99,7 +100,7 @@ func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *co
 			continue
 		}
 
-		runWatcher(ctx, roots, httpClient, connStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore, d)
+		runWatcher(ctx, roots, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore, d)
 
 		if ctx.Err() != nil {
 			return
@@ -112,7 +113,7 @@ func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *co
 // until ctx is cancelled or the poll interval fires (so the caller can re-read
 // settings and restart with updated paths). pollEvery is the caller's
 // already-resolved poll cadence (see pollInterval) — always > 0.
-func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore, pollEvery time.Duration) {
+func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore, pollEvery time.Duration) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Printf("watchfolders: creating watcher: %v", err)
@@ -139,7 +140,7 @@ func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *htt
 			t.Stop()
 		}
 		timers[m] = time.AfterFunc(watchDebounce, func() {
-			scanFromWatcher(context.Background(), m, httpClient, connStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
+			scanFromWatcher(context.Background(), m, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
 		})
 	}
 
@@ -192,10 +193,10 @@ func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *htt
 // exactly like renameScanHandler — the watch-folder trigger is a Scan-only
 // automation, never an Apply. Errors are logged and dropped; the user's
 // manual Scan button always remains the fallback.
-func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore) {
+func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore) {
 	log.Printf("watchfolders: scan triggered for %s", m)
 
-	sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 	if err != nil {
 		log.Printf("watchfolders: building session for %s: %v", m, err)
 		return

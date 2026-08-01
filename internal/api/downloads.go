@@ -17,6 +17,17 @@ import (
 )
 
 // Settings keys for the unified downloader's operator-tunable knobs.
+//
+// Claude 2026-08-01: DownloaderMaxConnectionsKey narrowed to torrent-only.
+// Reason: it used to also seed the usenet Manager's connection count
+// (cmd/sakms/main.go's old buildUsenetManager), which collided with the new
+// per-subscription MaxConns field once multiple Usenet subscriptions were
+// possible. Usenet connection counts are now configured per-subscription in
+// the Usenet settings page, with internal/usenet's defaultMaxConnsPerServer
+// covering an unset value — this setting no longer has any effect on Usenet.
+// Troubleshooting: a Usenet connection-count change here doing nothing.
+// Review if: this comment predates a future Downloader settings UI, which
+// should inherit "torrent engine only" wording rather than re-litigate it.
 const (
 	DownloaderStagingDirKey     = "downloader_staging_dir"
 	DownloaderMaxConcurrentKey  = "downloader_max_concurrent"
@@ -374,8 +385,11 @@ func getDownloaderConfigHandler(settingsStore *settings.Store) http.HandlerFunc 
 	}
 }
 
-// putDownloaderConfigHandler stores the downloader's staging dir + concurrency
-// knobs. Concurrency values must be positive; staging dir is free-typed (it's
+// putDownloaderConfigHandler stores the torrent downloader's staging dir +
+// concurrency knobs. MaxConnections here applies to the torrent engine only —
+// Usenet connection counts are configured per-subscription in the Usenet
+// settings page instead (see DownloaderMaxConnectionsKey's doc comment).
+// Concurrency values must be positive; staging dir is free-typed (it's
 // validated for existence/writability the next time the engine restarts, same
 // tolerance as a library root folder). A change takes effect on restart.
 func putDownloaderConfigHandler(settingsStore *settings.Store) http.HandlerFunc {

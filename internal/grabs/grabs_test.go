@@ -8,6 +8,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/db"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/secrets"
 )
 
 // newTestStore builds a Store against a real, freshly migrated SQLite file —
@@ -20,7 +21,11 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatalf("opening db: %v", err)
 	}
 	t.Cleanup(func() { sqlDB.Close() })
-	return New(sqlDB)
+	secretStore, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("building secret store: %v", err)
+	}
+	return New(sqlDB, secretStore)
 }
 
 func TestCreate_StartsQueuedWithTimestampsPopulated(t *testing.T) {

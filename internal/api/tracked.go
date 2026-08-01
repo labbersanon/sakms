@@ -25,6 +25,13 @@ import (
 // auto-grab, Year is display. They stay zero (omitted) for Adult, whose scenes
 // are keyed on (box, sceneId) and have no TMDB identity — the Tag picker, this
 // type's original caller, ignores them for every mode.
+//
+// CreatedAt is another additive omitempty field, populated only for
+// Movies/Series so the frontend's Library screen can offer an added-date
+// sort. It is deliberately left unpopulated for Adult (see the comment at
+// the Adult branch below) — Adult has no Library grid to sort, and leaving
+// it zero (omitted, since it's omitempty) keeps Adult's wire response
+// byte-identical to before this field existed.
 type libraryTrackedItem struct {
 	ID             int64    `json:"id"`
 	Title          string   `json:"title"`
@@ -34,6 +41,7 @@ type libraryTrackedItem struct {
 	CollectionName string   `json:"collectionName,omitempty"`
 	Genres         []string `json:"genres,omitempty"`
 	Cast           []string `json:"cast,omitempty"`
+	CreatedAt      string   `json:"createdAt,omitempty"`
 }
 
 // listTrackedHandler returns every item {mode} currently tracks — straight
@@ -62,7 +70,7 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year, CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast}
+				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year, CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast, CreatedAt: item.CreatedAt}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
@@ -81,7 +89,7 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year, Genres: s.Genres, Cast: s.Cast}
+				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year, Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
@@ -105,6 +113,10 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
+				// CreatedAt deliberately left unset here (see the type's doc
+				// comment) — Scene.CreatedAt exists but Adult has no Library
+				// grid to sort by it, and omitting it keeps this response
+				// byte-identical to before the field existed.
 				out[i] = libraryTrackedItem{ID: sc.ID, Title: sc.Title, Tags: tags}
 			}
 			w.Header().Set("Content-Type", "application/json")

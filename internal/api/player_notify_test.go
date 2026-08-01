@@ -133,12 +133,10 @@ func TestApplyProposalHandler_MoviesRename_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
 		{Status: proposals.Pending, SourceName: "Movie", SourcePath: sourcePath, RootFolderPath: destRoot, Title: "Some Movie", TMDBID: 453, Year: 2020},
@@ -147,7 +145,7 @@ func TestApplyProposalHandler_MoviesRename_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applied := applyProposal(t, srv, saved[0].ID, nil)
@@ -183,12 +181,10 @@ func TestApplyProposalHandler_SeriesRename_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Series, proposals.Rename, []proposals.Proposal{
 		{
@@ -200,7 +196,7 @@ func TestApplyProposalHandler_SeriesRename_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applied := applyProposal(t, srv, saved[0].ID, nil)
@@ -251,12 +247,10 @@ func TestApplyProposalHandler_MoviesRenameCollision_NotifiesActualUniquePath(t *
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
 		{Status: proposals.Pending, SourceName: "Movie", SourcePath: sourcePath, RootFolderPath: destRoot, Title: "Some Movie", TMDBID: 453, Year: 2020},
@@ -265,7 +259,7 @@ func TestApplyProposalHandler_MoviesRenameCollision_NotifiesActualUniquePath(t *
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applied := applyProposal(t, srv, saved[0].ID, nil)
@@ -294,16 +288,14 @@ func TestApplyProposalHandler_MoviesPurge_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	item, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 1, Title: "X", FilePath: filePath, RootFolderPath: dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Purge, []proposals.Proposal{
 		{Status: proposals.Pending, Title: "X", TrackedID: int(item.ID)},
@@ -312,7 +304,7 @@ func TestApplyProposalHandler_MoviesPurge_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applyProposal(t, srv, saved[0].ID, nil)
@@ -340,7 +332,7 @@ func TestApplyProposalHandler_SeriesPurge_NotifiesJellyfinNDeletes(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1, Title: "X", RootFolderPath: dir})
 	if err != nil {
@@ -353,9 +345,7 @@ func TestApplyProposalHandler_SeriesPurge_NotifiesJellyfinNDeletes(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Series, proposals.Purge, []proposals.Proposal{
 		{Status: proposals.Pending, Title: "X", TrackedID: int(series.ID)},
@@ -364,7 +354,7 @@ func TestApplyProposalHandler_SeriesPurge_NotifiesJellyfinNDeletes(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applyProposal(t, srv, saved[0].ID, nil)
@@ -396,16 +386,14 @@ func TestApplyProposalHandler_MoviesDedupLoser_NotifiesJellyfin(t *testing.T) {
 	loserPath := writeTestVideoFile(t, dir, "loser.mkv", 10)
 	winnerPath := writeTestVideoFile(t, dir, "winner.mkv", 10)
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	tracked, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 1, Title: "X", FilePath: loserPath, RootFolderPath: dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Dedup, []proposals.Proposal{
 		{
@@ -420,7 +408,7 @@ func TestApplyProposalHandler_MoviesDedupLoser_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applyProposal(t, srv, saved[0].ID, nil)
@@ -441,7 +429,7 @@ func TestApplyProposalHandler_SeriesDedupLoser_NotifiesJellyfin(t *testing.T) {
 	loserPath := writeTestVideoFile(t, dir, "loser.mkv", 10)
 	winnerPath := writeTestVideoFile(t, dir, "winner.mkv", 10)
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1, Title: "X", RootFolderPath: dir})
 	if err != nil {
@@ -452,9 +440,7 @@ func TestApplyProposalHandler_SeriesDedupLoser_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Series, proposals.Dedup, []proposals.Proposal{
 		{
@@ -469,7 +455,7 @@ func TestApplyProposalHandler_SeriesDedupLoser_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applyProposal(t, srv, saved[0].ID, nil)
@@ -486,16 +472,14 @@ func TestApplyProposalHandler_SeriesDedupLoser_NotifiesJellyfin(t *testing.T) {
 // TestApplyProposalHandler_DedupKeepAll_NoJellyfinNotify is Edge #3:
 // keepAll removes nothing, so it must produce zero notify calls.
 func TestApplyProposalHandler_DedupKeepAll_NoJellyfinNotify(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	tracked, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 1, Title: "X", FilePath: "/a.mkv", RootFolderPath: "/x"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	jf := newFakeJellyfin(0)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Dedup, []proposals.Proposal{
 		{
@@ -510,7 +494,7 @@ func TestApplyProposalHandler_DedupKeepAll_NoJellyfinNotify(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyProposalRequest{KeepAll: true})
@@ -532,16 +516,14 @@ func TestApplyProposalHandler_JellyfinBestEffort_ApplyStillSucceeds(t *testing.T
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	item, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 1, Title: "X", FilePath: filePath, RootFolderPath: dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	jf := newFakeJellyfin(http.StatusInternalServerError)
-	if err := connStore.Upsert(ctx, "jellyfin", jf.Server(t).URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Purge, []proposals.Proposal{
 		{Status: proposals.Pending, Title: "X", TrackedID: int(item.ID)},
@@ -550,7 +532,7 @@ func TestApplyProposalHandler_JellyfinBestEffort_ApplyStillSucceeds(t *testing.T
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	// applyProposal itself asserts a 200 status — the point of this test.
@@ -596,7 +578,7 @@ func TestApplyProposalHandler_MoviesApply_StashConnectionConfigured_SendsNothing
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	// Success here (no t.Fatalf inside the fake Stash handler having fired)
@@ -730,7 +712,7 @@ func TestApplyProposalHandler_AdultRename_NotifiesStash(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applied := applyProposal(t, srv, saved[0].ID, nil)
@@ -803,7 +785,7 @@ func TestApplyProposalHandler_AdultRenameNoMove_NoStashNotify(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applyProposal(t, srv, saved[0].ID, nil)
@@ -850,7 +832,7 @@ func TestApplyProposalHandler_AdultPurge_NotifiesStash(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applyProposal(t, srv, saved[0].ID, nil)
@@ -913,7 +895,7 @@ func TestApplyProposalHandler_AdultDedupLoser_NotifiesStash(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	applyProposal(t, srv, saved[0].ID, nil)
@@ -963,7 +945,7 @@ func TestApplyProposalHandler_AdultDedupKeepAll_NoStashNotify(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyProposalRequest{KeepAll: true})
@@ -975,21 +957,25 @@ func TestApplyProposalHandler_AdultDedupKeepAll_NoStashNotify(t *testing.T) {
 }
 
 // TestApplyProposalHandler_AdultApply_JellyfinConnectionConfigured_SendsNothingToJellyfin
-// proves the hardcoded scoping in the other direction from the existing
-// Movies test above: even with a "jellyfin" connection fully configured, an
-// Adult Apply's sess.Jellyfin is nil (Jellyfin is Movies/Series-only), so
-// nothing is ever sent to it.
+// proves mode assignment is honoured in the other direction from the existing
+// Movies test above: a fully configured, enabled Jellyfin player assigned to
+// movies+series is NOT in an Adult session's sess.Players, so nothing is sent
+// to it on an Adult Apply.
+//
+// NOTE what this does and does not assert since players became a
+// mode-assignable registry: Adult is no longer barred from having players (the
+// old hardcoded "Jellyfin is Movies/Series-only" scoping is gone). A player
+// the operator DOES assign to adult is notified on an Adult Apply, by design.
+// What is asserted here is only that an UNassigned mode gets nothing.
 func TestApplyProposalHandler_AdultApply_JellyfinConnectionConfigured_SendsNothingToJellyfin(t *testing.T) {
 	jfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("unexpected request to Jellyfin — sess.Jellyfin must be nil for Adult mode: %s %s", r.Method, r.URL.Path)
+		t.Fatalf("unexpected request to Jellyfin — a player assigned only to movies+series must not be in an Adult session: %s %s", r.Method, r.URL.Path)
 	}))
 	defer jfSrv.Close()
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
-	if err := connStore.Upsert(ctx, "jellyfin", jfSrv.URL, "jf-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedJellyfinPlayer(t, scStore, jfSrv.URL, "jf-key", "movies", "series")
 
 	scene, err := libStore.UpsertScene(ctx, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "Flagged Scene",
@@ -1005,7 +991,7 @@ func TestApplyProposalHandler_AdultApply_JellyfinConnectionConfigured_SendsNothi
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	// Success here (no t.Fatalf inside the fake Jellyfin handler having

@@ -12,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
@@ -180,7 +181,7 @@ func findSlider(ctx context.Context, store *discoversliders.Store, id int) (*dis
 // method. Response items reuse apidto.DiscoverItem's wire shape unchanged
 // (still just normalized TMDB movie/TV titles); see resolveSlider below for
 // the per-filter-type/target dispatch.
-func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, slidersStore *discoversliders.Store) http.HandlerFunc {
+func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, slidersStore *discoversliders.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -207,7 +208,7 @@ func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store,
 		// the one shared "tmdb" connection — same reasoning as
 		// discoverKeywordsHandler; a slider's own Target picks the media
 		// type(s) actually queried, not {mode}.
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, mode.Movies)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Movies)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

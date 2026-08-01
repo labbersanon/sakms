@@ -13,6 +13,7 @@ import {
 } from "solid-js";
 import type { Mode } from "../../api/discover";
 import {
+  LIBRARY_MODE_SERVICES,
   MAX_RESOLUTIONS,
   NAMING_PRESETS,
   QUALITY_TIERS,
@@ -28,6 +29,7 @@ import {
 } from "../../api/settings";
 import { Button, Muted, PillSelector, inputClass, labelClass } from "../../components/ui";
 import { FolderPicker } from "../../components/FolderPicker";
+import { ConnectionServiceTable } from "./ConnectionRow";
 import {
   Card,
   MODE_LABELS,
@@ -387,6 +389,30 @@ export const KidsRootPathSection: Component<{ mode: () => Mode }> = (props) => {
         Leave blank to turn Kids classification off. Applies to both newly-found
         files and already-tracked items whose classification has drifted.
       </Muted>
+    </Card>
+  );
+};
+
+// ---- Per-mode: metadata source connections ---------------------------------
+
+// LibraryConnectionsSection renders the metadata-source connections that belong
+// to exactly one mode, alongside that mode's other Library settings: TMDB under
+// Movies, TVDB under Series, and StashDB/FansDB/TPDB under Adult. They were
+// rows in the old global Connections table; each placement here was individually
+// confirmed rather than derived from a bulk grouping.
+//
+// The Adult set needs no adult_mode_enabled guard of its own — the Library tab's
+// ModeSelector omits the Adult mode entirely when the global switch is off, so
+// these rows are unreachable rather than merely hidden.
+export const LibraryConnectionsSection: Component<{ mode: () => Mode }> = (
+  props,
+) => {
+  const services = () => LIBRARY_MODE_SERVICES[props.mode()];
+  return (
+    <Card title={`Metadata sources (${MODE_LABELS[props.mode()]})`}>
+      {/* No SectionSave of its own: these rows join the Library tab's single
+          one, alongside root folder / quality prefs / naming / kids. */}
+      <ConnectionServiceTable services={services} />
     </Card>
   );
 };

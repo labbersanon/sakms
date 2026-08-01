@@ -19,6 +19,8 @@ import { ScreenTabBar, useAdultEnabled, type TabDef } from "../../components/ui"
 import { SliderAdminSection } from "../SliderAdmin";
 import { AdultRowAdminSection } from "../AdultRowAdmin";
 import { RssFeedAdminSection } from "./RssFeedAdmin";
+import { TraktConnectionSection } from "./Trakt";
+import { SectionSave } from "./shared";
 
 const DISCOVER_TABS: TabDef[] = [
   { id: "mainstream", label: "Mainstream" },
@@ -57,6 +59,21 @@ export const UISection: Component = () => {
           </Match>
         </Switch>
       </Show>
+
+      {/* Trakt drives a Discover row, so it lives with the other Discover
+          controls rather than in a connections list. It sits OUTSIDE the
+          Mainstream/Adult sub-tab switch because the Watchlist row is
+          Mainstream-and-Adult-independent, and it must stay wrapped in its own
+          SectionSave: useSectionSaveItem returns false when it finds no
+          enclosing context, which would silently drop Trakt out of batched save
+          and pop its own "Save credentials" button back. UISection itself has no
+          SectionSave to inherit, so this wrapper is what keeps the relocation
+          functionally unchanged. */}
+      <div>
+        <SectionSave>
+          <TraktConnectionSection />
+        </SectionSave>
+      </div>
     </div>
   );
 };

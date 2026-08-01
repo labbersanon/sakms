@@ -75,7 +75,7 @@ func TestRunFeedCycle_FetchErrorMarksUnhealthy(t *testing.T) {
 	}
 
 	fh := NewFeedHealth()
-	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, settingsStore, releaseStore, nil, rssFeedsStore, fh)
+	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, fh)
 
 	if fh.Healthy(int64(f.ID)) {
 		t.Error("a feed whose fetch errored must be marked unhealthy")
@@ -105,7 +105,7 @@ func TestRunFeedCycle_PruneToEnabledDropsRemovedFeed(t *testing.T) {
 	// A stale health entry for a feed id that is NOT in the enabled set.
 	fh.SetHealthy(999, time.Now())
 
-	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, settingsStore, releaseStore, nil, rssFeedsStore, fh)
+	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, fh)
 
 	if fh.Healthy(999) {
 		t.Error("a feed no longer enabled must be pruned from the health map")
@@ -147,7 +147,7 @@ func TestRunFeedCycle_RefreshesFullWindowLastSeen(t *testing.T) {
 	}
 
 	before := time.Now().Unix()
-	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
+	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
 
 	got := findByID(t, releaseStore, RowScene, "cached")
 	if got.LastConfirmedSeen < before {
@@ -190,7 +190,7 @@ func TestProcessFeedItem_NoSceneRow_SkipsStudioPerformer(t *testing.T) {
 		t.Fatalf("creating feed: %v", err)
 	}
 
-	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
+	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
 
 	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 0 {
 		t.Errorf("expected no scene row, got %v", got)
@@ -224,7 +224,7 @@ func TestProcessFeedItem_SceneRow_CreatesStudioPerformer(t *testing.T) {
 		t.Fatalf("creating feed: %v", err)
 	}
 
-	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
+	runFeedCycle(ctx, &http.Client{Timeout: 5 * time.Second}, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
 
 	if got := rawEntityTitles(t, releaseStore, RowScene); len(got) != 1 {
 		t.Fatalf("expected the scene row to be persisted, got %v", got)
@@ -258,7 +258,7 @@ func TestRun_FeedBootPollFiresBeforeInterval(t *testing.T) {
 	if err := settingsStore.Set(ctx, FeedIntervalSettingKey, "3600"); err != nil {
 		t.Fatalf("setting feed interval: %v", err)
 	}
-	go Run(ctx, 0, connStore, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
+	go Run(ctx, 0, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
 
 	select {
 	case <-hit:

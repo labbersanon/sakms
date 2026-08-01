@@ -7,6 +7,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -21,7 +22,7 @@ import (
 // click discipline applies to every Discover-popup upstream call). A title
 // with no trailer on file returns {url: ""} (200), not an error — the popup
 // simply omits the link.
-func discoverTrailerHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverTrailerHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		if m != mode.Movies && m != mode.Series {
@@ -35,7 +36,7 @@ func discoverTrailerHandler(httpClient *http.Client, connStore *connections.Stor
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

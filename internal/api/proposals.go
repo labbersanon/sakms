@@ -16,6 +16,7 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/purge"
 	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
@@ -142,7 +143,7 @@ type proposalApplyStore interface {
 // runs — the URL doesn't need to say which, since a proposal ID alone is
 // already unambiguous. No mode touches a *arr app anymore; every Apply is
 // library-backed (see applyByWorkflow).
-func applyProposalHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
+func applyProposalHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
 		if !ok {
@@ -173,9 +174,9 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 		// No proposal needs a Servarr session anymore (every Apply path is
 		// libStore-backed — see applyByWorkflow), but mode.Build is still
 		// needed for sess.Identify/sess.Stash (Adult give-back + player-rescan
-		// notify) and sess.Jellyfin (Movies/Series notify); it leaves
-		// sess.Servarr nil for every mode now.
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, p.Mode)
+		// notify) and sess.Players (every registry player assigned to this
+		// mode); it leaves sess.Servarr nil for every mode now.
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -404,7 +405,7 @@ type applyBatchResponse struct {
 // it matches today's one-at-a-time mental model and avoids reasoning about
 // concurrent filesystem mutations across items that may touch overlapping
 // paths (e.g. the same series folder). See .omc/plans/bulk-apply.md.
-func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
+func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -451,7 +452,7 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, se
 
 			sess, ok := sessions[p.Mode]
 			if !ok {
-				sess, err = mode.Build(ctx, connStore, settingsStore, httpClient, nil, p.Mode)
+				sess, err = mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 				if err != nil {
 					results = append(results, applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()})
 					continue
@@ -516,7 +517,7 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, se
 // action from Apply, only meaningful for Unmatched Adult Rename proposals
 // that were confidently AI-identified but matched nothing (see
 // rename.SubmitDraft's doc comment for why this isn't automatic).
-func submitDraftHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store) http.HandlerFunc {
+func submitDraftHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
 		if !ok {
@@ -530,7 +531,7 @@ func submitDraftHandler(httpClient *http.Client, connStore *connections.Store, s
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, p.Mode)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

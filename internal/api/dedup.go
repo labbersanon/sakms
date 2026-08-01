@@ -11,6 +11,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -33,7 +34,7 @@ import (
 // determines whether files are grouped. Adult dispatches to ScanLibraryAdult
 // (Whisparr eliminated, Stage 4), which groups by (box, scene_id) and refines
 // by perceptual similarity.
-func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, prober dedup.Prober, hasher dedup.PHasher, libStore *library.Store, hub *dedupscan.Hub) http.HandlerFunc {
+func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, prober dedup.Prober, hasher dedup.PHasher, libStore *library.Store, hub *dedupscan.Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -42,7 +43,7 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, set
 		//     backgrounding. mode.Build uses r.Context() for the early 400; the
 		//     Session does not retain the ctx, so the background scan is free to
 		//     pass its own shutdown-aware ctx to the scan functions instead.
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

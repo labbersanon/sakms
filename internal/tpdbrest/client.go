@@ -435,7 +435,7 @@ func (c *Client) doGet(ctx context.Context, path string, params url.Values, out 
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			return fmt.Errorf("request to %s failed: %w", req.URL.Host, err)
+			return httpx.WrapTransportError(req.URL.Host, err)
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {

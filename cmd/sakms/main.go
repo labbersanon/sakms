@@ -40,6 +40,7 @@ import (
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/scanschedule"
 	"github.com/labbersanon/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/trakt"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -100,7 +101,10 @@ func run() error {
 	// threshold stored on a stale bit scale (a pre-PDQ 64-bit value) to its PDQ
 	// default, logging one operator-visible notice per affected mode. Non-fatal.
 	api.SweepStalePHashThresholds(context.Background(), settingsStore)
-	grabsStore := grabs.New(sqlDB)
+	// secretStore encrypts each grab's download URL at rest — an indexer/NZB
+	// URL commonly embeds an API key, and the retry path is what needs the URL
+	// persisted at all (see migration 0054).
+	grabsStore := grabs.New(sqlDB, secretStore)
 	libStore := library.New(sqlDB)
 	slidersStore := discoversliders.New(sqlDB)
 	// Excluded titles back the Requests "remove" feature (see api.NewRequestsMux).
@@ -118,14 +122,6 @@ func run() error {
 		log.Printf("downloader: not starting (%v) — torrent grabbing will be unavailable until fixed", err)
 		dlManager = nil
 	}
-	// Usenet/NNTP downloader (internal/usenet): constructed only when an NNTP
-	// server is configured in Settings → Connections. Nil when unconfigured —
-	// usenet grabs stay unavailable until the operator adds a server.
-	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, connStore, settingsStore, &http.Client{Timeout: outboundTimeout})
-	if err != nil {
-		log.Printf("usenet: not starting (%v) — NZB grabbing will be unavailable until fixed", err)
-		nzbManager = nil
-	}
 	// rssFeedsStore backs admin-defined raw RSS 2.0 feed rows (NZBGeek
 	// saved-search style) — a per-row feed URL fetched and parsed server-side
 	// at resolve time, a separate concept from slidersStore (TMDB-backed). The
@@ -141,6 +137,34 @@ func run() error {
 	// the signal-driven ctx doesn't exist yet here).
 	if err := rssFeedsStore.BackfillEncryption(context.Background()); err != nil {
 		log.Printf("rss feeds: encrypting plaintext feed urls: %v (unreached rows keep working via the plaintext read-fallback; retried next boot)", err)
+	}
+	// serviceConnStore backs the shared multi-connection registry (Usenet
+	// subscriptions + media players) that migration 0053 moved the singleton
+	// nntp/jellyfin rows into; internal/connections keeps the ~7 services that
+	// really are one-per-install.
+	serviceConnStore := serviceconn.NewStore(sqlDB, secretStore)
+	// The Go half of migration 0053's data move: SQLite cannot parse the legacy
+	// `nntp://host:port` URL, so the migration copies it verbatim and this
+	// normalizes it into host/port/tls. Idempotent, so it runs unconditionally
+	// at every boot — same one-shot boot-step shape and non-fatal handling as
+	// the rss-feeds backfill above.
+	if err := serviceConnStore.BackfillUsenetURL(context.Background()); err != nil {
+		log.Printf("service connections: normalizing legacy usenet urls: %v (retried next boot)", err)
+	}
+	// Usenet/NNTP downloader (internal/usenet): built from every usenet-kind row
+	// in serviceConnStore, not a single connection — see buildUsenetManager.
+	// Constructed unconditionally (even with zero subscriptions configured),
+	// so nzbManager is never nil; must run after BackfillUsenetURL above, since
+	// a freshly migrated legacy row has no host/port until that normalizes it.
+	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, serviceConnStore, settingsStore, &http.Client{Timeout: outboundTimeout})
+	if err != nil {
+		// buildUsenetManager always returns a non-nil Manager (see its doc
+		// comment) — an error here means a subscription/settings read failed,
+		// so nzbManager boots with an empty pool set rather than being nilled
+		// out. Do NOT set nzbManager = nil: callers (e.g. search.go's dispatch
+		// path) now use Manager.HasSubscriptions() instead of a nil check, and
+		// HasSubscriptions() on a nil receiver panics.
+		log.Printf("usenet: starting with no subscriptions loaded (%v) — NZB grabbing unavailable until fixed", err)
 	}
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
@@ -228,7 +252,7 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -332,7 +356,7 @@ func run() error {
 	// of "the download finished." Reuses the signal-driven ctx so shutdown
 	// stops the torrent client too.
 	if dlManager != nil {
-		dlManager.SetOnComplete(api.DownloadCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, settingsStore, grabsStore, libStore, prober, dlManager))
+		dlManager.SetOnComplete(api.DownloadCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager))
 		go func() {
 			if err := dlManager.Start(ctx); err != nil && ctx.Err() == nil {
 				log.Printf("downloader: manager stopped: %v", err)
@@ -340,7 +364,7 @@ func run() error {
 		}()
 	}
 	if nzbManager != nil {
-		nzbManager.SetOnComplete(api.UsenetCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, settingsStore, grabsStore, libStore, prober, dlManager, nzbManager))
+		nzbManager.SetOnComplete(api.UsenetCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager, nzbManager))
 		go nzbManager.Start(ctx)
 	}
 
@@ -360,7 +384,7 @@ func run() error {
 	// for Adult Discover's newest-releases rows to read. Gated OFF by
 	// default (interval 0). To remove entirely: delete internal/adultnewest,
 	// this line, its NewMux params, and the two stores' construction above.
-	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, settingsStore, adultNewestReleaseStore, entityStore, rssFeedsStore, feedHealth)
+	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, serviceConnStore, settingsStore, adultNewestReleaseStore, entityStore, rssFeedsStore, feedHealth)
 
 	// Same deliberate, opt-in exception as recheck/adultnewest above: a
 	// background job that syncs all four entity-cache sources (Stash/TPDB/
@@ -373,7 +397,19 @@ func run() error {
 	// and triggers a Rename Scan automatically (never auto-Apply). Gated OFF
 	// by default (WatchFoldersEnabledKey = false). To remove entirely: delete
 	// internal/api/watchfolders.go and this line.
-	go api.RunWatchFolders(ctx, &http.Client{Timeout: outboundTimeout}, connStore, settingsStore, propStore, libStore, videoDispatcher, prober, entityStore)
+	go api.RunWatchFolders(ctx, &http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, libStore, videoDispatcher, prober, entityStore)
+
+	// Usenet retry loop — the fifth deliberate, opt-in exception to "manual by
+	// default" (see internal/api/usenetretry.go's file doc). Two jobs per cycle:
+	// the AUTHORITATIVE sweep that converts an asynchronous usenet retrieval
+	// failure into pending_retry (430) or failed (451, never retried), and the
+	// re-search of every pending_retry row that is due. Gated OFF by default —
+	// its interval is written by the auto-grab toggle (on -> 86400, off -> 0),
+	// never set independently. To remove entirely: delete
+	// internal/api/usenetretry.go, its four route registrations in handler.go,
+	// and this line.
+	go api.RunUsenetRetry(ctx, api.LoadUsenetRetryInterval(ctx, settingsStore), &http.Client{Timeout: outboundTimeout},
+		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, dlManager, nzbManager)
 
 	// General Rename/Purge/Dedup scan scheduler — the fourth deliberate, opt-in
 	// exception to "manual by default" (see internal/scanschedule's package doc
@@ -385,7 +421,7 @@ func run() error {
 	// returns; all are cancelled via ctx on shutdown. Dedup cycles share the
 	// same dedupHub concurrency guard as manual Dedup scans. To remove entirely:
 	// delete internal/scanschedule, scanadapter.go, and this block.
-	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, settingsStore, propStore, allowStore, libStore, prober, phashDispatcher, videoDispatcher, entityStore)
+	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, allowStore, libStore, prober, phashDispatcher, videoDispatcher, entityStore)
 	scanschedule.Run(ctx, scanScheduler, settingsStore, dedupHub)
 
 	select {
@@ -454,38 +490,64 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 	}, httpClient), nil
 }
 
-// buildUsenetManager reads the "nntp" connection from connStore and constructs
-// a usenet.Manager. Returns (nil, nil) when no NNTP server has been configured.
-// Same lifecycle pattern as buildDownloader.
-func buildUsenetManager(ctx context.Context, dataDir string, connStore *connections.Store, settingsStore *settings.Store, httpClient *http.Client) (*usenet.Manager, error) {
-	c, err := connStore.Get(ctx, "nntp")
+// buildUsenetManager reads every usenet-kind row from serviceConnStore (a
+// Usenet subscription may now be zero, one, or many — the registry replaced
+// the old singleton "nntp" connection) and constructs a usenet.Manager built
+// from all of them. Disabled subscriptions are excluded from the pool set,
+// same "only enabled rows are live" convention as PlayersForMode.
+//
+// ALWAYS returns a non-nil *usenet.Manager, even when err != nil — the one
+// invariant every caller may rely on. usenet.New is safe to call with zero
+// servers (see its doc comment), so a fresh install with no subscription
+// configured boots with a working, empty Manager, and a genuine infra
+// failure (the registry or settings store couldn't be read) degrades to that
+// same empty-Manager shape rather than nil — callers now branch on
+// Manager.HasSubscriptions(), not a nil check, and a nil Manager would panic
+// on that method. The caller should still log err.
+//
+// Note the global downloader_max_connections setting is deliberately NOT
+// read here — see DownloaderMaxConnectionsKey's doc comment: it is
+// torrent-only now. Each subscription carries its own MaxConns, with
+// usenet.defaultMaxConnsPerServer covering an unset (<=0) value.
+func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client) (*usenet.Manager, error) {
+	var servers []usenet.ServerConfig
+	subs, err := serviceConnStore.ListByKind(ctx, serviceconn.KindUsenet)
 	if err != nil {
-		if errors.Is(err, connections.ErrNotFound) {
-			return nil, nil
+		err = fmt.Errorf("usenet: reading usenet subscriptions: %w", err)
+	} else {
+		servers = make([]usenet.ServerConfig, 0, len(subs))
+		for _, s := range subs {
+			if !s.Enabled {
+				continue
+			}
+			servers = append(servers, usenet.ServerConfig{
+				Host:     s.Host,
+				Port:     s.Port,
+				TLS:      s.TLS,
+				Username: s.Username,
+				Password: s.Secret,
+				MaxConns: s.MaxConns,
+			})
 		}
-		return nil, fmt.Errorf("usenet: reading nntp connection: %w", err)
 	}
-	cfg, err := usenet.ParseURL(c.URL)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Username = c.Username
-	cfg.Password = c.APIKey
-	cfg.MaxConns = settingInt(ctx, settingsStore, api.DownloaderMaxConnectionsKey, 4)
 
-	staging, err := settingsStore.Get(ctx, api.DownloaderStagingDirKey)
-	if err != nil && !errors.Is(err, settings.ErrNotFound) {
-		return nil, fmt.Errorf("usenet: reading staging dir: %w", err)
+	staging, stagingErr := settingsStore.Get(ctx, api.DownloaderStagingDirKey)
+	if stagingErr != nil && !errors.Is(stagingErr, settings.ErrNotFound) {
+		staging = ""
+		if err == nil {
+			err = fmt.Errorf("usenet: reading staging dir: %w", stagingErr)
+		}
 	}
 	if staging == "" {
 		staging = filepath.Join(dataDir, "downloads")
 	}
 
-	return usenet.New(usenet.Config{
-		Server:     cfg,
+	m := usenet.New(usenet.Config{
+		Servers:    servers,
 		StagingDir: staging,
 		HTTPClient: httpClient,
-	}), nil
+	})
+	return m, err
 }
 
 // settingInt reads an int settings scalar, returning def when unset/invalid.

@@ -18,17 +18,28 @@ import (
 func newStoredTestMux(t *testing.T) (*httptest.Server, *connections.Store) {
 	t.Helper()
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv, connStore
 }
+
+// These tests exercise the GENERIC /api/connections/{service}/test-stored
+// mechanism and its no-secret-leak contract, not any one service. The fixture
+// is Prowlarr rather than the Jellyfin it used to be: migration 0053 moved
+// jellyfin into the multi-connection registry, so that route now rejects it
+// outright with a 400 naming /api/service-connections (see
+// rejectMovedConnectionService and TestConnectionsRoutes_RejectMovedServices).
+// Prowlarr is a surviving singleton service with the same URL+key shape, so the
+// mechanism under test is unchanged. The registry's own id-keyed equivalent —
+// POST /api/service-connections/{id}/test, including its identical detail-free
+// failure contract — is covered in serviceconns_test.go.
 
 // TestTestStored_NotConfigured confirms a 404 when the service has no saved
 // connection — nothing to test.
 func TestTestStored_NotConfigured(t *testing.T) {
 	srv, _ := newStoredTestMux(t)
 
-	resp, err := http.Post(srv.URL+"/api/connections/jellyfin/test-stored", "application/json", nil)
+	resp, err := http.Post(srv.URL+"/api/connections/prowlarr/test-stored", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}
@@ -52,11 +63,11 @@ func TestTestStored_Unreachable_NoSecretLeak(t *testing.T) {
 	closed.Close()
 
 	const secretKey = "SUPERSECRETKEY-do-not-leak-123"
-	if err := connStore.Upsert(context.Background(), "jellyfin", closedURL, secretKey); err != nil {
+	if err := connStore.Upsert(context.Background(), "prowlarr", closedURL, secretKey); err != nil {
 		t.Fatalf("seeding connection: %v", err)
 	}
 
-	resp, err := http.Post(srv.URL+"/api/connections/jellyfin/test-stored", "application/json", nil)
+	resp, err := http.Post(srv.URL+"/api/connections/prowlarr/test-stored", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}
@@ -87,25 +98,25 @@ func TestTestStored_Unreachable_NoSecretLeak(t *testing.T) {
 }
 
 // TestTestStored_Success confirms the stored path actually works end-to-end:
-// a saved connection pointing at a live (fake) Jellyfin tests OK, using the
+// a saved connection pointing at a live (fake) Prowlarr tests OK, using the
 // stored secret the client never holds.
 func TestTestStored_Success(t *testing.T) {
 	srv, connStore := newStoredTestMux(t)
 
-	fakeJellyfin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != `MediaBrowser Token="stored-jf-key"` {
-			t.Errorf("expected the stored key to be used, got header %q", r.Header.Get("Authorization"))
+	fakeProwlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") != "stored-prowlarr-key" {
+			t.Errorf("expected the stored key to be used, got header %q", r.Header.Get("X-Api-Key"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"Version":"10.9.0"}`))
+		w.Write([]byte(`[]`))
 	}))
-	defer fakeJellyfin.Close()
+	defer fakeProwlarr.Close()
 
-	if err := connStore.Upsert(context.Background(), "jellyfin", fakeJellyfin.URL, "stored-jf-key"); err != nil {
+	if err := connStore.Upsert(context.Background(), "prowlarr", fakeProwlarr.URL, "stored-prowlarr-key"); err != nil {
 		t.Fatalf("seeding connection: %v", err)
 	}
 
-	resp, err := http.Post(srv.URL+"/api/connections/jellyfin/test-stored", "application/json", nil)
+	resp, err := http.Post(srv.URL+"/api/connections/prowlarr/test-stored", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
 	}

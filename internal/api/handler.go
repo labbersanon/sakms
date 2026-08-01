@@ -25,6 +25,7 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/sysinfo"
@@ -73,7 +74,7 @@ import (
 // imageProxyHandler (the request read path) — an in-memory LRU over the live
 // upstream fetch, so a poster requested during one grid render is not
 // re-fetched from the same upstream host on the next.
-func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy) *http.ServeMux {
+func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,
@@ -85,6 +86,29 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/connections", listConnectionsHandler(connStore))
 	mux.HandleFunc("PUT /api/connections/{service}", upsertConnectionHandler(connStore))
 	mux.HandleFunc("DELETE /api/connections/{service}", deleteConnectionHandler(connStore))
+
+	// The multi-connection registry (internal/serviceconn): the service classes
+	// an operator can configure MORE THAN ONE of — Usenet subscriptions and
+	// media players. A sibling of the singleton /api/connections routes above,
+	// not a replacement: migration 0053 moved exactly two services here (nntp,
+	// jellyfin) and the other ~12 still live there.
+	//
+	// Keyed on a numeric id, never a service name — that is the whole point.
+	// POST /api/connections/{service}/test-stored cannot address one of N usenet
+	// subscriptions, so .../{id}/test replaces it for these two classes.
+	//
+	// fixedURLServices' "url is required" gate is deliberately NOT applied here:
+	// it is meaningless for a host/port-shaped usenet row. serviceconn.Store
+	// validates per-kind instead (a player needs a url, a subscription needs a
+	// host and port), so the invariant lives with the data rather than in a map
+	// the new shapes were never in.
+	mux.HandleFunc("GET /api/service-connections", listServiceConnectionsHandler(scStore))
+	mux.HandleFunc("POST /api/service-connections", createServiceConnectionHandler(scStore, nzb))
+	mux.HandleFunc("POST /api/service-connections/test", testServiceConnectionHandler(httpClient))
+	mux.HandleFunc("PUT /api/service-connections/{id}", updateServiceConnectionHandler(scStore, nzb))
+	mux.HandleFunc("DELETE /api/service-connections/{id}", deleteServiceConnectionHandler(scStore, nzb))
+	mux.HandleFunc("POST /api/service-connections/{id}/test", testStoredServiceConnectionHandler(httpClient, scStore))
+	mux.HandleFunc("PUT /api/service-connections/{id}/modes", setServiceConnectionModesHandler(scStore))
 
 	// LAN service probing for the setup wizard (see netscan.go) — an
 	// authenticated-operator convenience that pre-fills a connection's URL.
@@ -126,7 +150,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/modes/{mode}/identify-enabled", getIdentifyEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/identify-enabled", putIdentifyEnabledHandler(settingsStore))
 
-	mux.HandleFunc("POST /api/modes/{mode}/rename/scan", renameScanHandler(httpClient, connStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
+	mux.HandleFunc("POST /api/modes/{mode}/rename/scan", renameScanHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
 	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals", listProposalsHandler(propStore, proposals.Rename))
 	mux.HandleFunc("GET /api/modes/{mode}/rename/kids-root-path", getKidsRootPathHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/rename/kids-root-path", putKidsRootPathHandler(settingsStore))
@@ -137,7 +161,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/modes/{mode}/purge/allowlist", addAllowlistTagHandler(allowStore))
 	mux.HandleFunc("DELETE /api/modes/{mode}/purge/allowlist/{tag}", removeAllowlistTagHandler(allowStore))
 
-	mux.HandleFunc("POST /api/modes/{mode}/dedup/scan", dedupScanHandler(httpClient, connStore, settingsStore, propStore, prober, hasher, libStore, hub))
+	mux.HandleFunc("POST /api/modes/{mode}/dedup/scan", dedupScanHandler(httpClient, connStore, scStore, settingsStore, propStore, prober, hasher, libStore, hub))
 	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals", listProposalsHandler(propStore, proposals.Dedup))
 	// Live per-file progress stream + a status backstop for a running Dedup
 	// scan (POST .../dedup/scan now returns 202 and does the work in the
@@ -166,27 +190,27 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// (see searchHandler's doc comment). Grab is the one mutating action,
 	// tracked in grabsStore rather than propStore (see internal/grabs'
 	// package doc for why this isn't a proposals.Kind).
-	mux.HandleFunc("GET /api/modes/{mode}/discover", discoverHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover", discoverHandler(httpClient, connStore, scStore, settingsStore))
 	// Discover detail popup: on-demand, per-click availability preview (a
 	// single user-triggered Prowlarr search — same trigger shape/cost as the
 	// manual Search screen, NOT a reintroduction of the removed automatic
 	// per-card probe; see CLAUDE.md's "Discover never queries Prowlarr"
 	// note). Graded 32 ways (4 resolutions x 4 tiers x 2 protocols) via
 	// internal/autograb — see discover_availability.go.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/availability", discoverAvailabilityHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/availability", discoverAvailabilityHandler(httpClient, connStore, scStore, settingsStore))
 	// Discover detail popup's "Watch Trailer" link — one-shot per popup open,
 	// Movies/Series only. See discover_trailer.go.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/trailer", discoverTrailerHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/trailer", discoverTrailerHandler(httpClient, connStore, scStore, settingsStore))
 	// Discover detail popup's richer per-title enrichment (cast/crew/keywords/
 	// watch-providers/recommendations/extended metadata) — one on-demand,
 	// per-click TMDB fan-out, soft-failing each section independently.
 	// Movies/Series only. See discover_detail.go.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(httpClient, connStore, scStore, settingsStore))
 	// Calendar / upcoming month view — a TMDB release-date-range browse for the
 	// visible month. Movies (release date) / Series (first_air_date premieres)
 	// only; never routes through the trending/popular unreleased-hiding filter.
 	// See discover_detail.go's discoverCalendarHandler.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/calendar", discoverCalendarHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/calendar", discoverCalendarHandler(httpClient, connStore, scStore, settingsStore))
 	// Adult Discover is TPDB-backed (browse + search-by-term), not TMDB — the
 	// concrete path wins over the {mode} wildcard above for Adult (see
 	// adultDiscoverHandler).
@@ -211,13 +235,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// discoverHandler's category query param now also accepts upcoming/genre/
 	// studio/network (see discover.go) alongside trending/popular — this route
 	// is unchanged, just a richer dispatch behind it.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/genres", discoverGenresHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/genres", discoverGenresHandler(httpClient, connStore, scStore, settingsStore))
 	// Studio/network/keyword reference lists are global, not mode-scoped — a
 	// TMDB company/network/keyword id means the same thing regardless of
 	// which mode's Discover screen or admin slider editor is asking.
 	mux.HandleFunc("GET /api/discover/studios", discoverStudiosHandler())
 	mux.HandleFunc("GET /api/discover/networks", discoverNetworksHandler())
-	mux.HandleFunc("GET /api/discover/keywords", discoverKeywordsHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/discover/keywords", discoverKeywordsHandler(httpClient, connStore, scStore, settingsStore))
 	// Admin-defined custom Discover sliders (Seerr's CreateSlider/
 	// DiscoverSliderEdit equivalent) — CRUD + reorder on the stored config,
 	// plus resolve to fetch a slider's actual TMDB items (see
@@ -227,7 +251,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("PUT /api/discover/sliders/{id}", updateSliderHandler(slidersStore))
 	mux.HandleFunc("DELETE /api/discover/sliders/{id}", deleteSliderHandler(slidersStore))
 	mux.HandleFunc("POST /api/discover/sliders/reorder", reorderSlidersHandler(slidersStore))
-	mux.HandleFunc("GET /api/discover/sliders/{id}/resolve", resolveSliderHandler(httpClient, connStore, settingsStore, slidersStore))
+	mux.HandleFunc("GET /api/discover/sliders/{id}/resolve", resolveSliderHandler(httpClient, connStore, scStore, settingsStore, slidersStore))
 	// Admin-defined raw RSS 2.0 feed rows (NZBGeek saved-search style) — CRUD +
 	// reorder on the stored config, plus resolve to fetch+parse the feed's
 	// live items (see rss_feeds.go). A separate concept from the TMDB-backed
@@ -298,37 +322,49 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	// one entity, pagination held inside the returned result set. Registered
 	// on the literal "adult" path so ServeMux prefers it over {mode}. See
 	// adultdiscover_newest_scenes.go.
-	mux.HandleFunc("GET /api/modes/adult/discover/newest/entity-scenes", adultNewestEntityScenesHandler(connStore, settingsStore, adultNewestReleaseStore, feedHealth))
+	mux.HandleFunc("GET /api/modes/adult/discover/newest/entity-scenes", adultNewestEntityScenesHandler(connStore, scStore, settingsStore, adultNewestReleaseStore, feedHealth))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
 	// (see images.go / internal/imageproxy). Read-only, auth-gated like every
 	// route here.
 	mux.HandleFunc("GET /api/images/proxy", imageProxyHandler(imageProxy))
-	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, settingsStore))
-	mux.HandleFunc("GET /api/modes/{mode}/tmdb-search", tmdbSearchHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, scStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/tmdb-search", tmdbSearchHandler(httpClient, connStore, scStore, settingsStore))
 	// poster resolves a library card's TMDB poster art lazily, per card (the
 	// library caches no poster path) — see posterHandler.
-	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, settingsStore))
-	mux.HandleFunc("GET /api/modes/{mode}/search", searchHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, scStore, settingsStore))
+	// searchHandler is widened with grabHandler's own dispatch dependencies
+	// (dl, nzb, grabsStore, whStore, appended in that order) because the
+	// usenet_autograb_enabled toggle can make this route auto-grab instead of
+	// returning a pick-a-release list — see runToggleGatedSearch in search.go.
+	// This registration line is BE-5's, made on BE-6's behalf: BE-6 owns
+	// search.go/search_catalog.go and must not open handler.go (plan §2.3.1
+	// item 5, R4-3).
+	mux.HandleFunc("GET /api/modes/{mode}/search", searchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, whStore))
 	// Adult catalog-first Search: registered on the literal "adult" path so
 	// ServeMux prefers it over the {mode} wildcard above (same concrete-shadows-
 	// wildcard pattern as GET /api/modes/adult/discover). Movies/Series keep using
 	// the generic searchHandler; Adult's one-shot pool+one-Prowlarr flow is
 	// search_catalog.go's adultSearchHandler.
-	mux.HandleFunc("GET /api/modes/adult/search", adultSearchHandler(connStore, settingsStore, adultNewestReleaseStore, feedHealth))
-	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore, whStore))
+	// Widened with the same four dispatch dependencies as searchHandler above,
+	// appended in the same order: Adult reaches the identical toggle-gated
+	// auto-grab branch through the one shared runToggleGatedSearch (R4-1), so
+	// it needs the same means to dispatch. Second of BE-5's two registration
+	// edits made on BE-6's behalf (R4-3).
+	mux.HandleFunc("GET /api/modes/adult/search", adultSearchHandler(connStore, scStore, settingsStore, adultNewestReleaseStore, feedHealth, dl, nzb, grabsStore, whStore))
+	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, whStore))
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +
 	// bitrate-quality-floor scoring, then either grab the top qualifier or
 	// return the ranked manual pick list. Exactly one release per call.
-	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore))
+	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore))
 	// Bulk auto-grab: a bounded, user-approved multi-select exception to the
 	// single route's "one release per call". Cross-mode (each item carries its
 	// own mode, so NOT under /modes/{mode}); items are grabbed SEQUENTIALLY (max
 	// one Prowlarr search in flight), capped at MaxBatchGrabItems, skip-and-
 	// continue per item. See autoGrabBatchHandler in autograb_batch.go.
-	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore))
+	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
-	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, settingsStore, dl, nzb, grabsStore, libStore, prober))
+	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober))
 	// Request-status worklist + its excluded-titles endpoints live on their own
 	// mux (api.NewRequestsMux), mounted in cmd/sakms/main.go — they need an
 	// *excludes.Store, a dependency NewMux doesn't carry (same precedent as
@@ -377,7 +413,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("POST /api/modes/adult/scenes/{sceneId}/tags", addSceneTagHandler(libStore))
 	mux.HandleFunc("DELETE /api/modes/adult/scenes/{sceneId}/tags/{tagId}", removeSceneTagHandler(libStore))
 
-	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, allowStore, settingsStore))
+	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, scStore, allowStore, settingsStore))
 	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))
 
 	// One shared AI provider+model pair for every AI-assisted feature (Adult
@@ -422,6 +458,17 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("GET /api/settings/recheck-interval", getRecheckIntervalHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/recheck-interval", putRecheckIntervalHandler(settingsStore))
 
+	// Unattended Usenet auto-grab toggle — off by default, and the UI surface of
+	// a deliberate staged-for-approval exception. The PUT also writes the
+	// coupled retry cadence (on -> 86400, off -> 0), which is why there is no
+	// user-facing interval control: see usenetretry.go. The interval pair below
+	// is a settings scalar for parity/diagnostics only; the retry loop itself
+	// (RunUsenetRetry) is started once from main.
+	mux.HandleFunc("GET /api/settings/usenet-autograb-enabled", getUsenetAutoGrabEnabledHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/usenet-autograb-enabled", putUsenetAutoGrabEnabledHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/usenet-retry-interval", getUsenetRetryIntervalHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/usenet-retry-interval", putUsenetRetryIntervalHandler(settingsStore))
+
 	// Watch-folders toggle — opt-in, off by default. The background goroutine
 	// (RunWatchFolders, started from main) polls this setting every
 	// defaultWatchPollInterval seconds (or the configured
@@ -454,9 +501,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, propStore *pr
 	mux.HandleFunc("DELETE /api/webhooks/{id}", deleteWebhookHandler(whStore))
 	mux.HandleFunc("POST /api/webhooks/{id}/test", testWebhookHandler(whStore))
 
-	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, settingsStore, propStore, libStore, whStore))
-	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(httpClient, connStore, settingsStore, propStore, libStore, whStore))
-	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, settingsStore, propStore))
+	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore))
+	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore))
+	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, scStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/repick", repickProposalHandler(propStore))
 
@@ -492,6 +539,9 @@ func connectionsTestHandler(httpClient *http.Client) http.HandlerFunc {
 func connectionsTestStoredHandler(httpClient *http.Client, store *connections.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		service := r.PathValue("service")
+		if rejectMovedConnectionService(w, service) {
+			return
+		}
 		conn, err := store.Get(r.Context(), service)
 		if err != nil {
 			if errors.Is(err, connections.ErrNotFound) {
@@ -575,9 +625,41 @@ var fixedURLValues = map[string]string{
 	"brave":     bravesearch.DefaultBaseURL,
 }
 
+// movedConnectionServices names the two services migration 0053 moved out of
+// the singleton `connections` table and into the multi-connection registry,
+// mapped to the settings page that now owns each.
+//
+// The guard is load-bearing, not cosmetic. upsertConnectionHandler,
+// deleteConnectionHandler and connectionsTestStoredHandler each take an
+// arbitrary PathValue("service") and connections.Store accepts any service key
+// generically — so without this, a stale frontend, a saved API client or a curl
+// one-liner could still PUT /api/connections/nntp and silently write a row
+// nothing reads, producing a connection the operator believes is configured and
+// that has zero effect. Rejecting loudly, with the replacement endpoint named,
+// is the whole point.
+var movedConnectionServices = map[string]string{
+	"nntp":     "the Usenet settings page",
+	"jellyfin": "the Media Players settings page",
+}
+
+// rejectMovedConnectionService writes a 400 naming the registry endpoint and
+// reports true when service is one of the two moved ones. Callers must check it
+// FIRST, before decoding a body or touching the store.
+func rejectMovedConnectionService(w http.ResponseWriter, service string) bool {
+	page, moved := movedConnectionServices[service]
+	if !moved {
+		return false
+	}
+	http.Error(w, service+" connections moved to "+page+": use "+serviceConnectionsPath, http.StatusBadRequest)
+	return true
+}
+
 func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		service := r.PathValue("service")
+		if rejectMovedConnectionService(w, service) {
+			return
+		}
 		var req upsertConnectionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -598,6 +680,9 @@ func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {
 func deleteConnectionHandler(store *connections.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		service := r.PathValue("service")
+		if rejectMovedConnectionService(w, service) {
+			return
+		}
 		if err := store.Delete(r.Context(), service); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

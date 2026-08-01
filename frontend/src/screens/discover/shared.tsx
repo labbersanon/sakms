@@ -399,8 +399,12 @@ export const SearchReleasePicker: Component<{
 // internal/api/search.go) once a release is picked and needs to actually be
 // sent somewhere. Prowlarr is a self-hosted single-key service (URL +
 // optional API key, like NOT_CONFIGURED_SERVICES above, just not a fixed
-// URL); qBittorrent/NZBGet authenticate with username+password instead
-// (SERVICES_WITH_USERNAME's convention, Settings' own ConnectionRow).
+// URL); qBittorrent/NZBGet authenticate with username+password instead, which
+// is why buildConnectionUpsertBody still takes a needsUsername flag even though
+// Settings' own ConnectionRow now always passes false — nntp, the last singleton
+// service that used a username, moved to the multi-connection registry with
+// migration 0053, and the SERVICES_WITH_USERNAME constant that named it was
+// deleted rather than left as an empty array.
 const MISSING_GRAB_SERVICE: Record<
   "prowlarr" | "qbittorrent" | "nzbget",
   { label: string; needsUsername: boolean; wikiUrl?: string }

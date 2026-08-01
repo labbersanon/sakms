@@ -1,8 +1,9 @@
-// The authed app shell. Past auth it renders a LEFT SIDEBAR (Discover / Grabs /
-// Rename / Purge / Dedup / Tag / Settings, each an icon + label) beside the
-// client-side router; the landing view is Discover. The sidebar collapses to
-// icon-only and persists that choice in localStorage. The router must never
-// claim an /api/* path (see APP_ROUTES).
+// The authed app shell. Past auth it renders a LEFT SIDEBAR (Dashboard /
+// Discover / Library / Downloads / Grabs / Requests / Organize / Tag /
+// Collections / Settings, each an icon + label) beside the client-side
+// router; the landing view is Discover. The sidebar collapses to icon-only
+// and persists that choice in localStorage. The router must never claim an
+// /api/* path (see APP_ROUTES).
 //
 // LAYOUT (2026-07-14 mobile-responsive pass): the shell root is a fixed-height
 // flex row (`h-screen overflow-hidden`) with exactly one scroll region — the
@@ -38,6 +39,7 @@ import {
 import { fetchAdultModeEnabled } from "../api/settings";
 import { Dashboard } from "./Dashboard";
 import { Discover } from "./Discover";
+import { Library } from "./Library";
 import { Downloads } from "./Downloads";
 import { Grabs } from "./Grabs";
 import { Requests } from "./Requests";
@@ -51,7 +53,7 @@ import { BrowserNotifications } from "../components/BrowserNotifications";
 // serves. Guardrail #2 / requirement #7: the router must NEVER claim any
 // /api/* path (the OIDC callback /api/auth/oidc/callback is a real server
 // route). A unit test asserts none of these start with "/api".
-export const APP_ROUTES = ["/dashboard", "/", "/discover", "/downloads", "/grabs", "/requests", "/organize", "/tag", "/collections", "/settings"] as const;
+export const APP_ROUTES = ["/dashboard", "/", "/discover", "/library", "/downloads", "/grabs", "/requests", "/organize", "/tag", "/collections", "/settings"] as const;
 
 // SIDEBAR_COLLAPSED_KEY persists the sidebar's collapsed/expanded choice across
 // reloads. A single boolean is enough ("true" = collapsed).
@@ -143,6 +145,13 @@ const IconDiscover: Component = () => (
     <polygon points="15.5 8.5 11 11 8.5 15.5 13 13" />
   </svg>
 );
+const IconLibrary: Component = () => (
+  <svg {...svgProps}>
+    <rect x="3" y="4" width="4" height="16" rx="1" />
+    <rect x="9" y="4" width="4" height="16" rx="1" />
+    <path d="m16.5 5.5 3.5 1-3.5 13-3.5-1z" />
+  </svg>
+);
 const IconDownloads: Component = () => (
   <svg {...svgProps}>
     <path d="M12 3v10" />
@@ -206,6 +215,7 @@ type NavItem = { href: string; label: string; icon: Component };
 const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
   { href: "/discover", label: "Discover", icon: IconDiscover },
+  { href: "/library", label: "Library", icon: IconLibrary },
   { href: "/downloads", label: "Downloads", icon: IconDownloads },
   { href: "/grabs", label: "Grabs", icon: IconGrabs },
   { href: "/requests", label: "Requests", icon: IconRequests },
@@ -455,6 +465,7 @@ export const AppShell: Component<{
       <Route path="/" component={Discover} />
       <Route path="/dashboard" component={Dashboard} />
       <Route path="/discover" component={Discover} />
+      <Route path="/library" component={Library} />
       <Route path="/downloads" component={Downloads} />
       <Route path="/grabs" component={Grabs} />
       <Route path="/requests" component={Requests} />

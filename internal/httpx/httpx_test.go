@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -41,6 +42,34 @@ func TestDoJSON_Accepts2xxRange(t *testing.T) {
 		if err != nil {
 			t.Errorf("status %d: unexpected error: %v", status, err)
 		}
+	}
+}
+
+// TestDoJSON_TransportErrorHidesTheURL guards the credential leak in the
+// transport-error path: client.Do returns *url.Error, whose Error() renders the
+// full request URL. These clients routinely put a secret in that URL (TMDB's
+// api_key query parameter, an indexer's download link), and callers stringify
+// this error into logs, DB columns and API responses.
+func TestDoJSON_TransportErrorHidesTheURL(t *testing.T) {
+	// A server that is closed before the request runs guarantees a dial error.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	base := srv.URL
+	srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, base+"/3/movie/42?api_key=s3cr3t-key", nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	var out map[string]any
+	err = DoJSON(http.DefaultClient, req, MaxResponseBodySize, &out)
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	if strings.Contains(err.Error(), "s3cr3t-key") || strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("the transport error leaked the request URL's credentials: %v", err)
+	}
+	if !strings.Contains(err.Error(), req.URL.Host) {
+		t.Errorf("the error must still name the host it failed to reach: %v", err)
 	}
 }
 

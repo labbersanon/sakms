@@ -74,10 +74,6 @@ export type {
   OIDCStatusResponse,
 };
 
-// SERVICES_WITH_USERNAME authenticate with username+password rather than a bare
-// API key — their key field is a password, and they surface a Username input.
-export const SERVICES_WITH_USERNAME: string[] = ["nntp"];
-
 // SERVICES_WITH_FIXED_URL are fixed public APIs with one canonical address each,
 // hardcoded server-side as package constants (internal/tmdb, internal/stashbox,
 // internal/tpdbrest, internal/openai, internal/gemini, internal/anthropic,
@@ -105,36 +101,55 @@ export const SERVICES_WITH_FIXED_URL = [
 
 // SERVICES_WITH_HOST_LOOKUP are the services the netscan package can identify
 // on the LAN, enabling a "look up on a different host" input on their rows.
-export const SERVICES_WITH_HOST_LOOKUP = ["prowlarr", "jellyfin", "stash"];
+// jellyfin is deliberately absent: media players moved out of `connections`
+// into the multi-connection registry (migration 0053), so their host lookup
+// belongs to the registry UI, not to a singleton ConnectionRow.
+export const SERVICES_WITH_HOST_LOOKUP = ["prowlarr", "stash"];
 
-// CONNECTION_SERVICES is the full ordered set the Connections table lists, one
-// row each. There is no radarr/sonarr/whisparr — SAK owns those libraries now
-// (see internal/library's package doc). qbittorrent/nzbget were also removed
+// API_SECTION_SERVICES are the global, mode-independent singleton connections,
+// rendered by Settings' Advanced -> "API Connections" section.
+export const API_SECTION_SERVICES = ["prowlarr", "stash"];
+
+// LIBRARY_MODE_SERVICES are the metadata-source connections that belong to one
+// specific mode, rendered inside Settings' Library tab under that mode.
+export const LIBRARY_MODE_SERVICES: Record<Mode, string[]> = {
+  movies: ["tmdb"],
+  series: ["tvdb"],
+  adult: ["stashdb", "fansdb", "tpdb"],
+};
+
+// CONNECTION_SERVICES is the full set of SINGLETON services — the ones whose
+// `connections` PRIMARY KEY(service) shape is still correct, so there is at most
+// one of each. It is the union of the two placement groups above; the groups are
+// the source of truth, this is the flat view of them.
+//
+// There is no radarr/sonarr/whisparr — SAK owns those libraries now (see
+// internal/library's package doc). qbittorrent/nzbget were also removed
 // (2026-07-18): the unified aria2c downloader replaced them as SAK's download
 // engine, so there's no external download-client connection to configure — the
 // engine's tunables live in the Downloader settings section instead.
+// nntp and jellyfin are gone too (migration 0053): Usenet subscriptions and
+// media players are the two classes an operator can have MORE THAN ONE of, so
+// they moved to the `service_connections` registry and are configured on the
+// Usenet page / the API Connections player list rather than as a singleton row.
 // The AI providers (ollama/openai/gemini/anthropic) and Brave web-search
 // grounding are deliberately NOT here — they live in the AI tab instead
 // (rendered via the same ConnectionRow so their save path stays identical),
 // scoped to the currently-selected provider plus the always-visible Brave row.
 export const CONNECTION_SERVICES = [
-  "prowlarr",
-  "nntp",
-  "tmdb",
-  "tvdb",
-  "stashdb",
-  "fansdb",
-  "tpdb",
-  "stash",
-  "jellyfin",
+  ...API_SECTION_SERVICES,
+  ...LIBRARY_MODE_SERVICES.movies,
+  ...LIBRARY_MODE_SERVICES.series,
+  ...LIBRARY_MODE_SERVICES.adult,
 ];
 
 // ADULT_ONLY_CONNECTION_SERVICES are the 4 CONNECTION_SERVICES entries that
 // are exclusively Adult-related: `stash` for phash-first identification, the
 // other three for the stash-box identification network (StashDB/FansDB/TPDB).
-// Connections.tsx filters these out of the rendered table when the global
-// adult_mode_enabled switch (see fetchAdultModeEnabled below) is off — see
-// ralplan-adult-disable-switch.md step 9.
+// Settings -> Advanced -> API Connections (APISection.tsx) filters these out
+// of the rendered table when the global adult_mode_enabled switch (see
+// fetchAdultModeEnabled below) is off — see ralplan-adult-disable-switch.md
+// step 9.
 export const ADULT_ONLY_CONNECTION_SERVICES = [
   "stashdb",
   "fansdb",
@@ -182,8 +197,8 @@ export const AI_PROVIDER_MODELS: Record<
 
 // API_KEY_HELP_URLS points each API-key-bearing AI/search service at its
 // vendor's key-management page, for the "Get API key" link ConnectionRow
-// renders next to the key field (Connections.tsx, no new prop — it reads this
-// map directly keyed on props.service).
+// renders next to the key field (ConnectionRow.tsx, no new prop — it reads
+// this map directly keyed on props.service).
 export const API_KEY_HELP_URLS: Record<string, string> = {
   openai: "https://platform.openai.com/api-keys",
   gemini: "https://aistudio.google.com/app/apikey",

@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
@@ -60,7 +61,7 @@ const MaxBatchGrabItems = 20
 // /downloads; only the client's in-progress view of the run is lost. No rollback
 // of a partially-completed batch is attempted or wanted — consistent with
 // apply-batch's per-item commit model.
-func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
+func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -109,7 +110,7 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 
 			sess, ok := sessions[m]
 			if !ok {
-				built, err := mode.Build(ctx, connStore, settingsStore, httpClient, dl, m)
+				built, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, m)
 				if err != nil {
 					fail(err.Error())
 					continue

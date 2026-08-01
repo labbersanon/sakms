@@ -11,6 +11,35 @@ briefly here.
 
 ---
 
+## Known issues
+
+### SeasonEpisodePicker grabs the wrong season — added 2026-08-01, queued
+Reported by Wade: picking Season 4 in the season/episode picker grabs S1E1
+instead. Not yet diagnosed — root cause unknown. **This is a bug-fix task,
+not a feature — per CLAUDE.md's Execution Mode Rules it routes through
+Ralph (troubleshooting), not deep-interview.**
+
+**CORRECTED same day — the redesign is no longer folded into this fix.**
+Wade initially asked for the picker redesign to be folded into this same
+Ralph task, then explicitly asked for a separate deep-interview on the
+redesign instead, superseding that. The redesign now has its own spec:
+`.omc/specs/deep-interview-season-episode-picker-redesign.md` (spec ready,
+~10% ambiguity, PASSED — scope grew substantially: real TMDB season/episode
+enumeration with poster+still drill-down, a new general-purpose TMDB
+response cache, and an amendment to the shipped bulk-grab feature's
+per-item counting semantics). **This Ralph task is now scoped to the
+season-mismatch bug diagnosis/fix only** — do not also redesign the UI as
+part of it; that's the separate spec's job.
+
+**Scope note**: `SeasonEpisodePicker` (`frontend/src/screens/discover/
+Mainstream.tsx`, exported for reuse) is shared by both the inline card grab
+flow and `DetailPopup`'s Series gating step (see
+`.omc/specs/deep-interview-discover-card-cleanup.md`, spec ready, same day)
+— a fix here affects both call sites, no separate fix needed per
+call site. Wade confirmed the bug fix, the cleanup spec, and the redesign
+spec are three independent work items with no forced ordering between
+them.
+
 ## In progress
 
 ### Node CPU governor — backend + node-side enforcement shipped; slider, server-side reporting, and production verification still open
@@ -749,6 +778,22 @@ separate row-config systems now, deliberately not unified — see CLAUDE.md's
 "no premature abstraction" convention). Admin UI mirrors the existing
 slider/Adult-row editors' CRUD+reorder shape.
 
+**Follow-up shipped, undocumented until now (discovered 2026-07-31 during
+planning-session reconciliation): Adult RSS feed admin relocated into
+Settings, with Edit + protocol auto-detection added.** Commit `e043082`.
+The consensus-approved `.omc/specs/deep-interview-adult-rss-feed-settings-relocation.md`
+(9 rounds, ~13% ambiguity, PASSED 2026-07-27) sat marked "pending approval"
+for 4 days while the work was actually built and merged — its tracking
+status was simply never updated to reflect reality. `frontend/src/screens/settings/RssFeedAdmin.tsx`
+now lives in Settings → UI → Discover → Adult, with a genuine Edit
+capability that didn't exist before, drag-and-drop reorder (reusing
+`RowEditor.tsx`'s pattern), and server-side protocol auto-detection on Add
++ a per-feed Re-scan action, with a one-time manual-pick fallback dialog
+when detection is inconclusive. `protocol` is no longer a manually-set
+field anywhere in the normal flow. See the spec file for full acceptance
+criteria (all met) — this entry exists so ROADMAP.md stops contradicting
+the actual codebase.
+
 ### DB-first Adult filename parsing; bundled-Ollama image removed — shipped 2026-07-16
 A human-directed addition, not a pre-existing backlog item. New
 `internal/parseentity` package (migration `0029`): a local SQLite cache of
@@ -891,6 +936,319 @@ CHANGELOG.md's "transactional multi-episode upserts" entry.
 
 ## Backlog (not yet started, roughly in discussion order)
 
+### Multi-idea planning session (2026-07-31) — active, 11 items, specs banked incrementally
+Wade brought 11 feature ideas in one session, each getting its own full
+deep-interview per `CLAUDE.md`'s mandatory pipeline. This entry is updated
+after every spec lands and reconciled fully once the whole session
+completes (originally planned as a one-time end-of-session reconciliation;
+changed to update-as-you-go 2026-07-31 at Wade's request). None of these
+are authorized to build yet — every spec below is `pending approval`,
+**except items 3 and 12, both of which shipped 2026-08-01** (see each item's
+own "Shipped" block below, plus `CHANGELOG.md`). That blanket claim is
+corrected here rather than left to go stale silently — it is the same class
+of "was true when written" statement this file and `CLAUDE.md` both make a
+habit of superseding in place.
+
+**Confirmed interview order:** (1) Connections tab elimination + Usenet
+settings → (2) Grabs/Requests/Downloads side-tab grouping → (3) Discover
+scheduled refresh → (4) Torrent behavior settings → (5) Download progress
+bar/seeds → (6) Calendar → (7) Adult pop-up enrichment → (8) Series
+monitoring/auto-grab (last, highest architectural weight). Items are
+numbered below by original idea order, not interview order.
+
+1. **Adult rows configurable in 2 places, no duplication** — spec ready:
+   `.omc/specs/deep-interview-adult-rows-config-unification.md` (16%
+   ambiguity, PASSED). Unifies Settings' `AdultRowAdmin` and Discover's
+   Adult edit mode onto one canonical `sort_order` store; deletes the
+   StashDB/FansDB structural-rows feature entirely.
+2. **Live drag-and-drop row reordering** — spec ready:
+   `.omc/specs/deep-interview-row-dnd-consolidation-and-pagination.md`
+   (15% ambiguity, PASSED). Converts SliderAdmin off button-based reorder,
+   consolidates RssFeedAdmin's independent drag-and-drop into a shared
+   `RowEditor.tsx` with a new icon-based extra-actions slot; grew mid-interview
+   to also cover a Discover row-pagination redesign (arrow overlay on the
+   last poster, replacing the edge chevrons; native scrollbar hidden).
+3. **Eliminate Connections tab; Usenet multi-subscription settings** — spec
+   ready: `.omc/specs/deep-interview-connections-elimination-usenet-multisub.md`
+   (12% ambiguity, PASSED). Every one of the 9 services + Trakt + AI
+   individually placed (not bulk-grouped); new Advanced → API section adds
+   real Emby/Plex clients alongside Jellyfin, with per-connection library-mode
+   assignment; Usenet gets a dedicated multi-subscription page with a
+   parallel-query-and-score download model. **Introduces a genuine, explicit
+   staged-for-approval exception (auto-grab, off by default via a global
+   toggle) — same documentation obligation as the existing bulk-apply/
+   bulk-grab amendments in `CLAUDE.md` once this is actually built.** This
+   auto-grab mechanism is explicitly designed to be shared with item 10
+   below (series monitoring), not rebuilt twice.
+   <!-- Stale cross-reference, corrected 2026-08-01 rather than rewritten:
+        series monitoring is item 9, not item 10 (item 10 is the Downloads
+        progress bar). The number drifted during this session's renumbering. -->
+
+
+   **Shipped 2026-08-01** — see `CHANGELOG.md` and `CLAUDE.md`'s AMENDED
+   2026-08-01 staged-for-approval note. Built via a 4-wave, 12-task autopilot
+   split per `.omc/plans/autopilot-impl-connections-elimination.md` (plan
+   Critic-reviewed and revised 4 times before any executor ran). What
+   actually landed, and the parts a future session needs before touching it:
+
+   - **The registry is a SPLIT, not a replacement.** Migration `0053` adds a
+     new `service_connections` table (+ `service_connection_modes`) and moves
+     exactly TWO rows out of `connections` — `nntp` and `jellyfin`. The
+     `connections` table and `internal/connections` survive unchanged for the
+     ~7 genuinely-singleton services (TMDB, TVDB, StashDB, FansDB, TPDB,
+     Trakt, AI), which is what the spec's own constraint required. New
+     package `internal/serviceconn`, deliberately not named `connections`.
+     Migration `0054` adds the retry columns to `grabs`. The registry's Down
+     migration is deliberately lossy (the old `PRIMARY KEY(service)` shape
+     cannot represent multiple rows per provider) and says so in-file.
+   - **Real Emby and Plex clients** (`internal/emby`, `internal/plex`) now sit
+     alongside Jellyfin under Settings → Advanced → API Connections, each with
+     per-connection mode assignment (many-to-many, no exclusivity) replacing
+     the old hardcoded `Jellyfin = Movies/Series` scoping. **Stash was
+     deliberately NOT folded into the player registry** — its notify path
+     splits Created/Modified → `RescanPaths` vs Deleted → `CleanMetadata`,
+     which `mode.go` calls the single most important correctness guardrail in
+     that feature; a uniform `PlayerNotifier` interface would dilute or hide
+     it. Stash stays a singleton `connections` row.
+   - **Usenet is genuinely multi-subscription now**, with its own Settings
+     tab (`frontend/src/screens/settings/Usenet.tsx`), and the boot-time
+     singleton engine became runtime-reconfigurable
+     (`usenet.Manager.SetSubscriptions`) — before this, adding a subscription
+     in the UI did nothing until process restart. **The page must never grow
+     a priority/ordering field or a retry-interval input**; both are
+     documented in its header as permanent non-goals.
+   - **The shared auto-grab mechanism item 9 (series monitoring) is meant to
+     reuse is `RunAutoGrab` in `internal/api/autograb_shared.go`** — one
+     gated scoring-and-dispatch path, called with an `AutoGrabRequest` and an
+     `AutoGrabTrigger`. **`TriggerAirDate` already exists as an
+     unimplemented const**, exactly so that adding series monitoring is one
+     new caller and nothing else. Do not build a second scoring, dispatch or
+     toggle-gating path — the toggle gate lives inside `RunAutoGrab` and
+     nowhere else, which is what makes that promise real rather than
+     aspirational. The same applies to item 7's stale-torrent requeue and
+     item 8's pre-release requests: they are additional *callers*, not
+     additional retry systems.
+   - **The retry system items 7/8/9 forward-reference is
+     `internal/api/usenetretry.go` (`RunUsenetRetry`)** — one loop, two jobs
+     per cycle (the authoritative sweep converting asynchronous usenet
+     retrieval failures into `pending_retry`/`failed`, then the re-search of
+     every due row). Off by default; its interval is written server-side as a
+     coupled side effect of the auto-grab toggle so the two can never
+     disagree.
+   - **Two things worth knowing before extending this, both discovered during
+     implementation and neither predicted by the plan:** (a) the toggle-ON
+     Search hook can never actually auto-grab — a query-only search carries
+     no runtime, and `GradeCandidate` short-circuits on missing size/runtime
+     *before* the Lossless bypass the plan expected to save it, so every
+     toggle-ON search parks a retry row rather than grabbing; (b) a
+     successful retry must RE-ARM its existing row
+     (`AutoGrabRequest.ExistingGrabID` → `grabs.Relaunch`), because creating
+     a fresh row would leave the original due-in-the-past and the next cycle
+     would grab the same release again — and the existing GID dedup guard
+     cannot catch that, since `AddNZB` mints a fresh GID per call.
+   - **`RunUsenetRetry` is the first scheduler in this codebase that
+     dispatches downloads rather than proposing work for review**, which
+     falsifies the Scan-only claim in `CLAUDE.md`'s AMENDED 2026-07-23 note.
+     That note is corrected there, not silently extended.
+   - **This entry's own "parallel-query-and-score download model" wording
+     above describes the spec's literal reading, which was deviated from —
+     deliberately and with the deviation documented, not silently.** NNTP has
+     no search verb (only retrieval by message-ID), so "query all
+     subscriptions in parallel and score the results" is not implementable as
+     written. What ships is a two-stage pipeline: score Prowlarr candidates
+     first, then fan out *retrieval* across subscriptions. Nothing in the
+     spec is lost under that reading — the full per-criterion mapping is in
+     `CLAUDE.md`'s AMENDED 2026-08-01 note and the `CHANGELOG.md` entry.
+4. **Grabs/Requests/Downloads grouped under a side tab** — spec ready:
+   `.omc/specs/deep-interview-queue-navigation-grouping.md` (~9.5%
+   ambiguity, PASSED). New sidebar entry "Queue" (Downloads → Requests →
+   Grabs sub-tabs, Downloads default), reusing `Organize.tsx`'s exact
+   existing client-side-tabs pattern — no new nav mechanism, no
+   URL-addressable sub-routes. Pure navigation restructuring; builds
+   directly on the companion spec below.
+   - **AMENDED by item 8's Calendar spec (2026-07-31, same session)**:
+     item 8's Calendar sub-tab replaces Grabs entirely — the sub-tab order
+     becomes Downloads → Requests → **Calendar**, not Downloads → Requests
+     → Grabs as originally specced here. The standalone Grabs
+     screen/route retires once Calendar's History view ships. Implement
+     the amended order, not this entry's original one.
+   - **Directly builds on an already-passed, still-unbuilt companion
+     spec**: `.omc/specs/deep-interview-requests-downloads-remove.md` (9.5%
+     ambiguity, PASSED, generated same day 2026-07-31, predates this
+     planning session). Adds Remove/exclude to Requests, Cancel-with-
+     file-deletion + bulk multi-select + a global download-pause to
+     Downloads; confirms Grabs stays read-only, untouched.
+5. **Discover scheduled background refresh** — spec ready:
+   `.omc/specs/deep-interview-discover-scheduled-refresh.md` (~11%
+   ambiguity, PASSED). Misdiagnosis corrected during interview: Adult
+   newest-releases rows already background-refresh via
+   `internal/adultnewest` — the real gap is 4 other row categories making
+   a live external API call on every page load with zero caching
+   (Mainstream TMDB Trending/Popular/Upcoming, custom Discover sliders,
+   Trakt watchlist, Adult StashDB/FansDB catalog rows). One shared new
+   scheduler, on by default, 24h global interval, immediate one-off
+   populate on slider-create/Trakt-connect, plus an operator-triggered
+   manual refresh for all 4 sources as a troubleshooting backup.
+6. **Adult pop-up enrichment** (ratings/description/tags; performer
+   bio/tags) — spec ready: `.omc/specs/deep-interview-adult-popup-enrichment.md`
+   (~15% ambiguity, PASSED). **Real finding: description/bio are
+   genuinely absent from every currently-queried catalog** (TPDB REST,
+   StashDB, FansDB, and the local Stash instance) — not a wiring gap.
+   Direction corrected mid-interview away from an initially-proposed
+   AI-synthesis fallback (explicitly rejected) toward extending all three
+   catalogs' own queries for a `details`-style field (mirroring how
+   Stash's own built-in scraper pulls this data — TPDB's GraphQL API,
+   untested in this codebase today, flagged for live verification during
+   implementation). StashDB/FansDB tags get a real, low-risk fix (already
+   in the API, browse query just never requests them); their rating stays
+   genuinely absent (no such field exists) rather than faked. Performer
+   bio/tags render as a header above the existing scene-grid drill-down —
+   no new popup UI. Explicitly flags the same open item as item 5's spec:
+   needs a design pass before/during implementation.
+7. **Torrent behavior settings + seeding + stale torrent handling** — spec
+   ready: `.omc/specs/deep-interview-torrent-behavior-and-stale-handling.md`
+   (~12% ambiguity, PASSED). Grew mid-interview at Wade's request to fold
+   in "stale torrent handling" (thematically adjacent). New Settings
+   section exposes staging dir/max-connections (backend already existed,
+   UI was missing) plus download rate limit, DHT/PEX/local-peer-discovery,
+   listen port, and obfuscation mode (previously hardcoded to library
+   defaults). **Real architectural finding**: seeding (`Seed=true`) can't
+   just be flipped on — completed files are `os.Rename`'d out of staging
+   immediately, so there'd be nothing left to seed. Resolved via
+   copy-then-move: a staging-side seeding copy persists until a ratio or
+   duration limit is hit (whichever first), then gets deleted; the
+   existing library-relocation flow is unchanged. Stale torrents (zero
+   progress, no peers, default 4h threshold) auto-cancel + clean up
+   (reusing item 4's companion Cancel-with-file-deletion spec) and then
+   **requeue into Requests via the same shared retry mechanism item 3's
+   Usenet spec already built** — one retry system, two trigger sources
+   (Usenet no-match, and now stalled torrents).
+8. **Calendar for Grabs/Requests** (grid + list, upcoming + history) — spec
+   ready: `.omc/specs/deep-interview-calendar-grabs-requests.md` (~12%
+   ambiguity, PASSED). **Replaces Grabs as Queue's 3rd sub-tab** (amends
+   item 4's spec — see its note above), not an addition. History =
+   completed/imported grabs only, calendar-organized (drops the
+   in-progress/failed detail Grabs shows today, already visible
+   elsewhere). Upcoming is deliberately **asymmetric**: Series stays
+   bounded to already-tracked shows (`MissingEpisodes`' real air dates,
+   zero new backend needed); Movies are **open-ended** — any TMDB movie
+   with a digital/streaming-or-planned release date (region-aware, same
+   pattern as the existing `HasUSRelease` check), clickable to create a
+   real Request. Pre-release requests stay dormant (no search attempts)
+   until the actual release date passes, then join the normal
+   Missing-request pipeline — including item 3's shared retry/auto-grab
+   mechanism as a third trigger source. Loosely overlaps this file's
+   pre-existing "Request-status view" backlog item below — worth
+   reconciling before both get built, not yet done.
+9. **Series monitoring / true auto-grab** — spec ready:
+   `.omc/specs/deep-interview-series-monitoring-autograb.md` (~14%
+   ambiguity, PASSED). Turned out remarkably small given the shared
+   infrastructure items 3 and 7 already built: **zero new schedulers,
+   goroutines, or toggles beyond what's specified** — detection is just
+   an added filter (`MissingEpisodes()` + `AirDate<=today` + per-season
+   monitored flag) inside item 3's existing auto-grab tick, this
+   feature's fourth trigger source (after Usenet no-match, stale-torrent
+   requeue). No new persistence either — recomputed live each cycle,
+   matching Requests' existing pattern, a deliberate asymmetry from item
+   8's Movies-side `PendingPreReleaseRequest`. New scope, added
+   mid-interview: **per-season monitored granularity** (not a single
+   per-series flag) and a **new-season-discovery toggle** (off by
+   default) that checks TMDB for entirely new seasons — when on,
+   discovered seasons auto-monitor rather than requiring a second manual
+   opt-in step (explicit operator override of the more conservative
+   default). Every actual grab this feature causes still requires item
+   3's existing "Enable auto-grab" toggle — no new bypass path.
+
+**This completes the originally-confirmed 8-item interview order.** Three
+items remain queued from mid-session additions (Adult section security,
+Library sidebar tab, Streaming media player — items 11-13 below), all
+explicitly deferred.
+10. **Downloads progress bar with speed + seed count** — spec ready:
+    `.omc/specs/deep-interview-downloads-progress-speed-seeds.md` (~13%
+    ambiguity, PASSED). Fixes a real bug found during interview: today's
+    "Connections" field is a misnomer (actually `Stats().ConnectedSeeders`
+    for torrents, hardcoded 0 for usenet, no protocol field exists to
+    explain why) — becomes a correctly-labeled, protocol-scoped seed count
+    (torrents only, hidden entirely for usenet, not shown as 0/N/A). New
+    upload-speed tracking (reads `ConnStats.BytesWritten`, currently
+    unused) always shows on torrent rows even at 0 KB/s — deliberately
+    won't read non-zero until item 7's seeding work actually ships, but
+    can be built independently of that timing. Explicitly flags one open
+    item this interview couldn't resolve: exact visual layout needs a
+    design pass before/during implementation.
+11. **Security for Adult sections** — spec ready:
+    `.omc/specs/deep-interview-section-pin-lock.md` (~11% ambiguity,
+    PASSED). **Reframed mid-interview from an Adult-specific ask into a
+    general-purpose configurable PIN lock** — Settings → Advanced gets a
+    new panel: set a PIN, check which sidebar tabs it protects, plus a
+    dedicated "Adult content" checkbox (app-wide — Discover's Adult
+    sub-tab, Settings' Adult sections, Organize/Tag's Adult views, RSS
+    feeds — since Adult isn't its own sidebar tab), plus a one-click
+    "lock everything" shortcut. **Real finding: today's `adult_mode_enabled`
+    setting is explicitly documented as UI-visibility-only, trivially
+    bypassed by a direct API call** — this spec's enforcement is
+    genuinely server-side instead, including closing the same bypass via
+    `X-Api-Key` (which currently inherits full access with no scoping):
+    a new `X-Section-Pin`-style header is required on API-key requests to
+    locked sections. **Explicit, deliberate divergence from CLAUDE.md's
+    stated single-operator/no-permissions-system architecture** — flagged
+    for the same documentation discipline as this session's staged-for-
+    approval exceptions, though not made a hard acceptance criterion by
+    Wade this round.
+12. **Library sidebar tab** — spec ready:
+    `.omc/specs/deep-interview-library-sidebar-tab.md` (~10% ambiguity,
+    PASSED). **Real finding: no dedicated library-browsing screen exists
+    today — `Tag.tsx` accidentally already serves that role** for
+    Movies/Series (full tracked-catalog grid, client-side title search,
+    poster cards) alongside its actual purpose (tag CRUD). This spec
+    formally separates the two: a new Library tab takes over browsing
+    entirely (title search relocated, plus two new capabilities — genre
+    filter and added-date sort, the latter requiring `createdAt` to be
+    exposed to the frontend for the first time); Tag narrows back to
+    pure tag-editing, reached by drilling into an item from Library.
+    Conceptual split confirmed directly by Wade: "Library is what I have
+    and Discover is for finding content." Adult mode is explicitly out
+    of scope — keeps its existing separate table view untouched, matching
+    today's split. Quality-tier filtering was considered and consciously
+    declined (would need new data exposure), not silently dropped.
+
+    **Shipped 2026-08-01** — see `CHANGELOG.md` and `CLAUDE.md`'s "Sidebar +
+    section-tab redesign" section. Built via a 4-task autopilot split (backend
+    `createdAt` exposure, shell/sidebar wiring, Library+Tag move-refactor,
+    docs) per `.omc/plans/autopilot-impl-library-sidebar-tab.md`. One
+    resolved wrinkle worth flagging here since it's this item's own spec
+    contradicting itself: AC5 ("Tag no longer a standalone browsing entry
+    point") and AC7 ("Adult's table view completely unchanged") can't both
+    be fully true, because Adult's tag-CRUD table has always lived inside
+    `Tag.tsx` and was never given a Library-equivalent screen (Adult is
+    out of scope for Library, above). Resolution: Tag keeps a direct
+    sidebar entry for all three modes rather than either breaking Adult's
+    only path to its tag CRUD or building Adult a redundant new table
+    screen the spec never asked for — Movies/Series still lost their
+    standalone-browsing use of Tag, which is what AC5 was actually aimed
+    at. 499/499 tests passing, `go build`/`vet`/`test` and `pnpm
+    typecheck`/`test`/`build` all clean.
+13. **Streaming media player** — spec ready:
+    `.omc/specs/deep-interview-streaming-media-player.md` (~10%
+    ambiguity, PASSED). **Confirmed as the same feature** as this file's
+    "Native TV-app player enabling real transcoding" entry (below, under
+    "Native TV-app player enabling real transcoding — future, DIFFERENT
+    and higher legal-risk profile"). Wade was shown both the legal-risk
+    flag and CLAUDE.md's explicit "SAK does not become a media player"
+    Mission statement directly, before confirming he wants the full
+    transcoding scope — a knowing, deliberate choice. **This spec's own
+    Acceptance Criteria are gated on a dedicated legal/licensing review
+    that has NOT been performed** — a deep-interview cannot do codec-
+    royalty/patent research, so implementation must not start from this
+    spec alone. Scope, once the legal gate clears: shared backend
+    (direct-play via HTTP range-requests when compatible, else
+    hardware-accelerated adaptive HLS transcoding reusing the existing
+    `internal/nodes` worker-node dispatch) + a web player as the
+    reference implementation. Native TV/mobile apps (Android TV, tvOS,
+    Roku, Fire TV) are confirmed future work sharing this same backend,
+    each getting its own dedicated future deep-interview — not built
+    here.
+
 ### Dedup review UX refinement (list/card toggle, multi-keep, Skip, click-to-play) — deferred, plan approved, not built
 Consensus-approved plan at `.omc/plans/dedup-ux-refine.md` (6 review rounds,
 ambiguity 15%, status `pending approval`) to refine the Dedup review queue: a
@@ -1005,32 +1363,90 @@ CLAUDE.md's single-operator, no-permissions-surface decision stands; nothing
 below introduces per-user roles, quotas, or a second user. See "Dropped from
 scope" for the multi-user piece that was explicitly rejected. What's still
 worth building, staying single-operator:
-- **Bulk/multi-select request-and-grab** — not yet started. Today Discover
-  approves and grabs one title/season at a time; select several titles (or
-  several seasons of one show) and request+grab them in a single action,
-  same "same-screen multi-select" shape as the existing Rename/Dedup/Purge
-  bulk-apply feature (`apply-batch`), not a queue-wide "grab everything."
-- **Request-status view** — not yet started. A single screen surfacing
-  Requested/Downloading/In Library/Missing across the library, instead of
-  only per-card badges inside Discover — closer to a "worklist" than a new
-  approval concept, since there's still only one operator approving anything.
+- **Bulk/multi-select request-and-grab** — **already shipped, 2026-07-24**
+  (this entry was stale; no interview or build needed). See `CLAUDE.md`'s
+  "bounded Discover bulk-grab exception" note for the decision record.
+  Confirmed live in code, not just documented: an opt-in Select-mode toggle
+  on Discover (`frontend/src/screens/discover/selection.tsx`,
+  `BulkBar.tsx`), Movies select via a per-card checkbox, Series select
+  per-season via chips (`SeriesSeasonSelect`, no whole-series checkbox),
+  capped at 20 flattened items (`internal/api/autograb_batch.go`'s
+  `MaxBatchGrabItems`, a season-expanded series counts one item per
+  selected season), submitted via `POST /api/autograb-batch` and executed
+  sequentially server-side with a three-state per-item result
+  (grabbed/needs-manual-pick/error) — never a queue-wide "grab everything."
+  A live registry drops any selected-but-no-longer-rendered card before
+  building the batch, so a stale selection can't fire a grab of the wrong
+  title. Covered by `autograb_batch_test.go` and
+  `Discover.select.test.tsx`.
+- **Request-status view** — **reconciled 2026-08-01, spec ready**:
+  `.omc/specs/deep-interview-request-status-missing-filter.md` (~9%
+  ambiguity, PASSED). **Turned out ~90% already built before this
+  interview happened**: `Requests.tsx` already is the single
+  cross-mode worklist screen this item asked for, with live status/mode
+  filter chips and bulk-exclude. Discover per-card badges — the thing
+  this entry said to move away from — were never actually built, so
+  there was nothing to replace. "Requested" as a status is intentionally
+  absent by design (`internal/api/requests.go`'s own comment: "a grab IS
+  the request... no approval queue"). The one real gap: "Missing" existed
+  only as a numeric annotation (`· N missing`) on In-Library series rows,
+  not a separate filterable state — this spec adds a "Has Missing
+  Episodes" filter chip (Series-only, frontend-only, no backend changes)
+  to close exactly that gap. Deliberately does not overlap/merge with the
+  Calendar spec's Upcoming view (item 8, above) — same underlying missing-
+  episode data, different lens (date-organized vs. status-organized),
+  both kept as independent views.
 
 ### Storage & health analytics
 Identified 2026-07-24 during the same OmniMedia comparison above. Extends
 the existing System dashboard (`internal/sysinfo`, shipped 2026-07-17)
 rather than replacing it.
-- **Storage allocation breakdown by media type and quality tier** — not yet
-  started. Per-user breakdown from the source concept doesn't apply
-  (single-operator); what's relevant is showing how `/data` usage splits
-  across Movies/Series/Adult and quality tier, using data already tracked in
-  `internal/library`/`internal/quality`, no new collection needed.
-- **Propose-only pruning rules** — not yet started. Rules that flag
-  low-priority or stale media (age, size, quality-tier floor) as prune
-  *candidates* and stage them in the existing Purge review queue for a human
-  Apply — explicitly NOT auto-delete, same staged-for-approval invariant
-  every other workflow follows. If built, likely wired through the existing
-  `internal/scanschedule` Scan-only scheduler (see CLAUDE.md's Automation
-  section) to periodically populate candidates rather than a new scheduler.
+- **Storage allocation breakdown by media type and quality tier** —
+  **spec ready 2026-08-01**:
+  `.omc/specs/deep-interview-storage-allocation-breakdown.md` (~9%
+  ambiguity, PASSED). **Correction to this entry's own original text**:
+  "using data already tracked in `internal/library`/`internal/quality`, no
+  new collection needed" was false — verified against live code that no
+  per-file size and no per-item quality tier exist anywhere today. This is
+  real new instrumentation, not a query-only feature: size + tier get
+  captured at Apply/Grab time going forward (new DB columns), a one-time
+  backfill job resolves both for the existing library (size via
+  `os.Stat`, tier via a 3-step fallback: exact grab-record match →
+  filename inference → "Unknown"), and a new Dashboard.tsx section shows
+  the Movies/Series/Adult × tier grid with drill-down. Drill-down is
+  explicitly gated on the "Library sidebar tab" item (item 12, above)
+  shipping first — implement that one before this one, or ship this with
+  drill-down stubbed.
+- **Propose-only pruning rules** — **spec ready 2026-08-01**:
+  `.omc/specs/deep-interview-pruning-rules.md` (~9% ambiguity, PASSED).
+  **Hard dependency, not yet implementable**: this spec is explicitly
+  gated on the "Storage allocation breakdown" item (above) shipping first
+  — rule conditions read that spec's new per-item `size`/`quality_tier`
+  columns, which don't exist yet. Scope grew beyond this entry's original
+  framing during interview: multiple named, operator-authored rules (not
+  one fixed per-mode rule — a real rule-authoring system, a deliberate,
+  explicitly-confirmed scope increase after being shown the
+  no-premature-abstraction tradeoff), within-rule AND / across-rules OR,
+  wired into `internal/scanschedule`'s existing (currently-unwired) Purge
+  interval as opt-in scheduling AND the existing manual Purge Scan button
+  — still explicitly NOT auto-delete, same staged-for-approval invariant.
+  Matches surface in the existing Purge review queue via the existing
+  `Proposal.Reason` field (rule name + matched values), no new UI queue.
+
+### Discover card UI cleanup (grab buttons, poster size) — spec ready 2026-08-01
+`.omc/specs/deep-interview-discover-card-cleanup.md` (~9% ambiguity,
+PASSED). Both open questions resolved: "remove grab buttons" means the
+always-visible inline card button on Mainstream/Library/Adult cards is
+removed entirely, and card-click opens `DetailPopup` as the sole grab
+path — verified via code research to be a clean relocation, not new
+infrastructure (`DetailPopup` already fully supports Series
+season/episode selection and Adult's scene fields, and Adult's card
+already wires to it). Poster size: modest increase (Mainstream/Library
+180→220-240px, Adult 200→230-260px proportionally, same 16:9), explicit
+priority on preserving the current visible-card-count in the
+horizontal-scroll carousel over maximizing size. Select-mode's
+checkbox/season-chip states and Search's release-picker suppression are
+explicitly untouched — separate, pre-existing states.
 
 ### Dropped from scope
 - **Token/regex-based custom renaming engine** — considered, then

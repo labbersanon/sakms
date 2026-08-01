@@ -15,6 +15,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
@@ -34,7 +35,7 @@ import (
 // un-flipped (the operator can retry via check-import). files is aria2's
 // reported file list for the GID; the first file (or, empty, the grab's
 // staging dir) is the content path handed to the import core.
-func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager) func(gid string, files []string) {
+func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager) func(gid string, files []string) {
 	return func(gid string, files []string) {
 		ctx := context.Background()
 		g, err := grabsStore.GetByDownloadGID(ctx, gid)
@@ -60,7 +61,7 @@ func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.St
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, dl, g.Mode)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
 		if err != nil {
 			log.Printf("downloader import: grab %d building session: %v", g.ID, err)
 		} else {
@@ -119,7 +120,7 @@ func clean(p string) string {
 // parallel to DownloadCompleteImporter. Uses nzb.StagingDir() as the staging
 // root. dl is the torrent manager (may be nil) — passed only so mode.Build
 // can construct a session for player notification.
-func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager, nzb *usenet.Manager) func(gid string, files []string) {
+func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager, nzb *usenet.Manager) func(gid string, files []string) {
 	return func(gid string, files []string) {
 		ctx := context.Background()
 		g, err := grabsStore.GetByDownloadGID(ctx, gid)
@@ -145,7 +146,7 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, dl, g.Mode)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
 		if err != nil {
 			log.Printf("usenet import: grab %d building session: %v", g.ID, err)
 		} else {

@@ -1,9 +1,12 @@
 package usenet
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,6 +23,20 @@ var ErrArticleNotFound = errors.New("usenet: article not found (430)")
 // (typically a DMCA takedown).
 var ErrArticleRemoved = errors.New("usenet: article removed (451)")
 
+// defaultMaxConnsPerServer is the connection count substituted whenever a
+// ServerConfig arrives with MaxConns <= 0.
+//
+// Claude 2026-08-01: added alongside multi-subscription support.
+// Reason: service_connections.max_conns defaults to 0, and the global
+// downloader_max_connections setting is torrent-only now, so nothing else
+// supplies a default. A server contributing 0 to the Manager's concurrency
+// budget makes errgroup.SetLimit(0) block every Go() call forever — a silent
+// total hang rather than an error.
+// Troubleshooting: usenet downloads that start and never progress.
+// Review if: per-subscription max_conns becomes a required field with its own
+// non-zero default enforced at the storage layer.
+const defaultMaxConnsPerServer = 4
+
 // ServerConfig holds the parameters needed to dial and authenticate one NNTP
 // server. Credentials are provided by the caller from the connections store —
 // never hardcoded here.
@@ -30,9 +47,18 @@ type ServerConfig struct {
 	Username string
 	Password string
 	// MaxConns is the number of concurrent connections the pool may hold idle
-	// and the limit the Manager passes to errgroup for parallel segment fetches.
-	// Defaults to 4 when zero.
+	// and this server's contribution to the Manager's concurrency budget.
+	// Values <= 0 are substituted with defaultMaxConnsPerServer.
 	MaxConns int
+}
+
+// effectiveMaxConns returns cfg.MaxConns with the defaultMaxConnsPerServer
+// substitution applied. Always >= 1.
+func effectiveMaxConns(cfg ServerConfig) int {
+	if cfg.MaxConns <= 0 {
+		return defaultMaxConnsPerServer
+	}
+	return cfg.MaxConns
 }
 
 // pool recycles authenticated NNTP connections to a single server. It does not
@@ -46,11 +72,7 @@ type pool struct {
 }
 
 func newPool(cfg ServerConfig) *pool {
-	n := cfg.MaxConns
-	if n < 1 {
-		n = 4
-	}
-	return &pool{cfg: cfg, idle: make(chan *nntp.Conn, n)}
+	return &pool{cfg: cfg, idle: make(chan *nntp.Conn, effectiveMaxConns(cfg))}
 }
 
 // get returns an idle authenticated connection or dials a new one.
@@ -71,33 +93,61 @@ func (p *pool) get() (*nntp.Conn, error) {
 }
 
 // put returns c to the idle pool. A failed connection (ok=false) is closed and
-// discarded — never put a broken connection back into the pool.
+// discarded — never put a broken connection back into the pool. A connection
+// returned after the pool was closed is terminated rather than parked.
+//
+// Claude 2026-08-01: the closed check and the mutex held across the idle send
+// were added with Manager.SetSubscriptions.
+// Reason: SetSubscriptions can retire a pool while a segment fetch still holds
+// one of its connections. close() only ever terminates connections sitting in
+// the idle channel, so there is no use-after-close of a live connection — but
+// without this check the in-flight connection would be parked in an abandoned
+// channel nobody drains again, leaking the socket for the process lifetime.
+// Holding p.mu across the send closes the same window against close() itself.
+// Troubleshooting: NNTP connections left ESTABLISHED after a subscription edit.
+// Review if: pool gains a context-aware acquire/release that tracks checked-out
+// connections directly.
 func (p *pool) put(c *nntp.Conn, ok bool) {
 	if !ok {
 		c.Quit()
 		return
 	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		c.Quit()
+		return
+	}
 	select {
 	case p.idle <- c:
+		p.mu.Unlock()
 	default:
 		// Pool is full (shouldn't happen if callers respect MaxConns, but be safe).
+		p.mu.Unlock()
 		c.Quit()
 	}
 }
 
 // close terminates all idle connections in the pool and marks it closed so
 // subsequent get() calls fail fast rather than dialling new connections.
+// Idempotent — calling it twice is safe. Connections currently checked out by
+// an in-flight fetch are not touched here; put() terminates them on return.
 func (p *pool) close() {
-	for {
+	p.mu.Lock()
+	p.closed = true
+	var drained []*nntp.Conn
+	for done := false; !done; {
 		select {
 		case c := <-p.idle:
-			c.Quit()
+			drained = append(drained, c)
 		default:
-			p.mu.Lock()
-			p.closed = true
-			p.mu.Unlock()
-			return
+			done = true
 		}
+	}
+	p.mu.Unlock()
+	// Quit does network I/O — never hold p.mu across it.
+	for _, c := range drained {
+		c.Quit()
 	}
 }
 
@@ -160,7 +210,7 @@ func fetchSegment(c *nntp.Conn, msgID string) (segmentResult, error) {
 	// WithStatusLineAlreadyRead: nntp.Conn.Body() already consumed the
 	// "222 Body follows" status line before returning the io.Reader, so the
 	// decoder starts reading at the first line of the yEnc body.
-	dec := rapidyenc.NewDecoder(body, rapidyenc.WithStatusLineAlreadyRead())
+	dec := rapidyenc.NewDecoder(newArticleWireReader(body), rapidyenc.WithStatusLineAlreadyRead())
 	resp, err := dec.Next()
 	if err != nil {
 		return segmentResult{}, fmt.Errorf("usenet: yEnc decode %s: %w", msgID, err)
@@ -172,6 +222,57 @@ func fetchSegment(c *nntp.Conn, msgID string) (segmentResult, error) {
 		filename: resp.Metadata.FileName,
 		fileSize: resp.Metadata.FileSize,
 	}, nil
+}
+
+// articleWireReader restores raw NNTP wire framing on top of nntp.Conn's body
+// reader.
+//
+// Claude 2026-08-01: added while building the multi-pool fetch path.
+// Reason: nntp.Conn.Body() returns a bodyReader that canonicalises CRLF to a
+// bare LF and consumes the terminating "." line without emitting it. rapidyenc's
+// decoder splits on the literal "\r\n" and treats "\r\n.\r\n" as the end of the
+// article, so it never sees a line break or a terminator and every single
+// decode failed with io.ErrUnexpectedEOF. This adapter re-emits each line with
+// CRLF and appends the "." terminator at EOF, which is the exact byte stream the
+// decoder expects. Leading dots are deliberately NOT re-stuffed — bodyReader
+// already unstuffed them, and rapidyenc escapes a leading "." at encode time so
+// a data line can never be mistaken for the terminator.
+// Troubleshooting: every usenet segment failing with "yEnc decode ...:
+// unexpected EOF"; usenet downloads never completing.
+// Review if: Tensai75/nntp gains a raw-body accessor, or fetchSegment stops
+// using nntp.Conn.Body().
+type articleWireReader struct {
+	br   *bufio.Reader
+	buf  bytes.Buffer
+	done bool
+}
+
+func newArticleWireReader(r io.Reader) *articleWireReader {
+	return &articleWireReader{br: bufio.NewReader(r)}
+}
+
+func (a *articleWireReader) Read(p []byte) (int, error) {
+	for a.buf.Len() == 0 {
+		if a.done {
+			return 0, io.EOF
+		}
+		line, err := a.br.ReadBytes('\n')
+		if len(line) > 0 {
+			// TrimRight both bytes: bodyReader only rewrites CRLF when the line
+			// actually had one, so a wire line that was already bare-LF passes
+			// through untouched.
+			a.buf.Write(bytes.TrimRight(line, "\r\n"))
+			a.buf.WriteString("\r\n")
+		}
+		if err != nil {
+			// bodyReader stops at the article-terminating "." line and reports
+			// io.EOF, so any error here means the article ended. Re-append the
+			// terminator exactly once.
+			a.done = true
+			a.buf.WriteString(".\r\n")
+		}
+	}
+	return a.buf.Read(p)
 }
 
 // TestConnect dials, authenticates (if credentials are set), and immediately

@@ -12,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -75,12 +76,12 @@ func putKidsRootPathHandler(settingsStore *settings.Store) http.HandlerFunc {
 // (Whisparr eliminated, Stage 4), threading in the videophash hasher and the
 // mediainfo prober for its phash-first identification cascade. prober is the
 // mux's shared *mediainfo.Prober (its method set satisfies rename.Prober).
-func renameScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, prober dedup.Prober, videoHasher rename.PHasher, entityStore parseentity.EntityStore) http.HandlerFunc {
+func renameScanHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, prober dedup.Prober, videoHasher rename.PHasher, entityStore parseentity.EntityStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

@@ -13,6 +13,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
@@ -54,7 +55,7 @@ func mapSortBy(uiSort string, mt tmdb.MediaType) string {
 // resolveTVDBIDHandler, called only once a user picks a specific title to
 // search+grab — not eagerly for every item in a trending list, which would
 // multiply this one TMDB call into one-plus-N for results nobody clicks.
-func discoverHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -71,7 +72,7 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, sett
 			page = p
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -294,12 +295,12 @@ func filterByUSRelease(ctx context.Context, sess *mode.Session, items []tmdb.Ite
 // data for the genre-browse row's picker and a "genre" slider's FilterValue
 // dropdown in the admin editor. Not paginated; TMDB's genre list is small
 // and rarely changes.
-func discoverGenresHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverGenresHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -354,7 +355,7 @@ func discoverNetworksHandler() http.HandlerFunc {
 // session purely to reach the shared "tmdb" connection (see
 // tmdbSearchHandler's doc comment: sess.TMDB is populated identically for
 // every mode).
-func discoverKeywordsHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverKeywordsHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		query := r.URL.Query().Get("q")
@@ -363,7 +364,7 @@ func discoverKeywordsHandler(httpClient *http.Client, connStore *connections.Sto
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, mode.Movies)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Movies)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -397,7 +398,7 @@ func discoverKeywordsHandler(httpClient *http.Client, connStore *connections.Sto
 // guard for a different reason — refusing to re-pick Adult's foreignId-based
 // proposals), so relying on "sess.TMDB is nil for Adult" here would be false
 // and let Adult calls return real-but-useless movie results.
-func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		if m != mode.Movies && m != mode.Series {
@@ -411,7 +412,7 @@ func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, se
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -444,7 +445,7 @@ func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, se
 // endpoint doing an unbounded N+1 lookup for the whole library up front,
 // exactly the N+1 discoverHandler's own doc warns against. Movies/Series
 // only — Adult scenes carry their own image inline from TPDB.
-func posterHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func posterHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		if m != mode.Movies && m != mode.Series {
@@ -458,7 +459,7 @@ func posterHandler(httpClient *http.Client, connStore *connections.Store, settin
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -494,7 +495,7 @@ func posterHandler(httpClient *http.Client, connStore *connections.Store, settin
 // extra call needed before grabbing a Series title discovered via TMDB,
 // since Sonarr's AddRequest wants a TVDB id, a different id space entirely
 // (see internal/tmdb's package doc for why).
-func resolveTVDBIDHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+func resolveTVDBIDHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -504,7 +505,7 @@ func resolveTVDBIDHandler(httpClient *http.Client, connStore *connections.Store,
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

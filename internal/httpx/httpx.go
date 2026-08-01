@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // MaxResponseBodySize caps how much of an HTTP response body this program
@@ -22,6 +23,26 @@ const MaxResponseBodySize = 10 * 1024 * 1024
 // paginated request and would be too tight.
 const MaxResponseBodySizeLarge = 50 * 1024 * 1024
 
+// WrapTransportError normalizes a client.Do failure for host into a safe,
+// loggable error.
+//
+// SECURITY: a transport failure comes back as *url.Error, whose Error()
+// renders the FULL request URL — which for these clients routinely carries a
+// credential (TMDB's api_key query parameter, an indexer's download link).
+// Callers stringify this error into logs, DB columns and API responses, so
+// the URL is stripped here rather than trusted to every caller. Op + the
+// inner cause keep it diagnosable, and host is already named separately.
+// Every hand-rolled http.Client caller in this program (not just DoJSON)
+// should route its transport-error handling through this function rather
+// than wrapping client.Do's err directly.
+func WrapTransportError(host string, err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("request to %s failed: %s: %w", host, ue.Op, ue.Err)
+	}
+	return fmt.Errorf("request to %s failed: %w", host, err)
+}
+
 // DoJSON executes req via client, requires a 2xx status, and decodes the
 // response body (capped at maxBytes) as JSON into out. This is the shared
 // request/status-check/decode skeleton every external client in this
@@ -29,7 +50,7 @@ const MaxResponseBodySizeLarge = 50 * 1024 * 1024
 func DoJSON(client *http.Client, req *http.Request, maxBytes int64, out any) error {
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("request to %s failed: %w", req.URL.Host, err)
+		return WrapTransportError(req.URL.Host, err)
 	}
 	defer resp.Body.Close()
 

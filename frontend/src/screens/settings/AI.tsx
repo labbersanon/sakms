@@ -36,7 +36,7 @@ import {
 } from "../../api/settings";
 import type { ConnectionSummary, NetscanFinding } from "../../api/settings";
 import { Button, Muted, inputClass, labelClass } from "../../components/ui";
-import { ConnectionMiniTable, ConnectionRow } from "./Connections";
+import { ConnectionMiniTable, ConnectionRow } from "./ConnectionRow";
 import {
   Card,
   SaveStatus,

@@ -132,13 +132,19 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store, excludesS
 				if excluded[key] {
 					continue
 				}
+				// One derivation of the label for both branches, so a
+				// pending-retry row can never read "Downloading" in one and
+				// "Pending Retry" in the other.
+				status := grabStatusLabel(g.Status)
 				if pos, ok := index[key]; ok {
-					items[pos].Status = "Downloading"
+					items[pos].Status = status
 					items[pos].GrabID = g.ID
+					items[pos].RetryAfter = g.RetryAfter
+					items[pos].RetryReason = g.RetryReason
 					continue
 				}
 				index[key] = len(items)
-				items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: g.Title, TMDBID: g.TMDBID, Status: "Downloading", GrabID: g.ID})
+				items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: g.Title, TMDBID: g.TMDBID, Status: status, GrabID: g.ID, RetryAfter: g.RetryAfter, RetryReason: g.RetryReason})
 			}
 		}
 
@@ -155,13 +161,32 @@ func requestKey(m mode.Mode, tmdbID int, title string) string {
 }
 
 // isActiveGrab reports whether a grab is still in flight for the worklist —
-// queued/downloading/completed-but-not-yet-imported count; Imported (already
-// in the library, surfaced by the In-Library pass) and Failed do not.
+// queued/downloading/completed-but-not-yet-imported count, as does
+// pending_retry (an auto-grab awaiting its next re-search is very much still
+// outstanding work); Imported (already in the library, surfaced by the
+// In-Library pass) and Failed do not.
+//
+// This gate decides whether a grab reaches the worklist AT ALL — omitting
+// PendingRetry here would make a pending-retry row vanish from /api/requests
+// entirely, no matter what the status mapping above says about it.
 func isActiveGrab(s grabs.Status) bool {
 	switch s {
-	case grabs.Queued, grabs.Downloading, grabs.Completed:
+	case grabs.Queued, grabs.Downloading, grabs.Completed, grabs.PendingRetry:
 		return true
 	default:
 		return false
 	}
+}
+
+// grabStatusLabel is the worklist status string for an in-flight grab.
+// Everything still moving collapses to "Downloading" (in sakms's
+// single-operator model a grab IS the request, so there is no "Requested"
+// stage), but a pending_retry grab is NOT downloading anything — reporting it
+// as such would hide a request that found no qualifying release and is waiting
+// on a re-search. It gets its own honest state instead.
+func grabStatusLabel(s grabs.Status) string {
+	if s == grabs.PendingRetry {
+		return "Pending Retry"
+	}
+	return "Downloading"
 }

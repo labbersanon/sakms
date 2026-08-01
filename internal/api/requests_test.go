@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/db"
@@ -15,6 +16,7 @@ import (
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/secrets"
 )
 
 // requestsTestStores builds grabs/library/excludes stores on one fresh db for
@@ -28,7 +30,13 @@ func requestsTestStores(t *testing.T) (*grabs.Store, *library.Store, *excludes.S
 		t.Fatalf("opening db: %v", err)
 	}
 	t.Cleanup(func() { sqlDB.Close() })
-	return grabs.New(sqlDB), library.New(sqlDB), excludes.New(sqlDB)
+	// A real secret store, not nil: these tests create grabs, and grabs.Store
+	// encrypts a grab's download URL at rest.
+	secretStore, err := secrets.New(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("building secret store: %v", err)
+	}
+	return grabs.New(sqlDB, secretStore), library.New(sqlDB), excludes.New(sqlDB)
 }
 
 // TestRequestsHandler_AggregatesAndDedups exercises all four behaviors at once:
@@ -150,6 +158,74 @@ func TestRequestsHandler_ImportedGrabNotDownloading(t *testing.T) {
 	}
 }
 
+// TestRequestsHandler_PendingRetrySurfacesHonestly covers BOTH edit points the
+// pending_retry status needed. isActiveGrab is the gate deciding whether a grab
+// reaches the worklist at all — miss it and the row vanishes from /api/requests
+// entirely — and the status mapping must not report it as "Downloading", since
+// a pending-retry grab is not downloading anything: it found no qualifying
+// release and is parked for a re-search.
+func TestRequestsHandler_PendingRetrySurfacesHonestly(t *testing.T) {
+	grabsStore, libStore, excludesStore := requestsTestStores(t)
+	ctx := context.Background()
+
+	// A standalone pending-retry request (nothing tracked yet).
+	parked, err := grabsStore.Create(ctx, grabs.Grab{
+		Mode: mode.Movies, Title: "No Match Movie", TMDBID: 900,
+		Status: grabs.PendingRetry, RetryAfter: grabs.FormatTime(time.Now().Add(24 * time.Hour)),
+		RetryReason: "no candidate cleared the quality floor",
+	})
+	if err != nil {
+		t.Fatalf("create parked grab: %v", err)
+	}
+	// A tracked title that is ALSO parked — the dedup branch, which must reach
+	// the same label as the standalone branch.
+	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 901, Title: "Upgrade Me", FilePath: "/m/u.mkv", RootFolderPath: "/m"}); err != nil {
+		t.Fatalf("upsert tracked movie: %v", err)
+	}
+	tracked, err := grabsStore.Create(ctx, grabs.Grab{
+		Mode: mode.Movies, Title: "Upgrade Me", TMDBID: 901,
+		Status: grabs.PendingRetry, RetryAfter: grabs.FormatTime(time.Now().Add(24 * time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("create tracked parked grab: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore, excludesStore))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/requests")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var out apidto.RequestStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	byTitle := map[string]apidto.RequestStatusItem{}
+	for _, it := range out.Items {
+		byTitle[it.Title] = it
+	}
+	if len(out.Items) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %+v", len(out.Items), out.Items)
+	}
+	if got := byTitle["No Match Movie"]; got.Status != "Pending Retry" || got.GrabID != parked.ID {
+		t.Errorf("a standalone pending-retry grab should surface as Pending Retry with its id, got %+v", got)
+	}
+	if got := byTitle["No Match Movie"]; got.RetryAfter != parked.RetryAfter || got.RetryReason != parked.RetryReason {
+		t.Errorf("a standalone pending-retry row must carry the grab's RetryAfter/RetryReason (FE-5 needs these to explain the state), got %+v", got)
+	}
+	if got := byTitle["Upgrade Me"]; got.Status != "Pending Retry" || got.GrabID != tracked.ID {
+		t.Errorf("the dedup branch must reach the same label, got %+v", got)
+	}
+	if got := byTitle["Upgrade Me"]; got.RetryAfter != tracked.RetryAfter {
+		t.Errorf("the dedup (flip-existing-row) branch must also carry RetryAfter through, got %+v", got)
+	}
+}
+
 // TestRequestsHandler_ExcludedTitlesSuppressed proves an excluded title is
 // actually skipped by the live Requests aggregation — for BOTH an In-Library row
 // (keyed by TMDB id) and a standalone Downloading grab row (keyed by title for an
@@ -218,7 +294,7 @@ func TestExcludeTitle_SingleEndpoint(t *testing.T) {
 	_, _, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
-	mux := NewRequestsMux(grabs.New(nil), library.New(nil), excludesStore)
+	mux := NewRequestsMux(grabs.New(nil, nil), library.New(nil), excludesStore)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -260,7 +336,7 @@ func TestExcludeTitlesBatch_SkipAndContinue(t *testing.T) {
 	_, _, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
-	mux := NewRequestsMux(grabs.New(nil), library.New(nil), excludesStore)
+	mux := NewRequestsMux(grabs.New(nil, nil), library.New(nil), excludesStore)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

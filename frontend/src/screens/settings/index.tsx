@@ -1,21 +1,28 @@
 // Settings — ported from the vanilla-JS frontend's renderSettings plus the
 // Advanced Settings section. SECTION TABS (registered with the app shell via
 // ScreenTabs, so the shell draws the bar in its one consistent location; inline
-// fallback when rendered standalone in a unit test): Connections (own inline
-// Connections/AI sub-tab split, see ConnectionsTab.tsx — AI configuration is
-// conceptually a kind of connection setup, folded in here rather than living as
-// its own top-level tab; each sub-tab keeps its own independent Save); Library
-// (per-mode root folder + quality prefs for all three modes; naming preset and
-// kids path for Movies/Series only — Adult has a fixed naming scheme and no
-// kids classification); UI (screen-presentation admin controls — today a
-// Discover subsection with Mainstream/Adult sub-tabs hosting the custom slider
-// and Adult-newest-row editors, see UI.tsx); Auth (Authentication mode + API
-// Access break-glass key together); Advanced (leads with the mode-INDEPENDENT
-// Global settings — monitored-title refresh interval + manual trigger, Entity
-// Database, Watch Folders, Adult Mode master switch, see Global.tsx — rendered
-// ABOVE the mode selector so they read as global, then the per-mode fields:
-// phash-threshold; match-confidence-threshold for Movies/Series;
-// identify-enabled for Adult only).
+// fallback when rendered standalone in a unit test): Library (per-mode metadata
+// source connections + root folder + quality prefs for all three modes; naming
+// preset and kids path for Movies/Series only — Adult has a fixed naming scheme
+// and no kids classification); Usenet (the multi-subscription page + the
+// auto-grab toggle, its own tab because a subscription's field set is richer
+// than a connection row, see Usenet.tsx); UI (screen-presentation admin
+// controls — a Discover subsection with Mainstream/Adult sub-tabs hosting the
+// custom slider and Adult-newest-row editors, plus the Trakt watchlist
+// connection, see UI.tsx); AI (provider/model config + the AI-provider/Brave
+// connection rows); Auth (Authentication mode + API Access
+// break-glass key together); Advanced (leads with the mode-INDEPENDENT Global
+// settings — API Connections, monitored-title refresh interval + manual
+// trigger, Entity Database, Watch Folders, Adult Mode master switch, see
+// Global.tsx — rendered ABOVE the mode selector so they read as global, then
+// the per-mode fields: phash-threshold; match-confidence-threshold for
+// Movies/Series; identify-enabled for Adult only).
+//
+// There is no Connections tab. It was dismantled: each connection now lives in
+// the section it actually belongs to, and the two service classes an operator
+// can have more than one of — Usenet subscriptions and media players — moved out
+// of the singleton `connections` table into the `service_connections` registry
+// (migration 0053) entirely.
 //
 // There are TWO INDEPENDENT selectors here and they must not be conflated: the
 // section-tab selector (SECTION_TABS below), and a Movies/Series/Adult MODE
@@ -29,11 +36,12 @@
 // governs only the AdvancedSection fields, not the global cards above.
 //
 // This screen is split across settings/: shared primitives (Card, SaveStatus,
-// useSaveStatus, MODE_LABELS) in shared.tsx; one file per section (Connections/
-// Auth/AI/Library/Global/Advanced — Global is composed into the Advanced tab
-// here, it has no tab of its own); ConnectionsTab.tsx and UI.tsx each add an
-// inline sub-tab split combining two of those section files under one
-// top-level tab; this file is the thin tab shell.
+// useSaveStatus, MODE_LABELS) in shared.tsx; one file per section (Library/
+// Usenet/UI/AI/Auth/Webhooks/Nodes/Advanced — Global is composed into the
+// Advanced tab here, it has no tab of its own); UI.tsx additionally composes
+// several standalone subsection files (SliderAdmin, AdultRowAdmin,
+// RssFeedAdmin, Trakt) under its one top-level tab; this file is the thin tab
+// shell.
 
 import { type Component, createEffect, createSignal, Show } from "solid-js";
 import type { Mode } from "../../api/discover";
@@ -45,14 +53,16 @@ import {
   useAdultEnabled,
   type TabDef,
 } from "../../components/ui";
-import { ConnectionsTabSection } from "./ConnectionsTab";
+import { AISection } from "./AI";
 import { APIAccessSection, AuthModeSection } from "./Auth";
 import {
   KidsRootPathSection,
+  LibraryConnectionsSection,
   LibraryRootFolderSection,
   NamingPresetSection,
   QualityPrefsSection,
 } from "./Library";
+import { UsenetSection } from "./Usenet";
 import { AdvancedSection } from "./Advanced";
 import { GlobalSection } from "./Global";
 import { SectionSave } from "./shared";
@@ -61,13 +71,16 @@ import { WebhooksSection } from "./Webhooks";
 import { NodesSection } from "./Nodes";
 
 // SECTION_TABS is the section-level tab set (distinct from the Movies/Series/
-// Adult mode selector). Connections is first so it is the default tab — that
-// keeps the safety-critical Connections table (and its three-state secret gate)
-// on screen at mount with zero navigation.
+// Adult mode selector). There is no Connections tab: its rows were redistributed
+// to the section each one actually belongs to (metadata sources to Library under
+// their own mode, Prowlarr/Stash/media players to Advanced -> API Connections,
+// Trakt to UI -> Discover), and AI was promoted from a sub-tab to a top-level
+// tab of its own. Library leads, so it is the default.
 const SECTION_TABS: TabDef[] = [
-  { id: "connections", label: "Connections" },
   { id: "library", label: "Library" },
+  { id: "usenet", label: "Usenet" },
   { id: "ui", label: "UI" },
+  { id: "ai", label: "AI" },
   { id: "auth", label: "Auth" },
   { id: "webhooks", label: "Notifications" },
   { id: "nodes", label: "Nodes" },
@@ -111,7 +124,7 @@ const ModeSelector: Component<{
 };
 
 export const Settings: Component<{ onReboot: () => void }> = (props) => {
-  const [section, setSection] = createSignal<string>("connections");
+  const [section, setSection] = createSignal<string>("library");
   const [mode, setMode] = createSignal<Mode>("movies");
 
   return (
@@ -120,17 +133,14 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
 
       <ScreenTabs tabs={SECTION_TABS} current={section} onSelect={setSection} />
 
-      <Show when={section() === "connections"}>
-        <ConnectionsTabSection />
-      </Show>
-
       <Show when={section() === "library"}>
         <ModeSelector mode={mode} onSelect={setMode} />
-        {/* One Save button for the active mode's Library panels (root folder +
-            quality prefs + naming preset + kids root). Switching mode reseeds
-            each panel and clears its dirty flag, so the button reflects only the
-            currently-shown mode. */}
+        {/* One Save button for the active mode's Library panels (metadata source
+            connections + root folder + quality prefs + naming preset + kids
+            root). Switching mode reseeds each panel and clears its dirty flag,
+            so the button reflects only the currently-shown mode. */}
         <SectionSave>
+          <LibraryConnectionsSection mode={mode} />
           <LibraryRootFolderSection mode={mode} />
           <QualityPrefsSection mode={mode} />
           <Show
@@ -149,8 +159,19 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
         </SectionSave>
       </Show>
 
+      <Show when={section() === "usenet"}>
+        <UsenetSection />
+      </Show>
+
       <Show when={section() === "ui"}>
         <UISection />
+      </Show>
+
+      {/* AI is its own top-level tab now, not a sub-tab of Connections.
+          AISection takes no props and provides its own SectionSave, so it is
+          already standalone-renderable — promoting it needed no change to it. */}
+      <Show when={section() === "ai"}>
+        <AISection />
       </Show>
 
       <Show when={section() === "auth"}>

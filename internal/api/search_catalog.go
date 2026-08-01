@@ -10,11 +10,16 @@ import (
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/release"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/webhooks"
 )
 
 // adultSearchPoolPageSize is a local copy of adultnewest's unexported pool page
@@ -60,7 +65,23 @@ var adultSearchMaxBoxIdentify = 12
 // submit. StashDB/TPDB/FansDB are used ONLY to identify/group the RSS+Prowlarr
 // results (via sess.Identify, the same handle Show More uses), NEVER as the
 // primary title lookup — the settled D4b decision is not reversed.
-func adultSearchHandler(connStore *connections.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth) http.HandlerFunc {
+//
+// When usenet_autograb_enabled is on, the deduped Prowlarr releases go to the
+// SHARED runToggleGatedSearch instead of to groupAdultSearchScenes, and the
+// response is an outcome (apidto.SearchAutoGrabOutcome) — the same shape and
+// the same function Movies/Series use, never a second copy of that branch.
+// Three Adult-specific constraints hold on that branch:
+//   - Still exactly ONE Prowlarr call per submit. RunAutoGrab is handed the
+//     releases already fetched here; it must not search again.
+//   - Only the Prowlarr releases are scored. The RSS pool's direct-grab feed
+//     enclosures are NOT candidates — they already have their own operator
+//     route through autoGrabHandler's direct-grab branch, and excluding them is
+//     what keeps the shared function mode-agnostic.
+//   - HasMore is meaningless on that branch (an outcome has no page 2), so no
+//     pagination path hangs off it. The page>1 pool-only branch is untouched
+//     under both toggle states: it fires zero Prowlarr calls, so it is never a
+//     candidate source.
+func adultSearchHandler(connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		query := r.URL.Query().Get("q")
@@ -93,7 +114,11 @@ func adultSearchHandler(connStore *connections.Store, settingsStore *settings.St
 		// trip, plus a matching context deadline — see the identical reasoning in
 		// adultdiscover_newest_scenes.go's Show More path.
 		searchClient := &http.Client{Timeout: newestScenesOutboundTimeout}
-		sess, err := mode.Build(ctx, connStore, settingsStore, searchClient, nil, mode.Adult)
+		// dl, not nil: the toggle-ON branch dispatches, and
+		// dispatchToDownloadClient rejects a torrent dispatch on a nil
+		// Session.Downloader. searchClient stays the outbound client — its
+		// Timeout is what bounds this route's one Prowlarr round trip.
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, searchClient, dl, mode.Adult)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -123,6 +148,30 @@ func adultSearchHandler(connStore *connections.Store, settingsStore *settings.St
 				seeders:         rel.Seeders,
 			}
 		})
+
+		// Toggle ON: score the deduped Prowlarr releases and answer with the
+		// outcome. Read here — after the pool query, the one Prowlarr search and
+		// dedupeReleases, but BEFORE groupAdultSearchScenes — the point at which
+		// the candidate list exists and the expensive identification/grouping
+		// work has not yet been paid for. That work is skipped entirely: no
+		// grouping, no boxIdentifyRelease fan-out, no scene cards, because there
+		// is nothing left to render once the toggle has picked.
+		autoGrab, err := settingsStore.GetBool(tctx, usenetAutoGrabEnabledKey, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if autoGrab {
+			outcome, status, err := runToggleGatedSearch(tctx,
+				AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, Webhooks: whStore},
+				sess, searchGrabIdentity{Mode: mode.Adult, Title: query}, releases)
+			if err != nil {
+				http.Error(w, err.Error(), status)
+				return
+			}
+			writeJSON(w, outcome)
+			return
+		}
 
 		prefs, err := searchQualityProfile(tctx, settingsStore, mode.Adult)
 		if err != nil {

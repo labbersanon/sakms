@@ -23,6 +23,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/webhooks"
@@ -57,7 +58,22 @@ func categoriesForSearch(m mode.Mode) []int {
 // that mode's configured quality-prefs (tier + max resolution, defaulting
 // to quality.Default/no cap when unset) — a read-only proxy+transform,
 // nothing staged or persisted.
-func searchHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store) http.HandlerFunc {
+//
+// UNLESS usenet_autograb_enabled is on. Then this endpoint stops being
+// read-only: it hands its already-fetched, already-deduped releases to
+// runToggleGatedSearch, which scores them and either dispatches the winner or
+// parks a pending_retry row, and answers with an OUTCOME
+// (apidto.SearchAutoGrabOutcome) instead of a pick-a-release list — there is
+// nothing left to pick once the toggle has picked. This route is the one place
+// a Usenet search happens BEFORE a pick is made, which is why the gated
+// TriggerRequest hooks here and not in grabHandler (which already holds the
+// operator's chosen release) or in dispatchToDownloadClient (which RunAutoGrab
+// itself calls, so a hook there would recurse).
+//
+// Movies and Series only: GET /api/modes/adult/search is served by the
+// concrete-path adultSearchHandler, which reaches the SAME shared
+// runToggleGatedSearch rather than holding a second copy of this branch.
+func searchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -67,7 +83,19 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, settin
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, nil, m)
+		// Read the toggle once, first. It only chooses a RESPONSE SHAPE here;
+		// the gate itself is enforced inside RunAutoGrab (same constant, so the
+		// two reads cannot drift).
+		autoGrab, err := settingsStore.GetBool(ctx, usenetAutoGrabEnabledKey, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// dl, not nil: the toggle-ON branch dispatches, and
+		// dispatchToDownloadClient rejects a torrent dispatch on a nil
+		// Session.Downloader.
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -101,6 +129,22 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, settin
 				seeders:         rel.Seeders,
 			}
 		})
+
+		// Toggle ON: the scorer runs here instead of the pick list being
+		// rendered. Everything below this point (release.ScoreCandidate, the
+		// sort, the []SearchReleaseResult encode) is skipped — there is nothing
+		// left to render when the toggle has already picked.
+		if autoGrab {
+			outcome, status, err := runToggleGatedSearch(ctx,
+				AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, Webhooks: whStore},
+				sess, searchGrabIdentity{Mode: m, Title: query}, releases)
+			if err != nil {
+				http.Error(w, err.Error(), status)
+				return
+			}
+			writeJSON(w, outcome)
+			return
+		}
 
 		prefs, err := searchQualityProfile(ctx, settingsStore, m)
 		if err != nil {
@@ -154,6 +198,115 @@ func searchQualityProfile(ctx context.Context, settingsStore *settings.Store, m 
 	return quality.ProfileFor(tier, maxRes), nil
 }
 
+// searchGrabIdentity is the mode-agnostic identity of the thing being searched
+// for — exactly the fields FindPendingRetry's dedup key needs, no more.
+//
+// TMDBID is 0 at this hook in EVERY mode: both Search routes carry only ?q=.
+// That is not a defect of Adult specifically — it means excludes.Key (the same
+// normalization requestKey uses) degrades to the lowercased title uniformly, so
+// rows created here are title-keyed in all three modes. The general
+// (mode, tmdb_id, season, season_specified, episode) key still governs the
+// operator and retry paths, which do carry a TMDB id.
+type searchGrabIdentity struct {
+	Mode            mode.Mode
+	Title           string
+	TMDBID          int
+	Season, Episode int
+	SeasonSpecified bool
+}
+
+// runToggleGatedSearch is the ONE implementation of the toggle-ON search
+// branch, called from searchHandler (Movies/Series) and adultSearchHandler
+// (Adult). Neither handler holds a copy of it: one shared function was the
+// explicit design decision over two duplicated branches.
+//
+// It DELEGATES to RunAutoGrab; it does not re-implement it. The toggle gate,
+// the autograb.Select call, the dispatchToDownloadClient dispatch and the
+// pending_retry write all stay inside RunAutoGrab — anything else would make
+// this a SECOND gated scoring-and-dispatch path and falsify the "a future
+// trigger can invoke the shared mechanism without duplicating the
+// scoring/toggle-gating logic" guarantee. What is genuinely shared here is
+// identity construction, root-folder resolution, the AutoGrabRequest build and
+// the outcome-DTO mapping.
+//
+// releases is the caller's already-deduped Prowlarr result list. It returns the
+// body the caller encodes plus the HTTP status to surface on error.
+func runToggleGatedSearch(ctx context.Context, deps AutoGrabDeps, sess *mode.Session,
+	id searchGrabIdentity, releases []prowlarr.Release) (apidto.SearchAutoGrabOutcome, int, error) {
+
+	rootFolder, err := autoGrabRootFolder(ctx, deps.SettingsStore, id.Mode)
+	if err != nil {
+		return apidto.SearchAutoGrabOutcome{}, http.StatusBadRequest, err
+	}
+
+	// Never hand RunAutoGrab a nil slice: nil means "run your own search", and
+	// its internal search is TMDB-id-driven while this route carries only ?q=.
+	// A search that legitimately returned nothing must reach Selection.Fallback
+	// and become a pending_retry row, not an internal search that cannot work.
+	if releases == nil {
+		releases = []prowlarr.Release{}
+	}
+
+	// RuntimeSeconds is 0 in every mode at this hook — runtime comes from TMDB
+	// (MovieDetails.Runtime, seriesEpisodeRuntimeSeconds) or from an Adult
+	// entity's DurationSeconds, and a query-only Search request carries none of
+	// them.
+	//
+	// CONSEQUENCE, verified and reported rather than papered over: this hook
+	// currently can NEVER auto-grab. autograb.GradeCandidate short-circuits on
+	// `SizeBytes <= 0 || RuntimeSeconds <= 0` and returns not-qualified BEFORE
+	// reaching any other check — including the Lossless remux/bluray bypass, so
+	// not even a remux qualifies here. Every toggle-ON search therefore takes
+	// Selection.Fallback and parks a pending_retry row, which the 24h retry
+	// cycle re-searches. That is the ungradeable machinery behaving exactly as
+	// designed, and it is precisely the state the retry pipeline exists to make
+	// observable — it is NOT a bug to patch with a title->TMDB resolution step
+	// invented here. If auto-grab-on-first-search is wanted, that is a separate,
+	// deliberate decision about where runtime comes from.
+	//
+	// (The plan's §2.3.1 predicted "only a Lossless-source release can
+	// auto-grab" on this path. That prediction is wrong for the reason above;
+	// the direction — expect retries, not grabs — is right, and stronger.)
+	out, err := RunAutoGrab(ctx, deps, sess, AutoGrabRequest{
+		Mode: id.Mode, Title: id.Title, TMDBID: id.TMDBID,
+		Season: id.Season, Episode: id.Episode, SeasonSpecified: id.SeasonSpecified,
+		RootFolderPath: rootFolder, Trigger: TriggerRequest,
+		Releases: releases,
+	})
+	if err != nil {
+		return apidto.SearchAutoGrabOutcome{}, out.Status, err
+	}
+
+	switch {
+	case out.Gated:
+		// Only reachable if the toggle was switched off between the handler's
+		// read and RunAutoGrab's gate. Report it rather than answering with an
+		// empty outcome the frontend would render as a successful no-op.
+		return apidto.SearchAutoGrabOutcome{}, http.StatusConflict,
+			errors.New("usenet auto-grab was switched off while this search ran — try again")
+	case out.Grabbed:
+		return apidto.SearchAutoGrabOutcome{
+			AutoGrabbed: true, Outcome: "grabbed", GrabID: out.GrabID,
+			Title: out.Releases[out.Selection.PickIndex].Title,
+		}, http.StatusOK, nil
+	case out.AlreadyGrabbing:
+		outcome := apidto.SearchAutoGrabOutcome{
+			Outcome: "grabbed", Title: id.Title,
+			Reason: "already grabbing this release",
+		}
+		if out.Grab != nil {
+			outcome.GrabID = out.Grab.ID
+			outcome.Title = out.Grab.Title
+		}
+		return outcome, http.StatusOK, nil
+	default: // out.NoMatch — nothing cleared the quality floor
+		return apidto.SearchAutoGrabOutcome{
+			Outcome: string(out.RetryStatus), GrabID: out.GrabID,
+			Title: id.Title, Reason: out.RetryReason,
+		}, http.StatusOK, nil
+	}
+}
+
 type grabRequest struct {
 	Title            string `json:"title"`
 	TMDBID           int    `json:"tmdbId,omitempty"`
@@ -173,7 +326,7 @@ type grabRequest struct {
 // one mutating action in the search workflow — Search itself never does —
 // matching every other workflow's "Scan never mutates, exactly one
 // human-approved action does" rule.
-func grabHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, whStore *webhooks.Store) http.HandlerFunc {
+func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -188,7 +341,7 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, settings
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, dl, m)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -217,6 +370,12 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, settings
 			SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
 			QualityProfileID: req.QualityProfileID, Indexer: req.Indexer, Protocol: req.Protocol,
 			DownloadClient: downloadClient, RootFolderPath: req.RootFolderPath,
+			// Provenance for a later retry. An RSS-sourced usenet item's entire
+			// provenance is its enclosure URL plus title, so a row recorded
+			// without it parks as pending_retry with nothing to re-derive from.
+			// Same gap BE-8 fixed in grabDirectEnclosure; this is its twin on
+			// the manual-pick path.
+			DownloadURL: req.DownloadURL,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -277,7 +436,7 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 		return "anacrolix", gid, http.StatusOK, nil
 	case prowlarr.Usenet:
 		if nzb == nil {
-			return "", "", http.StatusBadRequest, errors.New("configure an NNTP server in Settings → Connections to grab usenet releases")
+			return "", "", http.StatusBadRequest, errors.New("add a Usenet subscription on the Settings → Usenet page to grab usenet releases")
 		}
 		gid, err := nzb.AddNZB(ctx, downloadURL, title)
 		if err != nil {
@@ -311,7 +470,7 @@ func listGrabsHandler(grabsStore *grabs.Store) http.HandlerFunc {
 // finishes — this endpoint is the on-demand "check it now" the Grabs UI offers.
 //
 // GID routing: "nzb-" prefix → usenet engine; everything else → torrent engine.
-func checkImportHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober) http.HandlerFunc {
+func checkImportHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -355,7 +514,25 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 				http.Error(w, "the usenet engine no longer knows about this download", http.StatusConflict)
 				return
 			}
-			newStatus := classifyDownloadState(nzbItem.Status)
+			newStatus := classifyDownloadState(nzbItem.Status, nzbItem.Err)
+			// A retryable retrieval failure needs a retry_after, not just a
+			// status: DueForRetry ignores a pending_retry row whose retry_after
+			// is empty, so a bare UpdateStatus here would strand it forever.
+			// The reason is classified the same way the sweep classifies it, so
+			// the two paths can never render different text for one failure.
+			if newStatus == grabs.PendingRetry {
+				if err := parkGrabForRetry(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}, id, usenetRetrievalReason(nzbItem.Err)); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				updated, err := grabsStore.Get(ctx, id)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, updated)
+				return
+			}
 			if newStatus == grabs.Completed {
 				contentPath := downloadContentPath(nzbItem.Files, nzbItem.Dir, nzb.StagingDir())
 				changes, err := importGrabContent(ctx, libStore, g, contentPath)
@@ -363,7 +540,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusBadGateway)
 					return
 				}
-				sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, dl, g.Mode)
+				sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
@@ -399,13 +576,14 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, settingsStore, httpClient, dl, g.Mode)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		newStatus := classifyDownloadState(dlItem.Status)
+		// nil: the torrent engine's Download carries no unflattened error field.
+		newStatus := classifyDownloadState(dlItem.Status, nil)
 		if newStatus == grabs.Completed {
 			contentPath := downloadContentPath(dlItem.Files, dlItem.Dir, dl.StagingDir())
 			changes, err := importGrabContent(ctx, libStore, g, contentPath)
@@ -440,7 +618,43 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 // classifyDownloadState maps the download engine's status vocabulary to grabs'
 // lifecycle. "complete" is the only status that triggers an import; "error" is
 // Failed; everything else (active/waiting/paused) is still in-flight.
-func classifyDownloadState(state string) grabs.Status {
+//
+// failure is the engine's UNFLATTENED error (usenet.Download.Err), and it is
+// checked before state because a bare "error" string cannot tell a permanent
+// takedown from a transient miss:
+//   - ErrArticleRemoved (451, DMCA) is PERMANENT → Failed, never retried.
+//   - ErrArticleNotFound (430 from every configured subscription) is retryable
+//     → PendingRetry.
+//   - ANY OTHER non-nil failure — a dial timeout, a decode error, the mixed
+//     case where one provider answered 451 and another was unreachable
+//     (usenet.fetchSegmentAny returns the raw transport error there) — is also
+//     retryable → PendingRetry. Only a CONFIRMED takedown is terminal: an
+//     unreachable server proves nothing about whether the article exists, and
+//     failing on it strands a recoverable download forever, since nothing ever
+//     re-searches a Failed row. This does not retry forever either —
+//     grabs.maxRetryAttempts (5) converts a row that can never succeed to
+//     Failed with an explaining reason.
+//
+// DEVIATION, reported not silently fixed: the plan asked for this to take the
+// Download struct. It cannot — the two callers pass usenet.Download and
+// downloader.Download, different types, and only the usenet one carries Err.
+// (state, failure) is the shape that classifies both; the torrent caller passes
+// nil until its engine grows an equivalent field.
+//
+// This is the FAST path only, reached by frontend polling. The authoritative
+// transition is the retry scheduler's GID sweep, which runs with no client
+// attached — a headless instance must not depend on a browser being open.
+func classifyDownloadState(state string, failure error) grabs.Status {
+	switch {
+	case errors.Is(failure, usenet.ErrArticleRemoved):
+		return grabs.Failed
+	case errors.Is(failure, usenet.ErrArticleNotFound):
+		return grabs.PendingRetry
+	case failure != nil:
+		// Unclassified — transient until proven otherwise. The torrent caller
+		// passes nil, so this only ever sees a usenet Download.Err.
+		return grabs.PendingRetry
+	}
 	switch state {
 	case "complete":
 		return grabs.Completed

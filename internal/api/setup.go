@@ -9,6 +9,7 @@ import (
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -33,10 +34,21 @@ type modeStatus struct {
 // allowlist); this endpoint only answers "what's already true," so the
 // wizard knows what to show and whether to show itself at all.
 //
-// JellyfinConfigured reports whether a "jellyfin" connection has been
-// saved — connections.Store already accepts any service key generically,
-// so this is honest today even though SAK has no Jellyfin client yet
-// and nothing acts on that connection until one exists.
+// JellyfinConfigured reports whether AT LEAST ONE MEDIA PLAYER OF ANY
+// PROVIDER — Jellyfin, Emby or Plex — is registered in the multi-connection
+// registry (internal/serviceconn).
+//
+// The JSON field name stays `jellyfinConfigured` because the frontend consumes
+// it; only its meaning widened. It is deliberately NOT read from
+// connections.Store anymore: migration 0053 moved the jellyfin row out of that
+// table, so connectionExists(ctx, connStore, "jellyfin") would now return false
+// forever no matter how many players the operator has configured, permanently
+// dropping Jellyfin's contribution to AnyConfigured and re-offering the setup
+// wizard on a fully configured install.
+//
+// Sourced from ListByKind, not PlayersForMode: a player that is disabled, or
+// assigned to no mode yet, is still *configured* — which is the only question
+// a setup wizard is asking.
 type setupStatus struct {
 	Modes              []modeStatus `json:"modes"`
 	JellyfinConfigured bool         `json:"jellyfinConfigured"`
@@ -52,10 +64,10 @@ type setupStatus struct {
 // the wizard's *arr-connection walk, so it stays out of this list.
 var wizardModes = []mode.Mode{mode.Movies, mode.Series}
 
-func setupStatusHandler(connStore *connections.Store, allowStore *allowlist.Store, settingsStore *settings.Store) http.HandlerFunc {
+func setupStatusHandler(connStore *connections.Store, scStore *serviceconn.Store, allowStore *allowlist.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		status, err := buildSetupStatus(ctx, connStore, allowStore, settingsStore)
+		status, err := buildSetupStatus(ctx, connStore, scStore, allowStore, settingsStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -65,7 +77,7 @@ func setupStatusHandler(connStore *connections.Store, allowStore *allowlist.Stor
 	}
 }
 
-func buildSetupStatus(ctx context.Context, connStore *connections.Store, allowStore *allowlist.Store, settingsStore *settings.Store) (setupStatus, error) {
+func buildSetupStatus(ctx context.Context, connStore *connections.Store, scStore *serviceconn.Store, allowStore *allowlist.Store, settingsStore *settings.Store) (setupStatus, error) {
 	var status setupStatus
 
 	for _, m := range append(append([]mode.Mode{}, wizardModes...), mode.Adult) {
@@ -79,12 +91,12 @@ func buildSetupStatus(ctx context.Context, connStore *connections.Store, allowSt
 		}
 	}
 
-	jellyfinConfigured, err := connectionExists(ctx, connStore, "jellyfin")
+	playerConfigured, err := playerExists(ctx, scStore)
 	if err != nil {
 		return setupStatus{}, err
 	}
-	status.JellyfinConfigured = jellyfinConfigured
-	status.AnyConfigured = status.AnyConfigured || jellyfinConfigured
+	status.JellyfinConfigured = playerConfigured
+	status.AnyConfigured = status.AnyConfigured || playerConfigured
 
 	ollamaConfigured, err := connectionExists(ctx, connStore, "ollama")
 	if err != nil {
@@ -139,6 +151,24 @@ func connectionExists(ctx context.Context, connStore *connections.Store, service
 		return false, err
 	}
 	return conn != nil, nil
+}
+
+// playerExists reports whether the registry holds at least one media player of
+// any provider — connectionExists' registry sibling, and the source behind
+// setupStatus.JellyfinConfigured (see its doc comment).
+//
+// A nil scStore yields false rather than panicking, matching mode.buildPlayers'
+// documented tolerance: the registry is an optional dependency for the many
+// handler tests that construct NewMux without one.
+func playerExists(ctx context.Context, scStore *serviceconn.Store) (bool, error) {
+	if scStore == nil {
+		return false, nil
+	}
+	players, err := scStore.ListByKind(ctx, serviceconn.KindPlayer)
+	if err != nil {
+		return false, err
+	}
+	return len(players) > 0, nil
 }
 
 type dismissSetupRequest struct {

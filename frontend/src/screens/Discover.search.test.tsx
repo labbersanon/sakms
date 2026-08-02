@@ -5,7 +5,24 @@
 // with release variants inline → click a card → picker opens with zero further
 // network calls → grab). Searched cards carry NO one-click Grab button (M3); the
 // picker replaces it. Browse rows are unchanged — a regression guard proves they
-// still open DetailPopup, keep their Grab button, and never fire a picker /search.
+// still open DetailPopup and never fire a picker /search.
+//
+// Claude 2026-08-02: this header used to add "keep their Grab button" to that
+// last clause. As of the Discover card cleanup NO card type has an inline Grab
+// button, so M3's searched-vs-browse contrast is now purely about what the CLICK
+// does (release picker vs. DetailPopup), not about a button one has and the
+// other lacks.
+// CORRECTED 2026-08-02 (later, same day): "The M3 absence assertions below still
+// hold and were not weakened" was true as written but misleading. Those
+// `queryByText("Grab")` checks on searched cards no longer DISCRIMINATE
+// anything — every card type, searched and browse alike, now lacks an inline
+// Grab button, so the assertion passes whether or not the underlying
+// suppression logic still exists. No coverage is lost: the real M3
+// discriminator now lives in the click-behavior assertions in the same tests
+// (a searched card's body click fires exactly one release-picker /search; a
+// browse card's click opens DetailPopup instead). Read "still hold" as
+// "trivially true," not "still proves M3."
+// Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §1.2/§3.2.
 //
 // Matcher note (advisor catch): three endpoints contain the substring "search"
 // — tmdb-search (catalog), /search?q= (release picker), /search/grab (grab). The
@@ -126,12 +143,14 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
     );
 
     const card = (await screen.findByText("Catalog Movie")).closest(
-      "div.w-\\[180px\\]",
+      "div.w-\\[220px\\]",
     ) as HTMLElement;
     // Catalog step: tmdb-search fired, ZERO Prowlarr release-picker /search.
     expect(calls.some((c) => c.url.includes("/api/modes/movies/tmdb-search"))).toBe(true);
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
-    // M3: no one-click Grab on a searched card.
+    // No inline Grab button on this searched card — no longer M3-discriminating
+    // on its own (see the CORRECTED header note above); the click-behavior
+    // assertions below are what actually prove the searched-card path.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
     // Click the card body → exactly one /search; picker lists BOTH quality
@@ -174,7 +193,7 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
     );
 
     const card = (await screen.findByText("Pick Movie")).closest(
-      "div.w-\\[180px\\]",
+      "div.w-\\[220px\\]",
     ) as HTMLElement;
     fireEvent.click(within(card).getByText("Pick Movie"));
     fireEvent.click(await screen.findByText("Pick.Movie.1080p-GRP")); // ensure open
@@ -213,7 +232,7 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
     );
 
     const card = (await screen.findByText("Empty Movie")).closest(
-      "div.w-\\[180px\\]",
+      "div.w-\\[220px\\]",
     ) as HTMLElement;
     fireEvent.click(within(card).getByText("Empty Movie"));
     expect(
@@ -273,10 +292,13 @@ describe("Discover search — Adult one-shot", () => {
     );
 
     const card = (await screen.findByText("Adult Search Scene")).closest(
-      ".w-\\[200px\\]",
+      ".w-\\[240px\\]",
     ) as HTMLElement;
     expect(calls.filter((c) => isAdultSearchCall(c.url))).toHaveLength(1);
-    // M3: no one-click Grab on a searched scene card.
+    // No inline Grab button on this searched scene card — no longer
+    // M3-discriminating on its own (see the CORRECTED header note above); the
+    // zero-extra-network-call assertions below are what actually prove the
+    // searched-card path.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
     // Opening the picker consumes the inline variants — zero further network calls.
@@ -321,7 +343,7 @@ describe("Discover search — Adult one-shot", () => {
     );
 
     const card = (await screen.findByText("Grab Scene")).closest(
-      ".w-\\[200px\\]",
+      ".w-\\[240px\\]",
     ) as HTMLElement;
     fireEvent.click(within(card).getByText("Grab Scene"));
     fireEvent.click(await screen.findByText("Grab.Scene.1080p"));
@@ -363,8 +385,20 @@ describe("Discover search — Adult one-shot", () => {
   });
 });
 
+// Claude 2026-08-02: both cases here used to assert a browse card "keeps its
+// Grab button" — the M3 contrast being drawn was searched-card (no Grab) vs.
+// browse-card (Grab). The Discover card cleanup removed the inline Grab button
+// from BOTH, so that contrast no longer exists and those two assertions were
+// deleted rather than re-selectored.
+// Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §1.2/§3.2. What
+// these cases still guard is the part the search redesign actually owns and
+// that IS unchanged: a browse card's click opens DetailPopup and fires ZERO
+// release-picker/adult /search calls, where a SEARCHED card's click opens the
+// release picker instead. The searched-card "no Grab" absence assertions
+// elsewhere in this file (AC5) are untouched and still pass unmodified.
+// Review if: browse and searched cards ever diverge in click behavior again.
 describe("Discover browse-row regression guard (unchanged by the search redesign)", () => {
-  it("Mainstream browse cards still open DetailPopup, keep their Grab button, and fire zero release-picker /search", async () => {
+  it("Mainstream browse cards open DetailPopup (not the release picker) and fire zero release-picker /search", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
         return jsonResponse([movie({ id: 1, title: "Browse Movie" })]);
@@ -377,10 +411,8 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
 
     render(() => <Discover />);
     const card = (await screen.findByText("Browse Movie")).closest(
-      "div.w-\\[180px\\]",
+      "div.w-\\[220px\\]",
     ) as HTMLElement;
-    // Browse card keeps its one-click Grab button.
-    expect(within(card).getByText("Grab")).toBeInTheDocument();
     // Clicking the body opens DetailPopup (popup-only "480p" markup), not the picker.
     fireEvent.click(within(card).getByText("Browse Movie"));
     expect(await screen.findByText("480p")).toBeInTheDocument();
@@ -388,7 +420,7 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
   });
 
-  it("Adult browse-row scene cards still open DetailPopup, keep their Grab button, and fire zero adult /search", async () => {
+  it("Adult browse-row scene cards open DetailPopup (not the release picker) and fire zero adult /search", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/newest-rows/1/resolve"))
         return jsonResponse([
@@ -408,10 +440,8 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
     const card = (await screen.findByText("Browse Scene")).closest(
-      ".w-\\[200px\\]",
+      ".w-\\[240px\\]",
     ) as HTMLElement;
-    // Browse scene card keeps its one-click Grab button.
-    expect(within(card).getByText("Grab")).toBeInTheDocument();
     // Clicking the body opens DetailPopup, not the picker.
     fireEvent.click(within(card).getByText("Browse Scene"));
     expect(await screen.findByText("480p")).toBeInTheDocument();

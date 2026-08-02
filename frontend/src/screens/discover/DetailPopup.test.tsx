@@ -406,10 +406,26 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     expect(detailCalls.every((c) => !c.url.includes("sections=seasons"))).toBe(true);
   });
 
-  // Nested-modal carve-out: a Series recommendation's Grab would open the picker
-  // in a SECOND modal inside this one, and both close on one backdrop click.
-  // Movies are deliberately untouched — their grab opens no picker at all.
-  it("suppresses Grab on a Series recommendation card but keeps it on a Movie one", async () => {
+  // Claude 2026-08-02: this case used to assert the `insideModal` nested-modal
+  // carve-out — Grab SUPPRESSED on a Series recommendation card (its picker
+  // would open a second Modal inside this one, and both close on one backdrop
+  // click) but KEPT on a Movie one (whose grab opens no picker at all).
+  // Reason: the Discover card cleanup removed PosterCard's inline Grab button
+  // outright, so the rail has nothing left that can open a nested modal and the
+  // `insideModal` prop was removed with it
+  // (.omc/plans/autopilot-impl-discover-card-cleanup.md §7 item 1). The carve-out
+  // is not "no longer tested" — it is no longer a thing, and this case now
+  // asserts the structural fact that replaced it: NEITHER card type carries a
+  // Grab button, for either mode.
+  // Troubleshooting: the reason the prop was safe to delete is that every card
+  // body which opens DetailPopup is select-mode-inert, so no popup can be raised
+  // mid-bulk-select. That invariant is guarded by its own case in
+  // Discover.test.tsx ("a LibraryCard body click is inert while select-mode is
+  // on") — if this case is ever loosened, check that one is still present.
+  // Review if: any Grab affordance is reinstated on the recommendations rail —
+  // a Series one would re-create the nested-modal hazard and needs `insideModal`
+  // (or an inline picker) back.
+  it("carries no Grab button on either a Movie or a Series recommendation card (the nested-modal carve-out is moot)", async () => {
     stubFetch((url) => {
       if (url.includes("/discover/detail"))
         return jsonResponse({
@@ -446,14 +462,18 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     render(() => <DetailPopup target={target} onClose={() => {}} />);
 
     const movieCard = (await screen.findByText("Recommended Movie")).closest(
-      "div.w-\\[180px\\]",
+      "div.w-\\[220px\\]",
     ) as HTMLElement;
     const showCard = screen
       .getByText("Recommended Show")
-      .closest("div.w-\\[180px\\]") as HTMLElement;
+      .closest("div.w-\\[220px\\]") as HTMLElement;
 
-    expect(within(movieCard).getByText("Grab")).toBeInTheDocument();
+    expect(within(movieCard).queryByText("Grab")).not.toBeInTheDocument();
     expect(within(showCard).queryByText("Grab")).not.toBeInTheDocument();
+
+    // The popup's own primary Grab is now the ONLY Grab button in the tree —
+    // which is the concrete reason no second Modal can be stacked from here.
+    expect(screen.getAllByRole("button", { name: "Grab" })).toHaveLength(1);
   });
 
   it("Adult now also fetches and honors quality-prefs, same as Movies/Series", async () => {
@@ -908,11 +928,13 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     };
     render(() => <Harness />);
 
-    // Grab on title A → "Grabbed" appears, grab state is now set. (The rec rail
-    // adds its own PosterCard "Grab" buttons; the popup's primary Grab is the
-    // first in DOM order, rendered above the detail section.)
-    const grabButtons = await screen.findAllByRole("button", { name: "Grab" });
-    fireEvent.click(grabButtons[0]!);
+    // Grab on title A → "Grabbed" appears, grab state is now set.
+    // Claude 2026-08-02: the rec rail no longer adds its own PosterCard "Grab"
+    // buttons (the Discover card cleanup removed them), so this is now the
+    // popup's single primary Grab — findAllByRole/[0] simplified to findByRole,
+    // which additionally fails loudly if a second one ever reappears.
+    // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §1.2.
+    fireEvent.click(await screen.findByRole("button", { name: "Grab" }));
     expect(await screen.findByText(/Grabbed/)).toBeInTheDocument();
 
     // Click the recommendation card body (its title) → re-target to B (id 99).

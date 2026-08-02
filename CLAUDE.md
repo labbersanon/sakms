@@ -286,6 +286,127 @@ above, so don't drop them for convenience:
     every existing test still passed. That is the single most likely way to
     break the stale-selection guarantee this list's 2026-07-24 note ends with
     — the guarantee itself is unchanged and still holds.
+  - **CORRECTED 2026-08-02 (later, same day) — the per-card Grab button is
+    GONE from Discover's three card types, so the 2026-07-24 sentence the note
+    directly above deliberately left half-standing is now false in its other
+    half too (see
+    `.omc/plans/autopilot-impl-discover-card-cleanup.md` and `CHANGELOG.md`).**
+    Stacked on top of the CORRECTED note above rather than replacing it, per
+    this file's append-and-correct convention — read them in order. The
+    paragraph now superseded, quoted verbatim so a future session can find it:
+
+    > *"**Sentence 2 is only HALF false — do not over-correct it.** The per-card
+    > Grab button **is still strictly single-item**: it picks one season or one
+    > episode and grabs that one thing, exactly as before."*
+
+    That was true when written. It is not now: `PosterCard`, `LibraryCard` and
+    `AdultCard` have **no inline Grab button at all**. Clicking the card body
+    opens `DetailPopup`, which is the sole grab affordance those three cards
+    offer. What is corrected is only the existence of the button — the
+    bulk-grab exception's own bounds (the ≤20 cap, the season-or-episode
+    counting semantic, sequential server-side execution, the orphan-drop, the
+    season/episode mutual exclusion) are **all completely unchanged**.
+
+    **This is a MECHANISM SUBSTITUTION, not a relocation — the single most
+    important thing in this note.** The spec that ordered it called it "a clean
+    relocation, not a capability loss"; that framing was checked against source
+    and is **false**. The removed button called **`autoGrab`**
+    (`internal/autograb`'s bitrate-quality-floor scorer picks the release, one
+    click). `DetailPopup` calls **`manualGrab`** with a candidate the operator
+    picks by hand off the availability grid (three-plus clicks). **Discover
+    therefore has no per-card one-click auto-grab any more.** Anyone verifying
+    this work by asserting "behavior is unchanged" is verifying the wrong thing.
+
+    **`internal/autograb` is still reachable from Discover**, by two paths, so
+    the scorer is not orphaned: **select-mode bulk grab** (`autoGrabBatch`,
+    untouched by this work) and **`TraktWatchlistRow`**, which was deliberately
+    left out of scope and **keeps its inline `GrabButton`**. Consequence worth
+    stating plainly because it looks like an oversight and is not: the Trakt
+    watchlist row is now the **only** card-level one-click auto-grab left in
+    Discover, and `TraktWatchlistRow.tsx` is the **sole remaining consumer** of
+    the still-exported `GrabButton`/`GrabDialog` pair. Do not delete either as
+    dead code.
+
+    **Adult lost a real capability here, and select-mode is the whole
+    mitigation — do not restore the button without reading this.**
+    `AdultCard`'s `sceneTarget()` carries two fields no other card does,
+    `downloadUrl` + `downloadProtocol`: when a scene's feed is currently fresh
+    it can dispatch **straight to the download client and skip Prowlarr
+    entirely**. `DetailPopup`'s Adult path **cannot** do this — it grabs a
+    Prowlarr-sourced candidate by construction, so a fresh-feed scene that used
+    to need zero indexer queries now needs one. The capability survives ONLY
+    through select-mode bulk grab, which still builds `sceneTarget()` with both
+    fields intact. That mitigation is exercised by a real test, not asserted:
+    `frontend/src/screens/discover/Adult.grab.test.tsx` submits a fresh-feed
+    scene through select-mode and asserts the two fields appear in the actual
+    `POST /api/autograb-batch` body. **If a future session is tempted to give
+    `AdultCard` its inline Grab button back, understand first that the button
+    carried unique capability no other card's did — and that threading
+    `downloadUrl` into `DetailPopup` instead would restore the one-click path
+    properly and make this whole note moot.**
+
+    **Poster sizes changed with it** (pure layout, no behavior):
+    Mainstream/Library `PosterCard`/`LibraryCard` 180px → **220px**
+    (`aspect-[2/3]` unchanged), Adult `AdultCard` 200px → **240px**
+    (`aspect-video` unchanged). `EntityCard`'s studio/performer tiles
+    **deliberately stay at 200px** — they diverge from `AdultCard` now, which is
+    correct, so never blanket find/replace `w-[200px]` in `Adult.tsx`.
+    `CalendarView`'s grid container had to widen from `min-w-[92rem]` to
+    `min-w-[106rem]` to fit seven 220px columns; without it cards bleed into the
+    adjacent day at every viewport.
+
+    **`LibraryCard` gained DetailPopup wiring it never had**, and its click is
+    **guarded twice**, both deliberately: it is inert when `tmdbId <= 0` (a
+    tracked item TMDB never matched yields id 0, and the popup reads `item.id`
+    unconditionally — opening it would fire three requests keyed on 0 that
+    cannot succeed, silently), and inert while **select-mode is on**.
+
+    **The `insideModal` prop's full lifecycle, recorded because it is exactly
+    the "added, then correctly retired" story this file documents elsewhere.**
+    The season/episode picker redesign (same day, earlier) added `insideModal`
+    to `PosterCard`: inside `DetailPopup`'s "More like this" rail it suppressed
+    the Grab button on **Series** cards only, because that button's picker
+    opened a second `Modal` nested inside the popup's own — two
+    `fixed inset-0 z-50` overlays, both closing on one backdrop click. This
+    cleanup removed the Grab button from `PosterCard` outright, so the rail has
+    nothing left that can open a nested modal and `insideModal` became
+    unreachable; it was deleted from `PosterCard` and its `DetailPopup` call
+    site rather than left as dead code. **A deleted guard is only safe while
+    the invariant that made it dead still holds**, so that invariant —
+    every card body which opens `DetailPopup` is select-mode-inert, hence no
+    popup can be raised mid-bulk-select — has its own dedicated test
+    (`Discover.test.tsx`, "a LibraryCard body click is inert while select-mode
+    is on"). If any Grab affordance is ever reinstated on the recommendations
+    rail, a Series one re-creates the hazard and needs `insideModal` (or an
+    inline picker) back.
+
+    **CORRECTED — the paragraph above only states half the invariant, and
+    overstates its test coverage.** Quoted verbatim, the sentence being
+    corrected: *"that invariant — every card body which opens `DetailPopup` is
+    select-mode-inert, hence no popup can be raised mid-bulk-select — has its
+    own dedicated test."* True as far as it goes, but keeping `insideModal`
+    safely dead requires BOTH directions, and only one was named:
+
+    (a) **No card body opens `DetailPopup` while select-mode is on.** This is
+    the half that was stated. It is true, and it IS tested —
+    `Discover.test.tsx`, "a LibraryCard body click is inert while select-mode
+    is on."
+
+    (b) **Select-mode cannot be entered while a popup is open.** This half was
+    left out. It is also true today, but for a different kind of reason than
+    (a): `Modal` has no focus trap and the toolbar's Select button sits behind
+    `DetailPopup`'s own `fixed inset-0 z-50` overlay, so there is no
+    click/keyboard path to it while a popup is mounted. That is a
+    UI-occlusion argument, not a code guard — nothing in the select-mode store
+    or `DetailPopup` refuses to toggle select-mode while a popup is open, it is
+    simply unreachable by mouse or keyboard right now. Both directions are
+    load-bearing: (a) alone does not rule out entering select-mode WHILE a
+    popup is already open, which is exactly the case (b) closes.
+
+    **"Has its own dedicated test" also overstates coverage.** The cited test
+    covers only direction (a), and only for `LibraryCard` — it says nothing
+    about `PosterCard`/`AdultCard`, and direction (b) has no test at all,
+    because it is a layout/occlusion fact, not something the code enforces.
   - **AMENDED 2026-08-01 — bounded unattended Usenet auto-grab exception (a
     third, deliberate, documented reversal; see `docs/ROADMAP.md`'s
     "Eliminate Connections tab; Usenet multi-subscription settings" entry
@@ -1004,6 +1125,18 @@ above, so don't drop them for convenience:
       **Do NOT suppress Movies there** — a movie's grab opens no picker and
       nests nothing, and blanket suppression would remove a shipped
       affordance for a problem it does not have.
+      - **SUPERSEDED 2026-08-02 (later, same day) — the `insideModal`
+        suppression described in the two sentences above no longer exists, and
+        neither does the Grab button it suppressed.** The Discover card cleanup
+        removed `PosterCard`'s inline Grab button outright, so the
+        recommendations rail has nothing left that can open a nested modal;
+        `insideModal` was deleted from `PosterCard` and from its `DetailPopup`
+        call site as newly-unreachable code. The **"never a nested modal"
+        principle itself still stands and is still why `DetailPopup` renders
+        the picker inline** — only the rail-specific carve-out is retired.
+        Full lifecycle, plus the invariant whose test now protects the deleted
+        guard, is under **Established engineering conventions →
+        Staged-for-approval**'s CORRECTED 2026-08-02 (later, same day) note.
     - **The degraded fallback is required, and the spec never asked for it.**
       If the fetch errors or returns zero seasons, the component renders the
       **old two free-text `S`/`E` inputs** plus a one-line error. Without it,

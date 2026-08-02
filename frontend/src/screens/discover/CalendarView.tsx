@@ -129,13 +129,18 @@ export const CalendarView: Component<{
         </Show>
       </div>
 
-      {/* min-w must fit 7 columns of a 180px PosterCard + its cell padding
-          (~192px each) so a day's card never overflows into the next day —
+      {/* min-w must fit 7 columns of a 220px PosterCard + each cell's own
+          chrome, so a day's card never overflows into the next day. The cells
+          below are border-box (Tailwind preflight), so a column needs
+          220 + 12 (p-1.5, 6px/side) + 2 (1px border/side) = 234px, plus the 6
+          gap-2 gutters: 7×234 + 6×8 = 1686px, hence 106rem (1696px).
           grid-cols-7 is minmax(0,1fr), which would otherwise shrink columns
-          below the card's fixed width. overflow-x-auto scrolls it on narrow
-          viewports. */}
+          below the card's fixed width, and overflow-x-auto sits OUTSIDE this
+          min-w so it cannot compensate — it only scrolls the whole grid on
+          narrow viewports.
+          Review if: PosterCard's w-[220px] or the cell's p-1.5/border changes. */}
       <div class="overflow-x-auto">
-        <div class="min-w-[92rem]">
+        <div class="min-w-[106rem]">
           <div class="grid grid-cols-7 gap-2">
             <For each={WEEKDAYS}>
               {(w) => (

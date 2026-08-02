@@ -1,11 +1,11 @@
 // RssFeedCard — one item from an admin-added raw RSS feed row (NZBGeek
 // saved-search style). Text-forward by default (title, pubDate, size, feed
-// name) with a single one-click Grab button — mirrors AdultCard's existing
-// quick-grab button's request/response/"Grabbed" state handling (shared.tsx's
-// GrabDialog.pickManual), but with NO DetailPopup integration: an RSS item is
-// already a fully-resolved release (a real downloadUrl+protocol in hand), so
-// there's no candidate-selection step to gate behind a click-through popup
-// the way TMDB/TPDB catalog items need. Calls manualGrab directly, reusing
+// name) with a single one-click Grab button — modelled on the request/response/
+// "Grabbed" state handling AdultCard's own quick-grab button used to have
+// (shared.tsx's GrabDialog.pickManual), but with NO DetailPopup integration: an
+// RSS item is already a fully-resolved release (a real downloadUrl+protocol in
+// hand), so there's no candidate-selection step to gate behind a click-through
+// popup the way TMDB/TPDB catalog items need. Calls manualGrab directly, reusing
 // the existing /search/grab endpoint unchanged (see internal/grabs +
 // internal/api/search.go's dispatchToDownloadClient — protocol-agnostic, no
 // new grab machinery needed for this feature).

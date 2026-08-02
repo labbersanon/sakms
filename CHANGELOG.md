@@ -4634,3 +4634,120 @@ is an observation to hand over, not a claim to make.
 **Outcome:** documentation-only pass — no code touched, nothing built or
 tested here. Implementation, its tests, and the stale-comment sweep are the
 concurrent waves' work.
+
+## 2026-08-02 — Discover card cleanup: inline Grab buttons removed, posters enlarged, `insideModal` retired
+
+Frontend-only. No Go changes, no API changes, no DTO changes, no migrations.
+Plan: `.omc/plans/autopilot-impl-discover-card-cleanup.md`; spec:
+`.omc/specs/deep-interview-discover-card-cleanup.md`.
+
+`PosterCard`, `LibraryCard` and `AdultCard` lost their always-visible inline
+**Grab** buttons. Clicking the card body opens `DetailPopup`, which is now the
+sole grab affordance those three cards offer. Poster widths went 180→**220px**
+(Mainstream/Library, `aspect-[2/3]` unchanged) and 200→**240px** (Adult,
+`aspect-video` unchanged). `EntityCard`'s studio/performer tiles deliberately
+stay at 200px and now diverge from `AdultCard` — a logo tile is not a scene
+card, so `w-[200px]` must never be blanket-replaced in `Adult.tsx`.
+`CalendarView`'s grid widened `min-w-[92rem]` → `min-w-[106rem]`: it is pinned
+to the card width, and seven 220px columns need 1672px of content box, so
+without it cards bleed into the adjacent day at every viewport (the plan's own
+first-draft arithmetic missed border-box sizing and said 105rem).
+
+**Recorded honestly, reversing the spec's own framing: this is a mechanism
+substitution, not a clean relocation.** The spec stated, verbatim, that it was
+"a clean relocation, not a capability loss or a new-infrastructure build —
+verified via two rounds of code research." Checked against source, that is
+false. The removed button called **`autoGrab`** (`internal/autograb`'s
+bitrate-quality-floor scorer picks the release; one click). `DetailPopup` calls
+**`manualGrab`** with a candidate the operator picks by hand off the
+availability grid. **Discover now has no per-card one-click auto-grab.** The
+decision itself stands — Wade chose the popup path explicitly and separately
+declined the icon-only alternative — but the justification was wrong, and this
+is written down so nobody "verifies" the work by asserting behavior is
+unchanged. `internal/autograb` is still reached from Discover two ways:
+select-mode bulk grab (`autoGrabBatch`, untouched) and `TraktWatchlistRow`,
+deliberately left out of scope, which keeps its inline `GrabButton`. That makes
+the Trakt row the only card-level one-click auto-grab left in Discover and
+`TraktWatchlistRow.tsx` the sole remaining consumer of the still-exported
+`GrabButton`/`GrabDialog` pair — neither is dead code.
+
+**Adult's direct-enclosure (Prowlarr-skipping) single grab is the one real
+capability loss, and it is mitigated rather than replaced.** `AdultCard`'s
+`sceneTarget()` carries `downloadUrl` + `downloadProtocol`, which let a
+fresh-feed scene dispatch straight to the download client with zero indexer
+queries. `DetailPopup`'s Adult path cannot carry them — it grabs a
+Prowlarr-sourced candidate by construction. The capability survives only
+through select-mode bulk grab, whose `sceneTarget()` is untouched. Because the
+plan accepts the loss *on the grounds that select-mode preserves it*, that
+mitigation is now exercised by an actual test rather than a code-trace claim:
+`Adult.grab.test.tsx` selects a fresh-feed scene, clicks "Grab all", and asserts
+`items[0].request` in the real `POST /api/autograb-batch` body contains both
+fields — mutation-verified (deleting the two fields from `sceneTarget()` fails
+it). Its negative twin asserts both keys are absent for an enclosure-less scene.
+
+**`LibraryCard` gained `DetailPopup` wiring it never had** — before this it had
+no `onDetail` prop, no body click handler and no popup route at all. Its click
+is guarded twice: inert when `tmdbId <= 0` (a tracked item TMDB never matched
+yields id 0, and the popup reads `item.id` unconditionally, so opening it would
+fire three requests keyed on 0 that cannot succeed, with no error surfaced), and
+inert while select-mode is on. Both guards are mutation-verified by their own
+test cases.
+
+**`insideModal` was added and correctly retired within one day.** The
+season/episode picker redesign (earlier the same day) introduced it on
+`PosterCard` to suppress the Grab button on Series cards in `DetailPopup`'s
+"More like this" rail, because that button's picker opened a second `Modal`
+nested inside the popup's own. This change removed that Grab button entirely, so
+the prop became unreachable and was deleted from `PosterCard` and its
+`DetailPopup` call site. A deleted guard is only safe while the invariant that
+made it dead still holds, so that invariant — every card body which opens
+`DetailPopup` is select-mode-inert, so no popup can be raised mid-bulk-select —
+now has its own dedicated test.
+
+**Test suite: 641 → 644 tests, 30 failing → 0.** The 30 red cases were all
+collateral from waves 1 and 2. Notable conversions, since two of them changed a
+suite's subject rather than just its selectors:
+
+- `Discover.grab.test.tsx`'s eleven Mainstream cases (the `GrabDialog` missing-
+  service setup prompts, the fallback pick list, the 423-pause path, the Series
+  picker gating) now enter through the **Trakt watchlist row's** card, via a
+  one-line fixture change to `mainstreamDefaults`. They were deliberately NOT
+  re-pointed at `DetailPopup`, which has no equivalent of `GrabDialog`'s
+  in-dialog setup forms — doing so would have silently deleted every
+  setup-prompt assertion in the file behind a green suite.
+- Its Adult `durationSeconds` case moved to select-mode bulk grab, Adult having
+  no Trakt equivalent.
+- `Discover.search.test.tsx`'s browse-row regression guard lost its "keeps its
+  Grab button" assertions: M3's searched-vs-browse contrast is now purely about
+  what the click does, since neither card type has a button. The searched-card
+  "no Grab" absence assertions (AC5) survive unmodified, as intended.
+- `DetailPopup.test.tsx`'s `insideModal` case now asserts neither a Movie nor a
+  Series recommendation card carries a Grab button, and that the popup's own
+  Grab is the only one in the tree.
+- `Discover.select.test.tsx` and `TraktWatchlistRow.test.tsx` pass **unmodified**,
+  which is the intended signal that select-mode and Trakt were not touched.
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/discover/Mainstream.tsx` | `PosterCard` 180→220px, inline `GrabButton` mount and its `!onOpenReleases \|\| inSelect()` gate removed, `insideModal` prop removed; `LibraryCard` 180→220px, `GrabButton` removed, new guarded `onDetail`/body click; `onDetail` threaded through `LibraryRow` and its mount. `GrabButton` itself kept and still exported (Trakt) |
+| `frontend/src/screens/discover/Adult.tsx` | `AdultCard` 200→240px, inline Grab `<Button>` + `grab` accessor + `onGrab` prop removed; `grabTarget` signal, `<GrabDialog>` mount and its import removed (`noUnusedLocals` made this mandatory, not optional). `EntityCard` untouched at 200px |
+| `frontend/src/screens/discover/DetailPopup.tsx` | `insideModal` call-site arg removed; header comment records the prop's full add-then-retire lifecycle. No behavioral change |
+| `frontend/src/screens/discover/CalendarView.tsx` | `min-w-[92rem]` → `min-w-[106rem]` + rewritten arithmetic comment |
+| `frontend/src/screens/discover/Adult.grab.test.tsx` | Both direct-enclosure cases re-pointed from the removed inline Grab to select-mode bulk grab; new `SelectionProvider` + `BulkBar` harness; asserts the `POST /api/autograb-batch` payload (AC9's second Adult leg) |
+| `frontend/src/screens/Discover.test.tsx` | Width selectors re-pointed (220px PosterCard / 240px AdultCard / 200px EntityCard kept); AdultCard-vs-EntityCard discriminator rebuilt on click behavior; Series drill re-pointed to the popup's inline picker; **three new `LibraryCard` cases** (opens popup, `tmdbId`-0 inert, select-mode inert) |
+| `frontend/src/screens/Discover.grab.test.tsx` | Mainstream cases re-pointed to the Trakt row; Adult case moved to bulk grab; searched-Series width selector |
+| `frontend/src/screens/Discover.search.test.tsx` | Seven width selectors; two "keeps its Grab button" assertions removed; header corrected |
+| `frontend/src/screens/discover/DetailPopup.test.tsx` | `insideModal` case rewritten; recs-rail `findAllByRole` → `findByRole` |
+| `CLAUDE.md` | Bulk-grab exception's sentence 2 corrected in its other half (quoted verbatim, stacked on the same-day episode-granularity note, not replacing it); picker-redesign's `insideModal` bullet marked superseded |
+| `docs/ROADMAP.md` | Card-cleanup entry flipped to shipped |
+| `CHANGELOG.md` | This entry |
+
+**Outcome:** `tsc --noEmit` clean, `vitest run` 644/644 passing, `vite build`
+clean. Three sign-off gates remain open and are non-blocking for code: **GATE-A**
+(Wade accepts trading Adult's one-click direct-enclosure grab for a Prowlarr
+round trip — now answerable with test evidence rather than assertion),
+**GATE-B** (the Trakt row keeping an inline auto-grab, so "DetailPopup is the
+sole grab path from Discover" is scoped to the three named card types),
+**GATE-C** (`DetailPopup` shows a bare but correct-and-actionable error where
+`GrabDialog` showed an inline connection-setup form). AC8 (visible-card-count
+and CalendarView layout) and AC9's popup leg remain manual browser checks.

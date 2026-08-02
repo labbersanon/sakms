@@ -253,7 +253,7 @@ describe("Discover — custom slider rows", () => {
   });
 
   it("routes a mixed-target slider's per-item grab mode from the item's own mediaType", async () => {
-    stubFetch((url) => {
+    const fetchMock = stubFetch((url) => {
       if (url === "/api/discover/sliders") {
         return jsonResponse([
           { id: 5, title: "Mixed Row", filterType: "trending", filterValue: "", target: "mixed", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
@@ -265,6 +265,8 @@ describe("Discover — custom slider rows", () => {
           movie({ id: 201, title: "Mixed Show Item", mediaType: "tv" }),
         ]);
       }
+      const av = availabilityDefaults(url);
+      if (av) return av;
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -275,29 +277,65 @@ describe("Discover — custom slider rows", () => {
     expect(await screen.findByText("Mixed Movie Item")).toBeInTheDocument();
     expect(await screen.findByText("Mixed Show Item")).toBeInTheDocument();
 
-    // The movie card grabs directly (no season/episode picker); the tv card
-    // opens the picker first — same per-item routing LibraryRow/ModedTitle
-    // already rely on elsewhere in this file.
+    // Claude 2026-08-02: this used to click each card's inline Grab button and
+    // assert a GrabDialog vs. a season-picker Modal. Both cards' Grab buttons
+    // were removed by the Discover card cleanup, so per-item mode routing is
+    // now observed through DetailPopup instead — which shows it just as
+    // sharply: a movie's popup lands straight on the availability grid, a
+    // series' popup is gated behind the season/episode step first.
+    // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §1.2 — the
+    // routing being asserted (mixed slider → per-item mediaType) is unchanged;
+    // only the surface that reveals it moved.
+    // Review if: sliders ever gain a mode-independent grab path.
     const movieCard = screen
       .getByText("Mixed Movie Item")
-      .closest("div.w-\\[180px\\]") as HTMLElement;
-    fireEvent.click(within(movieCard).getByText("Grab"));
-    expect(await screen.findByText(/Grab — Mixed Movie Item/)).toBeInTheDocument();
+      .closest("div.w-\\[220px\\]") as HTMLElement;
+    fireEvent.click(within(movieCard).getByText("Mixed Movie Item"));
+    // Movies are ungated: the popup's resolution selector renders immediately
+    // and no season grid is offered.
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Season 1.*eps/ })).toBeNull();
     fireEvent.click(screen.getByText("Close"));
+
+    // Snapshot BEFORE the show card's click: the movie popup above already fired
+    // its own /discover/availability call, so a bare "no availability call ever"
+    // assertion would be false regardless of gating. The backstop has to be "no
+    // NEW availability call", same pattern as the tmdbId-0 click-inert test.
+    const availabilityCallsBefore = fetchMock.mock.calls.filter(([u]) =>
+      String(u).includes("/discover/availability"),
+    ).length;
 
     const showCard = screen
       .getByText("Mixed Show Item")
-      .closest("div.w-\\[180px\\]") as HTMLElement;
-    fireEvent.click(within(showCard).getByText("Grab"));
-    // AC7 at call site 1: Grab opens the two-level poster GRID in a modal, not
-    // the free-text S/E inputs it replaced.
+      .closest("div.w-\\[220px\\]") as HTMLElement;
+    fireEvent.click(within(showCard).getByText("Mixed Show Item"));
+    // Series are gated: the two-level poster GRID renders first (not the
+    // free-text S/E inputs it replaced), and the availability grid stays
+    // suppressed until a pick is made.
     expect(
-      await within(showCard).findByRole("button", { name: /Season 1.*eps/ }),
+      await screen.findByRole("button", { name: /Season 1.*eps/ }),
     ).toBeInTheDocument();
-    expect(within(showCard).queryByLabelText("Season")).toBeNull();
+    expect(screen.queryByLabelText("Season")).toBeNull();
+    // "480p" is async-vacuous on its own (null on this tick whether gated or
+    // not) — the real proof is the backstop below: no NEW availability request
+    // fired while the popup sat on the season grid.
+    expect(screen.queryByText("480p")).toBeNull();
+    expect(
+      fetchMock.mock.calls.filter(([u]) => String(u).includes("/discover/availability"))
+        .length,
+    ).toBe(availabilityCallsBefore);
   });
 
-  it("a Discover Series card's Grab drills season → episode and grabs the picked episode", async () => {
+  // Claude 2026-08-02: re-pointed from the card's inline Grab button (removed by
+  // the Discover card cleanup) to the card body → DetailPopup entry path.
+  // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §7 item 2 — the
+  // season→episode drill itself is unchanged, but DetailPopup renders the picker
+  // INLINE as its own gating step rather than in a nested Modal, so the drill is
+  // asserted at popup scope, not card scope. The pick is proved by the
+  // season/episode params on the availability request it gates, which is the
+  // popup's equivalent of the GrabDialog title this used to assert on.
+  // Review if: DetailPopup stops gating Series behind the picker.
+  it("a Discover Series card's body click drills season → episode in DetailPopup and scopes availability to the picked episode", async () => {
     const calls: string[] = [];
     stubFetch((url) => {
       calls.push(url);
@@ -305,8 +343,8 @@ describe("Discover — custom slider rows", () => {
         return jsonResponse([
           movie({ id: 77, title: "Gridded Show", mediaType: "tv" }),
         ]);
-      if (url.includes("/api/modes/series/autograb"))
-        return jsonResponse({ grabbed: true, fallback: false, message: "ok", candidates: [] });
+      const av = availabilityDefaults(url);
+      if (av) return av;
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -314,23 +352,39 @@ describe("Discover — custom slider rows", () => {
 
     render(() => <Discover />);
     const card = (await screen.findByText("Gridded Show")).closest(
-      "div.w-\\[180px\\]",
+      "div.w-\\[220px\\]",
     ) as HTMLElement;
 
-    fireEvent.click(within(card).getByText("Grab"));
-    // The picker self-fetches — the card holds only a tmdbId, so it asks for
-    // just the season block rather than the whole detail bundle.
-    await within(card).findByRole("button", { name: /Season 2.*eps/ });
-    expect(
-      calls.some((u) => u.includes("/discover/detail") && u.includes("sections=seasons")),
-    ).toBe(true);
+    fireEvent.click(within(card).getByText("Gridded Show"));
+    // The popup opens on the season grid, not the availability grid — the
+    // gating step must come first for Series.
+    await screen.findByRole("button", { name: /Season 2.*eps/ });
+    expect(screen.queryByText("480p")).toBeNull();
+    // The season data came from the popup's own detail bundle, NOT the picker's
+    // card-path self-fetch: passing `seasons` at all switches self-fetching off
+    // (SeasonEpisodePicker's own prop doc), so no ?sections=seasons request
+    // fires here. This is the concrete difference between the two mount shapes
+    // and the reason this case could not just be re-selectored.
+    expect(calls.some((u) => u.includes("/discover/detail"))).toBe(true);
+    expect(calls.some((u) => u.includes("sections=seasons"))).toBe(false);
+    // No availability search fired while the popup was still gated.
+    expect(calls.some((u) => u.includes("/discover/availability"))).toBe(false);
 
     // Drill into Season 2, take episode 1.
-    fireEvent.click(within(card).getByRole("button", { name: /Season 2.*eps/ }));
-    fireEvent.click(within(card).getByRole("button", { name: /E1 · Ep 1/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Season 2.*eps/ }));
+    fireEvent.click(screen.getByRole("button", { name: /E1 · Ep 1/ }));
 
-    // The picker modal closes and the grab dialog opens for exactly that pick.
-    expect(await screen.findByText(/Grab — Gridded Show S2E1/)).toBeInTheDocument();
+    // The gate clears and the availability grid renders, scoped to exactly the
+    // picked (season, episode) — the proof the drill's pick was threaded.
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(
+      calls.some(
+        (u) =>
+          u.includes("/discover/availability") &&
+          u.includes("season=2") &&
+          u.includes("episode=1"),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -410,6 +464,138 @@ describe("Discover — existing-library row", () => {
       expect(src.startsWith("/api/images/proxy?url=")).toBe(true);
       expect(src.startsWith("https://image.tmdb.org")).toBe(false);
     }
+  });
+
+  // Claude 2026-08-02: LibraryCard's DetailPopup wiring is NEW — before the
+  // Discover card cleanup this card had no onDetail prop, no body click handler,
+  // and no popup route at all; its only affordance was an inline Grab button,
+  // which that cleanup removed. So these three cases are additive coverage for a
+  // capability that did not previously exist, not re-pointed old ones.
+  // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §2.3 and §0.3.
+  // Review if: LibraryCard's click handler stops being guarded.
+  it("clicking a LibraryCard's body opens DetailPopup for that tracked title", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([tracked({ id: 10, title: "Owned Movie", tmdbId: 500, year: 2020 })]);
+      if (url.includes("/api/modes/movies/poster?tmdbId=500"))
+        return jsonResponse({ posterPath: "/libmovie.jpg" });
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    await screen.findByText("Owned Movie");
+    const card = screen
+      .getByText("Owned Movie")
+      .closest("div.w-\\[220px\\]") as HTMLElement;
+
+    // AC2: the inline Grab button is gone; the body click replaced it.
+    expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
+
+    fireEvent.click(within(card).getByText("Owned Movie"));
+    // The popup's own resolution selector — markup a LibraryCard never renders.
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+  });
+
+  // §0.3's guard. This is the ONLY verification of it, and the defect it
+  // prevents is silent: LibraryCard's tmdbId() is `props.item.tmdbId ?? 0`, so a
+  // tracked item TMDB never matched yields id 0, and DetailPopup reads item.id
+  // unconditionally — opening it would fire three requests keyed on 0 that
+  // cannot succeed, with a degraded popup and no error to show for it.
+  it("a LibraryCard with no TMDB id is click-inert — no popup, and no doomed detail/trailer/availability request", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tracked"))
+        // tmdbId 0 is what a tracked item TMDB never matched actually stores.
+        return jsonResponse([tracked({ id: 12, title: "Unmatched Movie", tmdbId: 0, year: 2021 })]);
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    // A tmdbId-0 card resolves no poster, so it falls back to TextPoster — which
+    // repeats the title. Both matches sit inside the same card wrapper, so
+    // either one climbs to it; findAllByText avoids the multiple-match throw.
+    const titles = await screen.findAllByText("Unmatched Movie");
+    const card = titles[0]!.closest("div.w-\\[220px\\]") as HTMLElement;
+
+    // The card must not even advertise a click it will not honor.
+    expect(card.querySelector(".cursor-pointer")).toBeNull();
+
+    // Snapshot BEFORE the click: other rows legitimately fire these endpoints on
+    // mount, so the assertion has to be "no NEW popup request", not "none ever".
+    const popupCallsBefore = calls.mock.calls.filter(([u]) =>
+      /\/discover\/(detail|trailer|availability)/.test(String(u)),
+    ).length;
+
+    fireEvent.click(titles[0]!);
+
+    // No popup opened. Asserted on the Modal's OWN chrome ("Close"), which
+    // renders synchronously with the popup, NOT on "480p" — that comes from the
+    // async availability resource, so a queryByText for it is null on this tick
+    // whether the popup opened or not (same fix applied to the sibling
+    // select-mode-inert test below).
+    expect(screen.queryByText("Close")).not.toBeInTheDocument();
+    // ...and not one further doomed request fired.
+    expect(
+      calls.mock.calls.filter(([u]) =>
+        /\/discover\/(detail|trailer|availability)/.test(String(u)),
+      ).length,
+    ).toBe(popupCallsBefore);
+  });
+
+  // The select-mode half of the same guard. This invariant is load-bearing well
+  // beyond LibraryCard: it is precisely what made the picker redesign's
+  // `insideModal` nested-modal-suppression prop unreachable and therefore safe
+  // to delete (§7 item 1). If a LibraryCard body click ever opened DetailPopup
+  // while select-mode was on, a popup could be raised mid-bulk-select and its
+  // recommendation rail could nest a second Modal inside the first — the exact
+  // hazard `insideModal` used to guard. Deleting a guard is only safe while the
+  // invariant that made it dead still holds, so the invariant gets its own test.
+  it("a LibraryCard body click is inert while select-mode is on (the invariant that let insideModal be removed)", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([tracked({ id: 10, title: "Owned Movie", tmdbId: 500, year: 2020 })]);
+      if (url.includes("/api/modes/movies/poster?tmdbId=500"))
+        return jsonResponse({ posterPath: "/libmovie.jpg" });
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    await screen.findByText("Owned Movie");
+    fireEvent.click(screen.getByText("Select"));
+
+    const card = screen
+      .getByText("Owned Movie")
+      .closest("div.w-\\[220px\\]") as HTMLElement;
+    fireEvent.click(within(card).getByText("Owned Movie"));
+
+    // No popup — even though this same click opens one outside select-mode.
+    // Asserted on the Modal's OWN chrome ("Close"), which renders synchronously
+    // with the popup, NOT on "480p": that comes from the async availability
+    // resource, so a queryByText for it is null on this tick whether the popup
+    // opened or not, and would pass even with the guard removed.
+    expect(screen.queryByText("Close")).not.toBeInTheDocument();
+    // And LibraryCard is not selectable either (it registers no key and shows
+    // no checkbox), so the click did nothing at all rather than silently
+    // selecting something the BulkBar would then grab.
+    expect(within(card).queryAllByTestId("select-checkbox")).toHaveLength(0);
+    expect(screen.queryByText("Grab all")).not.toBeInTheDocument();
+
+    // Leaving select-mode restores the popup route — proving the inertness is
+    // the select-mode guard, not a broken handler.
+    fireEvent.click(screen.getByText("Done selecting"));
+    fireEvent.click(within(card).getByText("Owned Movie"));
+    expect(await screen.findByText("480p")).toBeInTheDocument();
   });
 });
 
@@ -731,13 +917,13 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
 
     // The TPDB scene's subtitle has no source label. getByText("Plain TPDB
     // Scene") returns the title <div> itself (Element.closest matches self),
-    // so climb to the card's outer wrapper (the "w-[200px]" card root, a sibling
+    // so climb to the card's outer wrapper (the "w-[240px]" card root, a sibling
     // container of the subtitle <div>) before scoping the query. Scoped to
     // the dedicated subtitle line (.text-xs.text-muted), not the whole card —
     // the card's CSS-only hover overlay (DetailPopup wiring) also renders the
     // same "Tushy · 2023" text for its truncated preview, which a bare
     // within(card).getByText match would ambiguously match twice.
-    const tpdbCard = screen.getByText("Plain TPDB Scene").closest(".w-\\[200px\\]");
+    const tpdbCard = screen.getByText("Plain TPDB Scene").closest(".w-\\[240px\\]");
     const tpdbSubtitle = (tpdbCard as HTMLElement).querySelector(
       ".text-xs.text-muted",
     );
@@ -749,7 +935,7 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     // rather than a text match, since the title itself ("Merged StashDB
     // Scene") also contains the substring "StashDB" and the subtitle also
     // carries a year segment (studio · year · source).
-    const stashCard = screen.getByText("Merged StashDB Scene").closest(".w-\\[200px\\]");
+    const stashCard = screen.getByText("Merged StashDB Scene").closest(".w-\\[240px\\]");
     const stashSubtitle = (stashCard as HTMLElement).querySelector(
       ".text-xs.text-muted",
     );
@@ -872,6 +1058,8 @@ describe("Discover — Adult admin newest rows", () => {
           { id: 2, title: "Newest Performers", rowType: "performer", sortOrder: 1, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
           { id: 3, title: "Hidden Studios", rowType: "studio", sortOrder: 2, enabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
         ]);
+      const av = availabilityDefaults(url);
+      if (av) return av;
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -892,14 +1080,27 @@ describe("Discover — Adult admin newest rows", () => {
     expect(await screen.findByText("Fresh Scene")).toBeInTheDocument();
     expect(await screen.findByText("Fresh Performer")).toBeInTheDocument();
 
-    // A scene/movie row's card is grab-able (AdultCard); a performer/studio
-    // row's card has no Grab button — it drills into that entity's live
-    // scenes instead (EntityCard's onSelect, see the AdultDiscover — newest
-    // drill-down describe block below).
-    const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[200px\\]") as HTMLElement;
-    expect(within(sceneCard).getByText("Grab")).toBeInTheDocument();
+    // Claude 2026-08-02: this pair used to tell AdultCard from EntityCard by
+    // Grab-button PRESENCE. After the Discover card cleanup neither card has
+    // one, so that discriminator proves nothing — replaced with the affordance
+    // that actually differs now: a scene card's body opens DetailPopup, an
+    // entity tile's body drills into that entity's live scenes.
+    // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §7.1's
+    // discriminator note. The width selectors also diverge here for the first
+    // time — AdultCard went 200px → 240px, EntityCard deliberately stayed at
+    // 200px (a studio/performer tile is not a scene card).
+    // Review if: EntityCard is ever resized to match AdultCard.
+    const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[240px\\]") as HTMLElement;
+    fireEvent.click(within(sceneCard).getByText("Fresh Scene"));
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Close"));
+
     const perfCard = screen.getByText("Fresh Performer").closest(".w-\\[200px\\]") as HTMLElement;
-    expect(within(perfCard).queryByText("Grab")).not.toBeInTheDocument();
+    // This null check IS the 200px/240px divergence guard — without it, an
+    // EntityCard resized to 240px makes .closest() return null and every
+    // assertion below silently passes against nothing.
+    expect(perfCard).not.toBeNull();
+    expect(within(perfCard).queryByText("480p")).not.toBeInTheDocument();
     expect(screen.getByText("Fresh Performer").closest("button")).toBeTruthy();
   });
 
@@ -1111,7 +1312,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     render(() => <Discover />);
     await screen.findByText("Hover Movie");
 
-    const card = screen.getByText("Hover Movie").closest("div.w-\\[180px\\]") as HTMLElement;
+    const card = screen.getByText("Hover Movie").closest("div.w-\\[220px\\]") as HTMLElement;
     // The old title=overview tooltip is gone from the card's outer wrapper.
     expect(card.getAttribute("title")).toBeNull();
 
@@ -1121,17 +1322,19 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     expect(overlay.parentElement?.className).toContain("group-hover:opacity-100");
   });
 
-  it("clicking a PosterCard's body opens DetailPopup; the card's own Grab button still fires the unchanged quick-grab path", async () => {
-    const calls = stubFetch((url) => {
+  // Claude 2026-08-02: the second half of this case ("the card's own Grab button
+  // still fires the unchanged quick-grab path") was deleted — PosterCard has no
+  // inline Grab button any more, and DetailPopup is the card's only grab route.
+  // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §1.2. The
+  // ABSENCE assertion added below is AC1's machine check: it is what would catch
+  // a future session restoring the button without reading §0.1 first (the button
+  // called autoGrab; the popup calls manualGrab — a mechanism substitution, not
+  // a relocation).
+  // Review if: a per-card one-click auto-grab is ever deliberately reinstated.
+  it("clicking a PosterCard's body opens DetailPopup, and the card carries no inline Grab button of its own", async () => {
+    stubFetch((url) => {
       if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
         return jsonResponse([movie({ id: 1, title: "Click Movie" })]);
-      if (url.includes("/api/modes/movies/autograb"))
-        return jsonResponse({
-          grabbed: true,
-          fallback: false,
-          message: "auto-grabbed Click.Movie",
-          grab: { id: 1, mode: "movies", title: "Click Movie", status: "queued" },
-        });
       const av = availabilityDefaults(url);
       if (av) return av;
       const d = mainstreamDefaults(url);
@@ -1141,7 +1344,10 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
 
     render(() => <Discover />);
     await screen.findByText("Click Movie");
-    const card = screen.getByText("Click Movie").closest("div.w-\\[180px\\]") as HTMLElement;
+    const card = screen.getByText("Click Movie").closest("div.w-\\[220px\\]") as HTMLElement;
+
+    // AC1: no inline Grab button survives on the card itself.
+    expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
     fireEvent.click(within(card).getByText("Click Movie"));
 
@@ -1151,15 +1357,6 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
 
     fireEvent.click(screen.getByText("Close"));
     expect(screen.queryByText("480p")).not.toBeInTheDocument();
-
-    // The card's own Grab button is untouched by the click-to-open wiring —
-    // it still fires the existing one-click auto-grab shortcut directly, not
-    // routed through the popup.
-    fireEvent.click(within(card).getByText("Grab"));
-    expect(await screen.findByText(/auto-grabbed/)).toBeInTheDocument();
-    expect(
-      calls.mock.calls.some(([u]) => String(u).includes("/autograb")),
-    ).toBe(true);
   });
 
   it("AdultCard shows a hover overlay (studio/date summary — scenes carry no overview field) and no longer carries the title= tooltip", async () => {
@@ -1183,14 +1380,27 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Hover Scene");
 
-    const card = screen.getByText("Hover Scene").closest(".w-\\[200px\\]") as HTMLElement;
+    const card = screen.getByText("Hover Scene").closest(".w-\\[240px\\]") as HTMLElement;
     expect(card.getAttribute("title")).toBeNull();
 
     const overlay = within(card).getByText("Tushy · 2023", { selector: "p" });
     expect(overlay.parentElement?.className).toContain("group-hover:opacity-100");
   });
 
-  it("clicking an AdultCard's body opens DetailPopup; the card's own Grab button still fires the unchanged quick-grab path", async () => {
+  // Claude 2026-08-02: same edit as the PosterCard case above — AdultCard's
+  // inline Grab button is gone, so its half of this test is replaced with an
+  // absence assertion (AC3).
+  // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §3.2. AdultCard's
+  // body→DetailPopup wiring itself is UNCHANGED by that cleanup (it predates
+  // this work); this case is what proves the popup still opens correctly in
+  // Adult mode now that it is the card's only grab route.
+  // Troubleshooting: the Adult popup is the one that CANNOT carry
+  // downloadUrl/downloadProtocol — the direct-enclosure capability that used to
+  // ride the deleted button now survives only via select-mode bulk grab, which
+  // Adult.grab.test.tsx covers (§0.2/GATE-A). Do not read this passing test as
+  // "the Adult grab path is fully equivalent to before"; it is not.
+  // Review if: DetailPopup learns to thread downloadUrl through its Adult grab.
+  it("clicking an AdultCard's body opens DetailPopup in Adult mode, and the card carries no inline Grab button of its own", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/newest-rows/1/resolve"))
         return jsonResponse([
@@ -1200,13 +1410,6 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
         return jsonResponse([
           { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
         ]);
-      if (url.includes("/api/modes/adult/autograb"))
-        return jsonResponse({
-          grabbed: true,
-          fallback: false,
-          message: "auto-grabbed Click.Scene",
-          grab: { id: 2, mode: "adult", title: "Click Scene", status: "queued" },
-        });
       const av = availabilityDefaults(url);
       if (av) return av;
       const d = mainstreamDefaults(url);
@@ -1217,19 +1420,28 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Click Scene");
-    const card = screen.getByText("Click Scene").closest(".w-\\[200px\\]") as HTMLElement;
+    const card = screen.getByText("Click Scene").closest(".w-\\[240px\\]") as HTMLElement;
+
+    // AC3: no inline Grab button survives on the scene card itself.
+    expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
     fireEvent.click(within(card).getByText("Click Scene"));
     expect(await screen.findByText("480p")).toBeInTheDocument();
 
+    // Opened in ADULT mode, not misrouted through a TMDB path: the availability
+    // search is the adult one and carries the scene's studio, and no TMDB-only
+    // detail/trailer bundle was fetched for it.
+    expect(
+      calls.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/adult/discover/availability"),
+      ),
+    ).toBe(true);
+    expect(
+      calls.mock.calls.some(([u]) => String(u).includes("/discover/trailer")),
+    ).toBe(false);
+
     fireEvent.click(screen.getByText("Close"));
     expect(screen.queryByText("480p")).not.toBeInTheDocument();
-
-    fireEvent.click(within(card).getByText("Grab"));
-    expect(await screen.findByText(/auto-grabbed/)).toBeInTheDocument();
-    expect(
-      calls.mock.calls.some(([u]) => String(u).includes("/autograb")),
-    ).toBe(true);
   });
 });
 

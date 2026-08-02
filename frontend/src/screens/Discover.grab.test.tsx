@@ -1,9 +1,27 @@
-// Auto-grab UI tests — the per-mode grab-trigger flows on the redesigned
-// combined Mainstream page: Movies direct grab, the manual fallback pick list,
-// the Series season/episode picker gating (per-item mode: a series card still
-// gets its picker even though it sits beside movie cards on one page), and
-// Adult's runtime-sourced grab. Also the explicit no-bulk assertion: one click
-// fires exactly one auto-grab for exactly one title.
+// Auto-grab UI tests — the GrabButton → GrabDialog → autoGrab flows reachable
+// from Discover: Movies direct grab, the manual fallback pick list, the
+// "service isn't configured" in-dialog setup prompts, the Series season/episode
+// picker gating, and Adult's runtime-sourced grab. Also the explicit no-bulk
+// assertion: one click fires exactly one auto-grab for exactly one title.
+//
+// Claude 2026-08-02: these used to enter through a Discover CATEGORY-ROW card's
+// inline Grab button. The Discover card cleanup removed that button from
+// PosterCard/LibraryCard/AdultCard, so the Mainstream cases now enter through
+// the TRAKT WATCHLIST row's card instead — supplied by mainstreamDefaults'
+// trakt fixtures below.
+// Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §0.4 — Trakt is
+// explicitly OUT of scope for that cleanup and KEEPS its inline GrabButton, so
+// after it lands `TraktWatchlistRow` is the SOLE remaining consumer of
+// GrabButton and therefore the only live surface these flows have.
+// Troubleshooting: this is deliberately NOT re-pointed at DetailPopup, which
+// would have destroyed the coverage rather than moved it — DetailPopup calls
+// manualGrab with an operator-picked candidate and has NO equivalent of
+// GrabDialog's missing-service setup forms (§0.1, §0.2b). Re-pointing these
+// there would have silently deleted every setup-prompt assertion in this file
+// while leaving a green suite behind.
+// Review if: TraktWatchlistRow ever loses its Grab button too — at that point
+// GrabButton/GrabDialog have no consumer at all and this whole file, plus those
+// two components, should go together.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
@@ -58,8 +76,16 @@ const stubFetch = (handler: Handler) => {
   return calls;
 };
 
+// Claude 2026-08-02: excludes the BULK endpoint. "/api/autograb-batch" contains
+// the substring "/autograb", so a bare includes() would count a bulk submission
+// as a single auto-grab — and this file now has a case that fires one (the
+// Adult block below). Every current caller asserts an exact single-grab count,
+// which is precisely the assertion that would go quietly wrong.
+// Review if: a case ever wants to count both kinds together.
 const autograbCalls = (calls: Call[]) =>
-  calls.filter((c) => c.url.includes("/autograb"));
+  calls.filter(
+    (c) => c.url.includes("/autograb") && !c.url.includes("autograb-batch"),
+  );
 
 // mainstreamDefaults quiets the combined page's background fetches (the
 // three category rows, the library row, per-card poster probes,
@@ -97,8 +123,14 @@ const mainstreamDefaults = (url: string): Response | null => {
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+  // Linked Trakt + a one-movie watchlist is what puts a live inline Grab button
+  // on the page (see the file header) — the category-row cards no longer have
+  // one. tmdbId 1 / "Hero Movie" deliberately match the movie fixture the
+  // category rows used to supply, so every assertion body below is unchanged.
   if (url.includes("/api/trakt/status"))
-    return jsonResponse({ configured: false, linked: false });
+    return jsonResponse({ configured: true, linked: true });
+  if (url.includes("/api/trakt/watchlist"))
+    return jsonResponse([{ type: "movie", title: "Hero Movie", year: 2024, tmdbId: 1 }]);
   if (url.includes("/studios")) return jsonResponse([]);
   if (url.includes("/performers")) return jsonResponse([]);
   return null;
@@ -109,8 +141,6 @@ afterEach(() => vi.unstubAllGlobals());
 describe("Discover auto-grab — Movies (direct one-click)", () => {
   it("grabs the top qualifier on one click and shows success — exactly one auto-grab fires", async () => {
     const calls = stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return jsonResponse({
           grabbed: true,
@@ -138,8 +168,6 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
 
   it("shows the ranked manual pick list on fallback, and grabs one chosen release", async () => {
     const calls = stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return jsonResponse({
           grabbed: false,
@@ -191,8 +219,6 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
 describe("Discover auto-grab — duplicate grab (regression: guard response must not render a blank modal)", () => {
   it("an 'already grabbing' response (grabbed:false, no fallback) renders the message, not an empty dialog", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return jsonResponse({
           grabbed: false,
@@ -222,8 +248,6 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
 
   it("a non-JSON 400 (matching the real Go http.Error body) surfaces as a message, not a permanent loading state", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return plainTextError("some other backend failure\n");
       const d = mainstreamDefaults(url);
@@ -240,8 +264,6 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
 
   it("a prowlarr-not-configured failure shows the Prowlarr setup prompt instead of a bare error", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return plainTextError("prowlarr isn't configured yet — add it in Settings first\n");
       if (url.includes("/api/netscan/known")) return jsonResponse([]);
@@ -260,8 +282,6 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
 
   it("a discovered LAN Prowlarr is offered as a confirm-first hint, not auto-filled", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return plainTextError("prowlarr isn't configured yet — add it in Settings first\n");
       if (url.includes("/api/netscan/known"))
@@ -287,8 +307,6 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
 
   it("a qbittorrent-not-configured failure (found once a release is picked) prompts for URL + username + password, not just a key", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return plainTextError("qbittorrent isn't configured yet — add it in Settings first\n");
       if (url.includes("/api/netscan/known")) return jsonResponse([]);
@@ -311,8 +329,6 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
 
   it("an nzbget-not-configured failure prompts for URL + username + password", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return plainTextError("nzbget isn't configured yet — add it in Settings first\n");
       if (url.includes("/api/netscan/known")) return jsonResponse([]);
@@ -345,8 +361,6 @@ describe("Discover auto-grab — blocked by global pause (HTTP 423)", () => {
 
   it("surfaces the pause message when a grab is attempted while paused", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/modes/movies/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 1, title: "Hero Movie" })]);
       if (url.includes("/api/modes/movies/autograb"))
         return paused423(
           "downloads are globally paused — resume in the Downloads screen before grabbing new releases\n",
@@ -368,13 +382,14 @@ describe("Discover auto-grab — blocked by global pause (HTTP 423)", () => {
 });
 
 describe("Discover auto-grab — Series (per-item picker gates the grab)", () => {
-  it("a series card on the combined page reveals its picker first, then grabs the chosen episode", async () => {
-    // Only the Trending Shows row has a card → the single "Grab" is the series
-    // card, proving the per-item mode routes it through the series path even
-    // though it shares the page with (empty) movie rows.
+  it("a series card reveals its picker first, then grabs the chosen episode", async () => {
+    // A show-typed watchlist entry is the only card on the page → the single
+    // "Grab" is the series card, proving GrabButton routes a tv item through the
+    // series path (picker first) rather than the movie path (grab immediately).
+    // This override replaces mainstreamDefaults' movie watchlist fixture.
     const calls = stubFetch((url) => {
-      if (url.includes("/api/modes/series/discover") && url.includes("trending"))
-        return jsonResponse([movie({ id: 42, title: "A Series", mediaType: "tv" })]);
+      if (url.includes("/api/trakt/watchlist"))
+        return jsonResponse([{ type: "show", title: "A Series", year: 2024, tmdbId: 42 }]);
       if (url.includes("/api/modes/series/autograb"))
         return jsonResponse({
           grabbed: false,
@@ -414,8 +429,19 @@ describe("Discover auto-grab — Series (per-item picker gates the grab)", () =>
   });
 });
 
-describe("Discover auto-grab — Adult (runtime-sourced)", () => {
-  it("grabs a scene sourcing durationSeconds as the scorer runtime", async () => {
+// Claude 2026-08-02: Adult has no Trakt equivalent to re-point to — AdultCard's
+// inline Grab button was the only single-item auto-grab surface it had, and the
+// Discover card cleanup removed it outright. So this case moves to SELECT-MODE
+// BULK GRAB (POST /api/autograb-batch), the one surviving path from an
+// AdultCard to internal/autograb's scorer.
+// Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §0.2 — the same
+// mitigation Adult.grab.test.tsx's direct-enclosure cases rely on. What is being
+// asserted is unchanged: a REAL non-zero durationSeconds sourced from the item
+// reaches the scorer's request, which is what lets it grade an Adult release at
+// all (a duration-less Adult item is graded not-qualified by construction).
+// Review if: a single-item Adult auto-grab affordance is ever reinstated.
+describe("Discover auto-grab — Adult (runtime-sourced, via select-mode bulk)", () => {
+  it("carries a scene's real durationSeconds through as the scorer runtime", async () => {
     const calls = stubFetch((url) => {
       // The admin "newest rows" (the default-leading Adult scene row today)
       // are Prowlarr-matched cache entries with no real duration data — their
@@ -431,16 +457,25 @@ describe("Discover auto-grab — Adult (runtime-sourced)", () => {
           { service: "fansdb", url: "https://example.invalid", hasApiKey: true, updatedAt: "2024-01-01T00:00:00Z" },
         ]);
       if (url.includes("/api/modes/adult/discover/fansdb/recent"))
-        return jsonResponse([scene({ id: "s1", title: "Scene One", studio: "Vixen", durationSeconds: 2400, source: "fansdb" })]);
+        // Non-empty image so the card renders an <img>, not the TextPoster
+        // fallback — the fallback repeats the title, giving the click query
+        // below two matches.
+        return jsonResponse([scene({ id: "s1", title: "Scene One", studio: "Vixen", durationSeconds: 2400, source: "fansdb", image: "https://cdn.example/scene-one.jpg" })]);
       // No admin newest rows configured — keeps this test to exactly the one
-      // FansDB card, so "the" Grab button is unambiguous.
+      // FansDB card, so "the" selectable scene card is unambiguous.
       if (url.includes("/newest-rows")) return jsonResponse([]);
-      if (url.includes("/api/modes/adult/autograb"))
+      if (url.includes("/api/autograb-batch"))
         return jsonResponse({
-          grabbed: true,
-          fallback: false,
-          message: "auto-grabbed Vixen.Scene.One",
-          grab: { id: 3, mode: "adult", title: "Scene One", status: "queued" },
+          results: [
+            {
+              index: 0,
+              mode: "adult",
+              label: "Scene One",
+              grabbed: true,
+              fallback: false,
+              message: "auto-grabbed Vixen.Scene.One",
+            },
+          ],
         });
       const d = mainstreamDefaults(url);
       if (d) return d;
@@ -449,14 +484,27 @@ describe("Discover auto-grab — Adult (runtime-sourced)", () => {
 
     render(() => <Discover />);
     fireEvent.click(await screen.findByText("Adult"));
-    fireEvent.click(await screen.findByText("Grab"));
+    await screen.findByText("Scene One");
 
-    expect(await screen.findByText(/auto-grabbed/)).toBeInTheDocument();
-    expect(autograbCalls(calls)).toHaveLength(1);
-    expect(autograbCalls(calls)[0]!.body).toMatchObject({
-      title: "Scene One",
-      studio: "Vixen",
-      durationSeconds: 2400,
+    fireEvent.click(screen.getByText("Select"));
+    fireEvent.click(screen.getByText("Scene One"));
+    fireEvent.click(await screen.findByText("Grab all"));
+
+    // The submission really succeeded (BulkResultModal rendered the grabbed
+    // row), so the payload assertion below is not reading a swallowed error.
+    expect(await screen.findByText("✓ Grabbed")).toBeInTheDocument();
+
+    const batch = calls.find((c) => c.url.includes("/api/autograb-batch"));
+    expect(batch?.method).toBe("POST");
+    const items = (batch?.body as { items: { mode: string; request: unknown }[] }).items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      mode: "adult",
+      request: {
+        title: "Scene One",
+        studio: "Vixen",
+        durationSeconds: 2400,
+      },
     });
   });
 });
@@ -505,12 +553,19 @@ describe("Discover search — a searched Series result opens the release picker 
     );
 
     const card = (await screen.findByText("Searched Series")).closest(
-      "div.w-\\[180px\\]",
+      "div.w-\\[220px\\]",
     ) as HTMLElement;
-    // M3: no one-click Grab on a searched card, and no season picker either —
-    // the assertion the picker redesign must not weaken. Checked against BOTH
-    // surfaces: the grid's trigger/tiles AND the free-text inputs the degraded
-    // fallback would render, since a searched card must reach neither.
+    // These four checks used to discriminate a searched card (no Grab, no
+    // season picker) from a browse card (had both, inline). Since the Discover
+    // card cleanup removed the inline Grab button — and the season/episode
+    // picker it used to gate — from EVERY card type, none of these four
+    // discriminate any more; they pass whether or not the underlying
+    // suppression logic still exists. No coverage is lost: the real proof that
+    // a searched card skips season gating is the click-behavior assertion below
+    // (body click fires exactly one release-picker /search and zero autograb
+    // calls, with no season/episode interaction in between). See
+    // Discover.search.test.tsx:10 for the same correction on the sibling M3
+    // comment.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
     expect(within(card).queryByLabelText("Season")).not.toBeInTheDocument();
     expect(within(card).queryByText("Choose seasons/episodes")).not.toBeInTheDocument();

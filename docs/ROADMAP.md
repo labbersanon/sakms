@@ -1592,7 +1592,7 @@ rather than replacing it.
   Purge review queue via the existing `Proposal.Reason` field (rule name +
   matched values), no new UI queue.
 
-### Discover card UI cleanup (grab buttons, poster size) — spec ready 2026-08-01
+### Discover card UI cleanup (grab buttons, poster size) — shipped 2026-08-02
 `.omc/specs/deep-interview-discover-card-cleanup.md` (~9% ambiguity,
 PASSED). Both open questions resolved: "remove grab buttons" means the
 always-visible inline card button on Mainstream/Library/Adult cards is
@@ -1606,6 +1606,50 @@ priority on preserving the current visible-card-count in the
 horizontal-scroll carousel over maximizing size. Select-mode's
 checkbox/season-chip states and Search's release-picker suppression are
 explicitly untouched — separate, pre-existing states.
+
+**SHIPPED 2026-08-02** (three sequential waves in one lane: `Mainstream.tsx` +
+`CalendarView.tsx`, then `Adult.tsx`, then tests + docs). `tsc --noEmit` clean,
+`vitest run` 644/644 passing (was 641 with 30 failing mid-wave), `vite build`
+clean. Plan: `.omc/plans/autopilot-impl-discover-card-cleanup.md`; full detail
+in `CHANGELOG.md` and `CLAUDE.md`'s CORRECTED 2026-08-02 (later, same day) note
+under Staged-for-approval.
+
+**Two claims in the paragraph above turned out to be wrong and are corrected
+here rather than left standing, since this entry is the record of what was
+asked for versus what was actually true.**
+
+1. ***"verified via code research to be a clean relocation, not new
+   infrastructure"* — false.** It is a **mechanism substitution**: the removed
+   button called `autoGrab` (`internal/autograb`'s scorer picks the release,
+   one click); `DetailPopup` calls `manualGrab` with an operator-picked
+   candidate. Discover has no per-card one-click auto-grab any more. The
+   scorer is still reached via select-mode bulk grab and via
+   `TraktWatchlistRow`, which was out of scope and keeps its inline
+   `GrabButton` — making the Trakt row the only card-level one-click auto-grab
+   left in Discover.
+2. ***"Adult's card already wires to it"* is true, but incomplete in a way that
+   mattered.** `AdultCard`'s body→popup wiring did pre-exist. What the spec
+   missed is that `AdultCard` also carried `downloadUrl`/`downloadProtocol` —
+   a direct-enclosure path that dispatches a fresh-feed scene straight to the
+   download client and **skips Prowlarr**, which `DetailPopup` cannot do. That
+   is the one real capability loss; it survives only through select-mode bulk
+   grab, and that mitigation is now covered by a real test asserting the
+   `POST /api/autograb-batch` payload rather than by a code-trace claim.
+   `LibraryCard`, by contrast, had **no** popup wiring at all and gained it
+   here (guarded against `tmdbId <= 0` and against select-mode).
+
+Final sizes: Mainstream/Library **220px**, Adult **240px**; `EntityCard`
+deliberately stays 200px. `CalendarView`'s grid needed a matching
+`min-w-[92rem]` → `min-w-[106rem]` widening the spec never anticipated. The
+picker redesign's `insideModal` nested-modal carve-out became unreachable once
+`PosterCard` lost its Grab button and was removed in the same change.
+
+**Open, non-blocking sign-off gates:** GATE-A (accept Adult's one-click
+direct-enclosure loss), GATE-B (Trakt keeps its inline auto-grab, so "sole grab
+path" is scoped to the three named card types), GATE-C (`DetailPopup` shows a
+bare but correct-and-actionable error where `GrabDialog` showed an inline
+setup form). AC8 (visible-card-count + CalendarView layout) and AC9's popup leg
+are manual browser checks.
 
 ### Dropped from scope
 - **Token/regex-based custom renaming engine** — considered, then

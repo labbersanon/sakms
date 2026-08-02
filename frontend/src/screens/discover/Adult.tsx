@@ -72,7 +72,6 @@ import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
 import {
   type GrabTarget,
   ConfigureConnectionModal,
-  GrabDialog,
   PaginatedStrip,
   SearchReleasePicker,
   SelectCheckbox,
@@ -131,8 +130,9 @@ const toAdultDiscoverItem = (
 // proxy). A non-"tpdb" item.source appends a provenance label to the
 // subtitle line so a merged-in or optional-source scene is distinguishable.
 //
-// Clicking the card body (poster/title/subtitle — NOT the Grab button below,
-// unchanged) opens DetailPopup via onDetail. The native title= tooltip
+// Clicking the card body (poster/title/subtitle) opens DetailPopup via
+// onDetail — the card's only grab affordance, since 2026-08-02 removed the
+// inline Grab button that used to sit below it. The native title= tooltip
 // (previously the scene's own title, not an overview — AdultDiscoverItem has
 // no overview field at all) is replaced by a CSS-only hover overlay showing
 // the same studio/date summary the subtitle line already displays — there is
@@ -141,13 +141,13 @@ const toAdultDiscoverItem = (
 // uses.
 const AdultCard: Component<{
   item: AdultDiscoverItem;
-  onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
   // onOpenReleases, when passed (only by the catalog-Search result grid),
   // reroutes the card's primary click to open the release picker (seeded with
-  // this scene's already-fetched variants) instead of DetailPopup AND suppresses
-  // the one-click Grab button (M3). Browse/drill-down call sites omit it, so
-  // their click→DetailPopup + Grab behavior is completely unchanged.
+  // this scene's already-fetched variants) instead of DetailPopup. Browse/
+  // drill-down call sites omit it, so their click→DetailPopup behavior is
+  // unchanged. (It also used to suppress the one-click Grab button (M3); that
+  // second job went away with the button itself on 2026-08-02.)
   onOpenReleases?: () => void;
 }> = (props) => {
   const selection = useSelection();
@@ -168,10 +168,24 @@ const AdultCard: Component<{
       releaseTitle: props.item.releaseTitle,
       durationSeconds: props.item.durationSeconds,
       // Direct-enclosure grab (D4/C1): when the card's feed is currently fresh
-      // it carries a downloadUrl+protocol, so both the single Grab and the bulk
-      // batch dispatch straight to the download client and skip Prowlarr. Absent
-      // (browse-only / stale feed) → undefined, dropped by JSON.stringify → the
-      // Prowlarr search path runs unchanged. protocol maps to downloadProtocol.
+      // it carries a downloadUrl+protocol, so the bulk batch dispatches straight
+      // to the download client and skips Prowlarr. Absent (browse-only / stale
+      // feed) → undefined, dropped by JSON.stringify → the Prowlarr search path
+      // runs unchanged. protocol maps to downloadProtocol.
+      //
+      // Claude 2026-08-02: this used to read "both the single Grab and the bulk
+      // batch"; the single-Grab half is gone with the inline Grab button.
+      // Reason: SELECT-MODE BULK GRAB IS NOW THE ONLY WAY TO REACH THE
+      // Prowlarr-skipping path for a fresh-feed scene — DetailPopup's Adult
+      // grab always searches Prowlarr and cannot carry these two fields. This
+      // is the one real capability loss in the card cleanup, accepted and
+      // recorded in .omc/plans/autopilot-impl-discover-card-cleanup.md §0.2
+      // (GATE-A).
+      // Troubleshooting: keeps the loss traceable so a future session does not
+      // read the survival of these two fields as "nothing changed".
+      // Review if: DetailPopup ever learns to thread downloadUrl through its
+      // Adult grab, at which point the one-click path is restored and §0.2's
+      // GATE-A is moot.
       downloadUrl: props.item.downloadUrl,
       downloadProtocol: props.item.protocol,
     },
@@ -182,7 +196,6 @@ const AdultCard: Component<{
     onCleanup(cleanup);
   });
   const checked = () => selection?.has(sceneKey()) ?? false;
-  const grab = () => props.onGrab(sceneTarget());
   // In select-mode the card body toggles selection instead of opening the
   // DetailPopup; outside it, the click-to-open behavior is unchanged.
   const onBody = () => {
@@ -196,8 +209,16 @@ const AdultCard: Component<{
     }
     props.onDetail({ mode: "adult", item: props.item });
   };
+  // Claude 2026-08-02: scene-card width 200px → 240px.
+  // Reason: proportional match to Mainstream's 180→220px bump (+20%), the
+  // conservative end of the spec's 230-260 band — see
+  // .omc/plans/autopilot-impl-discover-card-cleanup.md §3.1. aspect-video is
+  // deliberately unchanged (AC7).
+  // Troubleshooting: EntityCard's two w-[200px] tiles below are a DIFFERENT
+  // component and stay at 200px — never find/replace this width in this file.
+  // Review if: the carousel's visible-card count drops below 3 on desktop.
   return (
-    <div class="w-[200px] shrink-0">
+    <div class="w-[240px] shrink-0">
       <div class="group cursor-pointer" onClick={onBody}>
         <div class="relative aspect-video overflow-hidden rounded-lg border border-border bg-surface">
           <Show when={inSelect()}>
@@ -220,17 +241,20 @@ const AdultCard: Component<{
         <div class="mt-1.5 truncate text-sm text-fg">{props.item.title}</div>
         <div class="truncate text-xs text-muted">{subtitle() || "—"}</div>
       </div>
-      {/* Searched scene cards (onOpenReleases set) have no one-click grab —
-          their primary click opens the release picker with the scene's
-          already-fetched variants (M3). Only suppress OUTSIDE select-mode so a
-          search grid's bulk-grab checkbox still works. */}
-      <Show when={!props.onOpenReleases || inSelect()}>
-        <div class="mt-1.5">
-          <Button class="w-full !py-1 text-xs" onClick={grab}>
-            Grab
-          </Button>
-        </div>
-      </Show>
+      {/* Claude 2026-08-02: the inline Grab button and its
+          `!onOpenReleases || inSelect()` M3 suppression gate used to live here.
+          Reason: the gate existed SOLELY to hide that button on catalog-Search
+          cards, so it had no condition left to express once the button went —
+          see .omc/plans/autopilot-impl-discover-card-cleanup.md §3.2. Unlike
+          PosterCard, AdultCard has nothing else to render here (its
+          SelectCheckbox sits inside the poster frame above), so the slot is
+          empty rather than collapsed.
+          Troubleshooting: select-mode is deliberately UNAFFECTED — the
+          checkbox and sceneTarget()'s registration both sit above and are
+          untouched, which is what preserves the direct-enclosure
+          (Prowlarr-skipping) bulk path §0.2 relies on.
+          Review if: any non-select-mode affordance is added back to this
+          card. */}
     </div>
   );
 };
@@ -452,7 +476,17 @@ export const AdultDiscover: Component<{
   editMode?: () => boolean;
   onSortingChange?: (active: boolean) => void;
 }> = (props) => {
-  const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
+  // Claude 2026-08-02: the grabTarget signal (and the <GrabDialog> it drove)
+  // was removed along with AdultCard's inline Grab button — AdultCard was its
+  // only writer, so both became unreachable.
+  // Reason: Adult's grab wiring is the ONE deliberate exception to the card
+  // cleanup's "leave the onGrab cascade threaded" decision, because here it is
+  // genuinely dead AND noUnusedLocals fails the build on the unread signal
+  // pair — see .omc/plans/autopilot-impl-discover-card-cleanup.md §0.5/§3.3.
+  // Mainstream keeps its GrabDialog (TraktWatchlistRow still writes it).
+  // Troubleshooting: GrabTarget is still imported — sceneTarget()'s return type
+  // uses it for the bulk-grab registration.
+  // Review if: a per-card single grab is ever restored to Adult Discover.
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   // releasePicker is the catalog-Search release picker for a clicked searched
   // scene card — seeded with that scene's already-fetched release variants, so
@@ -715,7 +749,6 @@ export const AdultDiscover: Component<{
             {(item) => (
               <AdultCard
                 item={toAdultDiscoverItem(item)}
-                onGrab={setGrabTarget}
                 onDetail={setDetailTarget}
               />
             )}
@@ -791,7 +824,7 @@ export const AdultDiscover: Component<{
             onError={setSetupError}
           >
             {(item) => (
-              <AdultCard item={item} onGrab={setGrabTarget} onDetail={setDetailTarget} />
+              <AdultCard item={item} onDetail={setDetailTarget} />
             )}
           </PaginatedStrip>
         );
@@ -944,11 +977,7 @@ export const AdultDiscover: Component<{
                   containerClass="flex flex-wrap gap-3"
                 >
                   {(item) => (
-                    <AdultCard
-                      item={item}
-                      onGrab={setGrabTarget}
-                      onDetail={setDetailTarget}
-                    />
+                    <AdultCard item={item} onDetail={setDetailTarget} />
                   )}
                 </PaginatedStrip>
               </Show>
@@ -1002,11 +1031,7 @@ export const AdultDiscover: Component<{
                   perPage={"box" in d() ? undefined : 0}
                 >
                   {(item) => (
-                    <AdultCard
-                      item={item}
-                      onGrab={setGrabTarget}
-                      onDetail={setDetailTarget}
-                    />
+                    <AdultCard item={item} onDetail={setDetailTarget} />
                   )}
                 </PaginatedStrip>
               </div>
@@ -1028,7 +1053,6 @@ export const AdultDiscover: Component<{
                   {(s) => (
                     <AdultCard
                       item={s.scene}
-                      onGrab={setGrabTarget}
                       onDetail={setDetailTarget}
                       onOpenReleases={() =>
                         setReleasePicker({
@@ -1045,9 +1069,6 @@ export const AdultDiscover: Component<{
         </section>
       </Show>
 
-      <Show when={grabTarget()}>
-        {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
-      </Show>
       <Show when={releasePicker()}>
         {(rp) => (
           <SearchReleasePicker

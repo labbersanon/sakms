@@ -1,7 +1,6 @@
-// DetailPopup — Discover's primary grab path (Decision, plan
-// "pure-dancing-diffie.md"): clicking a card body (not its existing
-// quick-grab button, which stays as a secondary one-click shortcut) opens
-// this popup, which runs ONE upfront GET /api/modes/{mode}/discover/
+// DetailPopup — Discover's SOLE grab path for PosterCard, LibraryCard and
+// AdultCard (Decision, plan "pure-dancing-diffie.md"): clicking a card body
+// opens this popup, which runs ONE upfront GET /api/modes/{mode}/discover/
 // availability call (fetchAvailabilityPreview, src/api/discover.ts) and
 // renders three independent selectors — resolution (480/720/1080/2160),
 // quality tier (Low/Medium/High/Lossless), protocol (Usenet/Torrent) — whose
@@ -9,6 +8,19 @@
 // any one selector never refetches; it only re-derives the other two
 // selectors' disabled states against the current combination (see
 // resolutionEnabled/tierEnabled/protocolEnabled below).
+//
+// Claude 2026-08-02: the opening line used to read "Discover's primary grab
+// path … clicking a card body (not its existing quick-grab button, which stays
+// as a secondary one-click shortcut)". Those three cards no longer have a
+// quick-grab button, so this popup is not a primary path beside a shortcut —
+// it is the only one.
+// Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md. Load-bearing
+// nuance: this is a MECHANISM SUBSTITUTION, not a relocation. The removed
+// button called autoGrab (internal/autograb scores and picks the release, one
+// click); this popup calls manualGrab with a candidate the operator picks by
+// hand. TraktWatchlistRow and RssFeedCard keep their own inline Grab buttons
+// and were deliberately out of scope.
+// Review if: a per-card one-click auto-grab is ever reinstated.
 //
 // This endpoint DOES call Prowlarr, but only once, only on this explicit
 // click — the same trigger shape as the pre-existing manual Search screen,
@@ -24,8 +36,11 @@
 //
 // The picker renders INLINE here, never in its own Modal: this popup already IS
 // a Modal, and two stacked `fixed inset-0 z-50` overlays would both close on one
-// backdrop click. That same constraint is why the recommendations rail below
-// suppresses the Grab button on Series cards (insideModal — see PosterCard).
+// backdrop click. The recommendations rail below used to need a matching
+// carve-out for the same reason (an `insideModal` prop suppressing Series
+// cards' Grab button, whose picker opened a second Modal); it was removed
+// 2026-08-02 when PosterCard lost its inline Grab button entirely, so the rail
+// now has nothing that can open a nested modal.
 //
 // This is also the ONE call site that passes `seasons` rather than letting the
 // picker fetch for itself: this popup's own `detail` resource already carries
@@ -369,9 +384,17 @@ export const DetailPopup: Component<{
   // so callers that don't render a recommendations rail (they always pass it in
   // practice) stay type-clean; a rail click is a no-op without it.
   onSelectRecommendation?: (t: DetailTarget) => void;
-  // onGrab lets a recommendation card's own quick-grab button reuse the parent's
-  // GrabDialog (PosterCard requires it) — same setGrabTarget the surrounding
-  // grid cards use. Optional for the same reason as above.
+  // onGrab used to let a recommendation card's own quick-grab button reuse the
+  // parent's GrabDialog. Claude 2026-08-02: PosterCard's inline Grab button was
+  // removed, so nothing in the rail reads this any more — it has ZERO readers.
+  // Reason: kept on the prop contract rather than unwound because PosterCard
+  // still declares onGrab for the same reason (unwinding fans out across six
+  // files the picker redesign is concurrently editing) — see
+  // .omc/plans/autopilot-impl-discover-card-cleanup.md §0.5. noUnusedLocals
+  // never flags an unread member of a props type, so this cannot break the
+  // build.
+  // Review if: the picker redesign has fully landed and PosterCard's grab slot
+  // is still empty — then drop onGrab from both in one pass.
   onGrab?: (t: GrabTarget) => void;
 }> = (props) => {
   const mode = () => props.target.mode;
@@ -937,16 +960,11 @@ export const DetailPopup: Component<{
                   <div class="mt-4">
                     <SectionHeading>More like this</SectionHeading>
                     <div class="flex gap-3 overflow-x-auto pb-2">
-                      {/* insideModal: these cards live inside THIS modal, so a
-                          Series card's Grab (which opens the picker in a modal
-                          of its own) is suppressed. Movies keep theirs — see
-                          PosterCard's prop doc. */}
                       <For each={d().recommendations}>
                         {(rec) => (
                           <PosterCard
                             mode={rec.mediaType === "tv" ? "series" : "movies"}
                             item={rec}
-                            insideModal
                             onGrab={(t) => props.onGrab?.(t)}
                             onDetail={(t) => props.onSelectRecommendation?.(t)}
                           />

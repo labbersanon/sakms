@@ -1,8 +1,10 @@
 // MainstreamDiscover — the combined Movies+Series page and its cards: a search
 // bar over four stacked, independently-paginated TMDB category rows plus a
-// paginated "In your library" row of what's already tracked. Movies grab
-// directly on click; Series first open a season/episode picker (the gating step,
-// since no release exists to score until a specific episode/pack is chosen).
+// paginated "In your library" row of what's already tracked. Every card grabs
+// the same way as of 2026-08-02: its body click opens DetailPopup, which for
+// Series shows the season/episode picker first (the gating step, since no
+// release exists to score until a specific episode/pack is chosen). The inline
+// per-card Grab button these cards used to carry is gone.
 // Extracted from the original single-file Discover.tsx.
 //
 // Row order (Optional RSS Discover rows + inline row editor): the row block
@@ -124,17 +126,24 @@ const MAINSTREAM_FIXED_LABELS: Record<string, string> = {
 // GrabTarget once a season or episode is picked.
 //
 // The picker opens in a Modal rather than inline: it is a two-level poster grid
-// (SeasonEpisodePicker.tsx) and a grid does not fit this card's 180px column.
+// (SeasonEpisodePicker.tsx) and a grid does not fit a card's narrow column
+// (TraktWatchlistRow's cards, the only ones left rendering this, are w-36).
 // No `seasons` prop is passed — OMITTING it is what puts the picker in
 // self-fetching mode, which is what these card call sites want, since a card
 // holds only a tmdbId and never the detail bundle. Passing `seasons` at all,
 // even as undefined, would permanently hand loading control to this caller.
 // (DetailPopup is the one site that DOES pass it — it already has the data.)
 //
-// This one component is the picker's mount point for FIVE of the six surfaces:
-// the Discover category rows' PosterCard, the "In your library" LibraryCard,
-// the Trakt watchlist row, the "More like this" rail, and CalendarView all
-// reach the picker through here.
+// Claude 2026-08-02: this component used to be the picker's mount point for
+// five of the six surfaces (the category rows' PosterCard, the "In your
+// library" LibraryCard, the Trakt watchlist row, the "More like this" rail and
+// CalendarView). All of those lost their inline Grab button in the Discover
+// card cleanup, so TraktWatchlistRow.tsx is now its SOLE consumer — and the
+// only card-level auto-grab affordance left in Discover.
+// Reason: kept (not deleted) because Trakt is out of that cleanup's scope; the
+// card-body click → DetailPopup replaced this everywhere else.
+// Review if: TraktWatchlistRow stops rendering it — then this whole component
+// is dead and should go with it.
 export const GrabButton: Component<{
   mode: "movies" | "series";
   item: DiscoverItem;
@@ -196,9 +205,10 @@ export const GrabButton: Component<{
 };
 
 // PosterCard is one Movies/Series title. Fixed width so a row scrolls
-// horizontally. Clicking the card body (poster/title/meta — NOT the Grab
-// button below, which stays as today's unchanged one-click quick-grab
-// shortcut) opens DetailPopup via onDetail. The native title= overview
+// horizontally. Clicking the card body (poster/title/meta) opens DetailPopup
+// via onDetail — as of 2026-08-02 that is this card's ONLY grab path; the
+// inline one-click Grab button it used to carry below the meta line was
+// removed (see the slot below). The native title= overview
 // tooltip is replaced by a CSS-only (group/group-hover) hover overlay over
 // the poster — same information, richer presentation, no new Solid signal.
 // Exported (was module-private) so DetailPopup's "More like this" recommendation
@@ -338,25 +348,22 @@ const SeriesSeasonSelect: Component<{ item: DiscoverItem }> = (props) => {
 export const PosterCard: Component<{
   mode: "movies" | "series";
   item: DiscoverItem;
-  onGrab: (t: GrabTarget) => void;
+  // onGrab is no longer read by this card (its inline Grab button was removed
+  // 2026-08-02) but stays on the prop contract: unwinding it fans out to six
+  // files and eight call sites for no behavioral gain. See
+  // .omc/plans/autopilot-impl-discover-card-cleanup.md §0.5. Made optional
+  // (2026-08-02) so callers no longer have to invent a no-op for a prop nothing
+  // reads.
+  // Review if: this slot is still empty at the next Discover cleanup pass.
+  onGrab?: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
   // onOpenReleases, when passed (only by the catalog-Search result grid),
   // reroutes the card's primary click to open the release picker instead of
-  // DetailPopup AND suppresses the one-click Grab button (M3 — searched cards
-  // have no auto-grab shortcut). Browse-row call sites omit it, so their
-  // click→DetailPopup + GrabButton behavior is completely unchanged.
+  // DetailPopup. It used to ALSO suppress the one-click Grab button (M3 —
+  // searched cards have no auto-grab shortcut); that half is moot since
+  // 2026-08-02, when no card renders one. Browse-row call sites omit it, so
+  // their click→DetailPopup behavior is unchanged.
   onOpenReleases?: () => void;
-  // insideModal marks a card rendered INSIDE another modal — only DetailPopup's
-  // "More like this" rail does this. It suppresses the Grab button for SERIES
-  // cards only, because a Series grab opens the picker in its own Modal and two
-  // stacked `fixed inset-0 z-50` overlays both close on one backdrop click.
-  // Nothing is lost: a Series recommendation's own click re-targets the popup to
-  // that title, whose inline picker is the fuller surface anyway.
-  //
-  // MOVIES ARE DELIBERATELY UNAFFECTED — grabMovie() calls onGrab directly with
-  // no picker and no second modal, so there is nothing to nest. Suppressing them
-  // too would remove a shipped affordance for a problem they do not have.
-  insideModal?: boolean;
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -392,7 +399,7 @@ export const PosterCard: Component<{
     props.onDetail({ mode: props.mode, item: props.item });
   };
   return (
-    <div class="w-[180px] shrink-0">
+    <div class="w-[220px] shrink-0">
       <div class="group cursor-pointer" onClick={onBody}>
         <div class="relative aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
           <Show when={inSelect() && props.mode === "movies"}>
@@ -422,29 +429,30 @@ export const PosterCard: Component<{
           </Show>
         </div>
       </div>
-      {/* Searched cards (onOpenReleases set) have no one-click grab — their
-          primary click opens the release picker instead (M3). Only suppress the
-          single-grab UI OUTSIDE select-mode, so bulk-grab select affordances
-          (movie checkbox / series chips) still render on a search grid. In
-          select-mode a Series swaps its single-grab button for the season-add
-          UI; a Movie keeps its unchanged one-click Grab button (the per-card
-          single-item affordance the plan preserves on browse rows). */}
-      <Show
-        when={
-          (!props.onOpenReleases || inSelect()) &&
-          !(props.insideModal && props.mode === "series")
-        }
-      >
-        <Show
-          when={inSelect() && props.mode === "series"}
-          fallback={
-            <div class="mt-1.5">
-              <GrabButton mode={props.mode} item={props.item} onGrab={props.onGrab} />
-            </div>
-          }
-        >
-          <SeriesSeasonSelect item={props.item} />
-        </Show>
+      {/* Claude 2026-08-02: the inline Grab button was removed from this slot;
+          the card body's click → DetailPopup is now the grab path for Movies
+          and Series alike. Select-mode's season/episode chips are the ONLY
+          thing this slot still renders.
+          Reason: the outer `!onOpenReleases || inSelect()` guard existed solely
+          to suppress that button on catalog-Search cards (M3), and the
+          `insideModal && series` guard solely to stop the button's picker Modal
+          nesting inside DetailPopup's. With the button gone both are vacuous —
+          `inSelect() && series` already implies the first, and the second's
+          branch is unreachable because every card body that opens DetailPopup
+          early-returns while select-mode is on, so inSelect() is false inside
+          that modal. The collapsed form is equivalent GIVEN that invariant —
+          select-mode is never active while DetailPopup is open (see CLAUDE.md's
+          CORRECTED 2026-08-02 (later, same day) note under Staged-for-approval
+          for the full two-directional statement) — not "logically identical"
+          as a bare mathematical claim: the old condition also carried an
+          `insideModal`-specific clause the new one doesn't, it is just dead
+          under that invariant.
+          Review if: a non-select-mode affordance is ever added back to this
+          slot, or a card body ever opens DetailPopup without the select-mode
+          early return (that would re-create the nested-modal hazard the
+          removed `insideModal` prop guarded). */}
+      <Show when={inSelect() && props.mode === "series"}>
+        <SeriesSeasonSelect item={props.item} />
       </Show>
     </div>
   );
@@ -517,17 +525,27 @@ const PaginatedRow: Component<{
 
 // LibraryCard is one owned-library title on the existing-library row. Its mode
 // is per-item (the row mixes movies+series), which drives both the lazy poster
-// fetch and the auto-grab path. The library caches no poster art, so the
+// fetch and which mode DetailPopup opens in. The library caches no poster art, so the
 // poster is resolved on demand by tmdbId (fetchTitlePoster) — one bounded call
 // per rendered card, then routed through the image proxy exactly like every
-// other card. A synthetic DiscoverItem (id = tmdbId) feeds GrabButton so a
-// library card grabs through the identical GrabDialog/autoGrab path a Discover
-// card does — Series still gets its season/episode picker.
+// other card. A synthetic DiscoverItem (id = tmdbId) feeds DetailPopup so a
+// library card grabs through the identical popup path a Discover card does —
+// Series still gets its season/episode picker, now as the popup's inline
+// gating step rather than a modal off an inline Grab button (removed
+// 2026-08-02). The card is click-inert when tmdbId is 0 — see openDetail.
 const LibraryCard: Component<{
   mode: "movies" | "series";
   item: TrackedItem;
-  onGrab: (t: GrabTarget) => void;
+  // onGrab is no longer read by this card (its inline Grab button was removed
+  // 2026-08-02) but stays on the prop contract — see PosterCard's identical
+  // note and .omc/plans/autopilot-impl-discover-card-cleanup.md §0.5. Made
+  // optional (2026-08-02) so callers no longer have to invent a no-op for a
+  // prop nothing reads.
+  onGrab?: (t: GrabTarget) => void;
+  onDetail: (t: DetailTarget) => void;
 }> = (props) => {
+  const selection = useSelection();
+  const inSelect = () => selection?.selectMode() ?? false;
   const tmdbId = () => props.item.tmdbId ?? 0;
   const [poster] = createResource(tmdbId, (id) =>
     id ? fetchTitlePoster(props.mode, id).catch(() => "") : Promise.resolve(""),
@@ -542,26 +560,42 @@ const LibraryCard: Component<{
     voteAverage: 0,
     mediaType: props.mode === "series" ? "tv" : "movie",
   });
+
+  // A tracked item with no TMDB id (tmdbId() === 0) has nothing DetailPopup can
+  // resolve — opening it would fire fetchTitleDetail/fetchTrailer/
+  // fetchAvailabilityPreview against id 0, three requests that cannot succeed
+  // and that the popup itself does not guard (it reads item.id unconditionally).
+  // Such a card stays click-inert, exactly as every LibraryCard was before
+  // 2026-08-02. The select-mode half mirrors PosterCard/AdultCard: this card is
+  // not selectable (it registers no key and shows no checkbox), so while
+  // select-mode is on its body does nothing at all rather than opening a
+  // grab-capable popup mid-bulk-select — which is also what keeps DetailPopup's
+  // recommendation rail free of a nested picker Modal.
+  const clickable = () => tmdbId() > 0 && !inSelect();
+  const openDetail = () => {
+    if (!clickable()) return;
+    props.onDetail({ mode: props.mode, item: grabItem() });
+  };
+
   return (
-    <div class="w-[180px] shrink-0" title={props.item.title}>
-      <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
-        <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
-          <img
-            src={src()}
-            alt={props.item.title}
-            loading="lazy"
-            class="h-full w-full object-cover"
-          />
-        </Show>
-      </div>
-      <div class="mt-1.5 truncate text-sm text-fg" title={props.item.title}>
-        {props.item.title}
-      </div>
-      <div class="flex items-center gap-2 text-xs text-muted">
-        <span>{props.item.year || "—"}</span>
-      </div>
-      <div class="mt-1.5">
-        <GrabButton mode={props.mode} item={grabItem()} onGrab={props.onGrab} />
+    <div class="w-[220px] shrink-0" title={props.item.title}>
+      <div classList={{ "cursor-pointer": clickable() }} onClick={openDetail}>
+        <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
+          <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
+            <img
+              src={src()}
+              alt={props.item.title}
+              loading="lazy"
+              class="h-full w-full object-cover"
+            />
+          </Show>
+        </div>
+        <div class="mt-1.5 truncate text-sm text-fg" title={props.item.title}>
+          {props.item.title}
+        </div>
+        <div class="flex items-center gap-2 text-xs text-muted">
+          <span>{props.item.year || "—"}</span>
+        </div>
       </div>
     </div>
   );
@@ -583,6 +617,7 @@ const LIBRARY_PAGE_SIZE = 20;
 const LibraryRow: Component<{
   reloadToken: () => number;
   onGrab: (t: GrabTarget) => void;
+  onDetail: (t: DetailTarget) => void;
 }> = (props) => {
   const [entries] = createResource(props.reloadToken, async () => {
     const [movies, series] = await Promise.all([
@@ -607,7 +642,12 @@ const LibraryRow: Component<{
         title="In your library"
         items={shown()}
         renderItem={(e) => (
-          <LibraryCard mode={e.mode} item={e.item} onGrab={props.onGrab} />
+          <LibraryCard
+            mode={e.mode}
+            item={e.item}
+            onGrab={props.onGrab}
+            onDetail={props.onDetail}
+          />
         )}
         onLoadMore={() => setVisible((n) => n + LIBRARY_PAGE_SIZE)}
         hasMore={hasMore()}
@@ -946,7 +986,14 @@ export const MainstreamDiscover: Component<{
       );
     }
     if (key === "trakt-watchlist") return <TraktWatchlistRow onGrab={setGrabTarget} />;
-    if (key === "library") return <LibraryRow reloadToken={reloadToken} onGrab={setGrabTarget} />;
+    if (key === "library")
+      return (
+        <LibraryRow
+          reloadToken={reloadToken}
+          onGrab={setGrabTarget}
+          onDetail={setDetailTarget}
+        />
+      );
     if (key.startsWith("slider:")) {
       const slider = enabledSliders().find((s) => `slider:${s.id}` === key)!;
       return (

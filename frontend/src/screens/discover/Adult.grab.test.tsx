@@ -1,11 +1,41 @@
 // AdultDiscover grab-plumbing tests for the direct-enclosure (D4/C1) feature:
 //
 //   1. sceneTarget() must carry downloadUrl/downloadProtocol from the card when
-//      the item has them, so the single Grab (and, via the same GrabTarget, the
-//      bulk batch) dispatches directly to the download client instead of
-//      silently falling through to a Prowlarr search. When the item has no
-//      enclosure, those keys must be ABSENT (JSON.stringify drops undefined), so
-//      the Prowlarr path runs unchanged.
+//      the item has them, so the SELECT-MODE BULK BATCH dispatches directly to
+//      the download client instead of silently falling through to a Prowlarr
+//      search. When the item has no enclosure, those keys must be ABSENT
+//      (JSON.stringify drops undefined), so the Prowlarr path runs unchanged.
+//
+// Which case proves what, stated precisely because it is easy to over-read: the
+// POSITIVE case is the plumbing proof (it fails if sceneTarget() stops carrying
+// the two fields). The NEGATIVE case pins the JSON.stringify-drops-undefined
+// behavior — an absence assertion cannot, on its own, distinguish "correctly
+// omitted for this fixture" from "never sent at all", which is why it also
+// asserts the fields the fixture does carry.
+//
+// Claude 2026-08-02: both cases used to enter through AdultCard's inline Grab
+// button and assert on POST /api/modes/adult/autograb. That button was removed
+// by the Discover card cleanup, and DetailPopup — the affordance that replaced
+// it — CANNOT carry downloadUrl/downloadProtocol (its Adult grab always uses a
+// Prowlarr-sourced candidate). So select-mode bulk grab is now the ONLY surface
+// that reaches the Prowlarr-skipping direct-enclosure path, and these two tests
+// are re-pointed at it: POST /api/autograb-batch, asserting on items[0].request.
+// Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §0.2 accepts that
+// capability loss ON THE GROUNDS THAT select-mode preserves it (GATE-A). §8's
+// AC9 makes exercising that mitigation mandatory — a mitigation nobody runs is
+// an assertion, not a mitigation. These tests are what make GATE-A answerable
+// with evidence rather than a code-trace claim.
+// Troubleshooting: without this coverage, a future change to selection.tsx's
+// buildBatch or to sceneTarget() could drop the two fields with every existing
+// test still green, silently re-routing every fresh-feed Adult grab through a
+// Prowlarr search.
+// Review if: DetailPopup ever learns to thread downloadUrl through its Adult
+// grab — the single-card path would be restored and these could cover it too.
+//
+// SCOPE OF THE PROOF, stated precisely: these assert the two fields survive the
+// card → selection.register → buildBatch → POST body chain. Whether the BACKEND
+// then skips Prowlarr is server-side and unobservable from here; that half is
+// internal/autograb's own contract.
 //
 // (The former masked-feed-URL enable-toggle test was removed with consensus plan
 // Step 13: RSS feed admin — including the feedUrl:null-on-toggle three-state —
@@ -19,7 +49,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@solidjs/testing-library";
+import type { AutoGrabBatchItem } from "@dto";
 import { AdultDiscover } from "./Adult";
+import { BulkBar } from "./BulkBar";
+import { SelectionProvider, createSelection } from "./selection";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -66,8 +99,28 @@ const defaults = (url: string): Response | null => {
   return null;
 };
 
+// batchResponse is a well-formed AutoGrabBatchResponse for a one-item batch.
+// Deliberately NOT a bare {} : BulkBar catches a thrown/malformed response into
+// its own `error` signal, and the POST is recorded either way — so a loose stub
+// would let the payload assertions below pass while the flow actually failed.
+// Asserting the "✓ Grabbed" row BulkResultModal renders from this is what pins
+// the test to the happy path.
+const batchResponse = (label: string) =>
+  jsonResponse({
+    results: [
+      {
+        index: 0,
+        mode: "adult",
+        label,
+        grabbed: true,
+        fallback: false,
+        message: `auto-grabbed ${label}`,
+      },
+    ],
+  });
+
 // oneSceneRow wires a single enabled "scene" newest row whose resolve returns
-// the given item — the simplest path to a grab-able AdultCard.
+// the given item — the simplest path to a selectable AdultCard.
 const oneSceneRow =
   (item: Record<string, unknown>): Override =>
   (url) => {
@@ -84,15 +137,37 @@ const oneSceneRow =
           updatedAt: "2026-01-01T00:00:00Z",
         },
       ]);
-    if (url.includes("/api/modes/adult/autograb"))
-      return jsonResponse({ grabbed: true, fallback: false, message: "Grabbed." });
+    if (url.includes("/api/autograb-batch"))
+      return batchResponse(String(item.title));
     return defaults(url) ?? undefined;
   };
 
+// renderInSelectMode mounts AdultDiscover the way the Discover shell does
+// (index.tsx wraps the tab content in SelectionProvider and renders BulkBar as a
+// sibling), with select-mode already on. BulkBar is NOT inside AdultDiscover, so
+// it must be mounted here or "Grab all" never exists.
+const renderInSelectMode = () => {
+  const selection = createSelection();
+  selection.setSelectMode(true);
+  render(() => (
+    <SelectionProvider store={selection}>
+      <AdultDiscover />
+      <BulkBar />
+    </SelectionProvider>
+  ));
+};
+
+// batchItems pulls the submitted item list out of the recorded POST body.
+const batchItems = (calls: Call[]): AutoGrabBatchItem[] => {
+  const batch = calls.find((c) => c.url.includes("/api/autograb-batch"));
+  expect(batch?.method).toBe("POST");
+  return (batch?.body as { items: AutoGrabBatchItem[] }).items;
+};
+
 afterEach(() => vi.unstubAllGlobals());
 
-describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1)", () => {
-  it("threads downloadUrl/downloadProtocol into the autograb request when the scene's feed is fresh", async () => {
+describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode bulk grab", () => {
+  it("carries downloadUrl/downloadProtocol into the autograb-batch request when the scene's feed is fresh", async () => {
     const calls = stubFetch(
       oneSceneRow({
         id: "n1",
@@ -112,31 +187,36 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1)", () => {
       }),
     );
 
-    render(() => <AdultDiscover />);
+    renderInSelectMode();
     const card = (await screen.findByText("Fresh Scene")).closest(
-      ".w-\\[200px\\]",
+      ".w-\\[240px\\]",
     ) as HTMLElement;
-    fireEvent.click(within(card).getByText("Grab"));
 
-    await vi.waitFor(() =>
-      expect(
-        calls.some((c) => c.url.includes("/api/modes/adult/autograb")),
-      ).toBe(true),
-    );
+    // In select-mode the card body toggles selection instead of opening
+    // DetailPopup, which raises BulkBar.
+    fireEvent.click(within(card).getByText("Fresh Scene"));
+    fireEvent.click(await screen.findByText("Grab all"));
 
-    const grab = calls.find((c) =>
-      c.url.includes("/api/modes/adult/autograb"),
-    );
-    expect(grab?.method).toBe("POST");
-    expect(grab?.body).toMatchObject({
-      title: "Fresh Scene",
-      studio: "Vixen",
-      releaseTitle: "Fresh.Scene.2026.1080p",
-      durationSeconds: 1800,
-      // The load-bearing assertion: the direct-enclosure fields are present, so
-      // the backend dispatches straight to the download client (skips Prowlarr).
-      downloadUrl: "https://feed.example/fetch/abc.torrent",
-      downloadProtocol: "torrent",
+    // The happy path really completed — BulkResultModal rendered the grabbed
+    // row from the stubbed response, so the assertions below are about a
+    // successful submission, not a swallowed error.
+    expect(await screen.findByText("✓ Grabbed")).toBeInTheDocument();
+
+    const items = batchItems(calls);
+    expect(items).toHaveLength(1);
+    // The load-bearing assertion (AC9's second Adult leg): the direct-enclosure
+    // fields survive into the BULK payload, so the Prowlarr-skipping capability
+    // the removed inline Grab button used to carry still has a live surface.
+    expect(items[0]).toMatchObject({
+      mode: "adult",
+      request: {
+        title: "Fresh Scene",
+        studio: "Vixen",
+        releaseTitle: "Fresh.Scene.2026.1080p",
+        durationSeconds: 1800,
+        downloadUrl: "https://feed.example/fetch/abc.torrent",
+        downloadProtocol: "torrent",
+      },
     });
   });
 
@@ -155,23 +235,33 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1)", () => {
       }),
     );
 
-    render(() => <AdultDiscover />);
+    renderInSelectMode();
     const card = (await screen.findByText("Browse Scene")).closest(
-      ".w-\\[200px\\]",
+      ".w-\\[240px\\]",
     ) as HTMLElement;
-    fireEvent.click(within(card).getByText("Grab"));
 
-    await vi.waitFor(() =>
-      expect(
-        calls.some((c) => c.url.includes("/api/modes/adult/autograb")),
-      ).toBe(true),
-    );
+    fireEvent.click(within(card).getByText("Browse Scene"));
+    fireEvent.click(await screen.findByText("Grab all"));
+    expect(await screen.findByText("✓ Grabbed")).toBeInTheDocument();
 
-    const grab = calls.find((c) =>
-      c.url.includes("/api/modes/adult/autograb"),
-    );
-    const body = grab?.body as Record<string, unknown>;
-    expect("downloadUrl" in body).toBe(false);
-    expect("downloadProtocol" in body).toBe(false);
+    // Via unknown: AutoGrabRequest has no index signature, and the point of this
+    // assertion is exactly that the two optional keys are ABSENT from the
+    // serialized body (JSON.stringify drops undefined), which needs a raw
+    // property-presence check rather than a typed field read.
+    const request = batchItems(calls)[0]!.request as unknown as Record<
+      string,
+      unknown
+    >;
+    // The absence assertions alone would pass even if sceneTarget() stopped
+    // reading downloadUrl/protocol ENTIRELY — i.e. under the exact regression
+    // the case above exists to catch. Pin the fields this fixture DOES carry
+    // first, so a change that guts the request shape fails here too and this
+    // case cannot go quietly vacuous.
+    expect(request).toMatchObject({
+      title: "Browse Scene",
+      studio: "Blacked",
+    });
+    expect("downloadUrl" in request).toBe(false);
+    expect("downloadProtocol" in request).toBe(false);
   });
 });

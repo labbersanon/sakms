@@ -22,10 +22,38 @@ import (
 // services and read the package var instead, so a test that stands up a fake
 // server must redirect the var, not just store the URL. No-op for any other
 // service (e.g. stash/prowlarr, which legitimately still use Connection.URL).
+//
+// The "tmdb" case ALSO empties internal/tmdb's package-level response cache —
+// see that case's own comment for why it belongs here rather than per-file.
 func overrideFixedURL(t *testing.T, service, u string) {
 	t.Helper()
 	switch service {
 	case "tmdb":
+		// Claude 2026-08-02: reset the TMDB response cache here, in the shared
+		// helper, so all 53 call sites across 17 files get it automatically.
+		// Reason: internal/tmdb's cache is a package-level singleton keyed on
+		// base URL + path, and package api cannot reach the per-Client field —
+		// it builds clients through mode.Build against this swapped
+		// DefaultBaseURL. Sequential httptest servers in one process routinely
+		// reuse an ephemeral port, so two unrelated tests can land on the same
+		// base URL inside the cache's 10-minute TTL and one gets served the
+		// other's body — silently, with a passing-looking result. Only ONE file
+		// used to reset (discover_detail_test.go's detailMux); every other call
+		// site was exposed. Hoisted rather than sprinkled because a per-file
+		// reset is a rule every future caller has to know about and none of them
+		// will.
+		// Troubleshooting: Phase-4 review FIX 2 (architect F2 + code-reviewer).
+		// Review if: the cache stops being a package-level singleton.
+		//
+		// Reset up front AND on cleanup: up front so this test starts cold, on
+		// cleanup so it does not leave its own entries for the next one. It runs
+		// during setup, before any handler is built or any request is issued, at
+		// every current call site — deliberately NOT between a test's own
+		// subtests, which share one fake server and whose cache sharing is both
+		// correct and load-bearing (e.g. autograb_batch_test.go's cap-boundary
+		// subtests).
+		tmdb.ResetDefaultCache()
+		t.Cleanup(tmdb.ResetDefaultCache)
 		prev := tmdb.DefaultBaseURL
 		tmdb.DefaultBaseURL = u
 		t.Cleanup(func() { tmdb.DefaultBaseURL = prev })

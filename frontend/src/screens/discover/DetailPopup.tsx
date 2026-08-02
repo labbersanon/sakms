@@ -17,10 +17,23 @@
 // 2026-07-14 clarification).
 //
 // Series needs season/episode BEFORE the availability fetch can run (the
-// backend endpoint requires them) — reused verbatim from Mainstream.tsx's
-// existing SeasonEpisodePicker as a gating first step shown INSIDE this
-// popup, rather than a second hand-rolled season/episode input or resolving
-// it in the caller before opening the popup.
+// backend endpoint requires them) — the shared SeasonEpisodePicker (see
+// SeasonEpisodePicker.tsx) is the gating first step, shown INSIDE this popup
+// rather than a second hand-rolled input or resolved in the caller before the
+// popup opens.
+//
+// The picker renders INLINE here, never in its own Modal: this popup already IS
+// a Modal, and two stacked `fixed inset-0 z-50` overlays would both close on one
+// backdrop click. That same constraint is why the recommendations rail below
+// suppresses the Grab button on Series cards (insideModal — see PosterCard).
+//
+// This is also the ONE call site that passes `seasons` rather than letting the
+// picker fetch for itself: this popup's own `detail` resource already carries
+// them, so a self-fetch here would be a second request for data in hand. The
+// prop's PRESENCE (not its value) is what disables self-fetching — which is why
+// `loading` is passed alongside it: while `detail` is in flight, `seasons` is
+// undefined for a reason that is not "unavailable," and collapsing the two would
+// show the degraded free-text fallback during every normal load.
 
 import {
   type Component,
@@ -46,7 +59,8 @@ import { libraryRootFolder, manualGrab } from "../../api/grab";
 import { fetchQualityPrefs } from "../../api/settings";
 import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components/ui";
 import { type GrabTarget, Modal, TextPoster } from "./shared";
-import { PosterCard, SeasonEpisodePicker } from "./Mainstream";
+import { PosterCard } from "./Mainstream";
+import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
 
 // DetailTarget is the card DetailPopup was opened for — a discriminated union
 // so Adult's scene-shaped item (no overview/voteAverage/tmdbId) and
@@ -562,7 +576,15 @@ export const DetailPopup: Component<{
             <Muted class="mb-2">
               Pick a season (and optionally an episode) to check availability.
             </Muted>
+            {/* seasons is passed (not omitted) so the picker does NOT fire its
+                own ?sections=seasons request — this popup's detail resource has
+                already fetched them. loading distinguishes "still in flight"
+                from the resource's soft-fail to undefined. */}
             <SeasonEpisodePicker
+              tmdbId={(item() as DiscoverItem).id}
+              selectionMode="single"
+              seasons={detail()?.seasons}
+              loading={detail.loading}
               onSubmit={(season, episode) => setSeasonEpisode({ season, episode })}
             />
           </div>
@@ -915,11 +937,16 @@ export const DetailPopup: Component<{
                   <div class="mt-4">
                     <SectionHeading>More like this</SectionHeading>
                     <div class="flex gap-3 overflow-x-auto pb-2">
+                      {/* insideModal: these cards live inside THIS modal, so a
+                          Series card's Grab (which opens the picker in a modal
+                          of its own) is suppressed. Movies keep theirs — see
+                          PosterCard's prop doc. */}
                       <For each={d().recommendations}>
                         {(rec) => (
                           <PosterCard
                             mode={rec.mediaType === "tv" ? "series" : "movies"}
                             item={rec}
+                            insideModal
                             onGrab={(t) => props.onGrab?.(t)}
                             onDetail={(t) => props.onSelectRecommendation?.(t)}
                           />

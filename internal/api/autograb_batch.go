@@ -20,13 +20,23 @@ import (
 )
 
 // MaxBatchGrabItems bounds one POST /api/autograb-batch request. It counts
-// SUBMITTED items — the flattened batch entries — NOT Discover cards: a
-// season-expanded series contributes one item per selected season, so selecting
-// 15 seasons of one show counts as 15 toward this cap. The cap bounds the number
-// of *live acquisitions fired* (each item is its own Prowlarr search + potential
-// download-client add), which is what matters for indexer/download load — not
-// how many cards the operator clicked. It is deliberately far below apply-batch's
-// 200: apply-batch commits already-searched local file operations, whereas each
+// SUBMITTED items — the flattened batch entries the frontend builds — NOT
+// Discover cards: a flattened item is a whole season OR a single episode, so
+// a season-expanded series contributes one item per selected season, and an
+// episode-level selection (season-episode-picker-redesign, 2026-08-02)
+// contributes one item per selected episode — 15 episodes of one show counts
+// as 15 toward this cap, exactly as 15 seasons would. (AMENDED 2026-08-02:
+// this comment previously read "a season-expanded series contributes one item
+// per selected season" because no episode-level bulk selection existed yet.
+// THE GUARD ITSELF IS UNCHANGED — len(req.Items) already counted flattened
+// items correctly, and apidto.AutoGrabRequest already carried EpisodeNumber;
+// only what the frontend can put in that slice grew.) The cap bounds the
+// number of *live acquisitions fired* (each item is its own Prowlarr search +
+// potential download-client add), which is what matters for indexer/download
+// load — not how many cards the operator clicked, and an episode grab costs
+// exactly what a season grab costs, so nothing about this granularity argues
+// for a different cap value. It is deliberately far below apply-batch's 200:
+// apply-batch commits already-searched local file operations, whereas each
 // item here fires a live indexer search.
 const MaxBatchGrabItems = 20
 
@@ -79,6 +89,10 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 		}
 		if len(req.Items) > MaxBatchGrabItems {
 			http.Error(w, fmt.Sprintf("too many items: %d exceeds the %d-item batch cap", len(req.Items), MaxBatchGrabItems), http.StatusBadRequest)
+			return
+		}
+		if err := rejectSeasonEpisodeOverlap(req.Items); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -176,6 +190,65 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(apidto.AutoGrabBatchResponse{Results: results})
 	}
+}
+
+// rejectSeasonEpisodeOverlap refuses a batch that contains BOTH a whole-season
+// item and a single-episode item for that same season of that same title.
+// Dispatching the pair grabs a season pack plus one episode already inside it —
+// two genuinely different releases, so activeGrabForGID's download-client GID
+// dedup cannot see the conflict, and the result is a duplicate on disk. That is
+// a direct hit on the mission's "no duplicates" bar.
+//
+// Claude 2026-08-02: DEFENSE IN DEPTH ONLY — this is not the primary
+// enforcement and must not be mistaken for it. Mainstream.tsx's
+// SeriesSeasonSelect.toggle already makes the combination unconstructible
+// through the UI (selecting a season clears that season's episode keys and vice
+// versa, against the shared selection store rather than card-local state). This
+// guard exists because that check is CLIENT-side, and POST /api/autograb-batch
+// is reachable from the X-Api-Key out-of-process surface by any authenticated
+// caller, which never runs it.
+// Reason: rejects the whole batch rather than skipping the offending items —
+// the operator asked for a specific set, and silently grabbing a subset of it
+// is the kind of partial success this codebase's three-state-honesty convention
+// exists to prevent. Fires BEFORE the loop, like the empty and cap guards, so a
+// rejected batch touches no indexer.
+// Troubleshooting: Phase-4 review FIX 6 (security-reviewer, defense in depth).
+// Review if: whole-series selection ships, which would need its own rule here.
+//
+// TMDBID <= 0 is skipped deliberately: a direct-grab item (an Adult feed
+// enclosure) carries no TMDB id, so several unrelated ones would all collide on
+// (mode, 0, 0) and produce a false 400 on exactly the Prowlarr-less install the
+// handler goes out of its way to keep working. A Series episode always carries
+// a real id — SeriesSeasonSelect's targetFor sets it — so nothing this guard
+// targets is lost.
+func rejectSeasonEpisodeOverlap(items []apidto.AutoGrabBatchItem) error {
+	type seasonKey struct {
+		mode   string
+		tmdbID int
+		season int
+	}
+	wholeSeason := make(map[seasonKey]bool)
+	episodeOf := make(map[seasonKey]int)
+	for _, it := range items {
+		if it.Request.TMDBID <= 0 {
+			continue
+		}
+		k := seasonKey{mode: it.Mode, tmdbID: it.Request.TMDBID, season: it.Request.SeasonNumber}
+		switch {
+		case it.Request.EpisodeNumber > 0:
+			episodeOf[k] = it.Request.EpisodeNumber
+		case it.Request.SeasonSpecified:
+			wholeSeason[k] = true
+		}
+	}
+	for k := range wholeSeason {
+		if ep, ok := episodeOf[k]; ok {
+			return fmt.Errorf(
+				"batch contains both the whole season and episode %d of %s season %d (tmdbId %d) — grabbing a season pack alongside an episode inside it lands a duplicate on disk; pick one or the other",
+				ep, k.mode, k.season, k.tmdbID)
+		}
+	}
+	return nil
 }
 
 // grabOneBatchItem runs the SAME pipeline as autoGrabHandler for one batch item

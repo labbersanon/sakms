@@ -22,7 +22,14 @@ func recordingClient(t *testing.T, body string) (*Client, *string, *url.Values) 
 		w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
-	return New(Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client()), &gotPath, &gotQuery
+	c := New(Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
+	// Per-client cache, same reason as client_test.go's newTestClient: the
+	// production default is package-level and process-lifetime (cache.go), so a
+	// reused ephemeral httptest port could otherwise serve an earlier test's
+	// body here — and this helper's assertions read gotPath/gotQuery, which a
+	// cache-served response never writes.
+	c.cache = newCache(defaultCacheCap, defaultCacheTTL)
+	return c, &gotPath, &gotQuery
 }
 
 func TestMovieFullCredits_FiltersCrewToKeyRoles(t *testing.T) {

@@ -389,3 +389,255 @@ func TestAutoGrabBatchHandler_CapBoundaries(t *testing.T) {
 		}
 	})
 }
+
+// seriesBatchTestServer is batchTestServer's Series-shaped sibling (hand-rolled
+// setup, mirroring TestAutoGrabBatchHandler_CrossModeSessionIsolation's
+// precedent above, rather than adding a Series branch to batchTestServer
+// itself — four existing tests already call that helper with movies-only
+// wiring). It configures a TMDB fake serving /tv/{id}/external_ids and
+// episodes 1..episodeCount of /tv/{id}/season/{n}, each given
+// episodeRuntimeMinutes — enough for seriesEpisodeRuntimeSeconds to resolve a
+// real per-episode runtime for any EpisodeNumber in that range — plus Series
+// quality tier Low and root folder /series. Added for T-5.1/T-5.2
+// (season-episode-picker-redesign, 2026-08-02): AC9's proof that the batch
+// endpoint's MaxBatchGrabItems cap counts individual episode-level items
+// correctly, needing no counting-logic change (see the const's doc comment).
+func seriesBatchTestServer(t *testing.T, dlGID string, episodeCount, episodeRuntimeMinutes int, hold time.Duration, respFor func(url.Values) (int, string)) (*httptest.Server, *prowlarrStats) {
+	t.Helper()
+	dl := newTestDownloader(dlGID, t.TempDir())
+	dl.EnableTestAutoGID()
+	runtimes := make([]int, episodeCount)
+	for i := range runtimes {
+		runtimes[i] = episodeRuntimeMinutes
+	}
+	tmdbSrv := fakeTMDBSeriesSeasonRuntime(t, runtimes)
+	prowlarr, stats := fakeProwlarrTracking(t, hold, respFor)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarr.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Series), string(quality.Low)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/series"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil))
+	t.Cleanup(srv.Close)
+	return srv, stats
+}
+
+// TestAutoGrabBatch_CountsEpisodeItemsIndividually is AC9's proof
+// (season-episode-picker-redesign, 2026-08-02): now that bulk-select can
+// submit specific-episode items rather than only whole-season ones,
+// MaxBatchGrabItems' len(req.Items) guard must still count each item
+// individually — nothing merges same-title, same-season items that differ
+// only by EpisodeNumber into a single unit. 21 items differing ONLY in
+// EpisodeNumber must be rejected (one over the 20-item cap); exactly 20 must
+// run and return one result per item. Per the plan's §0.3, the counting guard
+// itself needed no code change for this — this is a regression test proving
+// that claim, not a test of new counting behavior.
+func TestAutoGrabBatch_CountsEpisodeItemsIndividually(t *testing.T) {
+	// A tiny, non-qualifying release for every episode query (same shape
+	// TestAutoGrabBatchHandler_ThreeStateMixedBatch's "Fallback Movie" case
+	// uses) — every item falls back, never grabs, which keeps the 20-item run
+	// light and sidesteps the download-client GID/idempotency path entirely.
+	// Only the item COUNT matters here, not any individual grab outcome.
+	srv, stats := seriesBatchTestServer(t, "gid-auto", MaxBatchGrabItems, 58, 0, func(url.Values) (int, string) {
+		return http.StatusOK, tinyMovieRelease
+	})
+
+	buildEpisodeItems := func(n int) []apidto.AutoGrabBatchItem {
+		items := make([]apidto.AutoGrabBatchItem, 0, n)
+		for i := 1; i <= n; i++ {
+			items = append(items, apidto.AutoGrabBatchItem{Mode: "series", Request: apidto.AutoGrabRequest{
+				Title: "Some Show", TMDBID: 100, SeasonNumber: 3, EpisodeNumber: i,
+			}})
+		}
+		return items
+	}
+
+	t.Run("21 episode items over cap rejected before any search", func(t *testing.T) {
+		resp, _ := postBatch(t, srv.URL, apidto.AutoGrabBatchRequest{Items: buildEpisodeItems(MaxBatchGrabItems + 1)})
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 for %d episode items (> cap %d), got %d", MaxBatchGrabItems+1, MaxBatchGrabItems, resp.StatusCode)
+		}
+		total, _ := stats.snapshot()
+		if total != 0 {
+			t.Errorf("expected ZERO Prowlarr searches for an over-cap batch (rejected before any search fires), got %d", total)
+		}
+	})
+
+	t.Run("20 episode items at cap runs, one result per item", func(t *testing.T) {
+		resp, out := postBatch(t, srv.URL, apidto.AutoGrabBatchRequest{Items: buildEpisodeItems(MaxBatchGrabItems)})
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 for exactly %d episode items (at the cap, not over it), got %d", MaxBatchGrabItems, resp.StatusCode)
+		}
+		if len(out.Results) != MaxBatchGrabItems {
+			t.Fatalf("expected %d results — one per episode item, proving episode-level items count individually toward the cap rather than merging — got %d", MaxBatchGrabItems, len(out.Results))
+		}
+		for i, r := range out.Results {
+			if r.Index != i {
+				t.Errorf("result %d has Index %d — index must match submission order", i, r.Index)
+			}
+		}
+	})
+}
+
+// TestAutoGrabBatch_MixedSeasonAndEpisodeItems proves a single batch mixing a
+// whole-season item and a specific-episode item runs each through the SAME
+// grabOneBatchItem pipeline — no season-vs-episode branch in the batch loop
+// itself — and returns exactly one result per item, in submission order.
+// season-episode-picker-redesign (2026-08-02) is what makes the frontend able
+// to build a mixed batch like this; the backend pipeline already handled it
+// (plan §0.3) — this is the regression proof.
+//
+// The two items get genuinely different outcomes from release lists keyed on
+// the SAME Prowlarr "ep" query param the picked-request shape drives, which is
+// the discriminating proof, not an assumption: a whole-season request
+// (EpisodeNumber: 0) always resolves 0 runtime by design
+// (seriesEpisodeRuntimeSeconds — a season pack's implied bitrate is
+// ambiguous), so autograb.Select can never qualify anything for it regardless
+// of what Prowlarr returns; a specific-episode request (EpisodeNumber: 5)
+// resolves a real per-episode runtime (mirrors
+// TestAutoGrabHandler_Series_SingleEpisodeQualifies' numbers: 900MB / 58min
+// clears the Low 1080p floor) and can genuinely qualify and grab.
+func TestAutoGrabBatch_MixedSeasonAndEpisodeItems(t *testing.T) {
+	srv, stats := seriesBatchTestServer(t, "gid-auto", 5, 58, 0, func(q url.Values) (int, string) {
+		if q.Get("ep") == "5" {
+			return http.StatusOK, `[{"guid":"1","title":"Some.Show.S03E05.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:BBBBBB1234567890abcdef1234567890abcdef12"}]`
+		}
+		// Whole-season request (no "ep" param): runtime resolves to 0
+		// regardless of what's returned here, so this release always falls
+		// back — included only to prove the fallback isn't from an empty
+		// result set.
+		return http.StatusOK, `[{"guid":"2","title":"Some.Show.S03.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":12000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:AAAAAA1234567890abcdef1234567890abcdef12"}]`
+	})
+
+	// The two items are for DIFFERENT seasons (2 whole, 3E5) — as of Phase-4
+	// review FIX 6, rejectSeasonEpisodeOverlap 400s a batch pairing a whole
+	// season with an episode OF THAT SAME SEASON, which is what this test used
+	// to submit (S3 + S3E5). That pairing is now genuinely invalid input, so
+	// asserting it still runs would be asserting the bug. Nothing this test
+	// actually proves depends on the two sharing a season: the discriminating
+	// signal is the `ep` query param (present for one item, absent for the
+	// other) and the per-item result shape, both unchanged. The whole-season
+	// item still resolves 0 runtime by design (seriesEpisodeRuntimeSeconds
+	// returns early for EpisodeNumber 0 without any TMDB call), so its season
+	// number is immaterial to the fallback it asserts.
+	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
+		{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 2, SeasonSpecified: true}},
+		{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, EpisodeNumber: 5}},
+	}}
+
+	resp, out := postBatch(t, srv.URL, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("expected 2 results (one per item, mixed season+episode), got %d: %+v", len(out.Results), out.Results)
+	}
+
+	season, episode := out.Results[0], out.Results[1]
+	if season.Grabbed || !season.Fallback {
+		t.Errorf("whole-season item (runtime always 0 by design) should have fallen back, got %+v", season)
+	}
+	if !episode.Grabbed || episode.Fallback || episode.Grab == nil {
+		t.Errorf("episode item (real per-episode runtime) should have grabbed, got %+v", episode)
+	}
+	for i, r := range out.Results {
+		if r.Index != i {
+			t.Errorf("result %d has Index %d — index must match submission order", i, r.Index)
+		}
+	}
+
+	total, _ := stats.snapshot()
+	if total != 2 {
+		t.Errorf("expected exactly 2 Prowlarr searches (one per item), got %d", total)
+	}
+}
+
+// TestAutoGrabBatch_RejectsWholeSeasonPlusItsOwnEpisode is the Phase-4 FIX 6
+// proof: the whole-season/single-episode mutual exclusion the Discover UI
+// enforces client-side is now ALSO enforced server-side, so the X-Api-Key
+// out-of-process surface (which never runs that UI) cannot dispatch a season
+// pack alongside an episode already inside it and land a duplicate on disk.
+//
+// The rejection must happen BEFORE any search, like the empty and over-cap
+// guards — asserted against the fake Prowlarr's own request count, not inferred
+// from the status code, so a handler that rejected only after searching could
+// not pass.
+func TestAutoGrabBatch_RejectsWholeSeasonPlusItsOwnEpisode(t *testing.T) {
+	srv, stats := seriesBatchTestServer(t, "gid-auto", 5, 58, 0, func(url.Values) (int, string) {
+		return http.StatusOK, `[]`
+	})
+
+	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
+		{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, SeasonSpecified: true}},
+		{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, EpisodeNumber: 5}},
+	}}
+
+	resp, _ := postBatch(t, srv.URL, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a season pack batched with an episode of that same season, got %d", resp.StatusCode)
+	}
+	if total, _ := stats.snapshot(); total != 0 {
+		t.Errorf("a rejected batch must fire no indexer search at all, got %d", total)
+	}
+}
+
+// TestAutoGrabBatch_AllowsAdjacentSeasonAndEpisodeCombinations guards the other
+// half of FIX 6: the check must be NARROW. Only a whole season paired with an
+// episode of THAT SAME season is a duplicate. A different season, a different
+// title, and two episodes of one season are all legitimate batches the UI can
+// produce, and a guard that rejected them would break shipped behavior — which
+// a season-blind or title-blind implementation would do silently.
+func TestAutoGrabBatch_AllowsAdjacentSeasonAndEpisodeCombinations(t *testing.T) {
+	cases := []struct {
+		name  string
+		items []apidto.AutoGrabBatchItem
+	}{
+		{"whole season plus an episode of a DIFFERENT season", []apidto.AutoGrabBatchItem{
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 2, SeasonSpecified: true}},
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, EpisodeNumber: 5}},
+		}},
+		{"whole season plus an episode of a DIFFERENT title", []apidto.AutoGrabBatchItem{
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, SeasonSpecified: true}},
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Other Show", TMDBID: 200, SeasonNumber: 3, EpisodeNumber: 5}},
+		}},
+		{"two episodes of the same season", []apidto.AutoGrabBatchItem{
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, EpisodeNumber: 4}},
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, EpisodeNumber: 5}},
+		}},
+		{"two whole seasons of one title", []apidto.AutoGrabBatchItem{
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 2, SeasonSpecified: true}},
+			{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 3, SeasonSpecified: true}},
+		}},
+		// Direct-grab items carry no TMDB id. Several of them would otherwise all
+		// collide on (mode, 0, 0) and produce a false 400 on exactly the
+		// Prowlarr-less install this handler goes out of its way to keep working.
+		{"TMDB-id-less direct-grab items never collide with each other", []apidto.AutoGrabBatchItem{
+			{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Scene A", DownloadURL: "http://example.invalid/a.torrent", SeasonSpecified: true}},
+			{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Scene B", DownloadURL: "http://example.invalid/b.torrent", EpisodeNumber: 5}},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := rejectSeasonEpisodeOverlap(tc.items); err != nil {
+				t.Errorf("expected this combination to be allowed, got rejection: %v", err)
+			}
+		})
+	}
+}

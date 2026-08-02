@@ -68,8 +68,32 @@ const autograbCalls = (calls: Call[]) =>
 // defaulting to [] keeps those optional rows invisible in every test here
 // that doesn't opt in) so each test only special-cases the mode + call it
 // asserts on.
+// seasonFixture is the season-grid data a Series card's picker enumerates. The
+// non-empty art paths keep each tile on an <img> rather than the TextPoster
+// fallback, which repeats the label and doubles text matches.
+const seasonFixture = (n: number) => ({
+  seasonNumber: n,
+  name: `Season ${n}`,
+  airDate: "2024-01-01",
+  episodeCount: 6,
+  posterPath: `/s${n}.jpg`,
+  episodes: [1, 2, 3, 4, 5, 6].map((e) => ({
+    episodeNumber: e,
+    name: `Ep ${e}`,
+    airDate: "2024-03-01",
+    runtime: 42,
+    stillPath: `/e${e}.jpg`,
+  })),
+});
+
 const mainstreamDefaults = (url: string): Response | null => {
   if (url.includes("/api/connections")) return jsonResponse([]);
+  // The picker's own ?sections=seasons request. MUST precede the generic
+  // "/discover" line: answered with a bare [] its absent `seasons` would route
+  // every Series card into the degraded free-text fallback, so a test meaning to
+  // exercise the grid would pass against the surface this feature replaced.
+  if (url.includes("/discover/detail"))
+    return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(3)] });
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
@@ -365,16 +389,19 @@ describe("Discover auto-grab — Series (per-item picker gates the grab)", () =>
 
     render(() => <Discover />);
 
-    // Clicking Grab reveals the picker — it must NOT auto-grab yet.
+    // Clicking Grab opens the season/episode grid — it must NOT auto-grab yet.
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
-    expect(await screen.findAllByLabelText("Season")).not.toHaveLength(0);
+    expect(
+      await screen.findByRole("button", { name: /Season 3.*eps/ }),
+    ).toBeInTheDocument();
+    // The free-text inputs this grid replaced are gone from the happy path.
+    expect(screen.queryByLabelText("Season")).toBeNull();
     expect(autograbCalls(calls)).toHaveLength(0);
 
-    const seasonInput = screen.getAllByLabelText("Season")[0]!;
-    const episodeInput = screen.getAllByLabelText("Episode")[0]!;
-    fireEvent.input(seasonInput, { target: { value: "3" } });
-    fireEvent.input(episodeInput, { target: { value: "5" } });
-    fireEvent.click(screen.getByText("Go"));
+    // Drill into Season 3, pick episode 5 — the grid's two levels are what now
+    // produce the (season, episode) pair the grab request carries.
+    fireEvent.click(screen.getByRole("button", { name: /Season 3.*eps/ }));
+    fireEvent.click(screen.getByRole("button", { name: /E5 · Ep 5/ }));
 
     await waitFor(() => expect(autograbCalls(calls)).toHaveLength(1));
     expect(autograbCalls(calls)[0]!.body).toMatchObject({
@@ -480,9 +507,16 @@ describe("Discover search — a searched Series result opens the release picker 
     const card = (await screen.findByText("Searched Series")).closest(
       "div.w-\\[180px\\]",
     ) as HTMLElement;
-    // M3: no one-click Grab on a searched card, and no season picker either.
+    // M3: no one-click Grab on a searched card, and no season picker either —
+    // the assertion the picker redesign must not weaken. Checked against BOTH
+    // surfaces: the grid's trigger/tiles AND the free-text inputs the degraded
+    // fallback would render, since a searched card must reach neither.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
     expect(within(card).queryByLabelText("Season")).not.toBeInTheDocument();
+    expect(within(card).queryByText("Choose seasons/episodes")).not.toBeInTheDocument();
+    expect(
+      within(card).queryByRole("button", { name: /Season \d+.*eps/ }),
+    ).not.toBeInTheDocument();
 
     // Clicking the card body opens the picker; exactly one /search fired, no auto-grab.
     fireEvent.click(within(card).getByText("Searched Series"));

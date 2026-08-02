@@ -70,6 +70,11 @@ const TMDB_POSTER_BASE = "https://image.tmdb.org/t/p/w342";
 const TMDB_PROFILE_BASE = "https://image.tmdb.org/t/p/w185";
 const TMDB_LOGO_BASE = "https://image.tmdb.org/t/p/w92";
 
+// TMDB_STILL_BASE is the size root for episode stills (w300), the landscape
+// per-episode frame the season/episode picker's episode grid renders. Same host
+// and same proxyImage wrapping as every other root here.
+const TMDB_STILL_BASE = "https://image.tmdb.org/t/p/w300";
+
 // proxyImage rewrites an absolute upstream image URL into a same-origin image
 // proxy request. This is the ONLY way images reach the DOM in this app: an
 // <img src> must be proxyImage(...)'d, never the raw upstream URL. Returns ""
@@ -100,6 +105,14 @@ export function tmdbProfile(profilePath: string): string {
 export function tmdbLogo(logoPath: string): string {
   if (!logoPath) return "";
   return proxyImage(TMDB_LOGO_BASE + logoPath);
+}
+
+// tmdbStill turns a TMDB stillPath (episode still frame) into a proxied image
+// URL; blank yields "" so the episode tile renders its title/number-only
+// fallback. Mirrors tmdbPoster, only the size root differs (w300 stills).
+export function tmdbStill(stillPath: string): string {
+  if (!stillPath) return "";
+  return proxyImage(TMDB_STILL_BASE + stillPath);
 }
 
 // fetchDiscover returns one TMDB category (trending/popular) for Movies/Series,
@@ -184,12 +197,23 @@ export function fetchTrailer(
 // Adult scenes have no TMDB id and never call this. This is one explicit-click,
 // per-title fetch — NOT the banned automatic per-card availability probe, and
 // not Prowlarr (see CLAUDE.md's "Discover never queries Prowlarr" note).
+//
+// `sections` scopes the response instead of adding a second endpoint (plan
+// §3.1). Omitted — the DetailPopup's case — requests today's full bundle and
+// produces a byte-identical URL to before this param existed. "seasons" asks
+// for only the season/episode block, which is all SeasonEpisodePicker needs
+// when it fetches for itself; the backend skips the credits/keywords/providers/
+// recommendations fan-out entirely rather than computing and discarding it.
+// An unrecognized value degrades to the full bundle server-side (never a 400),
+// so this stays safe to extend.
 export function fetchTitleDetail(
   mode: Exclude<Mode, "adult">,
   tmdbId: number,
+  sections?: "seasons",
 ): Promise<TitleDetail> {
   return api<TitleDetail>(
-    `/api/modes/${mode}/discover/detail?tmdbId=${tmdbId}`,
+    `/api/modes/${mode}/discover/detail?tmdbId=${tmdbId}` +
+      (sections ? `&sections=${sections}` : ""),
   );
 }
 

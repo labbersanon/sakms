@@ -7,12 +7,14 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignal, Show } from "solid-js";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import type {
   AdultDiscoverItem,
   AvailabilityCandidate,
   AvailabilityPreview,
   DiscoverItem,
+  EpisodeSummary,
+  SeasonSummary,
   TitleDetail,
 } from "@dto";
 import {
@@ -70,6 +72,44 @@ const movie = (over: Partial<DiscoverItem> = {}): DiscoverItem => ({
   mediaType: "movie",
   ...over,
 });
+
+// seasonFixture/episodeFixture build the season/episode grid data the Series
+// gating step now renders. Art paths are non-empty so each tile draws an <img>
+// instead of the TextPoster fallback, which repeats the label and would make
+// text queries ambiguous.
+const episodeFixture = (n: number): EpisodeSummary => ({
+  episodeNumber: n,
+  name: `Ep ${n}`,
+  airDate: "2024-03-01",
+  runtime: 42,
+  stillPath: `/e${n}.jpg`,
+});
+
+const seasonFixture = (n: number, epCount = 4): SeasonSummary => ({
+  seasonNumber: n,
+  name: `Season ${n}`,
+  airDate: "2024-01-01",
+  episodeCount: epCount,
+  posterPath: `/s${n}.jpg`,
+  episodes: Array.from({ length: epCount }, (_, i) => episodeFixture(i + 1)),
+});
+
+// pickSeasonEpisode drives the inline grid: drill into a season, then take
+// either one episode or the leading "Whole season" tile (episode 0). Tiles are
+// matched by ROLE — a season's label also appears in the drilled-in header, so a
+// text query would go ambiguous.
+const pickSeasonEpisode = async (seasonNumber: number, episodeNumber: number | null) => {
+  fireEvent.click(
+    await screen.findByRole("button", { name: new RegExp(`Season ${seasonNumber}.*eps`) }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: episodeNumber === null
+        ? /^Whole season/
+        : new RegExp(`E${episodeNumber} · Ep ${episodeNumber}`),
+    }),
+  );
+};
 
 const adultScene = (over: Partial<AdultDiscoverItem> = {}): AdultDiscoverItem => ({
   id: "s1",
@@ -304,6 +344,9 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     preview.res1080.high.torrent = candidate();
 
     const calls = stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       if (url.includes("/discover/availability")) return jsonResponse(preview);
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080 });
@@ -316,17 +359,101 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     };
     render(() => <DetailPopup target={target} onClose={() => {}} />);
 
-    expect(screen.getByLabelText("Season")).toBeInTheDocument();
+    // The gating step is the season grid now, not two free-text inputs.
+    expect(
+      await screen.findByRole("button", { name: /Season 2.*eps/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Season")).toBeNull();
     expect(calls.filter((c) => c.url.includes("/discover/availability"))).toHaveLength(0);
 
-    fireEvent.input(screen.getByLabelText("Season"), { target: { value: "2" } });
-    fireEvent.input(screen.getByLabelText("Episode"), { target: { value: "4" } });
-    fireEvent.click(screen.getByText("Go"));
+    await pickSeasonEpisode(2, 4);
 
     expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
     const availCall = calls.find((c) => c.url.includes("/discover/availability"));
     expect(availCall?.url).toContain("season=2");
     expect(availCall?.url).toContain("episode=4");
+  });
+
+  // T-8.1: the popup already fetched the bundle, so the picker must consume it
+  // rather than fetch again. The prop's PRESENCE is what disables self-fetching,
+  // so a refactor that "cleans up" `seasons={detail()?.seasons}` into a
+  // conditional would silently double-fetch and only this assertion would catch
+  // it.
+  it("the Series grid consumes the popup's already-fetched seasons — no second detail request", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({ id: 5, title: "A Series", mediaType: "tv" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await screen.findByRole("button", { name: /Season 1.*eps/ });
+    expect(screen.getByRole("button", { name: /Season 2.*eps/ })).toBeInTheDocument();
+
+    // Exactly ONE detail request — the popup's own bundle — and none of it is
+    // the picker's `?sections=seasons` self-fetch signature.
+    const detailCalls = calls.filter((c) => c.url.includes("/discover/detail"));
+    expect(detailCalls).toHaveLength(1);
+    expect(detailCalls.every((c) => !c.url.includes("sections=seasons"))).toBe(true);
+  });
+
+  // Nested-modal carve-out: a Series recommendation's Grab would open the picker
+  // in a SECOND modal inside this one, and both close on one backdrop click.
+  // Movies are deliberately untouched — their grab opens no picker at all.
+  it("suppresses Grab on a Series recommendation card but keeps it on a Movie one", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({
+          ...titleDetail(),
+          recommendations: [
+            {
+              id: 91,
+              title: "Recommended Movie",
+              posterPath: "/rm.jpg",
+              overview: "",
+              releaseDate: "",
+              voteAverage: 0,
+              mediaType: "movie",
+            },
+            {
+              id: 92,
+              title: "Recommended Show",
+              posterPath: "/rs.jpg",
+              overview: "",
+              releaseDate: "",
+              voteAverage: 0,
+              mediaType: "tv",
+            },
+          ],
+        });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    const movieCard = (await screen.findByText("Recommended Movie")).closest(
+      "div.w-\\[180px\\]",
+    ) as HTMLElement;
+    const showCard = screen
+      .getByText("Recommended Show")
+      .closest("div.w-\\[180px\\]") as HTMLElement;
+
+    expect(within(movieCard).getByText("Grab")).toBeInTheDocument();
+    expect(within(showCard).queryByText("Grab")).not.toBeInTheDocument();
   });
 
   it("Adult now also fetches and honors quality-prefs, same as Movies/Series", async () => {
@@ -436,6 +563,8 @@ describe("DetailPopup — Watch Trailer link", () => {
   const stubWithTrailer = (trailerUrl: string) =>
     stubFetch((url) => {
       if (url.includes("/discover/trailer")) return jsonResponse({ url: trailerUrl });
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1)] });
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
@@ -489,8 +618,8 @@ describe("DetailPopup — Watch Trailer link", () => {
     };
     render(() => <DetailPopup target={target} onClose={() => {}} />);
 
-    fireEvent.input(screen.getByLabelText("Season"), { target: { value: "1" } });
-    fireEvent.click(screen.getByText("Go"));
+    // Clear the Series gating step through the grid: Season 1 → Whole season.
+    await pickSeasonEpisode(1, null);
 
     await screen.findByText("Watch Trailer →");
     const trailerCall = calls.find((c) => c.url.includes("/discover/trailer"));
@@ -597,6 +726,9 @@ const titleDetail = (over: Partial<TitleDetail> = {}): TitleDetail => ({
       mediaType: "movie",
     },
   ],
+  // Always [] for a Movie, and this fixture's title is one. A Series' popup
+  // hands this straight to SeasonEpisodePicker as pre-fetched data.
+  seasons: [],
   ...over,
 });
 

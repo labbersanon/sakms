@@ -85,11 +85,13 @@ describe("Requests", () => {
           tmdbId: 7,
           status: "Downloading",
         }),
+        // "In Library" with a count, not a "Missing" status: Missing is an
+        // annotation the backend hangs off a real status, never a status itself.
         item({
           mode: "series",
           title: "Incomplete Show",
           tmdbId: 8,
-          status: "Missing",
+          status: "In Library",
           missingCount: 3,
         }),
       ],
@@ -124,6 +126,92 @@ describe("Requests", () => {
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     expect(screen.getByText("Owned Movie")).toBeInTheDocument();
     expect(screen.getByText("Grabbing Movie")).toBeInTheDocument();
+  });
+
+  // Base rows for the "Has Missing Episodes" cases: a movie and a series with
+  // nothing missing, plus one series that is missing 3 episodes.
+  const missingRows = () => [
+    item({ title: "Complete Movie", status: "In Library" }),
+    item({ mode: "series", title: "Complete Show", tmdbId: 7, status: "In Library" }),
+    item({
+      mode: "series",
+      title: "Incomplete Show",
+      tmdbId: 8,
+      status: "In Library",
+      missingCount: 3,
+    }),
+  ];
+
+  it("the missing chip filters to rows with missing episodes", async () => {
+    stubRequests({ items: missingRows() });
+
+    render(() => <Requests />);
+    await screen.findByText("Incomplete Show");
+
+    fireEvent.click(screen.getByRole("button", { name: "Has Missing Episodes" }));
+    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
+    expect(screen.queryByText("Complete Movie")).not.toBeInTheDocument();
+    expect(screen.queryByText("Complete Show")).not.toBeInTheDocument();
+  });
+
+  it("the missing chip toggles back off, restoring every row", async () => {
+    stubRequests({ items: missingRows() });
+
+    render(() => <Requests />);
+    await screen.findByText("Incomplete Show");
+
+    const chip = () => screen.getByRole("button", { name: "Has Missing Episodes" });
+    fireEvent.click(chip());
+    expect(screen.queryByText("Complete Movie")).not.toBeInTheDocument();
+
+    // A boolean toggle, not a one-of selector: the same chip clears it (there is
+    // no "All" of its own to fall back to).
+    fireEvent.click(chip());
+    expect(screen.getByText("Complete Movie")).toBeInTheDocument();
+    expect(screen.getByText("Complete Show")).toBeInTheDocument();
+    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
+  });
+
+  it("the missing chip is an independent filter, not a fourth status", async () => {
+    // Both extra rows are reachable backend states: the In-Library pass sets
+    // MissingCount on the series row, and the grab pass then overwrites only
+    // Status — so a Downloading/Pending Retry series keeps its count.
+    stubRequests({
+      items: [
+        ...missingRows(),
+        item({
+          mode: "series",
+          title: "Grabbing Show",
+          tmdbId: 9,
+          status: "Downloading",
+          missingCount: 2,
+        }),
+        item({
+          mode: "series",
+          title: "Retrying Show",
+          tmdbId: 10,
+          status: "Pending Retry",
+          missingCount: 2,
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Incomplete Show");
+
+    fireEvent.click(screen.getByRole("button", { name: "Has Missing Episodes" }));
+    expect(screen.getByText("Grabbing Show")).toBeInTheDocument();
+    expect(screen.getByText("Retrying Show")).toBeInTheDocument();
+    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
+
+    // Adding a status chip intersects with the missing chip rather than
+    // replacing it.
+    fireEvent.click(screen.getByRole("button", { name: "In Library" }));
+    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
+    expect(screen.queryByText("Grabbing Show")).not.toBeInTheDocument();
+    expect(screen.queryByText("Retrying Show")).not.toBeInTheDocument();
+    expect(screen.queryByText("Complete Show")).not.toBeInTheDocument();
+    expect(screen.queryByText("Complete Movie")).not.toBeInTheDocument();
   });
 
   it("single Remove calls the exclude endpoint with the correct body, after a confirm", async () => {

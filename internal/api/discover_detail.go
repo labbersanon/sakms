@@ -3,6 +3,7 @@ package api
 import (
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"golang.org/x/sync/errgroup"
@@ -15,7 +16,33 @@ import (
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
-// discoverDetailHandler backs GET /api/modes/{mode}/discover/detail?tmdbId=N —
+// maxPrefetchedSeasons caps how many seasons discoverDetailHandler eagerly
+// fetches episodes for on one request. Seasons past the cap are absent from the
+// response ENTIRELY — not present-with-empty-episodes — which is the point:
+// a soft-failed placeholder would still cost a cache slot and still gate the
+// response, hiding the problem instead of avoiding it.
+//
+// 30 covers essentially every scripted show; the tail it excludes is soaps,
+// daily news, and a few long-running anime. Below the cap nothing changes at
+// all.
+//
+// KNOWN, ACCEPTED LIMITATION, stated plainly because it is a real UI dead end,
+// not merely "less eager": a show with more than 30 seasons has NO path to
+// grabbing seasons 31+ from the picker. The picker's season grid renders
+// exactly what this response carries and has no lazy-fetch for a season it
+// cannot find (SeasonEpisodePicker.tsx's `current()` is a find over that one
+// list), and its degraded free-text S/E fallback does not help either — that
+// only renders when the season list is EMPTY, and a capped response is not
+// empty. Accepted for now: the alternative is a per-season lazy fetch, which is
+// real scope this finding did not ask for. If a >30-season show ever needs
+// grabbing here, that lazy fetch is the fix — do NOT just raise the cap.
+// Claude 2026-08-02, Phase-4 review FIX 5 (code-reviewer, not in the plan).
+// Review if: the picker gains a lazy per-season fetch, or the TMDB cache's
+// 512-entry capacity changes materially.
+const maxPrefetchedSeasons = 30
+
+// discoverDetailHandler backs GET
+// /api/modes/{mode}/discover/detail?tmdbId=N[&sections=seasons] —
 // the Seerr-parity Discover detail popup's one on-demand, per-click enrichment
 // fetch (Movies/Series only; Adult has no TMDB id, so it 400s and keeps its
 // existing performers/genres popup unchanged). It fans the independent TMDB
@@ -34,6 +61,15 @@ import (
 // first non-nil return) is deliberately used: with every goroutine returning
 // nil, there is no cancellation to reason about, and the sibling sub-calls
 // all complete even when one fails.
+//
+// `sections=seasons` scopes the response instead of adding an endpoint: it runs
+// ONLY the extended-details call (which is where the season list itself comes
+// from) plus the per-season episode fan-out, and never starts the credits/
+// keywords/providers/recommendations goroutines. That's for the card-level
+// season/episode picker, which wants a lightweight season-only fetch; the
+// detail popup omits the param and gets the full bundle plus seasons in one
+// request. Any OTHER value degrades to "give them everything" rather than
+// 400ing, matching this handler's existing soft-fail posture.
 func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -59,6 +95,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 		}
 
 		isTV := m == mode.Series
+		seasonsOnly := r.URL.Query().Get("sections") == "seasons"
 
 		// Each sub-call writes only its own captured var below — disjoint, so no
 		// data race across the parallel goroutines. Assembled into the DTO after
@@ -92,55 +129,144 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			}
 			return nil
 		})
-		g.Go(func() error {
-			var e error
-			if isTV {
-				credits, e = sess.TMDB.TVAggregateFullCredits(ctx, tmdbID)
-			} else {
-				credits, e = sess.TMDB.MovieFullCredits(ctx, tmdbID)
-			}
-			if e != nil {
-				log.Printf("discover detail: credits failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
-			}
-			return nil
-		})
-		g.Go(func() error {
-			var e error
-			if isTV {
-				keywords, e = sess.TMDB.TVKeywords(ctx, tmdbID)
-			} else {
-				keywords, e = sess.TMDB.MovieKeywords(ctx, tmdbID)
-			}
-			if e != nil {
-				log.Printf("discover detail: keywords failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
-			}
-			return nil
-		})
-		g.Go(func() error {
-			var e error
-			if isTV {
-				providers, e = sess.TMDB.TVWatchProviders(ctx, tmdbID)
-			} else {
-				providers, e = sess.TMDB.MovieWatchProviders(ctx, tmdbID)
-			}
-			if e != nil {
-				log.Printf("discover detail: watch providers failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
-			}
-			return nil
-		})
-		g.Go(func() error {
-			var e error
-			if isTV {
-				recs, e = sess.TMDB.TVRecommendations(ctx, tmdbID, 1)
-			} else {
-				recs, e = sess.TMDB.MovieRecommendations(ctx, tmdbID, 1)
-			}
-			if e != nil {
-				log.Printf("discover detail: recommendations failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
-			}
-			return nil
-		})
+		// The four goroutines below are the bundle `sections=seasons` skips
+		// entirely — zero requests to those endpoints, not fetched-then-discarded.
+		// The extended-details goroutine above always runs: it is what supplies
+		// ext.Seasons, which the season fan-out after g.Wait() iterates.
+		if !seasonsOnly {
+			g.Go(func() error {
+				var e error
+				if isTV {
+					credits, e = sess.TMDB.TVAggregateFullCredits(ctx, tmdbID)
+				} else {
+					credits, e = sess.TMDB.MovieFullCredits(ctx, tmdbID)
+				}
+				if e != nil {
+					log.Printf("discover detail: credits failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
+				}
+				return nil
+			})
+			g.Go(func() error {
+				var e error
+				if isTV {
+					keywords, e = sess.TMDB.TVKeywords(ctx, tmdbID)
+				} else {
+					keywords, e = sess.TMDB.MovieKeywords(ctx, tmdbID)
+				}
+				if e != nil {
+					log.Printf("discover detail: keywords failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
+				}
+				return nil
+			})
+			g.Go(func() error {
+				var e error
+				if isTV {
+					providers, e = sess.TMDB.TVWatchProviders(ctx, tmdbID)
+				} else {
+					providers, e = sess.TMDB.MovieWatchProviders(ctx, tmdbID)
+				}
+				if e != nil {
+					log.Printf("discover detail: watch providers failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
+				}
+				return nil
+			})
+			g.Go(func() error {
+				var e error
+				if isTV {
+					recs, e = sess.TMDB.TVRecommendations(ctx, tmdbID, 1)
+				} else {
+					recs, e = sess.TMDB.MovieRecommendations(ctx, tmdbID, 1)
+				}
+				if e != nil {
+					log.Printf("discover detail: recommendations failed for mode=%s tmdbId=%d, degrading to empty section: %v", m, tmdbID, e)
+				}
+				return nil
+			})
+		}
 		_ = g.Wait() // every goroutine returns nil — see the soft-fail note above.
+
+		// Season/episode prefetch — a SECOND, SEQUENTIAL-AFTER group, deliberately
+		// not a sixth sibling of the one above: the season list itself arrives with
+		// the extended-details call, so nothing here can start until that group has
+		// finished. Every season this response carries is fetched eagerly and in
+		// parallel on this one request, which is what makes the picker's episode
+		// grid instant on season click and keeps the browser at ONE request
+		// instead of N. "Every season this response carries" is no longer "every
+		// season TMDB reports" — see maxPrefetchedSeasons.
+		//
+		// SetLimit(6) bounds CONCURRENCY; maxPrefetchedSeasons bounds TOTAL work.
+		// Two different limits for two different costs, and the first alone was
+		// never sufficient. This is TMDB, once per explicit operator action, for
+		// one title — not the banned automatic per-card Prowlarr probe (CLAUDE.md,
+		// "Discover never queries Prowlarr"); both limits are politeness toward
+		// TMDB's rate limit and the response cache, not rule compliance.
+		//
+		// Soft-fails PER SEASON, mirroring this handler's existing posture and the
+		// codebase's per-item convention (retryDueGrabs/syncSeriesCatalog): one
+		// season's fetch failing leaves that season with an empty episode list and
+		// its siblings untouched, never a failed popup.
+		//
+		// Claude 2026-08-02: sort ascending and cap at maxPrefetchedSeasons BEFORE
+		// the fan-out (see that const), so an over-cap season is never fetched at
+		// all rather than fetched and hidden.
+		// Reason: SetLimit(6) bounds concurrency but NOT total work — a 40-season
+		// soap fired 40 sequential-ish TMDB calls and could evict ~8% of the
+		// 512-entry cache on one popup open, crowding out the Discover-row entries
+		// the cache mostly exists to serve, while the response waited on all 40.
+		// The sort moved UP here from where it used to run on the assembled DTO:
+		// this is what makes "the first N" mean the lowest season numbers rather
+		// than an arbitrary N of TMDB's own ordering.
+		// Troubleshooting: Phase-4 review FIX 5 (code-reviewer, not in the plan).
+		// Review if: the cache capacity or the picker's data model changes.
+		//
+		// INVARIANT: nothing may reorder or resize ext.Seasons below this point.
+		// seasonEps is indexed POSITIONALLY against it, so a later sort would pair
+		// every season with another season's episodes — silently, and no current
+		// test would catch it. That is precisely why the sort lives here and not
+		// next to the DTO assembly, which is where it looks like it belongs.
+		sort.Slice(ext.Seasons, func(i, j int) bool { return ext.Seasons[i].SeasonNumber < ext.Seasons[j].SeasonNumber })
+		if len(ext.Seasons) > maxPrefetchedSeasons {
+			log.Printf("discover detail: tmdbId=%d reports %d seasons, prefetching the first %d — later seasons are omitted from this response", tmdbID, len(ext.Seasons), maxPrefetchedSeasons)
+			ext.Seasons = ext.Seasons[:maxPrefetchedSeasons]
+		}
+
+		seasonEps := make([][]tmdb.SeasonEpisode, len(ext.Seasons))
+		sg := new(errgroup.Group)
+		sg.SetLimit(6)
+		for i, s := range ext.Seasons {
+			sg.Go(func() error {
+				eps, e := sess.TMDB.SeasonDetails(ctx, tmdbID, s.SeasonNumber)
+				if e != nil {
+					log.Printf("discover detail: season %d episodes failed for tmdbId=%d, degrading to season-only: %v", s.SeasonNumber, tmdbID, e)
+					return nil
+				}
+				seasonEps[i] = eps
+				return nil
+			})
+		}
+		_ = sg.Wait()
+
+		seasons := make([]apidto.SeasonSummary, 0, len(ext.Seasons))
+		for i, s := range ext.Seasons {
+			seasons = append(seasons, apidto.SeasonSummary{
+				SeasonNumber: s.SeasonNumber,
+				Name:         s.Name,
+				AirDate:      s.AirDate,
+				EpisodeCount: s.EpisodeCount,
+				PosterPath:   s.PosterPath,
+				Episodes:     mapSeasonEpisodes(seasonEps[i]),
+			})
+		}
+		// `seasons` is already ascending: ext.Seasons was sorted before the
+		// fan-out (see the INVARIANT above) and this loop preserves that order.
+		// TMDB returns seasons[] in its own order, so the sort is still required —
+		// it just happens earlier now. Judgment call, unchanged: ascending puts
+		// Specials (season 0) FIRST, where Sonarr/Seerr conventionally put them
+		// last — chosen for consistency with airdatemonitor.go's seasonStates sort
+		// and because it needs no special case. Flipping it is a one-line change
+		// (up there, not here — re-sorting at this point is safe for the DTO but
+		// would tempt the next reader to move the whole sort back down, which is
+		// not).
 
 		detail := apidto.TitleDetail{
 			Status:                ext.Status,
@@ -159,6 +285,14 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			Crew:                  mapCrew(credits.Crew),
 			WatchProviders:        mapWatchProviders(providers),
 			Recommendations:       mapDiscoverItems(recs),
+			// `"seasons":[]` and never null — for a Movie (which never populates
+			// ext.Seasons), for a Series whose TVDetails call soft-failed, and for
+			// a Series TMDB reports zero seasons for. The zero-length make() above
+			// is what actually guarantees that; nonNilSlice is belt-and-braces and
+			// keeps this field's shape consistent with every other slice on the
+			// type (repo's never-null-array convention — the generated TS type is
+			// non-nullable).
+			Seasons: nonNilSlice(seasons),
 		}
 		writeJSON(w, detail)
 	}
@@ -180,6 +314,10 @@ type titleExtended struct {
 	Networks              []string
 	Studios               []string
 	ReleaseDates          []apidto.ReleaseDateEntry
+	// Seasons is Series-only (nil for a Movie) — TMDB's seasons[] as /tv/{id}
+	// returns it, in TMDB's own order. It is what the handler's per-season
+	// episode fan-out iterates.
+	Seasons []tmdb.TVSeason
 }
 
 func extendedFromMovie(d tmdb.MovieDetails) titleExtended {
@@ -206,7 +344,26 @@ func extendedFromTV(d tmdb.TVDetails) titleExtended {
 		Runtime:               d.Runtime,
 		Genres:                d.Genres,
 		Networks:              d.Networks,
+		Seasons:               d.Seasons,
 	}
+}
+
+// mapSeasonEpisodes maps one season's TMDB episodes to the picker's episode
+// grid DTO. Same shape as mapCast/mapCrew, and for the same reason: the
+// zero-length make() means a soft-failed season's Episodes serializes as [],
+// never null.
+func mapSeasonEpisodes(in []tmdb.SeasonEpisode) []apidto.EpisodeSummary {
+	out := make([]apidto.EpisodeSummary, 0, len(in))
+	for _, e := range in {
+		out = append(out, apidto.EpisodeSummary{
+			EpisodeNumber: e.EpisodeNumber,
+			Name:          e.Name,
+			AirDate:       e.AirDate,
+			Runtime:       e.Runtime,
+			StillPath:     e.StillPath,
+		})
+	}
+	return out
 }
 
 // releaseTypeLabels maps TMDB's numeric release-date "type" enum to the human

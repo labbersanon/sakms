@@ -6,15 +6,20 @@
 //   - the Downloads tab is the live download-client queue status.
 // Neither rolls up state ACROSS modes, and neither surfaces what's still
 // MISSING. The Requests tab does both: one row per title spanning Movies/Series/Adult,
-// each tagged In Library (tracked) / Downloading (an active grab) / Missing
-// (Series episodes TMDB knows about but that aren't on disk yet), with a
-// missing-episode count. It is pure derive-on-read aggregation (GET /api/requests)
-// — no new persisted table, no grab affordance on already-in-library rows.
+// each tagged In Library (tracked) / Downloading (an active grab) / Pending Retry
+// (an auto-grab awaiting re-search). Missing is NOT one of those tags — it is a
+// Series-only missing-episode count that co-occurs with any of them (episodes TMDB
+// knows about that aren't on disk yet). It is pure derive-on-read aggregation
+// (GET /api/requests) — no new persisted table, no grab affordance on
+// already-in-library rows.
 //
 // Status honesty (single-operator model): there is no approval queue, so
-// "Requested" collapses into Downloading (a grab IS the request), and Missing is
-// Series-only in v1 (Movies/Adult don't track not-owned titles) — the backend
-// documents both; this screen just renders whatever statuses it returns.
+// "Requested" collapses into Downloading (a grab IS the request), and the
+// missing-episode count is Series-only (Movies/Adult don't track not-owned
+// titles) — the backend documents both. The status chips render whatever statuses
+// the backend returns; the "Has Missing Episodes" chip is the one hand-written,
+// non-data-derived filter on this screen, and it intersects with the status/mode
+// chips rather than acting as a fourth status.
 
 import {
   type Component,
@@ -159,6 +164,7 @@ export const Requests: Component = () => {
   const [data, { refetch }] = createResource(fetchRequests);
   const [statusFilter, setStatusFilter] = createSignal<string | null>(null);
   const [modeFilter, setModeFilter] = createSignal<string | null>(null);
+  const [missingOnly, setMissingOnly] = createSignal(false);
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   const [actionError, setActionError] = createSignal<string | null>(null);
@@ -177,7 +183,8 @@ export const Requests: Component = () => {
     items().filter(
       (i) =>
         (statusFilter() === null || i.status === statusFilter()) &&
-        (modeFilter() === null || i.mode === modeFilter()),
+        (modeFilter() === null || i.mode === modeFilter()) &&
+        (!missingOnly() || i.missingCount > 0),
     );
 
   const openRow = (item: RequestItem) => {
@@ -258,6 +265,27 @@ export const Requests: Component = () => {
             labelOf={(m) => MODE_LABELS[m] ?? m}
           />
         </Show>
+        {/* A standalone boolean toggle, deliberately NOT a FilterChips instance:
+            FilterChips always renders its own "All" button, and its semantics are
+            "All + one-of-N", not on/off. Rendered unconditionally (never gated on
+            the data) so it can't flicker during a refetch or strand an active
+            filter with no affordance to clear it. The predicate is missingCount > 0
+            alone — Series-only-ness is a backend guarantee (Movies/Adult are
+            constructed without a MissingCount), and a mode clause here would mask
+            a violation of it rather than surface one. */}
+        <div class="flex flex-wrap gap-1">
+          <button
+            type="button"
+            class="rounded-md px-3 py-1 text-xs font-medium transition"
+            classList={{
+              "bg-accent text-accent-fg": missingOnly(),
+              "bg-surface-2 text-muted hover:text-fg": !missingOnly(),
+            }}
+            onClick={() => setMissingOnly((v) => !v)}
+          >
+            Has Missing Episodes
+          </button>
+        </div>
       </div>
 
       <Show when={selection.size() > 0}>

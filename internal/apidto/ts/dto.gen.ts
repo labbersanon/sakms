@@ -899,13 +899,43 @@ export interface ReleaseDateEntry {
   date: string;
 }
 /**
+ * SeasonSummary is one season of a Series for the Discover picker's season
+ * grid. PosterPath is a bare TMDB path, proxied by the frontend like every
+ * other image path in this DTO (never an absolute URL). Episodes is populated
+ * by the detail handler's eager all-seasons prefetch and is EMPTY — not
+ * absent — for a season whose per-season fetch soft-failed; the grid renders a
+ * season card either way.
+ */
+export interface SeasonSummary {
+  seasonNumber: number /* int */;
+  name: string;
+  airDate: string;
+  episodeCount: number /* int */;
+  posterPath: string;
+  episodes: EpisodeSummary[];
+}
+/**
+ * EpisodeSummary is one episode in the picker's episode grid. StillPath is ""
+ * when TMDB has no still for this episode — a normal, expected condition — and
+ * the grid falls back to a title/number-only card.
+ */
+export interface EpisodeSummary {
+  episodeNumber: number /* int */;
+  name: string;
+  airDate: string;
+  runtime: number /* int */;
+  stillPath: string;
+}
+/**
  * TitleDetail is the full Discover detail popup payload for a Movie/Series
  * title. Every section is independently soft-failed by the handler, so any
  * slice may be empty (that section simply doesn't render) without the whole
- * response failing. All image-path fields (ProfilePath, LogoPath) are bare
- * TMDB paths — proxied by the frontend, never absolute URLs. Deliberately
- * carries NO Revenue/Budget and NO critic/review-badge field (both out of
- * scope for v1).
+ * response failing. All image-path fields (ProfilePath, LogoPath, and the
+ * PosterPath/StillPath carried by Seasons and their Episodes) are bare TMDB
+ * paths — proxied by the frontend, never absolute URLs. Seasons is the
+ * season/episode picker's grid data and is always empty for a Movie.
+ * Deliberately carries NO Revenue/Budget and NO critic/review-badge field
+ * (both out of scope for v1).
  */
 export interface TitleDetail {
   status: string;
@@ -924,6 +954,7 @@ export interface TitleDetail {
   crew: CrewMember[];
   watchProviders: WatchProviderDTO[];
   recommendations: DiscoverItem[];
+  seasons: SeasonSummary[];
 }
 /**
  * RequestStatusItem is one title's cross-mode status. Status is "In Library"

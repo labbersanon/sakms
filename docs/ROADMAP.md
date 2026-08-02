@@ -31,14 +31,29 @@ per-item counting semantics). **This Ralph task is now scoped to the
 season-mismatch bug diagnosis/fix only** — do not also redesign the UI as
 part of it; that's the separate spec's job.
 
-**Scope note**: `SeasonEpisodePicker` (`frontend/src/screens/discover/
-Mainstream.tsx`, exported for reuse) is shared by both the inline card grab
+**Scope note**: `SeasonEpisodePicker` is shared by both the inline card grab
 flow and `DetailPopup`'s Series gating step (see
 `.omc/specs/deep-interview-discover-card-cleanup.md`, spec ready, same day)
 — a fix here affects both call sites, no separate fix needed per
 call site. Wade confirmed the bug fix, the cleanup spec, and the redesign
 spec are three independent work items with no forced ordering between
 them.
+
+**UPDATED 2026-08-02 — the redesign shipped; THIS BUG DID NOT, and must not
+be marked fixed on the strength of it.** Two things in the note above are now
+stale. (1) The picker no longer lives in `Mainstream.tsx` — it is its own
+`frontend/src/screens/discover/SeasonEpisodePicker.tsx`, and there are SIX
+mount points, not the two "both call sites" implies (see the shipped entry
+below). Anything planning against the old export must re-verify. (2) The
+redesign's spec is no longer just "spec ready" — it is built and shipped.
+
+**The season-mismatch bug remains open and still belongs to Ralph.** Replacing
+free-text inputs with a grid may *mask* it (if the root cause was the
+free-text parse) or leave it fully intact (if it is in release scoring or
+check-import) — neither was diagnosed, and nothing in the redesign was allowed
+to touch it. If it now appears fixed, that is an observation to hand to the
+Ralph task, not a claim to make: silently absorbing a bug fix into a feature
+is exactly what the correction above exists to prevent.
 
 ## In progress
 
@@ -327,6 +342,42 @@ unchanged — unit tests are unaffected. Commit `29a56f3`.
 ---
 
 ## Recently shipped (outside this backlog)
+
+### Season/episode picker redesign (poster grid + TMDB response cache) — shipped 2026-08-02
+`.omc/specs/deep-interview-season-episode-picker-redesign.md`, built per
+`.omc/plans/autopilot-impl-season-episode-picker-redesign.md`. The two
+free-text `S`/`E` inputs are replaced by a two-level poster grid: a season grid
+(proxied poster, name, episode count, air year) drilling into an episode grid
+(proxied still, number, name, air date, runtime), with a leading "Whole season"
+tile preserving the shipped `episode: 0` / `SeasonSpecified: true` semantic that
+protects Season 0 / Specials. Images reuse `/api/images/proxy` — zero backend
+image work, never-hot-link rule unaffected. Data arrives through the existing
+`GET /api/modes/{mode}/discover/detail`, extended with a response-scoping
+`sections=seasons` param rather than a new endpoint, with the per-season episode
+fetches fanned out server-side (bounded, soft-failing per season) so the browser
+makes one request, not N. A general-purpose LRU+TTL TMDB response cache
+(`internal/tmdb/cache.go`) sits behind `Client.do()`, so every TMDB call in the
+codebase is cached by one change.
+
+Things a future session should not quietly undo:
+- **SIX mount points, not the three the spec names.** Five reach the picker
+  through the shared `GrabButton` (Discover rows, "In your library",
+  Trakt watchlist, `DetailPopup`'s "More like this" rail, `CalendarView`); the
+  other two are `DetailPopup`'s own inline gating step and bulk-select.
+  (`Library.tsx` has a same-named, unrelated `PosterCard` — not affected.)
+- **Omitting the `seasons` prop is what enables self-fetching**, not its value.
+  `DetailPopup` passes it (plus `loading`) because it already holds the bundle;
+  passing it anywhere else — even as `undefined` — would hand loading control to
+  that caller permanently.
+- **Grab is suppressed on SERIES cards in `DetailPopup`'s recommendations rail
+  only.** Its picker would open a second modal inside the popup's own, and both
+  close on one backdrop click. Movies are deliberately untouched: their grab
+  opens no picker and nests nothing.
+- **The degraded free-text fallback is required and the spec never asked for
+  it.** A failed/empty enumeration, or a `tmdbId <= 0` (reachable from the
+  library and Trakt rows), renders the old two inputs. Without it a TMDB outage
+  removes every Series grab in the app at once. It will look like dead code.
+- **Grid, not carousel**, at both levels — deliberate, scoped to the picker.
 
 ### Browser (desktop) notifications for webhook events — shipped and deployed 2026-07-21
 A human-directed addition, not a pre-existing backlog item (distinct from
@@ -1420,17 +1471,22 @@ worth building, staying single-operator:
   Confirmed live in code, not just documented: an opt-in Select-mode toggle
   on Discover (`frontend/src/screens/discover/selection.tsx`,
   `BulkBar.tsx`), Movies select via a per-card checkbox, Series select
-  per-season via chips (`SeriesSeasonSelect`, no whole-series checkbox),
-  capped at 20 flattened items (`internal/api/autograb_batch.go`'s
-  `MaxBatchGrabItems`, a season-expanded series counts one item per
-  selected season), submitted via `POST /api/autograb-batch` and executed
+  per-season **or per-episode** via chips (`SeriesSeasonSelect`, no
+  whole-series checkbox — episode granularity added 2026-08-02 by the picker
+  redesign; a whole season and any episode of that season are mutually
+  exclusive, since dispatching both means a season pack plus a duplicate
+  single episode), capped at 20 flattened items
+  (`internal/api/autograb_batch.go`'s `MaxBatchGrabItems`, where a flattened
+  item is a whole season **or** a single episode — so a series contributing
+  three checked episodes contributes three; the cap value and the guard are
+  both unchanged), submitted via `POST /api/autograb-batch` and executed
   sequentially server-side with a three-state per-item result
   (grabbed/needs-manual-pick/error) — never a queue-wide "grab everything."
   A live registry drops any selected-but-no-longer-rendered card before
   building the batch, so a stale selection can't fire a grab of the wrong
   title. Covered by `autograb_batch_test.go` and
   `Discover.select.test.tsx`.
-- **Request-status view** — **reconciled 2026-08-01, spec ready**:
+- **Request-status view** — **reconciled 2026-08-01, shipped 2026-08-02**:
   `.omc/specs/deep-interview-request-status-missing-filter.md` (~9%
   ambiguity, PASSED). **Turned out ~90% already built before this
   interview happened**: `Requests.tsx` already is the single
@@ -1441,9 +1497,9 @@ worth building, staying single-operator:
   absent by design (`internal/api/requests.go`'s own comment: "a grab IS
   the request... no approval queue"). The one real gap: "Missing" existed
   only as a numeric annotation (`· N missing`) on In-Library series rows,
-  not a separate filterable state — this spec adds a "Has Missing
-  Episodes" filter chip (Series-only, frontend-only, no backend changes)
-  to close exactly that gap. Deliberately does not overlap/merge with the
+  not a separate filterable state — shipped: a "Has Missing Episodes"
+  filter chip (Series-only, frontend-only, no backend changes) closes
+  exactly that gap. Deliberately does not overlap/merge with the
   Calendar spec's Upcoming view (item 8, above) — same underlying missing-
   episode data, different lens (date-organized vs. status-organized),
   both kept as independent views.

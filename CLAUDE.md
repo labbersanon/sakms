@@ -232,6 +232,60 @@ above, so don't drop them for convenience:
     Selection is cleared on tab/route change and any selected-but-no-
     longer-rendered card is dropped before the request is built, so a
     stale selection can never fire a live grab of the wrong title.
+  - **CORRECTED 2026-08-02 — the bulk-grab exception above is now
+    EPISODE-granular, and two of its sentences are false as written (see
+    `.omc/plans/autopilot-impl-season-episode-picker-redesign.md` §6.3 and
+    `CHANGELOG.md`).** Placed adjacent to the note it corrects rather than at
+    the end of this list, same as the CORRECTED note under **Automation**
+    above: this is not a fifth reversal, it is a correction to the second one.
+    The two superseded sentences, quoted verbatim so a future session can find
+    them:
+    1. *"capped (≤20 flattened items — a season-expanded series counts one
+       item per selected season)"*
+    2. *"every OTHER Discover affordance (the per-card Grab button, the
+       season/episode picker) is unchanged and still strictly single-item"*
+
+    **Corrected counting semantic:** a flattened item is a whole season **or a
+    single episode**. A selected episode counts as exactly one item, the same
+    as a selected season does, so a series contributing three checked episodes
+    contributes three items to the cap. **The cap value is unchanged at 20 and
+    the sequential server-side execution is untouched** (`POST
+    /api/autograb-batch`, still never a client-side/goroutine fan-out). The
+    backend needed no counting change at all: the frontend has always
+    submitted an already-flattened item list, and the request DTO has always
+    carried an episode number, so an episode-level item was already
+    representable and already counted as one. Only `MaxBatchGrabItems`' doc
+    comment was stale.
+
+    **Sentence 2 is only HALF false — do not over-correct it.** The per-card
+    Grab button **is still strictly single-item**: it picks one season or one
+    episode and grabs that one thing, exactly as before. Only bulk-select
+    gained episode granularity. The season/episode picker's *surface* changed
+    (free-text inputs → poster grid — see the Discover entry at the end of
+    **Current state**), but nothing about the single-item Grab path did.
+
+    **New bound this granularity requires, enforced in the UI: whole-season
+    and episode selections for the same season are MUTUALLY EXCLUSIVE.**
+    Selecting `S4` and `S4E7` together would dispatch a season pack plus a
+    single episode of that same season — two genuinely different releases, so
+    `activeGrabForGID`'s download-client-GID dedup cannot catch it, and the
+    result is a duplicate on disk, a direct hit on the mission's "no
+    duplicates" bar. Toggling a season on clears that season's episode keys;
+    toggling any episode of a season on clears that season's whole-season key.
+    This needed a **read-only** key-enumeration accessor on `SelectionStore`,
+    because the same title can render in two rows at once (Trending *and*
+    Popular) and a card-local workaround is defeated by construction. The
+    store still parses nothing — the caller owns the key format entirely,
+    which is what keeps the selection safety centerpiece uncoupled from one
+    screen's naming.
+
+    **Registration stays on the CARD's chip, never on the modal's tile.**
+    `buildBatch`'s orphan-drop submits only keys still registered by a
+    currently-rendered component; a modal closes and unmounts its tiles, so
+    registering there would silently drop every selection at submit time while
+    every existing test still passed. That is the single most likely way to
+    break the stale-selection guarantee this list's 2026-07-24 note ends with
+    — the guarantee itself is unchanged and still holds.
   - **AMENDED 2026-08-01 — bounded unattended Usenet auto-grab exception (a
     third, deliberate, documented reversal; see `docs/ROADMAP.md`'s
     "Eliminate Connections tab; Usenet multi-subscription settings" entry
@@ -592,6 +646,56 @@ above, so don't drop them for convenience:
   service. Its documented naming convention is separately adopted as SAK's
   own default preset (see below) precisely because that's a convention, not
   a dependency.
+- **TMDB response cache (2026-08-02)**: `internal/tmdb/cache.go` — a
+  fixed-capacity LRU with per-entry TTL, sitting behind `Client.do()`. `do()`
+  is the single chokepoint every one of the ~35 `*Client` methods routes
+  through, so caching the raw response body there makes **every TMDB call in
+  the codebase** cached by one change, with no per-method work. Behavior on a
+  miss is byte-for-byte what it was, error strings included; the one real
+  behavior change is that a second identical call inside the TTL does not hit
+  the network.
+  - **It is a package-level singleton, and that is load-bearing, not a
+    shortcut.** `mode.Build` constructs a brand-new `tmdb.Client` on every
+    call, from 33 non-test call sites that are essentially all
+    per-HTTP-request handlers — so a cache field on the `*Client` value would
+    live exactly as long as one request and would never serve a single hit.
+    The in-repo precedent is `internal/imageproxy`, whose cache is a
+    process-lifetime singleton constructed once in `main.go` for the same
+    reason. A package var rather than a `main.go` construction because the
+    alternative is threading a `*Cache` parameter through `mode.Build`'s 33
+    call sites plus every test that builds a session, for zero behavioral
+    gain — priced and rejected, not overlooked.
+  - **10-minute TTL, 512 entries, 256 KB per-entry cap — worst case 128 MB,
+    typically far less.** The per-entry cap is not optional: `do()` is shared
+    with heavy endpoints (a long-running show's aggregate credits runs to
+    hundreds of KB) and per-entry size is otherwise bounded only by
+    `httpx.MaxResponseBodySize` (10 MB), so 512 entries alone bounds nothing
+    useful. An oversized body is simply not cached and re-fetches. The TTL is
+    a deliberate compromise, not a tuned value: season/episode data is
+    near-immutable and would happily take an hour, but `/trending` and
+    `/discover` rows visibly should not, and a per-endpoint TTL table is
+    rejected as premature. If it proves wrong the symptom is observable
+    (Discover rows not refreshing) and the knob is two constants in one file.
+  - **Errors are never cached.** Non-2xx responses, transport failures, and
+    bodies that fail to unmarshal all return before the `put` — a TMDB blip
+    must not blank a Discover row for the whole TTL. Nothing is cached
+    negatively either: a 404 just re-fetches. No singleflight, so two
+    concurrent misses for one key both fetch — the same explicitly accepted,
+    self-correcting waste `internal/imageproxy` documents.
+  - **The cache key is computed BEFORE `api_key` is written into the query**,
+    with a short non-reversible fingerprint of the key appended instead. So
+    the operator's TMDB key is never stored in (or recoverable from) a
+    process-lifetime map key, and rotating it invalidates every entry
+    immediately rather than serving a revoked key's responses for up to a TTL.
+  - **Test isolation is a real hazard here, in two places.** In-package tests
+    give each client its own fresh cache (a reused ephemeral `httptest` port
+    would otherwise collide two tests' keys and silently serve an earlier
+    test's body). `internal/api` tests cannot reach the field at all — they
+    swap `tmdb.DefaultBaseURL` and build through `mode.Build` — so
+    `internal/tmdb` exports a test-only `ResetDefaultCache()` for them to call
+    in setup. Two `internal/api` tests that differ only in a *request-level*
+    detail the upstream TMDB traffic does not reflect will otherwise have one
+    of them fully cache-served — passing vacuously, or failing confusingly.
 - **Naming, scanning, and Season-0 (Stage 2c)**:
   - `library.ScanRootFolder` is now recursive (`filepath.WalkDir`,
     `internal/library/library.go`) — a directory is reported whole only if
@@ -861,3 +965,55 @@ above, so don't drop them for convenience:
     work's two-separate-external-apps friction (Prowlarr for search, then
     qBittorrent *or* NZBGet for the actual download) is the concrete driver
     for that idea, not yet started.
+  - **Season/episode picker is a poster grid (2026-08-02)** — the two
+    free-text `S`/`E` number inputs are replaced by a two-level grid: a season
+    grid (proxied season poster, name, episode count, air year) that drills
+    into an episode grid (proxied still, number, name, air date, runtime),
+    with a "Whole season" tile at the head of the episode level preserving
+    today's `episode: 0` / `SeasonSpecified: true` semantic that protects
+    Season 0 / Specials. Season posters and episode stills reuse the existing
+    `/api/images/proxy` path — **zero backend image work**, and the
+    never-hot-link rule is unaffected. Data arrives through the existing
+    `GET /api/modes/{mode}/discover/detail`, extended with a response-scoping
+    `sections=seasons` param rather than a new endpoint; the handler fans out
+    per-season episode fetches server-side (bounded concurrency, soft-failing
+    per season) so the browser makes one request, not N. Load-bearing details
+    a future session should not quietly undo:
+    - **The picker moved OUT of `Mainstream.tsx` into its own
+      `frontend/src/screens/discover/SeasonEpisodePicker.tsx`.** Anything that
+      used to import it from `Mainstream` no longer can — notably the
+      sequenced-after `discover-card-cleanup` work, which must re-verify
+      against the new location, not the old export.
+    - **There are SIX mount points, not the three the spec names** — the
+      Discover category rows' card, `DetailPopup`'s gating step, bulk-select,
+      the "In your library" row's card, the Trakt watchlist row, and the
+      cards in `DetailPopup`'s "More like this" rail plus `CalendarView`.
+      Every one of those except `DetailPopup`'s inline gating step and
+      bulk-select reaches the picker *through* `GrabButton`, which is why one
+      change covers them — but do not plan an edit here believing the surface
+      is three files. (`Library.tsx`'s own `PosterCard` is a
+      same-named, unrelated component and is NOT affected.)
+    - **One component, but deliberately different containers.** A grid does
+      not fit the 180px card column, so card-triggered sites open the picker
+      in the shared `Modal`, while `DetailPopup` renders it **inline** in the
+      modal body it already has. **Never a nested modal** — both modals are
+      `fixed inset-0 z-50` with a backdrop click that would close both. That
+      is also why the Grab button is suppressed on **Series** cards in
+      `DetailPopup`'s recommendations rail: clicking such a card already
+      re-targets the popup, from which the full inline picker is reachable.
+      **Do NOT suppress Movies there** — a movie's grab opens no picker and
+      nests nothing, and blanket suppression would remove a shipped
+      affordance for a problem it does not have.
+    - **The degraded fallback is required, and the spec never asked for it.**
+      If the fetch errors or returns zero seasons, the component renders the
+      **old two free-text `S`/`E` inputs** plus a one-line error. Without it,
+      a TMDB outage or an unconfigured TMDB connection would make every Series
+      grab in the app impossible, at every mount point simultaneously. It will
+      look like removable dead code to a future session; it is not.
+    - **Grid, not carousel — deliberate.** Every surrounding Discover row is a
+      `Carousel`; the picker is a CSS grid at both levels. Scoped to the
+      picker only, recorded so nobody "fixes" the inconsistency.
+    - Episode-level **bulk**-select is new and is bounded by its own rules —
+      see the CORRECTED 2026-08-02 note under **Established engineering
+      conventions → Staged-for-approval**. The per-card Grab button remains
+      strictly single-item.

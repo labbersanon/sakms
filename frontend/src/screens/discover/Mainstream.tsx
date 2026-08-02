@@ -42,12 +42,14 @@ import {
   type GrabTarget,
   ConfigureConnectionModal,
   GrabDialog,
+  Modal,
   PaginatedStrip,
   SearchReleasePicker,
   SelectCheckbox,
   TextPoster,
   notConfiguredService,
 } from "./shared";
+import { type EpisodePick, SeasonEpisodePicker } from "./SeasonEpisodePicker";
 import { useSelection } from "./selection";
 import {
   type MainstreamFilters,
@@ -117,56 +119,22 @@ const MAINSTREAM_FIXED_LABELS: Record<string, string> = {
   library: "In your library",
 };
 
-// SeasonEpisodePicker gates a Series grab: no release can be scored until a
-// specific season (and optionally episode) is chosen. Submitting always marks
-// the season as specified — that is what preserves Season-0/Specials (a bare
-// season number can't distinguish "Season 0 picked" from "nothing picked").
-// Exported (was module-private) so DetailPopup.tsx reuses the identical
-// season/episode input as its own Series gating step, instead of a second
-// hand-rolled one.
-export const SeasonEpisodePicker: Component<{
-  onSubmit: (season: number, episode: number) => void;
-}> = (props) => {
-  const [season, setSeason] = createSignal("");
-  const [episode, setEpisode] = createSignal("");
-  return (
-    <form
-      class="mt-1 flex items-center gap-1"
-      onSubmit={(e) => {
-        e.preventDefault();
-        props.onSubmit(
-          parseInt(season(), 10) || 0,
-          parseInt(episode(), 10) || 0,
-        );
-      }}
-    >
-      <input
-        class="w-12 rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg outline-none focus:border-accent"
-        placeholder="S"
-        aria-label="Season"
-        value={season()}
-        onInput={(e) => setSeason(e.currentTarget.value)}
-      />
-      <input
-        class="w-12 rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg outline-none focus:border-accent"
-        placeholder="E"
-        aria-label="Episode"
-        value={episode()}
-        onInput={(e) => setEpisode(e.currentTarget.value)}
-      />
-      <button
-        type="submit"
-        class="rounded bg-accent px-2 py-0.5 text-xs font-medium text-accent-fg"
-      >
-        Go
-      </button>
-    </form>
-  );
-};
-
 // GrabButton is the per-title grab affordance. Movies grab on click. Series
-// first reveal the season/episode picker (the gating step) and only build a
-// GrabTarget once the picker is submitted.
+// first open the season/episode picker (the gating step) and only build a
+// GrabTarget once a season or episode is picked.
+//
+// The picker opens in a Modal rather than inline: it is a two-level poster grid
+// (SeasonEpisodePicker.tsx) and a grid does not fit this card's 180px column.
+// No `seasons` prop is passed — OMITTING it is what puts the picker in
+// self-fetching mode, which is what these card call sites want, since a card
+// holds only a tmdbId and never the detail bundle. Passing `seasons` at all,
+// even as undefined, would permanently hand loading control to this caller.
+// (DetailPopup is the one site that DOES pass it — it already has the data.)
+//
+// This one component is the picker's mount point for FIVE of the six surfaces:
+// the Discover category rows' PosterCard, the "In your library" LibraryCard,
+// the Trakt watchlist row, the "More like this" rail, and CalendarView all
+// reach the picker through here.
 export const GrabButton: Component<{
   mode: "movies" | "series";
   item: DiscoverItem;
@@ -181,6 +149,11 @@ export const GrabButton: Component<{
       request: { title: props.item.title, tmdbId: props.item.id },
     });
 
+  // grabSeries is UNCHANGED from the free-text era, seasonSpecified: true
+  // included — only the surface that produces (season, episode) was replaced.
+  // setPicking(false) must stay FIRST: it unmounts the picker Modal before the
+  // GrabDialog Modal opens, and two stacked modals would make every Close/title
+  // query in this tree ambiguous.
   const grabSeries = (season: number, episode: number) => {
     setPicking(false);
     const suffix = `S${season}${episode ? "E" + episode : ""}`;
@@ -206,15 +179,17 @@ export const GrabButton: Component<{
         </Button>
       }
     >
-      <Show
-        when={picking()}
-        fallback={
-          <Button class="w-full !py-1 text-xs" onClick={() => setPicking(true)}>
-            Grab
-          </Button>
-        }
-      >
-        <SeasonEpisodePicker onSubmit={grabSeries} />
+      <Button class="w-full !py-1 text-xs" onClick={() => setPicking(true)}>
+        Grab
+      </Button>
+      <Show when={picking()}>
+        <Modal title={props.item.title} onClose={() => setPicking(false)}>
+          <SeasonEpisodePicker
+            tmdbId={props.item.id}
+            selectionMode="single"
+            onSubmit={grabSeries}
+          />
+        </Modal>
       </Show>
     </Show>
   );
@@ -227,54 +202,107 @@ export const GrabButton: Component<{
 // tooltip is replaced by a CSS-only (group/group-hover) hover overlay over
 // the poster — same information, richer presentation, no new Solid signal.
 // Exported (was module-private) so DetailPopup's "More like this" recommendation
-// rail and CalendarView reuse the identical card — same reason SeasonEpisodePicker
-// was exported for DetailPopup — rather than each hand-rolling a parallel one-off
-// (which would also miss the later F3 select-mode checkbox this card will gain).
-// SeriesSeasonSelect is the Series-card select-mode UI. There is no
-// season-enumeration data source anywhere in this codebase (DiscoverItem carries
-// no season count; the existing SeasonEpisodePicker is free-text, and DetailPopup
-// gates on that same free-text input), so a Series card CANNOT render a checkbox
-// per season. Instead it reuses SeasonEpisodePicker to ADD one season at a time
-// to the selection (multi-season within one series is in scope; selecting a whole
-// series at once is explicitly OUT of v1 scope). Each added season is its own
-// selection entry keyed series:${tmdbId}:S${season}; while its chip is on screen
-// it register()s its exact grab target, so buildBatch pulls a live, correct
-// payload — an orphaned/removed season is dropped, never grabbed (pre-mortem #5).
+// rail and CalendarView reuse the identical card rather than each hand-rolling a
+// parallel one-off (which would also miss the later F3 select-mode checkbox this
+// card will gain).
+// SeriesSeasonSelect is the Series-card select-mode UI: a "Choose seasons/
+// episodes" button opening the season/episode grid picker in multi mode, plus a
+// compact chip list of everything the operator has surfaced on this card.
+// Selection is season-level OR episode-level (`S4` / `S4E7`); selecting a whole
+// series at once remains explicitly OUT of v1 scope.
+//
+// REGISTRATION LIVES ON THE CHIP, NEVER ON THE MODAL'S TILE. buildBatch submits
+// only keys still register()ed by a currently-rendered component; a modal closes
+// and unmounts its tiles, so registering there would silently orphan-drop every
+// selection at submit time while every other test stayed green. The chips are
+// what stay on screen, so they are what register.
 const SeriesSeasonSelect: Component<{ item: DiscoverItem }> = (props) => {
   const selection = useSelection();
-  const keyFor = (season: number) => `series:${props.item.id}:S${season}`;
-  const targetFor = (season: number): GrabTarget => ({
+  const [picking, setPicking] = createSignal(false);
+
+  const keyFor = (p: EpisodePick) =>
+    `series:${props.item.id}:S${p.season}${p.episode ? `E${p.episode}` : ""}`;
+  const labelFor = (p: EpisodePick) =>
+    p.episode ? `S${p.season}E${p.episode}` : `Season ${p.season}`;
+  const targetFor = (p: EpisodePick): GrabTarget => ({
     mode: "series",
-    label: `${props.item.title} S${season}`,
+    label: `${props.item.title} S${p.season}${p.episode ? `E${p.episode}` : ""}`,
     request: {
       title: props.item.title,
       tmdbId: props.item.id,
-      seasonNumber: season,
+      seasonNumber: p.season,
+      // An episode pick carries its episode number so the batch dispatches a
+      // single episode; a whole-season pick omits it, exactly as before.
+      ...(p.episode ? { episodeNumber: p.episode } : {}),
       seasonSpecified: true,
     },
   });
-  // added is the set of seasons the operator has surfaced on this card. Episode
-  // is intentionally ignored for bulk-select — selection is season-level, per the
-  // plan's key format; the picker's episode box just isn't used here.
-  const [added, setAdded] = createSignal<number[]>([]);
-  const addSeason = (season: number) => {
-    if (season <= 0) return;
-    setAdded((prev) => (prev.includes(season) ? prev : [...prev, season]));
-    if (selection && !selection.has(keyFor(season))) selection.toggle(keyFor(season));
+
+  // picks is what this card has SURFACED, which is deliberately not the same as
+  // what is selected: a chip persists once added and flips ✓/+ as it is toggled,
+  // so re-checking something never means reopening the picker. It can also go
+  // unchecked without this card doing anything, when another card's mutually-
+  // exclusive pick clears it (see toggle below).
+  const [picks, setPicks] = createSignal<EpisodePick[]>([]);
+  const surface = (p: EpisodePick) =>
+    setPicks((prev) =>
+      prev.some((q) => q.season === p.season && q.episode === p.episode)
+        ? prev
+        : [...prev, p],
+    );
+
+  // toggle is where the whole-season/episode mutual exclusion is enforced —
+  // dispatching `S4` alongside `S4E7` would grab a season pack plus a duplicate
+  // single episode of that same content, which nothing downstream catches (the
+  // two are different releases, so the download-client GID dedup sees no
+  // conflict) and which lands a duplicate on disk.
+  //
+  // It runs against the STORE's full key set, not this component's local picks,
+  // and that is load-bearing: the same title can render in two rows at once
+  // (Trending AND Popular), giving two SeriesSeasonSelect instances independent
+  // local state over one shared selection. A card-local check would let a season
+  // picked here and an episode of it picked there both survive into buildBatch.
+  const toggle = (p: EpisodePick) => {
+    if (!selection) return;
+    const key = keyFor(p);
+    if (selection.has(key)) {
+      selection.toggle(key);
+      return;
+    }
+    if (p.episode === 0) {
+      // A whole season clears every episode of that season, on any card.
+      const prefix = `series:${props.item.id}:S${p.season}E`;
+      for (const k of selection.keys()) {
+        if (k.startsWith(prefix)) selection.toggle(k);
+      }
+    } else {
+      // An episode clears its own season's whole-season key, on any card.
+      const seasonKey = `series:${props.item.id}:S${p.season}`;
+      if (selection.has(seasonKey)) selection.toggle(seasonKey);
+    }
+    selection.toggle(key);
   };
+
+  // pick is what a picker tile activation runs: surface a chip for it (so it
+  // has somewhere to register from) and toggle it on.
+  const pick = (p: EpisodePick) => {
+    surface(p);
+    toggle(p);
+  };
+
   return (
     <div class="mt-1.5">
-      <For each={added()}>
-        {(season) => {
-          // Register this season's live target while its chip is mounted; the
-          // cleanup deregisters it on removal/unmount so a no-longer-shown
-          // season becomes an orphan and is dropped at submit time.
+      <For each={picks()}>
+        {(p) => {
+          // Register this pick's live target while its chip is mounted; the
+          // cleanup deregisters it on unmount, so a no-longer-shown pick becomes
+          // an orphan and is dropped at submit time rather than grabbed.
           createEffect(() => {
             if (!selection) return;
-            const cleanup = selection.register(keyFor(season), targetFor(season));
+            const cleanup = selection.register(keyFor(p), targetFor(p));
             onCleanup(cleanup);
           });
-          const checked = () => selection?.has(keyFor(season)) ?? false;
+          const checked = () => selection?.has(keyFor(p)) ?? false;
           return (
             <button
               type="button"
@@ -283,14 +311,26 @@ const SeriesSeasonSelect: Component<{ item: DiscoverItem }> = (props) => {
                 "border-accent bg-accent text-accent-fg": checked(),
                 "border-border text-muted": !checked(),
               }}
-              onClick={() => selection?.toggle(keyFor(season))}
+              onClick={() => toggle(p)}
             >
-              <span>{checked() ? "✓" : "+"}</span> Season {season}
+              <span>{checked() ? "✓" : "+"}</span> {labelFor(p)}
             </button>
           );
         }}
       </For>
-      <SeasonEpisodePicker onSubmit={(season) => addSeason(season)} />
+      <Button class="w-full !py-1 text-xs" onClick={() => setPicking(true)}>
+        Choose seasons/episodes
+      </Button>
+      <Show when={picking()}>
+        <Modal title={props.item.title} onClose={() => setPicking(false)}>
+          <SeasonEpisodePicker
+            tmdbId={props.item.id}
+            selectionMode="multi"
+            isSelected={(p) => selection?.has(keyFor(p)) ?? false}
+            onToggle={pick}
+          />
+        </Modal>
+      </Show>
     </div>
   );
 };
@@ -306,6 +346,17 @@ export const PosterCard: Component<{
   // have no auto-grab shortcut). Browse-row call sites omit it, so their
   // click→DetailPopup + GrabButton behavior is completely unchanged.
   onOpenReleases?: () => void;
+  // insideModal marks a card rendered INSIDE another modal — only DetailPopup's
+  // "More like this" rail does this. It suppresses the Grab button for SERIES
+  // cards only, because a Series grab opens the picker in its own Modal and two
+  // stacked `fixed inset-0 z-50` overlays both close on one backdrop click.
+  // Nothing is lost: a Series recommendation's own click re-targets the popup to
+  // that title, whose inline picker is the fuller surface anyway.
+  //
+  // MOVIES ARE DELIBERATELY UNAFFECTED — grabMovie() calls onGrab directly with
+  // no picker and no second modal, so there is nothing to nest. Suppressing them
+  // too would remove a shipped affordance for a problem they do not have.
+  insideModal?: boolean;
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -378,7 +429,12 @@ export const PosterCard: Component<{
           select-mode a Series swaps its single-grab button for the season-add
           UI; a Movie keeps its unchanged one-click Grab button (the per-card
           single-item affordance the plan preserves on browse rows). */}
-      <Show when={!props.onOpenReleases || inSelect()}>
+      <Show
+        when={
+          (!props.onOpenReleases || inSelect()) &&
+          !(props.insideModal && props.mode === "series")
+        }
+      >
         <Show
           when={inSelect() && props.mode === "series"}
           fallback={

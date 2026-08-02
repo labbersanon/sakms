@@ -18,6 +18,24 @@ const jsonResponse = (obj: unknown): Response =>
     headers: { "Content-Type": "application/json" },
   });
 
+// seasonFixture is the season-grid data a show card's picker enumerates once
+// opened. Non-empty art paths keep each tile on an <img> rather than the
+// TextPoster fallback, which repeats the label and doubles text matches.
+const seasonFixture = (n: number) => ({
+  seasonNumber: n,
+  name: `Season ${n}`,
+  airDate: "2024-01-01",
+  episodeCount: 2,
+  posterPath: `/s${n}.jpg`,
+  episodes: [1, 2].map((e) => ({
+    episodeNumber: e,
+    name: `Ep ${e}`,
+    airDate: "2024-03-01",
+    runtime: 42,
+    stillPath: `/e${e}.jpg`,
+  })),
+});
+
 type Handler = (url: string) => Response | undefined;
 const stubFetch = (handler?: Handler) => {
   const fn = vi.fn(async (input: RequestInfo | URL) => {
@@ -28,6 +46,12 @@ const stubFetch = (handler?: Handler) => {
       return jsonResponse({ configured: true, linked: false });
     if (url.includes("/api/trakt/watchlist")) return jsonResponse([]);
     if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+    // The picker's own ?sections=seasons request. Without a real body here the
+    // 204 fallthrough below would fail to parse, the picker would soft-fail into
+    // its degraded free-text fallback, and a test meaning to exercise the grid
+    // would silently pass against the surface this feature replaced.
+    if (url.includes("/discover/detail"))
+      return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
     return new Response(null, { status: 204 });
   });
   vi.stubGlobal("fetch", fn);
@@ -132,11 +156,16 @@ describe("TraktWatchlistRow", () => {
     await waitFor(() =>
       expect(screen.getAllByText("A Watched Show").length).toBeGreaterThan(0),
     );
-    // First click reveals the picker rather than grabbing immediately.
+    // First click opens the season/episode grid rather than grabbing immediately.
     fireEvent.click(screen.getByRole("button", { name: "Grab" }));
     expect(grabbed).toHaveLength(0);
-    fireEvent.input(screen.getByLabelText("Season"), { target: { value: "2" } });
-    fireEvent.click(screen.getByText("Go"));
+    // The grid, not the free-text inputs it replaced.
+    fireEvent.click(await screen.findByRole("button", { name: /Season 2.*eps/ }));
+    expect(screen.queryByLabelText("Season")).toBeNull();
+    // "Whole season" is what expresses episode 0 — the shipped S-with-no-E
+    // semantic this row's grab request has always sent.
+    fireEvent.click(screen.getByRole("button", { name: /^Whole season/ }));
+
     expect(grabbed).toHaveLength(1);
     expect(grabbed[0]!.mode).toBe("series");
     expect(grabbed[0]!.request).toEqual({
@@ -146,5 +175,35 @@ describe("TraktWatchlistRow", () => {
       episodeNumber: 0,
       seasonSpecified: true,
     });
+  });
+
+  // A Trakt entry can arrive with no TMDB id at all. The picker must say so
+  // rather than hang on a lookup that can never resolve — and must not fire it.
+  it("a show with no tmdbId falls back to the free-text picker without a lookup", async () => {
+    const fetchMock = stubFetch((url) => {
+      if (url.includes("/api/trakt/status"))
+        return jsonResponse({ configured: true, linked: true });
+      if (url.includes("/api/trakt/watchlist"))
+        return jsonResponse([
+          { type: "show", title: "Unknown Show", year: 2021, tmdbId: 0 },
+        ]);
+      return undefined;
+    });
+    const grabbed: GrabTarget[] = [];
+    render(() => <TraktWatchlistRow onGrab={(t) => grabbed.push(t)} />);
+    await waitFor(() =>
+      expect(screen.getAllByText("Unknown Show").length).toBeGreaterThan(0),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Grab" }));
+    fireEvent.input(await screen.findByLabelText("Season"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByText("Go"));
+
+    expect(grabbed[0]!.request).toMatchObject({ seasonNumber: 2, seasonSpecified: true });
+    expect(
+      fetchMock.mock.calls.filter((c) => String(c[0]).includes("/discover/detail")),
+    ).toHaveLength(0);
   });
 });

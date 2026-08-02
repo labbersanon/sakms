@@ -22,16 +22,26 @@
 //      grab structurally impossible even if defense #1 were somehow bypassed.
 //
 // Key format (documented, since it's load-bearing for uniqueness):
-//   - Movies title:            `movies:${tmdbId}`
-//   - Adult scene:             `adult:${sceneId}`
-//   - A specific Series season: `series:${tmdbId}:S${season}`
-// A Series card is NEVER directly selectable as a whole — only its individual
-// seasons are (multi-season within one series is in scope; whole-series
-// multi-select is explicitly OUT of v1 scope). There is no season-enumeration
-// data source in this codebase (DiscoverItem has no season count; the existing
-// SeasonEpisodePicker is free-text), so a Series card in select-mode reuses that
-// same free-text picker to ADD one season entry at a time rather than rendering
-// a checkbox per season — see PosterCard. (Plan deviation, documented.)
+//   - Movies title:             `movies:${tmdbId}`
+//   - Adult scene:              `adult:${sceneId}`
+//   - A whole Series season:    `series:${tmdbId}:S${season}`
+//   - A single Series episode:  `series:${tmdbId}:S${season}E${episode}`
+// `...:S4` and `...:S4E1` are distinct strings, so the two Series forms cannot
+// collide; nor can `S4E*` prefix-match `S41`, because the prefix carries the
+// trailing `E`. A Series card is NEVER directly selectable as a whole — only
+// its individual seasons/episodes are (multi-season and multi-episode within
+// one series are in scope; whole-series multi-select is explicitly OUT of v1
+// scope). SeriesSeasonSelect enumerates both levels from the season/episode
+// grid picker — see Mainstream.tsx.
+//
+// WHOLE-SEASON AND EPISODE-OF-THAT-SEASON ARE MUTUALLY EXCLUSIVE, and that rule
+// lives in the CALLER (SeriesSeasonSelect), never here. Dispatching `S4` and
+// `S4E7` together would grab a season pack plus a duplicate single episode of
+// the same content — two genuinely different releases, so the download-client
+// GID dedup cannot catch it. The caller enforces it by enumerating keys() and
+// clearing the conflicting ones. This store deliberately parses nothing: it
+// stores opaque strings, and teaching it Series key structure would couple the
+// safety centerpiece to one screen's naming.
 
 import {
   type JSX,
@@ -54,11 +64,24 @@ export type SelectionStore = {
   // selectMode is the opt-in toggle; mutually exclusive with Edit (index.tsx).
   selectMode: () => boolean;
   setSelectMode: (v: boolean) => void;
-  // toggle flips a key's membership; has/count are reactive reads.
+  // toggle flips a key's membership; has/count/keys are reactive reads.
   toggle: (key: string) => void;
   has: (key: string) => boolean;
   clear: () => void;
   count: () => number;
+  // keys enumerates the currently-selected keys, so a caller that owns a key
+  // NAMESPACE can find and clear the ones its own rules conflict with — the
+  // whole-season vs. episode-of-that-season exclusion in SeriesSeasonSelect
+  // (see the file header). READ-ONLY and format-agnostic by construction: it
+  // hands back opaque strings and a fresh array, so the store still parses
+  // nothing and a caller mutating the result cannot corrupt the selection.
+  //
+  // This exists because the exclusion is NOT solvable card-locally: the same
+  // title can render in two rows at once (Trending and Popular — see
+  // register's own doc below), giving two components independent local state
+  // over one shared selection set. A season picked on one card and an episode
+  // of it picked on the other would otherwise both survive into buildBatch().
+  keys: () => string[];
   // register records a currently-rendered selectable card's key + its exact
   // grab target, ref-counted so the same key rendered by two rows (e.g. a movie
   // in both Trending and Popular) survives one of them unmounting. Returns the
@@ -89,6 +112,7 @@ export function createSelection(): SelectionStore {
   const clear = () => setKeys(new Set<string>());
   const has = (key: string) => keys().has(key);
   const count = () => keys().size;
+  const keyList = () => [...keys()];
 
   const register = (key: string, target: GrabTarget) => {
     const existing = registry.get(key);
@@ -132,6 +156,7 @@ export function createSelection(): SelectionStore {
     has,
     clear,
     count,
+    keys: keyList,
     register,
     buildBatch,
   };

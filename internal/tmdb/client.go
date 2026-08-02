@@ -30,7 +30,11 @@ package tmdb
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -76,25 +80,91 @@ type Config struct {
 type Client struct {
 	cfg  Config
 	http *http.Client
+	// cache holds raw response bodies for do(). New assigns the package-level
+	// defaultCache — see cache.go for why it cannot live on the Client value.
+	// Tests in this package replace it with a per-client cache.
+	cache *cache
 }
 
 func New(cfg Config, httpClient *http.Client) *Client {
-	return &Client{cfg: cfg, http: httpClient}
+	return &Client{cfg: cfg, http: httpClient, cache: defaultCache}
+}
+
+// cacheKey derives this request's cache key. It is computed BEFORE api_key is
+// written into query, so the operator's TMDB key is never stored as (or
+// recoverable from) a process-lifetime map key. A short, non-reversible
+// fingerprint of the key is appended instead, so rotating the TMDB API key
+// invalidates every entry immediately rather than serving another operator's
+// (or a revoked key's) responses for up to a TTL.
+//
+// BaseURL is part of the key because tests point clients at per-test httptest
+// servers; path is included verbatim because do's contract allows a path that
+// already carries its own query string. url.Values.Encode sorts by key, so two
+// callers building the same params in different orders produce one key.
+func (c *Client) cacheKey(path string, query url.Values) string {
+	sum := sha256.Sum256([]byte(c.cfg.APIKey))
+	return c.cfg.BaseURL + path + "?" + query.Encode() + "#" + hex.EncodeToString(sum[:8])
 }
 
 // do executes a GET against path (which may already contain its own query
-// string), adding TMDB's v3 api_key auth param.
+// string), adding TMDB's v3 api_key auth param — serving the response from
+// c.cache when a previous identical request is still within its TTL.
+//
+// Every *Client method in this file (~35 of them) routes through here, which
+// is what makes one cache cover every TMDB call in the codebase. On a miss the
+// behavior is the same as before the cache existed, with one honest caveat:
+// the body is now buffered and passed to json.Unmarshal instead of streamed
+// through json.Decoder.Decode, and the two are not exactly equivalent —
+// Unmarshal errors on trailing bytes after the first JSON value (Decode
+// ignores them) and returns *json.SyntaxError rather than io.EOF for an empty
+// body. TMDB returns a single clean JSON object per endpoint and no method
+// here relies on the io.EOF form (that is httpx.DoJSONAllowEmpty's contract,
+// which this deliberately does not touch), so both differences are theoretical
+// — but they are differences, not "unchanged".
+//
+// Nothing is cached on failure: a non-2xx or transport error returns before
+// put, and put runs only after a successful unmarshal, so neither a TMDB blip
+// nor a truncated body is pinned for the whole TTL.
 func (c *Client) do(ctx context.Context, path string, query url.Values, out any) error {
 	if query == nil {
 		query = url.Values{}
 	}
-	query.Set("api_key", c.cfg.APIKey)
+	key := c.cacheKey(path, query)
+	if body, ok := c.cache.get(key); ok {
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decoding cached response for %s: %w", path, err)
+		}
+		return nil
+	}
+	logCacheMiss(path)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.BaseURL+path+"?"+query.Encode(), nil)
+	// Claude 2026-08-02: copy the caller's query before writing api_key into it.
+	// Reason: cacheKey above deliberately runs BEFORE api_key exists, so the
+	// operator's key never lands in a process-lifetime map key. Mutating the
+	// caller's own url.Values made that a POSITIONAL guarantee — correct only
+	// because no method currently reuses one map across two do() calls. A future
+	// pagination loop or retry that did would compute its second key from a
+	// query already carrying the raw api_key: the key leaks into the cache map
+	// AND every subsequent lookup permanently misses. The copy makes it
+	// structural instead.
+	// Troubleshooting: Phase-4 review FIX 3 (security-reviewer + code-reviewer).
+	// Review if: do() stops taking the caller's url.Values by reference.
+	reqQuery := maps.Clone(query)
+	reqQuery.Set("api_key", c.cfg.APIKey)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.BaseURL+path+"?"+reqQuery.Encode(), nil)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
 	}
-	return httpx.DoJSON(c.http, req, httpx.MaxResponseBodySize, out)
+	body, err := httpx.DoJSONBytes(c.http, req, httpx.MaxResponseBodySize)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("decoding response from %s: %w", req.URL.Host, err)
+	}
+	c.cache.put(key, body)
+	return nil
 }
 
 // Item is one browsable title, normalized across TMDB's movie and TV shapes.
@@ -399,8 +469,11 @@ type TVDetails struct {
 	// seasons EXIST without a per-season SeasonDetails call.
 	//
 	// It is a faithful full decode of TMDB's shape, not a decode of only what
-	// is consumed: SeasonNumber is the only field any caller reads today —
-	// nothing reads TVSeason.EpisodeCount at all.
+	// is consumed. Series monitoring's new-season discovery reads SeasonNumber
+	// alone (internal/api/airdatemonitor.go); the remaining fields —
+	// PosterPath, Name, AirDate and EpisodeCount — are decoded for Discover's
+	// season-grid picker, whose consuming UI lands with that feature's later
+	// waves rather than in the same change as this decode.
 	Seasons []TVSeason
 }
 
@@ -411,6 +484,11 @@ type TVSeason struct {
 	EpisodeCount int    `json:"episode_count"`
 	AirDate      string `json:"air_date"`
 	Name         string `json:"name"`
+	// PosterPath is TMDB's per-season poster path (added 2026-08-02 for the
+	// Discover season grid). It is "" when TMDB has no season art on file —
+	// a normal outcome, common for Specials — and callers fall back to a
+	// text poster. Non-pointer string, so null/omitted/empty all yield "".
+	PosterPath string `json:"poster_path"`
 }
 
 type tvDetailsResponse struct {
@@ -793,6 +871,11 @@ type SeasonEpisode struct {
 	Name          string `json:"name"`
 	AirDate       string `json:"airDate"`
 	Runtime       int    `json:"runtime"`
+	// StillPath is TMDB's per-episode still image path (added 2026-08-02 for
+	// the Discover episode grid). "" means "no still" — see SeasonDetails'
+	// VERIFICATION STATUS for why that is indistinguishable from, and handled
+	// identically to, null or omitted.
+	StillPath string `json:"stillPath"`
 }
 
 type seasonEpisodeRaw struct {
@@ -800,6 +883,7 @@ type seasonEpisodeRaw struct {
 	Name          string `json:"name"`
 	AirDate       string `json:"air_date"`
 	Runtime       int    `json:"runtime"`
+	StillPath     string `json:"still_path"`
 }
 
 type seasonDetailsResponse struct {
@@ -822,6 +906,14 @@ type seasonDetailsResponse struct {
 // recorded decision, not an oversight — do not rewrite this as "live
 // verified".
 //
+// still_path (added 2026-08-02) is documented by TMDB v3 as a nullable string
+// on each episode object, same verification level as the four fields above and
+// accepted on the same terms. It is a non-pointer string, so null/omitted/
+// empty-string are indistinguishable here by construction and all yield "" —
+// which the episode grid already treats as "no still", a condition that also
+// occurs for real episodes TMDB simply has no art for. The UI therefore
+// behaves identically whether or not the field exists.
+//
 // If a live call ever reveals a mismatch anywhere in the TV catalog path,
 // THIS is the function to check first. The one variation the documentation
 // leaves room for is already covered regardless of which form TMDB actually
@@ -838,7 +930,7 @@ func (c *Client) SeasonDetails(ctx context.Context, tmdbTVID, seasonNumber int) 
 	}
 	out := make([]SeasonEpisode, len(resp.Episodes))
 	for i, e := range resp.Episodes {
-		out[i] = SeasonEpisode{EpisodeNumber: e.EpisodeNumber, Name: e.Name, AirDate: e.AirDate, Runtime: e.Runtime}
+		out[i] = SeasonEpisode{EpisodeNumber: e.EpisodeNumber, Name: e.Name, AirDate: e.AirDate, Runtime: e.Runtime, StillPath: e.StillPath}
 	}
 	return out, nil
 }

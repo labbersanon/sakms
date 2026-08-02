@@ -23,6 +23,12 @@ import { BulkResultModal } from "./BulkResultModal";
 // possible grab, so far below apply-batch's 200). The backend rejects an
 // over-cap batch before any Prowlarr search fires; this client-side guard just
 // gives a faster, clearer message and never lets an over-cap request leave.
+//
+// It counts FLATTENED items, and since 2026-08-02 an item is a whole season OR a
+// single episode — one series contributing three checked episodes contributes
+// three. The value stays 20: an episode grab costs exactly what a season grab
+// costs (one Prowlarr search, one download-client add), so the granularity
+// change argues for no different number.
 const MAX_BATCH_GRAB_ITEMS = 20;
 
 export const BulkBar: Component = () => {

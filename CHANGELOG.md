@@ -4356,3 +4356,281 @@ alone: `usenetretry.go`'s "indefinite, unsuccessful retry loop" note and
 | `docs/ROADMAP.md` | Item 9 marked shipped; its "remarkably small" verdict and its trigger-source parenthetical corrected in place |
 
 **Outcome:** documentation pass verified with `go build ./...` clean.
+
+## 2026-08-02 — Requests: "Has Missing Episodes" filter chip
+
+**What shipped:** A third filter chip on the Requests tab (Queue → Requests),
+filtering the worklist to rows with `missingCount > 0`. Spec:
+`.omc/specs/deep-interview-request-status-missing-filter.md` (~9% ambiguity,
+PASSED). Plan: `.omc/plans/autopilot-impl-request-status-missing-filter.md`.
+This closes the one real gap the request-status reconciliation found: missing
+episodes existed only as a numeric annotation (`· N missing`) on a row, never
+as something you could filter by.
+
+**Frontend-only, and that is proven rather than assumed.** No Go file, no DTO,
+no migration, no API route was touched — `MissingCount` already ships on every
+`/api/requests` item (`internal/apidto/dto.go`, no `omitempty`, so the
+generated TS types it as a required `number`) and `Requests.tsx` already read
+it unguarded for the count annotation. The Go gates were run anyway,
+specifically to demonstrate a zero-Go diff rather than claim one.
+
+**The chip is NOT a fourth status, and the predicate deliberately has no
+`mode === "series"` clause.** It is a third AND clause in `filtered()`, so it
+intersects with the existing status and mode chips instead of replacing them —
+a `Downloading` or `Pending Retry` series keeps the `MissingCount` the
+In-Library pass computed (the grab pass overwrites `Status` only), and those
+rows must survive the filter. Series-only-ness is a *structural* backend
+guarantee, not just a documented one: the Movies and Adult passes construct
+`RequestStatusItem` without `MissingCount` at all. A redundant mode clause in
+the frontend would therefore mask a backend contract violation rather than
+surface it.
+
+**Two smaller decisions worth not re-litigating.** (1) The chip renders
+*unconditionally*, never gated on `items().some(...)` the way the mode-chip row
+is gated on `modes().length > 1` — a data-gated chip would flicker on every
+refetch (`items()` is `[]` while loading) and, worse, could unmount itself
+while its filter was still on after excluding the last missing-episode series,
+stranding an empty list with no affordance to clear it. (2) It is a standalone
+inline `<button>`, not a second `FilterChips` instance: `FilterChips` always
+renders its own "All" button, and a second one would immediately break the
+existing `getByRole("button", { name: "All" })` assertion, which throws on
+multiple matches.
+
+**A stale test fixture was corrected in the same pass.** `Requests.test.tsx`
+used `status: "Missing"` — a value the backend has never emitted. Missing is an
+annotation hung off a real status, never a status itself; the fixture now says
+`"In Library"` with the count, which is the state the backend actually
+produces. No assertion in that test read the status string, so the fix is
+inert. `Requests.tsx`'s file header carried the same drift twice (it listed
+Missing as a status tag and omitted `Pending Retry`, which the screen genuinely
+renders, and claimed the screen "just renders whatever statuses it returns" —
+now true only of the status chips).
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Requests.tsx` | `missingOnly` signal, third AND clause in `filtered()`, the unconditional toggle chip, header prose corrected (Missing demoted to an annotation, `Pending Retry` named, the data-derived claim narrowed to the status chips) |
+| `frontend/src/screens/Requests.test.tsx` | Three new cases (filters, toggles back off, intersects with a status chip rather than replacing it); the `status: "Missing"` fixture corrected |
+| `docs/ROADMAP.md` | Request-status view marked shipped; its one forward-looking sentence retensed |
+
+**Selection and bulk-exclude needed no changes at all** — `filteredKeys()` and
+`removeSelected()` both derive from `filtered()`, so select-all and bulk-remove
+respect the new filter for free. Two pre-existing `useBulkSelection` defects
+were re-confirmed during review and deliberately left alone as out of scope,
+recorded here so they are not mistaken for fallout from this change:
+`useBulkSelection.size` counts the *total* selection while `removeSelected()`
+intersects with `filtered()` (so "Remove Selected (2)" can confirm "exclude 1
+selected title(s)"), and `selectAll` replaces rather than merges (so select-all
+under an active filter drops prior out-of-filter selections). Both are reachable
+today via the existing status and mode chips; the new chip is a third path to
+them, not a new bug.
+
+**Outcome:** `tsc --noEmit` clean; `vitest run` green whole-suite, with
+`Requests.test.tsx` at 12/12 (9 pre-existing, unmodified + 3 new) and
+`Queue.test.tsx`, which embeds this screen, passing unmodified; `vite build`
+clean. `go build ./...` and `go vet ./...` clean; this change contributes
+zero `*.go` files to the diff, which is the point of running the Go gates at
+all. `go test ./...` has four **pre-existing, host-specific** failures in
+`internal/sysinfo` (`TestReadGPUs_*`) — verified by running that package in a
+detached worktree at pristine `HEAD`, where it fails identically. `readGPUs`
+ends with `enrichNVIDIAWithNVML`, which reads the real host GPU regardless of
+the `t.TempDir()` base path the tests pass in, so any machine with an NVIDIA
+card fails them. Unrelated to this change and deliberately not fixed here.
+
+## 2026-08-02 — Season/episode picker becomes a poster grid; general TMDB response cache; episode-level bulk-grab
+
+**Recorded in Wave 1, alongside the implementation rather than after it** —
+this is the plan's own DOC-1 obligation (§6.3), so the design facts below come
+from the plan's verified findings and the file table lists the surfaces the
+implementation waves touch. Spec:
+`.omc/specs/deep-interview-season-episode-picker-redesign.md` (PASSED, ~10%
+ambiguity). Plan (including the wave breakdown and the critic pass that widened
+its reach): `.omc/plans/autopilot-impl-season-episode-picker-redesign.md`.
+**No migration** — `0056` stays the high-water mark; the sequencing plan listed
+this spec as migration-bearing on the assumption that "new cache" implies a
+table, and it does not here.
+
+**What shipped:** Discover's season/episode picker stops being two free-text
+number inputs and becomes a two-level poster grid — a season grid (poster,
+name, episode count, air year) that drills into an episode grid (still,
+number, name, air date, runtime), with a "Whole season" tile at the head of
+the episode level. Bulk-select gains episode granularity. Underneath both, a
+general-purpose TMDB response cache.
+
+**The cache is a package-level singleton, and that is the whole design
+decision.** `mode.Build` constructs a brand-new `tmdb.Client` on every call,
+from 33 non-test call sites that are essentially all per-HTTP-request
+handlers — so the naive design (a cache field on `*Client`) would live exactly
+as long as one request and **would never serve a single hit**. The spec's AC3
+is unsatisfiable that way. `internal/imageproxy`'s own process-lifetime
+singleton cache is the in-repo precedent for exactly this shape, and
+`internal/tmdb` already declares package-level vars in the same file for the
+same test-override reason. The rejected alternative — threading a `*Cache`
+through `mode.Build` — is the purer injection and was priced rather than
+overlooked: 33 production call sites plus every session-building test, edited
+mechanically, for zero behavioral gain, in a codebase whose CLAUDE.md names
+premature abstraction as an anti-pattern.
+
+**It caches at `do()`, which is why "general-purpose" is real and not
+aspirational.** Every one of the ~35 `*Client` methods routes through that one
+chokepoint, so caching the raw response body there covers every TMDB call in
+the codebase with no per-method work. **10-minute TTL, 512 entries, 256 KB
+per-entry cap — 128 MB worst case, typically far less.** The byte cap is
+load-bearing, and the plan's original sizing claim ("well under a megabyte")
+was wrong and is not what shipped: `do()` is shared with heavy endpoints (a
+long-running show's aggregate credits runs to hundreds of KB) and per-entry
+size is otherwise bounded only by `httpx.MaxResponseBodySize` at 10 MB, so
+512 entries alone bounds nothing useful. Oversized bodies are skipped and
+re-fetch. The TTL is a stated compromise, not a tuned number — season data
+would happily take an hour, `/trending` and `/discover` rows visibly should
+not, and a per-endpoint TTL table is rejected as premature.
+
+**What is deliberately NOT cached:** non-2xx responses, transport errors, and
+bodies that fail to unmarshal (a TMDB blip must not blank a Discover row for
+ten minutes); nothing negative, so a 404 simply re-fetches; and no
+singleflight, so two concurrent misses both fetch — the same explicitly
+accepted, self-correcting waste `internal/imageproxy` documents. **The cache
+key is derived BEFORE `api_key` is written into the query**, with a short
+non-reversible fingerprint appended instead, so the operator's TMDB key is
+never held in a process-lifetime map key and rotating it invalidates every
+entry at once rather than serving a revoked key's responses for up to a TTL.
+
+**`httpx.DoJSONBytes` is new and deliberately NOT the shared implementation of
+`DoJSON`.** The cache needs raw bytes; `DoJSON` decodes straight from the
+response body, leaving nothing to cache. The obvious DRY refactor is a real
+regression: `DoJSONAllowEmpty` relies on `json.Decoder.Decode` returning
+exactly `io.EOF` for a zero-byte body, while `json.Unmarshal` on the same
+input returns a `*json.SyntaxError` — so re-expressing `DoJSON` in terms of
+the new function would silently break documented empty-body tolerance for
+every DELETE/204 caller. The few duplicated status-check lines are the price
+of not touching that.
+
+**Two test-isolation hazards, both closed rather than noted.** In-package
+`internal/tmdb` tests now get a per-client cache: `httptest` binds an ephemeral
+port that `t.Cleanup` frees for reuse within the same binary run, so a later
+test landing on a freed port and requesting the same path would collide cache
+keys and silently receive an earlier test's body — low probability, extremely
+confusing when it fires. `internal/api` tests cannot reach the field at all
+(they swap `tmdb.DefaultBaseURL` and build through `mode.Build`), so
+`internal/tmdb` exports a test-only `ResetDefaultCache()` for them; without it,
+two sibling handler tests whose upstream TMDB traffic is identical have one of
+them fully cache-served, passing vacuously.
+
+**The picker's data path extends the existing endpoint rather than adding
+one.** `GET /api/modes/{mode}/discover/detail` gains a response-scoping
+`sections=seasons` param: omitted, it returns today's full five-call bundle
+**plus** the new season block, so `DetailPopup` still makes exactly one
+request; `sections=seasons` returns only the season/episode block, so a
+card-triggered picker does not pay for credits, keywords, watch providers and
+recommendations it never renders. Any unrecognized value degrades to "give
+them everything," never a 400, matching the handler's existing soft-fail
+posture. Per-season episode fetches fan out **server-side** (bounded
+concurrency, soft-failing per season into an episode-less season card), so the
+browser makes one request, not N — which also means AC6's "verified via
+network inspection" is a server-log and Go-test claim, not a browser-devtools
+one.
+
+**Honest TMDB call budget, stated rather than hand-waved.** A 15-season series
+popup goes from 5 calls to 20 on a cold cache; a card-triggered picker on the
+same series is 16 where it was 0. Warm (within the TTL) all of these are 0.
+The eager all-seasons prefetch is the spec's own Round 8 decision, accepting
+the up-front cost; the cache is what makes repeat opens free. Every call is
+operator-initiated — no scheduler, no per-card probe — so this does not touch
+the "Discover never queries Prowlarr" rule or any automation bound.
+
+**The spec named three picker mount points; there are six.** The Discover
+category rows' card, `DetailPopup`'s gating step, bulk-select, the "In your
+library" row's card, the Trakt watchlist row, and the cards in `DetailPopup`'s
+recommendations rail plus `CalendarView`. Every one of those except
+`DetailPopup`'s inline gating step and bulk-select reaches the picker *through*
+`GrabButton`, so one change covers them — this was a file-list and
+test-coverage gap, not a design change. (`Library.tsx`'s own `PosterCard` is a same-named,
+unrelated component, moved there in the 2026-08-01 library/tag split, and is
+not affected.)
+
+**One component, deliberately different containers — and one nested-modal
+carve-out.** A grid does not fit the 180px card column, so card-triggered
+sites open the shared `Modal` while `DetailPopup` renders the picker inline in
+the modal body it already has. Both modals are `fixed inset-0 z-50` with a
+backdrop click that closes them, so the recommendations rail would nest one
+inside the other: the fix is suppressing the Grab button on **Series** cards
+in that rail only, reusing the rail's existing suppression precedent — a
+Series recommendation's primary click already re-targets the popup, from which
+the full inline picker is reachable. **Movies are deliberately not
+suppressed**: a movie's grab opens no picker and nests nothing, so blanket
+suppression would delete a shipped affordance for a problem it does not have.
+
+**The degraded fallback is a plan decision the spec never asked for, and it is
+not optional.** If the fetch errors or returns zero seasons, the picker renders
+the **old two free-text `S`/`E` inputs** plus a one-line error. Without it, a
+TMDB outage or an unconfigured TMDB connection makes every Series grab in the
+app impossible, at every mount point at once — a hard regression on shipped
+functionality. The markup is today's, moved verbatim, so the fallback is the
+current behavior rather than a new one.
+
+**Episode-level bulk-grab, and the duplicate risk it introduces.** The
+selection key format gains one form (`series:${tmdbId}:S${season}E${episode}`
+alongside the existing `...:S${season}`), and the ≤20 cap now counts an
+episode as one item exactly as it counts a season. **The backend needed no
+counting change** — the frontend has always submitted an already-flattened
+list and the request DTO has always carried an episode number, so the two
+existing cap tests are agnostic to what an item represents and remain correct
+verbatim. (The spec claimed those tests must be "updated, not just extended";
+verified against the file, that claim is wrong, and manufacturing edits to
+satisfy it was explicitly declined.) Only `MaxBatchGrabItems`' doc comment was
+stale. The genuinely new risk is overlap: `S4` and `S4E7` selected together
+dispatch a season pack **and** a single episode of that season — two different
+releases, so the download-client-GID dedup cannot catch it, and the result is
+a duplicate on disk. The two are therefore mutually exclusive in the UI, which
+required exposing a **read-only** key-enumeration accessor on `SelectionStore`
+(the same title can render in Trending *and* Popular at once, so a card-local
+workaround is defeated by construction). The store still parses nothing — the
+caller owns the key format — which is what keeps the selection safety
+centerpiece uncoupled from one screen's naming.
+
+**Registration stays on the card's chip, never the modal's tile.**
+`buildBatch`'s orphan-drop submits only keys still registered by a rendered
+component. A modal closes and unmounts its tiles, so registering there would
+silently drop every selection at submit time **while every existing test still
+passed** — the single most likely way to break the stale-selection guarantee
+without any signal.
+
+**`still_path` verification is a sign-off gate, not a code gate (GATE-1).**
+`SeasonDetails`' doc already records that on 2026-08-01 Wade accepted
+documentation-based verification because no TMDB API key was available in this
+environment — a deliberate recorded decision the file explicitly forbids
+rewriting as "live verified." AC2 asks for a live call, which cannot be
+performed here, so it is split: the code ships unconditionally (the episode
+grid branches on an empty `stillPath` at runtime regardless, which is also a
+normal per-episode condition for episodes TMDB simply has no art for), and only
+AC2's checkbox waits on Wade either supplying a key or waiving it on the same
+terms as 2026-08-01. Whichever lands is written into the doc comment.
+
+**Two things this feature deliberately does NOT do.** It does not touch
+`docs/ROADMAP.md`'s known-issues entry beyond post-ship status — the "redesign
+folded into the bug fix" framing was already corrected when the spec was
+written, and rewriting it risks damaging an accurate record. And it does not
+diagnose, fix, or claim to fix the separately-tracked "picking Season 4 grabs
+S1E1" bug, which stays with its own Ralph task: replacing the input surface may
+mask that bug or leave it fully intact, and if it looks fixed afterwards that
+is an observation to hand over, not a claim to make.
+
+| File | Change |
+|---|---|
+| `internal/tmdb/cache.go` | New — LRU + per-entry TTL over `[]byte` bodies, package-level `defaultCache`, per-entry byte cap, test-only `ResetDefaultCache()` |
+| `internal/tmdb/client.go` | `do()` caches at the one chokepoint; `cacheKey` derived before `api_key` is set; `TVSeason.PosterPath` and `SeasonEpisode.StillPath` added additively; the stale "SeasonNumber is the only field any caller reads" comment and the `SeasonDetails` verification paragraph rewritten |
+| `internal/httpx/httpx.go` | New `DoJSONBytes`; `DoJSON`/`DoJSONAllowEmpty` deliberately untouched (the `io.EOF` contract) |
+| `internal/apidto/dto.go`, `internal/apidto/ts/dto.gen.ts` | `SeasonSummary`, `EpisodeSummary`, `TitleDetail.Seasons`; TS regenerated via `go run ./cmd/gendto`, never hand-edited |
+| `internal/api/discover_detail.go` | `sections` scoping param, seasons carried through the extended-details mapping, server-side per-season episode fan-out with per-season soft-fail |
+| `internal/api/autograb_batch.go` | Doc comment only — `MaxBatchGrabItems` counting semantic corrected to season-or-episode. No handler logic changed |
+| `frontend/src/screens/discover/SeasonEpisodePicker.tsx` | New — two-level poster grid, single/multi selection modes, loading/season/episode/degraded states, moved out of `Mainstream.tsx` |
+| `frontend/src/api/discover.ts` | `sections` on the detail fetch; `tmdbStill` helper alongside the existing poster/logo proxy helpers |
+| `frontend/src/screens/discover/Mainstream.tsx` | Old inline free-text picker and its export removed; modal-triggered picker on the card; bulk-select chip list with per-pick registration and season/episode mutual exclusion |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Inline picker in the existing modal body (never nested); pre-fetched seasons passed in; loading-vs-failed distinction; Series-only Grab suppression in the recommendations rail |
+| `frontend/src/screens/discover/selection.tsx` | Key format doc gains the episode form; read-only `keys()` accessor exposed for mutual exclusion |
+| `frontend/src/components/TraktWatchlistRow.tsx`, `frontend/src/screens/discover/CalendarView.tsx`, `frontend/src/components/BulkBar.tsx` | Mount points 5 and 6 inherit the new picker through `GrabButton`; `BulkBar`'s mirrored cap comment gains the season-or-episode framing (constant unchanged) |
+| `CLAUDE.md` | Bulk-grab exception corrected to episode granularity (both superseded sentences quoted); TMDB response cache recorded as shared infrastructure; picker redesign recorded under Discover |
+| `CHANGELOG.md` | This entry |
+
+**Outcome:** documentation-only pass — no code touched, nothing built or
+tested here. Implementation, its tests, and the stale-comment sweep are the
+concurrent waves' work.

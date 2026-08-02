@@ -13,7 +13,14 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return New(Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
+	c := New(Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
+	// Per-client cache: the production default is package-level and
+	// process-lifetime (see cache.go), which would otherwise let a reused
+	// ephemeral httptest port collide two tests' cache keys and silently serve
+	// an earlier test's body. Cache BEHAVIOR is covered by its own tests
+	// (cache_test.go), not incidentally by every other test in this package.
+	c.cache = newCache(defaultCacheCap, defaultCacheTTL)
+	return c
 }
 
 // movieFixture is a plausible /trending/movie/week or /movie/popular
@@ -443,6 +450,68 @@ func TestSeasonDetails_HandlesNullRuntime(t *testing.T) {
 	}
 	if len(episodes) != 1 || episodes[0].Runtime != 0 {
 		t.Errorf("expected zero runtime for null, got %+v", episodes)
+	}
+}
+
+// TestTVDetails_ParsesSeasonPosters is the AC1 proof: /tv/{id}'s seasons[]
+// carries per-season poster art, decoded with no extra TMDB call, and a season
+// TMDB has no art for decodes to "" rather than erroring.
+func TestTVDetails_ParsesSeasonPosters(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id": 9, "name": "Postered Show", "seasons": [
+		  {"season_number": 0, "episode_count": 3, "name": "Specials", "air_date": "2021-12-01"},
+		  {"season_number": 1, "episode_count": 8, "name": "Season 1", "air_date": "2022-01-01", "poster_path": "/s1.jpg"}
+		]}`))
+	})
+
+	details, err := c.TVDetails(context.Background(), 9)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(details.Seasons) != 2 {
+		t.Fatalf("expected 2 seasons, got %+v", details.Seasons)
+	}
+	if details.Seasons[0].PosterPath != "" {
+		t.Errorf("a season with no poster_path should decode to \"\", got %q", details.Seasons[0].PosterPath)
+	}
+	if details.Seasons[1].PosterPath != "/s1.jpg" {
+		t.Errorf("unexpected season poster: %q", details.Seasons[1].PosterPath)
+	}
+	if details.Seasons[1].EpisodeCount != 8 || details.Seasons[1].Name != "Season 1" || details.Seasons[1].AirDate != "2022-01-01" {
+		t.Errorf("the season grid's other fields decoded wrong: %+v", details.Seasons[1])
+	}
+}
+
+// TestSeasonDetails_ParsesStillPath is AC2's fallback-branch proof: populated,
+// omitted and explicit-null still_path all decode without error, and the
+// latter two collapse to "" — the "no still" value the episode grid falls back
+// on regardless of how GATE-1's live-verification question is answered.
+func TestSeasonDetails_ParsesStillPath(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"episodes": [
+		  {"episode_number": 1, "name": "Pilot", "air_date": "2022-01-01", "runtime": 58, "still_path": "/e1.jpg"},
+		  {"episode_number": 2, "name": "Omitted", "air_date": "2022-01-08", "runtime": 47},
+		  {"episode_number": 3, "name": "Null", "air_date": "", "runtime": 0, "still_path": null}
+		]}`))
+	})
+
+	episodes, err := c.SeasonDetails(context.Background(), 2, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(episodes) != 3 {
+		t.Fatalf("expected 3 episodes, got %+v", episodes)
+	}
+	if episodes[0].StillPath != "/e1.jpg" {
+		t.Errorf("unexpected still path: %q", episodes[0].StillPath)
+	}
+	if episodes[1].StillPath != "" {
+		t.Errorf("an omitted still_path must decode to \"\", got %q", episodes[1].StillPath)
+	}
+	if episodes[2].StillPath != "" {
+		t.Errorf("a null still_path must decode to \"\", got %q", episodes[2].StillPath)
 	}
 }
 

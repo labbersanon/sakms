@@ -2,6 +2,8 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,6 +92,38 @@ func TestDoJSONAllowEmpty_ToleratesEmptyBodyOn2xx(t *testing.T) {
 		if err := DoJSONAllowEmpty(http.DefaultClient, req, MaxResponseBodySize, &discard); err != nil {
 			t.Errorf("status %d empty body: unexpected error: %v", status, err)
 		}
+	}
+}
+
+// TestDoJSONAllowEmpty_StillToleratesEmptyBodyAfterDoJSONBytes guards the
+// landmine DoJSONBytes' doc names: DoJSONAllowEmpty's empty-body tolerance
+// depends on json.Decoder.Decode returning exactly io.EOF, and re-expressing
+// DoJSON as DoJSONBytes + json.Unmarshal would silently break it for every
+// DELETE/204 caller. Rather than merely re-asserting the tolerance, this
+// demonstrates WHY the two cannot be merged: on the same 204 response,
+// DoJSONBytes succeeds with zero bytes and json.Unmarshal of those bytes
+// returns a non-io.EOF error.
+func TestDoJSONAllowEmpty_StillToleratesEmptyBodyAfterDoJSONBytes(t *testing.T) {
+	req := doTestRequest(t, 204, "")
+	var discard json.RawMessage
+	if err := DoJSONAllowEmpty(http.DefaultClient, req, MaxResponseBodySize, &discard); err != nil {
+		t.Fatalf("204 empty body must still succeed through DoJSONAllowEmpty: %v", err)
+	}
+
+	req = doTestRequest(t, 204, "")
+	body, err := DoJSONBytes(http.DefaultClient, req, MaxResponseBodySize)
+	if err != nil {
+		t.Fatalf("DoJSONBytes on a 204: unexpected error: %v", err)
+	}
+	if len(body) != 0 {
+		t.Fatalf("expected a zero-byte body from a 204, got %q", body)
+	}
+	err = json.Unmarshal(body, &discard)
+	if err == nil {
+		t.Fatal("json.Unmarshal of an empty body should error — if it stops doing so, the merge this test forbids becomes safe and this test should be revisited")
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatal("json.Unmarshal returned io.EOF, contradicting DoJSONBytes' doc; the DoJSON/DoJSONBytes split is justified by exactly this difference")
 	}
 }
 

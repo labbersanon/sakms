@@ -4,6 +4,7 @@ import type {
   AdultDiscoverItem,
   DiscoverItem,
   PerformerSummary,
+  SeasonSummary,
   StudioSummary,
   TrackedItem,
 } from "@dto";
@@ -30,6 +31,24 @@ const movie = (over: Partial<DiscoverItem>): DiscoverItem => ({
   voteAverage: 7.8,
   mediaType: "movie",
   ...over,
+});
+
+// seasonFixture is the season-grid data a Series card's picker enumerates. The
+// non-empty posterPath keeps each tile on an <img> rather than the TextPoster
+// fallback, which repeats the label and doubles text matches.
+const seasonFixture = (n: number): SeasonSummary => ({
+  seasonNumber: n,
+  name: `Season ${n}`,
+  airDate: "2024-01-01",
+  episodeCount: 2,
+  posterPath: `/s${n}.jpg`,
+  episodes: [1, 2].map((e) => ({
+    episodeNumber: e,
+    name: `Ep ${e}`,
+    airDate: "2024-03-01",
+    runtime: 42,
+    stillPath: `/e${e}.jpg`,
+  })),
 });
 
 const scene = (over: Partial<AdultDiscoverItem>): AdultDiscoverItem => ({
@@ -97,6 +116,12 @@ const mainstreamDefaults = (url: string): Response | null => {
   // contains that substring anyway, but kept explicit so a test that doesn't
   // opt into newest rows never sees them.
   if (url.includes("/newest-rows")) return jsonResponse([]);
+  // The season/episode picker's own ?sections=seasons request. MUST precede the
+  // generic "/discover" line: answered with a bare [] its absent `seasons` would
+  // route every Series card into the picker's degraded free-text fallback, so a
+  // test meaning to exercise the grid would pass against the old surface.
+  if (url.includes("/discover/detail"))
+    return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
@@ -251,7 +276,7 @@ describe("Discover — custom slider rows", () => {
     expect(await screen.findByText("Mixed Show Item")).toBeInTheDocument();
 
     // The movie card grabs directly (no season/episode picker); the tv card
-    // reveals the picker first — same per-item routing LibraryRow/ModedTitle
+    // opens the picker first — same per-item routing LibraryRow/ModedTitle
     // already rely on elsewhere in this file.
     const movieCard = screen
       .getByText("Mixed Movie Item")
@@ -264,7 +289,48 @@ describe("Discover — custom slider rows", () => {
       .getByText("Mixed Show Item")
       .closest("div.w-\\[180px\\]") as HTMLElement;
     fireEvent.click(within(showCard).getByText("Grab"));
-    expect(within(showCard).getByLabelText("Season")).toBeInTheDocument();
+    // AC7 at call site 1: Grab opens the two-level poster GRID in a modal, not
+    // the free-text S/E inputs it replaced.
+    expect(
+      await within(showCard).findByRole("button", { name: /Season 1.*eps/ }),
+    ).toBeInTheDocument();
+    expect(within(showCard).queryByLabelText("Season")).toBeNull();
+  });
+
+  it("a Discover Series card's Grab drills season → episode and grabs the picked episode", async () => {
+    const calls: string[] = [];
+    stubFetch((url) => {
+      calls.push(url);
+      if (url.includes("/api/modes/series/discover") && url.includes("trending"))
+        return jsonResponse([
+          movie({ id: 77, title: "Gridded Show", mediaType: "tv" }),
+        ]);
+      if (url.includes("/api/modes/series/autograb"))
+        return jsonResponse({ grabbed: true, fallback: false, message: "ok", candidates: [] });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    const card = (await screen.findByText("Gridded Show")).closest(
+      "div.w-\\[180px\\]",
+    ) as HTMLElement;
+
+    fireEvent.click(within(card).getByText("Grab"));
+    // The picker self-fetches — the card holds only a tmdbId, so it asks for
+    // just the season block rather than the whole detail bundle.
+    await within(card).findByRole("button", { name: /Season 2.*eps/ });
+    expect(
+      calls.some((u) => u.includes("/discover/detail") && u.includes("sections=seasons")),
+    ).toBe(true);
+
+    // Drill into Season 2, take episode 1.
+    fireEvent.click(within(card).getByRole("button", { name: /Season 2.*eps/ }));
+    fireEvent.click(within(card).getByRole("button", { name: /E1 · Ep 1/ }));
+
+    // The picker modal closes and the grab dialog opens for exactly that pick.
+    expect(await screen.findByText(/Grab — Gridded Show S2E1/)).toBeInTheDocument();
   });
 });
 

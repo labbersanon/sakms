@@ -3,11 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -76,6 +79,10 @@ func fakeTMDBDetailTV(t *testing.T) *httptest.Server {
 
 func detailMux(t *testing.T, tmdbURL string) *http.ServeMux {
 	t.Helper()
+	// The TMDB response-cache reset this helper used to do itself now lives in
+	// overrideFixedURL's "tmdb" case (called below), so every internal/api test
+	// gets it rather than only this file's. Do NOT re-add a local reset — one
+	// mechanism, in one place. See that case's comment for the hazard.
 	connStore, _, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", tmdbURL)
@@ -198,6 +205,360 @@ func TestDiscoverDetailHandler_SeriesUsesTVShapes(t *testing.T) {
 	}
 	if len(d.Recommendations) != 1 || d.Recommendations[0].Title != "Similar Show" {
 		t.Errorf("TV recommendations (name field, not title) not decoded correctly: %+v", d.Recommendations)
+	}
+}
+
+// tmdbPathCounter records every path a fake TMDB server is asked for. It is
+// mutex-guarded because the handler's season fan-out runs up to 6 goroutines
+// concurrently against the same server — a bare map or counter here is a real
+// data race, not a theoretical one.
+type tmdbPathCounter struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (c *tmdbPathCounter) record(p string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.paths = append(c.paths, p)
+}
+
+// count returns how many recorded paths contain sub.
+func (c *tmdbPathCounter) count(sub string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, p := range c.paths {
+		if strings.Contains(p, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// fakeTMDBSeasons serves a TV show whose /tv/{id} body carries a seasons[]
+// array for every number in seasonNumbers (deliberately accepted UNSORTED, so
+// a test can prove the handler sorts), plus a /tv/{id}/season/{n} endpoint per
+// season and the four bundle endpoints. failSeason, when >= 0, makes that one
+// season's endpoint 500 so the per-season soft-fail contract is assertable.
+// The returned counter is how the eager-prefetch claim is checked: it is
+// exactly the request log, not an inference from the response body.
+func fakeTMDBSeasons(t *testing.T, seasonNumbers []int, failSeason int) (*httptest.Server, *tmdbPathCounter) {
+	t.Helper()
+	counter := &tmdbPathCounter{}
+	seasonsJSON := make([]string, 0, len(seasonNumbers))
+	for _, n := range seasonNumbers {
+		seasonsJSON = append(seasonsJSON, fmt.Sprintf(
+			`{"season_number":%d,"episode_count":2,"air_date":"2020-01-01","name":"Season %d","poster_path":"/s%d.jpg"}`, n, n, n))
+	}
+	detailsBody := fmt.Sprintf(
+		`{"id":42,"name":"A Show","status":"Returning Series","original_language":"en","episode_run_time":[45],"genres":[{"name":"Drama"}],"networks":[{"name":"HBO"}],"seasons":[%s]}`,
+		strings.Join(seasonsJSON, ","))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tv/", func(w http.ResponseWriter, r *http.Request) {
+		counter.record(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/aggregate_credits"):
+			w.Write([]byte(`{"cast":[{"name":"Lead","profile_path":"/a.jpg","roles":[{"character":"Hero"}]}],"crew":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/keywords"):
+			w.Write([]byte(`{"results":[{"name":"heist"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/watch/providers"):
+			w.Write([]byte(`{"results":{"US":{"flatrate":[{"provider_name":"Netflix","logo_path":"/nf.jpg"}]}}}`))
+		case strings.HasSuffix(r.URL.Path, "/recommendations"):
+			w.Write([]byte(`{"results":[{"id":99,"name":"Similar Show","poster_path":"/x.jpg","first_air_date":"2021-01-01","vote_average":6.6}]}`))
+		case strings.Contains(r.URL.Path, "/season/"):
+			// Must precede the details default: /tv/{id}/season/{n} would
+			// otherwise be served the show body, which unmarshals into the
+			// season response as zero episodes WITHOUT an error — a fixture bug
+			// that reads exactly like a broken fan-out.
+			idx := strings.LastIndex(r.URL.Path, "/season/")
+			n, err := strconv.Atoi(r.URL.Path[idx+len("/season/"):])
+			if err != nil {
+				http.Error(w, "bad season", http.StatusBadRequest)
+				return
+			}
+			if failSeason >= 0 && n == failSeason {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte(fmt.Sprintf(
+				`{"episodes":[{"episode_number":1,"name":"S%dE1","air_date":"2020-02-01","runtime":45,"still_path":"/e1.jpg"},{"episode_number":2,"name":"S%dE2","air_date":"2020-02-08","runtime":44,"still_path":""}]}`, n, n)))
+		default: // /tv/{id} details
+			w.Write([]byte(detailsBody))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, counter
+}
+
+// TestDiscoverDetail_PrefetchesAllSeasons is the AC6 proof: "all seasons
+// prefetched server-side on popup open" is checked against the fake TMDB
+// server's own request log — exactly one /tv/{id}/season/{n} per season TMDB
+// reported — not inferred from the response, so a lazy per-season design could
+// not pass it. It also asserts the seasons come back sorted ascending
+// (the fixture deliberately reports them out of order, Specials included).
+//
+// "All" means "all, up to maxPrefetchedSeasons" as of Phase-4 review FIX 5 —
+// this fixture's 5 seasons are far below the cap, so this test is unaffected.
+// TestDiscoverDetail_CapsSeasonPrefetch below covers the over-cap case.
+func TestDiscoverDetail_PrefetchesAllSeasons(t *testing.T) {
+	tmdbSrv, counter := fakeTMDBSeasons(t, []int{3, 1, 0, 4, 2}, -1)
+	srv := httptest.NewServer(detailMux(t, tmdbSrv.URL))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/discover/detail?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var d apidto.TitleDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if got := counter.count("/season/"); got != 5 {
+		t.Errorf("expected exactly 5 per-season fetches (one per season TMDB reported), got %d", got)
+	}
+	for _, n := range []int{0, 1, 2, 3, 4} {
+		if got := counter.count(fmt.Sprintf("/season/%d", n)); got != 1 {
+			t.Errorf("expected exactly 1 fetch for season %d, got %d", n, got)
+		}
+	}
+	if len(d.Seasons) != 5 {
+		t.Fatalf("expected 5 seasons in the response, got %d: %+v", len(d.Seasons), d.Seasons)
+	}
+	for i, s := range d.Seasons {
+		if s.SeasonNumber != i {
+			t.Errorf("seasons must be sorted by seasonNumber ascending (Specials first); index %d is season %d", i, s.SeasonNumber)
+		}
+		if len(s.Episodes) != 2 {
+			t.Errorf("season %d episodes not prefetched: %+v", s.SeasonNumber, s.Episodes)
+			continue
+		}
+		if s.Episodes[0].Name != fmt.Sprintf("S%dE1", s.SeasonNumber) || s.Episodes[0].Runtime != 45 || s.Episodes[0].StillPath != "/e1.jpg" {
+			t.Errorf("season %d episode payload not mapped: %+v", s.SeasonNumber, s.Episodes[0])
+		}
+		if s.PosterPath != fmt.Sprintf("/s%d.jpg", s.SeasonNumber) || s.EpisodeCount != 2 || s.Name != fmt.Sprintf("Season %d", s.SeasonNumber) {
+			t.Errorf("season %d summary fields not mapped: %+v", s.SeasonNumber, s)
+		}
+	}
+}
+
+// TestDiscoverDetail_CapsSeasonPrefetch is the Phase-4 FIX 5 proof: a show
+// reporting more seasons than maxPrefetchedSeasons has its eager fan-out
+// bounded, and the over-cap seasons are ABSENT from the response rather than
+// present-but-empty.
+//
+// Both halves matter and neither implies the other. The request-count assertion
+// is what proves the cost is actually avoided — a handler that fetched all 40
+// and then truncated the DTO would satisfy the response-length check while
+// still paying every TMDB round trip and still evicting every cache slot, which
+// is the entire thing this cap exists to prevent. The fixture reports its
+// seasons out of order (40 down to 1) so "the first 30" is proven to mean the
+// 30 LOWEST season numbers, not the first 30 TMDB happened to list.
+func TestDiscoverDetail_CapsSeasonPrefetch(t *testing.T) {
+	seasons := make([]int, 0, 40)
+	for n := 40; n >= 1; n-- {
+		seasons = append(seasons, n)
+	}
+	tmdbSrv, counter := fakeTMDBSeasons(t, seasons, -1)
+	srv := httptest.NewServer(detailMux(t, tmdbSrv.URL))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/discover/detail?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var d apidto.TitleDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// The cost bound: 30 season fetches fired, not 40.
+	if got := counter.count("/season/"); got != maxPrefetchedSeasons {
+		t.Errorf("expected exactly %d per-season fetches for a 40-season show, got %d — an over-cap season must never be fetched at all", maxPrefetchedSeasons, got)
+	}
+	if len(d.Seasons) != maxPrefetchedSeasons {
+		t.Fatalf("expected %d seasons in the response, got %d", maxPrefetchedSeasons, len(d.Seasons))
+	}
+
+	// Seasons 1..30 present and ascending; 31..40 genuinely absent.
+	for i, s := range d.Seasons {
+		if s.SeasonNumber != i+1 {
+			t.Fatalf("expected the %d lowest season numbers ascending; index %d is season %d", maxPrefetchedSeasons, i, s.SeasonNumber)
+		}
+		if len(s.Episodes) != 2 {
+			t.Errorf("season %d episodes not prefetched: %+v", s.SeasonNumber, s.Episodes)
+		}
+	}
+	for n := maxPrefetchedSeasons + 1; n <= 40; n++ {
+		if got := counter.count(fmt.Sprintf("/season/%d", n)); got != 0 {
+			t.Errorf("season %d is over the cap and must not be fetched, got %d fetches", n, got)
+		}
+	}
+}
+
+// TestDiscoverDetail_SeasonFetchSoftFails asserts the per-season soft-fail
+// contract (the codebase's established per-item convention, same posture as
+// this handler's existing five sub-calls): one season's endpoint failing
+// leaves that season present with an EMPTY episode array — [] in the raw JSON,
+// never null — and every sibling season fully populated, with the response
+// still 200.
+func TestDiscoverDetail_SeasonFetchSoftFails(t *testing.T) {
+	tmdbSrv, _ := fakeTMDBSeasons(t, []int{1, 2, 3}, 2)
+	srv := httptest.NewServer(detailMux(t, tmdbSrv.URL))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/discover/detail?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("one failing season must not fail the whole response; got %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(raw), `"episodes":[]`) {
+		t.Errorf("a soft-failed season's episodes must serialize as [], never null; body: %s", raw)
+	}
+	var d apidto.TitleDetail
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(d.Seasons) != 3 {
+		t.Fatalf("the failed season must still be present as a card, got %d seasons", len(d.Seasons))
+	}
+	for _, s := range d.Seasons {
+		want := 2
+		if s.SeasonNumber == 2 {
+			want = 0
+		}
+		if len(s.Episodes) != want {
+			t.Errorf("season %d: expected %d episodes, got %d", s.SeasonNumber, want, len(s.Episodes))
+		}
+	}
+}
+
+// TestDiscoverDetail_SectionsSeasons_SkipsBundle asserts ?sections=seasons
+// makes ZERO requests to the four bundle endpoints — the point of the param is
+// that the card-level picker's lightweight fetch doesn't pay for credits,
+// keywords, providers and recommendations it never renders. The extended
+// details call still fires: it is where the season list itself comes from.
+//
+// Uses a tmdbId distinct from its sibling below: `sections` is a request-level
+// detail the upstream TMDB traffic doesn't reflect, so it is not part of the
+// package-level response cache's key and the two tests would otherwise be able
+// to serve each other's bodies (overrideFixedURL's per-test cache reset is the
+// primary guard; the distinct id is belt and braces).
+func TestDiscoverDetail_SectionsSeasons_SkipsBundle(t *testing.T) {
+	tmdbSrv, counter := fakeTMDBSeasons(t, []int{1, 2}, -1)
+	srv := httptest.NewServer(detailMux(t, tmdbSrv.URL))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/discover/detail?tmdbId=4343&sections=seasons")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var d apidto.TitleDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, endpoint := range []string{"/aggregate_credits", "/keywords", "/watch/providers", "/recommendations"} {
+		if got := counter.count(endpoint); got != 0 {
+			t.Errorf("sections=seasons must issue ZERO requests to %s, got %d", endpoint, got)
+		}
+	}
+	if got := counter.count("/season/"); got != 2 {
+		t.Errorf("expected both seasons still prefetched under sections=seasons, got %d", got)
+	}
+	if len(d.Seasons) != 2 || len(d.Seasons[0].Episodes) != 2 {
+		t.Errorf("seasons must still be populated under sections=seasons: %+v", d.Seasons)
+	}
+	if len(d.Cast) != 0 || len(d.Keywords) != 0 || len(d.WatchProviders) != 0 || len(d.Recommendations) != 0 {
+		t.Errorf("skipped sections must be empty, not fetched: %+v", d)
+	}
+}
+
+// TestDiscoverDetail_DefaultIncludesSeasonsAndBundle is the backward-compat
+// proof for DetailPopup, which sends no `sections` param and needs everything:
+// today's five sub-calls AND the new seasons block both fire on one request.
+// See the sibling above for why the tmdbId differs.
+func TestDiscoverDetail_DefaultIncludesSeasonsAndBundle(t *testing.T) {
+	tmdbSrv, counter := fakeTMDBSeasons(t, []int{1, 2}, -1)
+	srv := httptest.NewServer(detailMux(t, tmdbSrv.URL))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/discover/detail?tmdbId=4444")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var d apidto.TitleDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, endpoint := range []string{"/aggregate_credits", "/keywords", "/watch/providers", "/recommendations"} {
+		if got := counter.count(endpoint); got != 1 {
+			t.Errorf("the default (no sections param) must still fetch %s exactly once, got %d", endpoint, got)
+		}
+	}
+	if got := counter.count("/season/"); got != 2 {
+		t.Errorf("the default must ALSO prefetch every season, got %d season fetches", got)
+	}
+	if d.Status != "Returning Series" || len(d.Cast) != 1 || len(d.Keywords) != 1 || len(d.WatchProviders) != 1 || len(d.Recommendations) != 1 {
+		t.Errorf("the existing five-way bundle must be unchanged by default: %+v", d)
+	}
+	if len(d.Seasons) != 2 || len(d.Seasons[1].Episodes) != 2 {
+		t.Errorf("the seasons block must also be present by default: %+v", d.Seasons)
+	}
+}
+
+// TestDiscoverDetail_MoviesSeasonsEmptyArray asserts a Movie serializes
+// "seasons":[] rather than null. Asserted against the RAW BYTES on purpose:
+// decoding a JSON null into []SeasonSummary yields nil, whose len() is also 0,
+// so a struct-level check would pass vacuously against exactly the bug this
+// guards (repo's never-null-array convention; the generated TS type is
+// non-nullable).
+func TestDiscoverDetail_MoviesSeasonsEmptyArray(t *testing.T) {
+	srv := httptest.NewServer(detailMux(t, fakeTMDBDetail(t, http.StatusOK).URL))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/detail?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(raw), `"seasons":[]`) {
+		t.Errorf("a Movie must serialize seasons as [], never null; body: %s", raw)
 	}
 }
 

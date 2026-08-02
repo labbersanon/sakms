@@ -64,6 +64,36 @@ func DoJSON(client *http.Client, req *http.Request, maxBytes int64, out any) err
 	return nil
 }
 
+// DoJSONBytes is DoJSON's byte-returning sibling: same transport-error
+// wrapping and the same 2xx-only contract, but it returns the size-capped raw
+// body instead of decoding it. It exists for internal/tmdb's response cache,
+// which must hold the bytes and unmarshal them per hit.
+//
+// DELIBERATELY NOT the shared implementation of DoJSON. DoJSONAllowEmpty
+// relies on json.Decoder.Decode returning exactly io.EOF for a zero-byte body
+// (see its doc); json.Unmarshal on the same input returns a *json.SyntaxError
+// ("unexpected end of JSON input") instead, so re-expressing DoJSON as
+// DoJSONBytes + json.Unmarshal would silently break DoJSONAllowEmpty's
+// documented empty-body tolerance for every DELETE/204 caller. The few
+// duplicated status-check lines are the deliberate price of not touching that.
+func DoJSONBytes(client *http.Client, req *http.Request, maxBytes int64) ([]byte, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, WrapTransportError(req.URL.Host, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s returned status %d", req.URL.Host, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	if err != nil {
+		return nil, fmt.Errorf("reading response from %s: %w", req.URL.Host, err)
+	}
+	return body, nil
+}
+
 // DoJSONAllowEmpty is DoJSON but tolerates a response with a truly empty
 // body — common on a successful DELETE or a 204 No Content. A zero-byte body
 // decodes as exactly io.EOF, distinct from *json.SyntaxError (which is what

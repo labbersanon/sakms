@@ -124,6 +124,26 @@ const adultScene = (over: Partial<AdultDiscoverItem> = {}): AdultDiscoverItem =>
   ...over,
 });
 
+// emptyDescription is the 200-empty AdultDescription the backend answers with
+// whenever no catalog has real data (internal/api/adultdescription.go answers
+// 200 for EVERY no-data condition, never a non-2xx). Every Adult stub below
+// needs a branch for it — the popup fires /discover/description on any
+// catalog-sourced Adult open, and without the branch it would hit the stub's
+// `throw`, be swallowed by the resource's own catch, and the test would pass
+// while lying about what the component did.
+const emptyDescription = () => jsonResponse({ text: "", source: "" });
+
+// overviewParagraphs/descriptionParagraphs separate the popup's two <p>s. Both
+// carry line-clamp-4; only the margin differs (mt-1 for the item's own
+// overview/`studio · year` summary, mt-3 for the Adult description block). A
+// role/text query cannot tell them apart, and neither carries a test id — the
+// class strings are pinned byte-exactly by the design doc, so nothing may be
+// added to them just to make querying easier.
+const overviewParagraphs = (container: HTMLElement) =>
+  container.querySelectorAll("p.mt-1.line-clamp-4");
+const descriptionParagraphs = (container: HTMLElement) =>
+  container.querySelectorAll("p.mt-3.line-clamp-4");
+
 type Call = { url: string; method: string; body: unknown };
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 const stubFetch = (handler: Handler) => {
@@ -487,6 +507,7 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
       if (url.includes("/discover/availability")) return jsonResponse(preview);
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description")) return emptyDescription();
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -619,6 +640,7 @@ describe("DetailPopup — Watch Trailer link", () => {
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description")) return emptyDescription();
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -691,6 +713,7 @@ describe("DetailPopup — Adult tags/performers", () => {
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description")) return emptyDescription();
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -714,6 +737,230 @@ describe("DetailPopup — Adult tags/performers", () => {
 
     expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
     expect(screen.queryByText(/Performers:/)).not.toBeInTheDocument();
+  });
+});
+
+describe("DetailPopup — Adult scene description block", () => {
+  const stubAdultWithDescription = (description: { text: string; source: string }) =>
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description")) return jsonResponse(description);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+  it("renders the description, keyed on the scene's own source+id, when the catalog has real text", async () => {
+    const calls = stubAdultWithDescription({
+      text: "A real catalog-sourced synopsis.",
+      source: "tpdb",
+    });
+    const target: DetailTarget = { mode: "adult", item: adultScene() };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    expect(
+      await screen.findByText("A real catalog-sourced synopsis."),
+    ).toBeInTheDocument();
+    expect(descriptionParagraphs(container)).toHaveLength(1);
+
+    const call = calls.find((c) => c.url.includes("/discover/description"));
+    expect(call?.url).toContain("kind=scene");
+    expect(call?.url).toContain("source=tpdb");
+    expect(call?.url).toContain("id=s1");
+    // Exactly one request — a popup open is ONE explicit operator action
+    // (CLAUDE.md's 2026-08-02 clarification: never per card, never per scroll).
+    expect(calls.filter((c) => c.url.includes("/discover/description"))).toHaveLength(1);
+  });
+
+  it("renders no <p> and no empty section when the catalog has nothing (AC5)", async () => {
+    stubAdultWithDescription({ text: "", source: "" });
+    const target: DetailTarget = { mode: "adult", item: adultScene() };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    await screen.findByRole("button", { name: "Grab" });
+    expect(descriptionParagraphs(container)).toHaveLength(0);
+  });
+
+  // The description is an ADDITIONAL block, never a swap for the `studio · year`
+  // summary — that summary is the only place an Adult scene's studio and date
+  // appear at all (the Modal title is a bare item().title).
+  it("leaves the `studio · year` summary intact and renders the description beside it", async () => {
+    stubAdultWithDescription({ text: "Catalog synopsis.", source: "stashdb" });
+    const target: DetailTarget = {
+      mode: "adult",
+      item: adultScene({ source: "stashdb" }),
+    };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    expect(await screen.findByText("Catalog synopsis.")).toBeInTheDocument();
+    expect(screen.getByText("Vixen · 2023")).toBeInTheDocument();
+    expect(overviewParagraphs(container)).toHaveLength(1);
+    expect(descriptionParagraphs(container)).toHaveLength(1);
+  });
+
+  it("never fires the description request for Movies", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = { mode: "movies", item: movie() };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await screen.findByRole("button", { name: "Grab" });
+    expect(calls.some((c) => c.url.includes("/discover/description"))).toBe(false);
+  });
+
+  it("never fires the description request for Series", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1)] });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({ id: 5, title: "A Series", mediaType: "tv" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await pickSeasonEpisode(1, null);
+    await screen.findByRole("button", { name: "Grab" });
+    expect(calls.some((c) => c.url.includes("/discover/description"))).toBe(false);
+  });
+
+  // A Show More drill-down scene is emitted with source "prowlarr" and no id at
+  // all (internal/api/adultdiscover_newest_scenes.go's page>1 mapping). There is
+  // no catalog to ask, so the request must not fire — the server would answer it
+  // 200-empty anyway, which is exactly why this is a pointless round trip.
+  it("never fires the description request for a Show More drill-down scene (source 'prowlarr', no id)", async () => {
+    const calls = stubAdultWithDescription({
+      text: "must never be fetched",
+      source: "tpdb",
+    });
+    const target: DetailTarget = {
+      mode: "adult",
+      item: adultScene({ source: "prowlarr", id: "" }),
+    };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    await screen.findByRole("button", { name: "Grab" });
+    expect(calls.some((c) => c.url.includes("/discover/description"))).toBe(false);
+    expect(descriptionParagraphs(container)).toHaveLength(0);
+  });
+
+  it("never fires the description request for a catalog-sourced scene with no id", async () => {
+    const calls = stubAdultWithDescription({
+      text: "must never be fetched",
+      source: "tpdb",
+    });
+    const target: DetailTarget = { mode: "adult", item: adultScene({ id: "" }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await screen.findByRole("button", { name: "Grab" });
+    expect(calls.some((c) => c.url.includes("/discover/description"))).toBe(false);
+  });
+});
+
+// AC5 applies to all three modes, not just Adult — a deliberate, approved
+// cross-mode behavior change: a TMDB title with an empty overview now renders no
+// line at all instead of "No description available." Deleting the fallback
+// string alone would not be enough (an empty <p class="mt-1 …"> still
+// contributes a margin and a line box, which is itself a placeholder), so the
+// <p> element itself must be absent.
+describe("DetailPopup — AC5: no placeholder description in any mode", () => {
+  it("renders no overview <p> for a Movie with an empty overview", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = { mode: "movies", item: movie({ overview: "" }) };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    await screen.findByRole("button", { name: "Grab" });
+    expect(overviewParagraphs(container)).toHaveLength(0);
+    expect(screen.queryByText("No description available.")).not.toBeInTheDocument();
+  });
+
+  it("renders no overview <p> for a Series with an empty overview", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1)] });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({ id: 5, title: "A Series", mediaType: "tv", overview: "" }),
+    };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    await pickSeasonEpisode(1, null);
+    await screen.findByRole("button", { name: "Grab" });
+    expect(overviewParagraphs(container)).toHaveLength(0);
+    expect(screen.queryByText("No description available.")).not.toBeInTheDocument();
+  });
+
+  it("renders no overview <p> for an Adult scene with neither studio nor date", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description")) return emptyDescription();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "adult",
+      item: adultScene({ studio: "", date: "" }),
+    };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    await screen.findByRole("button", { name: "Grab" });
+    expect(overviewParagraphs(container)).toHaveLength(0);
+    expect(screen.queryByText("No description available.")).not.toBeInTheDocument();
+  });
+
+  it("still renders the overview <p> when there IS something to say", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = { mode: "movies", item: movie() };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    expect(await screen.findByText("An overview.")).toBeInTheDocument();
+    expect(overviewParagraphs(container)).toHaveLength(1);
   });
 });
 
@@ -873,6 +1120,7 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
         return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description")) return emptyDescription();
       throw new Error("unexpected fetch: " + url);
     });
     const target: DetailTarget = { mode: "adult", item: adultScene() };

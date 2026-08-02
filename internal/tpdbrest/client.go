@@ -198,6 +198,19 @@ type Scene struct {
 	// be empty (a scene with no performers on file, or a solo/POV scene TPDB
 	// hasn't tagged).
 	Performers []string
+	// Description is TPDB's per-scene synopsis — SceneResource.description,
+	// confirmed present in TPDB's live OpenAPI schema (fetched from
+	// https://api.theporndb.net/openapi.json) 2026-08-02, whose example value
+	// is a full multi-sentence synopsis rather than a vestigial stub. The
+	// field carries NO `nullable` annotation there (unlike
+	// PerformerResource.bio and SiteResource.description, which do).
+	//
+	// Verification level, stated rather than overclaimed: the SCHEMA is
+	// live-confirmed; the POPULATION RATE on real records is NOT verified (no
+	// TPDB API key was available in the environment where this was added).
+	// Treat empty as entirely normal and degrade gracefully — never render a
+	// "missing data" error on its absence.
+	Description string
 }
 
 // Tag mirrors one entry of TPDB's per-scene "tags" array (a TagResource) — only
@@ -309,12 +322,13 @@ type rawScene struct {
 	Background struct {
 		Large string `json:"large"`
 	} `json:"background"`
-	Duration   int                 `json:"duration"`
-	Rating     float64             `json:"rating"`
-	Hashes     []rawSceneHash      `json:"hashes"`
-	Type       string              `json:"type"`
-	Tags       []rawTag            `json:"tags"`
-	Performers []rawScenePerformer `json:"performers"`
+	Duration    int                 `json:"duration"`
+	Rating      float64             `json:"rating"`
+	Hashes      []rawSceneHash      `json:"hashes"`
+	Type        string              `json:"type"`
+	Tags        []rawTag            `json:"tags"`
+	Performers  []rawScenePerformer `json:"performers"`
+	Description string              `json:"description"`
 }
 
 // rawScenePerformer mirrors one entry of a TPDB scene's "performers" array — a
@@ -368,7 +382,7 @@ func (s rawScene) toScene() Scene {
 	// fields — see rawScene's doc comment for the live evidence behind this
 	// order.
 	image := firstNonEmpty(s.Background.Large, s.Poster, s.Image)
-	return Scene{ID: string(s.ID), Title: s.Title, Slug: s.Slug, Date: s.Date, Site: site, Image: image, Duration: s.Duration, Rating: s.Rating, Hashes: phashes, Tags: tags, Type: s.Type, Performers: performers}
+	return Scene{ID: string(s.ID), Title: s.Title, Slug: s.Slug, Date: s.Date, Site: site, Image: image, Duration: s.Duration, Rating: s.Rating, Hashes: phashes, Tags: tags, Type: s.Type, Performers: performers, Description: s.Description}
 }
 
 // firstNonEmpty returns the first non-empty string from vals, or "" if all are
@@ -651,6 +665,18 @@ type Performer struct {
 	Name   string
 	Image  string
 	Gender string
+	// Bio is TPDB's per-performer biography — PerformerResource.bio, confirmed
+	// present in TPDB's live OpenAPI schema (fetched from
+	// https://api.theporndb.net/openapi.json) 2026-08-02, where it IS marked
+	// nullable. Neither StashDB nor FansDB has any bio-like field at all
+	// (proven by complete field enumeration of their live GraphQL Performer
+	// type, same session), so TPDB is the only source for this.
+	//
+	// Verification level, stated rather than overclaimed: the SCHEMA is
+	// live-confirmed; the POPULATION RATE on real records is NOT verified (no
+	// TPDB API key was available in the environment where this was added).
+	// Treat empty as entirely normal.
+	Bio string
 }
 
 // rawPerformer mirrors the fields this client consumes from a TPDB
@@ -674,6 +700,10 @@ type rawPerformer struct {
 	Face      string             `json:"face"`
 	Posters   []rawPosterEntry   `json:"posters"`
 	Extras    rawPerformerExtras `json:"extras"`
+	// Bio is a TOP-LEVEL PerformerResource field, a sibling of "extras" —
+	// not a member of it, unlike gender below. Confirmed against the live
+	// OpenAPI schema's PerformerResource property list 2026-08-02.
+	Bio string `json:"bio"`
 }
 
 // rawPosterEntry mirrors one entry of a TPDB MediaResource — only url is
@@ -695,7 +725,7 @@ func (rp rawPerformer) toPerformer() Performer {
 	if len(rp.Posters) > 0 {
 		posterURL = rp.Posters[0].URL
 	}
-	return Performer{ID: string(rp.ID), Name: rp.Name, Image: firstNonEmpty(posterURL, rp.Image, rp.Thumbnail, rp.Face), Gender: rp.Extras.Gender}
+	return Performer{ID: string(rp.ID), Name: rp.Name, Image: firstNonEmpty(posterURL, rp.Image, rp.Thumbnail, rp.Face), Gender: rp.Extras.Gender, Bio: rp.Bio}
 }
 
 type performersResponse struct {
@@ -971,6 +1001,29 @@ type Site struct {
 	ID    string
 	Name  string
 	Image string
+	// Description is TPDB's per-site (studio) blurb —
+	// SiteResource.description, confirmed present in TPDB's live OpenAPI
+	// schema (fetched from https://api.theporndb.net/openapi.json) 2026-08-02,
+	// where it IS marked nullable. Neither StashDB nor FansDB has any
+	// description-like field on Studio at all (proven by complete field
+	// enumeration of their live GraphQL Studio type, same session), so TPDB is
+	// the only source for this.
+	//
+	// Verification level, stated rather than overclaimed: the SCHEMA is
+	// live-confirmed; the POPULATION RATE on real records is NOT verified (no
+	// TPDB API key was available in the environment where this was added).
+	// Treat empty as entirely normal.
+	//
+	// WHICH ENDPOINTS actually populate it is likewise NOT verified:
+	// /sites/{identifier} returns the full SiteResource per the spec, but
+	// whether the /sites LIST response serializes description was not checked
+	// live — contrast the Network field below, whose comment says "present on
+	// /sites LIST responses (confirmed live...)" precisely because this client
+	// has already been bitten by list-vs-detail divergence (see
+	// backfillMissingImages, which exists because the PERFORMER list endpoint
+	// omits data its detail endpoint has). toSite() populates Description from
+	// whichever response happens to carry it; GetSiteByID is the detail path.
+	Description string
 }
 
 // rawSiteEntry mirrors the fields this client consumes from a TPDB
@@ -1004,10 +1057,11 @@ type rawSiteEntry struct {
 	Network *struct {
 		ID int `json:"id"`
 	} `json:"network"`
+	Description string `json:"description"`
 }
 
 func (rs rawSiteEntry) toSite() Site {
-	return Site{ID: rs.ID, Name: rs.Name, Image: firstNonEmpty(rs.Logo, rs.Poster, rs.Favicon)}
+	return Site{ID: rs.ID, Name: rs.Name, Image: firstNonEmpty(rs.Logo, rs.Poster, rs.Favicon), Description: rs.Description}
 }
 
 // junkNetworkIDs are TPDB "network" ids for clip-selling platforms whose
@@ -1040,6 +1094,34 @@ func isJunkNetwork(rs rawSiteEntry) bool {
 
 type sitesResponse struct {
 	Data []rawSiteEntry `json:"data"`
+}
+
+// siteResponse is TPDB's single-entity envelope — GetSiteByID's response
+// shape, distinct from sitesResponse's array envelope above and identical in
+// shape to performerResponse/sceneResponse.
+type siteResponse struct {
+	Data rawSiteEntry `json:"data"`
+}
+
+// GetSiteByID fetches one site (TPDB's name for a studio) via its dedicated
+// GET /sites/{identifier} endpoint. The single-entity envelope ({data:
+// SiteResource}) was confirmed against the live OpenAPI spec 2026-08-02 — the
+// same shape GET /performers/{identifier} returns, so this mirrors
+// GetPerformerByID rather than inventing a new envelope pattern. The
+// identifier may be a slug, id or uuid per that spec; Site.ID (which decodes
+// "uuid", see rawSiteEntry) is a valid value for it.
+//
+// Deliberately NOT junk-network-filtered and deliberately NOT wired into
+// getSites/BrowseSites as an image-backfill fan-out: an explicit by-id lookup
+// is explicit operator intent (the same precedent SearchSites documents), and
+// extending backfillMissingImages' concurrency pattern to the site endpoints
+// would defeat internal/throttle exactly as that function's own doc warns.
+func (c *Client) GetSiteByID(ctx context.Context, id string) (Site, error) {
+	var sr siteResponse
+	if err := c.doGet(ctx, "/sites/"+url.PathEscape(id), url.Values{}, &sr); err != nil {
+		return Site{}, err
+	}
+	return sr.Data.toSite(), nil
 }
 
 func (c *Client) getSitesRaw(ctx context.Context, params url.Values) ([]rawSiteEntry, error) {

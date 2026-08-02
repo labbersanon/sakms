@@ -9,6 +9,7 @@
 
 import { api } from "./client";
 import type {
+  AdultDescription,
   AdultDiscoverItem,
   AdultSearchScene,
   AdultSearchScenesPage,
@@ -23,6 +24,7 @@ import type {
 } from "@dto";
 
 export type {
+  AdultDescription,
   AdultDiscoverItem,
   AdultSearchScene,
   AdultSearchScenesPage,
@@ -463,6 +465,34 @@ export function fetchNewestEntityScenes(
   const q = new URLSearchParams({ kind, name, page: String(page) });
   return api<{ items: AdultDiscoverItem[]; hasMore: boolean }>(
     `/api/modes/adult/discover/newest/entity-scenes?${q.toString()}`,
+  );
+}
+
+// fetchAdultDescription is the Adult Discover description/bio fetch — ONE call per
+// explicit operator action (a popup open, a drill-down open), one entity, zero
+// Prowlarr. See CLAUDE.md's Adult drill-down carve-out.
+//
+// GET /api/modes/adult/discover/description?kind=&source=&id=&name= — a scene
+// requires source (tpdb|stashdb|fansdb) + id; a performer/studio requires name
+// and takes an OPTIONAL source (a box hint the drill already knows — omitted
+// entirely, not sent as "", when the caller doesn't have one, so the backend
+// resolves it itself from the matched-entity pool). See
+// internal/api/adultdescription.go.
+export function fetchAdultDescription(
+  params:
+    | { kind: "scene"; source: string; id: string }
+    | { kind: "performer" | "studio"; name: string; source?: string },
+): Promise<AdultDescription> {
+  const q = new URLSearchParams({ kind: params.kind });
+  if (params.kind === "scene") {
+    q.set("source", params.source);
+    q.set("id", params.id);
+  } else {
+    q.set("name", params.name);
+    if (params.source) q.set("source", params.source);
+  }
+  return api<AdultDescription>(
+    `/api/modes/adult/discover/description?${q.toString()}`,
   );
 }
 

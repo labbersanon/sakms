@@ -1600,3 +1600,174 @@ func TestNoDirectClientDoOutsideDoGet(t *testing.T) {
 		t.Errorf("expected zero direct httpx.DoJSON(/DoJSONAllowEmpty( calls (every REST call must funnel through doGet's inline client.Do), found %d", doJSONCount)
 	}
 }
+
+// TestGet_ParsesDescription covers the scene-synopsis decode added for the
+// Adult Discover pop-up's description block. SceneResource.description is
+// confirmed present in TPDB's live OpenAPI schema (2026-08-02); this pins the
+// json tag so a future edit can't silently drop it.
+func TestGet_ParsesDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"A Scene","description":"Silvia has been Sam's therapist for a while.","site":{"name":"Some Site"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.SearchByTitle(context.Background(), "a scene", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Description != "Silvia has been Sam's therapist for a while." {
+		t.Fatalf("got %+v", out)
+	}
+}
+
+// TestGet_MissingDescriptionIsEmpty pins the AC5 contract: a scene TPDB has no
+// synopsis for decodes cleanly to "" rather than erroring, so consumers can
+// treat empty as normal (population rate on real records is unverified — see
+// Scene.Description's doc comment).
+func TestGet_MissingDescriptionIsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"1","title":"A Scene","site":{"name":"Some Site"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.SearchByTitle(context.Background(), "a scene", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Description != "" {
+		t.Fatalf("expected empty Description, got %+v", out)
+	}
+}
+
+// TestSearchPerformers_ParsesBio covers the performer-bio decode.
+// PerformerResource.bio is a TOP-LEVEL field, a sibling of "extras" (where
+// gender lives) — this fixture places it accordingly and would fail if the
+// tag were ever moved into rawPerformerExtras.
+func TestSearchPerformers_ParsesBio(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"p1","name":"Liv M","bio":"Born in Prague, debuted in 2016.","extras":{"gender":"female"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.SearchPerformers(context.Background(), "liv")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Bio != "Born in Prague, debuted in 2016." || out[0].Gender != "female" {
+		t.Fatalf("got %+v", out)
+	}
+}
+
+// TestSearchSites_ParsesDescription covers the site (studio) description
+// decode. SiteResource.description is nullable upstream, so an absent key
+// must stay a clean "" — asserted by the second server response here.
+func TestSearchSites_ParsesDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"uuid":"s1","name":"Tushy","description":"Premium anal-focused imprint."}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err := c.SearchSites(context.Background(), "tushy")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Description != "Premium anal-focused imprint." {
+		t.Fatalf("got %+v", out)
+	}
+
+	bare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"uuid":"s1","name":"Tushy"}]}`))
+	}))
+	defer bare.Close()
+
+	c = New(bare.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	out, err = c.SearchSites(context.Background(), "tushy")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0].Description != "" {
+		t.Fatalf("expected empty Description when the key is absent, got %+v", out)
+	}
+}
+
+// TestGetSiteByID_UsesDetailEndpoint covers the new single-site lookup: the
+// dedicated /sites/{identifier} path, the {data:{...}} single-entity envelope
+// (not the array envelope every browse/search endpoint returns), and the
+// "uuid"-not-"_id" ID decode rawSiteEntry documents.
+func TestGetSiteByID_UsesDetailEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sites/s1" {
+			t.Errorf("expected path /sites/s1, got %q", r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer testkey" {
+			t.Errorf("expected Bearer auth, got %q", auth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"uuid":"s1","name":"Tushy","logo":"https://cdn.theporndb.net/site/logo.jpg","description":"Premium anal-focused imprint."}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	site, err := c.GetSiteByID(context.Background(), "s1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if site.ID != "s1" || site.Name != "Tushy" {
+		t.Fatalf("got %+v", site)
+	}
+	if site.Image != "https://cdn.theporndb.net/site/logo.jpg" {
+		t.Fatalf("expected logo-first Image, got %+v", site)
+	}
+	if site.Description != "Premium anal-focused imprint." {
+		t.Fatalf("got %+v", site)
+	}
+}
+
+// TestGetSiteByID_EscapesIdentifier guards against an identifier containing a
+// slash (or any reserved character) silently changing the request path — TPDB
+// accepts a slug in this position, and a slug is free-form enough to warrant
+// the escape. Asserted against EscapedPath, not Path: Path is already decoded
+// server-side, so it cannot distinguish an escaped id from a traversal.
+func TestGetSiteByID_EscapesIdentifier(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.EscapedPath(); got != "/sites/tushy%2Fraw" {
+			t.Errorf("expected escaped path /sites/tushy%%2Fraw, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"uuid":"s1","name":"Odd Site"}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	if _, err := c.GetSiteByID(context.Background(), "tushy/raw"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestGetSiteByID_PropagatesError pins the failure shape: a non-2xx upstream
+// response surfaces as an error and a zero Site, never a silently-empty
+// success (this client's callers distinguish the two).
+func TestGetSiteByID_PropagatesError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "testkey", &http.Client{Timeout: 5 * time.Second})
+	site, err := c.GetSiteByID(context.Background(), "s1")
+	if err == nil {
+		t.Fatalf("expected an error, got site %+v", site)
+	}
+	if site.ID != "" || site.Name != "" {
+		t.Fatalf("expected a zero Site on error, got %+v", site)
+	}
+}

@@ -76,15 +76,12 @@ type Scene struct {
 	ReleaseDate string
 	StudioName  string
 	// ImageURL, Tags, and Duration are populated by both the browse path
-	// (QueryScenes, ImageURL/Duration only) and the title/id identification
-	// paths (SearchScene and FindScene, which request images/tags/duration
-	// for display + matching). The fingerprint path
-	// (FindScenesByFingerprints) keeps a minimal hash-matching selection that
-	// omits them, so scenes it returns leave these zero-valued — that's
-	// expected, not a bug. (Tags is not requested by QueryScenes: the
-	// Discover browse rows it backs don't need tag names, only the
-	// identification/matching pipeline does.) Duration was added to
-	// SearchScene/FindScene's selections after a live bug: a caller
+	// (QueryScenes) and the title/id identification paths (SearchScene and
+	// FindScene), all of which request images/tags/duration for display +
+	// matching. The fingerprint path (FindScenesByFingerprints) keeps a
+	// minimal hash-matching selection that omits them, so scenes it returns
+	// leave these zero-valued — that's expected, not a bug. Duration was
+	// added to SearchScene/FindScene's selections after a live bug: a caller
 	// (internal/adultnewest) building a grab request from a match with no
 	// runtime silently failed to auto-qualify anything against Adult's
 	// bitrate-quality-floor scorer, which never re-fetches a real runtime
@@ -92,6 +89,16 @@ type Scene struct {
 	ImageURL string
 	Tags     []string
 	Duration int
+	// Details is the scene's catalog synopsis/description (the stash-box
+	// schema's Scene.details, live-verified present on both stashdb.org and
+	// fansdb.cc). Populated ONLY by the identification paths (SearchScene and
+	// FindScene). The browse path (QueryScenes) deliberately does NOT request
+	// it: that selection backs every card of every Adult Discover row, and
+	// shipping a multi-sentence synopsis per card costs kilobytes of prose for
+	// cards that will never be opened. The fingerprint path doesn't request it
+	// either. Don't "fix" the browse omission — it is the payload decision, not
+	// an oversight.
+	Details string
 	// PHashes are the scene's fingerprint hashes whose algorithm is PHASH
 	// (MD5/OSHASH fingerprints are filtered out) — used by the merged-recent
 	// dedup to spot a stash-box scene TPDB already carries. Populated ONLY by
@@ -106,6 +113,7 @@ type Scene struct {
 type rawScene struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
+	Details     string `json:"details"`
 	ReleaseDate string `json:"release_date"`
 	Studio      *struct {
 		Name   string `json:"name"`
@@ -141,6 +149,7 @@ func (s rawScene) toScene() Scene {
 	return Scene{
 		ID:          s.ID,
 		Title:       s.Title,
+		Details:     s.Details,
 		ReleaseDate: s.ReleaseDate,
 		StudioName:  studioName,
 		ImageURL:    imageURL,
@@ -254,8 +263,9 @@ const defaultBrowsePerPage = 20
 
 // rawBrowseScene mirrors the richer GraphQL selection the browse query
 // (QueryScenes) requests — the same studio.name/parent.name fallback as
-// rawScene, plus images/duration/fingerprints. It's separate from rawScene so
-// the identification query paths keep their minimal selection unchanged.
+// rawScene, plus images/tags/duration/fingerprints. It's separate from rawScene
+// so the identification query paths keep their own selection (which requests
+// details, deliberately absent here — see Scene.Details) unchanged.
 type rawBrowseScene struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
@@ -269,6 +279,9 @@ type rawBrowseScene struct {
 	Images []struct {
 		URL string `json:"url"`
 	} `json:"images"`
+	Tags []struct {
+		Name string `json:"name"`
+	} `json:"tags"`
 	Duration     int `json:"duration"`
 	Fingerprints []struct {
 		Hash      string `json:"hash"`
@@ -288,6 +301,10 @@ func (s rawBrowseScene) toScene() Scene {
 	if len(s.Images) > 0 {
 		imageURL = s.Images[0].URL
 	}
+	var tags []string
+	for _, t := range s.Tags {
+		tags = append(tags, t.Name)
+	}
 	var phashes []string
 	for _, fp := range s.Fingerprints {
 		if fp.Algorithm == "PHASH" {
@@ -300,6 +317,7 @@ func (s rawBrowseScene) toScene() Scene {
 		ReleaseDate: s.ReleaseDate,
 		StudioName:  studioName,
 		ImageURL:    imageURL,
+		Tags:        tags,
 		Duration:    s.Duration,
 		PHashes:     phashes,
 	}
@@ -307,7 +325,7 @@ func (s rawBrowseScene) toScene() Scene {
 
 const queryScenesQuery = `query QueryScenes($input: SceneQueryInput!) {
   queryScenes(input: $input) {
-    scenes { id title release_date studio { name parent { name } } images { url } duration fingerprints { hash algorithm } }
+    scenes { id title release_date studio { name parent { name } } images { url } tags { name } duration fingerprints { hash algorithm } }
   }
 }`
 
@@ -399,7 +417,7 @@ func (c *Client) QueryScenesByPerformer(ctx context.Context, performerID string,
 }
 
 const searchSceneQuery = `query SearchScene($term: String!) {
-  searchScene(term: $term) { id title release_date studio { name parent { name } } tags { name } images { url } duration }
+  searchScene(term: $term) { id title details release_date studio { name parent { name } } tags { name } images { url } duration }
 }`
 
 // SearchScene returns raw title-search candidates. Similarity/studio-overlap
@@ -419,7 +437,7 @@ func (c *Client) SearchScene(ctx context.Context, term string) ([]Scene, error) 
 }
 
 const findSceneQuery = `query FindScene($id: ID!) {
-  findScene(id: $id) { id title release_date studio { name parent { name } } tags { name } images { url } duration }
+  findScene(id: $id) { id title details release_date studio { name parent { name } } tags { name } images { url } duration }
 }`
 
 // FindScene looks up a scene directly by its stash-box scene ID.

@@ -342,6 +342,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// on the literal "adult" path so ServeMux prefers it over {mode}. See
 	// adultdiscover_newest_scenes.go.
 	mux.HandleFunc("GET /api/modes/adult/discover/newest/entity-scenes", adultNewestEntityScenesHandler(connStore, scStore, settingsStore, adultNewestReleaseStore, feedHealth))
+	// Pop-up / drill-down description + bio read: one scene description, or one
+	// performer/studio bio, fetched from the catalogs only on an explicit
+	// operator open. Narrower than the drill-down above it — it never constructs
+	// a Prowlarr client at all — and answers 200 for every no-data condition, a
+	// 400 only for a malformed kind. Registered on the literal "adult" path so
+	// ServeMux prefers it over {mode}. See adultdescription.go.
+	mux.HandleFunc("GET /api/modes/adult/discover/description", adultDescriptionHandler(connStore, scStore, settingsStore, adultNewestReleaseStore))
 	// Image proxy: server-side-fetch + cache poster/thumbnail art from the
 	// allowlisted TMDB/TPDB image hosts so the browser never hot-links them
 	// (see images.go / internal/imageproxy). Read-only, auth-gated like every

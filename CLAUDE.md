@@ -1186,6 +1186,63 @@ above, so don't drop them for convenience:
     way the original per-card badge was treated. Response envelope for both
     pages is `{items, hasMore}`; `page=1` HasMore is always true (Show More
     always offered), `page>1` always false (Prowlarr doesn't paginate further).
+  - **Clarification, not a reversal (2026-08-02):** the Adult Discover pop-up
+    and drill-down enrichment endpoint
+    (`GET /api/modes/adult/discover/description`,
+    `internal/api/adultdescription.go`) reaches TPDB REST and/or a stash-box
+    GraphQL endpoint only — zero Prowlarr calls, ever, though `mode.Build`
+    still allocates `sess.Prowlarr` from the connection store whenever one is
+    configured (a plain struct constructor, no I/O); this handler simply never
+    reads or calls it. The guarantee is behavioral (no call site), not
+    structural (a nil client) — do not "verify" this rule by asserting
+    `sess.Prowlarr == nil`, that assertion is false whenever Prowlarr is
+    configured; `TestAdultDescriptionMakesNoProwlarrCall` is what actually
+    enforces it. So this is narrower than the carve-outs above it, not a
+    widening of them. It fires
+    once per explicit operator action — opening a scene's `DetailPopup`, or
+    opening a performer/studio drill-down — one entity, never per-card, never
+    per-scroll, never on `PaginatedStrip` page advance. It is a **dedicated
+    endpoint rather than an extension of the existing Discover response
+    envelope (Wade's explicit choice)**: extending the envelope would ship a
+    prose description on every card in every row, most of which are never
+    opened, and would require a migration for the pooled newest-releases path
+    (`adult_newest_releases` has no description column) — the dedicated
+    endpoint needs neither.
+
+    **Call budget: zero Prowlarr, ever; at most two upstream catalog calls per
+    request, structurally** (resolution never fans out across boxes) — exactly
+    **one** for a scene (`GetSceneByID`/`FindScene`, strictly following the
+    scene's own `entity_source`), and **two** for a performer or studio (an
+    exact-name resolve against TPDB, then a detail fetch). The entity path's
+    two calls are paid **even when the drill originated from a stash-box row**
+    — that is Wade's Option A decision (2026-08-02): a performer or studio's
+    bio is always resolved via TPDB regardless of the entity's own catalog
+    source, a narrow, documented exception to AC4's letter ("the entity's own
+    primary source") for the bio path only, made specifically to get
+    bio-banner coverage on all four drill-down entry points (stash-box
+    studios, stash-box performers, newest-row studios, newest-row performers)
+    instead of only the ones whose pool `entity_source` happened to be
+    `tpdb`. Scene descriptions are unaffected by this exception and still
+    strictly follow `entity_source`. **Do not write "one call" for the
+    entity path** — it is two, not one, whenever it resolves at all; there is
+    no zero-call case any more (an earlier draft of this feature's plan
+    priced one, and corrected it — see `.omc/plans/autopilot-impl-adult-popup-enrichment.md`
+    §2.2). The response's `Source` field echoes the box actually consulted,
+    so a stash-box-sourced entity's response reports `source: "tpdb"` — that
+    is the intended honest-provenance property, not a bug.
+
+    **No tags field on this endpoint, and none is coming.** Live schema
+    introspection (2026-08-02) — complete field enumeration against TPDB
+    REST's OpenAPI schema and both stash-box GraphQL endpoints, not an
+    inference — found no performer/studio tags field in any of the three
+    catalogs. The response DTO ships no `Tags` field for this reason. **Do
+    not add a tags pill row for performers or studios** — there is nothing in
+    any configured catalog to bind it to.
+
+    If a future change makes this endpoint fire without an explicit click,
+    for more than one entity per request, or ever construct a Prowlarr
+    client, that's the rule being broken again — treat it the same way the
+    original per-card badge was treated.
   - **Library sidebar tab added (2026-08-01)** — a new `frontend/src/screens/Library.tsx`
     (own sidebar entry, `/library` route) is now the tracked-catalog browsing
     screen for Movies/Series (title search, genre filter, added-date sort via

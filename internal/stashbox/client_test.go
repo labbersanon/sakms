@@ -872,3 +872,221 @@ func TestQueryPerformers_QuerySelectsGenderField(t *testing.T) {
 		t.Errorf("expected the outgoing QueryPerformers GraphQL query to select \"gender\", got %q", gotQuery)
 	}
 }
+
+// TestQueryScenes_QuerySelectsTags pins tags { name } into the browse
+// selection. A future session trimming it would silently empty Adult Discover's
+// stash-box genre pills and the drill-down catalog path's MatchResult.Tags.
+func TestQueryScenes_QuerySelectsTags(t *testing.T) {
+	var gotQuery string
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[]}}}`))
+	})
+	defer closeSrv()
+
+	if _, err := c.QueryScenes(context.Background(), SceneSortDate, 1, 20); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "tags { name }") {
+		t.Errorf("expected the outgoing QueryScenes GraphQL query to select \"tags { name }\", got %q", gotQuery)
+	}
+}
+
+// TestQueryScenes_QueryDoesNotSelectDetails pins the payload decision: the
+// browse selection backs every card of every Adult Discover row, so it must
+// never ship a per-scene synopsis. details belongs to the identification paths
+// (SearchScene/FindScene) only.
+func TestQueryScenes_QueryDoesNotSelectDetails(t *testing.T) {
+	var gotQuery string
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[]}}}`))
+	})
+	defer closeSrv()
+
+	if _, err := c.QueryScenes(context.Background(), SceneSortDate, 1, 20); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(gotQuery, "details") {
+		t.Errorf("QueryScenes must not select \"details\" (payload cost on every browse card), got %q", gotQuery)
+	}
+}
+
+func TestQueryScenes_DecodesTags(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"s1","title":"Tagged Scene","release_date":"2024-01-01",` +
+			`"studio":{"name":"Vixen","parent":null},"images":[{"url":"http://cdn/scene1.jpg"}],` +
+			`"tags":[{"name":"Blonde"},{"name":"Outdoor"}],"duration":1800,"fingerprints":[]}]}}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.QueryScenes(context.Background(), SceneSortDate, 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(out))
+	}
+	if len(out[0].Tags) != 2 || out[0].Tags[0] != "Blonde" || out[0].Tags[1] != "Outdoor" {
+		t.Errorf("Tags = %v, want [Blonde Outdoor]", out[0].Tags)
+	}
+	// The other browse fields must be untouched by the tags addition.
+	if out[0].ImageURL != "http://cdn/scene1.jpg" || out[0].Duration != 1800 {
+		t.Errorf("ImageURL/Duration = %q/%d, want http://cdn/scene1.jpg/1800", out[0].ImageURL, out[0].Duration)
+	}
+}
+
+// TestQueryScenes_ToleratesMissingTags proves the selection-set addition is
+// decode-additive: a pre-change-shaped response with no "tags" key at all still
+// decodes cleanly, leaving Tags nil rather than erroring.
+func TestQueryScenes_ToleratesMissingTags(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"s1","title":"Untagged Scene","release_date":"2024-01-01",` +
+			`"studio":{"name":"Vixen","parent":null},"images":[{"url":"http://cdn/s.jpg"}],"duration":600,` +
+			`"fingerprints":[{"hash":"ph1","algorithm":"PHASH"}]}]}}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.QueryScenes(context.Background(), SceneSortDate, 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(out))
+	}
+	if out[0].Tags != nil {
+		t.Errorf("Tags = %v, want nil for a response carrying no tags key", out[0].Tags)
+	}
+	if out[0].Title != "Untagged Scene" || out[0].Duration != 600 || len(out[0].PHashes) != 1 {
+		t.Errorf("pre-change-shaped response decoded wrong: %+v", out[0])
+	}
+}
+
+// TestQueryScenesByPerformer_DecodesTags covers the browse query's second
+// consumer: queryScenesFiltered backs the studio/performer drill-downs, whose
+// enriched scenes now carry real tags into identify's MatchResult.Tags.
+func TestQueryScenesByPerformer_DecodesTags(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"s1","title":"Drill Scene","release_date":"2024-01-01",` +
+			`"studio":{"name":"Tushy","parent":null},"images":[],"tags":[{"name":"Anal"}],"duration":2400,"fingerprints":[]}]}}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.QueryScenesByPerformer(context.Background(), "p1", 1, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(out))
+	}
+	if len(out[0].Tags) != 1 || out[0].Tags[0] != "Anal" {
+		t.Errorf("Tags = %v, want [Anal]", out[0].Tags)
+	}
+}
+
+// TestFindScene_DecodesDetails proves both halves of the identification-path
+// change: the outgoing selection asks for details, and the response's value
+// lands on Scene.Details.
+func TestFindScene_DecodesDetails(t *testing.T) {
+	var gotQuery string
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"findScene":{"id":"1","title":"T","details":"A full multi-sentence synopsis.",` +
+			`"release_date":"2020-01-01","studio":{"name":"Tushy","parent":null},"tags":[{"name":"Anal"}],` +
+			`"images":[{"url":"http://cdn/f.jpg"}],"duration":2400}}}`))
+	})
+	defer closeSrv()
+
+	sc, err := c.FindScene(context.Background(), "1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "details") {
+		t.Errorf("expected the outgoing FindScene GraphQL query to select \"details\", got %q", gotQuery)
+	}
+	if sc == nil {
+		t.Fatal("expected a scene, got nil")
+	}
+	if sc.Details != "A full multi-sentence synopsis." {
+		t.Errorf("Details = %q, want the synopsis", sc.Details)
+	}
+	// The pre-existing selection must be unaffected by the details addition.
+	if sc.Title != "T" || sc.Duration != 2400 || len(sc.Tags) != 1 || sc.ImageURL != "http://cdn/f.jpg" {
+		t.Errorf("existing fields changed: %+v", sc)
+	}
+}
+
+func TestSearchScene_DecodesDetails(t *testing.T) {
+	var gotQuery string
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"searchScene":[{"id":"1","title":"T","details":"Synopsis here.",` +
+			`"release_date":"2024-01-01","studio":{"name":"Vixen","parent":null},"tags":[{"name":"Blonde"}],` +
+			`"images":[{"url":"http://cdn/scene1.jpg"}],"duration":1800}]}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.SearchScene(context.Background(), "T")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "details") {
+		t.Errorf("expected the outgoing SearchScene GraphQL query to select \"details\", got %q", gotQuery)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(out))
+	}
+	if out[0].Details != "Synopsis here." {
+		t.Errorf("Details = %q, want \"Synopsis here.\"", out[0].Details)
+	}
+}
+
+// TestFindScene_ToleratesMissingDetails is the details half of the
+// additive-safety check: a response shaped like the pre-change server's (no
+// "details" key) still decodes, leaving Details blank. Sibling coverage exists
+// at TestScene_StudioFallsBackToParent, whose fixture omits every optional key.
+func TestFindScene_ToleratesMissingDetails(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"findScene":{"id":"1","title":"T","release_date":"2020-01-01",` +
+			`"studio":{"name":"Tushy","parent":null},"tags":[{"name":"Anal"}],"images":[{"url":"http://cdn/f.jpg"}],"duration":2400}}}`))
+	})
+	defer closeSrv()
+
+	sc, err := c.FindScene(context.Background(), "1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc == nil {
+		t.Fatal("expected a scene, got nil")
+	}
+	if sc.Details != "" {
+		t.Errorf("Details = %q, want blank for a response carrying no details key", sc.Details)
+	}
+	if sc.Duration != 2400 || len(sc.Tags) != 1 {
+		t.Errorf("pre-change-shaped response decoded wrong: %+v", sc)
+	}
+}

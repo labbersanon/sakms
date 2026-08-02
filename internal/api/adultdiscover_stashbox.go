@@ -93,6 +93,7 @@ func adultStashBoxScenesHandler(httpClient *http.Client, connStore *connections.
 				Image:           s.ImageURL,
 				DurationSeconds: s.Duration,
 				Source:          box,
+				Genres:          s.Tags,
 				// Rating stays 0 — stash-box has no numeric rating field.
 			}
 		}
@@ -250,6 +251,7 @@ func writeStashBoxScenes(w http.ResponseWriter, scenes []stashbox.Scene, box str
 			Image:           s.ImageURL,
 			DurationSeconds: s.Duration,
 			Source:          box,
+			Genres:          s.Tags,
 			// Rating stays 0 — stash-box has no numeric rating field.
 		}
 	}

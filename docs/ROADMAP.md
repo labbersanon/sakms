@@ -1180,6 +1180,62 @@ numbered below by original idea order, not interview order.
    bio/tags render as a header above the existing scene-grid drill-down —
    no new popup UI. Explicitly flags the same open item as item 5's spec:
    needs a design pass before/during implementation.
+
+   **CORRECTED 2026-08-02 — this item's own "Real finding" above was itself
+   wrong, retracted here rather than silently rewritten** (same convention
+   item 8's "zero new backend needed" retraction uses). The superseded
+   sentence, quoted verbatim: *"Real finding: description/bio are genuinely
+   absent from every currently-queried catalog (TPDB REST, StashDB, FansDB,
+   and the local Stash instance) — not a wiring gap."* Live-verified
+   2026-08-02 (TPDB's OpenAPI schema plus GraphQL introspection against both
+   stash-box instances, not inference): TPDB REST's `SceneResource` already
+   carries `description`, and `PerformerResource.bio` / `SiteResource.description`
+   exist too — so the TPDB-GraphQL workstream this item pointed toward was
+   closed as unnecessary, not deferred; the REST client needed three
+   additive decode fields, nothing else. The following sentence above is
+   also retracted: *"Performer bio/tags render as a header above the
+   existing scene-grid drill-down — no new popup UI."* Half right: the bio
+   banner does render as a header above the drill-down, but StashDB/FansDB
+   expose neither a performer bio nor a studio description field at all
+   (proven by complete GraphQL field enumeration, not inferred), and no
+   catalog — TPDB included — exposes performer/studio tags, so the "tags"
+   half of this item does not ship. The scene-tags half above is unaffected
+   and shipped as described: StashDB/FansDB's browse query genuinely never
+   requested `tags`, that was a real, low-risk fix.
+
+   **Shipped 2026-08-02** — see `CHANGELOG.md` and `CLAUDE.md`'s 2026-08-02
+   clarification under "Discover never queries Prowlarr, full stop." What
+   shipped, against the corrected finding above:
+   - **Scene tags (AC1)**: StashDB/FansDB's browse query now requests
+     `tags`, populating `Genres` on stash-box scene cards. The drill-down
+     enrichment path (`identify.fetchCatalog`) shares the same query and
+     gains tags as a documented side effect — a scene already cached in
+     `adult_newest_scene_matches` before this change keeps an empty
+     `Genres` indefinitely (that table has no TTL, prune, or invalidation);
+     only freshly-matched scenes gain tags.
+   - **Scene description (AC3/AC4)**: TPDB REST's `SceneResource.description`
+     and StashDB/FansDB's `Scene.details`, surfaced through a new dedicated
+     endpoint (`GET /api/modes/adult/discover/description`), fired once per
+     popup or drill-down open, strictly following the scene's own
+     `entity_source`.
+   - **Performer/studio bio (AC6, narrowed)**: a bio banner above the
+     performer/studio drill-down, sourced from TPDB's `PerformerResource.bio`/
+     `SiteResource.description` — always resolved via TPDB regardless of the
+     drill's own catalog source (Wade's Option A decision, 2026-08-02),
+     specifically for banner coverage on all four drill-down entry points.
+     Costs two upstream TPDB calls (name resolve + detail fetch) for a
+     stash-box-sourced entity; still one call per explicit operator action,
+     still zero Prowlarr.
+   - **Placeholder removal (AC5), cross-mode**: the "No description
+     available." fallback in `DetailPopup.tsx` is gone in all three modes,
+     one consistent rule (Wade's locked decision #3) — a TMDB title with an
+     empty `overview` now renders no line at all instead of the placeholder
+     sentence. Required its own PR callout so this doesn't read as Adult
+     scope leaking into Movies/Series.
+   - **Dropped (mandatory, not a judgment call)**: performer/studio tags. No
+     source exists in TPDB, StashDB, or FansDB (complete field enumeration,
+     live-verified 2026-08-02) — do not add a tags pill row here; there is
+     nothing in any configured catalog to bind it to.
 7. **Torrent behavior settings + seeding + stale torrent handling** — **SHIPPED
    2026-08-01** (full wave: BE-0 gate closed 2026-08-01; BE-1–BE-6 + FE-1–FE-2
    + QA-1 executed same day; all tests passing, `go build/vet/test -race` green,

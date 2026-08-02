@@ -47,6 +47,7 @@ import {
   type SearchReleaseResult,
   type StashBox,
   type StudioSummary,
+  fetchAdultDescription,
   fetchAdultDiscoverMergedRecent,
   fetchAdultDiscoverSorted,
   fetchAdultSearch,
@@ -454,9 +455,24 @@ const STASH_BOX_ORDERABLE_ROWS: StashBoxOrderableRow[] = STASH_BOX_ROWS.flatMap(
 //     entity NAME (this pool has no stable box-scoped id, only a
 //     Prowlarr/RSS name match) — see internal/api/adultdiscover_newest_scenes.go.
 // The two are told apart by the presence of `box` (`"box" in d`).
+//
+// `image` is on BOTH members: the bio banner's art frame renders the same
+// artwork the browse card the operator just clicked was already showing. Every
+// setDrill site already has it in scope, so this costs no extra fetch.
 type AdultDrill =
-  | { kind: "studio" | "performer"; name: string; box: StashBox; id: string }
-  | { kind: "studio" | "performer"; name: string; source: "newest" };
+  | {
+      kind: "studio" | "performer";
+      name: string;
+      image: string;
+      box: StashBox;
+      id: string;
+    }
+  | {
+      kind: "studio" | "performer";
+      name: string;
+      image: string;
+      source: "newest";
+    };
 
 // AdultDiscover is the scene-shaped browse, row-based like Mainstream: a search
 // bar over two ordered scene rows (Recently Released, Highest Rated), a Studios
@@ -504,6 +520,45 @@ export const AdultDiscover: Component<{
 
   // drill is the active Studio/Performer drill-down (null = the browse rows).
   const [drill, setDrill] = createSignal<AdultDrill | null>(null);
+
+  // entityDetail is the drilled-into performer's/studio's catalog bio — ONE
+  // call per drill-down open. Keyed on `drill` itself, so it refires exactly
+  // once when a drill opens and NEVER on pagination (PaginatedStrip's own
+  // "Show more" doesn't touch this signal). A null drill suppresses the fetcher
+  // entirely, so the browse view fires nothing.
+  //
+  // The fetcher swallows its own error to empty text: this app has no
+  // ErrorBoundary anywhere, so an unguarded read of an errored Solid resource
+  // throws mid-render and takes the whole SPA down. "Couldn't fetch it" and
+  // "this entity has no bio" render identically — no banner — which is also
+  // semantically right under the feature's no-placeholder rule.
+  const [entityDetail] = createResource(drill, async (dd) => {
+    try {
+      // name is ALWAYS sent; source is the box the drill already knows, when
+      // it knows one (the stash-box variant). A newest-row drill has no box.
+      return await fetchAdultDescription({
+        kind: dd.kind,
+        name: dd.name,
+        source: "box" in dd ? dd.box : undefined,
+      });
+    } catch {
+      return { text: "", source: "" };
+    }
+  });
+  // Claude 2026-08-02: gate on entityDetail.loading rather than reading
+  // entityDetail() directly.
+  // Reason: Solid resources RETAIN their previous value across a source-key
+  // change while the new fetch is in flight — they don't clear. entityDetail
+  // is keyed on `drill`, so opening performer B's drill-down right after
+  // closing performer A's would otherwise render A's bio (still sitting in
+  // the resource) inside B's banner for the whole descriptionTimeout window.
+  // While loading is true there is no trustworthy value to show, so this
+  // returns "" — the same "no bio" shape the banner's own <Show> already
+  // treats as absent, so no new empty-state branch is needed.
+  // Troubleshooting: performer/studio bio banner showing the PREVIOUS
+  // entity's biography during a drill switch (Phase 4 architect finding).
+  // Review if: entityDetail's fetcher stops being keyed on `drill`.
+  const entityBio = () => (entityDetail.loading ? "" : entityDetail()?.text ?? "");
 
   // adultSort is the sort bar's value. sorting() is true only when a non-
   // default sort is chosen AND the view isn't a search or a drill-down (a
@@ -772,7 +827,12 @@ export const AdultDiscover: Component<{
                 name={item.title}
                 image={item.image}
                 onSelect={() =>
-                  setDrill({ kind: "studio", name: item.title, source: "newest" })
+                  setDrill({
+                    kind: "studio",
+                    name: item.title,
+                    image: item.image,
+                    source: "newest",
+                  })
                 }
               />
             )}
@@ -804,7 +864,12 @@ export const AdultDiscover: Component<{
                   name={item.title}
                   image={item.image}
                   onSelect={() =>
-                    setDrill({ kind: "performer", name: item.title, source: "newest" })
+                    setDrill({
+                      kind: "performer",
+                      name: item.title,
+                      image: item.image,
+                      source: "newest",
+                    })
                   }
                 />
               )}
@@ -843,7 +908,13 @@ export const AdultDiscover: Component<{
                 name={s.name}
                 image={s.image}
                 onSelect={() =>
-                  setDrill({ kind: "studio", id: s.id, name: s.name, box: row.box })
+                  setDrill({
+                    kind: "studio",
+                    id: s.id,
+                    name: s.name,
+                    image: s.image,
+                    box: row.box,
+                  })
                 }
               />
             )}
@@ -863,7 +934,13 @@ export const AdultDiscover: Component<{
               name={p.name}
               image={p.image}
               onSelect={() =>
-                setDrill({ kind: "performer", id: p.id, name: p.name, box: row.box })
+                setDrill({
+                  kind: "performer",
+                  id: p.id,
+                  name: p.name,
+                  image: p.image,
+                  box: row.box,
+                })
               }
             />
           )}
@@ -985,13 +1062,71 @@ export const AdultDiscover: Component<{
           >
             {(d) => (
               <div>
-                <div class="mb-2 flex items-center gap-3">
+                {/* Row 1 — the entity name is promoted out of the scene
+                    strip's heading and into the Back-button row, UNGATED for
+                    both performers and studios. min-w-0 is mandatory: without
+                    it a long name refuses to shrink in this flex row and
+                    pushes the whole drill-down layout wide. */}
+                <div class="mb-3 flex items-center gap-3">
                   <Button class="!py-1 text-xs" onClick={() => setDrill(null)}>
                     Back to browse
                   </Button>
+                  <h2 class="min-w-0 truncate text-lg font-semibold text-fg">
+                    {d().name}
+                  </h2>
                 </div>
+                {/* Row 2 — performer/studio bio banner, catalog-sourced, ABOVE
+                    the existing scene grid and never a modal. Renders only when
+                    the catalog has real text; an entity with none is a plain
+                    drill-down exactly as before (no placeholder, no skeleton).
+                    Tags are deliberately absent — no catalog exposes tags on a
+                    performer or a studio, so there is nothing to bind to.
+
+                    Claude 2026-08-02: items-start on the flex container.
+                    Reason: the default align-items:stretch sets the art frame's
+                    cross size and OVERRIDES aspect-ratio, so a studio logo's
+                    frame geometry would vary with the bio's line count
+                    (~144x81 next to one line, ~144x144 next to four).
+                    items-start restores height:auto so aspect-ratio governs.
+                    Troubleshooting: same stretch-row hazard EntityCard's frame
+                    avoids by living in a non-flex tile.
+                    Review if: the banner ever stops being a flex row. */}
+                <Show when={entityBio()}>
+                  <div class="mb-4 flex items-start gap-3 rounded-xl border border-border bg-surface p-4">
+                    <div
+                      class="shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
+                      classList={{
+                        "w-20": d().kind === "performer",
+                        "aspect-[2/3]": d().kind === "performer",
+                        "w-36": d().kind === "studio",
+                        "aspect-video": d().kind === "studio",
+                      }}
+                    >
+                      <Show
+                        when={proxyImage(d().image)}
+                        fallback={<TextPoster label={d().name} />}
+                      >
+                        <img
+                          src={proxyImage(d().image)}
+                          alt={d().name}
+                          loading="lazy"
+                          class="h-full w-full"
+                          classList={{
+                            "object-cover": d().kind === "performer",
+                            "object-contain": d().kind === "studio",
+                          }}
+                        />
+                      </Show>
+                    </div>
+                    <div class="min-w-0 flex-1">
+                      <p class="line-clamp-4 text-sm text-muted" title={entityBio()}>
+                        {entityBio()}
+                      </p>
+                    </div>
+                  </div>
+                </Show>
                 <PaginatedStrip
-                  title={d().name}
+                  title="Scenes"
                   reloadToken={reloadToken}
                   load={(page) => {
                     // Capture the drill once so TypeScript narrows the union on

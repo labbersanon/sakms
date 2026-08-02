@@ -4955,3 +4955,125 @@ fresh, uncached `go test -count=1` run — including
 Frontend `tsc --noEmit` clean; `vitest run` **705/705 passing across 55 test
 files**. Not run in this pass and therefore not claimed: `go test -race` and
 `vite build`.
+
+## 2026-08-02 — Adult Discover pop-up & drill-down enrichment: scene tags, scene description, performer/studio bio
+
+Ships `docs/ROADMAP.md`'s multi-idea-session item 6, and retracts that item's
+own "Real finding" in the same entry rather than leaving it stale — the
+retraction is quoted in full in `ROADMAP.md`'s own CORRECTED 2026-08-02 note,
+not repeated here.
+
+**The spec's premise was live-verified false before any code was written.**
+The spec claimed description/bio are absent from every catalog SAK queries,
+pointing implementation toward extending TPDB's untested GraphQL API. Live
+schema checks against TPDB's OpenAPI spec and GraphQL introspection against
+both stash-box instances (StashDB, FansDB) found the opposite: TPDB REST's
+`SceneResource` already carries `description`, and `PerformerResource.bio` /
+`SiteResource.description` exist too. **No TPDB GraphQL integration was
+built** — the entire workstream the spec anticipated was closed as
+unnecessary, not deferred. `internal/tpdbrest` needed three additive decode
+fields on data it already fetches; no query shape changed.
+
+**What shipped, by acceptance criterion:**
+
+- **AC1 (scene tags, StashDB/FansDB)** — the browse query
+  (`internal/stashbox` `queryScenesQuery`) now requests `tags { name }`,
+  populating `Genres` on stash-box scene cards. **Known, accepted side
+  effect, not a bug:** that query backs the Adult newest-releases
+  drill-down enrichment path too (`identify.fetchCatalog`), so drill-down
+  scenes silently start carrying real tags as well — a behavior change on a
+  path this feature wasn't asked to touch, named here so it isn't mistaken
+  for scope creep. The improvement is **partial and permanent** for
+  already-cached rows: `adult_newest_scene_matches` (migration `0050`) has
+  no TTL, no prune, and no invalidation, so a Show More scene matched before
+  this change keeps an empty `Genres` indefinitely; only freshly-matched
+  scenes gain tags. Scene rating stays genuinely absent on this path — no
+  such field exists in any catalog, and it is not faked.
+- **AC3/AC4 (scene description)** — TPDB REST's `SceneResource.description`
+  and StashDB/FansDB's `Scene.details`, surfaced through a **new dedicated
+  endpoint**, `GET /api/modes/adult/discover/description`
+  (`internal/api/adultdescription.go`), rather than an extension of the
+  existing Discover response envelope. Deliberate (Wade's explicit choice),
+  for two reasons: an envelope extension would ship a prose description on
+  every card in every row, most of which are never opened; and it would
+  require a migration for the pooled newest-releases path
+  (`adult_newest_releases` has no description column), which the dedicated
+  endpoint avoids entirely. Fires once per explicit operator action — a
+  scene's `DetailPopup` open, or a performer/studio drill-down open — never
+  per-card, never per-scroll. Scene descriptions strictly follow the
+  scene's own `entity_source`; no exception.
+- **AC6 (performer/studio bio, narrowed)** — a bio banner renders above the
+  performer/studio drill-down, sourced from TPDB's `PerformerResource.bio` /
+  `SiteResource.description` via the same endpoint
+  (`internal/identify/entitydetail.go`'s new `EntityBio`). **Wade's Option A
+  decision (2026-08-02, resolving this feature's blocking GATE-0):** a
+  performer or studio's bio is always resolved via TPDB regardless of the
+  entity's own catalog source, a narrow, documented exception to AC4's
+  letter ("the entity's own primary source") for the bio path only. Cost:
+  an exact-name TPDB resolve plus a detail fetch — **two upstream catalog
+  calls, not one** — whenever a stash-box-sourced entity's bio is resolved.
+  This was chosen over the strict-AC4 baseline (Option B) specifically
+  because StashDB/FansDB expose no performer bio and no studio description
+  field at all (proven by complete GraphQL field enumeration), which would
+  have made the bio banner invisible on two of the drill-down's four entry
+  points — the stash-box studios and stash-box performers rows. Under
+  Option A all four entry points (stash-box studios, stash-box performers,
+  newest-row studios, newest-row performers) can show a banner. The
+  response's `Source` field echoes the box actually consulted, so a
+  stash-box-sourced entity's response honestly reports `source: "tpdb"`.
+  **Call budget, structural:** zero Prowlarr calls ever; at most two
+  upstream catalog calls per request — one for a scene, two for an entity,
+  never a fan-out across boxes.
+- **AC5 (no-placeholder-when-absent), cross-mode** — the "No description
+  available." fallback in `DetailPopup.tsx` is removed in **all three
+  modes** (Movies, Series, Adult), one consistent rule rather than an
+  Adult-only fix (Wade's locked decision #3). A TMDB title with an empty
+  `overview` now renders no description line at all, instead of the
+  placeholder sentence — a deliberate, cross-mode behavior change, called
+  out here so it is not mistaken for Adult scope leaking into Movies/Series.
+- **AC6's tags half — dropped, mandatory, not a judgment call.** Performer
+  and studio tags do not ship. Evidence, not assumption: complete GraphQL
+  field enumeration against both stash-box instances found no tags field on
+  either `Performer` or `Studio`; TPDB REST's `PerformerResource` and
+  `SiteResource` property lists carry no tags field either. All three
+  configured catalogs were checked; none has one. The response DTO
+  (`apidto.AdultDescription`) ships no `Tags` field for this reason. **Do
+  not add a tags pill row for performers or studios** — a future session
+  finding this gap should read it as a verified absence, not an unfinished
+  task, and should not "complete" it against a data source that does not
+  exist.
+
+**Documentation:** `CLAUDE.md` gained a 2026-08-02 clarification appended to
+the end of the "Discover never queries Prowlarr, full stop." chain (after
+the 2026-07-30 trigger correction, before the Library sidebar tab entry) —
+the endpoint, its call budget, and the no-tags note, in the same
+clarification-not-reversal register as the entries beside it. `docs/ROADMAP.md`
+item 6 got its own "Real finding" retracted in place (quoted verbatim) and
+flipped to shipped.
+
+| File | Change |
+|---|---|
+| `internal/tpdbrest/client.go` | Three additive decode fields — `SceneResource.description`, `PerformerResource.bio`, `SiteResource.description` — plus a new single-entity `GetSiteByID` method mirroring the existing `GetPerformerByID` |
+| `internal/stashbox/client.go` | `queryScenesQuery` gains `tags { name }`; `details` added to the two identification queries backing entity bio/description resolution |
+| `internal/identify/entitydetail.go` | **New.** `SceneDescription` and `EntityBio` on `*Identifier` — single-box resolution, best-effort, `""` (no error) on every no-data path, reusing `id.Throttle` and `id.resolveEntityInBox` |
+| `internal/api/adultdescription.go` | **New.** `GET /api/modes/adult/discover/description` — the dedicated endpoint; always `200` with the DTO, `400` reserved for a malformed/absent `kind` only, never `404`/`5xx` for a no-data condition |
+| `internal/api/adultdiscover_stashbox.go` | Populates `Genres` from `s.Tags` at its two `adultScene{...}` construction sites |
+| `internal/apidto/dto.go`, `ts/dto.gen.ts` | New `AdultDescription{Text, Source}` DTO — deliberately no `Tags` field; regenerated via `go run ./cmd/gendto`, never hand-edited |
+| `frontend/src/api/discover.ts` | New `fetchAdultDescription` client function |
+| `frontend/src/screens/DetailPopup.tsx` | AC5 placeholder removal (all three modes); renders the new description block |
+| `frontend/src/screens/discover/Adult.tsx` | Drill-down restructured to three rows (back button + promoted entity name; scene strip; bio banner); `AdultDrill` gains `image` on both union members |
+| `CLAUDE.md` | New 2026-08-02 clarification under "Discover never queries Prowlarr, full stop." |
+| `docs/ROADMAP.md` | Item 6's "Real finding" retracted verbatim in place, flipped to shipped |
+| `CHANGELOG.md` | This entry |
+
+**Verification note, stated honestly rather than omitted:** this entry was
+authored in the same implementation wave as the code changes above, as a
+concurrent documentation task working from the finalized implementation
+plan (`.omc/plans/autopilot-impl-adult-popup-enrichment.md`) rather than
+from a completed build — so, unlike this file's usual practice, no
+`go build`/`go vet`/`go test`/`pnpm typecheck`/`vitest run` results back this
+entry. That verification belongs to this feature's own build/test wave and
+its separate review pass, not to this documentation pass. File paths and the
+route string above are contracts specified by the plan, not locations
+independently confirmed against the working tree; line numbers are
+deliberately not cited anywhere in this entry for the same reason.

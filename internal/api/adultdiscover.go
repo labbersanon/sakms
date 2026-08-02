@@ -50,12 +50,18 @@ import (
 // stash-box ("stashdb"/"fansdb") scene: those sites' own detail pages are
 // UUID-path (stashdb.org/scenes/{id}), so the popup links via ID for them
 // instead and never reads Slug in that branch.
-// Genres/Performers back the Discover detail popup's tags/performers list —
-// populated for TPDB-sourced scenes (tpdbrest.Scene.Tags/Performers, both
-// confirmed present on SceneResource in TPDB's live OpenAPI schema); left
-// unset ("omitempty") for stash-box ("stashdb"/"fansdb") scenes constructed
-// elsewhere (adultdiscover_stashbox.go) — that schema's shape isn't verified
-// against a live instance yet.
+// Genres/Performers back the Discover detail popup's tags/performers list.
+// The two have DIFFERENT source coverage — don't read them as one field.
+// Genres is populated for TPDB-sourced scenes (tpdbrest.Scene.Tags, confirmed
+// present on SceneResource in TPDB's live OpenAPI schema) AND, since
+// 2026-08-02, for stash-box ("stashdb"/"fansdb") scenes constructed elsewhere
+// (adultdiscover_stashbox.go), which carry stashbox.Scene.Tags — live-verified
+// present on both stashdb.org and fansdb.cc.
+// Performers has no stash-box source: stashbox.Scene carries no performers
+// field at all, so the two stash-box construction sites leave it unset
+// ("omitempty"). A POOLED scene stamped Source "stashdb"/"fansdb" carries
+// whatever its own identification recorded (poolReleaseToAdultScene below) —
+// which is nothing today, since no stash-box lookup path supplies performers.
 type adultScene struct {
 	ID              string   `json:"id"`
 	Title           string   `json:"title"`

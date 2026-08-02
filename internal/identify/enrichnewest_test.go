@@ -367,3 +367,24 @@ func TestEnrichNewestScenes_NoBoxesConfigured(t *testing.T) {
 		t.Fatalf("expected empty result with no boxes configured, got %+v", got)
 	}
 }
+
+// TestStashboxSceneToMatch_CarriesTags pins the mapping this path relies on:
+// a catalog scene's tag names reach MatchResult.Tags (and from there
+// applyCatalogEnrichment → the card's Genres) comma-joined. The mapping itself
+// predates the browse query's tags addition — what changed is that s.Tags is
+// now actually populated on this path. The test that pins THAT is
+// stashbox's TestQueryScenesByPerformer_DecodesTags.
+func TestStashboxSceneToMatch_CarriesTags(t *testing.T) {
+	m := stashboxSceneToMatch("stashdb", stashbox.Scene{
+		ID: "s1", Title: "T", StudioName: "Vixen", ReleaseDate: "2024-01-01",
+		Tags: []string{"Blonde", "Outdoor"}, Duration: 1800,
+	})
+	if m.Tags != "Blonde,Outdoor" {
+		t.Errorf("Tags = %q, want \"Blonde,Outdoor\"", m.Tags)
+	}
+	// A scene with no tags must still produce an empty string, not a stray comma.
+	empty := stashboxSceneToMatch("stashdb", stashbox.Scene{ID: "s2", Title: "T2"})
+	if empty.Tags != "" {
+		t.Errorf("Tags = %q, want blank for a scene with no tags", empty.Tags)
+	}
+}

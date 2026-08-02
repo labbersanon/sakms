@@ -357,6 +357,49 @@ func TestAdultStashBoxEntityScenes_UpstreamErrorIs502(t *testing.T) {
 	}
 }
 
+// TestStashBoxScenesCarryGenres pins §3.3: BOTH stash-box adultScene
+// construction sites — the inline one in adultStashBoxScenesHandler (the
+// recent/trending browse rows) and writeStashBoxScenes (the studio/performer
+// drill-downs) — must emit the scene's stash-box tags as genres. Before this,
+// both omitted Genres entirely and the Discover popup's tag pills were empty
+// for every stashdb/fansdb scene.
+//
+// Performers is asserted empty in the same test on purpose: stashbox.Scene has
+// no performers field, so the two are NOT symmetric and a future session must
+// not "complete" this by wiring a performers source that doesn't exist.
+func TestStashBoxScenesCarryGenres(t *testing.T) {
+	box := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb-g-1","title":"Tagged Scene",` +
+			`"release_date":"2024-11-11","studio":{"name":"Blacked","parent":null},` +
+			`"images":[],"duration":900,"tags":[{"name":"Anal"},{"name":"Blonde"}],` +
+			`"fingerprints":[]}]}}}`))
+	})
+
+	srv := httptest.NewServer(newAdultMux(t, map[string]string{"stashdb": box.URL}))
+	defer srv.Close()
+
+	for _, path := range []string{
+		// adultStashBoxScenesHandler's inline construction.
+		"/api/modes/adult/discover/stashdb/recent",
+		// writeStashBoxScenes, shared by the studio and performer drill-downs.
+		"/api/modes/adult/discover/stashdb/studios/st-9/scenes",
+		"/api/modes/adult/discover/stashdb/performers/pf-9/scenes",
+	} {
+		var items []adultScene
+		getJSON(t, srv.URL+path, &items)
+		if len(items) != 1 {
+			t.Fatalf("%s: expected 1 scene, got %d", path, len(items))
+		}
+		if got := strings.Join(items[0].Genres, ","); got != "Anal,Blonde" {
+			t.Errorf("%s: genres = %q, want \"Anal,Blonde\"", path, got)
+		}
+		if len(items[0].Performers) != 0 {
+			t.Errorf("%s: performers = %v, want empty (stash-box has no performers field)", path, items[0].Performers)
+		}
+	}
+}
+
 // --- merged "Recently Released" (now pooled + D5-gated, see adultdiscover_stashbox.go) ---
 //
 // adultDiscoverMergedRecentHandler was re-pointed off the old live TPDB+StashDB

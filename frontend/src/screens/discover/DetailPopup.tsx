@@ -62,6 +62,7 @@ import type { AvailabilityCandidate, AvailabilityPreview, TitleDetail } from "@d
 import {
   type AdultDiscoverItem,
   type DiscoverItem,
+  fetchAdultDescription,
   fetchAvailabilityPreview,
   fetchTitleDetail,
   fetchTrailer,
@@ -255,6 +256,16 @@ const ADULT_SOURCE_LABEL: Record<string, string> = {
   fansdb: "FansDB",
 };
 
+// CATALOG_SOURCES are the AdultDiscoverItem `source` values the description
+// endpoint can actually fetch from (internal/api/adultdescription.go's
+// knownDescriptionBox) — a Show More drill-down scene's "prowlarr" source
+// isn't one of them, so the description resource's key selector below skips
+// firing the request for it. Module scope like every other fixed-set
+// constant in this file (RESOLUTIONS_DESC/TIERS/PROTOCOLS above): it was
+// previously declared inside the component body, re-allocating it on every
+// popup mount for no reason.
+const CATALOG_SOURCES = ["tpdb", "stashdb", "fansdb"];
+
 // externalDetailURL builds the link to this title's page on its source
 // database — TMDB for Movies/Series (DiscoverItem.id is TMDB's own numeric
 // id, already used as tmdbId in the grab call, so no backend change is
@@ -445,6 +456,38 @@ export const DetailPopup: Component<{
       fetchTitleDetail(m, tmdbId).catch(() => undefined as TitleDetail | undefined),
   );
 
+  // Adult scene description — the dedicated endpoint (AC3/AC4), fired once per
+  // popup open. The source accessor returns `null` for Movies/Series so Solid never
+  // runs the fetcher there — `null` rather than `false` to match this file's own
+  // convention (the trailer/detail resources above). The fetcher swallows its own
+  // error to "" for the same reason every other resource in this screen does: this
+  // app has no ErrorBoundary anywhere in its tree, so an unguarded read of an
+  // errored resource re-throws mid-render and crashes the SPA (the same class of
+  // bug as GrabDialog's sibling-Show stall — see CLAUDE.md's Discover notes).
+  // "Couldn't fetch it" and "there is no description" render identically — which is
+  // also semantically right under AC5.
+  const [description] = createResource(
+    () => {
+      if (mode() !== "adult") return null;
+      const it = item() as AdultDiscoverItem;
+      // A Show More drill-down scene carries source "prowlarr" and NO id
+      // (internal/api/adultdiscover_newest_scenes.go's page>1 mapping) — there is
+      // no catalog to ask, so don't fire the request at all. The server also
+      // answers such a request 200-empty; this gate just avoids the pointless
+      // round trip.
+      if (!CATALOG_SOURCES.includes(it.source) || !it.id) return null;
+      return { source: it.source, id: it.id };
+    },
+    async (k) => {
+      try {
+        return await fetchAdultDescription({ kind: "scene", ...k });
+      } catch {
+        return { text: "", source: "" };
+      }
+    },
+  );
+  const sceneDescription = () => description()?.text ?? "";
+
   const [preview] = createResource(
     () => (ready() ? { m: mode(), i: item(), se: seasonEpisode() } : null),
     ({ m, i, se }) => {
@@ -520,9 +563,18 @@ export const DetailPopup: Component<{
   // posterSrc/overviewText/ratingValue normalize the two item shapes into one
   // rendering surface. Adult scenes carry no `overview` field at all
   // (AdultDiscoverItem is id/title/studio/date/image/durationSeconds/rating/
-  // source — see dto.gen.ts) — rather than fabricate a description, the
-  // Adult body shows the same studio/date summary AdultCard's subtitle
-  // already displays.
+  // source — see dto.gen.ts), so the Adult branch renders a `studio · year`
+  // summary instead. That is NOT a stand-in for a description: a real Adult
+  // description now exists as a SEPARATE sibling block below (sceneDescription,
+  // fed by GET /api/modes/adult/discover/description), and this line is still
+  // the only place a scene's studio and date appear at all — the Modal title is
+  // bare item().title. The two coexist; neither replaces the other.
+  //
+  // Neither branch has a placeholder fallback any more (AC5): an item with
+  // nothing to say renders no <p> at all, not "No description available." —
+  // deliberately across all three modes, so a TMDB title with an empty overview
+  // now renders no line either. The guard is on the <p> itself, since an empty
+  // one still contributes margin and a line box.
   const posterSrc = () =>
     mode() === "adult"
       ? proxyImage((item() as AdultDiscoverItem).image)
@@ -534,8 +586,8 @@ export const DetailPopup: Component<{
           yearOf((item() as AdultDiscoverItem).date),
         ]
           .filter(Boolean)
-          .join(" · ") || "No description available."
-      : (item() as DiscoverItem).overview || "No description available.";
+          .join(" · ")
+      : (item() as DiscoverItem).overview;
   const ratingValue = () =>
     mode() === "adult"
       ? (item() as AdultDiscoverItem).rating
@@ -639,7 +691,9 @@ export const DetailPopup: Component<{
                 <RatingGauge value={ratingValue()} />
               </Show>
             </Show>
-            <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
+            <Show when={overviewText()}>
+              <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
+            </Show>
             <div class="mt-1 flex items-center gap-3">
               <a
                 href={externalDetailURL(props.target)}
@@ -676,6 +730,16 @@ export const DetailPopup: Component<{
             </div>
           </div>
         </div>
+
+        {/* Adult scene description — sourced from the entity's own catalog
+            (entity_source, AC4) via GET /api/modes/adult/discover/description, once per
+            popup open. Absent entirely when no catalog has real data (AC5): no
+            placeholder, no empty section, no AI fallback. */}
+        <Show when={mode() === "adult" && sceneDescription()}>
+          <p class="mt-3 line-clamp-4 text-sm text-muted" title={sceneDescription()}>
+            {sceneDescription()}
+          </p>
+        </Show>
 
         <Show when={mode() === "adult" && sceneGenres().length}>
           <div class="mt-2 flex flex-wrap gap-1">

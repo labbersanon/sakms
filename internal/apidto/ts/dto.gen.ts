@@ -249,13 +249,20 @@ export interface DiscoverItem {
  * Prowlarr release to remember), which falls back to the Studio+Title
  * query, same as before this field existed.
  * Genres/Performers back the Discover detail popup's tags/performers list.
- * Populated for TPDB-sourced items (catalog browse and newest-rows alike —
- * see internal/tpdbrest.Scene.Tags/Performers and
- * adultnewest.MatchedRelease.Genres/Performers for sourcing); empty for a
- * StashDB/FansDB item (that schema's shape hasn't been verified against a
- * live instance yet — see CLAUDE.md's "honesty about unverified
- * assumptions"). Both omitempty since most callers (any pre-existing cached
- * entity, any stash-box item) legitimately have neither.
+ * The two have DIFFERENT source coverage — don't read them as one field.
+ * Genres is populated for TPDB-sourced items (catalog browse and newest-rows
+ * alike — see internal/tpdbrest.Scene.Tags and
+ * adultnewest.MatchedRelease.Genres for sourcing) AND, since 2026-08-02, for
+ * StashDB/FansDB items: stashbox.Scene.Tags is live-verified present on both
+ * stashdb.org and fansdb.cc, and the browse query requests tags { name }.
+ * Performers has no stash-box source and is not gaining one: stashbox.Scene
+ * carries no performers field at all, so no stash-box path
+ * (identify/boxlookup.go, identify/enrichnewest.go's stashboxSceneToMatch)
+ * supplies performer names — only the TPDB ones do. Stated as a fact about
+ * the SOURCE rather than about every item, because a pooled row carries
+ * whatever its own identification recorded.
+ * Both omitempty since plenty of items (a pre-existing cached entity, a
+ * stash-box scene with no tags) legitimately have neither.
  */
 export interface AdultDiscoverItem {
   id: string;
@@ -305,6 +312,26 @@ export interface AdultDiscoverItem {
 export interface AdultNewestScenesPage {
   items: AdultDiscoverItem[];
   hasMore: boolean;
+}
+/**
+ * AdultDescription is the Adult Discover description/bio payload
+ * (GET /api/modes/adult/discover/description). Text is "" whenever no catalog has
+ * real data — the frontend renders NOTHING in that case (spec AC5/AC6: no
+ * placeholder, no AI fallback, no empty section). Source echoes the box actually
+ * consulted, or "" when none was — for a scene that strictly follows AC4 (the
+ * scene's own entity_source), but for a performer or studio it is ALWAYS "tpdb"
+ * under the shipped Option A design, regardless of the entity's own
+ * entity_source: live schema introspection (2026-08-02) proves neither stash-box
+ * endpoint exposes a performer bio or a studio description field, so a non-empty
+ * entity bio came from TPDB by construction (see EntityBio in
+ * internal/identify/entitydetail.go).
+ * There is deliberately NO Tags field: live schema introspection (2026-08-02)
+ * confirms neither stash-box nor TPDB exposes tags on a performer or a studio, so
+ * there is no source to populate one. See the implementation plan §0.3.
+ */
+export interface AdultDescription {
+  text: string;
+  source: string;
 }
 /**
  * SearchReleaseResult is one scored release the manual Search release-picker

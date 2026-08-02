@@ -192,9 +192,16 @@ func (id *Identifier) fetchCatalog(ctx context.Context, box, kind, entityID stri
 }
 
 // stashboxSceneToMatch mirrors SearchStashBox's Scene → MatchResult
-// construction (boxlookup.go:74-78). Tags is empty for the catalog path: the
-// browse query (queryScenesQuery) doesn't request tags, so s.Tags is nil — the
-// same empty-Genres outcome as today's raw fallback, by design.
+// construction (boxlookup.go:74-78). Tags carries real tag names on the catalog
+// path: the browse query (queryScenesQuery) now requests tags { name }, so
+// s.Tags is populated and flows through MatchResult.Tags →
+// applyCatalogEnrichment → the card's Genres. That is a deliberate improvement
+// to a path the tags change wasn't aimed at, not a side effect to undo.
+//
+// Known limitation, so the inconsistency isn't read as a bug: the release-level
+// cache (adult_newest_scene_matches, migration 0050) has no TTL, no prune and
+// no invalidation, so a Show More scene matched before the query gained tags
+// keeps its empty Genres indefinitely. Only fresh matches gain tags.
 func stashboxSceneToMatch(box string, s stashbox.Scene) *MatchResult {
 	return &MatchResult{
 		Title: s.Title, Studio: s.StudioName, Date: s.ReleaseDate,

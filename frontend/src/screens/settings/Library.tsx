@@ -1,6 +1,13 @@
 // Library section — the per-mode (Movies/Series) panels: root folder, search
 // quality preferences, file/folder naming preset, and kids classification path.
 // Extracted from the original single-file Settings.tsx.
+//
+// Plus one SERIES-ONLY panel: new-season discovery
+// (SeriesNewSeasonDiscoverySection). It lives here rather than under Settings →
+// Usenet deliberately — it is a Series-library behavior, and the Usenet page's
+// own doc says that page must not grow unrelated rows. That the backend gates
+// the resulting dispatch on the usenet auto-grab flag is an implementation
+// detail of dispatch, not a reason to file the control under Usenet.
 
 import {
   type Component,
@@ -8,10 +15,15 @@ import {
   createResource,
   createSignal,
   on,
+  onMount,
   For,
   Show,
 } from "solid-js";
 import type { Mode } from "../../api/discover";
+import {
+  fetchSeriesNewSeasonDiscovery,
+  putSeriesNewSeasonDiscovery,
+} from "../../api/seasons";
 import {
   LIBRARY_MODE_SERVICES,
   MAX_RESOLUTIONS,
@@ -27,7 +39,14 @@ import {
   putQualityPrefs,
   testLibraryRootFolder,
 } from "../../api/settings";
-import { Button, Muted, PillSelector, inputClass, labelClass } from "../../components/ui";
+import {
+  Button,
+  ErrorText,
+  Muted,
+  PillSelector,
+  inputClass,
+  labelClass,
+} from "../../components/ui";
 import { FolderPicker } from "../../components/FolderPicker";
 import { ConnectionServiceTable } from "./ConnectionRow";
 import {
@@ -389,6 +408,100 @@ export const KidsRootPathSection: Component<{ mode: () => Mode }> = (props) => {
         Leave blank to turn Kids classification off. Applies to both newly-found
         files and already-tracked items whose classification has drifted.
       </Muted>
+    </Card>
+  );
+};
+
+// ---- Series only: new-season discovery -------------------------------------
+
+// NEW_SEASON_DISCOVERY_COPY is a required honesty line: it names the one case
+// where a season becomes monitored without an operator monitoring it. Rendered
+// as a single unbroken text node in its own paragraph — an interleaved element
+// child would split the sentence across nodes.
+const NEW_SEASON_DISCOVERY_COPY =
+  "With new-season discovery on, a brand-new season is monitored automatically — even if every existing season of that series is unmonitored.";
+
+// SeriesNewSeasonDiscoverySection is the Series-only toggle for auto-monitoring
+// entirely new seasons. Off by default, and the PUT writes no coupled interval
+// (unlike the usenet auto-grab toggle) — this pass has no scheduler of its own,
+// it runs inside the existing retry cycle.
+//
+// loadError is scoped to this card so a failed GET leaves the toggle showing its
+// honest default (off) without taking down the Library tab's other panels — same
+// shape as Usenet's AutoGrabCard.
+export const SeriesNewSeasonDiscoverySection: Component = () => {
+  const [enabled, setEnabled] = createSignal(false);
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<Error | null>(null);
+  const status = useSaveStatus();
+
+  onMount(() => {
+    void fetchSeriesNewSeasonDiscovery()
+      .then((v) => setEnabled(v))
+      .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
+  });
+
+  const save = async () => {
+    try {
+      await putSeriesNewSeasonDiscovery(enabled());
+      setDirty(false);
+      status.saved();
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "library-new-season-discovery",
+    label: "new-season discovery",
+    dirty,
+    save,
+  });
+
+  return (
+    <Card title="New-season discovery (Series)">
+      <label class="mb-3 flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="Enable new-season discovery"
+          checked={enabled()}
+          disabled={loadError() !== null}
+          onChange={(e) => {
+            setEnabled(e.currentTarget.checked);
+            setDirty(true);
+          }}
+        />
+        <span class="text-sm text-fg">Enable new-season discovery</span>
+      </label>
+      <Muted>{NEW_SEASON_DISCOVERY_COPY}</Muted>
+      <Muted class="mt-2">
+        A season that already has episodes is always kept in sync regardless of
+        this setting — monitoring gates searching, never metadata.
+      </Muted>
+      <Show when={loadError()}>
+        <ErrorText>
+          Couldn't load the new-season discovery setting: {loadError()?.message}.
+          Discovery is off.
+        </ErrorText>
+      </Show>
+      <Show when={!batched()}>
+        <div class="mt-3 flex items-center gap-2">
+          <Button
+            variant="primary"
+            disabled={!dirty()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+      <Show when={batched()}>
+        <div class="mt-3">
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
     </Card>
   );
 };

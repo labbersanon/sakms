@@ -1170,6 +1170,46 @@ numbered below by original idea order, not interview order.
    default). Every actual grab this feature causes still requires item
    3's existing "Enable auto-grab" toggle — no new bypass path.
 
+   **Shipped 2026-08-01** — see `CHANGELOG.md` and `CLAUDE.md`'s AMENDED
+   2026-08-01 (later same day) scheduler/trigger-count note plus the
+   CORRECTED honest-scope note under the auto-grab amendment. Built per
+   `.omc/plans/autopilot-impl-series-monitoring-autograb.md` (Critic-reviewed
+   twice before any executor ran). Two claims in the entry above are corrected
+   rather than rewritten away, per this file's supersede-in-place habit:
+
+   - **"Turned out remarkably small" is WRONG, and an executor told that will
+     under-plan the largest piece.** The Pattern B trigger itself genuinely
+     was one const-doc edit plus one caller — that part held exactly. But
+     `library.MissingEpisodes()` returned the EMPTY SET on every install
+     (nothing in the codebase wrote a fileless `library_episodes` row after
+     `internal/sonarrimport` was deleted 2026-07-12) and `air_date` was
+     structurally always empty for the same reason, so the feature needed a
+     full TMDB→`library_episodes` **episode catalog sync** to have any input
+     at all — plus migration `0056` + a `library_season_monitored` table, a
+     column-scoped `UpsertEpisodeCatalog` writer, an additive
+     `tmdb.SeasonDetails` field, a settings toggle with routes, and a
+     per-season UI surface. Comparable to or somewhat larger than item 12
+     (Library sidebar tab), clearly smaller than item 7.
+   - **The trigger-source parenthetical is corrected.** It read *"this
+     feature's fourth trigger source (after Usenet no-match, stale-torrent
+     requeue)"* — which names two for a "fourth" and miscounts the
+     stale-torrent requeue, which is a Pattern A **parker** (it re-arms an
+     existing row), not an `AutoGrabTrigger` at all. The accurate statement:
+     `TriggerAirDate` is the **fourth `AutoGrabTrigger` const**, after
+     `TriggerOperator` (Discover's one-click Grab), `TriggerRequest` (the
+     toggle-ON Search hook) and `TriggerRetry` (the due re-search).
+   - **Scope additions beyond the spec's AC list, approved rather than
+     assumed** (same treatment `torrent_seeding_enabled` got in item 7): an
+     **all-seasons-at-once** monitor endpoint
+     (`PUT /api/modes/series/library/{seriesID}/seasons/monitored`), because
+     absent-means-unmonitored would otherwise make adopting this feature on a
+     200-series library a per-season click; and the per-season **UI surface**
+     itself, since a monitored flag with no operator surface is inert.
+   - **Zero new schedulers held, and is now enforced.** Detection is the
+     third pass inside `runUsenetRetryCycle` — a plain function call, no
+     goroutine, no ticker, no interval key, no `main.go` line — asserted by a
+     static AST test, `internal/api/airdatemonitor_static_test.go`.
+
 **This completes the originally-confirmed 8-item interview order.** Three
 items remain queued from mid-session additions (Adult section security,
 Library sidebar tab, Streaming media player — items 11-13 below), all

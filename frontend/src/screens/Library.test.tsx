@@ -28,7 +28,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
-import type { TagEntry, TrackedItem } from "@dto";
+import type { SeasonState, TagEntry, TrackedItem } from "@dto";
 import { Library } from "./Library";
 
 const jsonResponse = (obj: unknown): Response =>
@@ -99,18 +99,27 @@ const makeHandler = (
   movies: TrackedItem[],
   overrides: {
     series?: TrackedItem[];
+    seasons?: SeasonState[];
     onPost?: (url: string) => Response;
     onDelete?: (url: string) => Response;
   } = {},
 ) => {
   return (url: string, init?: RequestInit): Response => {
+    const method = (init?.method ?? "GET").toUpperCase();
     if (url.includes("/api/modes/movies/tags")) return jsonResponse(vocab(["hd"]));
     if (url.includes("/api/modes/movies/tracked")) return jsonResponse(movies);
     if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
     if (url.includes("/api/modes/series/tracked"))
       return jsonResponse(overrides.series ?? []);
     if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
-    const method = (init?.method ?? "GET").toUpperCase();
+    // Season state — only ever reached from a SERIES detail panel. Answered
+    // unconditionally rather than gated on overrides.seasons so the negative
+    // (Movies) case still fails loudly on the calls[] assertion instead of
+    // silently on an unexpected-fetch throw.
+    if (url.includes("/seasons"))
+      return method === "PUT"
+        ? noContent()
+        : jsonResponse(overrides.seasons ?? []);
     if (method === "POST" && overrides.onPost) return overrides.onPost(url);
     if (method === "DELETE" && overrides.onDelete) return overrides.onDelete(url);
     throw new Error("unexpected fetch: " + url);
@@ -478,6 +487,269 @@ describe("Library — quality-tier deep link and filter", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Lossless Movie" })).toBeNull();
     expect(tierSelect().value).toBe("unknown");
+  });
+});
+
+describe("Library — per-season monitoring (Series only)", () => {
+  // Copy strings are hard-coded here rather than imported from Library.tsx on
+  // purpose: importing the const would only prove the file is self-consistent,
+  // not that the required sentence is what actually ships. The arrow is U+2192
+  // and the dash in the discovery line (asserted in settings/Library.test.tsx)
+  // is an em dash — both are part of the requirement.
+  const UNMONITORED_COPY =
+    "An unmonitored season is never searched automatically, no matter how long ago it aired.";
+  const AUTOGRAB_COPY =
+    "Monitoring a season does nothing until Settings → Usenet → Enable auto-grab is on, and that takes effect on restart.";
+
+  const breakingBad = item({ id: 77, title: "Breaking Bad", tmdbId: 1396 });
+  const seasons: SeasonState[] = [
+    { seasonNumber: 0, episodeCount: 3, missingCount: 3, monitored: false },
+    { seasonNumber: 1, episodeCount: 7, missingCount: 2, monitored: true },
+  ];
+
+  const openSeriesDetail = async () => {
+    renderLibrary("/library?mode=series");
+    fireEvent.click(await screen.findByRole("button", { name: "Breaking Bad" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+    );
+  };
+
+  const switchOf = (label: string) => screen.getByLabelText(label);
+
+  it("lists each season with its counts and monitored state", async () => {
+    stubFetch(makeHandler([], { series: [breakingBad], seasons }));
+    await openSeriesDetail();
+
+    expect(await screen.findByLabelText("Monitor Season 1")).toBeInTheDocument();
+    // Season 0 is LISTED as Specials, not filtered out — "All seasons" would
+    // otherwise touch a season no visible row accounts for.
+    expect(switchOf("Monitor Specials")).toBeInTheDocument();
+    expect(switchOf("Monitor all seasons")).toBeInTheDocument();
+
+    // episodeCount is the TOTAL episode row count (on disk or not), shown
+    // beside missingCount — never relabelled as "on disk".
+    expect(screen.getByText("7 episodes · 2 missing")).toBeInTheDocument();
+    expect(screen.getByText("3 episodes · 3 missing")).toBeInTheDocument();
+
+    expect(switchOf("Monitor Season 1").getAttribute("aria-checked")).toBe("true");
+    expect(switchOf("Monitor Specials").getAttribute("aria-checked")).toBe("false");
+    // Partially monitored reads as off, so one click monitors the remainder.
+    expect(switchOf("Monitor all seasons").getAttribute("aria-checked")).toBe(
+      "false",
+    );
+  });
+
+  it("carries both required monitoring copy lines", async () => {
+    stubFetch(makeHandler([], { series: [breakingBad], seasons }));
+    await openSeriesDetail();
+
+    expect(await screen.findByText(UNMONITORED_COPY)).toBeInTheDocument();
+    expect(screen.getByText(AUTOGRAB_COPY)).toBeInTheDocument();
+  });
+
+  it("renders nothing season-related for a MOVIES item, and never calls /seasons", async () => {
+    const calls = stubFetch(makeHandler([inception()], { seasons }));
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByText("Seasons")).toBeNull();
+    expect(screen.queryByLabelText("Monitor all seasons")).toBeNull();
+    expect(screen.queryByText(UNMONITORED_COPY)).toBeNull();
+    expect(screen.queryByText(AUTOGRAB_COPY)).toBeNull();
+    // The routes carry a literal `series` segment — a Movies call would 404.
+    expect(calls.some((c) => c.url.includes("/seasons"))).toBe(false);
+  });
+
+  it("toggling one season PUTs that season's route and re-reads the list", async () => {
+    let specialsMonitored = false;
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/series/tracked"))
+        return jsonResponse([breakingBad]);
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/seasons")) {
+        if (method === "PUT") {
+          specialsMonitored = (
+            JSON.parse(init!.body as string) as { monitored: boolean }
+          ).monitored;
+          return noContent();
+        }
+        return jsonResponse([
+          {
+            seasonNumber: 0,
+            episodeCount: 3,
+            missingCount: 3,
+            monitored: specialsMonitored,
+          },
+        ] satisfies SeasonState[]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    await openSeriesDetail();
+    await screen.findByLabelText("Monitor Specials");
+    fireEvent.click(switchOf("Monitor Specials"));
+
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    const put = calls.find((c) => c.method === "PUT")!;
+    // {seriesID} is the tracked item's own id — no separate lookup.
+    expect(put.url).toBe("/api/modes/series/library/77/seasons/0/monitored");
+    expect(put.body).toEqual({ monitored: true });
+
+    // The panel re-reads rather than flipping a local copy: un-monitoring also
+    // cancels queued retries server-side, so the list is the only truth.
+    await waitFor(() =>
+      expect(switchOf("Monitor Specials").getAttribute("aria-checked")).toBe(
+        "true",
+      ),
+    );
+    expect(calls.filter((c) => c.method === "GET" && c.url.includes("/seasons")))
+      .toHaveLength(2);
+  });
+
+  it("the all-seasons toggle PUTs the bulk route once, not one call per season", async () => {
+    let allMonitored = false;
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/series/tracked"))
+        return jsonResponse([breakingBad]);
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/seasons")) {
+        if (method === "PUT") {
+          allMonitored = (
+            JSON.parse(init!.body as string) as { monitored: boolean }
+          ).monitored;
+          return noContent();
+        }
+        return jsonResponse(
+          seasons.map((s) => ({ ...s, monitored: allMonitored })),
+        );
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    await openSeriesDetail();
+    await screen.findByLabelText("Monitor all seasons");
+    fireEvent.click(switchOf("Monitor all seasons"));
+
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    const puts = calls.filter((c) => c.method === "PUT");
+    expect(puts).toHaveLength(1);
+    expect(puts[0]!.url).toBe("/api/modes/series/library/77/seasons/monitored");
+    expect(puts[0]!.body).toEqual({ monitored: true });
+
+    await waitFor(() =>
+      expect(switchOf("Monitor all seasons").getAttribute("aria-checked")).toBe(
+        "true",
+      ),
+    );
+    expect(switchOf("Monitor Specials").getAttribute("aria-checked")).toBe("true");
+  });
+
+  // The mirror of the case above, and the one that matters more: un-monitoring
+  // is NOT a pure flag write server-side — the same request cancels that
+  // season's queued air-date retries. A bulk switch that could only ever send
+  // `true` would leave the destructive half of this feature unreachable.
+  it("the all-seasons toggle can also send monitored:false", async () => {
+    let allMonitored = true;
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/series/tracked"))
+        return jsonResponse([breakingBad]);
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/seasons")) {
+        if (method === "PUT") {
+          allMonitored = (
+            JSON.parse(init!.body as string) as { monitored: boolean }
+          ).monitored;
+          return noContent();
+        }
+        return jsonResponse(
+          seasons.map((s) => ({ ...s, monitored: allMonitored })),
+        );
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    await openSeriesDetail();
+    await screen.findByLabelText("Monitor all seasons");
+    // Every season is monitored, so the bulk switch reads on and one click
+    // un-monitors the lot.
+    await waitFor(() =>
+      expect(switchOf("Monitor all seasons").getAttribute("aria-checked")).toBe(
+        "true",
+      ),
+    );
+    fireEvent.click(switchOf("Monitor all seasons"));
+
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    const puts = calls.filter((c) => c.method === "PUT");
+    expect(puts).toHaveLength(1);
+    expect(puts[0]!.url).toBe("/api/modes/series/library/77/seasons/monitored");
+    expect(puts[0]!.body).toEqual({ monitored: false });
+
+    await waitFor(() =>
+      expect(switchOf("Monitor Season 1").getAttribute("aria-checked")).toBe(
+        "false",
+      ),
+    );
+  });
+
+  it("surfaces a failed season write without wedging the panel", async () => {
+    stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/series/tracked"))
+        return jsonResponse([breakingBad]);
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/seasons")) {
+        if (method === "PUT")
+          return new Response("no tracked series with that id", { status: 404 });
+        return jsonResponse(seasons);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    await openSeriesDetail();
+    await screen.findByLabelText("Monitor Specials");
+    fireEvent.click(switchOf("Monitor Specials"));
+
+    await waitFor(() =>
+      expect(screen.getByText("no tracked series with that id")).toBeInTheDocument(),
+    );
+    // Still interactive — a failed write must not leave the switches disabled.
+    expect(switchOf("Monitor Specials")).not.toBeDisabled();
+  });
+
+  // A Solid resource's accessor RE-THROWS after its fetcher rejects, so a bare
+  // `seasons() ?? []` read would throw mid-render here rather than rendering the
+  // error — the same failure shape that once wedged Discover's GrabDialog. The
+  // rest of the detail panel (tags) must survive it.
+  it("renders a failed season LOAD as an error instead of throwing mid-render", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
+      if (url.includes("/api/modes/series/tracked"))
+        return jsonResponse([breakingBad]);
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/seasons"))
+        return new Response("seasons unavailable", { status: 500 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    await openSeriesDetail();
+
+    expect(await screen.findByText("seasons unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Seasons")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Monitor all seasons")).toBeNull();
+    // The panel's other half is unaffected.
+    expect(screen.getByLabelText("Add tag to Breaking Bad")).toBeInTheDocument();
   });
 });
 

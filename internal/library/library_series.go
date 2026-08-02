@@ -123,6 +123,28 @@ func (s *Store) GetSeriesByTMDBID(ctx context.Context, tmdbID int) (*Series, err
 	return &series, nil
 }
 
+// GetSeries looks up a series by its own row id — GetSeriesByTMDBID's sibling
+// for the callers that already hold the library's id rather than TMDB's (the
+// per-season monitored routes, whose path carries {seriesID}, and which need
+// the row's TMDBID to correlate it with grab rows). Same not-found contract:
+// ErrNotFound when no such series exists.
+func (s *Store) GetSeries(ctx context.Context, seriesID int64) (*Series, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
+		       created_at, updated_at
+		FROM library_series WHERE id = ?
+	`, seriesID)
+	series, err := scanSeries(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("loading series %d: %w", seriesID, err)
+	}
+	return &series, nil
+}
+
 // ListSeries returns every tracked series, ordered by title.
 func (s *Store) ListSeries(ctx context.Context) ([]Series, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -147,11 +169,15 @@ func (s *Store) ListSeries(ctx context.Context) ([]Series, error) {
 	return out, rows.Err()
 }
 
-// DeleteSeries permanently removes seriesID, its episodes, and its tags.
-// Explicit multi-statement delete rather than relying on the schema's
-// declared foreign keys — same reasoning as Store.Delete: SQLite only
-// enforces them when a connection has run `PRAGMA foreign_keys = ON`,
-// which internal/db's shared Open doesn't set.
+// DeleteSeries permanently removes seriesID, its episodes, its tags, and its
+// per-season monitored flags. Explicit multi-statement delete rather than
+// relying on the schema's declared foreign keys — same reasoning as
+// Store.Delete: SQLite only enforces them when a connection has run
+// `PRAGMA foreign_keys = ON`, which internal/db's shared Open doesn't set.
+//
+// The library_season_monitored delete is not optional bookkeeping: a monitored
+// row whose series_id no longer exists leaks on every delete, and it makes
+// ListSeasonStates' UNION report phantom seasons for that id.
 func (s *Store) DeleteSeries(ctx context.Context, seriesID int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -164,6 +190,9 @@ func (s *Store) DeleteSeries(ctx context.Context, seriesID int64) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM library_series_tags WHERE series_id = ?`, seriesID); err != nil {
 		return fmt.Errorf("deleting tags for series %d: %w", seriesID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM library_season_monitored WHERE series_id = ?`, seriesID); err != nil {
+		return fmt.Errorf("deleting season monitored flags for series %d: %w", seriesID, err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM library_series WHERE id = ?`, seriesID); err != nil {
 		return fmt.Errorf("deleting series %d: %w", seriesID, err)
@@ -245,6 +274,44 @@ func (s *Store) UpsertEpisodes(ctx context.Context, eps []Episode) ([]Episode, e
 		return nil, fmt.Errorf("committing episode upserts: %w", err)
 	}
 	return out, nil
+}
+
+// UpsertEpisodeCatalog records TMDB's CATALOG facts for one episode — its
+// title and air date — and nothing else. On INSERT it creates the fileless
+// row (file_path = ”) that makes an episode "missing"; on CONFLICT it updates
+// ONLY title and air_date.
+//
+// It STRUCTURALLY CANNOT touch file_path, size, quality_tier or the phash
+// triple. That is the entire reason it exists rather than reusing
+// UpsertEpisode: this writer runs unattended from the auto-grab cycle over
+// every tracked series, and UpsertEpisode's full-row overwrite would blank a
+// tracked file's path if handed a zero-valued Episode.
+//
+// The INSERT deliberately names only the columns this writer sets. Every other
+// episode column carries its own schema-level NOT NULL DEFAULT, so restating
+// them buys nothing and costs a typo class that is easy to get wrong
+// (phash_file_mtime is TEXT, not INTEGER) — and omitting them keeps this
+// statement correct for free if a later migration adds another defaulted
+// column.
+//
+// COALESCE(NULLIF(...)) is load-bearing, not defensive tidiness: TMDB
+// legitimately returns an empty name/air_date for unannounced or placeholder
+// episodes, and this runs every cycle. A plain `air_date = excluded.air_date`
+// would blank an episode's real air date on the first such response, making it
+// permanently ineligible for air-date detection, silently.
+func (s *Store) UpsertEpisodeCatalog(ctx context.Context, seriesID int64, seasonNumber, episodeNumber int, title, airDate string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
+			title      = COALESCE(NULLIF(excluded.title, ''), title),
+			air_date   = COALESCE(NULLIF(excluded.air_date, ''), air_date),
+			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+	`, seriesID, seasonNumber, episodeNumber, title, airDate)
+	if err != nil {
+		return fmt.Errorf("upserting episode catalog s%de%d for series %d: %w", seasonNumber, episodeNumber, seriesID, err)
+	}
+	return nil
 }
 
 // UpdateEpisodePHash writes a freshly-computed perceptual hash and its
@@ -364,6 +431,138 @@ func (s *Store) MissingEpisodes(ctx context.Context, seriesID int64) ([]Episode,
 			return nil, fmt.Errorf("scanning episode: %w", err)
 		}
 		out = append(out, ep)
+	}
+	return out, rows.Err()
+}
+
+// SeasonState is one season's row in the per-season monitoring UI: how many
+// episodes it has, how many of those are still missing, and whether it is
+// monitored.
+type SeasonState struct {
+	SeasonNumber int  `json:"seasonNumber"`
+	EpisodeCount int  `json:"episodeCount"`
+	MissingCount int  `json:"missingCount"`
+	Monitored    bool `json:"monitored"`
+}
+
+// MonitoredSeasons returns seriesID's monitored season numbers as a set.
+//
+// ONE query per series, returning only monitored = 1 rows — deliberately not a
+// per-season SeasonMonitored lookup, which would be an N+1 inside the auto-grab
+// cycle's per-series loop. An absent key means unmonitored, which is the same
+// answer an absent ROW gives: there is no tri-state (see migration 0056).
+func (s *Store) MonitoredSeasons(ctx context.Context, seriesID int64) (map[int]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT season_number FROM library_season_monitored WHERE series_id = ? AND monitored = 1
+	`, seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("listing monitored seasons for series %d: %w", seriesID, err)
+	}
+	defer rows.Close()
+
+	out := map[int]bool{}
+	for rows.Next() {
+		var season int
+		if err := rows.Scan(&season); err != nil {
+			return nil, fmt.Errorf("scanning monitored season: %w", err)
+		}
+		out[season] = true
+	}
+	return out, rows.Err()
+}
+
+// SeasonMonitorFlags returns every (season -> monitored) row that EXISTS for
+// seriesID, unfiltered by value — unlike MonitoredSeasons, which only returns
+// monitored = 1 rows. An absent key here means "never toggled"; a present key
+// with value false means "explicitly un-monitored".
+//
+// The destructive reap branch in airdatemonitor.go's backoff sweep needs that
+// distinction: with MonitoredSeasons alone it cannot tell an explicit un-monitor
+// from a season this feature has never touched — which is the state of EVERY
+// season on EVERY install by default — and so kills operator-initiated retry
+// rows that merely share the air-date shape. The DISPATCH filter deliberately
+// does NOT want this: there, absent-means-unmonitored is the safe, intentional
+// default (see migration 0056).
+func (s *Store) SeasonMonitorFlags(ctx context.Context, seriesID int64) (map[int]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT season_number, monitored FROM library_season_monitored WHERE series_id = ?
+	`, seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("listing season monitor flags for series %d: %w", seriesID, err)
+	}
+	defer rows.Close()
+
+	out := map[int]bool{}
+	for rows.Next() {
+		var season int
+		var monitored bool
+		if err := rows.Scan(&season, &monitored); err != nil {
+			return nil, fmt.Errorf("scanning season monitor flag: %w", err)
+		}
+		out[season] = monitored
+	}
+	return out, rows.Err()
+}
+
+// SetSeasonMonitored records whether (seriesID, seasonNumber) is monitored,
+// creating the row if this season has never been toggled before.
+func (s *Store) SetSeasonMonitored(ctx context.Context, seriesID int64, seasonNumber int, monitored bool) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO library_season_monitored (series_id, season_number, monitored)
+		VALUES (?, ?, ?)
+		ON CONFLICT(series_id, season_number) DO UPDATE SET
+			monitored  = excluded.monitored,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+	`, seriesID, seasonNumber, monitored)
+	if err != nil {
+		return fmt.Errorf("setting season %d monitored for series %d: %w", seasonNumber, seriesID, err)
+	}
+	return nil
+}
+
+// ListSeasonStates returns one row per season of seriesID, ascending — the
+// per-season monitoring UI's read.
+//
+// The season set is the UNION of two sources, and both halves are needed: a
+// season with episode rows but no monitored row yet (every season on an
+// install that predates this feature), and a season with a monitored row but no
+// episode rows yet (a season discovered from TMDB before its episodes are
+// synced). The monitored side of that union is deliberately NOT filtered to
+// monitored = 1, unlike MonitoredSeasons: an episode-less season the operator
+// un-monitors would otherwise vanish from this list and become impossible to
+// re-enable.
+func (s *Store) ListSeasonStates(ctx context.Context, seriesID int64) ([]SeasonState, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT seasons.season_number,
+		       COALESCE(counts.episode_count, 0),
+		       COALESCE(counts.missing_count, 0),
+		       COALESCE(flags.monitored, 0)
+		  FROM (SELECT DISTINCT season_number FROM library_episodes WHERE series_id = ?
+		        UNION
+		        SELECT season_number FROM library_season_monitored WHERE series_id = ?) AS seasons
+		  LEFT JOIN (SELECT season_number,
+		                    COUNT(*) AS episode_count,
+		                    SUM(CASE WHEN file_path = '' THEN 1 ELSE 0 END) AS missing_count
+		               FROM library_episodes WHERE series_id = ?
+		              GROUP BY season_number) AS counts
+		         ON counts.season_number = seasons.season_number
+		  LEFT JOIN (SELECT season_number, monitored
+		               FROM library_season_monitored WHERE series_id = ?) AS flags
+		         ON flags.season_number = seasons.season_number
+		 ORDER BY seasons.season_number
+	`, seriesID, seriesID, seriesID, seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("listing season states for series %d: %w", seriesID, err)
+	}
+	defer rows.Close()
+
+	out := []SeasonState{}
+	for rows.Next() {
+		var st SeasonState
+		if err := rows.Scan(&st.SeasonNumber, &st.EpisodeCount, &st.MissingCount, &st.Monitored); err != nil {
+			return nil, fmt.Errorf("scanning season state: %w", err)
+		}
+		out = append(out, st)
 	}
 	return out, rows.Err()
 }

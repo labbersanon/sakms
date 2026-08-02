@@ -551,3 +551,411 @@ func TestEpisodeTiersBySeries_KeepsDistinctTiersAcrossDifferentFiles(t *testing.
 		t.Errorf("expected both tiers (two distinct files) %v, got %v", want, tiers[series.ID])
 	}
 }
+
+func TestGetSeries_ByIDAndNotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.UpsertSeries(ctx, Series{TMDBID: 705, TVDBID: 905, Title: "Show", Year: 2021, RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+
+	got, err := s.GetSeries(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ID != created.ID || got.TMDBID != 705 || got.Title != "Show" || got.RootFolderPath != "/tv" {
+		t.Errorf("round trip mismatch: got %+v, want %+v", got, created)
+	}
+
+	if _, err := s.GetSeries(ctx, 999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for an unknown id, got %v", err)
+	}
+}
+
+// TestDeleteSeries_RemovesSeasonMonitoredRows covers the cascade migration 0056
+// adds. SQLite does not enforce the declared foreign keys here (internal/db's
+// Open never runs PRAGMA foreign_keys = ON), so every child table has to be
+// hand-deleted — a missed one leaks a row per delete and makes
+// ListSeasonStates report phantom seasons for a series that no longer exists.
+func TestDeleteSeries_RemovesSeasonMonitoredRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 730, Title: "Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	other, err := s.UpsertSeries(ctx, Series{TMDBID: 731, Title: "Other Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding other series: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, series.ID, 1, true); err != nil {
+		t.Fatalf("setting monitored: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, series.ID, 2, false); err != nil {
+		t.Fatalf("setting monitored: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, other.ID, 1, true); err != nil {
+		t.Fatalf("setting monitored on other series: %v", err)
+	}
+
+	if err := s.DeleteSeries(ctx, series.ID); err != nil {
+		t.Fatalf("deleting series: %v", err)
+	}
+
+	// Both rows go, monitored and unmonitored alike — the UNION in
+	// ListSeasonStates reads the table regardless of the flag's value.
+	states, err := s.ListSeasonStates(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing season states: %v", err)
+	}
+	if len(states) != 0 {
+		t.Errorf("expected no phantom seasons after delete, got %+v", states)
+	}
+	monitored, err := s.MonitoredSeasons(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing monitored seasons: %v", err)
+	}
+	if len(monitored) != 0 {
+		t.Errorf("expected monitored flags to be deleted with the series, got %v", monitored)
+	}
+
+	// Scoped to the deleted series only.
+	otherMonitored, err := s.MonitoredSeasons(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("listing other series' monitored seasons: %v", err)
+	}
+	if !otherMonitored[1] {
+		t.Errorf("another series' flags must survive, got %v", otherMonitored)
+	}
+}
+
+// TestMonitoredSeasons_AbsentRowMeansUnmonitored pins the schema's core
+// semantic (migration 0056): there is no tri-state. A season that has never
+// been toggled reads exactly the same as one explicitly set false.
+func TestMonitoredSeasons_AbsentRowMeansUnmonitored(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 710, Title: "Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+
+	monitored, err := s.MonitoredSeasons(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing monitored seasons: %v", err)
+	}
+	if len(monitored) != 0 {
+		t.Fatalf("a series with no rows has no monitored seasons, got %v", monitored)
+	}
+
+	if err := s.SetSeasonMonitored(ctx, series.ID, 2, true); err != nil {
+		t.Fatalf("setting monitored: %v", err)
+	}
+	monitored, err = s.MonitoredSeasons(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing monitored seasons: %v", err)
+	}
+	if !monitored[2] || len(monitored) != 1 {
+		t.Fatalf("expected exactly season 2 monitored, got %v", monitored)
+	}
+	if monitored[1] {
+		t.Error("a season with no row must read as unmonitored")
+	}
+
+	// Flipping back to false must remove it from the set, not leave a
+	// monitored = 0 row showing up as monitored.
+	if err := s.SetSeasonMonitored(ctx, series.ID, 2, false); err != nil {
+		t.Fatalf("clearing monitored: %v", err)
+	}
+	monitored, err = s.MonitoredSeasons(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing monitored seasons: %v", err)
+	}
+	if len(monitored) != 0 {
+		t.Fatalf("an explicit false reads the same as an absent row, got %v", monitored)
+	}
+
+	// Scoped per series: another series' flags must not leak in.
+	other, err := s.UpsertSeries(ctx, Series{TMDBID: 711, Title: "Other Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding other series: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, other.ID, 5, true); err != nil {
+		t.Fatalf("setting monitored on other series: %v", err)
+	}
+	monitored, err = s.MonitoredSeasons(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing monitored seasons: %v", err)
+	}
+	if len(monitored) != 0 {
+		t.Errorf("another series' monitored seasons must not leak in, got %v", monitored)
+	}
+}
+
+// TestSeasonMonitorFlags_DistinguishesAbsentFromExplicitFalse is the sibling of
+// the test above, pinning the ONE thing MonitoredSeasons deliberately cannot
+// express. Both reads are correct for their own consumer: the dispatch filter
+// wants absent-means-unmonitored, while the backoff sweep's DESTRUCTIVE reap
+// branch must tell an explicit un-monitor apart from a season nothing ever
+// touched, or it kills operator-initiated retry rows on every install.
+func TestSeasonMonitorFlags_DistinguishesAbsentFromExplicitFalse(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 712, Title: "Flag Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+
+	flags, err := s.SeasonMonitorFlags(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing season monitor flags: %v", err)
+	}
+	if len(flags) != 0 {
+		t.Fatalf("a series with no rows has no flags, got %v", flags)
+	}
+
+	if err := s.SetSeasonMonitored(ctx, series.ID, 1, true); err != nil {
+		t.Fatalf("monitoring season 1: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, series.ID, 2, false); err != nil {
+		t.Fatalf("un-monitoring season 2: %v", err)
+	}
+
+	flags, err = s.SeasonMonitorFlags(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing season monitor flags: %v", err)
+	}
+	if len(flags) != 2 {
+		t.Fatalf("expected both toggled seasons, got %v", flags)
+	}
+	if monitored, ok := flags[1]; !ok || !monitored {
+		t.Errorf("season 1: got (%v, %v), want (true, true)", monitored, ok)
+	}
+	// The whole point: present-and-false, NOT absent.
+	if monitored, ok := flags[2]; !ok || monitored {
+		t.Errorf("season 2: got (%v, %v), want (false, true) — an explicit un-monitor must be distinguishable from a never-toggled season", monitored, ok)
+	}
+	if _, ok := flags[3]; ok {
+		t.Errorf("season 3 was never toggled and must be absent, got %v", flags)
+	}
+
+	// Scoped per series, same as MonitoredSeasons.
+	other, err := s.UpsertSeries(ctx, Series{TMDBID: 713, Title: "Other Flag Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding other series: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, other.ID, 9, true); err != nil {
+		t.Fatalf("setting monitored on other series: %v", err)
+	}
+	flags, err = s.SeasonMonitorFlags(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("re-listing season monitor flags: %v", err)
+	}
+	if _, ok := flags[9]; ok {
+		t.Errorf("another series' flags must not leak in, got %v", flags)
+	}
+}
+
+// TestListSeasonStates_UnionsEpisodeAndMonitoredSeasons covers the read the
+// per-season UI is built on. Both halves of the union matter: a season known
+// only from episode rows (every season on an install predating this feature),
+// and a season known only from a monitored row (discovered from TMDB before its
+// episodes are synced).
+func TestListSeasonStates_UnionsEpisodeAndMonitoredSeasons(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 720, Title: "Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+
+	// Season 1: two episodes on disk, one still missing. No monitored row.
+	for _, ep := range []Episode{
+		{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: "/tv/Show/s01e01.mkv"},
+		{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, FilePath: "/tv/Show/s01e02.mkv"},
+	} {
+		if _, err := s.UpsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("seeding episode: %v", err)
+		}
+	}
+	if err := s.UpsertEpisodeCatalog(ctx, series.ID, 1, 3, "Third", "2024-05-01"); err != nil {
+		t.Fatalf("seeding missing episode: %v", err)
+	}
+
+	// Season 2: monitored, with no episode rows at all — the discovered-season
+	// case a plain query over library_episodes would never see.
+	if err := s.SetSeasonMonitored(ctx, series.ID, 2, true); err != nil {
+		t.Fatalf("setting monitored: %v", err)
+	}
+
+	// Season 3: has episode rows AND an explicit unmonitored row.
+	if err := s.UpsertEpisodeCatalog(ctx, series.ID, 3, 1, "S3 Premiere", "2025-01-01"); err != nil {
+		t.Fatalf("seeding season 3 episode: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, series.ID, 3, false); err != nil {
+		t.Fatalf("setting season 3 unmonitored: %v", err)
+	}
+
+	states, err := s.ListSeasonStates(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing season states: %v", err)
+	}
+	want := []SeasonState{
+		{SeasonNumber: 1, EpisodeCount: 3, MissingCount: 1, Monitored: false},
+		{SeasonNumber: 2, EpisodeCount: 0, MissingCount: 0, Monitored: true},
+		{SeasonNumber: 3, EpisodeCount: 1, MissingCount: 1, Monitored: false},
+	}
+	if !reflect.DeepEqual(states, want) {
+		t.Errorf("season states = %+v, want %+v", states, want)
+	}
+
+	// An episode-less season stays listed after being un-monitored — otherwise
+	// the operator could never turn it back on.
+	if err := s.SetSeasonMonitored(ctx, series.ID, 2, false); err != nil {
+		t.Fatalf("un-monitoring season 2: %v", err)
+	}
+	states, err = s.ListSeasonStates(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing season states: %v", err)
+	}
+	if len(states) != 3 || states[1].SeasonNumber != 2 || states[1].Monitored {
+		t.Errorf("an un-monitored episode-less season must stay listed, got %+v", states)
+	}
+}
+
+func TestListSeasonStates_EmptyForUnknownSeries(t *testing.T) {
+	s := newTestStore(t)
+	states, err := s.ListSeasonStates(context.Background(), 999)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if states == nil || len(states) != 0 {
+		t.Errorf("expected an empty, non-nil slice, got %#v", states)
+	}
+}
+
+// TestUpsertEpisodeCatalog_NeverTouchesFileColumns is the library-corruption
+// guard, not a coverage test. UpsertEpisodeCatalog runs unattended from the
+// auto-grab cycle over every tracked series, writing rows for episodes it knows
+// nothing about on disk. The two failure modes it must structurally prevent:
+//
+//	(a) overwriting a tracked episode's file_path/size/quality_tier/phash
+//	    triple — which would turn downloaded episodes into "missing" ones,
+//	    orphan real files, and auto-grab duplicates of them next cycle;
+//	(b) blanking a stored non-empty title/air_date with an empty incoming one —
+//	    TMDB legitimately returns an empty name/air_date for unannounced or
+//	    placeholder episodes, and an episode whose air_date got blanked becomes
+//	    PERMANENTLY ineligible for air-date detection, silently.
+//
+// (b) is what the COALESCE(NULLIF(...)) in the ON CONFLICT clause buys; a plain
+// `title = excluded.title` passes case (a) and fails here.
+func TestUpsertEpisodeCatalog_NeverTouchesFileColumns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 700, Title: "Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+
+	// A fully-tracked episode: real file, real size/tier, populated phash cache.
+	tracked := Episode{
+		SeriesID: series.ID, SeasonNumber: 2, EpisodeNumber: 5,
+		Title: "Real Title", AirDate: "2024-03-01",
+		FilePath: "/tv/Show/Season 02/s02e05.mkv", Size: 4_200_000_000, QualityTier: "high",
+		PHash: "v1:abcdef0123456789", PHashFileSize: 4_200_000_000, PHashFileMTime: "2024-03-02T10:00:00Z",
+	}
+	if _, err := s.UpsertEpisode(ctx, tracked); err != nil {
+		t.Fatalf("seeding tracked episode: %v", err)
+	}
+
+	// Case (a): a catalog write with fresh title/air_date updates exactly those
+	// two columns and leaves every file/phash column byte-identical.
+	if err := s.UpsertEpisodeCatalog(ctx, series.ID, 2, 5, "Corrected Title", "2024-03-04"); err != nil {
+		t.Fatalf("catalog upsert: %v", err)
+	}
+	got, err := s.GetEpisode(ctx, series.ID, 2, 5)
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+	if got.Title != "Corrected Title" || got.AirDate != "2024-03-04" {
+		t.Errorf("catalog fields should update, got title %q air date %q", got.Title, got.AirDate)
+	}
+	if got.FilePath != tracked.FilePath {
+		t.Errorf("file_path must never be touched: got %q, want %q", got.FilePath, tracked.FilePath)
+	}
+	if got.Size != tracked.Size {
+		t.Errorf("size must never be touched: got %d, want %d", got.Size, tracked.Size)
+	}
+	if got.QualityTier != tracked.QualityTier {
+		t.Errorf("quality_tier must never be touched: got %q, want %q", got.QualityTier, tracked.QualityTier)
+	}
+	if got.PHash != tracked.PHash || got.PHashFileSize != tracked.PHashFileSize || got.PHashFileMTime != tracked.PHashFileMTime {
+		t.Errorf("the phash triple must never be touched: got (%q, %d, %q), want (%q, %d, %q)",
+			got.PHash, got.PHashFileSize, got.PHashFileMTime,
+			tracked.PHash, tracked.PHashFileSize, tracked.PHashFileMTime)
+	}
+
+	// Case (b): TMDB returns an empty name/air_date for this episode on a later
+	// cycle. Neither stored value may be blanked.
+	if err := s.UpsertEpisodeCatalog(ctx, series.ID, 2, 5, "", ""); err != nil {
+		t.Fatalf("catalog upsert with empty values: %v", err)
+	}
+	got, err = s.GetEpisode(ctx, series.ID, 2, 5)
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+	if got.Title != "Corrected Title" {
+		t.Errorf("an empty incoming title must not blank a stored one, got %q", got.Title)
+	}
+	if got.AirDate != "2024-03-04" {
+		t.Errorf("an empty incoming air date must not blank a stored one, got %q", got.AirDate)
+	}
+	if got.FilePath != tracked.FilePath {
+		t.Errorf("file_path must still be intact after the empty write, got %q", got.FilePath)
+	}
+}
+
+// TestUpsertEpisodeCatalog_InsertsTheFilelessRow proves the INSERT half: an
+// episode TMDB knows about but that is not on disk gets a row with file_path
+// "" — which is exactly what makes it visible to MissingEpisodes. Every other
+// column falls to its schema-level default, which is why the INSERT names only
+// the columns this writer actually sets (§1.2, m-1).
+func TestUpsertEpisodeCatalog_InsertsTheFilelessRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 701, Title: "Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+
+	if err := s.UpsertEpisodeCatalog(ctx, series.ID, 1, 1, "Pilot", "2024-01-05"); err != nil {
+		t.Fatalf("catalog upsert: %v", err)
+	}
+
+	missing, err := s.MissingEpisodes(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("listing missing: %v", err)
+	}
+	if len(missing) != 1 {
+		t.Fatalf("expected exactly one fileless row, got %d", len(missing))
+	}
+	ep := missing[0]
+	if ep.Title != "Pilot" || ep.AirDate != "2024-01-05" {
+		t.Errorf("catalog metadata should persist, got title %q air date %q", ep.Title, ep.AirDate)
+	}
+	if ep.FilePath != "" || ep.Size != 0 || ep.QualityTier != "" {
+		t.Errorf("an inserted catalog row is fileless with defaulted columns, got %+v", ep)
+	}
+	if ep.PHash != "" || ep.PHashFileSize != 0 || ep.PHashFileMTime != "" {
+		t.Errorf("phash columns must default to their empty sentinels, got (%q, %d, %q)",
+			ep.PHash, ep.PHashFileSize, ep.PHashFileMTime)
+	}
+}

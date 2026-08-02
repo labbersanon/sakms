@@ -275,3 +275,115 @@ func TestSetPendingRetry_ErrNotFound(t *testing.T) {
 		t.Errorf("want ErrNotFound, got %v", err)
 	}
 }
+
+// parkedWithGIDAndCount seeds the one row shape that can tell SetRetryAfter and
+// SetPendingRetry apart: pending_retry, retry_count already non-zero, and a
+// non-empty download_gid.
+//
+// The order is load-bearing and not the obvious one. Create starts every row at
+// retry_count 0, and SetPendingRetry CLEARS download_gid — so seeding the GID
+// first would leave it blank by the time the assertions run, making the
+// "download_gid unchanged" check vacuously true against a method that clears it.
+// Park first (which bumps the count), then set the GID.
+func parkedWithGIDAndCount(t *testing.T, s *Store) Grab {
+	t.Helper()
+	ctx := context.Background()
+
+	g, err := s.Create(ctx, pendingRetry(Grab{
+		Mode: "series", Title: "Show", TMDBID: 88, SeasonNumber: 3, EpisodeNumber: 4, SeasonSpecified: true,
+	}, time.Now()))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.SetPendingRetry(ctx, g.ID, time.Now().Add(24*time.Hour), "nothing qualified"); err != nil {
+		t.Fatalf("seeding a counted attempt: %v", err)
+	}
+	if err := s.SetDownloadGID(ctx, g.ID, "gid-1234"); err != nil {
+		t.Fatalf("seeding a gid: %v", err)
+	}
+
+	seeded, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if seeded.RetryCount != 1 || seeded.DownloadGID != "gid-1234" || seeded.Status != PendingRetry {
+		t.Fatalf("seed did not produce the intended row shape: %+v", seeded)
+	}
+	return *seeded
+}
+
+// TestSetRetryAfter_ReschedulesWithoutCountingAnAttempt pins the two methods'
+// contracts against EACH OTHER rather than only describing the difference in a
+// doc comment.
+//
+// SetRetryAfter exists because the air-date backoff sweep runs after
+// parkPendingRetry has already incremented retry_count for the same cycle's
+// search. If it were to call SetPendingRetry instead, a searched cycle would
+// advance the count by 2, halving the documented backoff schedule — and it
+// would additionally clear a GID that rescheduling says nothing about.
+func TestSetRetryAfter_ReschedulesWithoutCountingAnAttempt(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	seeded := parkedWithGIDAndCount(t, s)
+	rescheduled := time.Now().Add(72 * time.Hour)
+
+	if err := s.SetRetryAfter(ctx, seeded.ID, rescheduled, "air-date backoff"); err != nil {
+		t.Fatalf("set retry after: %v", err)
+	}
+	got, err := s.Get(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	// The two fields it DOES write.
+	if got.RetryAfter != FormatTime(rescheduled) {
+		t.Errorf("retry_after = %q, want %q", got.RetryAfter, FormatTime(rescheduled))
+	}
+	if got.RetryReason != "air-date backoff" {
+		t.Errorf("retry_reason = %q, want %q", got.RetryReason, "air-date backoff")
+	}
+
+	// The three it must not.
+	if got.RetryCount != seeded.RetryCount {
+		t.Errorf("retry_count = %d, want %d unchanged — rescheduling is not an attempt", got.RetryCount, seeded.RetryCount)
+	}
+	if got.Status != seeded.Status {
+		t.Errorf("status = %q, want %q unchanged", got.Status, seeded.Status)
+	}
+	if got.DownloadGID != seeded.DownloadGID {
+		t.Errorf("download_gid = %q, want %q unchanged", got.DownloadGID, seeded.DownloadGID)
+	}
+}
+
+// TestSetPendingRetry_ContrastsWithSetRetryAfter is the other half of the pair:
+// the SAME seeded row shape, through SetPendingRetry, DOES increment the count
+// and DOES clear the GID. Without this case the test above would pass equally
+// well against two methods that behave identically.
+func TestSetPendingRetry_ContrastsWithSetRetryAfter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	seeded := parkedWithGIDAndCount(t, s)
+
+	if err := s.SetPendingRetry(ctx, seeded.ID, time.Now().Add(72*time.Hour), "another attempt"); err != nil {
+		t.Fatalf("set pending retry: %v", err)
+	}
+	got, err := s.Get(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.RetryCount != seeded.RetryCount+1 {
+		t.Errorf("retry_count = %d, want %d — SetPendingRetry counts an attempt", got.RetryCount, seeded.RetryCount+1)
+	}
+	if got.DownloadGID != "" {
+		t.Errorf("download_gid = %q, want cleared — SetPendingRetry parks a dead download", got.DownloadGID)
+	}
+}
+
+func TestSetRetryAfter_ErrNotFound(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetRetryAfter(context.Background(), 404, time.Now(), "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound, got %v", err)
+	}
+}

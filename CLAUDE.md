@@ -129,6 +129,43 @@ preserved, nothing is auto-Applied."* Two things in it are wrong now:
   one goroutine per workflow internally), which is part of why it is easy to
   miss when counting.
 
+**AMENDED 2026-08-01 (later, same day) — series air-date monitoring adds a
+FOURTH trigger source to the bounded auto-grab exception below, and changes NO
+COUNT in this section.** Recorded explicitly because the natural reading of
+"a new unattended thing that runs on a cycle" is that a seventh scheduler
+appeared. It did not. The superseded enumeration, quoted from the
+staged-for-approval amendment's bound 3 below: *"`RunAutoGrab` is the single
+scoring-and-dispatch path for every trigger (`TriggerOperator` /
+`TriggerRequest` / `TriggerRetry`, plus the reserved-but-unimplemented
+`TriggerAirDate`)."* `TriggerAirDate` is no longer reserved — it is
+implemented by `monitorAirDates` (`internal/api/airdatemonitor.go`), which
+searches for every aired-but-missing episode of a monitored season. Corrected
+enumeration: **four live triggers — `TriggerOperator` / `TriggerRequest` /
+`TriggerRetry` / `TriggerAirDate` — all through the one `RunAutoGrab` path,
+with the gate still enforced in exactly one place.**
+
+**There are still SIX interval-driven schedulers, not seven.** Air-date
+monitoring adds **no goroutine, no ticker, no interval key, and no line in
+`cmd/sakms/main.go`** — it is a plain function call, the third pass inside the
+existing `runUsenetRetryCycle` (`internal/api/usenetretry.go`), running after
+the GID sweep and the due re-search. Count the launch block in `main.go` as
+the CORRECTED note above instructs and it still yields the same six.
+**This one is proven rather than asserted**, which is the difference worth
+recording: `internal/api/airdatemonitor_static_test.go` is a static AST test
+(modelled on `internal/scanschedule`'s `allowlist_test.go`, whose *test* shape
+was adopted while its *scheduler* shape was rejected) asserting that
+`airdatemonitor.go` itself contains no goroutine launch, no
+`time.NewTicker`/`Tick`/`NewTimer`/`AfterFunc`/`After`/`Sleep` construction,
+no interval-setting access and no declared `Interval` const, and that
+`cmd/sakms/main.go` references nothing declared in it. **Read that guarantee
+as narrowly as the test's own doc states it:** it inspects ONE file for a
+fixed list of syntactic indicators, so a scheduler introduced any other way
+would pass it. It is a backstop against the specific likely regression — a
+future session "helpfully" giving this pass its own ticker and `main.go`
+launch, which is exactly what the sibling torrent-behavior plan's §5
+originally recommended and this feature's spec overrode — not a general proof
+about the whole codebase.
+
 (Bulk apply, added 2026-07-17, is a same-screen multi-select of
 already-reviewed Pending proposals — see the amended engineering-convention
 note below. It doesn't change this section: there is still no automation,
@@ -247,6 +284,13 @@ above, so don't drop them for convenience:
        (`TriggerOperator` / `TriggerRequest` / `TriggerRetry`, plus the
        reserved-but-unimplemented `TriggerAirDate`), so "retry never
        bypasses scoring" is true by construction rather than by review.
+       (**`TriggerAirDate` is no longer reserved as of 2026-08-01** — it is
+       implemented by `monitorAirDates`, making four live triggers, not three
+       plus a placeholder. The property this bound asserts is unaffected: it
+       holds for the fourth trigger by the same construction. Quoted and
+       corrected in full in the AMENDED 2026-08-01 note under **Automation**
+       above; flagged here so a reader who opens this bound directly is not
+       left with the superseded enumeration.)
     4. **A permanent-failure path that does not retry, and (as of 2026-08-01)
        no cap on the one that does.** A 451 `ErrArticleRemoved` (DMCA
        takedown) is terminal: `classifyDownloadState` maps it straight to
@@ -291,6 +335,41 @@ above, so don't drop them for convenience:
     the attempt cap was removed, so this is no longer *termination* — see
     bound 4 above), not eventual success. Both facts are load-bearing before anyone "improves" this: the
     unattended dispatch surface is narrower than the toggle's name suggests.
+
+    **CORRECTED 2026-08-01 (later, same day) — the SECOND half of the scope
+    note above is superseded by series air-date monitoring. The first half is
+    NOT, and must not be over-corrected along with it.** Superseded claim,
+    quoted: *"The rows this feature can genuinely convert into an unattended
+    dispatch are the ones the retry loop's GID sweep parks — real,
+    already-dispatched grabs carrying a real TMDB id and runtime."* That is no
+    longer the whole set. `TriggerAirDate` (`monitorAirDates`,
+    `internal/api/airdatemonitor.go`) supplies a real per-episode runtime via
+    `seriesEpisodeRuntimeSeconds` (`Episode > 0`), so `autograb.GradeCandidate`
+    does **not** short-circuit on `RuntimeSeconds <= 0` and an air-date
+    candidate can genuinely qualify and dispatch unattended.
+
+    **State the novelty as VOLUME, not KIND — the stronger claim is false.**
+    This is the first **routine, HIGH-VOLUME** unattended-dispatch surface;
+    it is *not* the first unattended dispatch of any sort. A GID-swept row
+    could already dispatch with no human in the loop before this feature
+    existed — the quoted sentence says so itself — so do not re-read this
+    correction as "nothing could auto-grab before." The difference is where
+    the population comes from: a GID-swept row exists only because an operator
+    already grabbed that exact release once and its retrieval failed, so it is
+    bounded by past operator action; an air-date row is minted by the
+    **system**, for every aired-but-missing episode of every monitored season,
+    with no prior operator action for that episode at all. The formal bounds
+    are unchanged — same toggle, same scorer, same single dispatch path — but
+    the practical blast radius grows by orders of magnitude, which is why the
+    per-season monitored flag defaults to **off** (an absent row means
+    unmonitored, so nothing fires on upgrade until an operator monitors a
+    season).
+
+    **The *"can never actually auto-grab"* clause above is still ACCURATE and
+    stays.** It is about the toggle-ON Search hook (`runToggleGatedSearch`)
+    specifically, whose routes still carry only `?q=` and which still parks a
+    `pending_retry` row every time. Air-date monitoring is a different trigger
+    on a different path; it does not touch that hook.
 
     It is still NOT a queue-wide "grab everything", not cross-mode
     auto-approval, and not a loosening of staged-for-approval anywhere else

@@ -414,7 +414,7 @@ func run() error {
 	// internal/api/usenetretry.go, its four route registrations in handler.go,
 	// and this line.
 	go api.RunUsenetRetry(ctx, api.LoadUsenetRetryInterval(ctx, settingsStore), &http.Client{Timeout: outboundTimeout},
-		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, dlManager, nzbManager)
+		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, libStore, dlManager, nzbManager)
 
 	// General Rename/Purge/Dedup scan scheduler — the fourth deliberate, opt-in
 	// exception to "manual by default" (see internal/scanschedule's package doc

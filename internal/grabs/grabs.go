@@ -36,9 +36,26 @@ const (
 	Downloading Status = "downloading"
 	Completed   Status = "completed"
 	Imported    Status = "imported"
-	// Failed is a genuinely terminal, never-retried state — reached only via
-	// a permanent classification (e.g. a 451/DMCA-removed article), never via
-	// retry exhaustion (SetPendingRetry no longer caps retries; see its doc).
+	// Failed is a genuinely terminal, never-retried state with exactly TWO
+	// producers, neither of which is retry exhaustion (SetPendingRetry no
+	// longer caps retries; see its doc):
+	//
+	//  1. A permanent classification — a 451/DMCA-removed article
+	//     (classifyDownloadState, internal/api/search.go).
+	//  2. An operator un-monitoring a Series season (added 2026-08-01 with
+	//     air-date monitoring). This is an explicit human STOP action that
+	//     cancels that season's already-queued air-date retries outright, not
+	//     a retry that ran out of attempts.
+	//
+	// CORRECTED 2026-08-01 — superseded claim, quoted: "reached ONLY via a
+	// permanent classification (e.g. a 451/DMCA-removed article), never via
+	// retry exhaustion." The "only" is what changed; the "never via retry
+	// exhaustion" clause survives verbatim and applies to both producers.
+	//
+	// The two are told apart by retry_reason, NEVER by status alone: an
+	// un-monitor writes airDateUnmonitoredReason before flipping the status
+	// (internal/api/airdatemonitor.go) precisely so a cancelled retry is not
+	// misread by an operator as a takedown.
 	Failed Status = "failed"
 	// PendingRetry is an auto-grab that found nothing worth grabbing (no
 	// candidate cleared the quality floor) or whose usenet retrieval failed
@@ -436,6 +453,45 @@ func (s *Store) SetPendingRetry(ctx context.Context, id int64, after time.Time, 
 	`, FormatTime(after), reason, id)
 	if err != nil {
 		return fmt.Errorf("setting grab %d pending retry: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// SetRetryAfter reschedules an ALREADY-PARKED grab without counting a fresh
+// attempt: it writes retry_after and retry_reason and nothing else.
+//
+// It is the deliberately narrow sibling of SetPendingRetry, and the ONLY
+// difference that matters is what it does NOT touch:
+//   - retry_count is NOT incremented. SetPendingRetry's increment is
+//     unconditional and means "another attempt was just made"; this method
+//     means "the same attempt's NEXT try moves to a different time", which is
+//     not an attempt at all.
+//   - status is NOT written. The caller is adjusting a row that is already
+//     pending_retry; this method must never resurrect a terminal row.
+//   - download_gid is NOT cleared. SetPendingRetry clears it because parking
+//     always means "this download attempt is dead"; rescheduling implies
+//     nothing about the download and must not silently invalidate a GID.
+//
+// It has two callers today, both in internal/api's airdatemonitor.go:
+//   - The air-date backoff sweep, which runs AFTER parkPendingRetry has already
+//     incremented the count for this cycle's real search — calling
+//     SetPendingRetry there would advance retry_count twice per searched cycle
+//     and halve the documented backoff schedule.
+//   - The un-monitor cleanup, which writes an explanatory retry_reason onto a
+//     row it is about to flip to Failed. UpdateStatus takes only (id, status)
+//     and cannot carry a reason, so the reason must be a separate, earlier
+//     call; SetPendingRetry would additionally re-assert pending_retry and
+//     clear download_gid for no reason.
+func (s *Store) SetRetryAfter(ctx context.Context, id int64, after time.Time, reason string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			retry_after  = ?,
+			retry_reason = ?,
+			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE id = ?
+	`, FormatTime(after), reason, id)
+	if err != nil {
+		return fmt.Errorf("setting grab %d retry after: %w", id, err)
 	}
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }

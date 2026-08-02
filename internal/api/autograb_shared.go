@@ -33,9 +33,17 @@ const (
 	TriggerRequest AutoGrabTrigger = "request"
 	// TriggerRetry is the unattended re-search cycle. Gated for the same reason.
 	TriggerRetry AutoGrabTrigger = "retry"
-	// TriggerAirDate is reserved for a future series-monitoring trigger. Adding
-	// that trigger is meant to be THIS one const plus a caller — no second
-	// scoring, dispatch or gating path. Deliberately unimplemented here.
+	// TriggerAirDate is Series air-date monitoring: an aired-but-missing
+	// episode of a monitored season, detected and dispatched by
+	// monitorAirDates (internal/api/airdatemonitor.go), which runs as the
+	// THIRD pass inside runUsenetRetryCycle — not as a scheduler of its own.
+	// Gated for the same reason as the two above: the gate below applies to
+	// it by construction, because it applies to every non-TriggerOperator
+	// trigger. CORRECTED 2026-08-01 — superseded claim, quoted: "reserved for
+	// a future series-monitoring trigger… Deliberately unimplemented here."
+	// It shipped 2026-08-01, and the promise the old comment made held: the
+	// whole diff to this file is this doc comment, with no second scoring,
+	// dispatch or gating path added anywhere.
 	TriggerAirDate AutoGrabTrigger = "airdate"
 )
 
@@ -161,8 +169,15 @@ type AutoGrabOutcome struct {
 	// Selection's indices.
 	Releases []prowlarr.Release
 
-	// RetryStatus is the status the pending_retry row landed on: PendingRetry
-	// normally, or Failed once SetPendingRetry's retry cap is exceeded.
+	// RetryStatus is the status the pending_retry row landed on. It is always
+	// PendingRetry: SetPendingRetry always parks with a real retry_after, so
+	// the Failed branch this field once documented is unreachable.
+	// CORRECTED 2026-08-01 — superseded claim, quoted: "PendingRetry
+	// normally, or Failed once SetPendingRetry's retry cap is exceeded." The
+	// retry-attempt cap was removed 2026-08-01, an explicit product decision;
+	// there is no cap left to exceed. Same correction as parkPendingRetry's
+	// read-back comment below, which had already been fixed — this field doc
+	// was the surviving copy of the same falsehood.
 	RetryStatus grabs.Status
 	RetryReason string
 

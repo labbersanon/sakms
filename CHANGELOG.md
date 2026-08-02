@@ -4194,3 +4194,165 @@ Torrent completion triggers an immediate `os.Rename` of the downloaded files out
 **Test coverage matrix (AC8/AC9):** `go build ./... && go vet ./... && go test ./... && go test -race ./internal/downloader/...` all passing. Spec §9 defines 30 test cases across 14 IDs (T-1.1 through T-6.2), each asserting a specific acceptance criterion. Key tests: T-3.5 (the only one proving seeding actually works, requires loopback pair with DHT off), T-3.9 (failed-import recovery via checkImportHandler), T-4.9 (stale grab with high retry count retries indefinitely, not terminates), T-6.2 (in-progress download never uploads despite seeding enabled). Frontend: `pnpm typecheck/test/build` clean.
 
 **Outcome:** Full build, test, and QA pass. All 30 test cases passing. Seeding, ratio/duration limits, ratio/duration cleanup, stale detection, stale auto-cancel, stale requeue, copy import path plumbing, `checkImportHandler` re-route, live rate-limit patching, rebuild snapshot + re-add — all verified end-to-end. No regressions in existing Cancel/Pause/Resume behavior.
+
+## 2026-08-01 — Series monitoring / air-date auto-grab (the fourth trigger source)
+
+**What shipped:** Per-season monitoring for Series, plus an unattended
+air-date pass that searches for every aired-but-missing episode of a monitored
+season. Spec: `.omc/specs/deep-interview-series-monitoring-autograb.md` (~14%
+ambiguity, PASSED). Plan (including the wave/ownership breakdown and the
+findings below): `.omc/plans/autopilot-impl-series-monitoring-autograb.md`.
+This is the **fourth `AutoGrabTrigger`**, `TriggerAirDate`, after
+`TriggerOperator` / `TriggerRequest` / `TriggerRetry` — a new *caller* of
+`RunAutoGrab`, not a new retry system, exactly as the 2026-08-01 Connections
+entry promised item 9 would be.
+
+**Operator-visible change nobody asked for and everybody will notice:
+`MissingCount` on `/api/requests` stops being always-zero.** `internal/api/
+requests.go` is byte-for-byte unchanged and its computation is unchanged — but
+it was reading `library.MissingEpisodes()`, which returned the **empty set on
+every install**, so the field has silently read `0` for every series since the
+day it was written. `MissingEpisodes()` selects `WHERE file_path = ''`, and
+nothing in this codebase wrote a fileless `library_episodes` row after
+`internal/sonarrimport` was deleted 2026-07-12 — every surviving writer
+(`rename.ApplyLibrarySeries`, Search check-import, `dedup.ApplyLibrarySeries`)
+supplies a real path. `library_episodes.air_date` was structurally empty for
+the same reason: its only two Go-side writers carry an existing value forward
+and neither ever seeds one. This feature's TMDB episode-catalog sync is what
+finally populates both. **Consequence: after upgrading, series will start
+showing real, often large, missing-episode counts for the first time.** That
+is the data becoming correct, not a regression, and not new grabbing — the
+count is display-only; whether anything is actually searched is governed by
+the per-season monitored flag and the auto-grab toggle, both off by default.
+
+**The episode catalog sync was the largest piece, and the spec did not know it
+existed.** The spec called this "the smallest possible extension of
+infrastructure already built"; the two findings above make that false. A full
+TMDB→`library_episodes` sync had to be rebuilt (it did not survive the Sonarr
+elimination) before the air-date filter had any input at all.
+`library.UpsertEpisodeCatalog` is the writer, and it is **column-scoped by
+construction, not by convention**: its `DO UPDATE SET` touches only `title`
+and `air_date`, so an unattended background write can never clobber
+`file_path`, `size`, `quality_tier` or the phash triple. `tmdb.SeasonDetails`
+gained the additive field the sync needs.
+
+**Detection is a pure filter over an UNMODIFIED `MissingEpisodes()`**, three
+predicates in order: season is monitored → `air_date != ""` → `air_date <=
+today`. The empty-string guard is mandatory, not defensive — an unannounced
+episode has no air date, and `"" <= today` is true, so omitting it would search
+for every unannounced episode in the library. The comparison is deliberately
+lexicographic (TMDB's `YYYY-MM-DD` makes string order chronological); the
+UTC-vs-origin-country-broadcast-date skew of up to a day is documented in-code
+rather than papered over with a grace period the spec explicitly ruled out.
+
+**Absent row means UNMONITORED (migration `0056`, `library_season_monitored`).**
+This is what makes the upgrade safe: on the day this lands, zero seasons are
+eligible in every library, regardless of the auto-grab toggle's existing state.
+An operator who enabled Usenet auto-grab months ago does not suddenly get
+air-date grabs — nothing fires until they explicitly monitor a season, which is
+itself a per-season approval action.
+
+**Which toggle gates it: `usenet_autograb_enabled`, reused, and the rename
+DECLINED.** Both halves deliberate. A second toggle would force
+trigger-conditional gating into `RunAutoGrab`, breaking the "the gate is
+enforced in exactly ONE place" property that makes the bound real. Renaming the
+key would need a settings migration whose failure mode is silently **disabling**
+unattended auto-grab for every install that had it on — a live regression to fix
+a label. The Usenet label is a cosmetic inaccuracy for this trigger; the UI copy
+names the real, current setting path so an operator who monitors a season and
+sees nothing happen is told why.
+
+**Two failure modes found by review and designed against, neither obvious:**
+- **A periodic Pattern B caller must re-establish "no prior grab row" itself,
+  every cycle.** A grabbed episode's `library_episodes` row keeps
+  `file_path = ''` until the download completes and imports, so
+  `MissingEpisodes()` returns it again next cycle — and the existing
+  `activeGrabForGID` dedup cannot catch it, because `AddNZB` mints a fresh GID
+  per call. Without the explicit per-cycle active-grab pre-filter, this would
+  have grabbed the same episode again every 24h until the file landed.
+- **Un-monitoring a season is not a pure flag write.** Setting the flag alone
+  would leave that season's already-queued air-date retries being re-searched
+  every cycle forever. The toggle handler actively terminates them:
+  `SetRetryAfter` (a new `grabs` method) writes
+  `airDateUnmonitoredReason` **first**, then `UpdateStatus(…, grabs.Failed)` —
+  reason before status, because `UpdateStatus` cannot set one. The order is
+  load-bearing: `grabs.Failed` everywhere else in this app means "this release
+  was taken down," so a cancelled retry that arrived with no reason string
+  would be a genuinely misleading operator-facing signal.
+
+**`grabs.Failed` now has TWO producers, and "never via retry exhaustion" still
+holds for both.** Producer 1 is the 451/DMCA permanent classification, as
+before. Producer 2 is operator un-monitoring — an explicit human stop action,
+not a retry that ran out of attempts, so the retry-cap removal recorded in the
+entry above is not walked back. The two are distinguished by `retry_reason`,
+never by status alone.
+
+**Scope additions beyond the spec's AC list, flagged for sign-off rather than
+assumed** (same treatment `torrent_seeding_enabled` got in the torrent-behavior
+entry above):
+- **An all-seasons-at-once monitor endpoint**,
+  `PUT /api/modes/series/library/{seriesID}/seasons/monitored`. With
+  absent-means-unmonitored, an operator adopting this on a 200-series library
+  would otherwise click a toggle per season. It is one round trip, not a
+  queue-wide action, and it still only writes a monitored flag — it grabs
+  nothing. Its `false` variant performs the same retry-cancellation cleanup as
+  the per-season one.
+- **The per-season UI surface itself.** No AC demands it, but a monitored flag
+  with no operator surface is inert.
+
+**Zero new schedulers, and it is enforced rather than claimed.** Detection runs
+as the **third pass inside the existing `runUsenetRetryCycle`** — a plain
+function call, no goroutine, no ticker, no interval key, no `cmd/sakms/main.go`
+line. The pass runs LAST on purpose: its active-grab pre-filter must see the
+rows `retryDueGrabs` just re-armed, and its backoff sweep must have the last
+word on `retry_after`, which `retryDueGrabs` would otherwise overwrite with the
+flat interval. `internal/api/airdatemonitor_static_test.go` asserts the
+structural claim with the type checker (no `*ast.GoStmt`, no
+`time.NewTicker`/`Tick`/`NewTimer`/`AfterFunc`/`After`/`Sleep`, no interval
+access, no `Interval` const, and `main.go` referencing nothing declared in the
+file). **Its doc states the guarantee narrowly on purpose** — it inspects one
+file for a fixed list of indicators, so it is a backstop against the specific
+likely regression (a future session giving this pass its own ticker and
+`main.go` launch), not a general proof about the codebase.
+
+**Placement, recorded because it looks wrong on purpose:** air-date monitoring
+is not a Usenet concern, and it lives in `internal/api/usenetretry.go`'s cycle
+anyway. The sibling torrent-behavior plan's §5 wanted a Pattern B caller in its
+own file with its own interval and its own `main.go` launch; this spec's
+Constraint 4 / AC5 forbid all three. Resolution: keep the **file** boundary
+(`internal/api/airdatemonitor.go`, independently deletable), drop the
+**launch**. §5's real objection was a naming/doc one, and it is answered by
+correcting `usenetretry.go`'s file doc in this codebase's
+quote-the-superseded-claim style — not by renaming `runUsenetRetryCycle`, which
+`CLAUDE.md` and that plan both name by hand.
+
+**Five stale retry-cap comments were expected on disk; only THREE were still
+stale.** The plan's m-6 table listed five, but the torrent-behavior DOC-1 pass
+(entry above) had already corrected two of them — `usenetretry.go`'s file doc
+and `parkPendingRetry`'s read-back rationale. Recorded so the discrepancy is
+not re-derived as a missed edit. The three fixed here:
+`AutoGrabOutcome.RetryStatus`'s "Failed once SetPendingRetry's retry cap is
+exceeded" (the surviving copy of the falsehood `parkPendingRetry`'s comment had
+already shed), `retryDueGrabs`' `AlreadyGrabbing` branch ("the cap eventually
+retires it"), and its default branch ("already re-parked (or gave up on) the
+row"). Two comments that *look* stale are correct and were deliberately left
+alone: `usenetretry.go`'s "indefinite, unsuccessful retry loop" note and
+`reparkFailedRetry`'s "retries are no longer capped" note.
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0056_series_season_monitored.sql` | New `library_season_monitored` table; absent row means unmonitored |
+| `internal/library/library_series.go` | `UpsertEpisodeCatalog` (column-scoped: only `title` + `air_date`), season-monitoring store methods |
+| `internal/tmdb/client.go` | Additive field on `SeasonDetails`' response shape for the catalog sync |
+| `internal/api/airdatemonitor.go` | New — detection filter, active-grab pre-filter, air-date retry backoff, season-monitoring handlers, un-monitor retry cancellation |
+| `internal/api/usenetretry.go` | `monitorAirDates` added as the third pass in `runUsenetRetryCycle`; file doc corrected (two things → three, plus the placement rationale); two stale retry-cap branch comments corrected |
+| `internal/api/autograb_shared.go` | Doc-comment only — `TriggerAirDate` now points at its implementation; `AutoGrabOutcome.RetryStatus`'s stale retry-cap claim corrected. No function body touched |
+| `internal/grabs/grabs.go` | New `SetRetryAfter` method (reschedule without counting a fresh attempt); `Failed`'s type doc now names its second, non-retry producer |
+| `internal/api/handler.go` | Three season routes + the new-season-discovery setting; literal `series` path segment, per the established one-mode-only route convention |
+| `internal/apidto/dto.go`, `internal/apidto/ts/dto.gen.ts` | `SeasonState`, `SetSeasonMonitoredRequest`, `SeriesNewSeasonDiscovery*`; TS regenerated via `go run ./cmd/gendto`, never hand-edited |
+| `frontend/src/api/seasons.ts`, `frontend/src/screens/Library.tsx`, `frontend/src/screens/settings/Library.tsx` | Per-season monitoring UI and the new-season-discovery toggle |
+| `cmd/sakms/main.go` | `libStore` threaded into `RunUsenetRetry` — no new launch line, no new interval |
+| `CLAUDE.md` | Fourth trigger source recorded; scheduler count confirmed unchanged at six; the auto-grab honest-scope note's second half corrected (volume, not kind) |
+| `docs/ROADMAP.md` | Item 9 marked shipped; its "remarkably small" verdict and its trigger-source parenthetical corrected in place |
+
+**Outcome:** documentation pass verified with `go build ./...` clean.

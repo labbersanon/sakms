@@ -4,7 +4,7 @@
 // fallback when rendered standalone in a unit test): Library (per-mode metadata
 // source connections + root folder + quality prefs for all three modes; naming
 // preset and kids path for Movies/Series only — Adult has a fixed naming scheme
-// and no kids classification); Usenet (the multi-subscription page + the
+// and no kids classification; new-season discovery for Series only); Usenet (the multi-subscription page + the
 // auto-grab toggle, its own tab because a subscription's field set is richer
 // than a connection row, see Usenet.tsx); Torrent (the torrent engine's
 // counterpart to Usenet — engine/performance/seeding/stale-handling settings,
@@ -63,6 +63,7 @@ import {
   LibraryRootFolderSection,
   NamingPresetSection,
   QualityPrefsSection,
+  SeriesNewSeasonDiscoverySection,
 } from "./Library";
 import { UsenetSection } from "./Usenet";
 import { TorrentSection } from "./Torrent";
@@ -159,6 +160,12 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
           >
             <NamingPresetSection mode={mode} />
             <KidsRootPathSection mode={mode} />
+          </Show>
+          {/* Series-only: new-season discovery. Not under Usenet — it is a
+              Series-library behavior, even though the dispatch it eventually
+              feeds is gated by the usenet auto-grab toggle. */}
+          <Show when={mode() === "series"}>
+            <SeriesNewSeasonDiscoverySection />
           </Show>
         </SectionSave>
       </Show>

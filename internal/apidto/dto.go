@@ -2387,3 +2387,47 @@ type NodeBrowseResponse struct {
 	Path    string            `json:"path"`
 	Entries []NodeBrowseEntry `json:"entries"`
 }
+
+// SeasonState is one row of
+// GET /api/modes/series/library/{seriesID}/seasons — Series-only, since Movies
+// has no seasons and Adult has no episode model.
+//
+// EpisodeCount counts every episode ROW the season has, on disk or not;
+// MissingCount is the subset with no file yet, so downloaded = EpisodeCount -
+// MissingCount. Monitored is false for a season with no monitored row at all —
+// there is no tri-state, an absent row means unmonitored.
+type SeasonState struct {
+	SeasonNumber int  `json:"seasonNumber"`
+	EpisodeCount int  `json:"episodeCount"`
+	MissingCount int  `json:"missingCount"`
+	Monitored    bool `json:"monitored"`
+}
+
+// SetSeasonMonitoredRequest is the body of both season-monitoring writes: the
+// per-season PUT .../seasons/{seasonNumber}/monitored and the all-seasons
+// PUT .../seasons/monitored.
+//
+// Setting it false is not a pure flag write — the handler also cancels that
+// season's queued air-date retries in the same request, since nothing else in
+// the retry loop knows about monitored state.
+type SetSeasonMonitoredRequest struct {
+	Monitored bool `json:"monitored"`
+}
+
+// SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back
+// GET/PUT /api/settings/series-new-season-discovery — off by default.
+//
+// It governs ONLY entirely-new seasons (a season TMDB reports that has no
+// episode rows at all): those are synced and auto-monitored when it is on.
+// Seasons that already have episode rows are always synced regardless, because
+// monitoring gates searching, never metadata.
+//
+// Unlike the usenet auto-grab toggle, this one writes no coupled interval: it
+// has no scheduler of its own, running instead inside the existing retry cycle.
+type SeriesNewSeasonDiscoveryResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+type SeriesNewSeasonDiscoveryRequest struct {
+	Enabled bool `json:"enabled"`
+}

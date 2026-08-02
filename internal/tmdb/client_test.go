@@ -179,6 +179,63 @@ func TestTVDetails_ParsesPosterPath(t *testing.T) {
 	}
 }
 
+// TestTVDetails_ParsesSeasons proves /tv/{id}'s seasons[] array — already
+// present in the body TVDetails fetches, previously discarded — decodes into
+// TVDetails.Seasons, Specials (season 0) included, in TMDB's own order.
+func TestTVDetails_ParsesSeasons(t *testing.T) {
+	const body = `{
+	  "id": 99, "name": "A Show",
+	  "seasons": [
+	    {"season_number": 0, "episode_count": 3, "air_date": "2019-01-01", "name": "Specials"},
+	    {"season_number": 1, "episode_count": 10, "air_date": "2020-04-05", "name": "Season 1"},
+	    {"season_number": 2, "episode_count": 8, "air_date": null, "name": "Season 2"}
+	  ]
+	}`
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tv/99" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(body))
+	})
+
+	d, err := c.TVDetails(context.Background(), 99)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(d.Seasons) != 3 {
+		t.Fatalf("expected 3 seasons, got %+v", d.Seasons)
+	}
+	if d.Seasons[0] != (TVSeason{SeasonNumber: 0, EpisodeCount: 3, AirDate: "2019-01-01", Name: "Specials"}) {
+		t.Errorf("unexpected specials season: %+v", d.Seasons[0])
+	}
+	if d.Seasons[1] != (TVSeason{SeasonNumber: 1, EpisodeCount: 10, AirDate: "2020-04-05", Name: "Season 1"}) {
+		t.Errorf("unexpected season 1: %+v", d.Seasons[1])
+	}
+	// A null air_date must decode to "" rather than failing the whole body.
+	if d.Seasons[2] != (TVSeason{SeasonNumber: 2, EpisodeCount: 8, AirDate: "", Name: "Season 2"}) {
+		t.Errorf("unexpected season 2: %+v", d.Seasons[2])
+	}
+}
+
+// TestTVDetails_OmittedSeasons confirms a body with no seasons[] leaves
+// Seasons empty rather than erroring — TVDetails' other callers send no
+// seasons and must keep working unchanged.
+func TestTVDetails_OmittedSeasons(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id": 100, "name": "No Seasons"}`))
+	})
+
+	d, err := c.TVDetails(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(d.Seasons) != 0 {
+		t.Errorf("expected no seasons, got %+v", d.Seasons)
+	}
+}
+
 func TestSearchMovies_NormalizesAndSendsQuery(t *testing.T) {
 	var gotPath, gotQuery string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

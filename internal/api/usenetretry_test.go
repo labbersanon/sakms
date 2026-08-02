@@ -212,7 +212,7 @@ func TestRetryDueGrabsRelaunchesTheSameRow(t *testing.T) {
 		return mode.Build(ctx, connStore, scStore, settingsStore, testHTTPClient(), dl, m)
 	}
 	runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-		build, nil, nil, time.Now())
+		build, nil, nil, nil, time.Now())
 
 	list, err := grabsStore.List(ctx, mode.Movies)
 	if err != nil {
@@ -263,7 +263,7 @@ func TestRetryDueGrabsCountsAFailedAttempt(t *testing.T) {
 		return nil, fmt.Errorf("prowlarr isn't configured")
 	}
 	runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-		failing, nil, nil, time.Now())
+		failing, nil, nil, nil, time.Now())
 
 	got, err := grabsStore.Get(ctx, g.ID)
 	if err != nil {
@@ -321,7 +321,7 @@ func TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 	const cyclesWellPastTheOldCap = 12
 	for i := 0; i <= cyclesWellPastTheOldCap; i++ {
 		runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-			alwaysFails, nil, nil, time.Now().Add(time.Duration(i)*25*time.Hour))
+			alwaysFails, nil, nil, nil, time.Now().Add(time.Duration(i)*25*time.Hour))
 	}
 
 	got, err := grabsStore.Get(ctx, g.ID)
@@ -362,7 +362,7 @@ func TestRetryDueGrabsSkipsExcludedTitles(t *testing.T) {
 	}
 	excluded := map[string]bool{excludes.Key(string(mode.Movies), 42, "Some Movie"): true}
 	runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-		build, nil, excluded, time.Now())
+		build, nil, nil, excluded, time.Now())
 
 	got, err := grabsStore.Get(ctx, g.ID)
 	if err != nil {

@@ -15,10 +15,17 @@
 // resolve the other direction.
 //
 // SearchMovies/Trending/Popular/ExternalIDs are exercised live by this
-// project's Discover flow. SeasonDetails, MovieDetails, and TVDetails are
-// NOT — their response shapes are modeled from TMDB's public API
-// documentation only, per this project's
-// honesty-about-unverified-assumptions convention.
+// project's Discover flow, as is TVDetails (the Discover detail popup, and
+// internal/rename's series matching, both call it — it was listed as
+// un-exercised here until 2026-08-01, which was stale). MovieDetails is NOT
+// — its response shape is modeled from TMDB's public API documentation only,
+// per this project's honesty-about-unverified-assumptions convention.
+// SeasonDetails is also documentation-derived rather than live-verified, but
+// its shape was deliberately cross-checked against TMDB's published v3
+// reference and that verification level was explicitly accepted for this
+// launch (2026-08-01, QA-GATE-1) — see SeasonDetails' own doc for the exact
+// fields checked and the one edge case (air_date null vs. omitted vs. empty
+// string) that is covered either way.
 package tmdb
 
 import (
@@ -385,6 +392,25 @@ type TVDetails struct {
 	ProductionCountry     string   // display name of the first production country
 	ProductionCountryCode string   // ISO 3166-1 code
 	Networks              []string // networks[].name
+	// Seasons is TMDB's seasons[] array, in the order TMDB returns it
+	// (season 0 / Specials included when present). It comes free with the
+	// /tv/{id} body this method already fetches — no extra round trip — and
+	// is what series monitoring's new-season discovery uses to know which
+	// seasons EXIST without a per-season SeasonDetails call.
+	//
+	// It is a faithful full decode of TMDB's shape, not a decode of only what
+	// is consumed: SeasonNumber is the only field any caller reads today —
+	// nothing reads TVSeason.EpisodeCount at all.
+	Seasons []TVSeason
+}
+
+// TVSeason is one entry of TMDB's /tv/{id} seasons[] array. EpisodeCount is
+// TMDB's own count for the season, not a count of episodes on disk.
+type TVSeason struct {
+	SeasonNumber int    `json:"season_number"`
+	EpisodeCount int    `json:"episode_count"`
+	AirDate      string `json:"air_date"`
+	Name         string `json:"name"`
 }
 
 type tvDetailsResponse struct {
@@ -411,6 +437,9 @@ type tvDetailsResponse struct {
 		Name     string `json:"name"`
 	} `json:"production_countries"`
 	OriginCountry []string `json:"origin_country"`
+	// Seasons is present in every /tv/{id} body TMDB returns; it was
+	// previously decoded away and discarded.
+	Seasons []TVSeason `json:"seasons"`
 }
 
 // TVDetails fetches TMDB's /tv/{id} — the details-by-id sibling of
@@ -430,6 +459,7 @@ func (c *Client) TVDetails(ctx context.Context, tmdbID int) (TVDetails, error) {
 		OriginalLanguage: resp.OriginalLanguage,
 		Genres:           make([]string, len(resp.Genres)),
 		Networks:         make([]string, len(resp.Networks)),
+		Seasons:          resp.Seasons,
 	}
 	for i, g := range resp.Genres {
 		details.Genres[i] = g.Name
@@ -777,11 +807,29 @@ type seasonDetailsResponse struct {
 }
 
 // SeasonDetails returns every episode TMDB knows about for one season of a
-// TV show — hits /tv/{id}/season/{season_number}. Unlike SearchMovies/
-// ExternalIDs (already exercised live by Discover), this shape is modeled
-// from TMDB's public documentation, not yet confirmed against a live call
-// — flagged per this project's honesty-about-unverified-assumptions
-// convention.
+// TV show — hits /tv/{id}/season/{season_number}.
+//
+// VERIFICATION STATUS, stated plainly per this project's honesty-about-
+// unverified-assumptions convention: this shape is cross-checked against
+// TMDB's public API v3 documentation, NOT against a live call. The
+// documentation specifies /tv/{id}/season/{n}'s body as a top-level
+// `episodes` array whose entries carry snake_case `episode_number`, `name`,
+// `air_date` and `runtime` keys, with `air_date` a bare YYYY-MM-DD string and
+// an unannounced episode's date returned as an EMPTY STRING — not null, and
+// not omitted. Wade explicitly accepted documentation-based verification as
+// sufficient for this launch (2026-08-01, QA-GATE-1) because no TMDB API key
+// was available in this environment to test against. That is a deliberate,
+// recorded decision, not an oversight — do not rewrite this as "live
+// verified".
+//
+// If a live call ever reveals a mismatch anywhere in the TV catalog path,
+// THIS is the function to check first. The one variation the documentation
+// leaves room for is already covered regardless of which form TMDB actually
+// sends: `AirDate` is a non-pointer string, and encoding/json decodes a JSON
+// null into a non-pointer string as a silent no-op, leaving it "" — the same
+// value an omitted key or a documented empty string produces. So null vs.
+// omitted vs. empty-string is indistinguishable here by construction, and
+// every caller already treats "" as "no air date".
 func (c *Client) SeasonDetails(ctx context.Context, tmdbTVID, seasonNumber int) ([]SeasonEpisode, error) {
 	var resp seasonDetailsResponse
 	path := fmt.Sprintf("/tv/%d/season/%d", tmdbTVID, seasonNumber)

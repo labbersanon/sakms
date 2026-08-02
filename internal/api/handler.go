@@ -135,6 +135,25 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// browse.go's browsableRoots, which scope only the autocomplete helper.
 	mux.HandleFunc("POST /api/modes/{mode}/library/root-folder/test", testLibraryRootFolderHandler())
 
+	// Per-season monitoring (see airdatemonitor.go). The literal `series`
+	// segment, rather than the {mode} wildcard its neighbours above use, is the
+	// same deliberate convention the /api/modes/adult/... subtrees below follow:
+	// seasons exist only for Series, so a wildcard would have to reject two of
+	// its three values at runtime. Un-monitoring is not a pure flag write — the
+	// PUTs also cancel that season's queued air-date retries.
+	//
+	// Both the GET and the all-seasons PUT read through seasonCatalog, which
+	// merges TMDB's own season list over the local rows so a season nothing was
+	// ever downloaded from is still visible and monitorable. That is one TMDB
+	// call per explicit operator action on one series — the same carve-out shape
+	// as the Discover detail popup's availability check, and deliberately shared
+	// by both routes so the "All seasons" switch acts on exactly what the panel
+	// shows (see seasonCatalog's doc).
+	seasons := seasonCatalog{httpClient: httpClient, connStore: connStore, scStore: scStore, settings: settingsStore, lib: libStore}
+	mux.HandleFunc("GET /api/modes/series/library/{seriesID}/seasons", listSeasonStatesHandler(seasons))
+	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/seasons/monitored", putAllSeasonsMonitoredHandler(seasons, grabsStore))
+	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/seasons/{seasonNumber}/monitored", putSeasonMonitoredHandler(libStore, grabsStore))
+
 	// Server-side directory browser for the Settings root-folder pickers +
 	// their as-you-type autocomplete — restricted to the mounted roots (see
 	// browse.go). Session-protected like every other route on this mux.
@@ -475,6 +494,14 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/settings/usenet-autograb-enabled", putUsenetAutoGrabEnabledHandler(settingsStore))
 	mux.HandleFunc("GET /api/settings/usenet-retry-interval", getUsenetRetryIntervalHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/usenet-retry-interval", putUsenetRetryIntervalHandler(settingsStore))
+
+	// New-season discovery for series air-date monitoring — off by default, and
+	// deliberately NOT coupled to any interval: the pass it feeds runs inside the
+	// usenet retry cycle above rather than on a scheduler of its own (see
+	// airdatemonitor.go). It governs only entirely-new seasons; seasons that
+	// already have episode rows are always synced.
+	mux.HandleFunc("GET /api/settings/series-new-season-discovery", getSeriesNewSeasonDiscoveryHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/series-new-season-discovery", putSeriesNewSeasonDiscoveryHandler(settingsStore))
 
 	// Watch-folders toggle — opt-in, off by default. The background goroutine
 	// (RunWatchFolders, started from main) polls this setting every

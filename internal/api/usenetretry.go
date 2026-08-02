@@ -27,7 +27,10 @@
 // meaning while auto-grab is on, and RunAutoGrab gates every retry on the same
 // toggle anyway, so two independent switches could only ever disagree.
 //
-// Each cycle does two things, in order:
+// Each cycle does THREE things, in order. CORRECTED 2026-08-01 — superseded
+// claim, quoted: "Each cycle does two things, in order." Series air-date
+// monitoring was added as a third pass; see item 3 and the placement note
+// under it, which explains why a non-usenet concern lives in this file.
 //
 //  1. The GID sweep. A usenet retrieval failure is ASYNCHRONOUS — AddNZB
 //     returns a GID immediately and the failure lands long after the HTTP
@@ -40,10 +43,41 @@
 //     goes back through RunAutoGrab with TriggerRetry — the same single gated
 //     scoring-and-dispatch path every other trigger uses, so a retry can never
 //     bypass scoring or the toggle.
+//  3. Series air-date monitoring (monitorAirDates, airdatemonitor.go). Every
+//     aired-but-missing episode of a monitored season goes through RunAutoGrab
+//     with TriggerAirDate — again the same single gated path, so this pass
+//     adds no scoring, dispatch or gating surface of its own. It runs LAST on
+//     purpose; runUsenetRetryCycle's own doc explains why the ordering is
+//     load-bearing.
 //
-// Honest scope note, because it changes what "working" means here: the rows
-// this loop can actually convert into grabs are the ones the GID sweep parks
-// (real dispatched grabs, with a real TMDB id). Rows parked by the toggle-ON
+// The third pass is DELIBERATELY NOT A USENET CONCERN, and it lives in this
+// usenet-named file anyway. That is a resolved tension between two documents,
+// not an oversight. The sibling torrent-behavior plan's §5 file-boundary
+// guidance wanted a Pattern B caller in its own file with its own interval
+// key and its own cmd/sakms/main.go launch; this feature's spec forbids all
+// three outright (Constraint 4 and AC5: no new goroutine, no new interval, no
+// new detection-specific toggle). The spec is authoritative, so the FILE
+// boundary §5 wanted is kept — airdatemonitor.go, independently deletable for
+// exactly the reason stated below — and the LAUNCH it wanted is dropped: the
+// pass is a plain function call inside runUsenetRetryCycle, so nothing new is
+// scheduled and the codebase's scheduler count is unchanged. §5's real
+// objection was a naming/doc one (this file's passes are usenet-specific by
+// name and doc, and air-date monitoring is not), and correcting this doc is
+// the answer to it — NOT renaming runUsenetRetryCycle, which CLAUDE.md and
+// that plan both name by hand and which would invalidate two documents to fix
+// a comment.
+//
+// Honest scope note, because it changes what "working" means here. CORRECTED
+// 2026-08-01 — superseded claim, quoted: "the rows this loop can actually
+// convert into grabs are the ones the GID sweep parks (real dispatched grabs,
+// with a real TMDB id)." Pass 3 adds a second, far larger source: an air-date
+// row carries a real TMDB id AND a real per-episode runtime
+// (seriesEpisodeRuntimeSeconds, Episode > 0), so it clears GradeCandidate's
+// size/runtime short-circuit and can genuinely dispatch. What is new is
+// VOLUME, not kind — a GID-swept row exists only because an operator already
+// grabbed that release once, while an air-date row is minted by the system
+// with no prior operator action for that episode. The rest of this note is
+// unchanged and still true. Rows parked by the toggle-ON
 // Search hook carry TMDBID 0 and no runtime, which is unfixable at that hook
 // (see runToggleGatedSearch's comment) — for those, what this loop provides is
 // an indefinite, unsuccessful retry loop (2026-08-01: the retry-attempt cap
@@ -65,6 +99,7 @@ import (
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -161,7 +196,7 @@ func LoadUsenetRetryInterval(ctx context.Context, settingsStore *settings.Store)
 func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *http.Client,
 	connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store,
 	grabsStore *grabs.Store, excludesStore *excludes.Store, whStore *webhooks.Store,
-	dl *downloader.Manager, nzb *usenet.Manager) {
+	libStore *library.Store, dl *downloader.Manager, nzb *usenet.Manager) {
 
 	if interval <= 0 {
 		return // opt-in gate: off by default, honoring "manual first"
@@ -197,7 +232,7 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 				interval = cur
 				ticker.Reset(cur)
 			}
-			runUsenetRetryCycle(ctx, deps, build, lookup, excludedRequestKeys(ctx, excludesStore), time.Now())
+			runUsenetRetryCycle(ctx, deps, build, lookup, libStore, excludedRequestKeys(ctx, excludesStore), time.Now())
 		}
 	}
 }
@@ -210,11 +245,25 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 //
 // Fault isolation matches the rest of this codebase: one grab's failure is
 // logged and skipped, never fatal to the pass.
+//
+// monitorAirDates runs THIRD and LAST, and the position is load-bearing rather
+// than arbitrary. Its active-grab pre-filter must see the rows retryDueGrabs
+// just re-armed, or a just-retried episode could be grabbed twice in one cycle;
+// and its backoff sweep must have the LAST WORD on retry_after, because
+// retryDueGrabs re-parks every row it re-searches at the flat interval and the
+// sweep is what overrides that with the widening air-date schedule. Reordering
+// these two would silently discard the backoff every cycle while every unit
+// test of airDateRetryBackoff still passed.
+//
+// libStore may be nil — a caller that only wants the two usenet passes (the
+// tests that predate air-date monitoring) passes nil and monitorAirDates
+// returns immediately, exactly as sweepUsenetFailures does for a nil lookup.
 func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc,
-	lookup usenetDownloadLookup, excluded map[string]bool, now time.Time) {
+	lookup usenetDownloadLookup, libStore *library.Store, excluded map[string]bool, now time.Time) {
 
 	sweepUsenetFailures(ctx, deps, lookup)
 	retryDueGrabs(ctx, deps, build, excluded, now)
+	monitorAirDates(ctx, deps, build, libStore, excluded, now)
 }
 
 // sweepUsenetFailures is the AUTHORITATIVE M3 transition: it asks the usenet
@@ -342,8 +391,13 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 		case out.AlreadyGrabbing:
 			// Another row already holds this release's GID (a torrent client
 			// dedupes by infohash back to the same GID). This row is redundant;
-			// park it so the attempt is counted and the cap eventually retires
-			// it rather than leaving it due forever.
+			// park it so the attempt is counted and the row stops being due
+			// every cycle. CORRECTED 2026-08-01 — superseded claim, quoted:
+			// "the cap eventually retires it rather than leaving it due
+			// forever." Nothing retires it. The retry-attempt cap was removed
+			// 2026-08-01, so this row re-parks on the normal interval
+			// indefinitely; only a terminal 451 classification or an explicit
+			// operator action ever ends it.
 			duplicate := "another grab"
 			if out.GrabID != 0 {
 				duplicate = fmt.Sprintf("grab %d", out.GrabID)
@@ -356,8 +410,13 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 		case out.Grabbed:
 			log.Printf("usenet retry: grab %d (%s) re-searched and dispatched", g.ID, g.Title)
 		default:
-			// out.NoMatch — RunAutoGrab already re-parked (or gave up on) the
-			// row through parkPendingRetry, including the retry_count bump.
+			// out.NoMatch — RunAutoGrab already re-parked the row through
+			// parkPendingRetry, including the retry_count bump. CORRECTED
+			// 2026-08-01 — superseded claim, quoted: "already re-parked (or
+			// gave up on) the row". There is no give-up branch: since the
+			// retry-attempt cap was removed, parkPendingRetry always parks to
+			// pending_retry (see its read-back comment), so out.RetryStatus
+			// logged below is always PendingRetry.
 			log.Printf("usenet retry: grab %d (%s) still has no qualifying candidate (%s)", g.ID, g.Title, out.RetryStatus)
 		}
 	}

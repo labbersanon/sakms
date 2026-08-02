@@ -70,6 +70,12 @@ function defaultGet(url: string): Response | undefined {
   // that with an explicit error override instead.
   if (url.includes("/api/settings/usenet-autograb-enabled"))
     return jsonResponse({ enabled: false });
+  // The Series-only new-season discovery toggle (Library tab, Series mode).
+  // Answered as OFF because off IS the default. Without this line the GET falls
+  // through to the 204 default, api() resolves null, and every Series-mode
+  // Library render would show the card in its load-error state.
+  if (url.includes("/api/settings/series-new-season-discovery"))
+    return jsonResponse({ enabled: false });
   if (url.includes("/api/netscan/known")) return jsonResponse([]);
   if (url.includes("/api/apikey"))
     return jsonResponse({ hasKey: false, source: "none" });

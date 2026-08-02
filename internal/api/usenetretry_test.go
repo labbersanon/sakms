@@ -249,8 +249,10 @@ func TestRetryDueGrabsRelaunchesTheSameRow(t *testing.T) {
 // TestRetryDueGrabsCountsAFailedAttempt guards the hot-loop hazard. A row parked
 // by the toggle-ON Search hook carries TMDB id 0, so RunAutoGrab's internal
 // search cannot resolve it and errors every single time. Left unparked, that row
-// stays due forever and re-runs the same broken search every cycle without
-// maxRetryAttempts ever capping it.
+// stays due forever and re-runs the same broken search every cycle on a tight
+// loop — retry_count is tracked for observability, but (2026-08-01: retry cap
+// removed) nothing ever caps it; the interval-based park below is what prevents
+// the hot loop, not a give-up threshold.
 func TestRetryDueGrabsCountsAFailedAttempt(t *testing.T) {
 	ctx := context.Background()
 	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
@@ -268,7 +270,7 @@ func TestRetryDueGrabsCountsAFailedAttempt(t *testing.T) {
 		t.Fatalf("reloading grab: %v", err)
 	}
 	if got.RetryCount != 1 {
-		t.Fatalf("retryCount = %d, want 1 — a failed attempt that costs nothing never reaches the give-up cap", got.RetryCount)
+		t.Fatalf("retryCount = %d, want 1", got.RetryCount)
 	}
 	if got.Status != grabs.PendingRetry {
 		t.Errorf("status = %q, want %q", got.Status, grabs.PendingRetry)
@@ -292,17 +294,20 @@ func TestRetryDueGrabsCountsAFailedAttempt(t *testing.T) {
 	}
 }
 
-// TestRetryDueGrabsTerminatesAPermanentlyUngradeableRow is the claim this whole
-// loop's honest description rests on: for a request that can NEVER succeed —
-// a Series season pack, a duration-less Adult scene, or (as here) a row parked
-// by the Search hook with no TMDB id for the internal search to resolve — what
-// the scheduler provides is TERMINATION, not eventual success.
+// TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow covers the
+// 2026-08-01 decision to remove the retry-attempt cap: for a request that can
+// NEVER succeed — a Series season pack, a duration-less Adult scene, or (as
+// here) a row parked by the Search hook with no TMDB id for the internal
+// search to resolve — the scheduler now retries indefinitely rather than
+// terminating. This is a deliberate, explicit product decision (auto-grab
+// should keep trying until a match is found), not an oversight; the previous
+// version of this test asserted the opposite (termination after
+// maxRetryAttempts) before that cap was removed.
 //
-// Counting attempts is not enough on its own; this asserts the counter actually
-// retires the row. The clock is advanced per cycle because each failed attempt
-// pushes retry_after a full interval out — a test that called the cycle six
-// times at the same instant would pass while proving nothing.
-func TestRetryDueGrabsTerminatesAPermanentlyUngradeableRow(t *testing.T) {
+// The clock is advanced per cycle because each failed attempt pushes
+// retry_after a full interval out — a test that called the cycle repeatedly
+// at the same instant would pass while proving nothing.
+func TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 	ctx := context.Background()
 	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	setAutoGrabToggle(t, settingsStore, true)
@@ -311,8 +316,10 @@ func TestRetryDueGrabsTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 	alwaysFails := func(context.Context, mode.Mode) (*mode.Session, error) {
 		return nil, fmt.Errorf("prowlarr isn't configured")
 	}
-	// One cycle past the cap; each tick 25 h later so the row is due again.
-	for i := 0; i <= 6; i++ {
+	// Well past what was previously the give-up cap; each tick 25 h later so
+	// the row is due again.
+	const cyclesWellPastTheOldCap = 12
+	for i := 0; i <= cyclesWellPastTheOldCap; i++ {
 		runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
 			alwaysFails, nil, nil, time.Now().Add(time.Duration(i)*25*time.Hour))
 	}
@@ -321,21 +328,21 @@ func TestRetryDueGrabsTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reloading grab: %v", err)
 	}
-	if got.Status != grabs.Failed {
-		t.Fatalf("status = %q after exceeding the retry cap, want %q — this row would retry forever", got.Status, grabs.Failed)
+	if got.Status != grabs.PendingRetry {
+		t.Fatalf("status = %q after %d cycles, want %q — retries are no longer capped", got.Status, cyclesWellPastTheOldCap, grabs.PendingRetry)
 	}
-	if got.RetryAfter != "" {
-		t.Errorf("a given-up row still carries retry_after %q", got.RetryAfter)
+	if got.RetryCount != cyclesWellPastTheOldCap+1 {
+		t.Errorf("retryCount = %d, want %d — still counted for observability even though nothing caps on it", got.RetryCount, cyclesWellPastTheOldCap+1)
 	}
-	if !strings.Contains(got.RetryReason, "gave up after") {
-		t.Errorf("retryReason = %q, want it to explain that the retries were exhausted", got.RetryReason)
+	if got.RetryAfter == "" {
+		t.Errorf("a still-retrying row must stay parked for its next attempt, got empty RetryAfter")
 	}
 	due, err := grabsStore.DueForRetry(ctx, time.Now().Add(30*24*time.Hour))
 	if err != nil {
 		t.Fatalf("listing due grabs: %v", err)
 	}
-	if len(due) != 0 {
-		t.Errorf("a retired row is still due: %+v", due)
+	if len(due) != 1 || due[0].ID != g.ID {
+		t.Errorf("a row well past the old cap must still come back due, got %+v", due)
 	}
 }
 

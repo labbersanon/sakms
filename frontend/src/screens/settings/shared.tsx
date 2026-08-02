@@ -73,6 +73,17 @@ export function useSaveStatus() {
 // sets its own inline SaveStatus (so per-row failure visibility isn't regressed)
 // AND throws on failure so the section can additionally report which rows failed.
 
+// A save has THREE outcomes, not two. Resolving means saved; rejecting means
+// failed; resolving with "not-applied" is the third: the change was neither
+// stored nor applied, but nothing is wrong with it and retrying is the whole
+// remedy. The torrent settings PUT's 409 is the case this exists for — the
+// engine couldn't restart while a download was mid-flight. A child in that
+// situation renders its own explanation, and the section must not contradict
+// it: rejecting would print a red "failed: …" summary next to a card saying
+// "try again in a moment", and resolving plainly would claim a success that
+// never happened.
+export type SectionSaveOutcome = void | "not-applied";
+
 export interface SectionSaveItem {
   id: string;
   label: string;
@@ -89,8 +100,10 @@ export interface SectionSaveItem {
   valid?: Accessor<boolean>;
   // save runs the child's own existing save logic (its own body-building, its own
   // inline status). It MUST reject on failure — including client-side validation
-  // early-outs — so the section summary never falsely reports "saved".
-  save: () => Promise<void>;
+  // early-outs — so the section summary never falsely reports "saved". A refusal
+  // that is not a failure resolves with "not-applied" instead of rejecting; see
+  // SectionSaveOutcome for when that applies and what the section does with it.
+  save: () => Promise<SectionSaveOutcome>;
 }
 
 interface SectionSaveRegistry {
@@ -122,7 +135,8 @@ export function useSectionSaveItem(item: SectionSaveItem): () => boolean {
 // whole batch from saving, not just its own row, so the operator sees the
 // block before clicking rather than an error after. A click runs every dirty
 // child's own save() via allSettled so one failure never skips the rest,
-// then reports which (if any) failed.
+// then reports which (if any) failed — or, for a child that resolved with
+// "not-applied", which were refused rather than failed (see SectionSaveOutcome).
 export const SectionSave: Component<{
   label?: string;
   children: JSX.Element;
@@ -144,10 +158,21 @@ export const SectionSave: Component<{
     const failed = pending.filter(
       (_, idx) => results[idx]?.status === "rejected",
     );
+    const notApplied = pending.filter((_, idx) => {
+      const r = results[idx];
+      return r?.status === "fulfilled" && r.value === "not-applied";
+    });
+    // Order matters: a real failure outranks a retryable refusal, and both
+    // outrank "saved". The refusal line is deliberately NOT status.failed() —
+    // it is not red, because the child that reported it is simultaneously
+    // rendering its own calmer explanation of why retrying is all that's
+    // needed. It still isn't status.saved() either: nothing was stored.
     if (failed.length)
       status.failed(
         new Error(`failed: ${failed.map((i) => i.label).join(", ")}`),
       );
+    else if (notApplied.length)
+      status.set(`not applied: ${notApplied.map((i) => i.label).join(", ")}`);
     else status.saved();
   };
   return (

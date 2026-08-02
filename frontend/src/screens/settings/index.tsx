@@ -6,7 +6,9 @@
 // preset and kids path for Movies/Series only — Adult has a fixed naming scheme
 // and no kids classification); Usenet (the multi-subscription page + the
 // auto-grab toggle, its own tab because a subscription's field set is richer
-// than a connection row, see Usenet.tsx); UI (screen-presentation admin
+// than a connection row, see Usenet.tsx); Torrent (the torrent engine's
+// counterpart to Usenet — engine/performance/seeding/stale-handling settings,
+// its own tab for the same reason, see Torrent.tsx); UI (screen-presentation admin
 // controls — a Discover subsection with Mainstream/Adult sub-tabs hosting the
 // custom slider and Adult-newest-row editors, plus the Trakt watchlist
 // connection, see UI.tsx); AI (provider/model config + the AI-provider/Brave
@@ -63,6 +65,7 @@ import {
   QualityPrefsSection,
 } from "./Library";
 import { UsenetSection } from "./Usenet";
+import { TorrentSection } from "./Torrent";
 import { AdvancedSection } from "./Advanced";
 import { GlobalSection } from "./Global";
 import { SectionSave } from "./shared";
@@ -79,6 +82,7 @@ import { NodesSection } from "./Nodes";
 const SECTION_TABS: TabDef[] = [
   { id: "library", label: "Library" },
   { id: "usenet", label: "Usenet" },
+  { id: "torrent", label: "Torrent" },
   { id: "ui", label: "UI" },
   { id: "ai", label: "AI" },
   { id: "auth", label: "Auth" },
@@ -161,6 +165,10 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
 
       <Show when={section() === "usenet"}>
         <UsenetSection />
+      </Show>
+
+      <Show when={section() === "torrent"}>
+        <TorrentSection />
       </Show>
 
       <Show when={section() === "ui"}>

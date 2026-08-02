@@ -132,8 +132,8 @@ func TestReparkFailedRetryDoesNotLeakTheCause(t *testing.T) {
 	if got.RetryReason != retrySearchFailedReason {
 		t.Errorf("retryReason = %q, want the classified %q", got.RetryReason, retrySearchFailedReason)
 	}
-	// The attempt must still be counted, or maxRetryAttempts never retires a
-	// row that can never succeed — the classification must not cost that.
+	// The attempt must still be counted for observability, even though
+	// nothing caps on it anymore — the classification must not cost that.
 	if got.RetryCount != 1 {
 		t.Errorf("retryCount = %d, want 1", got.RetryCount)
 	}

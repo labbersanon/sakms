@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -584,8 +586,30 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 
 		// nil: the torrent engine's Download carries no unflattened error field.
 		newStatus := classifyDownloadState(dlItem.Status, nil)
+		imported := false
 		if newStatus == grabs.Completed {
-			contentPath := downloadContentPath(dlItem.Files, dlItem.Dir, dl.StagingDir())
+			// SECOND CALLER of the seeding seam. dlItem.Files/.Dir are the
+			// ORIGINAL staging paths — with seeding on, exactly the files the
+			// torrent client is still serving, and relocating them kills the
+			// seed silently. Consume the per-gid import copy instead, falling
+			// back to the originals only when there is none (seeding off, no
+			// copy made, or the copy failed and the completion flow already
+			// fell through to the originals) — which is every seeding-off
+			// install, byte-for-byte today's behavior.
+			files, dir, staging := dlItem.Files, dlItem.Dir, dl.StagingDir()
+			if copied := dl.ImportPaths(g.DownloadGID); len(copied) > 0 {
+				if _, err := os.Stat(copied[0]); err != nil {
+					// The copy was recorded but is gone: a previous import
+					// already consumed it. Re-running would relocate the
+					// seeding originals — refuse instead. 409 is the status
+					// this handler already uses for "the engine no longer
+					// knows about this download".
+					http.Error(w, "this download's import copy has already been imported — the torrent is still seeding its original files", http.StatusConflict)
+					return
+				}
+				files, dir, staging = copied, filepath.Dir(copied[0]), dl.ImportRoot(g.DownloadGID)
+			}
+			contentPath := downloadContentPath(files, dir, staging)
 			changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
@@ -596,6 +620,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			sess.NotifyPlayers(ctx, changes)
 			_ = grabsStore.SetDownloadStatus(ctx, id, dlItem.Status, contentPath)
 			newStatus = grabs.Imported
+			imported = true
 		} else {
 			_ = grabsStore.SetDownloadStatus(ctx, id, dlItem.Status, "")
 		}
@@ -603,6 +628,15 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 		if err := grabsStore.UpdateStatus(ctx, id, newStatus); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if imported {
+			// The import consumed the copy; Relocate moved the content out but
+			// left the (now empty) .import/<gid>/ tree behind. The automatic
+			// path (DownloadCompleteImporter, internal/api/import.go) already
+			// reclaims this on success — mirror it here so a manually-triggered
+			// check-import doesn't leave an empty per-gid directory behind
+			// until the next restart's sweep (Manager.Start's sweepImportDir).
+			dl.ClearImportCopy(g.DownloadGID)
 		}
 
 		updated, err := grabsStore.Get(ctx, id)
@@ -631,9 +665,10 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 //     retryable → PendingRetry. Only a CONFIRMED takedown is terminal: an
 //     unreachable server proves nothing about whether the article exists, and
 //     failing on it strands a recoverable download forever, since nothing ever
-//     re-searches a Failed row. This does not retry forever either —
-//     grabs.maxRetryAttempts (5) converts a row that can never succeed to
-//     Failed with an explaining reason.
+//     re-searches a Failed row. PendingRetry rows now retry indefinitely
+//     (2026-08-01: the retry-attempt cap was removed) — a permanently
+//     ungradeable item keeps retrying on the normal interval rather than
+//     eventually becoming Failed, a deliberate product decision.
 //
 // DEVIATION, reported not silently fixed: the plan asked for this to take the
 // Download struct. It cannot — the two callers pass usenet.Download and

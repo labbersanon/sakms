@@ -395,10 +395,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/downloads/pause-state", getPauseStateHandler(settingsStore))
 	mux.HandleFunc("PUT /api/downloads/pause-state", putPauseStateHandler(settingsStore, dl, nzb))
 
-	// Unified downloader config (staging dir + concurrency knobs). The RPC
-	// token is auto-generated and stored via internal/secrets, never here.
+	// Unified downloader config (staging dir + concurrency + torrent-engine
+	// knobs). The RPC token is auto-generated and stored via internal/secrets,
+	// never here. The PUT takes the Manager as well as the store because it
+	// APPLIES the saved settings to the running engine (Reconfigure) rather than
+	// only storing them for the next boot.
 	mux.HandleFunc("GET /api/downloader/config", getDownloaderConfigHandler(settingsStore))
-	mux.HandleFunc("PUT /api/downloader/config", putDownloaderConfigHandler(settingsStore))
+	mux.HandleFunc("PUT /api/downloader/config", putDownloaderConfigHandler(settingsStore, dl))
 
 	mux.HandleFunc("GET /api/modes/{mode}/tags", listTagsHandler(libStore))
 	mux.HandleFunc("POST /api/modes/{mode}/items/{itemId}/tags", addItemTagHandler(libStore))

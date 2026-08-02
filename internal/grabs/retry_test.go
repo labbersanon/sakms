@@ -223,11 +223,13 @@ func TestDueForRetry_OnlyDueGidlessRows(t *testing.T) {
 	}
 }
 
-// TestSetPendingRetry_IncrementsThenGivesUp covers the cap: a permanently
-// ungradeable item (a Series season pack, a duration-less Adult scene) can
-// never succeed, so after maxRetryAttempts the row becomes Failed with an
-// explaining reason instead of retrying forever.
-func TestSetPendingRetry_IncrementsThenGivesUp(t *testing.T) {
+// TestSetPendingRetry_NeverGivesUp covers the 2026-08-01 decision to remove
+// the retry-attempt cap: a permanently ungradeable item (a Series season
+// pack, a duration-less Adult scene) now retries indefinitely instead of
+// eventually becoming Failed. retry_count keeps incrementing (observability
+// only) but never drives a status transition, well past what was previously
+// the give-up threshold.
+func TestSetPendingRetry_NeverGivesUp(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	now := time.Now()
@@ -237,7 +239,8 @@ func TestSetPendingRetry_IncrementsThenGivesUp(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	for i := 1; i <= maxRetryAttempts; i++ {
+	const attemptsWellPastTheOldCap = 12
+	for i := 1; i <= attemptsWellPastTheOldCap; i++ {
 		if err := s.SetPendingRetry(ctx, g.ID, now.Add(24*time.Hour), "still nothing qualified"); err != nil {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
@@ -246,31 +249,23 @@ func TestSetPendingRetry_IncrementsThenGivesUp(t *testing.T) {
 			t.Fatalf("get: %v", err)
 		}
 		if got.Status != PendingRetry {
-			t.Fatalf("attempt %d should stay pending, got %q", i, got.Status)
+			t.Fatalf("attempt %d should stay pending (no cap), got %q", i, got.Status)
 		}
 		if got.RetryCount != i {
 			t.Fatalf("attempt %d should be counted, got %d", i, got.RetryCount)
 		}
+		if got.RetryAfter == "" {
+			t.Errorf("attempt %d should still be parked for a future retry, got empty RetryAfter", i)
+		}
+		if got.RetryReason != "still nothing qualified" {
+			t.Errorf("attempt %d reason should be the real reason, not a give-up message, got %q", i, got.RetryReason)
+		}
 	}
 
-	if err := s.SetPendingRetry(ctx, g.ID, now.Add(24*time.Hour), "still nothing qualified"); err != nil {
-		t.Fatalf("give-up attempt: %v", err)
-	}
-	got, err := s.Get(ctx, g.ID)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got.Status != Failed {
-		t.Errorf("past the cap the grab must fail rather than retry forever, got %q", got.Status)
-	}
-	if got.RetryAfter != "" {
-		t.Errorf("a failed grab must not stay parked for a retry, got %q", got.RetryAfter)
-	}
-	if got.RetryReason == "still nothing qualified" || got.RetryReason == "" {
-		t.Errorf("the give-up reason should explain itself, got %q", got.RetryReason)
-	}
-	if due, err := s.DueForRetry(ctx, now.Add(48*time.Hour)); err != nil || len(due) != 0 {
-		t.Errorf("a given-up grab must never come back due, got %+v (err %v)", due, err)
+	// Never becomes due-forever-excluded: it should still show up as due once
+	// its retry_after arrives, even this many cycles in.
+	if due, err := s.DueForRetry(ctx, now.Add(48*time.Hour)); err != nil || len(due) != 1 || due[0].ID != g.ID {
+		t.Errorf("a grab past the old cap must still come back due, got %+v (err %v)", due, err)
 	}
 }
 

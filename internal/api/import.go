@@ -49,7 +49,16 @@ func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.St
 			return // already imported (e.g. a manual check-import beat us)
 		}
 
-		contentPath := downloadContentPath(files, dl.StagingDir(), dl.StagingDir())
+		// With seeding on, files are the per-gid IMPORT COPY under
+		// <staging>/.import/<gid>/ — the originals stay put and keep seeding.
+		// downloadContentPath decides "single file" vs "wrapping folder" by
+		// comparing files[0]'s parent against the staging root it is given, so
+		// it must be given the import root, not the global staging dir, or a
+		// single-file torrent's copy would relocate its whole directory.
+		// ImportRoot falls back to StagingDir() whenever there is no copy, so
+		// a seeding-off install takes exactly today's path.
+		importRoot := dl.ImportRoot(gid)
+		contentPath := downloadContentPath(files, importRoot, importRoot)
 		if contentPath == "" {
 			log.Printf("downloader import: grab %d (gid %s) completed but has no content path", g.ID, gid)
 			return
@@ -74,7 +83,14 @@ func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.St
 		}
 		if err := grabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
 			log.Printf("downloader import: grab %d marking imported: %v", g.ID, err)
+			return
 		}
+		// The import consumed the copy; Relocate moved the content out but
+		// left the .import/<gid>/ tree behind. Reclaim it now rather than
+		// waiting for the next restart's sweep. Only on the fully-successful
+		// path: while the grab is not yet Imported, the copy is still what a
+		// manual check-import must consume.
+		dl.ClearImportCopy(gid)
 	}
 }
 

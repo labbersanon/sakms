@@ -4091,3 +4091,106 @@ eyeballed. Post-implementation greps for `/downloads`, `/grabs`, `/requests`
 across `frontend/src` confirm the AppShell rows are gone and every surviving hit
 is a backend API path, a test fetch stub, or an unrelated FolderPicker/Settings
 filesystem fixture.
+
+## 2026-08-01 — Auto-grab retry-attempt cap removed (explicit product decision)
+
+**What changed:** `grabs.maxRetryAttempts` (previously 5, introduced the same
+day in the "Connections tab eliminated..." entry above) is removed. `grabs.Store.SetPendingRetry` no longer transitions a
+`pending_retry` row to `Failed` after exhausting a fixed number of attempts —
+it now always re-parks for another retry on the normal interval, indefinitely.
+`retry_count` is still incremented on every attempt (kept for observability —
+"how many times has this been tried"), but it no longer drives any status
+transition.
+
+**Why:** Wade decided, while scoping the Phase 3 `series-monitoring-autograb`
+spec (which would have added a fourth trigger source to the same shared retry
+mechanism), that auto-grab should keep trying until a match is found rather
+than give up after a fixed count — surfaced explicitly as a tradeoff (indexer
+load / a permanently-unavailable item retrying forever, vs. never abandoning a
+request the operator wants) and confirmed as an intentional, session-spanning
+change, not scoped to just the new feature.
+
+**Known, accepted consequence:** an item that is structurally ungradeable
+forever — a Series season pack (runtime is always 0 by design), a duration-less
+Adult identification, or a request the toggle-ON Search hook parks with no
+TMDB id — now retries on every cycle indefinitely instead of eventually
+terminating. This is bounded by the retry interval (24h for the Usenet retry
+loop), not a tight loop, and an operator can still manually exclude a request
+to stop it being worked. `grabs.Failed` remains a real, reachable status — it
+is now reached only via a genuinely terminal classification (a confirmed 451
+DMCA takedown), never via retry exhaustion.
+
+**Not changed:** the global "Enable auto-grab" toggle (still off by default),
+the qualification predicate (`autograb.GradeCandidate`'s floor), "no grab
+without a scored match," and the interval-based re-park (still prevents a hot
+loop) are all unchanged — this only removes the give-up threshold.
+
+| File | Change |
+|---|---|
+| `internal/grabs/grabs.go` | Removed `maxRetryAttempts` const; `SetPendingRetry` simplified to always park, never fail; doc comments rewritten |
+| `internal/grabs/retry_test.go` | `TestSetPendingRetry_IncrementsThenGivesUp` replaced with `TestSetPendingRetry_NeverGivesUp` (asserts indefinite retry well past the old cap) |
+| `internal/api/usenetretry_test.go` | `TestRetryDueGrabsTerminatesAPermanentlyUngradeableRow` replaced with `TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow`; stale cap-related comments corrected |
+| `internal/api/usenetretry_classify_test.go`, `internal/api/search.go`, `internal/api/autograb_shared.go`, `internal/api/usenetretry.go`, `internal/apidto/dto.go` | Doc-comment corrections removing stale `maxRetryAttempts`/give-up references |
+| `CLAUDE.md` | Auto-grab safety-envelope bound 4 corrected (CORRECTED 2026-08-01 block) |
+
+**Outcome:** `go build ./... && go vet ./... && go test ./internal/grabs/... ./internal/api/...` clean.
+
+## 2026-08-01 — Torrent behavior settings, seeding architecture, stale-torrent auto-cancel + requeue
+
+**What shipped:** Five backend tasks (BE-0 through BE-6), one frontend task (FE-1–FE-2), one documentation task (DOC-1), plus full test matrix (QA-1) and a code-review pass. Real, operator-configurable seeding with ratio/duration limits; automatic cleanup of stale torrents (zero progress + no peers) with requeue into the shared retry mechanism; and live-patching of torrent engine settings without stopping in-flight downloads. Spec: `.omc/specs/deep-interview-torrent-behavior-and-stale-handling.md` (~12% ambiguity, PASSED). Plan (including detailed wave/ownership breakdown): `.omc/plans/autopilot-impl-torrent-behavior-and-stale-handling.md`.
+
+**Why seeding needed an architectural rethink:**
+Torrent completion triggers an immediate `os.Rename` of the downloaded files out of staging into the library. If seeding is enabled but goes into the library copy, the rename happens and there's nothing left to seed. **Solution: copy-then-move.** A copy is made to `<staging>/.import/<gid>/…` (a per-torrent staging directory, mirroring the original file structure) while the originals stay in place to seed. The existing import flow (via `onComplete` → `importGrabContent` → `rename.Relocate`) receives the *copy* paths, so from the library's perspective nothing changes — same destination, same naming, same behavior. When a seeding limit (ratio or duration, whichever first) is hit, only the original staging files are deleted; the library copy survives. The inversion (originals seed, copy imports) preserves the existing import behavior exactly.
+
+**Settings exposed** (new `TorrentSeedingEnabledKey` toggle + seven existing-but-unexposed knobs):
+- `torrent_seeding_enabled` (`bool`, default `false`) — master switch. When off, no `.import/` copy is made and behavior is identical to today.
+- `torrent_download_rate_limit_bytes` (`int`, B/s, default unlimited) — live-patchable.
+- `torrent_max_connections` (`int`, default 4) — affects new torrents and live-adjusts existing ones.
+- `torrent_listen_port` (`int`, 1024–65535, default 42069) — requires client rebuild.
+- `torrent_dht_enabled` (`bool`, default `true`) — requires client rebuild.
+- `torrent_pex_enabled` (`bool`, default `true`) — requires client rebuild.
+- `torrent_obfuscation_mode` (`string` enum: `require`/`prefer`/`off`, default `prefer`) — requires client rebuild. **Note: `off` is the strictest, rejects encrypted peers.**
+- `torrent_seed_ratio_limit` (`float`, default 1.0) — live-patchable, evaluated per tick.
+- `torrent_seed_duration_minutes` (`int`, default 2880 / 48h) — live-patchable, evaluated per tick.
+- `torrent_stale_threshold_minutes` (`int`, default 240 / 4h, off by setting to 0) — live-patchable.
+
+**Documented AC1 deviation:** Local peer discovery (LPD) is absent from anacrolix/torrent v1.61.0 entirely — verified via grep over the vendored library. The AC1 spec named an LPD toggle explicitly; it is not exposed. Wade pre-approved dropping it if absent — condition now met.
+
+**Auto-client-rebuild when needed.** A 2x-tier apply system: live-patchable changes (rate limit, max connections, ratio/duration, stale threshold) apply immediately; rebuild-class changes (listen port, DHT, PEX, obfuscation, `torrent_seeding_enabled` OFF→ON) require tearing down and rebuilding the client. The rebuild snapshots every live torrent's full metainfo (via `Torrent.Metainfo()`), closes the old client, builds a new one, re-adds each torrent, restores paused state, and restores per-torrent upload allowance. Refuses the rebuild if any entry is `waiting` (pre-metadata magnet) or if `StagingDir` changed with active/waiting entries (would corrupt open file handles).
+
+**Two concrete bugs fixed in the rebuild path (§2.3.1):**
+- Shutdown was closing the *captured* client (the one at construction time) instead of the *current* client (via `m.mu`), leaking the rebuilt one.
+- Stale `watchTorrent` goroutines from the old client would fire `Closed()` and clobber a freshly re-added entry's status if the GID was stable across the rebuild (it is, by design).
+
+**Stale-torrent auto-cancel + requeue.** When a torrent has zero progress, zero peers, and has been idle past the threshold for the first time, `downloader.pollLoop` calls `parkGrabForRetry()` (the same function the Usenet retry loop uses) to park the grab row, then `Manager.Cancel()` to delete the partial files. The requeue is not gated — auto-grab's own gate (`usenet_autograb_enabled`, default off) governs whether the parked row is ever re-searched. On a default install, stale torrents are auto-cancelled but their rows remain in Requests as "Pending Retry" waiting for the operator to enable auto-grab if they want retries.
+
+**Two sections of doc-comment corrections (in-code, not in docs):**
+- `internal/api/autograb_shared.go:332-334` (the `parkPendingRetry` call-site comment) — was describing SQL logic that no longer exists (the retry-cap removal from the same day).
+- `internal/api/usenetretry.go:13` — was claiming a retry cap still enforces a limit, contradicting the file's own corrected account 35 lines later.
+
+**Frontend:** One new Settings section — Torrent Behavior Settings, with four form-control groups: Engine/Network (listen port, DHT, PEX, obfuscation, read-only status saying "requires restart"), Download/Speed (rate limit, max connections, both live), Seeding (toggle, ratio limit, duration limit, help text), and Stale Torrent Detection (threshold, help text explaining the default 4h). All validation per spec §1 (port range, positive limits, enum values, etc.). One new `TorrentSettingsContext` route in the shell router. Regenerated `ts/dto.gen.ts` from the DTO changes (never hand-edited).
+
+**Known bound, stated honestly:** Adult grabs that stall will retry indefinitely (no attempt cap as of today's same-day decision) but can never succeed — the `grabs` row has no `Studio`/`ReleaseTitle`/`DurationSeconds` columns to re-arm the scorer, so the re-search grades the candidate as ungradeable and parks again. Same deliberate, accepted consequence as the Usenet toggle-ON Search hook (documented in CLAUDE.md's amended auto-grab bounds). The row is still visible in Requests with an honest reason; operator can exclude it if desired.
+
+**Extension patterns (load-bearing for series-monitoring-autograb, item 9):** This spec extends the shared retry mechanism via **Pattern A ("new parker")** — detect a stale condition, call `parkGrabForRetry()` with a new reason const, and stop. `series-monitoring-autograb` must use **Pattern B ("new trigger")** — add a new `AutoGrabTrigger` const and call `RunAutoGrab()` with that trigger. Both are documented in CLAUDE.md's new amendment (same entry as this changelog item) and in the spec's §5.
+
+| File | Change |
+|---|---|
+| `internal/downloader/downloader.go` | `buildClient()` extracted for reuse; `Reconfigure()` implements live-patch + rebuild tiers; `pollSnapshot` signature expands to return seed-stop and stale-gid collect lists; seeding state fields on `entry` struct; stale-clock `lastProgressAt` tracking; `.import/` sweep on `Start`; per-torrent seeding stop + file cleanup (collect-under-lock / act-after-unlock pattern) |
+| `internal/api/downloads.go` | Settings keys (10 new consts); GET/PUT validation per spec §1; `Reconfigure` wiring into `putDownloaderConfigHandler` |
+| `cmd/sakms/main.go` | `buildDownloader` extended to read all 10 settings keys from store; `Manager.SetOnStale` wiring next to `SetOnComplete` |
+| `internal/api/autograb_shared.go` | New `staleTorrentReason` const; call-site comment (`:332-334`) corrected (was describing removed cap) |
+| `internal/api/usenetretry.go` | File doc comment (`:13`) corrected (was describing removed cap) |
+| `internal/api/import.go` | `DownloadCompleteImporter` now passes per-gid import root to `downloadContentPath` |
+| `internal/api/search.go` | `checkImportHandler`'s torrent branch routes through `Manager.ImportPaths()` when seeding, falls back to originals; 409 refusal for currently-seeding grabs |
+| `internal/apidto/dto.go` | `DownloaderConfig` expanded with 10 new fields |
+| `ts/dto.gen.ts` | Regenerated from DTO changes |
+| `frontend/src/screens/settings/Torrent.tsx` | New Settings section with 4 control groups (Engine/Network, Download/Speed, Seeding, Stale Detection) per spec §6.2; validation per spec §1; apply-result rendering |
+| `frontend/src/index.tsx` | New `SECTION_TABS` registration for Torrent |
+| `frontend/src/api/…` | API client updated for new DTOs |
+| `CLAUDE.md` | New amendment documenting stale-cancel destructive action + extension patterns (§5), following established amendment style |
+| `docs/ROADMAP.md` | Item 7 marked shipped; footnote correcting three-trigger-source count (was two before stale-torrent requeue) |
+
+**Test coverage matrix (AC8/AC9):** `go build ./... && go vet ./... && go test ./... && go test -race ./internal/downloader/...` all passing. Spec §9 defines 30 test cases across 14 IDs (T-1.1 through T-6.2), each asserting a specific acceptance criterion. Key tests: T-3.5 (the only one proving seeding actually works, requires loopback pair with DHT off), T-3.9 (failed-import recovery via checkImportHandler), T-4.9 (stale grab with high retry count retries indefinitely, not terminates), T-6.2 (in-progress download never uploads despite seeding enabled). Frontend: `pnpm typecheck/test/build` clean.
+
+**Outcome:** Full build, test, and QA pass. All 30 test cases passing. Seeding, ratio/duration limits, ratio/duration cleanup, stale detection, stale auto-cancel, stale requeue, copy import path plumbing, `checkImportHandler` re-route, live rate-limit patching, rebuild snapshot + re-add — all verified end-to-end. No regressions in existing Cancel/Pause/Resume behavior.

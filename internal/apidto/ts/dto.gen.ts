@@ -722,10 +722,12 @@ export interface AutoGrabResponse {
  *     row for the same identity was updated — see FindPendingRetry/GRAB-1)
  *     so the 24h retry sweep (BE-7) can pick it up later. Reason explains
  *     why (e.g. "no candidate cleared the quality floor").
- *   - AutoGrabbed == false, Outcome == "failed": the row's retry budget was
- *     exhausted (SetPendingRetry's retry_count exceeded maxRetryAttempts and
- *     flipped the row to Failed) rather than parked for another retry —
- *     reported honestly as "failed", never as a lingering "pending_retry".
+ *   - AutoGrabbed == false, Outcome == "failed": the row was classified as
+ *     permanently ungradeable (e.g. a confirmed 451/DMCA takedown) rather
+ *     than parked for another retry — reported honestly as "failed", never
+ *     as a lingering "pending_retry". (2026-08-01: retries are no longer
+ *     capped, so a row is never marked "failed" merely for exhausting a
+ *     retry budget — only for a genuinely terminal classification.)
  * GrabID is populated in every outcome — it identifies the grabs row created
  * or updated by this call, whether that row ended up Downloading/Completed
  * (grabbed) or PendingRetry/Failed.
@@ -1970,6 +1972,15 @@ export interface Download {
 /**
  * DownloaderConfig is the unified downloader's operator-tunable settings
  * (GET/PUT /api/downloader/config).
+ * PUT IS A FULL-DOCUMENT REPLACE. Every field is a plain (non-pointer,
+ * non-omitempty) type, so an omitted field arrives as its zero value and is
+ * stored as such — a client must GET, mutate, and PUT the whole document back.
+ * Omitting MaxConcurrent, MaxConnections or ListenPort is a loud 400; omitting
+ * DHTEnabled or PEXEnabled silently DISABLES them (both default true), and
+ * omitting the rate/ratio/duration/stale fields silently means unlimited/off.
+ * StagingDir comes back "" when unset — the handler has no data directory to
+ * synthesize the boot default (<dataDir>/downloads) from. Empty is a normal
+ * "not configured" state here, not an error.
  */
 export interface DownloaderConfig {
   stagingDir: string;
@@ -1982,6 +1993,88 @@ export interface DownloaderConfig {
    * Usenet downloads.
    */
   maxConnections: number /* int */;
+  /**
+   * DownloadRateLimitBytes caps the torrent engine's aggregate download rate
+   * in bytes/sec. 0 means unlimited.
+   */
+  downloadRateLimitBytes: number /* int */;
+  /**
+   * DHTEnabled and PEXEnabled toggle the two peer-discovery mechanisms.
+   * Both default true, matching the torrent library's own defaults.
+   */
+  dhtEnabled: boolean;
+  pexEnabled: boolean;
+  /**
+   * ListenPort is the torrent engine's peer listen port, 1024-65535.
+   */
+  listenPort: number /* int */;
+  /**
+   * ObfuscationMode is one of "require", "prefer" or "off". Note that "off"
+   * is the STRICTEST setting, not the most permissive one: it rejects every
+   * encrypted peer connection rather than merely preferring plaintext, which
+   * can measurably shrink the reachable swarm. UI copy must say so.
+   */
+  obfuscationMode: string;
+  /**
+   * SeedingEnabled is the seeding master switch, default OFF. Turning it on
+   * keeps a second copy of completed content in the staging directory (so
+   * roughly double the disk space for that content) until a limit below is
+   * reached; the library copy is never affected.
+   */
+  seedingEnabled: boolean;
+  /**
+   * SeedRatioLimit stops seeding once this upload:download ratio is reached.
+   * 0 means no ratio limit.
+   */
+  seedRatioLimit: number /* float64 */;
+  /**
+   * SeedDurationMinutes stops seeding after this long. 0 means no duration
+   * limit. Both limits apply — whichever is reached first wins.
+   */
+  seedDurationMinutes: number /* int */;
+  /**
+   * StaleThresholdMinutes is how long a torrent may make no progress with no
+   * connected peers before it is cancelled, its partial files deleted, and
+   * the title requeued for another attempt. 0 disables stale detection.
+   */
+  staleThresholdMinutes: number /* int */;
+}
+/**
+ * DownloaderConfigApplyResult is PUT /api/downloader/config's response body.
+ * The PUT does not merely store settings — it applies them to the running
+ * torrent engine before persisting anything, so the response has to tell the
+ * operator WHICH of the two apply paths ran. A save that only moved the rate
+ * limit is disruption-free; a save that changed the listen port tore the engine
+ * down and stood it back up, briefly interrupting every in-flight download.
+ * Presenting both as an undifferentiated "Saved" hides a real consequence.
+ */
+export interface DownloaderConfigApplyResult {
+  /**
+   * Applied is "live" when every changed field could be patched into the
+   * running engine in place, or "rebuilt" when at least one rebuild-class
+   * field changed and the engine had to be reconstructed.
+   * Rebuild-class fields are stagingDir, listenPort, dhtEnabled, pexEnabled,
+   * obfuscationMode, and seedingEnabled going false->true (that one direction
+   * only — the engine's upload gate is fixed at client construction, so
+   * turning seeding ON cannot be patched live, while turning it OFF can).
+   * Everything else is live.
+   */
+  applied: string;
+  /**
+   * RestartRequired is true exactly when Applied is "rebuilt". It is a
+   * separate field rather than something the client derives because it is the
+   * stable signal across two possible backend implementations: the engine
+   * rebuild that shipped restarts the engine in-process, but the documented
+   * fallback for that work was store-and-require-an-operator-restart, and the
+   * UI copy keyed on this flag is the same either way — "this change did not
+   * take effect quietly and instantly". Render it as a warning, not an error.
+   */
+  restartRequired: boolean;
+  /**
+   * Message is operator-facing copy describing what happened, suitable for
+   * the save-status line verbatim.
+   */
+  message: string;
 }
 /**
  * BulkCancelRequest is POST /api/downloads/cancel-batch's body — cancel several

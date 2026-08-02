@@ -247,21 +247,31 @@ above, so don't drop them for convenience:
        (`TriggerOperator` / `TriggerRequest` / `TriggerRetry`, plus the
        reserved-but-unimplemented `TriggerAirDate`), so "retry never
        bypasses scoring" is true by construction rather than by review.
-    4. **A permanent-failure path that does not retry, and a cap on the one
-       that does.** A 451 `ErrArticleRemoved` (DMCA takedown) is terminal:
-       `classifyDownloadState` maps it straight to `failed` and it is never
-       re-searched. A 430 `ErrArticleNotFound` from every configured
-       subscription, and any other unclassified/transient failure (a dial
-       timeout, a decode error), are both treated as retryable — corrected
-       2026-08-01 after a Phase-4 review found the original transient-error
-       path was silently terminal despite a test asserting otherwise (see
-       `internal/api/search.go`'s `classifyDownloadState`). This does not
-       widen the safety envelope: the toggle, the qualification predicate,
-       and "no grab without a scored match" are all unchanged — only which
-       failures get another attempt. And retries are capped —
-       `grabs.maxRetryAttempts = 5`, after which the row becomes `failed`
-       with an explaining reason, so a permanently ungradeable item
-       terminates instead of being worked forever.
+    4. **A permanent-failure path that does not retry, and (as of 2026-08-01)
+       no cap on the one that does.** A 451 `ErrArticleRemoved` (DMCA
+       takedown) is terminal: `classifyDownloadState` maps it straight to
+       `failed` and it is never re-searched. A 430 `ErrArticleNotFound` from
+       every configured subscription, and any other unclassified/transient
+       failure (a dial timeout, a decode error), are both treated as
+       retryable — corrected 2026-08-01 after a Phase-4 review found the
+       original transient-error path was silently terminal despite a test
+       asserting otherwise (see `internal/api/search.go`'s
+       `classifyDownloadState`). This does not widen the safety envelope: the
+       toggle, the qualification predicate, and "no grab without a scored
+       match" are all unchanged — only which failures get another attempt.
+       **CORRECTED 2026-08-01 — the retry-attempt cap (`grabs.maxRetryAttempts
+       = 5`) was removed, an explicit product decision, not a bug fix**: a
+       `pending_retry` row now retries indefinitely on its normal interval
+       instead of eventually becoming `failed`. `retry_count` is still
+       incremented on every attempt (observability only — it no longer
+       drives any status transition). Known, accepted consequence: an item
+       that is structurally ungradeable forever (a Series season pack's
+       runtime is always 0 by design, as is a duration-less Adult
+       identification) now retries on every cycle indefinitely rather than
+       terminating — bounded by the retry interval, not a tight loop, and an
+       operator can still manually exclude a request to stop it. `Failed` is
+       still a real, reachable status — just only via a genuinely terminal
+       classification (the 451 path above), never via retry exhaustion.
 
     **Honest scope note, verified against the shipped code rather than
     predicted:** the toggle-ON Search hook (`runToggleGatedSearch`, reached
@@ -277,8 +287,9 @@ above, so don't drop them for convenience:
     rows this feature can genuinely convert into an unattended dispatch are
     the ones the retry loop's GID sweep parks — real, already-dispatched
     grabs carrying a real TMDB id and runtime. For Search-hook rows the
-    retry loop provides *termination* (via the attempt cap), not eventual
-    success. Both facts are load-bearing before anyone "improves" this: the
+    retry loop provides an indefinite, unsuccessful retry loop (2026-08-01:
+    the attempt cap was removed, so this is no longer *termination* — see
+    bound 4 above), not eventual success. Both facts are load-bearing before anyone "improves" this: the
     unattended dispatch surface is narrower than the toggle's name suggests.
 
     It is still NOT a queue-wide "grab everything", not cross-mode
@@ -333,6 +344,47 @@ above, so don't drop them for convenience:
       that is what ships. `Usenet.tsx`'s header comment says "queried in
       parallel with no ordering at all", which is right about the *ordering*
       and loose about the *parallelism*.
+    - **AMENDED 2026-08-01 — torrent seeding + stale-torrent auto-cancel added
+      destructive scheduler work (a fourth, deliberate, documented reversal;
+      see `docs/ROADMAP.md` item 7 and `CHANGELOG.md`).**
+      `downloader.pollLoop` now performs two unattended destructive actions
+      that widen what that scheduler does, even though neither widens the
+      auto-grab exception itself:
+      **(1) Stale-torrent auto-cancel + cleanup.** When a torrent has zero
+      progress, no peers, and has been idle past a configured threshold
+      (default 4h, configurable via Settings → Torrent Behavior Settings,
+      off-by-default via threshold = 0), `downloader.pollLoop` calls
+      `Manager.Cancel(gid)`, which deletes the staged partial files from
+      `StagingDir`. This is cleanup only — identical to a manual operator
+      Cancel, and the library is never touched (staging-only, checked via
+      `deleteDownloadFiles`' containment guard). No human review needed
+      because the torrent is definitively dead (zero progress + no peers
+      together mean no possibility of eventual success). The requeue step
+      (parking to `pending_retry` via `parkGrabForRetry`) routes through
+      `RunAutoGrab` under the existing `usenet_autograb_enabled` gate with
+      no new bypass (§5 Pattern A, unchanged), so the exception surface does
+      not widen.
+      **(2) Ratio/duration-limit seeding cleanup.** When a torrent is seeding
+      and hits a configured ratio or duration limit (either first), seeding
+      stops and the staging-side seeding copy (not the library import) is
+      deleted — same cleanup, same containment. Again, no new gate needed
+      (seeding itself is `off` by default). This is purely an operational
+      cleanup, not an acquisition or library mutation.
+      **Extension patterns, load-bearing for the next auto-grab trigger
+      source** (`series-monitoring-autograb`): there are two distinct ways to
+      extend the shared retry mechanism. This spec uses **Pattern A ("new
+      parker")**  — detect a condition (stale torrent), call
+      `parkGrabForRetry()` to re-park an existing grab row for retry, and
+      stop. The existing `retryDueGrabs` loop picks it up on the next cycle.
+      **Pattern B ("new trigger")** is for initiating a first grab with no
+      prior row — add a new `AutoGrabTrigger` const, add the detection logic
+      where it's observable, call `RunAutoGrab()` with the new trigger, and
+      stop. The difference is not academic: Pattern A re-arms a row by
+      `ExistingGrabID`, so a stalled title on retry retains its TMDB id and
+      metadata; Pattern B creates a fresh row. `series-monitoring-autograb`
+      must use Pattern B because there is no prior row. Do not use both for
+      the same trigger source.
+
 - **Secrets encrypted at rest** (`internal/secrets`, a locally generated
   key file, not an OS keychain — the primary deployment target is a
   headless container with no keychain to use).

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,13 +34,151 @@ const (
 	DownloaderStagingDirKey     = "downloader_staging_dir"
 	DownloaderMaxConcurrentKey  = "downloader_max_concurrent"
 	DownloaderMaxConnectionsKey = "downloader_max_connections"
+
+	TorrentDownloadRateLimitKey     = "torrent_download_rate_limit_bytes"
+	TorrentDHTEnabledKey            = "torrent_dht_enabled"
+	TorrentPEXEnabledKey            = "torrent_pex_enabled"
+	TorrentListenPortKey            = "torrent_listen_port"
+	TorrentObfuscationModeKey       = "torrent_obfuscation_mode"
+	TorrentSeedingEnabledKey        = "torrent_seeding_enabled"
+	TorrentSeedRatioLimitKey        = "torrent_seed_ratio_limit"
+	TorrentSeedDurationMinutesKey   = "torrent_seed_duration_minutes"
+	TorrentStaleThresholdMinutesKey = "torrent_stale_threshold_minutes"
 )
 
 // Defaults for the concurrency knobs when unset (per the feature spec).
+//
+// Claude 2026-08-01: exported (was downloaderDefault*, package-private).
+// Reason: cmd/sakms/main.go's buildDownloader is the boot-time half of a
+// two-reader contract with this file — both must read the same keys with the
+// same defaults, or a saved setting applies while the process is up and
+// silently reverts on the next restart. main.go previously re-declared its own
+// copy of every default (and hardcoded bare 3/4 for these two), so the two
+// halves agreed only by review. They now share one definition and the compiler
+// enforces it; no drift test is needed or possible.
+// Troubleshooting: a torrent setting that works until the container restarts.
+// Review if: main.go stops importing internal/api, or these move to a shared
+// config package.
 const (
-	downloaderDefaultMaxConcurrent  = 3
-	downloaderDefaultMaxConnections = 4
+	DownloaderDefaultMaxConcurrent  = 3
+	DownloaderDefaultMaxConnections = 4
 )
+
+// Defaults for the torrent-engine knobs when unset. DHT/PEX mirror the
+// anacrolix/torrent library's own un-overridden defaults, so an install that
+// never opens this settings page behaves exactly as it did before these knobs
+// existed. Seeding defaults OFF deliberately — same "off by default, manual
+// first" convention as usenet_autograb_enabled (autograb_shared.go) — because
+// turning it on changes disk usage and upload behavior for in-progress
+// downloads too.
+//
+// Exported for the same reason as the two above — see their comment.
+const (
+	TorrentDefaultDownloadRateLimit     = 0 // bytes/sec; 0 = unlimited
+	TorrentDefaultDHTEnabled            = true
+	TorrentDefaultPEXEnabled            = true
+	TorrentDefaultListenPort            = 42069
+	TorrentDefaultObfuscationMode       = torrentObfuscationPrefer
+	TorrentDefaultSeedingEnabled        = false
+	TorrentDefaultSeedRatioLimit        = 1.0
+	TorrentDefaultSeedDurationMinutes   = 2880 // 48h; 0 = no duration limit
+	TorrentDefaultStaleThresholdMinutes = 240  // 4h; 0 = stale detection off
+)
+
+// The three accepted protocol-obfuscation modes. These map onto the torrent
+// library's HeaderObfuscationPolicy{Preferred, RequirePreferred} pair:
+// require → {true,true}; prefer → {true,false} (the library default); off →
+// {false,true}. Note that "off" is the STRICTEST mode, not the most permissive
+// one — RequirePreferred means "Preferred is a hard requirement", so off
+// rejects every encrypted peer rather than merely preferring plaintext.
+const (
+	torrentObfuscationRequire = "require"
+	torrentObfuscationPrefer  = "prefer"
+	torrentObfuscationOff     = "off"
+)
+
+// torrentListenPortMin/Max bound the listen port to the unprivileged range —
+// the engine runs as a non-root user, so a privileged port could never bind.
+const (
+	torrentListenPortMin = 1024
+	torrentListenPortMax = 65535
+)
+
+// Claude 2026-08-01: upper bounds added for the three "how long / how much"
+// knobs, which previously had a lower bound only.
+// Reason: both minute fields reach downloader.go as
+// `time.Duration(minutes) * time.Minute` — int64 NANOSECONDS — so any value
+// above 153,722,867 wraps to a NEGATIVE duration. That inverts the setting
+// instead of saturating it: `now.Sub(lastProgressAt) >= negativeThreshold` is
+// true for every entry, so a stale threshold an operator entered meaning
+// "effectively never" auto-cancels and DELETES the partial files of every
+// active torrent on the next poll tick. seedRatioLimit has the same shape via
+// downloader.go's `int64(float64(seedTotalBytes) * ratio)`: an out-of-range
+// float→int64 conversion is implementation-defined in Go and yields min-int64
+// on amd64, so the ratio target goes negative and seeding stops instantly.
+// 10 years of minutes is far past any real use case and two orders of
+// magnitude below the wrap point, so a rejected value is unambiguously a typo
+// or an attack, never a legitimate "very large" setting.
+// Troubleshooting: unattended, irreversible mass-cancellation of active
+// torrents after a settings save.
+// Review if: these values stop being converted to time.Duration/int64.
+const (
+	torrentMinutesMax   = 5256000 // 10 years, in minutes
+	torrentSeedRatioMax = 10000.0
+)
+
+// stagingDirDenylist is the set of system directories the staging dir may never
+// be pointed at. The torrent engine legitimately creates, writes, and DELETES
+// torrent-declared filenames under StagingDir, so a save pointing it at one of
+// these hands that authority to whatever a .torrent file declares. Matched on
+// the CLEANED path exactly, never as a prefix: "/var/lib" must reject itself
+// while still allowing the common production default /var/lib/sakms/downloads.
+// It does not need to be exhaustive — it catches the obvious footguns, and the
+// absolute-path and creatable checks alongside it do the rest.
+var stagingDirDenylist = map[string]bool{
+	"/":        true,
+	"/bin":     true,
+	"/boot":    true,
+	"/dev":     true,
+	"/etc":     true,
+	"/home":    true,
+	"/lib":     true,
+	"/proc":    true,
+	"/root":    true,
+	"/sbin":    true,
+	"/sys":     true,
+	"/usr":     true,
+	"/var":     true,
+	"/var/lib": true,
+}
+
+// validateStagingDir checks an incoming staging-dir value, returning an
+// operator-facing message when it must be rejected with 400.
+//
+// An EMPTY string is legal and is NOT validated here: it means "leave it at the
+// boot-computed default", which this handler cannot resolve (it has no dataDir)
+// and which is the one value guaranteed to already be creatable, since boot
+// created it. Note filepath.Clean("") is ".", so the early return also has to
+// come before the absolute-path check.
+//
+// MkdirAll is the last check because it is the only one with a side effect: a
+// request rejected on some other field must not leave a directory behind.
+func validateStagingDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(dir) {
+		return "stagingDir must be an absolute path"
+	}
+	clean := filepath.Clean(dir)
+	if stagingDirDenylist[clean] {
+		return fmt.Sprintf("stagingDir must not be the system directory %q — the torrent engine creates and deletes torrent-declared filenames under it", clean)
+	}
+	if err := os.MkdirAll(clean, 0o755); err != nil {
+		return fmt.Sprintf("stagingDir %q could not be created: %v", clean, err)
+	}
+	return ""
+}
 
 // downloadsGlobalPausedKey is the settings flag backing the system-wide download
 // pause toggle (GET/PUT /api/downloads/pause-state). It's a simple app-wide
@@ -357,67 +497,346 @@ func pauseAllActive(dl *downloader.Manager, nzb *usenet.Manager) {
 }
 
 // getDownloaderConfigHandler returns the downloader's staging dir + concurrency
-// knobs, filling in defaults for unset numeric fields (staging dir "" when
-// unset — the caller/boot supplies the real default path).
+// knobs plus the torrent-engine behavior knobs, filling in defaults for unset
+// fields (staging dir "" when unset — the caller/boot supplies the real default
+// path, this handler has no dataDir to synthesize one from).
 func getDownloaderConfigHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		staging, err := getSetting(ctx, settingsStore, DownloaderStagingDirKey)
+		cfg, err := readDownloaderConfig(r.Context(), settingsStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		conc, err := getSettingInt(ctx, settingsStore, DownloaderMaxConcurrentKey, downloaderDefaultMaxConcurrent)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		conn, err := getSettingInt(ctx, settingsStore, DownloaderMaxConnectionsKey, downloaderDefaultMaxConnections)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, apidto.DownloaderConfig{
-			StagingDir:     staging,
-			MaxConcurrent:  conc,
-			MaxConnections: conn,
-		})
+		writeJSON(w, cfg)
 	}
+}
+
+// readDownloaderConfig reads the whole downloader settings document, filling in
+// the documented default for every unset key. Two callers: the GET handler, and
+// the PUT handler — which needs the PRE-EDIT document to work out whether the
+// incoming save changed a rebuild-class field or only live-patchable ones.
+func readDownloaderConfig(ctx context.Context, settingsStore *settings.Store) (apidto.DownloaderConfig, error) {
+	var zero apidto.DownloaderConfig
+	staging, err := getSetting(ctx, settingsStore, DownloaderStagingDirKey)
+	if err != nil {
+		return zero, err
+	}
+	conc, err := getSettingInt(ctx, settingsStore, DownloaderMaxConcurrentKey, DownloaderDefaultMaxConcurrent)
+	if err != nil {
+		return zero, err
+	}
+	conn, err := getSettingInt(ctx, settingsStore, DownloaderMaxConnectionsKey, DownloaderDefaultMaxConnections)
+	if err != nil {
+		return zero, err
+	}
+	rate, err := getSettingInt(ctx, settingsStore, TorrentDownloadRateLimitKey, TorrentDefaultDownloadRateLimit)
+	if err != nil {
+		return zero, err
+	}
+	dht, err := getSettingBool(ctx, settingsStore, TorrentDHTEnabledKey, TorrentDefaultDHTEnabled)
+	if err != nil {
+		return zero, err
+	}
+	pex, err := getSettingBool(ctx, settingsStore, TorrentPEXEnabledKey, TorrentDefaultPEXEnabled)
+	if err != nil {
+		return zero, err
+	}
+	port, err := getSettingInt(ctx, settingsStore, TorrentListenPortKey, TorrentDefaultListenPort)
+	if err != nil {
+		return zero, err
+	}
+	obfs, err := getSetting(ctx, settingsStore, TorrentObfuscationModeKey)
+	if err != nil {
+		return zero, err
+	}
+	if obfs == "" {
+		obfs = TorrentDefaultObfuscationMode
+	}
+	seeding, err := getSettingBool(ctx, settingsStore, TorrentSeedingEnabledKey, TorrentDefaultSeedingEnabled)
+	if err != nil {
+		return zero, err
+	}
+	ratio, err := getSettingFloat(ctx, settingsStore, TorrentSeedRatioLimitKey, TorrentDefaultSeedRatioLimit)
+	if err != nil {
+		return zero, err
+	}
+	seedMinutes, err := getSettingInt(ctx, settingsStore, TorrentSeedDurationMinutesKey, TorrentDefaultSeedDurationMinutes)
+	if err != nil {
+		return zero, err
+	}
+	staleMinutes, err := getSettingInt(ctx, settingsStore, TorrentStaleThresholdMinutesKey, TorrentDefaultStaleThresholdMinutes)
+	if err != nil {
+		return zero, err
+	}
+	return apidto.DownloaderConfig{
+		StagingDir:             staging,
+		MaxConcurrent:          conc,
+		MaxConnections:         conn,
+		DownloadRateLimitBytes: rate,
+		DHTEnabled:             dht,
+		PEXEnabled:             pex,
+		ListenPort:             port,
+		ObfuscationMode:        obfs,
+		SeedingEnabled:         seeding,
+		SeedRatioLimit:         ratio,
+		SeedDurationMinutes:    seedMinutes,
+		StaleThresholdMinutes:  staleMinutes,
+	}, nil
 }
 
 // putDownloaderConfigHandler stores the torrent downloader's staging dir +
 // concurrency knobs. MaxConnections here applies to the torrent engine only —
 // Usenet connection counts are configured per-subscription in the Usenet
 // settings page instead (see DownloaderMaxConnectionsKey's doc comment).
-// Concurrency values must be positive; staging dir is free-typed (it's
-// validated for existence/writability the next time the engine restarts, same
-// tolerance as a library root folder). A change takes effect on restart.
-func putDownloaderConfigHandler(settingsStore *settings.Store) http.HandlerFunc {
+// Concurrency values must be positive.
+//
+// Claude 2026-08-01: staging dir is validated HERE now (absolute, not an
+// obvious system directory, and creatable — see validateStagingDir).
+// Reason: this comment used to claim the value was "validated for existence and
+// writability by the engine rebuild this save triggers". That was false — the
+// engine's only staging-dir handling is downloader.go:429-431, which MkdirAlls
+// and log.Printfs any error without returning it, so nothing ever reached this
+// handler and any writable path (/etc, /) was accepted. Note the check is
+// "creatable", NOT "writable": os.MkdirAll returns nil for an existing
+// directory without probing it. A read-only existing directory still fails
+// later, at download time, in the log.
+// Troubleshooting: the torrent engine creating and deleting torrent-declared
+// filenames somewhere it should never have been pointed.
+// Review if: the engine starts returning its staging-dir error from
+// Reconfigure, which would make a handler-side creatability check redundant.
+//
+// A change takes effect IMMEDIATELY, not on restart: the validated document is
+// handed to Manager.Reconfigure, which either live-patches the running engine
+// or rebuilds it (see downloaderRebuildClass). The response says which happened.
+//
+// ORDER IS LOAD-BEARING: validate -> Reconfigure -> persist. Reconfigure can
+// REFUSE a rebuild that isn't safe right now (a staging-dir move with an open
+// file handle; any torrent still fetching its metadata), and a refusal must
+// leave the operator's stored config exactly as it was — persisting first would
+// strand a setting that the engine rejected, which is the "stored and ignored"
+// failure this whole feature exists to prevent. The residual risk runs the
+// other way and is accepted: if a settings write fails AFTER a successful
+// Reconfigure, the live engine leads the store until the next restart. That is
+// a 500 the operator sees and can retry, versus a silent permanent divergence.
+//
+// This is a FULL-DOCUMENT REPLACE, not a patch: none of the fields are
+// pointers or omitempty, so an omitted field arrives as its zero value and is
+// stored as such. A client must therefore GET, mutate, and PUT the whole
+// document back — omitting maxConcurrent/maxConnections/listenPort is a loud
+// 400, but omitting dhtEnabled/pexEnabled silently DISABLES them (their
+// defaults are true), and omitting the rate/ratio/duration/stale fields
+// silently means unlimited/off. The plain-type choice is deliberate (it keeps
+// the wire contract readable and matches the pre-existing maxConcurrent
+// guard's shape); the round-trip requirement is what pays for it, and
+// TestDownloaderConfig_OmittedMaxConcurrentIs400 pins it.
+func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req apidto.DownloaderConfig
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+		// Everything is validated before anything is stored: interleaving
+		// validate-then-Set would leave a rejected request half-persisted.
 		if req.MaxConcurrent < 1 || req.MaxConnections < 1 {
 			http.Error(w, "maxConcurrent and maxConnections must be at least 1", http.StatusBadRequest)
 			return
 		}
+		if req.ListenPort < torrentListenPortMin || req.ListenPort > torrentListenPortMax {
+			http.Error(w, fmt.Sprintf("listenPort must be between %d and %d", torrentListenPortMin, torrentListenPortMax), http.StatusBadRequest)
+			return
+		}
+		switch req.ObfuscationMode {
+		case torrentObfuscationRequire, torrentObfuscationPrefer, torrentObfuscationOff:
+		default:
+			http.Error(w, fmt.Sprintf("obfuscationMode must be one of %q, %q, %q", torrentObfuscationRequire, torrentObfuscationPrefer, torrentObfuscationOff), http.StatusBadRequest)
+			return
+		}
+		if req.DownloadRateLimitBytes < 0 {
+			http.Error(w, "downloadRateLimitBytes must be zero (unlimited) or greater", http.StatusBadRequest)
+			return
+		}
+		// The three bounds below are UPPER bounds as well as lower ones. An
+		// unbounded value does not saturate, it WRAPS NEGATIVE and inverts the
+		// setting — see torrentMinutesMax's comment for the full mechanism.
+		// NaN is checked explicitly because `< 0` is false for it; encoding/json
+		// has no NaN literal so it cannot arrive over the wire today, but the
+		// guard costs nothing and the ceiling is what does the real work.
+		if req.SeedRatioLimit < 0 || math.IsNaN(req.SeedRatioLimit) || req.SeedRatioLimit > torrentSeedRatioMax {
+			http.Error(w, fmt.Sprintf("seedRatioLimit must be between zero (no ratio limit) and %g", torrentSeedRatioMax), http.StatusBadRequest)
+			return
+		}
+		if req.SeedDurationMinutes < 0 || req.SeedDurationMinutes > torrentMinutesMax {
+			http.Error(w, fmt.Sprintf("seedDurationMinutes must be between zero (no duration limit) and %d", torrentMinutesMax), http.StatusBadRequest)
+			return
+		}
+		if req.StaleThresholdMinutes < 0 || req.StaleThresholdMinutes > torrentMinutesMax {
+			http.Error(w, fmt.Sprintf("staleThresholdMinutes must be between zero (detection disabled) and %d", torrentMinutesMax), http.StatusBadRequest)
+			return
+		}
+		// Last, because it is the only validation with a side effect (MkdirAll).
+		if msg := validateStagingDir(req.StagingDir); msg != "" {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
 		ctx := r.Context()
-		if err := settingsStore.Set(ctx, DownloaderStagingDirKey, req.StagingDir); err != nil {
+		// The pre-edit document is what classifies the save. It comes from the
+		// same store the engine's boot-time reader uses, and now from the same
+		// default constants too (cmd/sakms/main.go's buildDownloader reads
+		// api.TorrentDefault*/api.DownloaderDefault* directly), so old-vs-new
+		// here matches what Reconfigure computes internally — with the one
+		// documented staging-dir exception in downloaderRebuildClass's comment.
+		old, err := readDownloaderConfig(ctx, settingsStore)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := settingsStore.Set(ctx, DownloaderMaxConcurrentKey, strconv.Itoa(req.MaxConcurrent)); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// Classification compares the STORED old document against the STORED new
+		// one — req, unsubstituted. See downloaderRebuildClass's doc comment for
+		// why the staging-dir case is deliberately classified this way.
+		rebuild := downloaderRebuildClass(old, req)
+
+		// Claude 2026-08-01: substitution now affects the APPLIED value only;
+		// it no longer rewrites either side of the classification.
+		// Reason: substituting the resolved live path into both `old` and `next`
+		// made "clear stagingDir back to the boot default" compare equal to
+		// itself, so a save that really did change the stored value (a real path
+		// -> "") was reported as a live, no-restart-needed change. The next boot
+		// then re-derives <dataDir>/downloads, which need not be the path that
+		// was in use — behavior silently changing across a restart with no
+		// warning, the exact failure class M11 exists to prevent.
+		// Troubleshooting: staging dir reverting on restart after a save the UI
+		// reported as applied instantly.
+		// Review if: this handler gains a dataDir and can resolve the default
+		// itself, which would remove the store/engine disagreement entirely.
+		//
+		// "" in the request still means "leave it at the boot default", so it
+		// resolves to the live path rather than handing the torrent client an
+		// empty DataDir (which would write to the cwd). "" remains what gets
+		// STORED, so boot keeps re-deriving the default.
+		next := req
+		if dl != nil && next.StagingDir == "" {
+			next.StagingDir = dl.StagingDir()
 		}
-		if err := settingsStore.Set(ctx, DownloaderMaxConnectionsKey, strconv.Itoa(req.MaxConnections)); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+
+		if dl != nil {
+			applied := downloader.Config{
+				StagingDir:            next.StagingDir,
+				MaxConc:               next.MaxConcurrent,
+				MaxConn:               next.MaxConnections,
+				DownloadRateLimit:     next.DownloadRateLimitBytes,
+				DHTEnabled:            next.DHTEnabled,
+				PEXEnabled:            next.PEXEnabled,
+				ListenPort:            next.ListenPort,
+				ObfuscationMode:       next.ObfuscationMode,
+				SeedingEnabled:        next.SeedingEnabled,
+				SeedRatioLimit:        next.SeedRatioLimit,
+				SeedDurationMinutes:   next.SeedDurationMinutes,
+				StaleThresholdMinutes: next.StaleThresholdMinutes,
+			}
+			if err := dl.Reconfigure(ctx, applied); err != nil {
+				if errors.Is(err, downloader.ErrRebuildRefused) {
+					// Not a failure to save — a "not right now". The message
+					// names the blocking download and what to do about it, so
+					// it goes to the operator verbatim. Nothing was persisted
+					// and nothing was applied; a retry in a moment succeeds.
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
-		w.WriteHeader(http.StatusNoContent)
+
+		for _, kv := range []struct{ key, value string }{
+			{DownloaderStagingDirKey, req.StagingDir},
+			{DownloaderMaxConcurrentKey, strconv.Itoa(req.MaxConcurrent)},
+			{DownloaderMaxConnectionsKey, strconv.Itoa(req.MaxConnections)},
+			{TorrentDownloadRateLimitKey, strconv.Itoa(req.DownloadRateLimitBytes)},
+			{TorrentDHTEnabledKey, strconv.FormatBool(req.DHTEnabled)},
+			{TorrentPEXEnabledKey, strconv.FormatBool(req.PEXEnabled)},
+			{TorrentListenPortKey, strconv.Itoa(req.ListenPort)},
+			{TorrentObfuscationModeKey, req.ObfuscationMode},
+			{TorrentSeedingEnabledKey, strconv.FormatBool(req.SeedingEnabled)},
+			{TorrentSeedRatioLimitKey, strconv.FormatFloat(req.SeedRatioLimit, 'f', -1, 64)},
+			{TorrentSeedDurationMinutesKey, strconv.Itoa(req.SeedDurationMinutes)},
+			{TorrentStaleThresholdMinutesKey, strconv.Itoa(req.StaleThresholdMinutes)},
+		} {
+			if err := settingsStore.Set(ctx, kv.key, kv.value); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		writeJSON(w, downloaderApplyResult(rebuild))
 	}
+}
+
+// downloaderApplyResult turns the rebuild classification into §6.3's
+// apply-result body. Split out so the copy has one home and the tests can
+// assert the classification without matching prose.
+func downloaderApplyResult(rebuild bool) apidto.DownloaderConfigApplyResult {
+	if rebuild {
+		return apidto.DownloaderConfigApplyResult{
+			Applied:         "rebuilt",
+			RestartRequired: true,
+			Message:         "Saved. Applying these settings restarted the torrent engine — any downloads in flight were briefly interrupted and have resumed.",
+		}
+	}
+	return apidto.DownloaderConfigApplyResult{
+		Applied:         "live",
+		RestartRequired: false,
+		Message:         "Saved and applied immediately. No downloads were interrupted.",
+	}
+}
+
+// downloaderRebuildClass reports whether moving from old to next needs the
+// torrent engine rebuilt rather than live-patched.
+//
+// THIS MIRRORS downloader.rebuildRequired, WHICH IS UNEXPORTED. The engine
+// decides the real apply path from its own copy of this comparison; this one
+// only decides what the response TELLS the operator. They must agree, so a
+// change to either belongs in both — the failure mode of a divergence is a save
+// that quietly reports "applied immediately" while the engine tore itself down
+// (or the reverse), which is a lie in the exact place this feature exists to
+// stop lying.
+//
+// Claude 2026-08-01: ONE deliberate, permanent exception to that mirror.
+// Reason: this function is now called with the STORED old and new documents,
+// while the engine compares RESOLVED paths. Those agree for every field except
+// staging dir cleared to "": stored "/srv/dl" -> "" is a real change here and a
+// no-op to the engine (whose resolved path is unchanged either way), so this
+// over-reports rebuild for that one transition. That is the correct direction to
+// be wrong in. The stored value DID change, and the next boot re-derives
+// <dataDir>/downloads, which need not be the path currently in use — so
+// "restartRequired" is the honest answer even though nothing was torn down
+// right now. RestartRequired's contract (see apidto.DownloaderConfigApplyResult)
+// is "this change did not take effect quietly and instantly", which holds.
+// Reporting "live" instead would be the far worse lie: applies now, silently
+// reverts on restart.
+// Troubleshooting: a staging-dir clear reported as an instant no-op save.
+// Review if: this handler gains a dataDir and can resolve the default itself,
+// at which point stored and resolved comparisons converge and the exception
+// should be deleted rather than documented.
+//
+// Note the seeding case is DIRECTIONAL, not !=. The engine's upload gate
+// (config.NoUpload / config.Seed) is fixed at client construction, so turning
+// seeding ON cannot be patched into a running client and needs a rebuild;
+// turning it OFF is genuinely live, because the per-torrent DisallowDataUpload
+// call short-circuits ahead of it.
+func downloaderRebuildClass(old, next apidto.DownloaderConfig) bool {
+	switch {
+	case old.StagingDir != next.StagingDir:
+		return true
+	case old.ListenPort != next.ListenPort:
+		return true
+	case old.DHTEnabled != next.DHTEnabled:
+		return true
+	case old.PEXEnabled != next.PEXEnabled:
+		return true
+	case old.ObfuscationMode != next.ObfuscationMode:
+		return true
+	}
+	return next.SeedingEnabled && !old.SeedingEnabled
 }
 
 // getSetting returns a settings value, "" when unset (ErrNotFound is a normal
@@ -445,4 +864,39 @@ func getSettingInt(ctx context.Context, store *settings.Store, key string, def i
 		return def, nil
 	}
 	return n, nil
+}
+
+// getSettingBool returns a settings value parsed as bool, or def when unset or
+// unparseable. Same tolerance as getSettingInt: a corrupted value degrades to
+// the documented default rather than failing the whole config read.
+func getSettingBool(ctx context.Context, store *settings.Store, key string, def bool) (bool, error) {
+	v, err := getSetting(ctx, store, key)
+	if err != nil {
+		return false, err
+	}
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def, nil
+	}
+	return b, nil
+}
+
+// getSettingFloat returns a settings value parsed as float64, or def when unset
+// or unparseable. Mirrors getSettingInt's tolerance.
+func getSettingFloat(ctx context.Context, store *settings.Store, key string, def float64) (float64, error) {
+	v, err := getSetting(ctx, store, key)
+	if err != nil {
+		return 0, err
+	}
+	if v == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def, nil
+	}
+	return f, nil
 }

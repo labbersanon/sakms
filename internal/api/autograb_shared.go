@@ -318,8 +318,8 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 // is the dedup key: a re-submitted request and every subsequent retry cycle
 // update the one existing row instead of inserting duplicates. A first-time row
 // is ONE atomic Create at retry_count 0 — SetPendingRetry increments, so
-// Create-then-SetPendingRetry would land a brand-new row at 1 and also give up
-// one cycle early.
+// Create-then-SetPendingRetry would land a brand-new row at 1, an inaccurate
+// attempt count for a row that was never actually retried yet.
 func parkPendingRetry(ctx context.Context, deps AutoGrabDeps, req AutoGrabRequest, reason string) (*grabs.Grab, error) {
 	after := time.Now().Add(usenetRetryInterval(ctx, deps.SettingsStore))
 
@@ -329,9 +329,10 @@ func parkPendingRetry(ctx context.Context, deps AutoGrabDeps, req AutoGrabReques
 		if err := deps.GrabsStore.SetPendingRetry(ctx, existing.ID, after, reason); err != nil {
 			return nil, err
 		}
-		// Re-read: SetPendingRetry decides in SQL whether the row stayed
-		// pending_retry or gave up and became failed, and the caller must
-		// report which honestly rather than assuming.
+		// Re-read: SetPendingRetry always parks to pending_retry with a real
+		// retry_after (§4.4.1: the retry-attempt cap was removed 2026-08-01,
+		// an explicit product decision). Read back to log the scheduled retry
+		// time honestly, not to branch on a Failed status (unreachable).
 		return deps.GrabsStore.Get(ctx, existing.ID)
 	case errors.Is(err, grabs.ErrNotFound):
 		created, err := deps.GrabsStore.Create(ctx, grabs.Grab{

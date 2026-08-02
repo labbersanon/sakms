@@ -36,23 +36,18 @@ const (
 	Downloading Status = "downloading"
 	Completed   Status = "completed"
 	Imported    Status = "imported"
-	Failed      Status = "failed"
+	// Failed is a genuinely terminal, never-retried state — reached only via
+	// a permanent classification (e.g. a 451/DMCA-removed article), never via
+	// retry exhaustion (SetPendingRetry no longer caps retries; see its doc).
+	Failed Status = "failed"
 	// PendingRetry is an auto-grab that found nothing worth grabbing (no
 	// candidate cleared the quality floor) or whose usenet retrieval failed
 	// transiently — it holds no download and will be re-searched from scratch
-	// on the next retry cycle. Deliberately NOT Failed: the Requests
-	// aggregation would misreport it, and a genuinely failed grab would be
-	// retried forever.
+	// on the next retry cycle, indefinitely (no attempt cap as of 2026-08-01).
+	// Deliberately NOT Failed: the Requests aggregation would misreport it as
+	// terminal, and this status is by design never terminal on its own.
 	PendingRetry Status = "pending_retry"
 )
-
-// maxRetryAttempts caps how many times a pending_retry grab is re-searched
-// before it gives up and becomes Failed with an explicit reason. Some items are
-// PERMANENTLY ungradeable — a Series season pack always has runtime 0 by design
-// (seriesEpisodeRuntimeSeconds returns 0 for episode <= 0), as does an Adult
-// item whose identification carried no duration — so without a cap their
-// retries could never succeed and would run forever.
-const maxRetryAttempts = 5
 
 // sqliteTimeLayout is the shape strftime('%Y-%m-%dT%H:%M:%fZ', 'now') writes
 // throughout this schema. retry_after is compared lexicographically in SQL, so
@@ -397,13 +392,23 @@ func (s *Store) scanGrab(row rowScanner) (Grab, error) {
 	return g, err
 }
 
-// SetPendingRetry parks a grab for a later re-search, or gives up on it.
+// SetPendingRetry parks a grab for a later re-search.
 //
-// The retry_count increment and the give-up decision are ONE statement so they
-// cannot interleave: once the incremented count exceeds maxRetryAttempts the
-// row becomes Failed with an explaining reason and no retry_after, instead of
-// cycling back to PendingRetry forever. A freshly created pending_retry row is
-// NOT routed through here — Create writes it at count 0 (see Create).
+// CHANGED 2026-08-01 (explicit product decision, not a bug fix): this used to
+// cap retries at maxRetryAttempts (5), after which a row became permanently
+// Failed. Wade decided auto-grab should keep retrying until a match is found
+// rather than give up — the cap is removed. retry_count is still incremented
+// on every park (kept for observability/audit — how many times has this been
+// tried), but it no longer drives any status transition. A freshly created
+// pending_retry row is NOT routed through here — Create writes it at count 0
+// (see Create).
+//
+// Known consequence, accepted deliberately: some items are structurally
+// ungradeable forever (e.g. a Series season pack's runtime is always 0 by
+// design, as is an Adult item whose identification carried no duration) —
+// these now retry on every cycle indefinitely rather than terminating. This
+// is bounded by the retry cycle's own interval (not a tight loop), and an
+// operator can still manually exclude a request to stop it.
 //
 // download_gid is CLEARED in the same statement, and that is load-bearing in
 // two directions. Parking always means "this download attempt is dead, re-search
@@ -419,17 +424,16 @@ func (s *Store) scanGrab(row rowScanner) (Grab, error) {
 //     by infohash back to the SAME GID — would be rejected as "already grabbing
 //     this release" against a download that is not in flight.
 func (s *Store) SetPendingRetry(ctx context.Context, id int64, after time.Time, reason string) error {
-	gaveUp := fmt.Sprintf("gave up after %d retry attempts: %s", maxRetryAttempts, reason)
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE grabs SET
 			retry_count  = retry_count + 1,
-			status       = CASE WHEN retry_count + 1 > ? THEN 'failed' ELSE 'pending_retry' END,
-			retry_after  = CASE WHEN retry_count + 1 > ? THEN ''       ELSE ? END,
-			retry_reason = CASE WHEN retry_count + 1 > ? THEN ?        ELSE ? END,
+			status       = 'pending_retry',
+			retry_after  = ?,
+			retry_reason = ?,
 			download_gid = '',
 			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 		WHERE id = ?
-	`, maxRetryAttempts, maxRetryAttempts, FormatTime(after), maxRetryAttempts, gaveUp, reason, id)
+	`, FormatTime(after), reason, id)
 	if err != nil {
 		return fmt.Errorf("setting grab %d pending retry: %w", id, err)
 	}
@@ -462,8 +466,9 @@ type Dispatch struct {
 // must not still carry a retry_after (DueForRetry would hand it straight back)
 // nor a retry_reason (the Requests screen renders it, and "no candidate cleared
 // the quality floor" on an in-flight download is a visible lie). retry_count is
-// deliberately KEPT — it is this request's attempt history, so a later failure
-// resumes the maxRetryAttempts cap where it left off instead of restarting it.
+// deliberately KEPT — it is this request's attempt history (observability only,
+// since SetPendingRetry no longer caps on it), so a later failure's count
+// continues from where this request's history left off instead of restarting.
 func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 	encrypted, err := s.encrypt(d.DownloadURL)
 	if err != nil {

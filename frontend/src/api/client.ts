@@ -18,6 +18,25 @@
 //      Content-Type explicitly when it injects X-Api-Key, or the JSON content
 //      type would be dropped.
 
+// ApiError is what api() throws on a non-ok response: a plain Error (same
+// message, so every existing `catch (e) { (e as Error).message }` and every
+// `rejects.toThrow("…")` keeps working) that additionally carries the HTTP
+// status. It exists because some routes answer with several DISTINCT non-ok
+// meanings that a caller must tell apart, and the message alone can't do it
+// without matching on a server-side string literal that nothing pins:
+// PUT /api/downloader/config answers 400 for a validation failure but 409 for
+// "the engine can't restart right now, nothing was saved, retry in a moment" —
+// a retryable not-now, not a failure. Callers branch on `.status`, never on
+// message text.
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 let sessionExpiredHandler: (() => void) | null = null;
 
 // setOnSessionExpired registers the callback api() invokes when a non-/api/auth
@@ -52,7 +71,7 @@ export async function api<T = unknown>(
       typeof body === "string"
         ? body
         : ((body as { error?: string } | null)?.error ?? JSON.stringify(body));
-    throw new Error(msg || "HTTP " + res.status);
+    throw new ApiError(msg || "HTTP " + res.status, res.status);
   }
   return body as T;
 }

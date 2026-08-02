@@ -357,6 +357,11 @@ func run() error {
 	// stops the torrent client too.
 	if dlManager != nil {
 		dlManager.SetOnComplete(api.DownloadCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager))
+		// Stale-torrent callback, wired the same way and for the same reason as
+		// the completion callback above: the engine detects the dead download,
+		// internal/api owns what to do about it (cancel + park for re-search).
+		// Both must be set BEFORE Start — the poll loop reads them unguarded.
+		dlManager.SetOnStale(api.StaleTorrentHandler(settingsStore, grabsStore, dlManager))
 		go func() {
 			if err := dlManager.Start(ctx); err != nil && ctx.Err() == nil {
 				log.Printf("downloader: manager stopped: %v", err)
@@ -501,10 +506,34 @@ func seedBundledOllamaDefaults(ctx context.Context, connStore *connections.Store
 	return nil
 }
 
+// buildDownloader below is the boot-time half of a two-reader contract; the
+// downloader-config GET/PUT handlers in internal/api are the other half, and
+// the PUT handler is what feeds Manager.Reconfigure while the process runs. The
+// two MUST read the same keys with the same defaults. If they diverge, a saved
+// setting applies while the process is up and silently reverts on the next
+// restart — worse than never applying it, because nothing errors and the value
+// is still sitting in the settings table.
+//
+// Claude 2026-08-01: this file's own torrentDefault* const block was deleted;
+// both the keys (api.*Key) and the defaults (api.TorrentDefault* /
+// api.DownloaderDefault*) are now read straight from internal/api below.
+// Reason: the const block was a hand-maintained duplicate of internal/api's
+// then-package-private set, and MaxConcurrent/MaxConnections weren't even in it
+// — they were bare 3 and 4 literals inline. Nothing but review prevented the
+// two halves drifting, which is the exact silent-revert failure the paragraph
+// above describes. With one shared definition the contract is compiler-enforced,
+// so no drift test is needed or possible. (Values live in
+// internal/api/downloads.go, including the note that DHT/PEX must stay TRUE —
+// reading them with anything that yields the zero value on an unset key turns
+// peer discovery off on every fresh install.)
+// Troubleshooting: a torrent setting that works until the container restarts.
+// Review if: this file stops importing internal/api.
+//
 // buildDownloader reads the operator-tunable config from settings (staging dir
-// defaulting to <dataDir>/downloads, concurrency knobs to their defaults) and
-// constructs the process-lifetime download Manager. It does NOT start the
-// engine — the caller does that with `go m.Start(ctx)`.
+// defaulting to <dataDir>/downloads, concurrency and torrent-engine knobs to
+// their documented defaults) and constructs the process-lifetime download
+// Manager. It does NOT start the engine — the caller does that with
+// `go m.Start(ctx)`.
 func buildDownloader(ctx context.Context, dataDir string, settingsStore *settings.Store, httpClient *http.Client) (*downloader.Manager, error) {
 	staging, err := settingsStore.Get(ctx, api.DownloaderStagingDirKey)
 	if err != nil && !errors.Is(err, settings.ErrNotFound) {
@@ -514,13 +543,31 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 		staging = filepath.Join(dataDir, "downloads")
 	}
 
-	maxConc := settingInt(ctx, settingsStore, api.DownloaderMaxConcurrentKey, 3)
-	maxConn := settingInt(ctx, settingsStore, api.DownloaderMaxConnectionsKey, 4)
+	maxConc := settingInt(ctx, settingsStore, api.DownloaderMaxConcurrentKey, api.DownloaderDefaultMaxConcurrent)
+	maxConn := settingInt(ctx, settingsStore, api.DownloaderMaxConnectionsKey, api.DownloaderDefaultMaxConnections)
+
+	obfuscation, err := settingsStore.Get(ctx, api.TorrentObfuscationModeKey)
+	if err != nil && !errors.Is(err, settings.ErrNotFound) {
+		return nil, err
+	}
+	if obfuscation == "" {
+		obfuscation = api.TorrentDefaultObfuscationMode
+	}
 
 	return downloader.New(downloader.Config{
 		StagingDir: staging,
 		MaxConc:    maxConc,
 		MaxConn:    maxConn,
+
+		DownloadRateLimit:     settingInt(ctx, settingsStore, api.TorrentDownloadRateLimitKey, api.TorrentDefaultDownloadRateLimit),
+		DHTEnabled:            settingBool(ctx, settingsStore, api.TorrentDHTEnabledKey, api.TorrentDefaultDHTEnabled),
+		PEXEnabled:            settingBool(ctx, settingsStore, api.TorrentPEXEnabledKey, api.TorrentDefaultPEXEnabled),
+		ListenPort:            settingInt(ctx, settingsStore, api.TorrentListenPortKey, api.TorrentDefaultListenPort),
+		ObfuscationMode:       obfuscation,
+		SeedingEnabled:        settingBool(ctx, settingsStore, api.TorrentSeedingEnabledKey, api.TorrentDefaultSeedingEnabled),
+		SeedRatioLimit:        settingFloat(ctx, settingsStore, api.TorrentSeedRatioLimitKey, api.TorrentDefaultSeedRatioLimit),
+		SeedDurationMinutes:   settingInt(ctx, settingsStore, api.TorrentSeedDurationMinutesKey, api.TorrentDefaultSeedDurationMinutes),
+		StaleThresholdMinutes: settingInt(ctx, settingsStore, api.TorrentStaleThresholdMinutesKey, api.TorrentDefaultStaleThresholdMinutes),
 	}, httpClient), nil
 }
 
@@ -595,4 +642,30 @@ func settingInt(ctx context.Context, settingsStore *settings.Store, key string, 
 		return def
 	}
 	return n
+}
+
+// settingBool reads a bool setting, returning def when the key is unset or
+// unreadable. def — not false — is what an unset key yields, which is what
+// makes a true-by-default knob like torrent_dht_enabled survive a fresh
+// install.
+func settingBool(ctx context.Context, settingsStore *settings.Store, key string, def bool) bool {
+	v, err := settingsStore.GetBool(ctx, key, def)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+// settingFloat reads a float setting stored as a string, returning def when the
+// key is unset or unparseable. Same shape as settingInt.
+func settingFloat(ctx context.Context, settingsStore *settings.Store, key string, def float64) float64 {
+	v, err := settingsStore.Get(ctx, key)
+	if err != nil || v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }

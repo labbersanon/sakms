@@ -9,9 +9,10 @@
 // documented auto-grab exception, not an oversight, and it is bounded the same
 // way the feature is: an off-by-default toggle RunAutoGrab enforces on every
 // cycle, a scorer that refuses to grab an ungradeable release, no grab without
-// a scored match, a permanent-failure (451) path that never retries, and a
-// retry cap that retires a request instead of working it forever. CLAUDE.md's
-// Scan-only claim must be corrected alongside the auto-grab amendment.
+// a scored match, a permanent-failure (451) path that never retries, and
+// indefinite retries with no attempt cap (the cap was removed 2026-08-01, an
+// explicit product decision). CLAUDE.md's Scan-only claim must be corrected
+// alongside the auto-grab amendment.
 //
 // It lives in internal/api rather than its own package because everything it
 // drives is package-private here — RunAutoGrab's deps, parkGrabForRetry,
@@ -45,8 +46,9 @@
 // (real dispatched grabs, with a real TMDB id). Rows parked by the toggle-ON
 // Search hook carry TMDBID 0 and no runtime, which is unfixable at that hook
 // (see runToggleGatedSearch's comment) — for those, what this loop provides is
-// termination, not eventual success: each cycle increments retry_count until
-// maxRetryAttempts converts the row to failed with an explaining reason.
+// an indefinite, unsuccessful retry loop (2026-08-01: the retry-attempt cap
+// was removed — auto-grab now keeps trying until a match is found rather than
+// eventually giving up), not eventual success.
 package api
 
 import (
@@ -99,6 +101,13 @@ const (
 	// the Requests screen. The failure is classified, not stringified, matching
 	// the detail-free contract the stored-connection-test handlers already use.
 	retrySearchFailedReason = "the retry re-search failed — see the server log"
+	// staleTorrentReason is the retry_reason for a torrent auto-cancelled after
+	// making zero progress with no peers for the configured stale threshold.
+	//
+	// SECURITY: detail-free by the same convention as retrySearchFailedReason
+	// above — it is rendered in the browser via the Requests screen and must
+	// never carry a credentialed URL.
+	staleTorrentReason = "the torrent stalled with no progress and no peers — cancelled and requeued"
 )
 
 // usenetRetrievalReason maps a classified retrieval failure to its
@@ -317,11 +326,12 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 		})
 		switch {
 		case err != nil:
-			// A failed attempt must still cost an attempt. Left unparked, the
-			// row stays due forever and this loop re-runs the same broken
-			// search every cycle without maxRetryAttempts ever capping it —
-			// which is exactly what happens to a TMDB-id-less row parked by the
-			// toggle-ON Search hook.
+			// A failed attempt must still cost an attempt (retry_count, for
+			// observability) and re-park on the normal interval. Left unparked,
+			// the row would stay due immediately and this loop would re-run the
+			// same broken search in a tight loop instead of on the normal
+			// interval — which is exactly what happens to a TMDB-id-less row
+			// parked by the toggle-ON Search hook.
 			reparkFailedRetry(ctx, deps, g, err)
 		case out.Gated:
 			// The toggle went off between the interval read and the gate. Every
@@ -354,7 +364,9 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 }
 
 // reparkFailedRetry records a failed retry ATTEMPT, so the attempt is counted
-// and maxRetryAttempts can eventually retire a row that can never succeed. The
+// (observability — 2026-08-01: retries are no longer capped, so this no
+// longer drives a give-up decision) and the row re-parks on the normal
+// interval instead of retrying in a tight loop. The
 // reason is retrySearchFailedReason rather than articlesUnavailableReason — the
 // Requests screen renders it, and a search failure is not an article
 // availability failure — and it is a fixed string rather than the cause's text,

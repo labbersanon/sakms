@@ -1110,24 +1110,30 @@ numbered below by original idea order, not interview order.
    bio/tags render as a header above the existing scene-grid drill-down —
    no new popup UI. Explicitly flags the same open item as item 5's spec:
    needs a design pass before/during implementation.
-7. **Torrent behavior settings + seeding + stale torrent handling** — spec
-   ready: `.omc/specs/deep-interview-torrent-behavior-and-stale-handling.md`
+7. **Torrent behavior settings + seeding + stale torrent handling** — **SHIPPED
+   2026-08-01** (full wave: BE-0 gate closed 2026-08-01; BE-1–BE-6 + FE-1–FE-2
+   + QA-1 executed same day; all tests passing, `go build/vet/test -race` green,
+   frontend `pnpm typecheck/test/build` clean).
+   Spec: `.omc/specs/deep-interview-torrent-behavior-and-stale-handling.md`
    (~12% ambiguity, PASSED). Grew mid-interview at Wade's request to fold
    in "stale torrent handling" (thematically adjacent). New Settings
    section exposes staging dir/max-connections (backend already existed,
-   UI was missing) plus download rate limit, DHT/PEX/local-peer-discovery,
-   listen port, and obfuscation mode (previously hardcoded to library
-   defaults). **Real architectural finding**: seeding (`Seed=true`) can't
-   just be flipped on — completed files are `os.Rename`'d out of staging
-   immediately, so there'd be nothing left to seed. Resolved via
-   copy-then-move: a staging-side seeding copy persists until a ratio or
-   duration limit is hit (whichever first), then gets deleted; the
-   existing library-relocation flow is unchanged. Stale torrents (zero
-   progress, no peers, default 4h threshold) auto-cancel + clean up
-   (reusing item 4's companion Cancel-with-file-deletion spec) and then
-   **requeue into Requests via the same shared retry mechanism item 3's
-   Usenet spec already built** — one retry system, two trigger sources
-   (Usenet no-match, and now stalled torrents).
+   UI was missing) plus download rate limit, DHT/PEX/listen port, and
+   obfuscation mode (previously hardcoded to library defaults). **Note: Local
+   peer discovery was confirmed absent in anacrolix/torrent v1.61.0 and is not
+   exposed** (documented AC1 deviation, disclosed in CHANGELOG).
+   **Real architectural finding**: seeding (`Seed=true`) can't just be flipped
+   on — completed files are `os.Rename`'d out of staging immediately, so
+   there'd be nothing left to seed. Resolved via copy-then-move: a
+   staging-side seeding copy under `<staging>/.import/<gid>/…` persists until
+   a ratio or duration limit is hit (whichever first), then gets deleted; the
+   existing library-relocation flow is unchanged (works on the copy paths, not
+   the originals). Stale torrents (zero progress, no peers, default 4h
+   threshold, off by default) auto-cancel + clean up (reusing item 4's
+   companion Cancel-with-file-deletion spec) and then **requeue into Requests
+   via the same shared retry mechanism item 3's Usenet spec already built** —
+   one retry system, three trigger sources now (Usenet no-match, stalled
+   torrents, and pending for series-monitoring when it ships, item 9).
 8. **Calendar for Grabs/Requests** (grid + list, upcoming + history) — spec
    ready: `.omc/specs/deep-interview-calendar-grabs-requests.md` (~12%
    ambiguity, PASSED). **Replaces Grabs as Queue's 3rd sub-tab** (amends
@@ -1465,21 +1471,30 @@ rather than replacing it.
      Adult Library exists to open). Cells render with disabled styling and
      no click handler, providing operator visibility into Adult storage
      allocation without a broken navigation target.
-- **Propose-only pruning rules** — **spec ready 2026-08-01**:
-  `.omc/specs/deep-interview-pruning-rules.md` (~9% ambiguity, PASSED).
-  **Hard dependency, not yet implementable**: this spec is explicitly
-  gated on the "Storage allocation breakdown" item (above) shipping first
-  — rule conditions read that spec's new per-item `size`/`quality_tier`
-  columns, which don't exist yet. Scope grew beyond this entry's original
-  framing during interview: multiple named, operator-authored rules (not
-  one fixed per-mode rule — a real rule-authoring system, a deliberate,
-  explicitly-confirmed scope increase after being shown the
-  no-premature-abstraction tradeoff), within-rule AND / across-rules OR,
-  wired into `internal/scanschedule`'s existing (currently-unwired) Purge
-  interval as opt-in scheduling AND the existing manual Purge Scan button
-  — still explicitly NOT auto-delete, same staged-for-approval invariant.
-  Matches surface in the existing Purge review queue via the existing
-  `Proposal.Reason` field (rule name + matched values), no new UI queue.
+- **Propose-only pruning rules** — **spec ready, dependency satisfied,
+  planned but not yet built**: `.omc/specs/deep-interview-pruning-rules.md`
+  (~9% ambiguity, PASSED). Its hard dependency ("Storage allocation
+  breakdown," above) shipped 2026-08-01 — the per-item `size`/`quality_tier`
+  columns this spec's rule conditions read now exist. An implementation
+  plan exists at `.omc/plans/autopilot-impl-pruning-rules.md`
+  (Architect+Critic reviewed) and is ready to resume when scheduled — see
+  that file for a required safety addition (a match-count preview before
+  a rule is saved, so a broad rule like an age-only threshold can't stage
+  an unbounded, uncapped portion of the library for deletion in one click)
+  identified during review and not yet resolved. Scope grew beyond this
+  entry's original framing during interview: multiple named,
+  operator-authored rules (not one fixed per-mode rule — a real
+  rule-authoring system, a deliberate, explicitly-confirmed scope increase
+  after being shown the no-premature-abstraction tradeoff), within-rule AND
+  / across-rules OR, wired into `internal/scanschedule`'s Purge interval
+  (**correction**: Purge's scheduler wiring is already fully built at
+  HEAD — the spec's premise that it was "currently-unwired" was wrong;
+  the only real gap is a frontend interval-settings UI, which doesn't
+  exist for Rename/Purge/Dedup at all yet) as opt-in scheduling AND the
+  existing manual Purge Scan button — still explicitly NOT auto-delete,
+  same staged-for-approval invariant. Matches surface in the existing
+  Purge review queue via the existing `Proposal.Reason` field (rule name +
+  matched values), no new UI queue.
 
 ### Discover card UI cleanup (grab buttons, poster size) — spec ready 2026-08-01
 `.omc/specs/deep-interview-discover-card-cleanup.md` (~9% ambiguity,

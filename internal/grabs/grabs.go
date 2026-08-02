@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/dbutil"
@@ -27,6 +28,18 @@ import (
 
 // ErrNotFound is returned by Get when no grab exists with the given ID.
 var ErrNotFound = errors.New("grabs: no grab with that id")
+
+// ErrHeldRequestExists is returned by Create when a held Calendar pre-release
+// request already exists for the same (mode, tmdb_id) — the partial unique index
+// idx_grabs_held_request (migration 0057) refusing a second one.
+//
+// It exists so the route can degrade a LOST RACE into its ordinary
+// already-requested answer instead of a 500. Two concurrent clicks both miss
+// FindHeldRequest and both reach Create; the loser gets this, re-reads the row
+// the winner minted, and reports the same alreadyRequested the sequential path
+// reports. The index is what makes the outcome correct; this error is only what
+// makes it presentable.
+var ErrHeldRequestExists = errors.New("grabs: a held pre-release request already exists for that mode and tmdb id")
 
 // Status is a grab's lifecycle stage.
 type Status string
@@ -137,8 +150,20 @@ type Grab struct {
 	RetryAfter  string `json:"retryAfter,omitempty"`
 	RetryCount  int    `json:"retryCount,omitempty"`
 	RetryReason string `json:"retryReason,omitempty"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	// HoldUntil is a Calendar pre-release request's hold: a sqliteTimeLayout
+	// timestamp ("" for every grab that did not originate as one). It is this
+	// feature's ORIGIN MARKER, not merely a schedule — nothing but a Calendar
+	// pre-release request can produce a non-empty value, so origin is a
+	// queryable fact rather than an inference from status + RetryReason +
+	// RetryCount (the pattern that caused a HIGH-severity misclassification bug
+	// in series air-date monitoring).
+	//
+	// It is NEVER cleared, including after the row is promoted and dispatched:
+	// provenance outlives the hold. DueForRelease's retry_after = '' guard, not
+	// a clear, is what makes promotion fire exactly once.
+	HoldUntil string `json:"holdUntil,omitempty"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // encryptor is the subset of *secrets.Store this package needs — the same
@@ -202,6 +227,12 @@ func (s *Store) Create(ctx context.Context, g Grab) (Grab, error) {
 	if g.Status != PendingRetry {
 		g.Status = Queued
 		g.RetryAfter, g.RetryCount, g.RetryReason = "", 0, ""
+		// HoldUntil is zeroed by the same arm and for the same reason: a hold
+		// only ever belongs to a pending_retry row a Calendar pre-release
+		// request minted. Without this a caller could fabricate a queued row
+		// carrying a hold, which is exactly the fabrication this arm exists to
+		// prevent.
+		g.HoldUntil = ""
 	}
 	encrypted, err := s.encrypt(g.DownloadURL)
 	if err != nil {
@@ -211,14 +242,27 @@ func (s *Store) Create(ctx context.Context, g Grab) (Grab, error) {
 		INSERT INTO grabs (
 			mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 			download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path,
-			download_url_encrypted, retry_after, retry_count, retry_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			download_url_encrypted, retry_after, retry_count, retry_reason, hold_until
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id, created_at, updated_at
 	`, string(g.Mode), g.Title, g.TMDBID, g.TVDBID, g.SeasonNumber, g.EpisodeNumber, g.SeasonSpecified, g.QualityProfileID, g.Indexer, g.Protocol,
 		g.DownloadClient, g.ClientRef, g.DownloadGID, g.DownloadStatus, g.DownloadStagingPath, string(g.Status), g.RootFolderPath,
-		encrypted, g.RetryAfter, g.RetryCount, g.RetryReason)
+		encrypted, g.RetryAfter, g.RetryCount, g.RetryReason, g.HoldUntil)
 
 	if err := row.Scan(&g.ID, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		// A unique-constraint failure on a HELD row can only be
+		// idx_grabs_held_request: it is the only unique index on this table
+		// (idx_grabs_mode_status, from 0009, is not unique), and the g.HoldUntil
+		// test reads the value AFTER the arm above zeroed it for every
+		// non-PendingRetry caller — so no ordinary grab path can reach this
+		// translation. Matched on the driver's message rather than an extended
+		// result code to avoid importing modernc.org/sqlite here purely to
+		// classify one error; the text is the observed one
+		// ("constraint failed: UNIQUE constraint failed: grabs.mode,
+		// grabs.tmdb_id (2067)").
+		if g.HoldUntil != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return Grab{}, fmt.Errorf("inserting held request for %q: %w", g.Title, ErrHeldRequestExists)
+		}
 		return Grab{}, fmt.Errorf("inserting grab for %q: %w", g.Title, err)
 	}
 	return g, nil
@@ -229,7 +273,7 @@ func (s *Store) List(ctx context.Context, m mode.Mode) ([]Grab, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
 		FROM grabs WHERE mode = ? ORDER BY created_at DESC, id DESC
 	`, string(m))
 	if err != nil {
@@ -256,7 +300,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Grab, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
 		FROM grabs WHERE id = ?
 	`, id)
 	g, err := s.scanGrab(row)
@@ -339,7 +383,7 @@ func (s *Store) GetByDownloadGID(ctx context.Context, gid string) (*Grab, error)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
 		FROM grabs WHERE download_gid = ?
 	`, gid)
 	g, err := s.scanGrab(row)
@@ -373,7 +417,7 @@ func (s *Store) ActiveByDownloadGID(ctx context.Context, m mode.Mode, gid string
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
 		FROM grabs WHERE mode = ? AND download_gid = ? AND status NOT IN ('imported', 'failed')
 		ORDER BY id ASC LIMIT 1
 	`, string(m), gid)
@@ -400,7 +444,7 @@ func (s *Store) scanGrab(row rowScanner) (Grab, error) {
 	var m, encryptedURL string
 	err := row.Scan(&g.ID, &m, &g.Title, &g.TMDBID, &g.TVDBID, &g.SeasonNumber, &g.EpisodeNumber, &g.SeasonSpecified, &g.QualityProfileID, &g.Indexer, &g.Protocol,
 		&g.DownloadClient, &g.ClientRef, &g.DownloadGID, &g.DownloadStatus, &g.DownloadStagingPath, &g.Status, &g.RootFolderPath, &g.FlaggedForReview, &g.FlagReason,
-		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.CreatedAt, &g.UpdatedAt)
+		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.HoldUntil, &g.CreatedAt, &g.UpdatedAt)
 	g.Mode = mode.Mode(m)
 	if err != nil {
 		return g, err
@@ -496,6 +540,121 @@ func (s *Store) SetRetryAfter(ctx context.Context, id int64, after time.Time, re
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// SetHoldUntil records (or refreshes) a Calendar pre-release request's hold:
+// it writes hold_until and retry_reason and NOTHING else.
+//
+// Modelled on SetRetryAfter, the narrow-writer sibling above, and narrow for the
+// same reasons — what it does NOT touch is the contract:
+//   - retry_count is NOT incremented. A re-click is not an attempt. This is why
+//     the re-request path must call this and never SetPendingRetry, which would
+//     inflate the attempt history of a request that has never been searched.
+//   - retry_after is NOT written. An empty retry_after is precisely what keeps a
+//     held row invisible to DueForRetry until releaseDueGrabs promotes it; a
+//     hold that also parked the row would fire the very search the hold exists
+//     to prevent.
+//   - status is NOT written. This must never resurrect a terminal row — and
+//     since FindHeldRequest is deliberately not status-scoped, the CALLER is what
+//     enforces that: it must branch on the found row's status and route a Failed
+//     row to RearmHeldRequest below instead of here. Calling this method on a
+//     Failed row is the documented misuse, and it is silent: the row keeps
+//     status=failed and a non-empty download_gid, fails two of DueForRelease's
+//     guards forever, and — because FindHeldRequest's ORDER BY id ASC keeps
+//     returning that same row for the id — no later click can route around it.
+//     The request vanishes while the API reports success.
+//   - download_gid is NOT cleared. A hold says nothing about a download, and
+//     hold_until survives promotion and dispatch as inert provenance.
+//
+// So the precondition is: the row is in a state a bare date refresh is
+// meaningful for — still held, in flight, or already delivered. A row whose
+// status is Failed needs RearmHeldRequest, not this.
+//
+// reason is operator-facing copy only ("held until its release date"). NOTHING
+// branches on it — hold_until itself is the origin marker, deliberately, so that
+// origin is never re-inferred from a reason string.
+func (s *Store) SetHoldUntil(ctx context.Context, id int64, until time.Time, reason string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			hold_until   = ?,
+			retry_reason = ?,
+			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE id = ?
+	`, FormatTime(until), reason, id)
+	if err != nil {
+		return fmt.Errorf("setting grab %d hold until: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// RearmHeldRequest resurrects a TERMINALLY FAILED Calendar pre-release request
+// into a fresh, promotable held row — the sanctioned exception to SetHoldUntil's
+// "never resurrect a terminal row" contract above, and the only one.
+//
+// It exists because the re-click path can genuinely land on a Failed row.
+// FindHeldRequest is not status-scoped (deliberately — see its doc), so a request
+// that promoted, dispatched, and then took a permanent 451/DMCA classification is
+// still what a second click finds. A bare SetHoldUntil there writes a future date
+// onto a row that DueForRelease can never return, which is a silent dead end, not
+// a refresh. Plan §5.3 treats a re-click as a legitimate, successful action; this
+// is what makes that true for the one status where it otherwise is not.
+//
+// It resets ALL THREE of DueForRelease's non-hold guards, which is precisely what
+// distinguishes it from the narrow writers above:
+//   - status back to pending_retry — a re-armed request has not been attempted
+//     since, and pending_retry is by design never terminal on its own.
+//   - download_gid cleared — the Failed row's GID is a dead download's, and
+//     DueForRelease requires an empty one (a non-empty GID means "already
+//     dispatched, do not promote again").
+//   - retry_after cleared — the empty retry_after IS the hold, exactly as it is
+//     for a freshly parked request (see api.parkPreReleaseRequest). A row that
+//     kept one would rejoin the ordinary retry track and search before its date.
+//
+// retry_count is deliberately KEPT, matching Relaunch's reasoning: it is this
+// request's attempt history, observability only since SetPendingRetry no longer
+// caps on it, and a re-click is not an attempt to erase.
+//
+// WHY RESURRECTING IS SAFE, per status — this is not "reset whatever we find":
+//   - Failed, and ONLY Failed, is accepted. It is terminal and never retried, so
+//     nothing is in flight to be reset out from under, and by the Status doc its
+//     two producers are a permanent takedown classification and an operator
+//     un-monitor — in both cases the row holds no download and delivered nothing.
+//   - Queued/Downloading are ACTIVE. Re-arming one would strand a live download:
+//     the GID would be cleared while the downloader still owns it, and the row
+//     would promote and dispatch a second copy. The status guard in the WHERE
+//     clause refuses this even if a caller asks.
+//   - Completed/Imported already delivered the film. Re-arming would re-download
+//     something the operator has.
+//
+// The guard is in the WHERE clause, not only at the call site, so a status change
+// racing between the caller's read and this write loses safely: zero rows are
+// affected and the caller gets an error rather than a silent stray reset.
+//
+// One ordering dependency worth stating, because it looks like an unconsidered
+// duplicate-download path otherwise: api.terminateSupersededRequest also produces
+// Failed held rows (a request the operator satisfied another way). Re-arming one
+// is correct ONLY because the route runs nonHeldMovieWork FIRST and short-circuits
+// while the superseding library entry or grab still exists — so this is reached
+// only once that thing is gone, which is exactly when the operator does want the
+// request back.
+func (s *Store) RearmHeldRequest(ctx context.Context, id int64, until time.Time, reason string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			status       = ?,
+			download_gid = '',
+			retry_after  = '',
+			hold_until   = ?,
+			retry_reason = ?,
+			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		WHERE id = ? AND status = ? AND hold_until != ''
+	`, string(PendingRetry), FormatTime(until), reason, id, string(Failed))
+	if err != nil {
+		return fmt.Errorf("re-arming held request %d: %w", id, err)
+	}
+	if err := dbutil.CheckAffected(res, id, ErrNotFound); err != nil {
+		return fmt.Errorf("re-arming held request %d: it is no longer a failed held row: %w", id, err)
+	}
+	return nil
+}
+
 // Dispatch is what a successful (re-)dispatch learned about a grab: which
 // release was picked, where it came from, and the GID the download engine
 // assigned it.
@@ -558,15 +717,31 @@ func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 // ActiveByDownloadGID-guarded lifecycle — returning it again would double-grab.
 // retry_after != ”: the column defaults to the empty string, which sorts BELOW
 // every real timestamp and would otherwise make every unparked row look due.
+//
+// A THIRD guard, added 2026-08-02 with the pre-release hold:
+// (hold_until = '' OR hold_until <= ?). A held Calendar pre-release request is
+// normally invisible here anyway, because it carries no retry_after — but that
+// is a property of who writes the row, not a structural guarantee, and it was
+// escapable: parkPendingRetry selects its target with FindPendingRetry, which
+// is keyed on (mode, tmdb_id, season…) and ignores ExistingGrabID, so an
+// unrelated failing retry for the SAME movie could stamp a real retry_after
+// onto the held row and cause the unreleased film to be searched — and possibly
+// dispatched — before its release date. This conjunct is defence-in-depth
+// against ANY writer of retry_after, present or future, not just that one path.
+//
+// It is deliberately an OR rather than hold_until = '': a PROMOTED row (its
+// hold_until now in the past) must rejoin the ordinary retry track, since
+// hold_until is never cleared and is inert provenance from that point on.
 func (s *Store) DueForRetry(ctx context.Context, now time.Time) ([]Grab, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
 		FROM grabs
 		WHERE status = ? AND download_gid = '' AND retry_after != '' AND retry_after <= ?
+		  AND (hold_until = '' OR hold_until <= ?)
 		ORDER BY retry_after ASC, id ASC
-	`, string(PendingRetry), FormatTime(now))
+	`, string(PendingRetry), FormatTime(now), FormatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("listing grabs due for retry: %w", err)
 	}
@@ -607,7 +782,7 @@ func (s *Store) FindPendingRetry(ctx context.Context, m mode.Mode, tmdbID int, t
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
 		FROM grabs
 		WHERE mode = ? AND status = ? AND season_number = ? AND season_specified = ? AND episode_number = ?
 		ORDER BY id ASC
@@ -630,4 +805,106 @@ func (s *Store) FindPendingRetry(ctx context.Context, m mode.Mode, tmdbID int, t
 		return nil, err
 	}
 	return nil, ErrNotFound
+}
+
+// FindHeldRequest is the dedup key for Calendar pre-release requests: the
+// earliest grab for (mode, tmdb_id) that originated as one. Returns ErrNotFound
+// when this title was never click-requested.
+//
+// It is DELIBERATELY NOT STATUS-SCOPED, and that is the single most important
+// property of this query — it is what lets one predicate close two distinct
+// duplicate-detection bugs that the status-scoped FindPendingRetry has:
+//
+//   - A held row can never be confused with an unrelated live retry row.
+//     hold_until = '' on every non-held row, so they cannot match at all. There
+//     is no branch to get wrong and no discriminator to keep honest — which is
+//     the whole point of paying for a column rather than inferring origin from
+//     status + retry_reason + retry_count.
+//   - A second click finds the first request no matter how far the row has
+//     travelled — held, promoted, dispatched, imported or failed. Status-scoping
+//     to pending_retry would miss a row that already promoted and flipped to
+//     queued, and the click would mint a SECOND row carrying an already-past
+//     date, which the very next cycle would dispatch as a duplicate download.
+//
+// Both of those depend on hold_until never being cleared. Nothing in this
+// package clears it; see the Grab field's doc.
+//
+// ORDER BY id ASC returns the ORIGINAL request if duplicates somehow exist, so
+// the guard is deterministic — the same convention ActiveByDownloadGID uses. As
+// of migration 0057's partial unique index idx_grabs_held_request, duplicates
+// CANNOT exist (Create refuses the second with ErrHeldRequestExists), so this is
+// now belt-and-braces rather than the real guarantee; nothing depends on it.
+//
+// The caller must branch on the returned row's STATUS. This query's whole value
+// is that it is not status-scoped, which means it can and does return a terminal
+// Failed row — see SetHoldUntil's and RearmHeldRequest's docs for what each
+// status needs.
+func (s *Store) FindHeldRequest(ctx context.Context, m mode.Mode, tmdbID int) (*Grab, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
+		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		FROM grabs
+		WHERE mode = ? AND tmdb_id = ? AND hold_until != ''
+		ORDER BY id ASC LIMIT 1
+	`, string(m), tmdbID)
+	g, err := s.scanGrab(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("finding held request for tmdb id %d: %w", tmdbID, err)
+	}
+	return &g, nil
+}
+
+// DueForRelease returns every held pre-release request whose hold_until has
+// arrived and which has not yet been promoted — the promotion candidates
+// releaseDueGrabs dispatches, soonest-held first.
+//
+// FOUR guards, every one of them load-bearing:
+//
+//   - status = pending_retry and download_gid = '' mirror DueForRetry's
+//     reasoning exactly: a row that has dispatched holds a GID and has rejoined
+//     the normal ActiveByDownloadGID-guarded lifecycle, so returning it again
+//     would double-grab.
+//   - hold_until != '' excludes every ordinary row. Like retry_after, the column
+//     defaults to the empty string, which sorts BELOW every real timestamp and
+//     would otherwise make the whole table look due.
+//   - retry_after = '' IS WHAT MAKES PROMOTION FIRE EXACTLY ONCE, and it is why
+//     hold_until never needs clearing. After a promotion attempt the row carries
+//     either a real retry_after (parkPendingRetry on a no-match, reparkFailedRetry
+//     on an error) or a real GID (a successful dispatch), so it can never be
+//     returned here again. Eligibility ends; provenance survives.
+//
+// The hold_until <= ? comparison is lexicographic on FormatTime's sortable
+// layout, the same string comparison DueForRetry already depends on.
+//
+// There is deliberately NO LIMIT: the per-cycle dispatch cap belongs to the
+// caller's loop (it must not consume budget on rows it skips without searching),
+// not to this query.
+func (s *Store) DueForRelease(ctx context.Context, now time.Time) ([]Grab, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
+		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		FROM grabs
+		WHERE status = ? AND download_gid = '' AND retry_after = ''
+		  AND hold_until != '' AND hold_until <= ?
+		ORDER BY hold_until ASC, id ASC
+	`, string(PendingRetry), FormatTime(now))
+	if err != nil {
+		return nil, fmt.Errorf("listing grabs due for release: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Grab{}
+	for rows.Next() {
+		g, err := s.scanGrab(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning grab due for release: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }

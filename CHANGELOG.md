@@ -4751,3 +4751,207 @@ sole grab path from Discover" is scoped to the three named card types),
 **GATE-C** (`DetailPopup` shows a bare but correct-and-actionable error where
 `GrabDialog` showed an inline connection-setup form). AC8 (visible-card-count
 and CalendarView layout) and AC9's popup leg remain manual browser checks.
+
+## 2026-08-02 — Calendar replaces Grabs as Queue's third tab; pre-release requests, and a fifth auto-grab trigger
+
+Spec: `.omc/specs/deep-interview-calendar-grabs-requests.md` (~12% ambiguity,
+PASSED), built per `.omc/plans/autopilot-impl-calendar-grabs-requests.md`
+(BE-0 gate closed 2026-08-02 with both blocking questions decided by Wade;
+Waves 0–3 executed the same day). `docs/ROADMAP.md` item 8, and the pending
+amendment item 4 had been carrying since 2026-07-31.
+
+**Queue's third tab is now Calendar, and `Grabs.tsx` was deleted outright.**
+Tab order is Downloads → Requests → **Calendar**, still deliberately not the
+old sidebar order. `frontend/src/screens/Grabs.tsx` and `Grabs.test.tsx` were
+removed rather than kept alongside Calendar, per this repo's "no dead code left
+behind" convention — nothing was lost, because Calendar's History view carries
+the read-only completed/imported grab log forward, still with no bulk actions
+and no mutate-many affordances. An operator whose stored `sakms.queue.tab` is
+still `"grabs"` lands on Downloads through `Queue.tsx`'s existing sanitizing
+fallback; that is the deliberate, tested outcome and deliberately **not** a
+`"grabs"` → `"calendar"` storage rewrite, which would be the only
+storage-migration path in the app. `APP_ROUTES` and the sidebar counts are
+unchanged from the 2026-08-01 Queue grouping — Calendar never had a route of
+its own, so the three routes collapsed into `/queue` are still `/downloads`,
+`/grabs` and `/requests`. Queue's shadowing `ScreenTabsContext.Provider` is
+still load-bearing, but for a different child than before and one level deeper:
+it is **Calendar's `History` child** that renders the three-mode `ModeTabs`,
+while `calendar/index.tsx`'s own History/Upcoming switch is a plain
+`ScreenTabBar` that draws inline and registers nothing. History is Calendar's
+default view, so the collision is live from the moment the tab is opened.
+
+**Upcoming is deliberately asymmetric, and the Series half turned out to need
+real backend work the spec said it did not.** The spec's "No new backend
+tracking needed; this data already exists" (echoed in ROADMAP item 8 as "zero
+new backend needed") was **false on every default install**, and this was the
+feature's headline blocking discovery. `MissingEpisodes` needs
+`library_episodes` rows with an empty `file_path` and a populated `air_date`;
+the only thing that writes either is `syncSeriesCatalog`; its only caller was
+`monitorAirDates`; that runs only inside `runUsenetRetryCycle`; that loop
+returns immediately without starting when `usenet_retry_interval_seconds` is 0,
+which is what `usenet_autograb_enabled` (default **false**) writes server-side.
+Series' Upcoming would therefore have rendered permanently empty, gated on an
+unrelated toggle. This was not a defect this feature introduced — it is an
+inherited property of where the 2026-08-01 series-monitoring work put the sync,
+which was correct for a dispatch feature and wrong for a read-only browsing
+surface. **Resolved by extracting `syncSeriesCatalog` VERBATIM into a new file,
+`internal/api/seriescatalog.go`** (Wade's BE-0.1 decision), as a caller-driven,
+TTL-cached, per-request-capped function serving both `monitorAirDates`
+(unchanged behaviour when auto-grab is on) and Calendar's read path: **metadata
+becomes always-available, dispatch stays gated exactly as before.** A new file
+rather than an export because `internal/api/airdatemonitor_static_test.go`
+fails on any const in `airdatemonitor.go` whose name merely *contains*
+`"Interval"`, whatever it is used for — so the TTL this read path needs could
+not live there. That test passes **unmodified**, which is the signal that the
+extraction stayed inside the shape the gate approved.
+
+Movies' Upcoming is the open-ended half: any TMDB movie with a
+digital/streaming-or-planned release date in the viewed window, via a new
+`DiscoverMoviesUpcoming` on `internal/tmdb`. "Region-aware" was read as
+"region-scoped to US, by the convention `HasUSRelease` already established" — a
+named constant, not a new settings key, control, or migration, because the spec
+explicitly declined to design a new TMDB date-resolution heuristic. **Documented
+deviation.**
+
+**The pre-release hold is a real schema-level origin marker, and that was a
+deliberate reversal of this plan's own recommendation.** Migration
+`0057_grabs_hold_until.sql` adds `hold_until TEXT NOT NULL DEFAULT ''` to
+`grabs`. A row with a non-empty `hold_until` originated as a Calendar
+pre-release request and nothing else in the codebase can produce one — a
+queryable fact, not an inference from `status` + `retry_reason` +
+`retry_count`. The plan recommended the cheaper alternative (reuse `retry_after`
+as the hold, no schema change, no new trigger) through two Critic passes;
+**Wade chose the column on 2026-08-02, citing by name the HIGH-severity
+misclassification bug fixed days earlier in `series-monitoring-autograb`**,
+where origin *was* inferred from row shape and a reason string, misfired, and
+destroyed an operator's own grab. The decision is that the fragility class
+matters more than the extra column. By the end of Critic pass 2 the evidence
+had already moved that way — the alternative's dedup guard still permitted a
+duplicate download, its refresh path destroyed its own discriminator, and the
+citation supporting its reason-string marker argued the opposite. Full audit
+trail in the plan's §5.4. The column is **never cleared**, not even after
+promotion and dispatch: provenance outlives the hold, and `DueForRelease`'s
+`retry_after = ''` guard — not a clear — is what makes promotion fire exactly
+once.
+
+**A partial unique index was added during Wave 2 review, and it was not in the
+original design.** `CREATE UNIQUE INDEX idx_grabs_held_request ON grabs (mode,
+tmdb_id) WHERE hold_until != ''` moves at-most-one-held-request-per-title from
+the route's check-then-act into the database. Without it, two genuinely
+concurrent clicks (a double-click, two tabs) could both miss `FindHeldRequest`
+and both `Create`, and nothing downstream could repair it: the shared
+`nonHeldMovieWork` predicate self-excludes *every* held row rather than just the
+one under evaluation, so promotion-time suppression cannot tell two held rows
+apart — both promote, both dispatch, one film downloads twice. It is PARTIAL
+because ordinary grabs legitimately repeat a `(mode, tmdb_id)` pair (a re-grab,
+a retry that minted a fresh row) and a total index would break every one of
+them. There is no pre-existing-duplicate failure mode on upgrade: the
+`ADD COLUMN` lands `''` on every existing row, so zero rows are held when the
+index is built. **The `Down` migration must drop the index BEFORE the column** —
+SQLite refuses to drop a column named in a partial index's `WHERE` clause, and
+`internal/db/migration_grabs_hold_until_test.go` catches an edit that reverses
+that ordering (verified by deliberately swapping the two statements and watching
+it fail).
+
+**`TriggerPreRelease` is this codebase's fifth `AutoGrabTrigger`, and it
+introduces a new unattended-dispatch category.** Dispatch is textbook Pattern B
+— a new const plus a caller that goes through the one gated `RunAutoGrab` path
+(`releaseDueGrabs`, `internal/api/prerelease.go`). *Creation* is a parker
+(`parkPreReleaseRequest`), because a held row is minted by a click rather than
+by a search and dispatches nothing. That split is legal: CLAUDE.md's "do not use
+both for the same trigger source" forbids two *dispatch* paths for one source,
+and there is exactly one here. An earlier draft proposed naming this a third
+"Pattern C"; **that name is retired.** The category itself — an operator's
+click that dispatches days-to-months later with nobody present — is **deferred
+operator approval**, narrower than `TriggerAirDate` (one explicitly chosen title
+per click, not a system-minted per-episode sweep) and broader than
+`TriggerOperator` (nobody is present when it fires). The four formal bounds of
+the 2026-08-01 unattended auto-grab exception are all unchanged. **The gate-flip
+burst is real and capped**: on a default install nothing fires, so an operator
+can accumulate dozens of held rows over months and the first cycle after they
+enable unattended auto-grab sees the whole backlog come due — bounded by
+`maxPreReleaseGrabsPerCycle = 20`, the same value and precedent as
+`maxAirDateGrabsPerCycle`, with the rest held for the next cycle.
+
+**`TriggerRetry`'s population is unchanged, which is the direct payoff of the
+column.** A held row is born with an **empty** `retry_after`, making it
+invisible to `grabs.DueForRetry` unconditionally; it reaches dispatch through
+`releaseDueGrabs`, never `retryDueGrabs`. The rejected design would have
+silently widened `TriggerRetry` instead.
+
+**No new scheduler, and the cycle now does four things instead of three.**
+`cmd/sakms/main.go` is untouched by this feature. There are still **six**
+interval-driven schedulers: `releaseDueGrabs` is a plain function call, the
+fourth and last pass inside the existing `runUsenetRetryCycle` (after the GID
+sweep, the due re-search, and `monitorAirDates`), and it notices a release date
+has arrived with a `WHERE` clause (`grabs.DueForRelease`), not a timer. The
+catalog sync described above is caller-driven for the same reason. This is
+**verified by reading `main.go`'s launch block**, not proven by a static test —
+there is no `airdatemonitor_static_test.go` equivalent for `prerelease.go` or
+`seriescatalog.go`, and the docs say so rather than overclaiming.
+`usenetretry.go`'s file doc was corrected in lockstep to describe four passes.
+
+**Requests gained a "Scheduled" state.** `grabStatusLabel` changed signature
+from `(status)` to `(grab)` — it now needs the whole row, because a held
+pre-release request is a `pending_retry` row whose `hold_until` is still in the
+future and which must not be shown as "Pending Retry" (nothing is retrying; it
+is waiting for a date). Once the date passes and the row promotes, it reads as
+"Downloading" like any other.
+
+**Deliberate duplication, recorded so a future deslop pass does not "fix" it.**
+`frontend/src/screens/calendar/grid.ts` re-implements the month-grid geometry
+helpers (`pad2`/`dayKey`/`monthRange`/`cells`) that already exist privately in
+`discover/CalendarView.tsx`. The two are independent screens over three
+different data sources with no common carrier type, and this repo's
+no-premature-abstraction convention (the same one that makes `Queue.tsx` a
+near-line-for-line mirror of `Organize.tsx`) treats that as insufficient
+justification for a shared module. Keep them in sync in *spirit*; do not import
+across.
+
+**Three documented spec deviations**, all recorded in `CLAUDE.md`'s AMENDED
+2026-08-02 note under Staged-for-approval rather than only in the plan:
+1. **AC6's "the same flow Discover's Grab button uses" was not taken
+   literally** — that flow searches and dispatches immediately, which this
+   feature's dormancy constraint forbids. What is shared is the row type and
+   the dispatch gate, not the entry point.
+2. **"Region-aware" read as US-scoped by the existing convention** (above).
+3. **AC9 lists History's completed-only filtering under `go test ./...`, but
+   its test is TypeScript** — the filter is deliberately client-side, so
+   `listGrabsHandler` stays general and the test lives in the frontend suite.
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0057_grabs_hold_until.sql` | **New.** `grabs.hold_until` column + partial unique index `idx_grabs_held_request`; `Down` drops the index first |
+| `internal/db/migration_grabs_hold_until_test.go` | **New.** Up/Down round-trip; pins the drop ordering |
+| `internal/grabs/grabs.go` | `HoldUntil` field, `scanGrab` + every `SELECT` column list + `Create`'s INSERT updated in lockstep; `FindHeldRequest`, `DueForRelease`, hold-aware `DueForRetry` conjunct, `ExistingGrabID` preference in `parkPendingRetry` |
+| `internal/api/prerelease.go` | **New.** `releaseDueGrabs` (cycle pass 4), `maxPreReleaseGrabsPerCycle = 20`, promotion pre-filter |
+| `internal/api/autograb_shared.go` | `TriggerPreRelease` const; `parkPreReleaseRequest` parker |
+| `internal/api/calendar_prerelease.go` | **New.** `POST /api/calendar/prerelease-request` — `FindHeldRequest`-then-`Create` with index-loss recovery |
+| `internal/api/calendar_upcoming.go` | **New.** `GET /api/calendar/upcoming/movies` and `/series` |
+| `internal/api/seriescatalog.go` | **New.** `syncSeriesCatalog` relocated verbatim out of `airdatemonitor.go`, plus its TTL and per-request cap |
+| `internal/api/airdatemonitor.go` | Sync removed (now calls into `seriescatalog.go`); static test unmodified and still passing |
+| `internal/api/usenetretry.go` | Pass 4 wired in; file doc corrected from three passes to four |
+| `internal/api/requests.go` | `grabStatusLabel(status)` → `grabStatusLabel(grab)`, new "Scheduled" state |
+| `internal/api/handler.go` | Three Calendar routes registered (deliberately not mode-parameterised) |
+| `internal/tmdb/client.go` | `DiscoverMoviesUpcoming` (US-scoped, `from`/`to` window) |
+| `internal/apidto/dto.go`, `ts/dto.gen.ts` | Calendar DTOs; regenerated, never hand-edited |
+| `frontend/src/screens/calendar/` | **New.** `index.tsx` (view switch, month nav, display toggle), `History.tsx`, `Upcoming.tsx`, `grid.ts` + their tests |
+| `frontend/src/api/calendar.ts` | **New.** Calendar client + test |
+| `frontend/src/screens/Queue.tsx` | Tab 3 Grabs → Calendar; header rewritten to record the swap, the deletion, and which child needs the shadowing Provider |
+| `frontend/src/screens/Grabs.tsx`, `Grabs.test.tsx` | **Deleted** |
+| `frontend/src/api/grab.ts`, `Downloads.tsx`, `Requests.tsx`, `discover/shared.tsx`, `discover/BulkResultModal.tsx` | Copy and doc comments re-pointed from "the Grabs view" to "Calendar's History view" |
+| `CLAUDE.md` | Two AMENDED 2026-08-02 notes (Automation: fifth trigger, six schedulers, four passes; Staged-for-approval: deferred-operator-approval category, `hold_until` rationale, parker/Pattern-B split, gate-flip cap, three deviations); bound 3 cross-reference; CORRECTED 2026-08-02 note quoting the three now-false sentences in the Queue sidebar grouping entry |
+| `docs/ROADMAP.md` | Item 8 flipped to SHIPPED with the "zero new backend needed" claim retracted verbatim; item 4's pending Grabs → Calendar amendment marked performed |
+| `CHANGELOG.md` | This entry |
+
+**Verification, run for this documentation pass rather than quoted from the
+implementing waves:** `go build ./...` clean, `go vet ./...` clean,
+`go test ./...` green across every package **except four pre-existing
+`TestReadGPUs_*` failures in `internal/sysinfo`**, a package this feature does
+not touch and which is byte-identical to `HEAD` in the working tree — unrelated
+to this work. `internal/api`, `internal/grabs` and `internal/db` all pass on a
+fresh, uncached `go test -count=1` run — including
+`airdatemonitor_static_test.go`, which is itself unmodified.
+Frontend `tsc --noEmit` clean; `vitest run` **705/705 passing across 55 test
+files**. Not run in this pass and therefore not claimed: `go test -race` and
+`vite build`.

@@ -595,8 +595,21 @@ type Grab struct {
 	RetryAfter  string `json:"retryAfter,omitempty"`
 	RetryCount  int    `json:"retryCount,omitempty"`
 	RetryReason string `json:"retryReason,omitempty"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	// HoldUntil mirrors grabs.Grab.HoldUntil — a Calendar pre-release request's
+	// hold timestamp, "" for every grab that did not originate as one.
+	//
+	// It is deliberately declared on BOTH structs, and neither copy is
+	// redundant: the History wire payload carries grabs.Grab, encoded directly
+	// by listGrabsHandler with no DTO mapping step, while the TypeScript Grab
+	// type is generated from THIS struct. Dropping it here makes the field
+	// invisible to TypeScript; dropping it on grabs.Grab makes it absent from
+	// the payload. The two structs are already divergent by three other fields
+	// (downloadGid/downloadStatus/downloadStagingPath exist only on
+	// grabs.Grab), so they are two independent copies of "what a grab looks
+	// like", not one type duplicated by accident.
+	HoldUntil string `json:"holdUntil,omitempty"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // AutoGrabRequest is POST /api/modes/{mode}/autograb's body — Discover's
@@ -1001,6 +1014,11 @@ type RequestStatusItem struct {
 	// the bare "Pending Retry" label alone.
 	RetryAfter  string `json:"retryAfter,omitempty"`
 	RetryReason string `json:"retryReason,omitempty"`
+	// HoldUntil mirrors the grab row's grabs.Grab.HoldUntil (see Grab above for
+	// why that field exists on two structs). Carried here so the Requests
+	// screen can render a held pre-release request's scheduled release date
+	// inline, without a second call to fetch the grab it was derived from.
+	HoldUntil string `json:"holdUntil,omitempty"`
 }
 
 // RequestStatusResponse is GET /api/requests's response — one row per title
@@ -2459,4 +2477,73 @@ type SeriesNewSeasonDiscoveryResponse struct {
 
 type SeriesNewSeasonDiscoveryRequest struct {
 	Enabled bool `json:"enabled"`
+}
+
+// --- Calendar: Upcoming + pre-release requests -----------------------------
+//
+// Calendar's two Upcoming views are structurally different queries against
+// different backends, not one query over a mode variable, so they have two
+// separate entry shapes rather than a shared one (see the Calendar plan's
+// route-shape justification). Neither carries a download URL: grabs.Grab's
+// DownloadURL is json:"-" because an indexer/NZB URL commonly embeds an API
+// key, and no DTO here may reintroduce a passthrough for it.
+
+// UpcomingSeriesEntry is one not-yet-aired episode of an already-tracked
+// series, sourced from library.MissingEpisodes — tracked series only, so this
+// view is bounded by the operator's own library rather than by a catalog
+// query. SeriesID is the library row id (library.Series.ID), TMDBID the show's
+// TMDB id; AirDate is a bare date string as TMDB returns it.
+type UpcomingSeriesEntry struct {
+	SeriesTitle   string `json:"seriesTitle"`
+	SeriesID      int64  `json:"seriesId"`
+	TMDBID        int    `json:"tmdbId"`
+	SeasonNumber  int    `json:"seasonNumber"`
+	EpisodeNumber int    `json:"episodeNumber"`
+	EpisodeTitle  string `json:"episodeTitle"`
+	AirDate       string `json:"airDate"`
+}
+
+// UpcomingMovieEntry is one upcoming movie release from TMDB.
+//
+// ReleaseKind is "digital" or "planned" and nothing else — the same two values
+// tmdb.ReleaseKindDigital/ReleaseKindPlanned carry. They are repeated here as
+// literal strings rather than referenced, because this package deliberately
+// imports no internal/domain package: it is a hand-picked wire boundary, not a
+// re-export of domain types (hence the flat fields below rather than embedding
+// tmdb.Item the way tmdb.UpcomingMovie does).
+// AlreadyRequested is the server-computed answer to "is this movie already
+// tracked or already being grabbed" — the flag AC6's click-to-request
+// affordance keys on, so the client never cross-references two lists itself
+// (and never asks Prowlarr: the signal comes from the tracked library plus the
+// grab log, per CLAUDE.md's Discover-never-queries-Prowlarr rule). Deliberately
+// NOT omitempty: false is the meaningful "clickable" case and must reach
+// TypeScript as a required boolean, not an optional one.
+type UpcomingMovieEntry struct {
+	TMDBID           int    `json:"tmdbId"`
+	Title            string `json:"title"`
+	PosterPath       string `json:"posterPath,omitempty"`
+	ReleaseDate      string `json:"releaseDate"`
+	ReleaseKind      string `json:"releaseKind"`
+	AlreadyRequested bool   `json:"alreadyRequested"`
+}
+
+// PreReleaseRequestRequest is POST /api/calendar/prerelease-request's body —
+// the operator clicking an un-requested upcoming movie. ReleaseDate is the
+// date the resulting grab row is held until.
+type PreReleaseRequestRequest struct {
+	TMDBID      int    `json:"tmdbId"`
+	Title       string `json:"title"`
+	ReleaseDate string `json:"releaseDate"`
+}
+
+// PreReleaseRequestResponse reports the held grab row the request produced.
+//
+// AlreadyRequested is true when the click matched an existing outstanding
+// request instead of creating one — the UI says "already requested" rather
+// than silently appearing to succeed twice. GrabID is int64 to match
+// RequestStatusItem.GrabID, since both name the same grabs.Grab row.
+type PreReleaseRequestResponse struct {
+	GrabID           int64  `json:"grabId"`
+	HeldUntil        string `json:"heldUntil"`
+	AlreadyRequested bool   `json:"alreadyRequested"`
 }

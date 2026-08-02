@@ -2,7 +2,8 @@
 //
 // What it adds over the two existing, deliberately-narrow sibling tabs (all
 // three live under the Queue sidebar entry):
-//   - the Grabs tab is a raw, per-mode grab log (one mode at a time, read-only).
+//   - the Calendar tab's History view is a raw, per-mode grab log (one mode at
+//     a time, read-only).
 //   - the Downloads tab is the live download-client queue status.
 // Neither rolls up state ACROSS modes, and neither surfaces what's still
 // MISSING. The Requests tab does both: one row per title spanning Movies/Series/Adult,
@@ -148,7 +149,6 @@ function retryDuration(ms: number): string {
 // reason with no scheduled time yet, or vice versa — so each is optional
 // here too. Returns null when there's nothing to show.
 function retryBlurb(item: RequestItem): string | null {
-  if (item.status !== "Pending Retry") return null;
   const parts: string[] = [];
   if (item.retryAfter) {
     const ms = new Date(item.retryAfter).getTime() - Date.now();
@@ -158,6 +158,40 @@ function retryBlurb(item: RequestItem): string | null {
   }
   if (item.retryReason) parts.push(item.retryReason);
   return parts.length > 0 ? parts.join(" — ") : null;
+}
+
+// scheduledBlurb is retryBlurb's sibling for a HELD Calendar pre-release
+// request — a row the operator click-requested for a film that has not come out
+// yet. Without it the row rendered a bare "Scheduled" chip with no date and no
+// explanation, which against a film six months out is indistinguishable from a
+// stuck request.
+//
+// It renders holdUntil (the release date), not a retryDuration delta: the
+// countdown shape retryBlurb uses reads badly across months, and the operator's
+// actual question here is "when does this film come out", which is a date.
+// Sliced to YYYY-MM-DD rather than parsed into a local Date, matching what
+// calendar/History.tsx does with the same class of UTC timestamp — and keeping
+// this line off the raw-ISO-string display retryBlurb also avoids.
+//
+// COPY HONESTY, and it is a correctness requirement rather than polish: this
+// must NOT promise that the film will be searched for automatically. Per
+// Upcoming.tsx's §5.7 note, that promise is a lie whenever
+// usenet_autograb_enabled is off — the default on every install, where the
+// retry cycle never starts and nothing will ever promote this row on its own.
+// Requests does not read that toggle (and should not grow a fetch for it), so
+// the copy states the HOLD, which is true either way, and never the search.
+function scheduledBlurb(item: RequestItem): string | null {
+  if (!item.holdUntil) return null;
+  return `Held until ${item.holdUntil.slice(0, 10)} — its release date`;
+}
+
+// statusBlurb picks the one explanatory line a row gets, if any. Two statuses
+// carry one; everything else ("In Library", "Downloading") is self-explanatory
+// from the chip alone.
+function statusBlurb(item: RequestItem): string | null {
+  if (item.status === "Scheduled") return scheduledBlurb(item);
+  if (item.status === "Pending Retry") return retryBlurb(item);
+  return null;
 }
 
 export const Requests: Component = () => {
@@ -343,7 +377,7 @@ export const Requests: Component = () => {
                           {item.missingCount} missing
                         </Show>
                       </div>
-                      <Show when={retryBlurb(item)}>
+                      <Show when={statusBlurb(item)}>
                         {(blurb) => <div class="text-xs text-warn">{blurb()}</div>}
                       </Show>
                     </div>

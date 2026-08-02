@@ -359,6 +359,122 @@ describe("Requests", () => {
     ).toBeInTheDocument();
   });
 
+  // A held Calendar pre-release request. The backend half of this shipped
+  // correct — grabStatusLabel returns "Scheduled" for a future hold_until and
+  // RequestStatusItem carries holdUntil — but the frontend never rendered it,
+  // so the row showed a bare "Scheduled" chip with no date and no explanation:
+  // exactly the outcome plan §5.6 exists to prevent. An operator seeing it
+  // against a film six months out has no way to tell it from a stuck request.
+  it("renders a Scheduled row's holdUntil date, not a bare chip", async () => {
+    stubRequests({
+      items: [
+        item({
+          title: "Unreleased Blockbuster",
+          tmdbId: 9,
+          status: "Scheduled",
+          // A held row is born with an EMPTY retryAfter — that emptiness IS the
+          // hold — so holdUntil is the only date this row has to show.
+          retryReason: "held until its release date",
+          holdUntil: "2026-12-25T00:00:00Z",
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+
+    expect(
+      await screen.findByText("Unreleased Blockbuster"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Scheduled", { selector: "span" }),
+    ).toBeInTheDocument();
+    // The release date, rendered — the whole point of the fix.
+    expect(screen.getByText(/2026-12-25/)).toBeInTheDocument();
+    // …and never the raw ISO timestamp, matching the Pending Retry line's own
+    // "no raw timestamps" convention directly above.
+    expect(
+      screen.queryByText("2026-12-25T00:00:00Z"),
+    ).not.toBeInTheDocument();
+  });
+
+  // COPY HONESTY, and the reason the obvious wording is wrong. Upcoming.tsx's
+  // §5.7 note is explicit that promising an automatic search is a LIE while
+  // usenet_autograb_enabled is off — the default on every install, where the
+  // retry cycle never starts and nothing will ever promote this row on its own.
+  // Requests does not read that toggle, so its copy must be true in BOTH states:
+  // state the hold, never promise the search.
+  it("does not promise an automatic search it cannot guarantee", async () => {
+    stubRequests({
+      items: [
+        item({
+          title: "Unreleased Blockbuster",
+          tmdbId: 9,
+          status: "Scheduled",
+          holdUntil: "2026-12-25T00:00:00Z",
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Unreleased Blockbuster");
+
+    expect(
+      screen.queryByText(/searched? automatically|automatically search/i),
+    ).not.toBeInTheDocument();
+  });
+
+  // The one case where the two fields DISAGREE, and the only way to get the
+  // blurb wrong now. holdUntil is never cleared — it is permanent provenance
+  // that outlives the hold (CLAUDE.md; TestReleaseDueGrabsPromotesTheSameRow) —
+  // so a PROMOTED pre-release row carries a PAST holdUntil while genuinely
+  // being on the retry track. grabStatusLabel already reports that honestly as
+  // "Pending Retry", and the blurb must follow the status, not the presence of
+  // holdUntil: rendering "Held until <a date last month>" for a row that is
+  // actively retrying would be a straight UI lie.
+  it("renders the retry line, not the held line, for a promoted row whose holdUntil has passed", async () => {
+    const inSixHours = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    stubRequests({
+      items: [
+        item({
+          title: "Now Released Film",
+          tmdbId: 9,
+          status: "Pending Retry",
+          retryAfter: inSixHours,
+          retryReason: "no candidate cleared the quality floor",
+          // In the past: this row promoted, was searched, and found nothing.
+          holdUntil: "2026-01-05T00:00:00Z",
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Now Released Film");
+
+    expect(
+      screen.getByText(
+        /Retrying in 6h — no candidate cleared the quality floor/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Held until/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/2026-01-05/)).not.toBeInTheDocument();
+  });
+
+  // A Scheduled row with no holdUntil must not render a line with a blank or
+  // "Invalid Date" where the date should be. Defensive because RetryAfter and
+  // HoldUntil are independent optional fields on the DTO.
+  it("renders no blurb for a Scheduled row carrying no holdUntil", async () => {
+    stubRequests({
+      items: [
+        item({ title: "Dateless Request", tmdbId: 9, status: "Scheduled" }),
+      ],
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Dateless Request");
+
+    expect(screen.queryByText(/Invalid Date|NaN/)).not.toBeInTheDocument();
+  });
+
   it("a Pending Retry row is still excludable via Remove", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const calls = stubReqFetch((url) => {

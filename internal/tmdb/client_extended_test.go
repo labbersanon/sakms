@@ -258,3 +258,132 @@ func TestDiscoverFiltered_DateRangeQuery(t *testing.T) {
 		t.Errorf("expected tv first_air_date range, got %v", *query2)
 	}
 }
+
+// upcomingClient serves digitalBody to DiscoverMoviesUpcoming's query A (the
+// with_release_type one) and plannedBody to query B, recording every request's
+// query in order. recordingClient above can't be reused here: it keeps only the
+// LAST request, and this method issues two.
+func upcomingClient(t *testing.T, digitalBody, plannedBody string) (*Client, *[]url.Values, *[]string) {
+	t.Helper()
+	var queries []url.Values
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		queries = append(queries, r.URL.Query())
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("with_release_type") != "" {
+			w.Write([]byte(digitalBody))
+			return
+		}
+		w.Write([]byte(plannedBody))
+	}))
+	t.Cleanup(srv.Close)
+	c := New(Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
+	// Per-client cache, same reason as the two helpers above.
+	c.cache = newCache(defaultCacheCap, defaultCacheTTL)
+	return c, &queries, &paths
+}
+
+// TestDiscoverMoviesUpcoming_QueryShapes proves the two queries §4.1's table
+// specifies actually go out: A carries region + pipe-joined release types + a
+// release_date window and no primary_release_date bound; B is the plain
+// primary_release_date window the existing calendar browse already issues,
+// with neither of the new params on it.
+func TestDiscoverMoviesUpcoming_QueryShapes(t *testing.T) {
+	c, queries, paths := upcomingClient(t, `{"results": []}`, `{"results": []}`)
+	if _, err := c.DiscoverMoviesUpcoming(context.Background(), "2026-09-01", "2026-09-30"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*queries) != 2 {
+		t.Fatalf("expected exactly 2 TMDB calls (A + B, page 1 only), got %d", len(*queries))
+	}
+	for _, p := range *paths {
+		if p != "/discover/movie" {
+			t.Errorf("expected both calls on /discover/movie, got %q", p)
+		}
+	}
+
+	a := (*queries)[0]
+	if a.Get("region") != UpcomingRegion {
+		t.Errorf("query A: expected region=%s, got %q", UpcomingRegion, a.Get("region"))
+	}
+	if a.Get("with_release_type") != "4|5" {
+		t.Errorf("query A: expected pipe-joined with_release_type=4|5, got %q", a.Get("with_release_type"))
+	}
+	if a.Get("release_date.gte") != "2026-09-01" || a.Get("release_date.lte") != "2026-09-30" {
+		t.Errorf("query A: expected the release_date window, got %v", a)
+	}
+	if a.Has("primary_release_date.gte") || a.Has("primary_release_date.lte") {
+		t.Errorf("query A: expected no primary_release_date bound, got %v", a)
+	}
+	if a.Has("sort_by") {
+		t.Errorf("query A: expected no sort_by (the newest sort's own cap would collide with the window), got %q", a.Get("sort_by"))
+	}
+
+	b := (*queries)[1]
+	if b.Get("primary_release_date.gte") != "2026-09-01" || b.Get("primary_release_date.lte") != "2026-09-30" {
+		t.Errorf("query B: expected the primary_release_date window, got %v", b)
+	}
+	if b.Has("region") || b.Has("with_release_type") || b.Has("release_date.gte") {
+		t.Errorf("query B must stay byte-identical to today's calendar browse, got %v", b)
+	}
+}
+
+// TestDiscoverMoviesUpcoming_MergeAWinsOnCollision covers the merge rules: an
+// id in both queries keeps A's typed date and is tagged "digital"; an id only
+// in B is tagged "planned" (the "has release_dates but no type-4/5 entry" case,
+// since TMDB itself filters A on those ids); no id appears twice; and the order
+// is deterministic — A's results in order, then B-only ones.
+func TestDiscoverMoviesUpcoming_MergeAWinsOnCollision(t *testing.T) {
+	const digitalBody = `{"results": [
+	  {"id": 10, "title": "In Both", "poster_path": "/both.jpg", "release_date": "2026-09-15"},
+	  {"id": 11, "title": "Digital Only", "release_date": "2026-09-20"}
+	]}`
+	const plannedBody = `{"results": [
+	  {"id": 10, "title": "In Both", "release_date": "2026-06-01"},
+	  {"id": 12, "title": "Planned Only", "release_date": "2026-09-05"}
+	]}`
+	c, _, _ := upcomingClient(t, digitalBody, plannedBody)
+	got, err := c.DiscoverMoviesUpcoming(context.Background(), "2026-09-01", "2026-09-30")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []UpcomingMovie{
+		{Item: Item{ID: 10, Title: "In Both", PosterPath: "/both.jpg", ReleaseDate: "2026-09-15", MediaType: Movie}, ReleaseKind: ReleaseKindDigital},
+		{Item: Item{ID: 11, Title: "Digital Only", ReleaseDate: "2026-09-20", MediaType: Movie}, ReleaseKind: ReleaseKindDigital},
+		{Item: Item{ID: 12, Title: "Planned Only", ReleaseDate: "2026-09-05", MediaType: Movie}, ReleaseKind: ReleaseKindPlanned},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d merged items (id 10 deduped), got %d: %+v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("item %d:\n got %+v\nwant %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestDiscoverMoviesUpcoming_PropagatesQueryError proves a failed query is an
+// error, not a silent partial result — "fallback" in §4.1 describes B's DATA
+// coverage (planned-only titles), never error recovery for A.
+func TestDiscoverMoviesUpcoming_PropagatesQueryError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("with_release_type") != "" {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [{"id": 12, "title": "Planned Only"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := New(Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
+	c.cache = newCache(defaultCacheCap, defaultCacheTTL)
+
+	items, err := c.DiscoverMoviesUpcoming(context.Background(), "2026-09-01", "2026-09-30")
+	if err == nil {
+		t.Fatalf("expected an error when query A fails, got %d items", len(items))
+	}
+	if items != nil {
+		t.Errorf("expected no items alongside the error, got %+v", items)
+	}
+}

@@ -1142,6 +1142,22 @@ type FilterOptions struct {
 	// DateTo (see discoverFilterQuery).
 	DateFrom string
 	DateTo   string
+	// Region/ReleaseTypes back the Upcoming Movies calendar's "has a digital
+	// or physical release dated in this window" query (see
+	// DiscoverMoviesUpcoming). Region emits TMDB's `region` param;
+	// ReleaseTypes, when non-empty, emits with_release_type as a pipe-joined
+	// (OR) id list and moves the DateFrom/DateTo window off dateField onto
+	// release_date.gte/.lte — the typed-release date those ids select. Both
+	// are zero-valued for every pre-existing caller, so no other query changes.
+	//
+	// The SortBy advice above still applies to a calendar caller here, for a
+	// slightly different reason: with ReleaseTypes set the window key
+	// (release_date.lte) and the newest sort's own cap key
+	// (primary_release_date.lte) are different keys, so the cap no longer
+	// overwrites DateTo via url.Values.Set — it ANDs an extra unrelated bound
+	// instead. Still leave SortBy unset.
+	Region       string
+	ReleaseTypes []int
 }
 
 // discoverFilterQuery builds the /discover query for one FilterOptions.
@@ -1174,14 +1190,40 @@ func discoverFilterQuery(page int, yearField, dateField string, opts FilterOptio
 	if opts.Year > 0 {
 		q.Set(yearField, strconv.Itoa(opts.Year))
 	}
-	// Inclusive release-date window (Calendar view). dateField is the same
-	// media-type-specific field the "newest" sort below uses, so no separate
-	// movie/tv branch is needed here.
+	// Inclusive release-date window (Calendar view). dateField is normally the
+	// same media-type-specific field the "newest" sort below uses, so no
+	// separate movie/tv branch is needed here.
+	//
+	// Claude 2026-08-02: windowField is a LOCAL SHADOW of dateField, never a
+	// reassignment of the parameter.
+	// Reason: with_release_type selects on the TYPED release date, so the
+	// window must be expressed as release_date.* or TMDB matches the digital
+	// release but bounds the theatrical one. dateField itself is read a second
+	// time below, by the newest sort's `opts.SortBy == dateField+".desc"`
+	// comparison — reassigning the parameter here would silently change what
+	// that comparison means for any caller setting both ReleaseTypes and a
+	// date sort, dropping its today-cap without a word.
+	// Troubleshooting: latent trap flagged in the calendar plan's §4.1 (r2-4).
+	// Review if: the newest-sort block below stops reading dateField.
+	windowField := dateField
+	if len(opts.ReleaseTypes) > 0 {
+		// Pipe-join = OR, exactly as with_genres above: "released digitally OR
+		// physically in this window", never "both".
+		ids := make([]string, len(opts.ReleaseTypes))
+		for i, id := range opts.ReleaseTypes {
+			ids[i] = strconv.Itoa(id)
+		}
+		q.Set("with_release_type", strings.Join(ids, "|"))
+		windowField = "release_date"
+	}
+	if opts.Region != "" {
+		q.Set("region", opts.Region)
+	}
 	if opts.DateFrom != "" {
-		q.Set(dateField+".gte", opts.DateFrom)
+		q.Set(windowField+".gte", opts.DateFrom)
 	}
 	if opts.DateTo != "" {
-		q.Set(dateField+".lte", opts.DateTo)
+		q.Set(windowField+".lte", opts.DateTo)
 	}
 	if opts.MinRating > 0 {
 		q.Set("vote_average.gte", strconv.FormatFloat(opts.MinRating, 'f', 1, 64))
@@ -1229,6 +1271,93 @@ func (c *Client) DiscoverTVFiltered(ctx context.Context, opts FilterOptions, pag
 		return nil, err
 	}
 	return normalizeAll(resp.Results, TV), nil
+}
+
+// UpcomingRegion is the ISO 3166-1 country DiscoverMoviesUpcoming scopes its
+// digital/physical release query to. A named constant rather than a setting:
+// "region-aware" for the Upcoming calendar means region-scoped by the same
+// US-only convention HasUSRelease already established (and MovieDetails'
+// release-date list repeats), not operator-configurable.
+const UpcomingRegion = "US"
+
+// upcomingReleaseTypes are TMDB's release_dates type ids for Digital (4) and
+// Physical (5) — the same two HasUSRelease treats as "actually available",
+// expressed here as a /discover with_release_type filter instead.
+var upcomingReleaseTypes = []int{4, 5}
+
+// ReleaseKindDigital/ReleaseKindPlanned are UpcomingMovie.ReleaseKind's only
+// two values: a digital/physical release dated in the window, or a
+// planned/theatrical date only (spec Ontology: "releaseDate (digital|planned)").
+const (
+	ReleaseKindDigital = "digital"
+	ReleaseKindPlanned = "planned"
+)
+
+// UpcomingMovie is one DiscoverMoviesUpcoming result — a normal Item plus which
+// kind of release date put it in the window. Item is embedded rather than
+// ReleaseKind being added to Item itself, so the ~35 other Item-returning
+// methods don't grow a field that would be empty for every one of them.
+type UpcomingMovie struct {
+	Item
+	ReleaseKind string `json:"releaseKind"`
+}
+
+// DiscoverMoviesUpcoming returns movies with a release dated in the inclusive
+// [from, to] window ("YYYY-MM-DD") — the Upcoming Movies calendar's data
+// source. Two queries, merged:
+//
+//	A (preferred) region=US + with_release_type=4|5 + a release_date window:
+//	              movies with a digital or physical release in the window.
+//	B (fallback)  the plain primary_release_date window the existing calendar
+//	              browse already issues: movies with only a planned date.
+//
+// Merged by TMDB id with A winning on collision, so an id in both keeps A's
+// returned date and is tagged "digital", and a B-only id is tagged "planned".
+// Two sequential calls, never a fan-out. Page 1 only in v1, matching the
+// existing calendar browse — a busy month can exceed 20 titles per query, so
+// the result is deliberately not exhaustive and caller copy must not imply it is.
+//
+// UNVERIFIED ASSUMPTION (per this project's honesty-about-unverified-
+// assumptions convention): query A's shape is modeled from TMDB's public API
+// documentation only, not confirmed against a live call. In particular it is
+// UNRESOLVED whether a /discover/movie result's `release_date` carries the
+// TYPED (digital/physical) date the with_release_type filter matched, or the
+// PRIMARY release date — so this method makes no claim about which date an
+// UpcomingMovie.ReleaseDate holds beyond "whatever TMDB returned for query A".
+// A caller that BUCKETS by that date must not assume the typed reading until
+// that is verified live; if it turns out to be the primary date, a movie that
+// opened theatrically in June and goes digital in September is matched by a
+// September window but dated June, and per-item resolution via MovieDetails
+// (whose ReleaseDates arrive in the same round trip) is required instead.
+func (c *Client) DiscoverMoviesUpcoming(ctx context.Context, from, to string) ([]UpcomingMovie, error) {
+	digital, err := c.DiscoverMoviesFiltered(ctx, FilterOptions{
+		Region:       UpcomingRegion,
+		ReleaseTypes: upcomingReleaseTypes,
+		DateFrom:     from,
+		DateTo:       to,
+	}, 1)
+	if err != nil {
+		return nil, err
+	}
+	planned, err := c.DiscoverMoviesFiltered(ctx, FilterOptions{DateFrom: from, DateTo: to}, 1)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UpcomingMovie, 0, len(digital)+len(planned))
+	seen := make(map[int]struct{}, len(digital))
+	for _, it := range digital {
+		seen[it.ID] = struct{}{}
+		out = append(out, UpcomingMovie{Item: it, ReleaseKind: ReleaseKindDigital})
+	}
+	// Walk B's slice rather than ranging a merged map — map iteration order is
+	// randomized, which would make the calendar's ordering differ per request.
+	for _, it := range planned {
+		if _, dup := seen[it.ID]; dup {
+			continue
+		}
+		out = append(out, UpcomingMovie{Item: it, ReleaseKind: ReleaseKindPlanned})
+	}
+	return out, nil
 }
 
 // Keyword is one TMDB keyword, as returned by /search/keyword — unlike

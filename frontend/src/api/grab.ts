@@ -1,5 +1,6 @@
 // Auto-grab data access (Stage 2). Discover's one-click unattended grab and
-// its manual-fallback pick list, plus the Grabs view's list. Every call goes
+// its manual-fallback pick list, plus the list backing Calendar's History
+// view (Queue's third tab). Every call goes
 // through api() (src/api/client.ts) so it inherits the session cookie and the
 // global 401 → re-boot session-expiry fallback. Request/response shapes are the
 // generated DTOs (@dto), never hand-duplicated (plan Guardrail #4).
@@ -104,7 +105,7 @@ export function manualGrab(mode: string, body: ManualGrabBody): Promise<Grab> {
   });
 }
 
-// fetchGrabs lists the grabs recorded for one mode (the Grabs view).
+// fetchGrabs lists the grabs recorded for one mode (Calendar's History view).
 export function fetchGrabs(mode: string): Promise<Grab[]> {
   return api<Grab[]>(`/api/modes/${mode}/grabs`);
 }

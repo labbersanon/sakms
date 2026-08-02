@@ -45,6 +45,17 @@ const (
 	// whole diff to this file is this doc comment, with no second scoring,
 	// dispatch or gating path added anywhere.
 	TriggerAirDate AutoGrabTrigger = "airdate"
+	// TriggerPreRelease is a Calendar pre-release request whose hold_until has
+	// arrived: an operator clicked an unreleased movie in Calendar's Upcoming view,
+	// and the release date has now passed. Detected and dispatched by
+	// releaseDueGrabs (internal/api/prerelease.go), the FOURTH pass of
+	// runUsenetRetryCycle. Gated like every non-TriggerOperator trigger, by
+	// construction — the gate below applies to it without a second gating path.
+	//
+	// The click and the dispatch are separated by days-to-months, which is what
+	// makes this a genuinely new category ("deferred operator approval", §6.1) and
+	// not a member of TriggerOperator's immediate-click exemption.
+	TriggerPreRelease AutoGrabTrigger = "prerelease"
 )
 
 const (
@@ -72,6 +83,18 @@ const (
 	// articlesUnavailableReason is the retry_reason for a retrieval failure
 	// where every configured subscription answered 430.
 	articlesUnavailableReason = "no configured usenet subscription holds this release's articles"
+	// heldRequestReason is the retry_reason a Calendar pre-release request
+	// carries while it waits for its release date.
+	//
+	// OPERATOR-FACING COPY ONLY. Nothing anywhere branches on it, and nothing
+	// ever may: hold_until is this feature's origin marker precisely so that
+	// origin is a queryable column rather than an inference from a reason string
+	// — the pattern that caused a HIGH-severity misclassification bug in series
+	// air-date monitoring (see airDateShaped's doc on why a reason-string marker
+	// cannot even survive one cycle). An executor who reintroduces a
+	// `RetryReason == heldRequestReason` test has re-created that fragility
+	// class.
+	heldRequestReason = "held until its release date"
 )
 
 // AutoGrabDeps is the fixed dependency set every trigger needs. The mode
@@ -335,8 +358,44 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 // is ONE atomic Create at retry_count 0 — SetPendingRetry increments, so
 // Create-then-SetPendingRetry would land a brand-new row at 1, an inaccurate
 // attempt count for a row that was never actually retried yet.
+//
+// req.ExistingGrabID WINS OVER FindPendingRetry when it is non-zero, and that
+// preference is a correctness fix rather than an optimisation (added 2026-08-02
+// with the pre-release hold). FindPendingRetry is keyed on
+// (mode, tmdb_id, season…) and orders id ASC, so it resolves to the OLDEST
+// matching row — which, once Calendar can mint a held request, need not be the
+// row this run is a retry OF:
+//
+//	H = a held pre-release row for tmdb_id N (retry_after '', hold_until future)
+//	R = a separately Discover-grabbed row for the SAME N, at a higher id
+//
+// R's retrieval fails, R comes due, its re-search finds nothing — and
+// FindPendingRetry hands back H. R's failure would then overwrite H's
+// retry_after, retry_reason and retry_count: an unreleased film searched early
+// (which grabs.DueForRetry's hold conjunct also independently blocks) and, more
+// to the point, a held request whose state is silently corrupted by an
+// unrelated grab. Both existing callers are unaffected — retryDueGrabs already
+// passes ExistingGrabID: g.ID and FindPendingRetry resolves to that same row
+// today, so this is a no-op there; dispatchAirDateGrabs passes zero and falls
+// through unchanged.
+//
+// Do NOT "simplify" this by adding AND hold_until = ” to FindPendingRetry
+// instead. It looks like the one-line version of the same fix and it BREAKS
+// PROMOTION IDEMPOTENCE: a promoted held row would stop matching the update arm
+// below, fall into the Create arm, and mint a duplicate.
+//
+// A non-zero ExistingGrabID that no longer resolves returns ErrNotFound rather
+// than falling through to Create. The caller named a specific row; minting a
+// different one instead is the very class of thing this preference closes.
 func parkPendingRetry(ctx context.Context, deps AutoGrabDeps, req AutoGrabRequest, reason string) (*grabs.Grab, error) {
 	after := time.Now().Add(usenetRetryInterval(ctx, deps.SettingsStore))
+
+	if req.ExistingGrabID != 0 {
+		if err := deps.GrabsStore.SetPendingRetry(ctx, req.ExistingGrabID, after, reason); err != nil {
+			return nil, err
+		}
+		return deps.GrabsStore.Get(ctx, req.ExistingGrabID)
+	}
 
 	existing, err := deps.GrabsStore.FindPendingRetry(ctx, req.Mode, req.TMDBID, req.Title, req.Season, req.SeasonSpecified, req.Episode)
 	switch {
@@ -365,6 +424,52 @@ func parkPendingRetry(ctx context.Context, deps AutoGrabDeps, req AutoGrabReques
 	default:
 		return nil, err
 	}
+}
+
+// parkPreReleaseRequest mints the held row a Calendar pre-release click leaves
+// behind: an operator asked for a movie that is not out yet, and the request
+// must sit dormant until its release date.
+//
+// It lives HERE, beside parkPendingRetry, so exactly ONE file mints GID-less
+// pending_retry rows. That placement is deliberate (plan §5.2.3): the DISPATCH
+// half of this feature is textbook Pattern B (a new AutoGrabTrigger const plus a
+// caller that goes through RunAutoGrab — see releaseDueGrabs), while the
+// CREATION half is a parker, because a held row is minted by a click and not by
+// a search. CLAUDE.md's "do not use both patterns for the same trigger source"
+// forbids two DISPATCH paths for one source; there is exactly one here.
+//
+// THE EMPTY retry_after IS THE WHOLE HOLD, and it is the single most
+// load-bearing detail in this row's shape. grabs.DueForRetry selects on
+// `retry_after != ” AND retry_after <= ?`, and its own doc explains the first
+// conjunct: the column defaults to the empty string, which sorts below every
+// real timestamp. So a row born with no retry_after is invisible to the retry
+// cycle unconditionally — not "until its date arrives", but always, until
+// something writes a retry_after onto it. Writing one here (parking the hold as
+// a retry_after, the design this feature deliberately did NOT build) would make
+// the hold and the re-search schedule the same field and force origin to be
+// re-inferred from row shape.
+//
+// hold_until carries the date instead, and doubles as the ORIGIN MARKER: nothing
+// else in this codebase produces a non-empty hold_until. reason is
+// heldRequestReason, operator-facing copy only — nothing branches on it.
+//
+// Status PendingRetry is stored as given because grabs.Create makes exactly this
+// exception for PendingRetry rather than forcing Queued; every other status
+// would be reset, hold_until included.
+//
+// It can return grabs.ErrHeldRequestExists, and a caller MUST handle that rather
+// than treating it as a server error: it means a concurrent click won the race to
+// mint this film's held row (the partial unique index idx_grabs_held_request
+// refusing a second), which is an already-requested answer, not a failure. See
+// the call site in calendar_prerelease.go's step 3.
+func parkPreReleaseRequest(ctx context.Context, grabsStore *grabs.Store, m mode.Mode, title string, tmdbID int, until time.Time) (grabs.Grab, error) {
+	return grabsStore.Create(ctx, grabs.Grab{
+		Mode: m, Title: title, TMDBID: tmdbID,
+		Status: grabs.PendingRetry,
+		// RetryAfter is deliberately LEFT EMPTY — see the doc above.
+		HoldUntil:   grabs.FormatTime(until),
+		RetryReason: heldRequestReason,
+	})
 }
 
 // usenetRetryInterval is how far ahead retry_after is parked. An unset or

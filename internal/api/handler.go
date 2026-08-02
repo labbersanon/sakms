@@ -389,6 +389,20 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// *excludes.Store, a dependency NewMux doesn't carry (same precedent as
 	// NewRecheckTriggerMux). GET /api/requests moved there with them.
 
+	// Calendar's Upcoming views. Deliberately NOT mode-parameterised — Movies
+	// and Series are different queries against different backends, not one
+	// query over a mode variable (same precedent as /api/requests and
+	// /api/autograb-batch being global). from/to are required; see
+	// calendar_upcoming.go.
+	mux.HandleFunc("GET /api/calendar/upcoming/movies", upcomingMoviesHandler(httpClient, connStore, scStore, settingsStore, grabsStore, libStore))
+	mux.HandleFunc("GET /api/calendar/upcoming/series", upcomingSeriesHandler(httpClient, connStore, scStore, settingsStore, libStore))
+	// Calendar's click-to-request. Creates a HELD grab row (hold_until = the
+	// release date) that nothing searches until that date arrives — the fourth
+	// pass of the retry cycle promotes it. It needs no *excludes.Store, so it
+	// stays on this mux; see calendar_prerelease.go for why no exclusion check
+	// belongs at create time.
+	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore))
+
 	// Download queue: torrent (anacrolix) + usenet (NNTP) merged into one
 	// stream. GID routing: "nzb-" prefix → usenet engine, otherwise torrent.
 	// See downloads.go.

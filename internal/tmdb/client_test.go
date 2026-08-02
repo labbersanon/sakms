@@ -866,6 +866,102 @@ func TestDiscoverFilterQuery_LteBoundOnlyOnNewestSort(t *testing.T) {
 	}
 }
 
+// TestDiscoverFilterQuery_ReleaseTypesSwitchWindowField proves the Upcoming
+// calendar's two additions: release type ids are pipe-joined (OR — a movie
+// needs a digital OR physical release, not both), and setting them moves the
+// date window off the caller's dateField onto release_date, the typed-release
+// date with_release_type actually selects on.
+func TestDiscoverFilterQuery_ReleaseTypesSwitchWindowField(t *testing.T) {
+	q := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{
+		ReleaseTypes: []int{4, 5},
+		DateFrom:     "2026-09-01",
+		DateTo:       "2026-09-30",
+	})
+	if got := q.Get("with_release_type"); got != "4|5" {
+		t.Errorf("expected pipe-joined with_release_type=4|5, got %q", got)
+	}
+	if q.Get("release_date.gte") != "2026-09-01" || q.Get("release_date.lte") != "2026-09-30" {
+		t.Errorf("expected the window on release_date.*, got %v", q)
+	}
+	if q.Has("primary_release_date.gte") || q.Has("primary_release_date.lte") {
+		t.Errorf("expected no primary_release_date window when release types are set, got %v", q)
+	}
+}
+
+// TestDiscoverFilterQuery_RegionParam proves Region emits TMDB's `region`.
+func TestDiscoverFilterQuery_RegionParam(t *testing.T) {
+	q := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{Region: "US"})
+	if got := q.Get("region"); got != "US" {
+		t.Errorf("expected region=US, got %q", got)
+	}
+	bare := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{})
+	if bare.Has("region") {
+		t.Errorf("expected no region param when Region is unset, got %q", bare.Get("region"))
+	}
+}
+
+// TestDiscoverFilterQuery_WindowFieldIsALocalShadow is the regression guard for
+// the one trap in the Region/ReleaseTypes change: the override MUST be a local
+// shadow, never a reassignment of the dateField parameter, because dateField is
+// read a second time by the newest sort's `SortBy == dateField+".desc"` check.
+//
+// Reassigning would make that comparison read "primary_release_date.desc" ==
+// "release_date.desc" → false → the today-cap silently disappears. So the
+// discriminating case is BOTH fields set at once: a plain no-ReleaseTypes call
+// behaves identically under either implementation and proves nothing.
+func TestDiscoverFilterQuery_WindowFieldIsALocalShadow(t *testing.T) {
+	orig := nowFn
+	nowFn = func() time.Time { return time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC) }
+	defer func() { nowFn = orig }()
+
+	q := discoverFilterQuery(1, "primary_release_year", "primary_release_date", FilterOptions{
+		ReleaseTypes: []int{4, 5},
+		DateFrom:     "2026-09-01",
+		DateTo:       "2026-09-30",
+		SortBy:       "primary_release_date.desc",
+	})
+	if got := q.Get("primary_release_date.lte"); got != "2026-08-02" {
+		t.Errorf("newest-sort today-cap must still key on the untouched dateField parameter; expected primary_release_date.lte=2026-08-02, got %q (whole query: %v)", got, q)
+	}
+	// The window itself is unaffected by the cap — different keys, so the cap
+	// ANDs an extra bound rather than overwriting DateTo via url.Values.Set.
+	if got := q.Get("release_date.lte"); got != "2026-09-30" {
+		t.Errorf("expected the window's own release_date.lte=2026-09-30 to survive, got %q", got)
+	}
+}
+
+// TestDiscoverFilterQuery_ZeroValuedNewFieldsAreByteIdentical proves every
+// pre-existing caller (sliders, genre/keyword/studio browses, the calendar) is
+// untouched: with Region/ReleaseTypes zero-valued the encoded query is exactly
+// what it was before they existed, for both the movie and tv field pairs.
+func TestDiscoverFilterQuery_ZeroValuedNewFieldsAreByteIdentical(t *testing.T) {
+	orig := nowFn
+	nowFn = func() time.Time { return time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC) }
+	defer func() { nowFn = orig }()
+
+	opts := FilterOptions{
+		GenreIDs:  []int{28, 12},
+		StudioID:  420,
+		Year:      2023,
+		MinRating: 7,
+		SortBy:    "primary_release_date.desc",
+		DateFrom:  "2026-07-01",
+		DateTo:    "2026-07-31",
+	}
+	const wantMovie = "page=2&primary_release_date.gte=2026-07-01&primary_release_date.lte=2026-08-02&" +
+		"primary_release_year=2023&sort_by=primary_release_date.desc&vote_average.gte=7.0&" +
+		"vote_count.gte=200&with_companies=420&with_genres=28%7C12"
+	if got := discoverFilterQuery(2, "primary_release_year", "primary_release_date", opts).Encode(); got != wantMovie {
+		t.Errorf("movie query changed:\n got %s\nwant %s", got, wantMovie)
+	}
+
+	tvOpts := FilterOptions{NetworkID: 213, DateFrom: "2026-07-01", DateTo: "2026-07-31"}
+	const wantTV = "first_air_date.gte=2026-07-01&first_air_date.lte=2026-07-31&with_networks=213"
+	if got := discoverFilterQuery(1, "first_air_date_year", "first_air_date", tvOpts).Encode(); got != wantTV {
+		t.Errorf("tv query changed:\n got %s\nwant %s", got, wantTV)
+	}
+}
+
 // TestDiscoverMoviesFiltered_HitsDiscoverMovie proves the movie filter path
 // hits /discover/movie and forwards the built query (pipe-joined genres, sort).
 func TestDiscoverMoviesFiltered_HitsDiscoverMovie(t *testing.T) {

@@ -166,6 +166,80 @@ launch, which is exactly what the sibling torrent-behavior plan's §5
 originally recommended and this feature's spec overrode — not a general proof
 about the whole codebase.
 
+**AMENDED 2026-08-02 — Calendar pre-release requests add a FIFTH trigger source
+to the bounded auto-grab exception below, and change NO COUNT in this section.**
+Same shape as the air-date amendment directly above, recorded for the same
+reason: *"held dormant until the release date"* is the most schedule-suggesting
+phrase in this feature's spec and it adds no scheduler at all. The superseded
+enumeration, quoted verbatim from that amendment so a future session can find
+it: *"Corrected enumeration: **four live triggers — `TriggerOperator` /
+`TriggerRequest` / `TriggerRetry` / `TriggerAirDate` — all through the one
+`RunAutoGrab` path, with the gate still enforced in exactly one place.**"*
+Corrected enumeration: **five live triggers — `TriggerOperator` /
+`TriggerRequest` / `TriggerRetry` / `TriggerAirDate` / `TriggerPreRelease` —
+still all through the one `RunAutoGrab` path, still with the gate enforced in
+exactly one place.** `TriggerPreRelease` is declared in
+`internal/api/autograb_shared.go` and dispatched by `releaseDueGrabs`
+(`internal/api/prerelease.go`); the category it introduces is documented in full
+under **Staged-for-approval** below (AMENDED 2026-08-02).
+
+**`TriggerRetry`'s population is UNCHANGED by this feature, and that is a direct
+benefit of the design rather than a coincidence.** A held pre-release row is
+born with an EMPTY `retry_after`, which makes it invisible to
+`grabs.DueForRetry` unconditionally; it reaches dispatch through
+`releaseDueGrabs`, never through `retryDueGrabs`. So "retry" keeps meaning
+exactly what it means everywhere else in this document. The rejected design
+(reusing `retry_after` as the hold) would have silently widened `TriggerRetry`
+instead — the full Option A / Option B audit trail is in
+`.omc/plans/autopilot-impl-calendar-grabs-requests.md` §5.4.
+
+**There are still SIX interval-driven schedulers, not seven.** This feature adds
+no goroutine, no ticker, no interval key, and **no line in `cmd/sakms/main.go`**
+— that file is untouched by this feature. Two separate pieces of it look like
+they should each have added one, and neither did:
+
+- **`releaseDueGrabs` is a plain function call — the FOURTH pass inside the
+  existing `runUsenetRetryCycle`** (`internal/api/usenetretry.go`), exactly as
+  `monitorAirDates` is the third. The 24h cycle notices a release date has
+  arrived with a `WHERE` clause (`grabs.DueForRelease`), not a timer.
+- **The series episode-catalog sync is caller-driven, not timed.**
+  `syncSeriesCatalog` moved VERBATIM out of `airdatemonitor.go` into a new file,
+  `internal/api/seriescatalog.go`, so that METADATA becomes always-available
+  while DISPATCH stays gated exactly as before (decided by Wade, 2026-08-02, in
+  response to the finding below). It is called from `monitorAirDates` (unchanged
+  behaviour when auto-grab is on) and from Calendar's read path, with its TTL
+  and per-request cap declared in that new file — no ticker, no `main.go`
+  launch. **Why it had to move:** that sync is the only thing that ever writes a
+  `library_episodes` row with an empty `file_path` or seeds `air_date` at all,
+  and its sole caller ran inside the toggle-gated retry cycle, which does not
+  start while unattended auto-grab is off — the default on every install. So
+  Calendar's Upcoming/Series view would have rendered permanently empty
+  everywhere. **Why a NEW FILE rather than an export:**
+  `internal/api/airdatemonitor_static_test.go` constrains `airdatemonitor.go` by
+  name, and one of its assertions fires on any const whose NAME CONTAINS
+  `"Interval"`, whatever that const is actually used for — so the TTL this read
+  path needs would have failed that test from inside that file. The test passes
+  **unmodified**. Never declare an `"Interval"`-named const or a settings-backed
+  TTL in `airdatemonitor.go`.
+
+**This count is verified, not proven — a weaker claim than the note above it
+makes, stated honestly.** The air-date note could say *"This one is proven
+rather than asserted"* because a static AST test pins it. There is no equivalent
+test for `prerelease.go` or `seriescatalog.go`. The six was confirmed by reading
+`cmd/sakms/main.go`'s launch block and confirming the file is untouched — the
+method the CORRECTED note above prescribes — not by anything that would catch a
+future session giving either of these its own ticker.
+
+**The cycle now does FOUR things, not three.** The air-date amendment's *"it is
+a plain function call, the third pass inside the existing `runUsenetRetryCycle`
+(`internal/api/usenetretry.go`), running after the GID sweep and the due
+re-search"* remains true **of `monitorAirDates`** and no longer describes the
+whole cycle. In order: (1) the GID sweep converting asynchronous usenet
+retrieval failures into `pending_retry`/`failed`, (2) the due re-search,
+(3) `monitorAirDates`, (4) `releaseDueGrabs`. `usenetretry.go`'s own file doc
+was corrected in lockstep and is the authoritative description of the ordering
+and of why pass 4 runs last.
+
 (Bulk apply, added 2026-07-17, is a same-screen multi-select of
 already-reviewed Pending proposals — see the amended engineering-convention
 note below. It doesn't change this section: there is still no automation,
@@ -466,6 +540,16 @@ above, so don't drop them for convenience:
        corrected in full in the AMENDED 2026-08-01 note under **Automation**
        above; flagged here so a reader who opens this bound directly is not
        left with the superseded enumeration.)
+       (**A FIFTH trigger, `TriggerPreRelease`, was added 2026-08-02** —
+       Calendar pre-release requests, dispatched by `releaseDueGrabs`
+       (`internal/api/prerelease.go`). Five live triggers now, not four. The
+       property this bound asserts is again unaffected and again holds by the
+       same construction — a held row is *created* by a parker that dispatches
+       nothing, so there is no cached winner to re-dispatch, and its only route
+       to dispatch is one `RunAutoGrab` call. Quoted and corrected in full in
+       the AMENDED 2026-08-02 note under **Automation** above; the category it
+       introduces is documented in the AMENDED 2026-08-02 note at the end of
+       this list.)
     4. **A permanent-failure path that does not retry, and (as of 2026-08-01)
        no cap on the one that does.** A 451 `ErrArticleRemoved` (DMCA
        takedown) is terminal: `classifyDownloadState` maps it straight to
@@ -638,6 +722,120 @@ above, so don't drop them for convenience:
       metadata; Pattern B creates a fresh row. `series-monitoring-autograb`
       must use Pattern B because there is no prior row. Do not use both for
       the same trigger source.
+  - **AMENDED 2026-08-02 — bounded DEFERRED-OPERATOR-APPROVAL exception:
+    Calendar pre-release requests (a fifth, deliberate, documented reversal;
+    see `docs/ROADMAP.md` items 4 and 8 and `CHANGELOG.md`).** Placed at the end
+    of this list rather than adjacent to any note above it because it is a
+    genuinely NEW category, not a correction to an existing one. An operator
+    clicks an unreleased movie in Calendar's Upcoming view; that click mints a
+    **held** grab row which sits dormant — no search, no dispatch, no indexer
+    traffic — until its release date, potentially months later, at which point
+    `releaseDueGrabs` dispatches it via `TriggerPreRelease` with nobody
+    watching. The category sits BETWEEN the two exceptions above, which is
+    exactly why neither of them covers it:
+
+    | | `TriggerOperator` (2026-07-24) | **`TriggerPreRelease` (this note)** | `TriggerAirDate` (2026-08-01) |
+    |---|---|---|---|
+    | Human action | a click | **a click** | none |
+    | Time from click to dispatch | immediate | **days to months** | n/a |
+    | Who mints the row | the operator | **the operator** | the system |
+    | Human present at dispatch | yes | **no** | no |
+    | Per-cycle dispatch cap | n/a (ungated) | **`maxPreReleaseGrabsPerCycle = 20`** | `maxAirDateGrabsPerCycle = 20` |
+
+    Call it **deferred operator approval**: *narrower* than `TriggerAirDate`
+    (one explicitly chosen title per click, not a system-minted per-episode
+    sweep) and *broader* than `TriggerOperator` (nobody is present when it
+    fires). The 2026-07-24 bulk-grab amendment turns on "the operator's own
+    click *is* the approval," which assumes the click and the dispatch are the
+    same event; the 2026-08-01 usenet amendment turns on "no human action in
+    the loop at all," which is not true here. **The four formal bounds in that
+    amendment are all unchanged** — same off-by-default toggle enforced in the
+    same single place inside `RunAutoGrab`, same `autograb.Select`
+    qualification predicate, same "no grab without a scored match," same
+    permanent-failure path. Bound 3's trigger enumeration goes from four to
+    five; that correction is quoted and made in full in the AMENDED 2026-08-02
+    note under **Automation** above.
+
+    **The origin marker is a real database column, `grabs.hold_until`
+    (migration `0057`), and WHY it is a column is the most important thing in
+    this note.** A row with a non-empty `hold_until` originated as a Calendar
+    pre-release request, and nothing else in the codebase can produce one. That
+    is a queryable fact, not an inference from `status` + `retry_reason` +
+    `retry_count`. Wade chose this design (Option B) on 2026-08-02 over a
+    cheaper no-schema-change alternative, citing by name the HIGH-severity
+    misclassification bug just fixed in `series-monitoring-autograb`, where
+    origin *was* inferred from row shape and a reason string — the inference
+    misfired and destroyed an operator's own grab (see `airdatemonitor.go`'s
+    `airDateShaped`/`airDateOriginated` and their doc comments). The plan
+    argued the other way through two Critic passes and its own evidence had
+    moved against it by the end; the full audit trail is in
+    `.omc/plans/autopilot-impl-calendar-grabs-requests.md` §5.4. **Do not
+    "simplify" this back into a reason-string discriminator.**
+
+    Two further properties of the column are load-bearing. It is **never
+    cleared**, not even after the row is promoted and dispatched — provenance
+    outlives the hold, and `DueForRelease`'s `retry_after = ''` guard, not a
+    clear, is what makes promotion fire exactly once. And a **partial unique
+    index**, `idx_grabs_held_request ON grabs (mode, tmdb_id) WHERE hold_until
+    != ''`, enforces at-most-one-held-request-per-title in the DATABASE rather
+    than in the route's check-then-act. **That index was added during Wave 2
+    review, not in the original design**, and it closes a real hole: two
+    genuinely concurrent clicks (a double-click, two tabs) can both miss
+    `FindHeldRequest` and both `Create`, and nothing downstream can repair it —
+    the shared `nonHeldMovieWork` predicate self-excludes EVERY held row, not
+    just the one under evaluation, so promotion-time suppression cannot tell
+    two held rows apart; both promote, both dispatch, one film downloads twice.
+    It is PARTIAL because ordinary grabs legitimately repeat a
+    `(mode, tmdb_id)` pair (a re-grab, a retry that minted a fresh row) and a
+    total unique index would break every one of them. The migration's `Down`
+    must **drop the index BEFORE the column** — SQLite refuses to drop a column
+    named in a partial index's `WHERE` clause — and
+    `internal/db/migration_grabs_hold_until_test.go` is what catches a future
+    edit that reverses that ordering.
+
+    **Dispatch is Pattern B; creation is a PARKER — and that split is legal.
+    Recorded because it is the one place a reader could reasonably think the
+    "do not use both for the same trigger source" rule directly above was
+    broken.** That rule forbids two *dispatch* paths for one trigger source.
+    There is exactly one here: `releaseDueGrabs` →
+    `RunAutoGrab(TriggerPreRelease)`, textbook Pattern B. The row's *creation*
+    is a parker (`parkPreReleaseRequest`) instead, because a held row is minted
+    by a click rather than by a search, and a parker dispatches nothing — so
+    the row is never a "cached winner" being re-dispatched; it was never
+    dispatched at all. An earlier draft of the plan proposed naming this a
+    third pattern, "Pattern C"; **that name is retired** — it was an artifact of
+    the rejected design. Without this note a future session will spend a review
+    cycle rediscovering that "parker + Pattern B" is legal.
+
+    **The gate-flip burst is real, and it is capped — both halves matter.** On
+    a default install nothing fires at all (the toggle is off, so the cycle
+    never starts), so an operator can browse Calendar for months and accumulate
+    dozens of held rows before ever enabling unattended auto-grab. The first
+    cycle after they enable it sees that whole accumulated backlog come due at
+    once. The burst is bounded by **`maxPreReleaseGrabsPerCycle = 20`**
+    (`internal/api/prerelease.go`) — same value, same precedent as
+    `maxAirDateGrabsPerCycle`; the rest stay held for the next cycle. This
+    bound is affordable precisely BECAUSE `releaseDueGrabs` is a loop this
+    feature owns. `retryDueGrabs`' own loop remains uncapped — a pre-existing
+    property this feature does not contribute to and did not change.
+
+    - **Three documented spec deviations, recorded in this amendment because a
+      future session will look for them here** (same register as the usenet
+      amendment's "queried in parallel" reinterpretation above):
+      1. **AC6's "the same flow Discover's Grab button uses" was NOT taken
+         literally.** That flow searches and dispatches immediately, which this
+         feature's own dormancy constraint forbids. What is genuinely shared is
+         the **row type and the dispatch gate**, not the entry point.
+      2. **"Region-aware" was read as "region-scoped to US, by the convention
+         `HasUSRelease` already established."** That helper is hard-coded to US
+         and the spec explicitly declined to design a new TMDB date-resolution
+         heuristic, so this is a named constant — not a new settings key, a new
+         Settings control, or a migration.
+      3. **AC9 lists History's completed-only filtering under the
+         `go test ./...` bullet, but its test is TypeScript.** The filter is
+         deliberately client-side (`listGrabsHandler` stays general), so the
+         test lives in the frontend suite. That is the right engineering call,
+         and it means one AC-named assertion does not exist as a Go test.
 
 - **Secrets encrypted at rest** (`internal/secrets`, a locally generated
   key file, not an OS keychain — the primary deployment target is a
@@ -1034,6 +1232,55 @@ above, so don't drop them for convenience:
     Calendar as tab 3 is Phase 4 scope, deferred on purpose per
     `.omc/plans/roadmap-implementation-sequencing.md:104-106`. See
     `.omc/plans/autopilot-impl-queue-navigation-grouping.md`.
+    - **CORRECTED 2026-08-02 — the deferred swap has been PERFORMED. Tab 3 is
+      Calendar, and `Grabs.tsx` is deleted outright (see
+      `.omc/plans/autopilot-impl-calendar-grabs-requests.md` §1.1,
+      `docs/ROADMAP.md` items 4 and 8, and `CHANGELOG.md`).** Stacked on the
+      note above rather than rewriting it, per this file's append-and-correct
+      convention. **Three** sentences in it are now false, quoted verbatim so a
+      future session can find them:
+      1. *"`Downloads.tsx`/`Requests.tsx`/`Grabs.tsx` are internally untouched
+         and their own suites pass unmodified."*
+      2. *"The Provider is load-bearing for exactly one child: the embedded
+         `Grabs` renders `ModeTabs`, which would otherwise clobber Queue's own
+         tab bar in the shell's single tab slot"* — quoted up to, but not
+         including, its trailing parenthetical, which is still true.
+      3. *"**Tab order is Downloads → Requests → Grabs, deliberately NOT the
+         old sidebar order** — and `docs/ROADMAP.md` item 4's 2026-07-31
+         amendment swapping Grabs for Calendar as tab 3 is Phase 4 scope,
+         deferred on purpose per
+         `.omc/plans/roadmap-implementation-sequencing.md:104-106`."*
+
+      **Corrected: tab order is Downloads → Requests → Calendar**, still
+      deliberately NOT the old sidebar order.
+      `frontend/src/screens/Grabs.tsx` **and** `Grabs.test.tsx` were **DELETED**
+      — not kept alongside Calendar — per this repo's "no dead code left
+      behind" convention. Nothing was lost: Calendar's History view carries the
+      read-only completed/imported grab log forward, still with no bulk actions
+      and no mutate-many affordances. `Downloads.tsx` and `Requests.tsx` are
+      still there (both were edited by this feature for other reasons).
+      **A stored `sakms.queue.tab` of `"grabs"` lands the operator on
+      Downloads through the existing sanitizing fallback** — the deliberate,
+      tested outcome, and deliberately NOT a `"grabs"` → `"calendar"` storage
+      rewrite, which would be the only storage-migration path in the app.
+
+      **Corrected: the Provider still exists and is still load-bearing for
+      exactly one child — but be precise about WHICH component registers,
+      because it is not the obvious one.** It is **Calendar's `History`
+      child**, not `Calendar` itself: `calendar/index.tsx`'s own
+      History/Upcoming switch is a plain `ScreenTabBar` that draws inline and
+      registers nothing, while `calendar/History.tsx` renders the real
+      three-mode `ModeTabs`. History is Calendar's default view, so the
+      collision is live from the moment the Calendar tab is opened. Downloads
+      and Requests still render neither `ModeTabs` nor `ScreenTabs` at all.
+
+      **Unchanged and still accurate:** "Sidebar 10 entries → 8; `APP_ROUTES`
+      11 → 9." Calendar never had a route of its own, so it added nothing —
+      the three routes collapsed into `/queue` are still `/downloads`,
+      `/grabs` and `/requests`, which is what `routing.test.ts` asserts are
+      dead. The `Organize.tsx`-mirror / no-premature-abstraction stance is
+      unchanged too. `Queue.tsx`'s own file header is the authoritative
+      description of all of this.
 
 - **Mainstream Discover — Seerr-parity expansion (2026-07-14)**: supersedes
   this section's earlier "paginated Trending/Popular rows" description —

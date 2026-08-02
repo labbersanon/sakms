@@ -99,7 +99,7 @@ const FallbackRow: Component<{
       }
     >
       <div class="text-sm text-ok">
-        Grabbed “{grabbed()}”. Tracked in the Grabs view.
+        Grabbed “{grabbed()}”. Tracked in Calendar's History view.
       </div>
     </Show>
   );

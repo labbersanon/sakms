@@ -600,6 +600,20 @@ export interface Grab {
   retryAfter?: string;
   retryCount?: number /* int */;
   retryReason?: string;
+  /**
+   * HoldUntil mirrors grabs.Grab.HoldUntil — a Calendar pre-release request's
+   * hold timestamp, "" for every grab that did not originate as one.
+   * It is deliberately declared on BOTH structs, and neither copy is
+   * redundant: the History wire payload carries grabs.Grab, encoded directly
+   * by listGrabsHandler with no DTO mapping step, while the TypeScript Grab
+   * type is generated from THIS struct. Dropping it here makes the field
+   * invisible to TypeScript; dropping it on grabs.Grab makes it absent from
+   * the payload. The two structs are already divergent by three other fields
+   * (downloadGid/downloadStatus/downloadStagingPath exist only on
+   * grabs.Grab), so they are two independent copies of "what a grab looks
+   * like", not one type duplicated by accident.
+   */
+  holdUntil?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -981,6 +995,13 @@ export interface RequestStatusItem {
    */
   retryAfter?: string;
   retryReason?: string;
+  /**
+   * HoldUntil mirrors the grab row's grabs.Grab.HoldUntil (see Grab above for
+   * why that field exists on two structs). Carried here so the Requests
+   * screen can render a held pre-release request's scheduled release date
+   * inline, without a second call to fetch the grab it was derived from.
+   */
+  holdUntil?: string;
 }
 /**
  * RequestStatusResponse is GET /api/requests's response — one row per title
@@ -2406,4 +2427,66 @@ export interface SeriesNewSeasonDiscoveryResponse {
 }
 export interface SeriesNewSeasonDiscoveryRequest {
   enabled: boolean;
+}
+/**
+ * UpcomingSeriesEntry is one not-yet-aired episode of an already-tracked
+ * series, sourced from library.MissingEpisodes — tracked series only, so this
+ * view is bounded by the operator's own library rather than by a catalog
+ * query. SeriesID is the library row id (library.Series.ID), TMDBID the show's
+ * TMDB id; AirDate is a bare date string as TMDB returns it.
+ */
+export interface UpcomingSeriesEntry {
+  seriesTitle: string;
+  seriesId: number /* int64 */;
+  tmdbId: number /* int */;
+  seasonNumber: number /* int */;
+  episodeNumber: number /* int */;
+  episodeTitle: string;
+  airDate: string;
+}
+/**
+ * UpcomingMovieEntry is one upcoming movie release from TMDB.
+ * ReleaseKind is "digital" or "planned" and nothing else — the same two values
+ * tmdb.ReleaseKindDigital/ReleaseKindPlanned carry. They are repeated here as
+ * literal strings rather than referenced, because this package deliberately
+ * imports no internal/domain package: it is a hand-picked wire boundary, not a
+ * re-export of domain types (hence the flat fields below rather than embedding
+ * tmdb.Item the way tmdb.UpcomingMovie does).
+ * AlreadyRequested is the server-computed answer to "is this movie already
+ * tracked or already being grabbed" — the flag AC6's click-to-request
+ * affordance keys on, so the client never cross-references two lists itself
+ * (and never asks Prowlarr: the signal comes from the tracked library plus the
+ * grab log, per CLAUDE.md's Discover-never-queries-Prowlarr rule). Deliberately
+ * NOT omitempty: false is the meaningful "clickable" case and must reach
+ * TypeScript as a required boolean, not an optional one.
+ */
+export interface UpcomingMovieEntry {
+  tmdbId: number /* int */;
+  title: string;
+  posterPath?: string;
+  releaseDate: string;
+  releaseKind: string;
+  alreadyRequested: boolean;
+}
+/**
+ * PreReleaseRequestRequest is POST /api/calendar/prerelease-request's body —
+ * the operator clicking an un-requested upcoming movie. ReleaseDate is the
+ * date the resulting grab row is held until.
+ */
+export interface PreReleaseRequestRequest {
+  tmdbId: number /* int */;
+  title: string;
+  releaseDate: string;
+}
+/**
+ * PreReleaseRequestResponse reports the held grab row the request produced.
+ * AlreadyRequested is true when the click matched an existing outstanding
+ * request instead of creating one — the UI says "already requested" rather
+ * than silently appearing to succeed twice. GrabID is int64 to match
+ * RequestStatusItem.GrabID, since both name the same grabs.Grab row.
+ */
+export interface PreReleaseRequestResponse {
+  grabId: number /* int64 */;
+  heldUntil: string;
+  alreadyRequested: boolean;
 }

@@ -676,8 +676,8 @@ export const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> 
                 <Match when={r().grabbed}>
                   <div class="text-sm text-ok">{r().message}</div>
                   <Muted class="mt-1">
-                    Tracked in the Grabs view — check import there once it
-                    finishes downloading.
+                    Tracked in Calendar's History view — check import there
+                    once it finishes downloading.
                   </Muted>
                 </Match>
                 <Match when={r().fallback}>
@@ -693,7 +693,8 @@ export const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> 
                     }
                   >
                     <div class="text-sm text-ok">
-                      Grabbed “{manualGrabbed()}”. Tracked in the Grabs view.
+                      Grabbed “{manualGrabbed()}”. Tracked in Calendar's
+                      History view.
                     </div>
                   </Show>
                 </Match>

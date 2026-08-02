@@ -25,19 +25,19 @@
 // RunUsenetRetry's signatures and from RunUsenetRetry's call site in
 // cmd/sakms/main.go.
 //
-// Two halves live here, in one file on purpose:
+// What lives here is DETECTION + DISPATCH + the air-date retry BACKOFF.
+// Detection is a pure filter over an unmodified MissingEpisodes; dispatch goes
+// through RunAutoGrab like every other trigger; the backoff is what keeps an
+// air-date row that never finds a release from costing one live Prowlarr search
+// every 24 hours forever (see airDateRetryBackoff).
 //
-//  1. The EPISODE CATALOG SYNC. Nothing in this codebase ever wrote a
-//     library_episodes row with an empty file_path after internal/sonarrimport
-//     was deleted, and nothing ever seeded air_date at all — so MissingEpisodes
-//     returned the empty set on every install and the air-date filter had no
-//     data to filter on. The sync is what makes both real. It cannot live in
-//     internal/library (no TMDB dependency there, and it must not gain one).
-//  2. DETECTION + DISPATCH + the air-date retry BACKOFF. Detection is a pure
-//     filter over an unmodified MissingEpisodes; dispatch goes through
-//     RunAutoGrab like every other trigger; the backoff is what keeps an
-//     air-date row that never finds a release from costing one live Prowlarr
-//     search every 24 hours forever (see airDateRetryBackoff).
+// The EPISODE CATALOG SYNC that feeds all of it used to live here too, as the
+// second half of this file. It now lives in seriescatalog.go, moved verbatim so
+// a read-only browsing surface can populate episode air dates without the
+// unattended auto-grab toggle being on (see that file's doc for the full
+// reasoning, including why a new file rather than an export from this one).
+// monitorAirDates calls it exactly as it always did, and the sync's behaviour on
+// this path is unchanged.
 package api
 
 import (
@@ -167,136 +167,6 @@ func monitorAirDates(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 
 	dispatchAirDateGrabs(ctx, deps, sess, libStore, seriesList, excluded, now)
 	airDateBackoffSweep(ctx, deps, libStore, now)
-}
-
-// syncSeriesCatalog records TMDB's episode catalog for one tracked series, so
-// the episodes TMDB knows about but that are not on disk exist as fileless rows
-// with a real air_date. It is what makes MissingEpisodes and this feature's
-// air-date predicate have any data at all.
-//
-// Scoped to TRACKED SERIES, not to MONITORED SEASONS, and that is load-bearing
-// rather than sloppy: gating the sync on the monitored flag creates a dead
-// chicken-and-egg — an unmonitored season would never gain episode rows, so
-// ListSeasonStates would never show it, so the operator could never find it to
-// monitor it. Monitoring gates SEARCHING, never METADATA. This is the first
-// thing a reviewer will want to "tighten"; don't.
-//
-// Soft-fail per series: one series' TMDB error logs and the cycle moves to the
-// next, matching retryDueGrabs' fault isolation. One bad series never kills a
-// cycle.
-func syncSeriesCatalog(ctx context.Context, sess *mode.Session, libStore *library.Store,
-	series library.Series, discovery bool) {
-
-	// library_series.tmdb_id is INTEGER NOT NULL with no positive constraint,
-	// and every TMDB-facing path in this package already treats 0 as "no id".
-	// GET /tv/0 and GET /tv/0/season/1 are wasted round trips that return
-	// nothing usable, once per cycle, per such series, forever.
-	if series.TMDBID == 0 {
-		return
-	}
-
-	rows, err := libStore.ListEpisodes(ctx, series.ID)
-	if err != nil {
-		log.Printf("air-date monitor: listing episodes for series %d: %v", series.ID, err)
-		return
-	}
-	known := map[int]bool{}
-	syncSeasons := []int{}
-	for _, ep := range rows {
-		if known[ep.SeasonNumber] {
-			continue
-		}
-		known[ep.SeasonNumber] = true
-		syncSeasons = append(syncSeasons, ep.SeasonNumber)
-	}
-
-	// An EXPLICITLY MONITORED season with zero episode rows is synced too,
-	// independently of the discovery toggle. This is the same "monitoring gates
-	// SEARCHING, never METADATA" rule this function's doc already states, applied
-	// to the case that became reachable when seasonCatalog started surfacing
-	// TMDB-only seasons in the season panel: an operator can now monitor a season
-	// nothing was ever downloaded from, and with discovery off — the default —
-	// that season would otherwise NEVER enter syncSeasons, never gain episode
-	// rows, and therefore never be searched for. Monitoring it would be a
-	// permanent no-op, which is exactly the dead chicken-and-egg the doc above
-	// warns about, arrived at from the other direction.
-	//
-	// MonitoredSeasons, not SeasonMonitorFlags: an explicitly UN-monitored
-	// episode-less season must not burn a SeasonDetails call every cycle. This
-	// costs one extra call per monitored-but-episode-less season per cycle, and
-	// only until that season gains rows — after the first successful sync it
-	// arrives through ListEpisodes like any other.
-	if monitoredSeasons, err := libStore.MonitoredSeasons(ctx, series.ID); err != nil {
-		log.Printf("air-date monitor: reading monitored seasons for series %d: %v — syncing episode-backed seasons only this cycle", series.ID, err)
-	} else {
-		for season := range monitoredSeasons {
-			if known[season] {
-				continue
-			}
-			known[season] = true
-			syncSeasons = append(syncSeasons, season)
-		}
-	}
-
-	if discovery {
-		// A TVDetails failure skips DISCOVERY ONLY and falls through to the sync
-		// loop below — it must not return. Discovery is the only half that needs
-		// TMDB's season list at all; the known-season sync is always-on and needs
-		// nothing from it, so abandoning the whole function on a transient
-		// discovery failure would stop this series' episode catalog (and
-		// therefore MissingCount and the season UI) from updating for reasons
-		// that have nothing to do with it.
-		// TVDetails returns a zero-valued TVDetails on error, whose Seasons is
-		// nil, so the loop below is a no-op on the failure path — but the nil is
-		// stated here rather than relied on implicitly.
-		details, err := sess.TMDB.TVDetails(ctx, series.TMDBID)
-		if err != nil {
-			log.Printf("air-date monitor: loading TMDB details for series %d: %v — syncing known seasons only this cycle", series.ID, err)
-			details.Seasons = nil
-		}
-		for _, season := range details.Seasons {
-			if known[season.SeasonNumber] {
-				continue
-			}
-			// Season 0 (Specials) is excluded from auto-monitor-on-discovery
-			// only — it is still synced when it already has episode rows, and
-			// still manually monitorable. Auto-monitoring Specials on renewal
-			// would surprise an operator who asked for "Season 5 onward";
-			// Sonarr's own default is the same.
-			if season.SeasonNumber == 0 {
-				continue
-			}
-			// Monitored BEFORE its episodes are synced, so the same cycle's
-			// detection pass already sees it as monitored. This is the operator's
-			// explicit override of the conservative default — do not "restore"
-			// a manual opt-in here.
-			if err := libStore.SetSeasonMonitored(ctx, series.ID, season.SeasonNumber, true); err != nil {
-				log.Printf("air-date monitor: monitoring discovered season %d of series %d: %v", season.SeasonNumber, series.ID, err)
-				continue
-			}
-			known[season.SeasonNumber] = true
-			syncSeasons = append(syncSeasons, season.SeasonNumber)
-		}
-	}
-
-	sort.Ints(syncSeasons)
-	for _, season := range syncSeasons {
-		episodes, err := sess.TMDB.SeasonDetails(ctx, series.TMDBID, season)
-		if err != nil {
-			log.Printf("air-date monitor: loading TMDB season %d of series %d: %v", season, series.ID, err)
-			continue
-		}
-		for _, e := range episodes {
-			// UpsertEpisodeCatalog, never UpsertEpisode: the latter overwrites
-			// EVERY column on conflict, so a zero-valued Episode would blank the
-			// file_path of every already-tracked episode this sync touches —
-			// turning downloaded episodes into missing ones and then auto-grabbing
-			// duplicates of them next cycle.
-			if err := libStore.UpsertEpisodeCatalog(ctx, series.ID, season, e.EpisodeNumber, e.Name, e.AirDate); err != nil {
-				log.Printf("air-date monitor: recording s%02de%02d of series %d: %v", season, e.EpisodeNumber, series.ID, err)
-			}
-		}
-	}
 }
 
 // eligibleEpisodes filters MissingEpisodes' output to the episodes this cycle

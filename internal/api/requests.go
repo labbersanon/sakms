@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/excludes"
@@ -135,16 +136,17 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store, excludesS
 				// One derivation of the label for both branches, so a
 				// pending-retry row can never read "Downloading" in one and
 				// "Pending Retry" in the other.
-				status := grabStatusLabel(g.Status)
+				status := grabStatusLabel(g)
 				if pos, ok := index[key]; ok {
 					items[pos].Status = status
 					items[pos].GrabID = g.ID
 					items[pos].RetryAfter = g.RetryAfter
 					items[pos].RetryReason = g.RetryReason
+					items[pos].HoldUntil = g.HoldUntil
 					continue
 				}
 				index[key] = len(items)
-				items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: g.Title, TMDBID: g.TMDBID, Status: status, GrabID: g.ID, RetryAfter: g.RetryAfter, RetryReason: g.RetryReason})
+				items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: g.Title, TMDBID: g.TMDBID, Status: status, GrabID: g.ID, RetryAfter: g.RetryAfter, RetryReason: g.RetryReason, HoldUntil: g.HoldUntil})
 			}
 		}
 
@@ -184,9 +186,32 @@ func isActiveGrab(s grabs.Status) bool {
 // stage), but a pending_retry grab is NOT downloading anything — reporting it
 // as such would hide a request that found no qualifying release and is waiting
 // on a re-search. It gets its own honest state instead.
-func grabStatusLabel(s grabs.Status) string {
-	if s == grabs.PendingRetry {
-		return "Pending Retry"
+//
+// It takes the whole Grab rather than just its Status (it took only the Status
+// until 2026-08-02) because a HELD Calendar pre-release request is also
+// pending_retry, and "Pending Retry" is a LIE for it: nothing has been tried,
+// the row has never been searched, and an operator seeing it against a film
+// released in six months reasonably concludes something is failing repeatedly.
+// Three cases:
+//
+//	hold_until in the FUTURE  -> "Scheduled"
+//	hold_until in the PAST    -> "Pending Retry" (promoted; it really is on the
+//	                             retry track now — provenance does not override
+//	                             current state, and hold_until is never cleared)
+//	no hold_until             -> "Pending Retry", unchanged
+//
+// The discriminator is hold_until and NOTHING ELSE. It reads no retry_reason and
+// no retry_count, deliberately: inferring a row's origin from those is the
+// fragility class the column was added to eliminate (see heldRequestReason and
+// airDateShaped's doc for what it costs when it goes wrong). The comparison is
+// lexicographic on grabs.FormatTime's sortable layout, the same string
+// comparison DueForRetry and DueForRelease already depend on.
+func grabStatusLabel(g grabs.Grab) string {
+	if g.Status != grabs.PendingRetry {
+		return "Downloading"
 	}
-	return "Downloading"
+	if g.HoldUntil != "" && g.HoldUntil > grabs.FormatTime(time.Now()) {
+		return "Scheduled"
+	}
+	return "Pending Retry"
 }

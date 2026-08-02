@@ -27,10 +27,13 @@
 // meaning while auto-grab is on, and RunAutoGrab gates every retry on the same
 // toggle anyway, so two independent switches could only ever disagree.
 //
-// Each cycle does THREE things, in order. CORRECTED 2026-08-01 — superseded
-// claim, quoted: "Each cycle does two things, in order." Series air-date
-// monitoring was added as a third pass; see item 3 and the placement note
-// under it, which explains why a non-usenet concern lives in this file.
+// Each cycle does FOUR things, in order. CORRECTED 2026-08-02 — superseded
+// claim, quoted: "Each cycle does THREE things, in order." The Calendar
+// pre-release hold was added as a fourth pass; see item 4. The correction it
+// itself carries is retained: "CORRECTED 2026-08-01 — superseded claim, quoted:
+// 'Each cycle does two things, in order.' Series air-date monitoring was added
+// as a third pass; see item 3 and the placement note under it, which explains
+// why a non-usenet concern lives in this file."
 //
 //  1. The GID sweep. A usenet retrieval failure is ASYNCHRONOUS — AddNZB
 //     returns a GID immediately and the failure lands long after the HTTP
@@ -46,11 +49,17 @@
 //  3. Series air-date monitoring (monitorAirDates, airdatemonitor.go). Every
 //     aired-but-missing episode of a monitored season goes through RunAutoGrab
 //     with TriggerAirDate — again the same single gated path, so this pass
-//     adds no scoring, dispatch or gating surface of its own. It runs LAST on
+//     adds no scoring, dispatch or gating surface of its own. It runs THIRD on
 //     purpose; runUsenetRetryCycle's own doc explains why the ordering is
 //     load-bearing.
+//  4. The pre-release promotion pass (releaseDueGrabs, prerelease.go). Every
+//     held Calendar pre-release request whose hold_until has arrived goes
+//     through RunAutoGrab with TriggerPreRelease — again the same single gated
+//     path, adding no scoring, dispatch or gating surface of its own. It runs
+//     FOURTH and LAST so nothing downstream can re-handle a row it just
+//     promoted, and it adds NO scheduler: the codebase still has six.
 //
-// The third pass is DELIBERATELY NOT A USENET CONCERN, and it lives in this
+// The third and fourth passes are DELIBERATELY NOT USENET CONCERNS, and live in this
 // usenet-named file anyway. That is a resolved tension between two documents,
 // not an oversight. The sibling torrent-behavior plan's §5 file-boundary
 // guidance wanted a Pattern B caller in its own file with its own interval
@@ -246,8 +255,12 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 // Fault isolation matches the rest of this codebase: one grab's failure is
 // logged and skipped, never fatal to the pass.
 //
-// monitorAirDates runs THIRD and LAST, and the position is load-bearing rather
-// than arbitrary. Its active-grab pre-filter must see the rows retryDueGrabs
+// monitorAirDates runs THIRD, and the position is load-bearing rather than
+// arbitrary. (CORRECTED 2026-08-02 — superseded claim, quoted: "monitorAirDates
+// runs THIRD and LAST". It is still third, and everything below about WHY is
+// unchanged; releaseDueGrabs is now the last pass, and the two orderings do not
+// interact — see its own note further down.)
+// Its active-grab pre-filter must see the rows retryDueGrabs
 // just re-armed, or a just-retried episode could be grabbed twice in one cycle;
 // and its backoff sweep must have the LAST WORD on retry_after, because
 // retryDueGrabs re-parks every row it re-searches at the flat interval and the
@@ -255,15 +268,25 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 // these two would silently discard the backoff every cycle while every unit
 // test of airDateRetryBackoff still passed.
 //
+// releaseDueGrabs runs FOURTH and LAST, and that position is chosen too, on a
+// simpler argument than monitorAirDates': running last means no downstream pass
+// can re-handle a row it just promoted, by construction, with no reasoning about
+// DueForRetry's guards required to see it. It cannot disturb monitorAirDates'
+// final-word-on-retry_after guarantee either, because that guarantee is about
+// Series rows while a pre-release row is always Movies with hold_until set —
+// two provably disjoint populations (airDateShaped requires mode.Series).
+//
 // libStore may be nil — a caller that only wants the two usenet passes (the
-// tests that predate air-date monitoring) passes nil and monitorAirDates
-// returns immediately, exactly as sweepUsenetFailures does for a nil lookup.
+// tests that predate air-date monitoring) passes nil, and BOTH monitorAirDates
+// and releaseDueGrabs return immediately, exactly as sweepUsenetFailures does
+// for a nil lookup.
 func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc,
 	lookup usenetDownloadLookup, libStore *library.Store, excluded map[string]bool, now time.Time) {
 
 	sweepUsenetFailures(ctx, deps, lookup)
 	retryDueGrabs(ctx, deps, build, excluded, now)
 	monitorAirDates(ctx, deps, build, libStore, excluded, now)
+	releaseDueGrabs(ctx, deps, build, libStore, excluded, now)
 }
 
 // sweepUsenetFailures is the AUTHORITATIVE M3 transition: it asks the usenet

@@ -5,8 +5,8 @@
 // pause/resume/cancel actions. This is NOT a mode-scoped screen (the download
 // engine is global, one queue for the whole app), so it registers no mode tabs.
 //
-// The screen reflects aria2's own queue directly — separate from the per-mode
-// Grabs view, which tracks the grab records SAK created. A completed download
+// The screen reflects aria2's own queue directly — separate from Calendar's
+// History view, which tracks the grab records SAK created. A completed download
 // here auto-imports server-side (the downloader's onComplete callback); this
 // screen just shows the engine's live state.
 

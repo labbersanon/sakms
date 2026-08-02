@@ -1080,12 +1080,14 @@ numbered below by original idea order, not interview order.
      item 8's pre-release requests: they are additional *callers*, not
      additional retry systems.
    - **The retry system items 7/8/9 forward-reference is
-     `internal/api/usenetretry.go` (`RunUsenetRetry`)** — one loop, two jobs
-     per cycle (the authoritative sweep converting asynchronous usenet
-     retrieval failures into `pending_retry`/`failed`, then the re-search of
-     every due row). Off by default; its interval is written server-side as a
-     coupled side effect of the auto-grab toggle so the two can never
-     disagree.
+     `internal/api/usenetretry.go` (`RunUsenetRetry`)** — one loop, now **four**
+     passes per cycle (**CORRECTED 2026-08-02, was "two jobs per cycle"**): the
+     authoritative sweep converting asynchronous usenet retrieval failures into
+     `pending_retry`/`failed`; the re-search of every due row; series air-date
+     monitoring (`monitorAirDates`); and pre-release request promotion
+     (`releaseDueGrabs`, shipped by `calendar-grabs-requests`). Off by default;
+     its interval is written server-side as a coupled side effect of the
+     auto-grab toggle so the two can never disagree.
    - **Two things worth knowing before extending this, both discovered during
      implementation and neither predicted by the plan:** (a) the toggle-ON
      Search hook can never actually auto-grab — a query-only search carries
@@ -1134,6 +1136,23 @@ numbered below by original idea order, not interview order.
      planning session). Adds Remove/exclude to Requests, Cancel-with-
      file-deletion + bulk multi-select + a global download-pause to
      Downloads; confirms Grabs stays read-only, untouched.
+   - **AMENDED 2026-08-02 — the pending swap has been PERFORMED, by item 8's
+     Calendar work, exactly as this entry said it would have to be.** Two
+     things above are now superseded, quoted verbatim rather than rewritten in
+     place. First, this entry's own summary line: *"(Downloads → Requests →
+     Grabs sub-tabs, Downloads default)"* — **corrected to Downloads →
+     Requests → Calendar, Downloads still the default.** Second, the bullet
+     that deferred it: *"**The Grabs → Calendar swap described below remains a
+     real, pending amendment** — whoever implements item 8's Calendar spec
+     must still perform it as that spec's own scope, not assume it already
+     happened."* — **performed 2026-08-02.** The standalone Grabs screen
+     (`frontend/src/screens/Grabs.tsx` + its test) was **deleted outright**
+     rather than kept alongside Calendar, per the "no dead code left behind"
+     convention; Calendar's History view carries the read-only
+     completed/imported grab log forward. `APP_ROUTES` and the sidebar counts
+     in this entry are unaffected — Calendar never had a route of its own. See
+     item 8 below, `CLAUDE.md`'s CORRECTED 2026-08-02 note on the Queue
+     sidebar grouping entry, and `CHANGELOG.md`.
 5. **Discover scheduled background refresh** — spec ready:
    `.omc/specs/deep-interview-discover-scheduled-refresh.md` (~11%
    ambiguity, PASSED). Misdiagnosis corrected during interview: Adult
@@ -1185,8 +1204,11 @@ numbered below by original idea order, not interview order.
    via the same shared retry mechanism item 3's Usenet spec already built** —
    one retry system, three trigger sources now (Usenet no-match, stalled
    torrents, and pending for series-monitoring when it ships, item 9).
-8. **Calendar for Grabs/Requests** (grid + list, upcoming + history) — spec
-   ready: `.omc/specs/deep-interview-calendar-grabs-requests.md` (~12%
+8. **Calendar for Grabs/Requests** (grid + list, upcoming + history) —
+   **SHIPPED 2026-08-02** (BE-0 gate closed 2026-08-02 with both blocking
+   questions decided by Wade; Waves 0–3 executed the same day). Plan:
+   `.omc/plans/autopilot-impl-calendar-grabs-requests.md`. Spec:
+   `.omc/specs/deep-interview-calendar-grabs-requests.md` (~12%
    ambiguity, PASSED). **Replaces Grabs as Queue's 3rd sub-tab** (amends
    item 4's spec — see its note above), not an addition. History =
    completed/imported grabs only, calendar-organized (drops the
@@ -1202,6 +1224,55 @@ numbered below by original idea order, not interview order.
    mechanism as a third trigger source. Loosely overlaps this file's
    pre-existing "Request-status view" backlog item below — worth
    reconciling before both get built, not yet done.
+   - **RETRACTED 2026-08-02 — this entry's "zero new backend needed" claim
+     about Series' Upcoming was FALSE, and finding out why was this feature's
+     headline blocking discovery.** The superseded clause, quoted verbatim from
+     the paragraph above rather than deleted: *"Series stays bounded to
+     already-tracked shows (`MissingEpisodes`' real air dates, zero new backend
+     needed)"*. It restates the spec's own **"No new backend tracking needed;
+     this data already exists."** Both are wrong on **any install where
+     unattended auto-grab is switched off, which is every install by default**,
+     and the call graph was verified end to end: `MissingEpisodes` needs
+     `library_episodes` rows with an empty `file_path` and a populated
+     `air_date`; the only thing in the codebase that writes either is
+     `syncSeriesCatalog`; its only caller was `monitorAirDates`; that runs only
+     inside `runUsenetRetryCycle`; that loop returns immediately without
+     starting when `usenet_retry_interval_seconds` is 0, which is what
+     `usenet_autograb_enabled` (default **false**) writes server-side. So
+     Series' Upcoming would have rendered **permanently empty**, gated on an
+     unrelated toggle. **Not a defect this spec introduced** — an inherited
+     property of where item 9's `series-monitoring-autograb` put the sync,
+     which was correct for a dispatch feature and wrong for a read-only
+     browsing surface. **Resolved by real backend work** (BE-0.1, decided by
+     Wade 2026-08-02): `syncSeriesCatalog` was extracted verbatim into a new
+     file, `internal/api/seriescatalog.go`, as a caller-driven, TTL-cached,
+     per-request-capped function serving both `monitorAirDates` (unchanged when
+     auto-grab is on) and Calendar's read path — **metadata becomes
+     always-available, dispatch stays gated exactly as before.** A new file
+     rather than an export because
+     `internal/api/airdatemonitor_static_test.go` fails on any const in
+     `airdatemonitor.go` whose name merely CONTAINS `"Interval"`; that test
+     passes unmodified. **This adds no seventh scheduler** — see `CLAUDE.md`'s
+     AMENDED 2026-08-02 note under **Automation**.
+   - **AMENDED 2026-08-02 — the "worth reconciling, not yet done" closing
+     sentence is stale.** It was reconciled 2026-08-01, before this shipped:
+     see the **Request-status view** entry below, which records the decision
+     that the two views deliberately do **not** merge — same underlying
+     missing-episode data, different lens (date-organized vs.
+     status-organized), both kept as independent views.
+   - **What shipped, and the load-bearing decisions behind it.** The
+     pre-release hold is a real schema-level origin marker — a new
+     `grabs.hold_until` column plus a partial unique index (migration `0057`)
+     — chosen by Wade over a cheaper `retry_after` reuse specifically because
+     inferring origin from row shape and a reason string caused a HIGH-severity
+     bug in item 9's work days earlier. Dispatch is a **fifth**
+     `AutoGrabTrigger`, `TriggerPreRelease`, through the one existing
+     `RunAutoGrab` gate; it introduces a new unattended-dispatch category
+     ("deferred operator approval": an operator's click, dispatching
+     days-to-months later with nobody present), capped at
+     `maxPreReleaseGrabsPerCycle = 20`. Full detail, including three
+     documented spec deviations, is in `CLAUDE.md`'s two AMENDED 2026-08-02
+     notes and in `CHANGELOG.md`.
 9. **Series monitoring / true auto-grab** — spec ready:
    `.omc/specs/deep-interview-series-monitoring-autograb.md` (~14%
    ambiguity, PASSED). Turned out remarkably small given the shared

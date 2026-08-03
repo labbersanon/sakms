@@ -866,6 +866,88 @@ above, so don't drop them for convenience:
     (JWKS signature check, not a trusted header) and needs no proxy-held
     secret. Both old modes were deleted outright, not deprecated in place —
     see the CHANGELOG entry for full detail.
+  - **AMENDED 2026-08-03 — a configurable section PIN lock ships, and it
+    makes THREE sentences of the paragraph above false. Authorization scope
+    is no longer flat; identity still is (see `docs/ROADMAP.md` item 11 and
+    `CHANGELOG.md`).** Recorded as a sub-bullet rather than a rewrite, per
+    this file's append-and-correct convention. The three sentences, quoted
+    verbatim so a future session can find them:
+    1. *"No permissions system, no per-user roles —
+       one login gates the whole app, across all three
+       supported auth strategies (`password`, `oidc`, `none`)."*
+    2. *"No user table, no roles, no permissions surface is introduced by any
+       mode."*
+    3. *"a key inherits the one operator's full access in every mode, it is
+       not a second user or a permissions surface."*
+
+    **Sentence 1 is still true of IDENTITY and now false of AUTHORIZATION
+    SCOPE — the distinction is the whole point.** There is still exactly one
+    login, one operator, and one credential set; nothing here authenticates a
+    second party. What changed is that satisfying that one login no longer
+    reaches every route: an operator can set a PIN and check which sidebar
+    tabs (plus a dedicated "Adult content" pseudo-section) it protects, and a
+    request that clears primary auth but presents no PIN is refused with
+    **403 `section_locked`**.
+
+    **Sentence 2 is now false as written: a per-section lock IS a permissions
+    surface, narrowly scoped.** Still no user table and still no roles — but
+    "no permissions surface" overstates it, and pretending otherwise would
+    hide the one property a future session most needs to know before building
+    against this.
+
+    **Sentence 3 is the load-bearing one and is DIRECTLY false.** A key no
+    longer inherits the operator's full access: on a locked section it must
+    ADDITIONALLY present `X-Section-Pin: <PIN>`. That makes `X-Api-Key` a
+    genuinely scoped credential for the first time — a key with no PIN header
+    has strictly less access than a browser session holding an unlock ticket.
+    This is a real, narrow divergence from the single-operator model, not a
+    wording nit.
+
+    **The anti-RBAC invariant, which is what keeps this from becoming a role
+    layer: ONE PIN, ONE unlock ticket, and that ticket unlocks EVERY locked
+    section at once.** There are no per-section PINs and there will not be.
+    Unlocking `discover` therefore also unlocks `adult-content`. The ticket
+    carries no identity and no per-section scope — it is a boolean "the
+    operator entered the PIN recently" (absolute 30-minute TTL, non-sliding).
+    With a single shared secret any other design would be security theatre
+    and a de-facto role layer. **Do not add per-section PINs.**
+
+    **The lock is INERT in auth mode `none` (GATE-1, decided deliberately).**
+    The `none` banner already declares the instance fully open, and there is
+    no authenticated caller to bound a config write, an unlock, or the
+    brute-force counter — enforcing there would create an unauthenticated
+    remote-brick surface and false assurance. The control endpoints answer
+    **409** and the Settings panel renders disabled. **`SAKMS_SECTION_LOCK_DISABLE=1`**
+    is the full-disarm env var: no section is enforced, and `PUT`/`DELETE
+    /api/section-lock/pin` stop requiring `currentPin`, which is the only way
+    out of a corrupt bcrypt hash. Both are documented in
+    `docs/break-glass-recovery.md`.
+
+    **Locking `settings` now also gates `/api/nodes*`, and that is a REAL
+    BEHAVIOR CHANGE worth knowing before it surprises someone.** A
+    gap-closure pass found the node-management routes classified as `settings`
+    but structurally unreachable by the gate: `NewNodesMux` builds its own
+    `auth.Middleware` internally rather than inheriting `cmd/sakms`'s single
+    wrap, so the gate options had to be threaded through the constructor to
+    reach them at all. Seven operator routes were affected (the five `op`
+    routes plus `dualAuth`'s operator branch). **The node-agent bearer routes
+    are deliberately NOT gated** — an agent holds no PIN and has no
+    interactive surface to enter one, so gating them would take every node
+    offline the moment `settings` was locked. `sectionlock_sl10_test.go` is
+    what caught this and is what keeps it covered; a static test proving a
+    route is *classified* is not the same as one proving it is *reachable by
+    the gate*, and only the second kind would have found this.
+
+    **MIGRATION NOTE — this is a breaking change on first use, not a
+    hypothetical.** Every existing out-of-process script or automation hitting
+    a route that becomes gated will get a **403 it has never seen before, the
+    moment an operator locks that section for the first time** — including the
+    newly-fixed `/api/nodes*` operator routes. Nothing breaks at upgrade time
+    (no section is locked by default and no PIN exists), so the failure
+    surfaces later, detached from the change that caused it. The fix for any
+    such script is to add `-H "X-Section-Pin: <PIN>"`; there is no
+    grandfathering path and no per-key exemption, by design — an exempt
+    credential would be a hole straight through the feature.
 - **Honesty about unverified assumptions.** When a client's response shape
   is modeled from documentation but not confirmed against a live instance,
   say so explicitly in the package doc — don't present a guess as fact.

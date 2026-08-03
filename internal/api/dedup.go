@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
@@ -11,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
@@ -151,7 +153,18 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, scS
 // priming (the last progress / "starting" seed enqueued by Subscribe) and any
 // events published immediately after connect can never be missed in the gap
 // between the flush and the subscribe.
-func dedupScanStreamHandler(hub *dedupscan.Hub) http.HandlerFunc {
+//
+// It also carries §4.5's section-lock re-check ticker, and this is the
+// stream that most needs it: GET /api/modes/adult/dedup/scan/stream
+// classifies as {organize, adult-content}, so locking Adult (or Organize)
+// while a scan is streaming terminates it within one tick instead of
+// letting Adult filenames keep arriving for the tab's lifetime.
+// recheckInterval is a test-only override.
+//
+// Its polling sibling, GET /api/modes/{mode}/dedup/scan/status, needs
+// nothing here: it is an ordinary request/response route, so Layer 1
+// classifies and denies it on every single poll.
+func dedupScanStreamHandler(hub *dedupscan.Hub, recheckInterval ...time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -176,10 +189,18 @@ func dedupScanStreamHandler(hub *dedupscan.Hub) http.HandlerFunc {
 		fmt.Fprint(w, ": connected\n\n")
 		flusher.Flush()
 
+		sections := sectionlock.Classify(r.URL.Path)
+		recheck := time.NewTicker(streamRecheckInterval(recheckInterval))
+		defer recheck.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-recheck.C:
+				if sectionlock.StreamRevoked(r, sections) {
+					return
+				}
 			case ev := <-ch:
 				writeSSEData(w, flusher, ev)
 			}

@@ -65,8 +65,11 @@ import {
   Button,
   type TabDef,
   ScreenTabs,
+  SectionLockOverlay,
   useAdultEnabled,
+  useSectionLock,
 } from "../../components/ui";
+import { ADULT_CONTENT_SECTION, sectionLabel } from "../../api/sectionLock";
 import { MainstreamDiscover } from "./Mainstream";
 import { AdultDiscover } from "./Adult";
 import { SelectionProvider, createSelection } from "./selection";
@@ -94,6 +97,15 @@ const MAINSTREAM_TABS: TabDef[] = [
 // no-longer-visible title — plan pre-mortem #5) carries across a context change.
 export const Discover: Component = () => {
   const adultEnabled = useAdultEnabled();
+  // SECTION-LOCK: when `adult-content` is locked, the Adult SUB-TAB alone
+  // renders a PIN overlay. This is scoped to the Adult <Match> arm below and
+  // must stay that way — a screen-level overlay here would hide Mainstream
+  // Discover too, which AC6's closing clause explicitly forbids. The Adult
+  // tab itself stays visible (unlike ModeTabs on the workflow screens, which
+  // hides it): here there is a real unlock affordance to offer behind it, and
+  // a vanished tab would be indistinguishable from Adult mode being off.
+  const lock = useSectionLock();
+  const adultLocked = () => lock.isLocked(ADULT_CONTENT_SECTION);
   const selection = createSelection();
   const [tab, setTab] = createSignal("mainstream");
   const [editMode, setEditMode] = createSignal(false);
@@ -211,6 +223,11 @@ export const Discover: Component = () => {
           />
           <div class="mt-4">
             <Switch>
+              <Match when={tab() === "adult" && adultLocked()}>
+                <SectionLockOverlay
+                  label={sectionLabel(ADULT_CONTENT_SECTION)}
+                />
+              </Match>
               <Match when={tab() === "adult"}>
                 <AdultDiscover
                   editMode={editMode}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 )
 
 // NewAuthMux returns the handful of routes that must stay reachable without
@@ -255,9 +256,29 @@ func authLoginHandler(authStore *auth.Store, tokenEnc auth.TokenEncryptor) http.
 // authLogoutHandler always succeeds — clearing a cookie that may not exist
 // is harmless, and there's no server-side session state to invalidate (see
 // session.go's doc comment on why tokens are stateless).
+//
+// Claude 2026-08-03: now drops the section-lock unlock ticket too (SL-19).
+// Reason: the ticket is an INDEPENDENT credential in an independent cookie, so
+// clearing only sakms_session left it behind — log out, log back in, and every
+// locked section was already open, inherited from the previous session. That
+// silently defeats "log out" as a way to re-secure a shared screen, which is
+// this feature's entire threat model. sectionlock.ClearUnlockCookie's own doc
+// already claimed "manual lock, and logout"; only the manual-lock half was
+// ever wired up.
+// Troubleshooting: the plan specifies this as test SL-19; it had been dropped
+// rather than deferred, so nothing failed.
+// Review if: the unlock ticket ever gains server-side state, which would need
+// revoking here rather than merely clearing.
+//
+// Deliberately NOT paired with gate.Revoke() the way POST /api/section-lock/lock
+// is. Revoke is a GLOBAL epoch bump that tears down every open SSE stream on
+// the instance; logging one browser out must not terminate another's streams.
+// Clearing this browser's cookie is the whole and correct effect here, and the
+// logged-out browser's own streams die with its page.
 func authLogoutHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth.ClearSessionCookie(w)
+		sectionlock.ClearUnlockCookie(w)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

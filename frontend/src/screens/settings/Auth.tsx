@@ -135,6 +135,19 @@ export const AuthModeSection: Component<{ onReboot: () => void }> = (props) => {
     }
   };
 
+  // Section PIN lock, §4.4: PUT /api/auth/mode is the lock's own disarm surface
+  // (switching to "none" makes the lock inert), so the backend requires the PIN
+  // whenever one is set — and refuses with a 400 "a PIN is required", not the
+  // 403 section_locked shape the overlay reacts to. Without this field the
+  // Settings-side switcher is simply unusable on any instance with a section
+  // PIN, with an error message the screen offers no way to satisfy.
+  //
+  // Optional, and deliberately not conditioned on GET /api/section-lock/status:
+  // most instances have no PIN, the field costs nothing when unused, and this
+  // mirrors the pattern OidcLogin.tsx's pre-session recovery form already
+  // established — which cannot read that status at all.
+  const [sectionPin, setSectionPin] = createSignal("");
+
   const switchMode = async () => {
     status.set("");
     const mode = selected();
@@ -151,10 +164,17 @@ export const AuthModeSection: Component<{ onReboot: () => void }> = (props) => {
     try {
       // Preconditions (password needs an existing hash, oidc needs saved
       // config) are enforced server-side and surface as this thrown error.
-      await putAuthMode({
-        mode: body.mode,
-        acknowledgeInsecure: body.acknowledgeInsecure ?? false,
-      });
+      await putAuthMode(
+        {
+          mode: body.mode,
+          acknowledgeInsecure: body.acknowledgeInsecure ?? false,
+        },
+        sectionPin(),
+      );
+      // Clear the entered PIN on success, matching the PIN-set/PIN-clear
+      // handlers in SectionLock.tsx. onReboot() unmounts this anyway, but a
+      // PIN left sitting in component state is the wrong default to keep.
+      setSectionPin("");
       status.set("switched");
       props.onReboot();
     } catch (e) {
@@ -265,6 +285,24 @@ export const AuthModeSection: Component<{ onReboot: () => void }> = (props) => {
           to confirm before this takes effect.
         </ErrorText>
       </Show>
+
+      <label class="mt-3 block">
+        <span class={labelClass}>Section PIN (only if one is set)</span>
+        <input
+          type="password"
+          class={`${inputClass} mt-1`}
+          placeholder="leave blank if no section PIN is configured"
+          name="section-pin"
+          autocomplete="new-password"
+          value={sectionPin()}
+          onInput={(e) => setSectionPin(e.currentTarget.value)}
+        />
+      </label>
+      <Muted class="mb-2">
+        Switching auth mode is gated by the section PIN, because switching to
+        "None" would disarm the section lock. Not needed unless a PIN is set; if
+        it's forgotten, restart with SAKMS_SECTION_LOCK_DISABLE=1.
+      </Muted>
 
       <div class="mt-3 flex items-center gap-2">
         <Button variant="primary" onClick={() => void switchMode()}>

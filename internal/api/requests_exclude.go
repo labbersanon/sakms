@@ -8,6 +8,7 @@ import (
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 // NewRequestsMux mounts the Requests worklist + its exclusion endpoints on their
@@ -37,6 +38,11 @@ func excludeTitleHandler(excludesStore *excludes.Store) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+		// §4.3 item 3, write half. The mode is in the BODY, so Layer 1's
+		// {queue} classification cannot see it.
+		if req.Mode == string(mode.Adult) && denyIfAdultLocked(w, r) {
+			return
+		}
 		if err := excludesStore.Add(r.Context(), req.Mode, req.TMDBID, req.Title); err != nil {
 			if err == excludes.ErrInvalid {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -64,6 +70,17 @@ func excludeTitlesBatchHandler(excludesStore *excludes.Store) http.HandlerFunc {
 		if len(req.Items) == 0 {
 			http.Error(w, "items is required", http.StatusBadRequest)
 			return
+		}
+		// Refused WHOLE if any item is Adult, rather than reported as a
+		// per-item error alongside this handler's usual skip-and-continue
+		// results. §6 defines exactly one rejection shape and the frontend
+		// raises its PIN overlay on that code — a per-item error string can
+		// never raise it, so the operator would see an inscrutable row
+		// failure with no route to unlocking.
+		for _, item := range req.Items {
+			if item.Mode == string(mode.Adult) && denyIfAdultLocked(w, r) {
+				return
+			}
 		}
 		ctx := r.Context()
 		results := make([]apidto.ExcludeTitleResult, 0, len(req.Items))

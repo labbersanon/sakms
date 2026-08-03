@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/sysinfo"
 )
@@ -111,13 +112,32 @@ func sysinfoStreamHandler(
 			flusher.Flush()
 		}
 
+		// §4.5's re-check, on the ONE stream that already had a ticker of its
+		// own. The other three SSE handlers each grew a dedicated 30s recheck
+		// ticker because they had none to piggyback on; this one deliberately
+		// reuses its existing sampling ticker instead of adding a second — the
+		// 2s cadence re-checks strictly more often than the 30s bound §4.5
+		// asks for, and StreamRevoked reads the process-lifetime configuration
+		// cache, not the database.
+		//
+		// /api/admin/sysinfo classifies as {dashboard}, so locking the
+		// Dashboard tab (or explicitly re-locking) terminates an open metrics
+		// stream instead of letting it run for the tab's lifetime.
+		sections := sectionlock.Classify(r.URL.Path)
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if sectionlock.StreamRevoked(r, sections) {
+					return
+				}
 				sampleAndSend()
 			case <-fastFirstTickC:
+				if sectionlock.StreamRevoked(r, sections) {
+					return
+				}
 				sampleAndSend()
 			}
 		}

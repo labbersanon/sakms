@@ -2577,3 +2577,65 @@ type PreReleaseRequestResponse struct {
 	HeldUntil        string `json:"heldUntil"`
 	AlreadyRequested bool   `json:"alreadyRequested"`
 }
+
+// --- Section PIN lock (internal/api/sectionlock.go) ------------------------
+//
+// Mirrors of internal/api's handler-local sectionLock* structs, guarded by
+// internal/api/dto_drift_test.go. The PIN fields below are plain strings, NOT
+// the *string/omitempty three-state pattern Guardrail #5 reserves for stored
+// secrets: a PIN here is either being VERIFIED (CurrentPin) or REPLACED
+// outright (NewPin), never "preserved unchanged" — so there is no third state
+// to express, and a pointer would only invite a frontend to send null and
+// mean something the server does not implement.
+//
+// No field here carries omitempty. Each one is meaningful at its zero value —
+// pinSet:false, unlocked:false and enforcementAvailable:false are the states
+// the panel must actually render, and an empty lockedSections is "nothing is
+// locked", not "unknown" — so they must all reach TypeScript as required
+// fields rather than optional ones.
+
+// SectionLockStatusResponse is GET /api/section-lock/status: what the Settings
+// panel and the sidebar lock badges read. The PIN itself, and its hash, never
+// cross this boundary — PinSet is the only thing said about it.
+//
+// EnforcementAvailable is false when the lock cannot enforce anything on this
+// instance (SAKMS_SECTION_LOCK_DISABLE is set, or the instance runs auth mode
+// "none"); the panel renders disabled on false.
+type SectionLockStatusResponse struct {
+	PinSet               bool     `json:"pinSet"`
+	LockedSections       []string `json:"lockedSections"`
+	Unlocked             bool     `json:"unlocked"`
+	EnforcementAvailable bool     `json:"enforcementAvailable"`
+}
+
+// SectionLockUnlockRequest is POST /api/section-lock/unlock's body — the PIN
+// exchanged for the sakms_unlock ticket cookie.
+type SectionLockUnlockRequest struct {
+	Pin string `json:"pin"`
+}
+
+// SectionLockPinRequest serves BOTH PUT /api/section-lock/pin (both fields)
+// and DELETE /api/section-lock/pin (CurrentPin only) — one shape for two
+// routes, matching the single handler-local struct it mirrors.
+//
+// CurrentPin is required whenever a PIN already exists, and is required from
+// the BODY even when the caller already holds a live unlock ticket: the ticket
+// says "the operator entered the PIN recently", which is the right bar for
+// viewing a locked section and the wrong one for rewriting the lock's own
+// configuration.
+type SectionLockPinRequest struct {
+	CurrentPin string `json:"currentPin"`
+	NewPin     string `json:"newPin"`
+}
+
+// SectionLockSectionsRequest is PUT /api/section-lock/sections' body: the
+// complete replacement set of locked section ids, plus the same CurrentPin
+// re-authentication SectionLockPinRequest carries.
+//
+// Sections is a full replacement, not a delta, and a non-empty array is
+// rejected with 400 while no PIN is set — locking a section with no PIN in
+// existence would deny with no credential that could ever satisfy the gate.
+type SectionLockSectionsRequest struct {
+	CurrentPin string   `json:"currentPin"`
+	Sections   []string `json:"sections"`
+}

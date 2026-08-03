@@ -16,6 +16,7 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/purge"
 	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/webhooks"
@@ -178,6 +179,15 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 		// mode); it leaves sess.Servarr nil for every mode now.
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 		if err != nil {
+			// Layer 2 of the section lock rejects an Adult p.Mode here — a
+			// mode the URL cannot express, so Layer 1 never saw it. It gets
+			// the SAME 403 section_locked body Layer 1 writes, not this
+			// handler's generic 400: the frontend keys its PIN overlay on
+			// that code, and a 400 would render as an unexplained failure.
+			if errors.Is(err, sectionlock.ErrSectionLocked) {
+				writeSectionLocked(w, sectionlock.SectionAdultContent)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -540,6 +550,12 @@ func submitDraftHandler(httpClient *http.Client, connStore *connections.Store, s
 
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 		if err != nil {
+			// Same reason as applyProposalHandler's: an Adult p.Mode is
+			// row-addressed, so this is where the section lock rejects it.
+			if errors.Is(err, sectionlock.ErrSectionLocked) {
+				writeSectionLocked(w, sectionlock.SectionAdultContent)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -566,13 +582,36 @@ func submitDraftHandler(httpClient *http.Client, connStore *connections.Store, s
 
 // dismissProposalHandler marks one proposal reviewed-and-rejected, dropping
 // it out of the live queue without acting on it.
+// dismissProposalHandler is §4.3 item 4, resolved by reading the source: it
+// does NOT call mode.Build, so Layer 2 never sees it, and /api/proposals/*
+// classifies as {organize} only — dismissing an ADULT proposal while Adult
+// alone was locked would otherwise succeed.
+//
+// The Get is new, and is the whole cost of the check: the proposal's mode is
+// the only place its Adult scope is written down. It moves the not-found 404
+// from Dismiss to Get, which is the same status for the same input.
+//
+// Its sibling repickProposalHandler needs NO check, and the asymmetry is
+// deliberate rather than an omission: repick already refuses any proposal
+// whose Mode is not Movies or Series (Adult identification uses a different
+// id space and has its own correction path), so it can never act on Adult in
+// the first place.
 func dismissProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
 		if !ok {
 			return
 		}
-		if err := propStore.Dismiss(r.Context(), id); err != nil {
+		ctx := r.Context()
+		p, err := propStore.Get(ctx, id)
+		if err != nil {
+			proposalNotFoundOr500(w, err)
+			return
+		}
+		if p.Mode == mode.Adult && denyIfAdultLocked(w, r) {
+			return
+		}
+		if err := propStore.Dismiss(ctx, id); err != nil {
 			proposalNotFoundOr500(w, err)
 			return
 		}

@@ -37,6 +37,7 @@ import { AdultModeContext, Button, Muted } from "../../components/ui";
 import { Card, SaveStatus, useSaveStatus } from "./shared";
 import { DurationSetting } from "./Advanced";
 import { APISection } from "./APISection";
+import { SectionLockSection } from "./SectionLock";
 
 // RecheckTriggerButton is the manual "Refresh now" action for the
 // monitored-title refresh — an immediate, always-available fire-and-forget
@@ -461,10 +462,18 @@ const AdultModeSection: Component = () => {
 // ABOVE the Advanced tab's mode selector, which is the correct semantic for
 // them. It leads the fragment: connection setup is what an operator most often
 // comes to this tab for.
+//
+// SectionLockSection is composed here for the SAME reason and follows the same
+// precedent: a section PIN lock is mode-INDEPENDENT, so it must not sit inside
+// AdvancedSection, which takes a `mode: () => Mode` and is governed by the
+// selector below it. It is placed next to AdultModeSection because the two are
+// adjacent concerns and routinely read together — one is a visibility switch
+// that enforces nothing, the other is the actual enforcement boundary.
 export const GlobalSection: Component = () => (
   <>
     <APISection />
     <AdultModeSection />
+    <SectionLockSection />
     <RecheckSection />
     <EntityDatabaseSection />
     <WatchFoldersSection />

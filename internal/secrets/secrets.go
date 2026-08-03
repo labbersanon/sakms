@@ -104,3 +104,49 @@ func (s *Store) Decrypt(encoded string) (string, error) {
 	}
 	return string(plaintext), nil
 }
+
+// EncryptWithAAD is Encrypt with additional authenticated data bound into
+// the ciphertext's authentication tag. Same key, same AES-256-GCM
+// primitive, same output shape — aad is authenticated but not stored, so
+// the caller must present the identical value to DecryptWithAAD.
+//
+// It exists for DOMAIN SEPARATION. Encrypt/Decrypt seal with a nil AAD, so
+// every ciphertext in the app shares one namespace under one key: a value
+// of one type is interchangeable with a value of another type that happens
+// to share its payload shape. An AAD makes two ciphertext families
+// mutually undecryptable at the crypto layer, before any field is read.
+//
+// This is deliberately a NEW method rather than an AAD parameter added to
+// Encrypt. The existing pair holds every already-stored ciphertext across
+// eight packages (session cookies, the OIDC client secret, grabs, RSS
+// feeds, connections, service connections, Trakt, webhooks); giving them a
+// non-nil AAD would invalidate all of it at once.
+func (s *Store) EncryptWithAAD(plaintext string, aad []byte) (string, error) {
+	nonce := make([]byte, s.gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("generating nonce: %w", err)
+	}
+	ciphertext := s.gcm.Seal(nonce, nonce, []byte(plaintext), aad)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// DecryptWithAAD reverses EncryptWithAAD. Fails if encoded is malformed,
+// if the key is wrong, if the data was tampered with — or if aad differs
+// by even one byte from the value it was sealed under, which is the whole
+// point (see EncryptWithAAD).
+func (s *Store) DecryptWithAAD(encoded string, aad []byte) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decoding ciphertext: %w", err)
+	}
+	nonceSize := s.gcm.NonceSize()
+	if len(data) < nonceSize {
+		return "", errors.New("secrets: ciphertext too short")
+	}
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := s.gcm.Open(nil, nonce, ciphertext, aad)
+	if err != nil {
+		return "", fmt.Errorf("decrypting (wrong key, wrong domain, or corrupted data): %w", err)
+	}
+	return string(plaintext), nil
+}

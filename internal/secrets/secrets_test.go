@@ -130,3 +130,67 @@ func TestNew_RejectsWrongKeySize(t *testing.T) {
 		t.Fatal("expected an error for a key that isn't 32 bytes")
 	}
 }
+
+// The AAD pair round-trips, and encrypting the same plaintext twice under
+// the same AAD still produces different ciphertext (fresh nonce per call).
+func TestEncryptWithAAD_RoundTrip(t *testing.T) {
+	store, _ := New(make([]byte, keySize))
+	const plaintext = "sakms-unlock-ticket-payload"
+	aad := []byte("sakms-section-unlock-v1")
+
+	first, err := store.EncryptWithAAD(plaintext, aad)
+	if err != nil {
+		t.Fatalf("EncryptWithAAD: %v", err)
+	}
+	second, err := store.EncryptWithAAD(plaintext, aad)
+	if err != nil {
+		t.Fatalf("EncryptWithAAD: %v", err)
+	}
+	if first == second {
+		t.Fatal("two encryptions of the same plaintext produced identical ciphertext — the nonce is not fresh")
+	}
+	got, err := store.DecryptWithAAD(first, aad)
+	if err != nil {
+		t.Fatalf("DecryptWithAAD: %v", err)
+	}
+	if got != plaintext {
+		t.Fatalf("round-trip = %q, want %q", got, plaintext)
+	}
+}
+
+// The domain separation, asserted in every direction that matters. This is
+// what makes the unlock ticket non-interchangeable with a session cookie:
+// the two families are mutually undecryptable at the crypto layer, before
+// any payload field is read.
+func TestAADDomainSeparation(t *testing.T) {
+	store, _ := New(make([]byte, keySize))
+	const plaintext = "same payload, two domains"
+	domainA := []byte("sakms-section-unlock-v1")
+	domainB := []byte("sakms-some-other-domain")
+
+	sealedA, err := store.EncryptWithAAD(plaintext, domainA)
+	if err != nil {
+		t.Fatalf("EncryptWithAAD: %v", err)
+	}
+	sealedNil, err := store.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	if _, err := store.DecryptWithAAD(sealedA, domainB); err == nil {
+		t.Error("a ciphertext sealed under domain A decrypted under domain B")
+	}
+	if _, err := store.Decrypt(sealedA); err == nil {
+		t.Error("a ciphertext sealed under an AAD decrypted with the nil-AAD Decrypt — " +
+			"an unlock ticket would be usable as a session cookie")
+	}
+	if _, err := store.DecryptWithAAD(sealedNil, domainA); err == nil {
+		t.Error("a nil-AAD ciphertext decrypted under an AAD — " +
+			"a session cookie would be usable as an unlock ticket")
+	}
+	// A nil AAD passed explicitly is the same domain the existing pair uses,
+	// so the two forms stay interoperable for callers that want one code path.
+	if got, err := store.DecryptWithAAD(sealedNil, nil); err != nil || got != plaintext {
+		t.Errorf("DecryptWithAAD(_, nil) = %q, %v; want the plaintext and no error", got, err)
+	}
+}

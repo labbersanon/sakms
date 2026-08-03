@@ -11,9 +11,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
@@ -255,14 +259,61 @@ func mergedDownloads(dl *downloader.Manager, nzb *usenet.Manager) []apidto.Downl
 	return out
 }
 
+// Claude 2026-08-03: the Downloads queue now hides Adult rows while
+// adult-content is locked.
+// Reason: /api/downloads carries no {mode} in its path, so Layer 1 classifies
+// it as {queue} ONLY and never adds adult-content. Locking Adult alone
+// therefore left an in-progress Adult grab's RELEASE NAME — the most
+// identifying string the app holds — plainly visible in the Downloads tab.
+// Troubleshooting: requests.go already had this filter; downloads.go had no
+// equivalent and was missed because its URL looks mode-agnostic.
+// Review if: apidto.Download ever carries its own mode, which would remove the
+// per-GID grab lookup below.
+//
+// FILTER, not refuse — the same rule requests.go states. Queue itself may be
+// unlocked, so the request as a whole must still succeed; taking the entire
+// download queue away whenever Adult alone is locked is exactly what AC6's
+// "without also locking Mainstream" forbids.
+//
+// # Fail CLOSED on an indeterminate row
+//
+// A download's mode lives in its grabs row, not in the download itself, so this
+// resolves each GID through grabs. A row whose mode cannot be determined — no
+// grab row, or a failed lookup — is DROPPED rather than shown. Every path that
+// reaches a download manager creates a grabs row first (dispatchToDownloadClient's
+// four callers all do), so in practice this drops nothing; when that assumption
+// breaks, hiding a mainstream row is a visible bug and showing an Adult one is a
+// silent confidentiality failure. The lookups run ONLY while Adult is locked,
+// and download_gid is indexed (migration 0035).
+func filterAdultDownloads(ctx context.Context, grabsStore *grabs.Store, rows []apidto.Download) []apidto.Download {
+	if grabsStore == nil {
+		// No way to resolve any row's mode. Fail closed: an empty queue is a
+		// visible, reportable state; a leaked Adult release name is not.
+		return []apidto.Download{}
+	}
+	out := make([]apidto.Download, 0, len(rows))
+	for _, row := range rows {
+		g, err := grabsStore.GetByDownloadGID(ctx, row.GID)
+		if err != nil || g == nil || g.Mode == mode.Adult {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // listDownloadsHandler returns the current download queue.
-func listDownloadsHandler(dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
+func listDownloadsHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if dl == nil && nzb == nil {
 			http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
 			return
 		}
-		writeJSON(w, mergedDownloads(dl, nzb))
+		rows := mergedDownloads(dl, nzb)
+		if adultLocked(r.Context()) {
+			rows = filterAdultDownloads(r.Context(), grabsStore, rows)
+		}
+		writeJSON(w, rows)
 	}
 }
 
@@ -271,7 +322,31 @@ func listDownloadsHandler(dl *downloader.Manager, nzb *usenet.Manager) http.Hand
 // triggers a full re-snapshot so the UI always sees the merged queue.
 // Nil channels (unconfigured engine) simply never fire in the select, so the
 // handler works correctly when only one engine is running.
-func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
+//
+// It also carries §4.5's section-lock re-check ticker: this stream
+// classifies as {queue}, so locking the Queue tab while a stream is open
+// terminates it within one tick rather than letting it stream the queue for
+// the tab's lifetime. recheckInterval is a test-only override.
+// It applies the same Adult filter listDownloadsHandler does, but resolved
+// LIVE on every snapshot rather than from the frozen context Decision.
+//
+// A stream outlives the request that opened it, so the Decision it captured
+// cannot see a section locked afterwards — and this route classifies as
+// {queue}, so the re-check ticker terminates it on a QUEUE lock but not on an
+// adult-content one. Without a live read, locking Adult mid-stream would leave
+// Adult release names flowing to an already-open tab until it was reloaded.
+// sectionlock.StreamRevoked is exactly that live read (§4.5's sanctioned
+// exception, see sectionlock.LiveLookup); asking it about the adult-content set
+// answers "must this stream stop showing Adult now", which is the question here
+// — it already handles the frozen-decision trap, the ticket, and the epoch.
+func adultHiddenNow(r *http.Request) bool {
+	if adultLocked(r.Context()) {
+		return true
+	}
+	return sectionlock.StreamRevoked(r, sectionlock.NewSet(sectionlock.SectionAdultContent))
+}
+
+func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, recheckInterval ...time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if dl == nil && nzb == nil {
 			http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
@@ -288,9 +363,20 @@ func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager) http.Ha
 
 		ctx := r.Context()
 
+		// snapshot resolves the Adult filter FRESH on every frame — see
+		// adultHiddenNow for why a stream cannot use the frozen context
+		// Decision the way listDownloadsHandler does.
+		snapshot := func() []apidto.Download {
+			rows := mergedDownloads(dl, nzb)
+			if adultHiddenNow(r) {
+				rows = filterAdultDownloads(ctx, grabsStore, rows)
+			}
+			return rows
+		}
+
 		// Paint an initial snapshot immediately so the screen isn't blank until
 		// the queue next changes.
-		writeSSEData(w, flusher, mergedDownloads(dl, nzb))
+		writeSSEData(w, flusher, snapshot())
 
 		// Subscribe to both managers. A nil channel blocks forever in a select,
 		// so the unconfigured engine's case simply never fires — correct behavior.
@@ -307,20 +393,28 @@ func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager) http.Ha
 			defer nzbCancel()
 		}
 
+		sections := sectionlock.Classify(r.URL.Path)
+		recheck := time.NewTicker(streamRecheckInterval(recheckInterval))
+		defer recheck.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-recheck.C:
+				if sectionlock.StreamRevoked(r, sections) {
+					return
+				}
 			case _, ok := <-dlCh:
 				if !ok {
 					return
 				}
-				writeSSEData(w, flusher, mergedDownloads(dl, nzb))
+				writeSSEData(w, flusher, snapshot())
 			case _, ok := <-nzbCh:
 				if !ok {
 					return
 				}
-				writeSSEData(w, flusher, mergedDownloads(dl, nzb))
+				writeSSEData(w, flusher, snapshot())
 			}
 		}
 	}

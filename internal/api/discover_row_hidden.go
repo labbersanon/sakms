@@ -33,6 +33,9 @@ func getRowHiddenHandler(settingsStore *settings.Store) http.HandlerFunc {
 			http.Error(w, "screen path parameter must be \"mainstream\" or \"adult\"", http.StatusBadRequest)
 			return
 		}
+		if denyIfAdultRowScreen(w, r) {
+			return
+		}
 
 		resp := apidto.RowHiddenResponse{Keys: []string{}}
 		stored, err := settingsStore.Get(r.Context(), key)
@@ -58,6 +61,9 @@ func putRowHiddenHandler(settingsStore *settings.Store) http.HandlerFunc {
 		key, ok := discoverRowHiddenSettingKey[r.PathValue("screen")]
 		if !ok {
 			http.Error(w, "screen path parameter must be \"mainstream\" or \"adult\"", http.StatusBadRequest)
+			return
+		}
+		if denyIfAdultRowScreen(w, r) {
 			return
 		}
 

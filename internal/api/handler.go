@@ -400,8 +400,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Download queue: torrent (anacrolix) + usenet (NNTP) merged into one
 	// stream. GID routing: "nzb-" prefix → usenet engine, otherwise torrent.
 	// See downloads.go.
-	mux.HandleFunc("GET /api/downloads", listDownloadsHandler(dl, nzb))
-	mux.HandleFunc("GET /api/downloads/stream", downloadsStreamHandler(dl, nzb))
+	mux.HandleFunc("GET /api/downloads", listDownloadsHandler(dl, nzb, grabsStore))
+	mux.HandleFunc("GET /api/downloads/stream", downloadsStreamHandler(dl, nzb, grabsStore))
 	// Live browser-notification stream. Registered on this same authenticated
 	// mux (never the public setup/login mux). This relies on whStore being the
 	// single shared singleton passed to every handler (see handler.go:62,247,

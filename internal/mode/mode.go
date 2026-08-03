@@ -29,6 +29,7 @@ import (
 	"github.com/labbersanon/sakms/internal/plex"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/qbittorrent"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/servarr"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -338,9 +339,11 @@ func (p plexPlayer) NotifyMediaUpdated(ctx context.Context, updates []jellyfin.M
 
 // Build constructs a Session for m from whatever connections are currently
 // configured — the singleton services in store, plus every media player in
-// the multi-connection registry (scStore) assigned to m. Returns an error
-// only if m isn't one of the three known modes (the sole hard requirement) —
-// no mode requires a *arr connection anymore.
+// the multi-connection registry (scStore) assigned to m. Two hard
+// requirements can fail it: m must be one of the three known modes, and — as
+// of the section PIN lock — an Adult m must not be denied by the
+// section-lock decision ctx carries (sectionlock.ErrSectionLocked, wrapped).
+// No mode requires a *arr connection anymore.
 //
 // SAK owns its own library for all three modes now (internal/library) instead
 // of proxying Radarr/Sonarr/Whisparr, so sess.Servarr stays nil for every
@@ -366,6 +369,25 @@ func Build(ctx context.Context, store *connections.Store, scStore *serviceconn.S
 		// SAK-owned library; no *arr construction.
 	default:
 		return nil, fmt.Errorf("mode %q: unknown mode", m)
+	}
+
+	// Layer 2 of the section PIN lock, immediately after the unknown-mode
+	// validation above. It READS ONLY the decision auth.Middleware (Layer 1)
+	// resolved into ctx — no PIN store, no ticket decrypt, no sectionlock.Gate
+	// call from this package. A second verify path is how two layers drift
+	// apart and one starts saying yes while the other says no.
+	//
+	// This is deliberately NOT the authorization chokepoint — Layer 1's
+	// path-based gate is primary and covers the ~25 {mode} routes that never
+	// reach Build at all. Build only adds the row/body-addressed Adult cases a
+	// URL cannot express: a proposal row's own p.Mode (proposals.go), a batch
+	// item's body mode (autograb_batch.go), a grab row's g.Mode (search.go).
+	//
+	// An ABSENT decision ALLOWS — see sectionlock.RequireSection's doc for why
+	// (background schedulers build from context.Background(), and a PIN lock
+	// must never stop background work).
+	if err := sectionlock.RequireMode(ctx, string(m)); err != nil {
+		return nil, fmt.Errorf("mode %q: %w", m, err)
 	}
 
 	aiClient, err := buildAIClient(ctx, store, settingsStore, httpClient)

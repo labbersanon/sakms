@@ -141,6 +141,13 @@ const RecoveryFix: Component<{
   const [saveError, setSaveError] = createSignal("");
   const [saved, setSaved] = createSignal(false);
   const [switchError, setSwitchError] = createSignal("");
+  // Section PIN lock, §4.4: PUT /api/auth/mode is the lock's own disarm
+  // surface (switching to "none" makes the lock inert), so it requires the PIN
+  // whenever one is set. Optional here because most instances have no PIN, and
+  // this form is the pre-session recovery path — it must stay usable on an
+  // instance that never enabled the feature. Sent as a header, not a body
+  // field, because AuthModeRequest is a generated DTO with a fixed shape.
+  const [sectionPin, setSectionPin] = createSignal("");
 
   const saveFix = async (e: Event) => {
     e.preventDefault();
@@ -167,9 +174,14 @@ const RecoveryFix: Component<{
     setSwitchError("");
     const body: AuthModeRequest = { mode: "password", acknowledgeInsecure: false };
     try {
+      // The header is omitted entirely when the field is blank: an empty
+      // X-Section-Pin is not a wrong PIN and must never count as a failed
+      // attempt against the brute-force counter.
+      const pin = sectionPin().trim();
       await apiWithKey("/api/auth/mode", props.apiKey, {
         method: "PUT",
         body: JSON.stringify(body),
+        ...(pin ? { headers: { "X-Section-Pin": pin } } : {}),
       });
       // Re-gate from scratch: mode is now password, so boot() lands on the
       // password login screen (this key-holder has no session cookie).
@@ -230,6 +242,25 @@ const RecoveryFix: Component<{
           </Button>
         </div>
       </Show>
+
+      <div class="mt-3">
+        <Field label="Section PIN (only if one is set)">
+          <input
+            type="password"
+            placeholder="leave blank if no section PIN is configured"
+            class={inputClass}
+            name="section-pin"
+            autocomplete="new-password"
+            value={sectionPin()}
+            onInput={(e) => setSectionPin(e.currentTarget.value)}
+          />
+        </Field>
+        <p class="mb-2 text-xs text-muted">
+          PUT /api/auth/mode is gated by the section PIN, because switching to
+          "none" would disarm the section lock. Not needed unless a PIN is set;
+          if it is forgotten, restart with SAKMS_SECTION_LOCK_DISABLE=1.
+        </p>
+      </div>
 
       <div class="mt-3 flex items-center gap-2">
         <Button onClick={switchToPassword}>

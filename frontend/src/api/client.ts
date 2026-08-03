@@ -17,6 +17,12 @@
 //      REPLACES the default header object. apiWithKey() therefore sets
 //      Content-Type explicitly when it injects X-Api-Key, or the JSON content
 //      type would be dropped.
+//
+//   3. (added with the section PIN lock) A section-lock refusal is a 403 with
+//      a body code, NOT a 401, and is handled on a completely separate branch
+//      from note 1 above — see SectionLockedError. Keeping those two apart is
+//      the whole reason the lock answers 403: routing it through note 1 would
+//      reboot the SPA every time an operator browsed into a locked section.
 
 // ApiError is what api() throws on a non-ok response: a plain Error (same
 // message, so every existing `catch (e) { (e as Error).message }` and every
@@ -37,13 +43,69 @@ export class ApiError extends Error {
   }
 }
 
+// SectionLockedError is what api() throws when the section PIN lock refuses a
+// request: a 403 whose JSON body carries code "section_locked" — the single
+// rejection shape internal/auth's gate and internal/api/sectionlock.go both
+// write. It extends ApiError (status 403) so every existing `catch (e) {
+// (e as Error).message }` and every `.status` branch keeps working unchanged.
+//
+// THE DISCRIMINATOR IS THE BODY CODE, NOT THE STATUS, AND THAT IS
+// LOAD-BEARING. A section-lock refusal must never reach the 401 branch above:
+// that branch reboots the whole SPA, so a locked Adult poster would log the
+// operator out. Two independent things keep them apart — the lock answers 403
+// (never 401, a deliberate spec deviation recorded in the plan's §10.1
+// precisely because of the reboot), and this branch additionally requires
+// code === "section_locked", so a plain 403 from any other route still throws
+// an ordinary ApiError. The 401 branch returns before the body is ever parsed;
+// this one runs only after it, inside the !res.ok arm.
+export class SectionLockedError extends ApiError {
+  // section is the locked section id the server named, or "" when the refusal
+  // was of the lock's own control surface (which classifies as no section).
+  readonly section: string;
+  constructor(message: string, section: string) {
+    super(message, 403);
+    this.name = "SectionLockedError";
+    this.section = section;
+  }
+}
+
+// SectionLockLockoutError is the brute-force refusal: 429 with code
+// "section_lock_lockout" and a retryAfter in seconds. It is deliberately a
+// DIFFERENT class from SectionLockedError — an operator who is locked out
+// needs to be told to wait, not shown a PIN box that will refuse them again.
+//
+// This shape has no internal/apidto mirror (it is not in the plan's §6 route
+// table), so it is hand-written here, next to the code that parses it, rather
+// than imported from @dto.
+export class SectionLockLockoutError extends ApiError {
+  readonly retryAfter: number;
+  constructor(message: string, retryAfter: number) {
+    super(message, 429);
+    this.name = "SectionLockLockoutError";
+    this.retryAfter = retryAfter;
+  }
+}
+
 let sessionExpiredHandler: (() => void) | null = null;
+let sectionLockedHandler: ((section: string) => void) | null = null;
 
 // setOnSessionExpired registers the callback api() invokes when a non-/api/auth
 // request returns 401. App uses it to re-run the boot sequence (falling back to
 // the login branch) without this module importing the boot code.
 export function setOnSessionExpired(handler: (() => void) | null): void {
   sessionExpiredHandler = handler;
+}
+
+// setOnSectionLocked registers the callback api() invokes when a request is
+// refused by the section lock. Mirrors setOnSessionExpired's shape and exists
+// for the same reason (this module must not import the shell): AppShell wires
+// it to refetch the lock status, so a mid-session ticket expiry raises the PIN
+// overlay instead of failing silently. Unlike the session-expiry handler this
+// one never reboots anything — the operator stays logged in.
+export function setOnSectionLocked(
+  handler: ((section: string) => void) | null,
+): void {
+  sectionLockedHandler = handler;
 }
 
 // api issues a JSON request to path and returns the parsed body (null on 204).
@@ -71,6 +133,28 @@ export async function api<T = unknown>(
       typeof body === "string"
         ? body
         : ((body as { error?: string } | null)?.error ?? JSON.stringify(body));
+    const code: string =
+      typeof body === "string"
+        ? ""
+        : ((body as { code?: string } | null)?.code ?? "");
+    if (res.status === 403 && code === "section_locked") {
+      const section: string =
+        typeof body === "string"
+          ? ""
+          : ((body as { section?: string } | null)?.section ?? "");
+      if (sectionLockedHandler) sectionLockedHandler(section);
+      throw new SectionLockedError(msg || "section locked", section);
+    }
+    if (res.status === 429 && code === "section_lock_lockout") {
+      const retryAfter: number =
+        typeof body === "string"
+          ? 0
+          : ((body as { retryAfter?: number } | null)?.retryAfter ?? 0);
+      throw new SectionLockLockoutError(
+        msg || "too many failed PIN attempts",
+        retryAfter,
+      );
+    }
     throw new ApiError(msg || "HTTP " + res.status, res.status);
   }
   return body as T;

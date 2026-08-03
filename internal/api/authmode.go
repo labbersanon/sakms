@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/labbersanon/sakms/internal/auth"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 )
 
 // NewAuthModeMux returns the routes for reading and switching the active
@@ -18,10 +19,16 @@ import (
 // visitor with neither cookie nor key never reaches it, which is why
 // first-run mode selection goes through the public /api/auth/setup body
 // instead (see the plan's §0.7 first-run bootstrap fix).
-func NewAuthModeMux(authStore *auth.Store) *http.ServeMux {
+// gate and disabled carry §4.4's PIN requirement onto PUT /api/auth/mode.
+// gate must be the SAME *sectionlock.Gate cmd/sakms passes to
+// auth.WithSectionGate and api.NewSectionLockMux — a second one would have
+// its own settings cache and its own brute-force counter. Passing nil leaves
+// the route behaving exactly as it did before the section lock existed, which
+// is what a test with no lock configured wants.
+func NewAuthModeMux(authStore *auth.Store, gate *sectionlock.Gate, disabled bool) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/auth/mode", getAuthModeHandler(authStore))
-	mux.HandleFunc("PUT /api/auth/mode", putAuthModeHandler(authStore))
+	mux.HandleFunc("PUT /api/auth/mode", putAuthModeHandler(authStore, gate, disabled))
 	return mux
 }
 
@@ -63,12 +70,27 @@ type authModeRequest struct {
 // On success, SetAuthMode writes ONLY auth_mode — the departed mode's
 // config (e.g. a password hash) is never wiped, so switching away and back
 // requires no reconfiguration (G4, AC6).
-func putAuthModeHandler(authStore *auth.Store) http.HandlerFunc {
+//
+// # This route is PIN-gated, and it is the section lock's own disarm surface
+//
+// §4.4's critical row. Switching to auth mode "none" makes the section lock
+// INERT (GATE-1), and before this gate existed that switch required only
+// acknowledgeInsecure:true — so one request from any session cookie or API
+// key permanently disarmed the whole feature, and the repo ships a
+// copy-pasteable curl for it in docs/break-glass-recovery.md.
+//
+// The whole route is gated, not just the switch to "none". §4.4's table row
+// is unqualified, and a "none"-only check would be a rule with an exception
+// for a reader to get wrong later.
+func putAuthModeHandler(authStore *auth.Store, gate *sectionlock.Gate, disabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		var req authModeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if !authorizeAuthModeChange(w, r, gate, disabled, authStore) {
 			return
 		}
 
@@ -112,4 +134,58 @@ func putAuthModeHandler(authStore *auth.Store) http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// authorizeAuthModeChange enforces §4.4's PIN requirement on PUT
+// /api/auth/mode, reporting true when the request may proceed.
+//
+// # Header, not body
+//
+// The PIN arrives as X-Section-Pin, unlike /api/section-lock/*'s currentPin
+// body field. "Gated on the PIN" is about STRENGTH, not transport, and the
+// header is what the break-glass runbook's curl and OidcLogin.tsx's
+// pre-session recovery form can both actually send — the recovery form has no
+// session and posts a fixed body shape.
+//
+// # Four skips, each of which would otherwise brick a recovery path
+//
+//  1. No gate installed — the section lock is not part of this build/mount.
+//  2. SAKMS_SECTION_LOCK_DISABLE. Checked BEFORE any configuration read, so
+//     it survives the corrupt stored value it exists to recover from. This is
+//     the documented way out of a forgotten PIN, and §4.4 leans on it
+//     explicitly when it argues this gate adds inconvenience rather than a
+//     new access class.
+//  3. No PIN set — nothing to re-authenticate against, matching
+//     sectionLockHandlers.authorizeChange.
+//  4. Auth mode is already "none". The lock is inert there (GATE-1), so there
+//     is nothing to disarm; gating would only make switching OUT of "none" —
+//     the direction that RESTORES security — impossible.
+func authorizeAuthModeChange(w http.ResponseWriter, r *http.Request, gate *sectionlock.Gate, disabled bool, authStore *auth.Store) bool {
+	if gate == nil || disabled {
+		return true
+	}
+	ctx := r.Context()
+	mode, err := authStore.AuthMode(ctx)
+	if err != nil {
+		log.Printf("auth mode switch (section lock, reading auth mode): %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return false
+	}
+	if mode == auth.ModeNone {
+		return true
+	}
+	pinSet, err := gate.Store().PinSet(ctx)
+	if err != nil {
+		log.Printf("auth mode switch (section lock, reading pin state): %v", err)
+		http.Error(w, "section lock configuration unavailable", http.StatusInternalServerError)
+		return false
+	}
+	if !pinSet {
+		return true
+	}
+	if err := gate.VerifyPin(ctx, sectionlock.Identity(r), sectionlock.PinFrom(r)); err != nil {
+		writeSectionLockPinError(w, err)
+		return false
+	}
+	return true
 }

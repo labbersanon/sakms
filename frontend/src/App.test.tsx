@@ -133,6 +133,17 @@ describe("boot branch: authed app shell", () => {
       // boot-branch smoke test isn't coupled to the switch's own behavior.
       if (url.includes("/api/settings/adult-mode-enabled"))
         return jsonResponse({ enabled: true });
+      // ShellRoot's second boot fetch, alongside the adult-mode switch above:
+      // the section PIN lock's status, which backs the sidebar lock badges and
+      // the content-area overlay. Nothing locked, so this boot-branch smoke
+      // test is unaffected by the lock's own behavior.
+      if (url.includes("/api/section-lock/status"))
+        return jsonResponse({
+          pinSet: false,
+          lockedSections: [],
+          unlocked: false,
+          enforcementAvailable: true,
+        });
       throw new Error("unexpected " + url);
     });
     render(() => <App />);
@@ -151,6 +162,17 @@ describe("boot branch: authed app shell", () => {
         return jsonResponse({ configured: false, linked: false });
       if (url.includes("/api/settings/adult-mode-enabled"))
         return jsonResponse({ enabled: true });
+      // ShellRoot's second boot fetch, alongside the adult-mode switch above:
+      // the section PIN lock's status, which backs the sidebar lock badges and
+      // the content-area overlay. Nothing locked, so this boot-branch smoke
+      // test is unaffected by the lock's own behavior.
+      if (url.includes("/api/section-lock/status"))
+        return jsonResponse({
+          pinSet: false,
+          lockedSections: [],
+          unlocked: false,
+          enforcementAvailable: true,
+        });
       throw new Error("unexpected " + url);
     });
     render(() => <App />);

@@ -349,10 +349,35 @@ export function fetchAuthMode(): Promise<AuthModeResponse> {
 // re-implements them (verbatim from renderAuthMode). Only "none" carries a
 // client-side gate: acknowledgeInsecure must be true, set after an explicit
 // confirm in the component.
-export function putAuthMode(body: AuthModeRequest): Promise<void> {
+//
+// sectionPin carries the section PIN lock's §4.4 requirement: this route is the
+// lock's own disarm surface (switching to "none" makes the lock inert), so the
+// backend refuses it whenever a section PIN is set and none is presented. It is
+// a HEADER rather than a body field because AuthModeRequest is a generated DTO
+// with a fixed shape — the same reason OidcLogin.tsx's pre-session recovery
+// form sends it as one.
+//
+// Omitted entirely when blank: an empty X-Section-Pin is not a WRONG pin and
+// must never count as a failed attempt against the brute-force counter (the
+// backend treats "" as ErrNoPinPresented, which deliberately does not increment
+// it). Content-Type is restated because api()'s options merge is shallow —
+// passing headers at all replaces the default object.
+export function putAuthMode(
+  body: AuthModeRequest,
+  sectionPin?: string,
+): Promise<void> {
+  const pin = (sectionPin || "").trim();
   return api<void>("/api/auth/mode", {
     method: "PUT",
     body: JSON.stringify(body),
+    ...(pin
+      ? {
+          headers: {
+            "Content-Type": "application/json",
+            "X-Section-Pin": pin,
+          },
+        }
+      : {}),
   });
 }
 

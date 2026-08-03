@@ -40,6 +40,7 @@ import (
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/scanschedule"
 	"github.com/labbersanon/sakms/internal/secrets"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/trakt"
@@ -48,6 +49,25 @@ import (
 	"github.com/labbersanon/sakms/internal/web"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
+
+// sectionLockDisabledByEnv reports whether SAKMS_SECTION_LOCK_DISABLE asks
+// for the section PIN lock's full disarm (see §2's threat model: restarting
+// SAK with an env var set already requires host access, which is well past
+// the household-member attacker this feature defends against). It is the
+// documented — and only — way out of a corrupt stored PIN hash.
+//
+// # It is parsed UNLIKE every other env var in this program, deliberately
+//
+// There is no boolean env-var convention here to follow: config.FromEnv's
+// four variables are all string-valued, and the one boolean-ish flag in the
+// codebase (internal/tmdb/cache.go's SAKMS_TMDB_CACHE_DEBUG) is a bare
+// `!= ""`. That convention is fine for a debug flag and wrong for this: it
+// would make SAKMS_SECTION_LOCK_DISABLE=0 and =false DISARM the lock, which
+// is the exact opposite of what an operator setting either of them means.
+// Every doc, plan and runbook names this variable as =1; only =1 disarms.
+func sectionLockDisabledByEnv() bool {
+	return os.Getenv("SAKMS_SECTION_LOCK_DISABLE") == "1"
+}
 
 // outboundTimeout bounds every call SAK makes to a configured service
 // (Radarr/Sonarr/Ollama/Stash/...) — a Test Connection click against a dead
@@ -208,6 +228,38 @@ func run() error {
 	// is untouched.
 	authStore := auth.New(settingsStore, secretStore, &http.Client{Timeout: outboundTimeout})
 
+	// Section PIN lock — Layer 1, installed into auth.Middleware below.
+	//
+	// Constructed exactly ONCE and shared. sectionlock.Store caches both of
+	// its settings keys and invalidates only its own copy; sectionlock.Gate
+	// owns the process-memory brute-force counter and the bcrypt memo. A
+	// second Store would keep honouring a changed PIN until restart, and a
+	// second Gate would split the failure counter so the effective lockout
+	// threshold doubled — neither visible to anything that builds one gate.
+	//
+	// secretStore satisfies sectionlock.AADEncryptor via EncryptWithAAD/
+	// DecryptWithAAD: the same AES-256-GCM primitive the session cookie uses,
+	// with the unlock ticket's own AAD bound in so the two ciphertexts are not
+	// interchangeable.
+	//
+	// SAKMS_SECTION_LOCK_DISABLE=1 is the full-disarm path from the threat
+	// model, and the way it disarms is that sectionGate stays EMPTY: no call
+	// site below installs a gate, and Middleware behaves exactly as it did
+	// before the lock existed. The gate itself is still built, because the
+	// control mux needs it to read and write configuration — clearing a
+	// corrupt PIN is the whole point of the disarm.
+	//
+	// See sectionLockDisabledByEnv for how the variable is parsed, and why not
+	// the way every other env var in this program is.
+	sectionLockDisabled := sectionLockDisabledByEnv()
+	sectionLockGate := sectionlock.NewGate(sectionlock.NewStore(settingsStore), secretStore)
+	var sectionGate []auth.MiddlewareOption
+	if sectionLockDisabled {
+		log.Printf("section lock: DISARMED by SAKMS_SECTION_LOCK_DISABLE=1 — no section is enforced")
+	} else {
+		sectionGate = append(sectionGate, auth.WithSectionGate(sectionLockGate))
+	}
+
 	// dedupHub is the process-lifetime live-progress hub for background Dedup
 	// scans (internal/dedupscan) — a broadcaster + per-mode in-flight tracker,
 	// injected into NewMux like webhookStore/dlManager. Its shutdown-aware base
@@ -253,18 +305,23 @@ func run() error {
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
 	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy)
-	protectedAPI := auth.Middleware(secretStore, authStore, apiMux)
+	protectedAPI := auth.Middleware(secretStore, authStore, apiMux, sectionGate...)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
-	// for operators). Mounted without a top-level auth.Middleware wrapper.
-	nodesMux := api.NewNodesMux(nodeReg, pairingReg, nodeKeyStore, secretStore, authStore, settingsStore, nodeSettingsStore)
+	// for operators). Mounted without a top-level auth.Middleware wrapper — so
+	// unlike every other protected mux here, the section gate cannot be applied
+	// at the mount and is passed INTO the constructor instead, which installs it
+	// on the operator paths only (see NewNodesMux's doc comment). Without this
+	// argument /api/nodes/* stays reachable while `settings` is locked, which is
+	// exactly what SL-10 exists to catch.
+	nodesMux := api.NewNodesMux(nodeReg, pairingReg, nodeKeyStore, secretStore, authStore, settingsStore, nodeSettingsStore, sectionGate...)
 
 	// API-key management (status + regenerate) is session-protected like
 	// the rest of /api/..., but deliberately NOT part of NewMux (see
 	// api.NewAPIKeyMux's doc comment) — its own small mux, wrapped in the
 	// same middleware so either a cookie or a key can reach it.
-	apikeyMux := api.NewAPIKeyMux(authStore)
-	protectedAPIKey := auth.Middleware(secretStore, authStore, apikeyMux)
+	apikeyMux := api.NewAPIKeyMux(authStore, sectionLockGate)
+	protectedAPIKey := auth.Middleware(secretStore, authStore, apikeyMux, sectionGate...)
 
 	// Auth-mode management (GET/PUT /api/auth/mode) mutates security state,
 	// so — unlike NewAuthMux's setup/login/logout/status routes — it must be
@@ -274,8 +331,14 @@ func run() error {
 	// pattern ("/api/auth/") regardless of registration order (Go ServeMux
 	// picks the more specific match), so mode stays protected while
 	// setup/login/logout/status stay public.
-	authModeMux := api.NewAuthModeMux(authStore)
-	protectedAuthMode := auth.Middleware(secretStore, authStore, authModeMux)
+	// The gate is passed here as well as to auth.WithSectionGate above and to
+	// NewSectionLockMux below — the SAME instance all three times, so all
+	// three share one settings cache and one brute-force counter. It carries
+	// §4.4's PIN requirement onto PUT /api/auth/mode, which is the section
+	// lock's own disarm surface: switching to auth mode "none" makes the lock
+	// inert, so without this one request would permanently disarm it.
+	authModeMux := api.NewAuthModeMux(authStore, sectionLockGate, sectionLockDisabled)
+	protectedAuthMode := auth.Middleware(secretStore, authStore, authModeMux, sectionGate...)
 
 	// OIDC-mode config (GET status, PUT issuer/client id/client secret/
 	// redirect URL) — the post-first-run Settings-switch path, not first-run
@@ -284,14 +347,14 @@ func run() error {
 	// redirect legs (those are on NewAuthMux). Session-protected like the
 	// other mode-specific muxes above.
 	oidcMux := api.NewOIDCMux(authStore, secretStore)
-	protectedOIDC := auth.Middleware(secretStore, authStore, oidcMux)
+	protectedOIDC := auth.Middleware(secretStore, authStore, oidcMux, sectionGate...)
 
 	// Manual "Refresh now" trigger for the recheck feature (see
 	// api.NewRecheckTriggerMux's doc comment) — its own small mux, same
 	// precedent as apikeyMux/authModeMux/oidcMux above, since it needs
 	// watchStore, a dependency NewMux doesn't otherwise carry.
 	recheckTriggerMux := api.NewRecheckTriggerMux(connStore, watchStore)
-	protectedRecheckTrigger := auth.Middleware(secretStore, authStore, recheckTriggerMux)
+	protectedRecheckTrigger := auth.Middleware(secretStore, authStore, recheckTriggerMux, sectionGate...)
 
 	// Requests worklist + excluded-titles endpoints — its own mux because it
 	// needs excludesStore, a dependency NewMux doesn't carry (same precedent as
@@ -299,7 +362,19 @@ func run() error {
 	// subtree ("/api/requests/", POST exclude/exclude-batch) on top below, both
 	// beating the general "/api/" subtree.
 	requestsMux := api.NewRequestsMux(grabsStore, libStore, excludesStore)
-	protectedRequests := auth.Middleware(secretStore, authStore, requestsMux)
+	protectedRequests := auth.Middleware(secretStore, authStore, requestsMux, sectionGate...)
+
+	// The section lock's own control surface — its own mux for the same
+	// reason as apikeyMux/authModeMux above (it needs sectionLockGate, which
+	// NewMux does not carry), wrapped in the SAME auth.Middleware as every
+	// other protected mux. Three of its routes are exempt from the SECTION
+	// gate — sectionlock.Classify deliberately maps /api/section-lock/* to no
+	// section, because the panel that manages the lock lives behind the
+	// `settings` lock — but NONE of them is exempt from primary auth: a
+	// session cookie or the universal API key is still required, so an
+	// unauthenticated caller cannot read or clear the lock.
+	sectionLockMux := api.NewSectionLockMux(sectionLockGate, authStore, sectionLockDisabled)
+	protectedSectionLock := auth.Middleware(secretStore, authStore, sectionLockMux, sectionGate...)
 
 	top := http.NewServeMux()
 	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -315,11 +390,18 @@ func run() error {
 	// exists).
 	top.Handle("/api/auth/", api.NewAuthMux(authStore, secretStore))
 	top.HandleFunc("GET /api/openapi.yaml", api.OpenapiHandler())
-	top.Handle("/api/apikey", protectedAPIKey)                           // exact match: GET status
-	top.Handle("/api/apikey/", protectedAPIKey)                          // subtree: POST .../regenerate
-	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)    // exact match: manual "Refresh now"
-	top.Handle("/api/requests", protectedRequests)                       // exact match: GET worklist (excluded-title-suppressed)
-	top.Handle("/api/requests/", protectedRequests)                      // subtree: POST exclude, exclude-batch
+	top.Handle("/api/apikey", protectedAPIKey)                        // exact match: GET status
+	top.Handle("/api/apikey/", protectedAPIKey)                       // subtree: POST .../regenerate
+	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger) // exact match: manual "Refresh now"
+	top.Handle("/api/requests", protectedRequests)                    // exact match: GET worklist (excluded-title-suppressed)
+	top.Handle("/api/requests/", protectedRequests)                   // subtree: POST exclude, exclude-batch
+	// BOTH forms are required, same precedent as /api/apikey and /api/requests
+	// above. The subtree pattern is what beats the general "/api/" one for
+	// every real route here; the exact one exists because without it the bare
+	// path falls through to "/api/" and 404s inside NewMux's own mux instead of
+	// reaching this handler.
+	top.Handle("/api/section-lock", protectedSectionLock)                // exact match
+	top.Handle("/api/section-lock/", protectedSectionLock)               // subtree: status, unlock, lock, pin, sections
 	top.Handle("GET /api/nodes/pair", api.PairStreamHandler(pairingReg)) // no auth: pre-pairing SSE
 	top.Handle("/api/nodes", nodesMux)                                   // exact match: GET list (per-handler auth inside)
 	top.Handle("/api/nodes/", nodesMux)                                  // subtree: {id}/approve, /pending, /settings, etc.

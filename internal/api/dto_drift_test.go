@@ -111,6 +111,13 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"traktDeviceStartResponse/TraktDeviceStartResponse", traktDeviceStartResponse{}, apidto.TraktDeviceStartResponse{}},
 		{"traktDevicePollResponse/TraktDevicePollResponse", traktDevicePollResponse{}, apidto.TraktDevicePollResponse{}},
 		{"traktWatchlistItem/TraktWatchlistItem", traktWatchlistItem{}, apidto.TraktWatchlistItem{}},
+		// sectionlock.go — sectionLockPinRequest is ONE pair serving both
+		// PUT /pin and DELETE /pin, so it gets one entry, not two.
+		// sectionLockLockoutResponse has no apidto mirror and is not listed.
+		{"sectionLockStatusResponse/SectionLockStatusResponse", sectionLockStatusResponse{}, apidto.SectionLockStatusResponse{}},
+		{"sectionLockUnlockRequest/SectionLockUnlockRequest", sectionLockUnlockRequest{}, apidto.SectionLockUnlockRequest{}},
+		{"sectionLockPinRequest/SectionLockPinRequest", sectionLockPinRequest{}, apidto.SectionLockPinRequest{}},
+		{"sectionLockSectionsRequest/SectionLockSectionsRequest", sectionLockSectionsRequest{}, apidto.SectionLockSectionsRequest{}},
 	}
 
 	for _, tc := range cases {

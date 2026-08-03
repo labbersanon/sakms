@@ -18,6 +18,8 @@ import {
   useContext,
 } from "solid-js";
 import type { Mode } from "../api/discover";
+import { SectionLockedError, SectionLockLockoutError } from "../api/client";
+import { ADULT_CONTENT_SECTION, unlockSections } from "../api/sectionLock";
 import type { ApplyBatchResponse } from "@dto";
 
 export const inputClass =
@@ -233,6 +235,188 @@ export function useAdultEnabled(): () => boolean {
   return useContext(AdultModeContext).enabled;
 }
 
+// SectionLockContext carries the section PIN lock's current state (plus a
+// refetch trigger) down to the sidebar badges, the content-area overlay,
+// Discover's Adult sub-tab and ModeTabs. Same downward value-distribution
+// shape as AdultModeContext directly above, and deliberately so — the plan
+// (§7) pins that as the pattern to mirror.
+//
+// isLocked() IS THE ONLY THING CONSUMERS SHOULD READ, and it folds three
+// facts together so no caller can get the conjunction wrong:
+//
+//   - the section is in lockedSections, AND
+//   - no unlock ticket is currently held (unlocked === false) — this is what
+//     makes an unlock + refetch clear every overlay at once, and
+//   - enforcementAvailable === true. When it is false (the instance sets
+//     SAKMS_SECTION_LOCK_DISABLE, or runs auth mode "none") the backend still
+//     REPORTS a stored lockedSections but gates nothing at all, so drawing an
+//     overlay there would hide content the server serves happily.
+//
+// The default value — used when no Provider is present, i.e. every screen's
+// own standalone unit test, none of which mount AppShell — resolves to
+// NOTHING LOCKED. Same reasoning as AdultModeContext's `enabled: () => true`
+// default: it reproduces the pre-feature behavior so the existing standalone
+// screen tests keep passing unmodified. Note this is the OPPOSITE polarity to
+// the backend's fail-closed policy, and correctly so: this context is
+// presentation only. The gate in auth.Middleware is the real boundary, and it
+// fails closed on its own.
+// `ready`/`error` describe the STATUS FETCH ITSELF, not the lock's config, and
+// exist because `enforcementAvailable() === false` otherwise conflates three
+// different situations: the fetch is still in flight, the fetch failed, and
+// the instance genuinely reports enforcement as unavailable. Only the third is
+// worth telling an operator about; the Settings panel branches on these to
+// avoid claiming "enforcement is disabled" while it simply does not know yet.
+//
+// Both are OPTIONAL so the standalone stubs that build this control by hand
+// (every screen's own unit test) keep compiling unchanged — same reasoning as
+// Sidebar's optional mobileOpen/onCloseMobile props. A consumer reading them
+// must supply the no-Provider defaults itself: `ready ?? true` (a hand-built
+// control is never mid-flight) and `error ?? false`.
+export type SectionLockControl = {
+  isLocked: (section: string) => boolean;
+  lockedSections: () => string[];
+  pinSet: () => boolean;
+  unlocked: () => boolean;
+  enforcementAvailable: () => boolean;
+  refetch: () => void;
+  ready?: () => boolean;
+  error?: () => boolean;
+};
+
+export const SectionLockContext = createContext<SectionLockControl>({
+  isLocked: () => false,
+  lockedSections: () => [],
+  pinSet: () => false,
+  unlocked: () => false,
+  enforcementAvailable: () => false,
+  refetch: () => {},
+});
+
+// useSectionLock returns the whole control. Unlike useAdultEnabled (which
+// narrows to the one accessor its consumers want) every consumer here needs
+// at least two members — the overlay needs isLocked AND refetch — so
+// narrowing would just push a second useContext call to each call site.
+export function useSectionLock(): SectionLockControl {
+  return useContext(SectionLockContext);
+}
+
+// SectionLockOverlay is the PIN-entry panel shown IN PLACE OF locked content.
+// It is deliberately an in-flow panel, not a fixed full-screen scrim: the
+// content area renders it for a locked tab, and Discover renders it for the
+// Adult sub-tab alone — a full-screen treatment there would hide Mainstream
+// Discover too, which AC6's closing clause forbids outright.
+//
+// It lives in this file rather than in AppShell.tsx because both AppShell and
+// screens/discover/index.tsx need it, and AppShell imports Discover — putting
+// it there would be an import cycle.
+//
+// One ticket unlocks EVERY locked section at once, so this panel never asks
+// which section it is unlocking.
+export const SectionLockOverlay: Component<{
+  label: string;
+}> = (props) => {
+  const lock = useSectionLock();
+  const [pin, setPin] = createSignal("");
+  const [error, setError] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await unlockSections(pin());
+      setPin("");
+      lock.refetch();
+    } catch (err) {
+      // ORDER MATTERS, and so does mapping SectionLockedError to its own copy.
+      // A wrong PIN comes back as the SAME 403 section_locked body the path
+      // gate writes ("section locked"), so surfacing err.message verbatim
+      // would tell an operator who fat-fingered their PIN that the section is
+      // locked — which is what they are already looking at. The lockout case
+      // must be tested FIRST: both are PIN failures, and only one of them is
+      // fixable by trying again.
+      if (err instanceof SectionLockLockoutError) {
+        setError(
+          `Too many failed attempts — try again in ${err.retryAfter} second${err.retryAfter === 1 ? "" : "s"}.`,
+        );
+      } else if (err instanceof SectionLockedError) {
+        setError("Incorrect PIN.");
+      } else {
+        setError((err as Error).message || "Could not unlock");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div class="mx-auto mt-6 max-w-md rounded-xl border border-border bg-surface p-6 text-center">
+      <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-2 text-muted">
+        <LockGlyph size={20} />
+      </div>
+      <h3 class="text-base font-semibold text-fg">{props.label} is locked</h3>
+      <Muted class="mt-1">
+        Enter the section PIN to unlock. Unlocking clears every locked section
+        for 30 minutes.
+      </Muted>
+      {/* name="section-pin" + autocomplete="new-password" on EVERY section-PIN
+          input in the app (here, SectionLock.tsx's two, Auth.tsx's and
+          OidcLogin.tsx's). autocomplete="off" is deliberately IGNORED by
+          Chromium and Firefox on password fields so managers keep working, so
+          it protected nothing; "new-password" is the value they honor. The
+          shared `name` is what disambiguates a PIN box from the other unnamed
+          type="password" fields on the same origin (OidcLogin's break-glass
+          API key, the OIDC client secret) — without it a manager will happily
+          offer a saved API key into a PIN box. No inputmode="numeric": the
+          PIN's format is deliberately not hinted at. */}
+      <form class="mt-4" onSubmit={(e) => void submit(e)}>
+        <input
+          type="password"
+          class={inputClass}
+          aria-label="Section PIN"
+          placeholder="PIN"
+          name="section-pin"
+          autocomplete="new-password"
+          value={pin()}
+          disabled={busy()}
+          onInput={(e) => setPin(e.currentTarget.value)}
+        />
+        <div class="mt-3">
+          <Button type="submit" variant="primary" disabled={busy() || !pin()}>
+            {busy() ? "Unlocking…" : "Unlock"}
+          </Button>
+        </div>
+      </form>
+      <Show when={error()}>
+        <ErrorText>{error()}</ErrorText>
+      </Show>
+    </div>
+  );
+};
+
+// LockGlyph is the small padlock shared by the sidebar badge and the overlay.
+// Hand-drawn rather than pulled from lucide-solid to match the sidebar's own
+// icon set, which is entirely hand-rolled (see AppShell.tsx's note: lucide is
+// used for Settings action slots only, and swapping the nav icons is
+// explicitly out of scope).
+export const LockGlyph: Component<{ size?: number }> = (props) => (
+  <svg
+    width={props.size ?? 14}
+    height={props.size ?? 14}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="4" y="11" width="16" height="10" rx="2" />
+    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+  </svg>
+);
+
 // ScreenTabBar is the generic tab bar: a row of pill buttons over an opaque
 // TabDef set, plus an optional trailing slot rendered after them (e.g.
 // Discover's Edit-mode toggle). The shell renders it in its consistent
@@ -307,12 +491,32 @@ export function ScreenTabs(props: {
 // drawing the bar inline — preserving the pre-sidebar behavior every existing
 // screen test relies on. `current` is a Solid accessor; `class` only affects the
 // inline fallback (the shell owns placement).
+// SECTION-LOCK ADDITION: when `adult-content` is locked, the Adult tab is
+// HIDDEN here rather than overlaid — mirroring exactly what useAdultEnabled
+// already does when Adult mode is off, so the five screens that render
+// ModeTabs (Rename, Purge, Dedup, Tag, calendar/History) needed no edit at
+// all. Hiding is UX polish; the backend gate is the real boundary and denies
+// these routes whether or not a tab is drawn.
+//
+// Discover is deliberately NOT this treatment: its Mainstream/Adult split is
+// a ScreenTabs pair where the Adult tab STAYS visible and its panel renders
+// SectionLockOverlay instead — a hidden tab there would be indistinguishable
+// from Adult mode being off, and Discover is the one screen with a real
+// unlock affordance to offer.
 export function ModeTabs(props: {
   current: () => Mode;
   onSelect: (mode: Mode) => void;
   class?: string;
 }): JSX.Element {
-  const adultEnabled = useAdultEnabled();
+  const adultEnabledRaw = useAdultEnabled();
+  const lock = useSectionLock();
+  // adultEnabled folds the lock into the existing visibility switch so BOTH
+  // consumers below — the tab list AND the fall-back-to-Movies effect — see
+  // one predicate. Without the effect seeing it too, a screen sitting on
+  // Adult when the lock engages would keep rendering Adult content with no
+  // tab left to navigate away by.
+  const adultEnabled = () =>
+    adultEnabledRaw() && !lock.isLocked(ADULT_CONTENT_SECTION);
   // `tabs` stays a FUNCTION, called inline at each JSX call site below
   // (never hoisted into a plain variable) — Solid compiles JSX prop
   // expressions into getters, so calling it inline keeps the standalone

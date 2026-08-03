@@ -5575,3 +5575,188 @@ untouched by this work. `pnpm -C frontend build` clean, **106.8 KB** gzipped JS
 **13 passed**; full `pnpm -C frontend test` **779 passed / 0 failed across 56
 files**. **No live-instance verification of any probe was performed** — see the
 load-bearing paragraph above; that is the one gate this feature did not clear.
+
+## 2026-08-03 — Configurable section PIN lock (ROADMAP item 11, "Security for Adult sections")
+
+An operator can now set a PIN and choose which sidebar tabs it protects, plus
+a dedicated "Adult content" pseudo-section (app-wide: Discover's Adult sub-tab,
+Settings' Adult sections, Organize/Tag's Adult views, RSS feeds — since Adult
+isn't its own sidebar tab), plus a one-click "lock everything" shortcut.
+Enforcement is genuinely **server-side**, which is the entire point: the
+pre-existing `adult_mode_enabled` setting is explicitly documented as a
+UI-visibility switch and is trivially bypassed by a direct API call. That
+setting is **completely untouched** by this work — a hard Non-Goal, its doc
+comment at `internal/api/adult_mode.go:14-19` survives verbatim.
+
+**This falsifies three sentences of `CLAUDE.md`'s "Single-operator auth"
+paragraph, and they are quoted and corrected there rather than rewritten.**
+The load-bearing one: *"a key inherits the one operator's full access in every
+mode, it is not a second user or a permissions surface."* That is now directly
+false — on a locked section an `X-Api-Key` request must additionally present
+`X-Section-Pin: <PIN>`, making the key a genuinely scoped credential for the
+first time. Identity is still flat (one login, one operator, no user table, no
+roles); authorization scope is not.
+
+**The anti-RBAC invariant, stated because it is what keeps this from becoming
+a role layer: ONE PIN, ONE unlock ticket, and that ticket unlocks EVERY locked
+section at once.** No per-section PINs, ever. Unlocking `discover` also
+unlocks `adult-content`. The ticket carries no identity and no per-section
+scope — it is a boolean "the operator entered the PIN recently," absolute
+30-minute TTL, non-sliding.
+
+**MIGRATION NOTE — a breaking change on first use, not a hypothetical.** Every
+existing out-of-process script or automation hitting a route that becomes
+gated will get a **403 it has never seen before, the moment an operator locks
+that section for the first time** — including the newly-fixed `/api/nodes*`
+operator routes described below. Nothing breaks at upgrade time (no section is
+locked by default and no PIN exists), so the failure surfaces later, detached
+from the change that caused it. The fix is to add `-H "X-Section-Pin: <PIN>"`;
+there is deliberately no grandfathering path and no per-key exemption, since an
+exempt credential would be a hole straight through the feature.
+
+**Four enforcement layers, each with a distinct job.** Layer 1 (primary) is a
+gate on `auth.Middleware`'s **one** gated success exit — the three former
+success exits were collapsed into it so no credential type can route around
+the gate, while the `mode == ModeNone` early return is preserved verbatim as a
+deliberate fourth, ungated exit. Classification parses `r.URL.Path` segments,
+**never `r.PathValue`**: `http.ServeMux` populates path values during its own
+`ServeHTTP`, after the middleware has run, so `r.PathValue("mode")` is `""`
+there and reading it would silently fail OPEN on every Adult route. Layer 2 is
+`mode.Build`, for the row/body-addressed Adult cases a URL cannot express.
+Layer 3 is explicit checks where `Build` is not reached. Layer 4 protects the
+lock's own control surface — most importantly `PUT /api/auth/mode`, without
+which one request switching to auth mode `none` would permanently disarm the
+feature.
+
+**Two gap-closure findings worth recording, because both were real holes the
+original plan missed.** First, **seven `/api/nodes*` operator routes were
+classified as `settings` but structurally unreachable by the gate**:
+`NewNodesMux` builds its own `auth.Middleware` internally rather than
+inheriting `cmd/sakms`'s single wrap, so the gate options had to be threaded
+through the constructor. So **locking `settings` now also gates node
+management.** The node-agent bearer routes are deliberately NOT gated — an
+agent holds no PIN and no interactive surface to enter one, so gating them
+would take every node offline the moment `settings` was locked. A static test
+proving a route is *classified* is not the same as one proving it is
+*reachable by the gate*; only the second kind (`sectionlock_sl10_test.go`)
+found this. Second, a **fourth SSE handler (`sysinfo.go`) had been missed** —
+all four now carry a 30s re-check ticker plus a **revocation epoch**, without
+which "Re-lock now" is silently ignored by every already-open stream (an open
+stream's `*http.Request` froze its cookie header at open time, so it keeps
+re-validating a ticket that is still cryptographically valid).
+
+**GATE-1 was decided Option A: the lock is inert in auth mode `none`.** That
+mode's banner already declares the instance fully open, and there is no
+authenticated caller to bound a config write, an unlock, or the brute-force
+counter — enforcing there would create an unauthenticated remote-brick surface
+and false assurance. Control endpoints answer 409; the panel renders disabled.
+
+**Recovery paths, each deliberate.** `SAKMS_SECTION_LOCK_DISABLE=1` is the
+full disarm: no section is enforced, and `PUT`/`DELETE /api/section-lock/pin`
+stop requiring `currentPin` — the only way out of a corrupt bcrypt hash.
+`PUT /sections` refuses a non-empty array while no PIN exists (400), because
+that state would deny with no credential in existence that could satisfy it.
+Clearing the PIN by any path also clears the locked set. Both are documented in
+`docs/break-glass-recovery.md`.
+
+**Documented deviations.** A locked route answers **403, not the 401** the spec
+asked for ("rejected exactly as an unauthenticated one would be"):
+`client.ts` reboots the SPA on any non-`/api/auth/` 401, so a 401 here would
+log the operator out or boot-loop. The confidentiality property survives
+through **ordering** — primary auth answers 401 first, so an unauthenticated
+caller never learns anything about section-lock state. Separately, the
+"lock everything" equivalence assertion is a TypeScript test rather than a Go
+one, because that button is a pure frontend convenience over one mechanism
+(it PUTs the same explicit array) and there is nothing in Go to test.
+
+| File | Change |
+|---|---|
+| `internal/sectionlock/` | **New package** — `sections.go` (the 8 canonical tab ids + `adult-content`), `routes.go` (path classification, returning a SET: `/api/modes/adult/rename/scan` is `{organize, adult-content}` and is gated when either is locked), `store.go` (bcrypt PIN + locked set, both cached, split failure policy — transient read retries once then fails closed, a malformed value fails closed immediately), `ticket.go` (the typed, AAD-bound unlock ticket), `lockout.go`, `gate.go`, `context.go`, `stream.go` (the SSE re-check + revocation epoch) |
+| `internal/secrets/secrets.go` | New AAD-taking Encrypt/Decrypt variant, used by the unlock ticket ONLY. Deliberately not retrofitted onto the existing methods — that would invalidate every existing ciphertext across 8 packages |
+| `internal/auth/session.go` | Layer 1. Three success exits collapsed to one gated exit; the `none` return preserved verbatim as the fourth, ungated one; `ValidateToken` amended to REJECT `typ == "unlock"` while treating an ABSENT `typ` as a valid session — asymmetric on purpose, since a symmetric rule would force-logout every already-issued session cookie on deploy |
+| `internal/mode/mode.go` | Layer 2, immediately after the unknown-mode switch. Reads ONLY the context decision Layer 1 resolved — no second decrypt/verify path. An ABSENT decision ALLOWS, so background work is unaffected — a scheduler's context is threaded down from `main.go` and never passes through `auth.Middleware`, so it carries no decision to deny by. (Stated without a count on purpose: the plan said "four callers build from `context.Background()`" and CLAUDE.md's "six" counts interval-driven schedulers, a different set — and today NO non-test caller passes `context.Background()` to `Build` directly. Per CLAUDE.md's own rule, count the launch block rather than trusting a prose ordinal) |
+| `internal/api/sectionlock.go`, `sse_sectionlock.go` | **New** — the six-route control surface, plus the SSE re-check helper. A wrong PIN answers 403 `section_locked`; an active lockout answers **429** `section_lock_lockout` with `Retry-After`, deliberately NOT `section_locked`, since the frontend raises its PIN overlay on that exact string and an overlay is precisely what must not appear during a lockout |
+| `internal/api/nodes_mux.go` | The enforcement-hole fix — `sectionGate` threaded onto the operator paths (`op`, and `dualAuth`'s operator branch) only |
+| `internal/api/{dedup,downloads,notifications,sysinfo}.go` | The four SSE handlers' 30s re-check tickers. Three had no ticker at all to piggyback on |
+| `internal/api/{proposals,requests,requests_exclude,rss_feeds,search,discover_row_order,discover_row_hidden}.go` | Layer 3's explicit checks where `mode.Build` is not reached |
+| `internal/api/authmode.go` | Layer 4's `PUT /api/auth/mode` PIN gate — the one that closes the one-request permanent-disarm hole |
+| `cmd/sakms/main.go` | `SAKMS_SECTION_LOCK_DISABLE` at boot; the section-lock mux mounted BOTH as `/api/section-lock` and `/api/section-lock/` — without the subtree form every path under it falls through to the general `/api/` pattern and 404s |
+| `internal/apidto/dto.go`, `internal/apidto/ts/dto.gen.ts` | The four section-lock DTOs. PIN fields are plain `string`, not `*string` — no preserve/clear/set three-state semantics are intended (Guardrail #5). The `.ts` half is generated via `go run ./cmd/gendto`, not hand-edited |
+| `frontend/src/api/sectionLock.ts` | **New** — client + `LOCKABLE_TAB_SECTIONS` |
+| `frontend/src/screens/settings/SectionLock.tsx` | **New** — the panel, composed into `Global.tsx` (not `Advanced.tsx`: `AdvancedSection` takes a `mode` and is governed by the mode selector, and a section lock is mode-INDEPENDENT; `GlobalSection` still renders under the Advanced tab, so the spec's "Settings → Advanced" is satisfied) |
+| `frontend/src/api/client.ts` | `SectionLockedError` + `setOnSectionLocked`, keyed on `code === "section_locked"` so a locked-section 403 raises a PIN overlay and never triggers `sessionExpiredHandler` |
+| `frontend/src/screens/AppShell.tsx`, `components/ui.tsx` | `NAV_ITEMS` exported; `SectionLockContext`; sidebar lock badges. Locked tabs stay VISIBLE with a badge and render a PIN-entry overlay, rather than disappearing |
+| `frontend/src/screens/discover/index.tsx` | The Adult overlay is **sub-tab-scoped, never whole-screen** — a whole-screen overlay would hide Mainstream, which AC6 explicitly forbids |
+| `frontend/src/screens/{OidcLogin,settings/Auth}.tsx` | Optional `X-Section-Pin` field on the pre-session recovery form and the Settings auth-mode form |
+| `docs/break-glass-recovery.md` | `-H "X-Section-Pin: <PIN>"` on the `PUT /api/auth/mode` curl, plus `SAKMS_SECTION_LOCK_DISABLE=1` as the forgotten-PIN recovery path |
+| `CLAUDE.md`, `docs/ROADMAP.md`, `CHANGELOG.md` | The quote-then-correct amendment; item 11 marked shipped; this entry |
+
+**Verification.** `go build ./...` clean; `go vet ./...` clean. `go test ./...`
+green except `internal/sysinfo`'s four `TestReadGPUs_*` cases — the same
+pre-existing failures the 2026-08-02 entries above document, which read this
+host's real sysfs and are untouched by this work (a different package from
+`internal/api/sysinfo.go`, which this feature did touch). `pnpm -C frontend
+build` clean, **109.9 KB** gzipped JS (200 KB ceiling); `pnpm -C frontend test`
+**806 passed / 0 failed across 61 files**.
+
+**QA-GATE-1 was run live against a real binary on a throwaway config+database**
+(per this project's script-verification convention — the failure paths are
+mandatory, not optional), and **three of the plan's eight predicted status
+codes were wrong.** All three are the plan mispredicting shipped behavior, not
+the implementation being wrong; none is a security regression, and they are
+recorded here rather than papered over:
+
+| # | Request | Predicted | **Observed** |
+|---|---|---|---|
+| 1 | `POST /api/modes/adult/rename/scan`, no credential | 401 | **401** ✓ |
+| 2 | valid session cookie, no unlock cookie | 403 `section_locked` | **403 `section_locked`** ✓ |
+| 3 | `X-Api-Key` alone | 403 `section_locked` | **403 `section_locked`** ✓ |
+| 4 | `X-Api-Key` + correct `X-Section-Pin` | 200 | **200** ✓ |
+| 5 | `X-Api-Key` + wrong pin ×6 | 403, then lockout | **403 ×6** — see below |
+| 6 | `POST /api/autograb-batch`, Adult item, key only | 403 | **200 + per-item `error: mode "adult": section locked`** |
+| 7 | open the dedup stream unlocked, then `POST /lock` | terminates ≤30s | **terminated 27s after the lock** ✓ |
+| 8 | `PUT /api/auth/mode` → `none`, key only | 403 | **400 "a PIN is required"** |
+
+**Row 5 — the lockout is INVISIBLE in the middleware's status code, by
+design.** Layer 1 has exactly one rejection shape (`writeSectionLocked` is
+unconditionally 403), so six wrong PINs return six identical 403s and prove
+nothing on their own. The counter was confirmed engaged separately: the same
+API-key identity presenting the CORRECT PIN to the control mux answered **429
+`section_lock_lockout`, `Retry-After: 60`**. Two controls also passed — a
+different identity (session cookie) was NOT locked out, confirming the counter
+is per-identity rather than global (a global one lets a household member, the
+stated threat actor, self-DoS the operator); and a request carrying no PIN at
+all did not count as a failure, confirming the browser's own routine gated
+requests cannot self-inflict a lockout.
+
+**Row 6 — a batch endpoint has no single status to carry a denial.**
+`POST /api/autograb-batch` applies skip-and-continue per-item semantics, so
+Layer 2's refusal surfaces as that item's `error` field with HTTP 200. The
+Adult item **was denied** (not grabbed), which is the property that matters;
+the shipped test `TestSectionLockLayer2_AutoGrabBatchAdultItemDenied` asserts
+exactly this and documents why. A control with the PIN header cleared the
+denial (the per-item error became the unrelated "prowlarr isn't configured").
+
+**Row 8 — a MISSING header is 400, a WRONG one is 403.** The discriminating
+question for §0.6's one-request-disarm hole is whether the request is refused
+at all, and it is, both ways; auth mode was confirmed still `password`
+afterwards. This matches what `docs/break-glass-recovery.md` already
+documents, so the plan's prediction — not the code — was the stale artifact.
+
+**Row 7 is the one that most needed live verification and got a negative
+control**, since a stream dying at t=2s for unrelated reasons would look like
+a pass: held open with no lock action it survived the full 35s cap, and only
+after `POST /lock` did it terminate, 27s later, inside the 30s ticker window.
+This is the revocation-epoch mechanism, which unit tests structurally could
+not have caught. Row 4 was re-run after configuring an Adult root folder so
+the handler could reach a real **200** rather than a config error — gate
+passage is proven by the ABSENCE of `code: section_locked`, and row 3 was
+re-confirmed as 403 under otherwise identical conditions, so the PIN header is
+the only variable.
+
+**Deslop pass** over all 66 changed/new Go and TS/TSX files (tracked diff
+against `b691380` **plus** the untracked new files, which are the majority of
+this feature's code): no `TODO`/`FIXME`/`HACK`, no `.skip`/`.only`, no
+`t.Skip`, no `console.log`/`fmt.Print`/`debugger`, no commented-out code. The
+one `XXX` match is a pre-existing Newznab category term (the 6000-range) in
+`internal/api/search.go`, untouched by this work.

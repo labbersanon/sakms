@@ -13,7 +13,7 @@ import (
 
 func TestGetMode_ReturnsEffective(t *testing.T) {
 	authStore, _ := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	srv := httptest.NewServer(NewAuthModeMux(authStore, nil, false))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/auth/mode")
@@ -44,7 +44,7 @@ func TestGetMode_ReturnsEffective(t *testing.T) {
 
 func TestPutMode_NoneRequiresAck_400(t *testing.T) {
 	authStore, _ := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	srv := httptest.NewServer(NewAuthModeMux(authStore, nil, false))
 	defer srv.Close()
 
 	body, _ := json.Marshal(authModeRequest{Mode: auth.ModeNone})
@@ -69,7 +69,7 @@ func TestPutMode_NoneRequiresAck_400(t *testing.T) {
 
 func TestPutMode_NoneWithAck_204(t *testing.T) {
 	authStore, _ := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	srv := httptest.NewServer(NewAuthModeMux(authStore, nil, false))
 	defer srv.Close()
 
 	body, _ := json.Marshal(authModeRequest{Mode: auth.ModeNone, AcknowledgeInsecure: true})
@@ -94,7 +94,7 @@ func TestPutMode_NoneWithAck_204(t *testing.T) {
 
 func TestPutMode_PasswordWithoutHash_400(t *testing.T) {
 	authStore, _ := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	srv := httptest.NewServer(NewAuthModeMux(authStore, nil, false))
 	defer srv.Close()
 
 	body, _ := json.Marshal(authModeRequest{Mode: auth.ModePassword})
@@ -114,7 +114,7 @@ func TestPutMode_PasswordWithoutHash_400(t *testing.T) {
 // switch could otherwise strand the instance with an unusable mode.
 func TestPutMode_OIDCWithoutConfig_400(t *testing.T) {
 	authStore, _ := testAuthStore(t)
-	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	srv := httptest.NewServer(NewAuthModeMux(authStore, nil, false))
 	defer srv.Close()
 
 	body, _ := json.Marshal(authModeRequest{Mode: auth.ModeOIDC})
@@ -142,7 +142,7 @@ func TestPutMode_OIDCWithConfig_204(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	srv := httptest.NewServer(NewAuthModeMux(authStore, nil, false))
 	defer srv.Close()
 
 	body, _ := json.Marshal(authModeRequest{Mode: auth.ModeOIDC})
@@ -171,7 +171,7 @@ func TestPutMode_SwitchAwayKeepsConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewAuthModeMux(authStore))
+	srv := httptest.NewServer(NewAuthModeMux(authStore, nil, false))
 	defer srv.Close()
 
 	// Switch to none.
@@ -214,7 +214,7 @@ func TestPutMode_SwitchAwayKeepsConfig(t *testing.T) {
 // the wrapped composition directly, the same way cmd/sakms wires it.
 func TestAuthModeMux_ProtectedByMiddleware(t *testing.T) {
 	authStore, tokenEnc := testAuthStore(t)
-	protected := auth.Middleware(tokenEnc, authStore, NewAuthModeMux(authStore))
+	protected := auth.Middleware(tokenEnc, authStore, NewAuthModeMux(authStore, nil, false))
 	srv := httptest.NewServer(protected)
 	defer srv.Close()
 

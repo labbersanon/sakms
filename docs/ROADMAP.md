@@ -1534,6 +1534,30 @@ explicitly deferred.
     for the same documentation discipline as this session's staged-for-
     approval exceptions, though not made a hard acceptance criterion by
     Wade this round.
+
+    **Shipped 2026-08-03** — see `CHANGELOG.md` and `CLAUDE.md`'s
+    "Single-operator auth" AMENDED 2026-08-03 sub-bullet, which quotes and
+    corrects the three sentences this feature falsifies. Built via a
+    multi-wave autopilot split per
+    `.omc/plans/autopilot-impl-section-pin-lock.md`: a new
+    `internal/sectionlock` package, a gate on `auth.Middleware`'s one gated
+    success exit (Layer 1, path-classified — `r.PathValue` is empty inside
+    the middleware and reading it would fail open on every Adult route),
+    `mode.Build` for row/body-addressed Adult (Layer 2), explicit checks
+    where `Build` is not reached (Layer 3), and SSE re-check tickers with a
+    revocation epoch so an already-open stream terminates on a re-lock.
+    **The `X-Api-Key` scoping divergence WAS documented** rather than left
+    at "not a hard acceptance criterion" — see the CLAUDE.md sub-bullet.
+    Two things worth flagging here. **GATE-1 was decided Option A**: the
+    lock is inert in auth mode `none`, since that mode's banner already
+    declares the instance fully open and there is no authenticated caller
+    to bound a config write or the brute-force counter. And a gap-closure
+    pass found a real enforcement hole the original plan missed — seven
+    `/api/nodes*` operator routes classified as `settings` but structurally
+    unreachable by the gate, because `NewNodesMux` builds its own
+    `auth.Middleware` instead of inheriting `cmd/sakms`'s single wrap. **So
+    locking `settings` now also gates node management**, a breaking change
+    for any out-of-process script the first time an operator locks it.
 12. **Library sidebar tab** — spec ready:
     `.omc/specs/deep-interview-library-sidebar-tab.md` (~10% ambiguity,
     PASSED). **Real finding: no dedicated library-browsing screen exists

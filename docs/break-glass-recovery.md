@@ -145,8 +145,25 @@ the mode-switch if a password was previously set:
 ```sh
 curl -X PUT https://media-admin.zaena.us/api/auth/mode \
   -H "X-Api-Key: <KEY>" -H "Content-Type: application/json" \
+  -H "X-Section-Pin: <PIN>" \
   -d '{"mode":"password","acknowledgeInsecure":false}'
 ```
+
+**Second gotcha — `X-Section-Pin` is required if a section PIN is set.** This
+route is the section lock's own disarm surface: switching to `none` makes the
+lock inert, so without a gate here one request would permanently disarm it.
+Omit the header when no PIN is configured (the route then behaves exactly as
+it always did); a missing header while a PIN IS set answers **400** ("a PIN is
+required") and a wrong one answers **403** `section_locked`, escalating to
+**429** after five consecutive wrong attempts.
+
+**If the PIN itself is forgotten**, restart the container with
+`SAKMS_SECTION_LOCK_DISABLE=1` in its environment. That disarms the section
+lock entirely — this route stops requiring the header, no section is enforced,
+and `PUT`/`DELETE /api/section-lock/pin` stop requiring `currentPin`, which is
+the only way out of a corrupt PIN hash. It needs host access, which Step 1
+above already required, so it adds inconvenience rather than a new access
+class.
 
 If no password exists and OIDC can't be fixed quickly, switching to `none`
 mode (`{"mode":"none","acknowledgeInsecure":true}`) restores access with **no

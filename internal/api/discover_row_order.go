@@ -26,6 +26,28 @@ var discoverRowOrderSettingKey = map[string]string{
 	"adult":      "discover_row_order_adult",
 }
 
+// denyIfAdultRowScreen is §4.3 item 2 — the belt-and-braces half of the
+// row-order/row-hidden coverage, shared by this file and
+// discover_row_hidden.go.
+//
+// Layer 1 already covers these four routes: sectionlock.Classify adds
+// adult-content when the {screen} segment is "adult", so a request never
+// reaches the handler while Adult is locked. This is deliberate
+// defence-in-depth against exactly one failure — someone narrowing
+// classifyDiscover's {screen} rule without noticing these are the routes it
+// protects — and it must stay cheap enough to be obviously harmless.
+//
+// r.PathValue is SAFE here and nowhere near auth.Middleware: http.ServeMux
+// has already routed by the time a handler body runs. The rule that
+// classification must never read PathValue is about Layer 1, which runs
+// BEFORE routing and would read "".
+func denyIfAdultRowScreen(w http.ResponseWriter, r *http.Request) bool {
+	if r.PathValue("screen") != "adult" {
+		return false
+	}
+	return denyIfAdultLocked(w, r)
+}
+
 // getRowOrderHandler is GET /api/discover/row-order/{screen} — {screen} must
 // be "mainstream" or "adult". Returns an empty key list (not a 404) when
 // nothing has been saved yet — a fresh install simply has no display-order
@@ -35,6 +57,9 @@ func getRowOrderHandler(settingsStore *settings.Store) http.HandlerFunc {
 		key, ok := discoverRowOrderSettingKey[r.PathValue("screen")]
 		if !ok {
 			http.Error(w, "screen path parameter must be \"mainstream\" or \"adult\"", http.StatusBadRequest)
+			return
+		}
+		if denyIfAdultRowScreen(w, r) {
 			return
 		}
 
@@ -61,6 +86,9 @@ func putRowOrderHandler(settingsStore *settings.Store) http.HandlerFunc {
 		key, ok := discoverRowOrderSettingKey[r.PathValue("screen")]
 		if !ok {
 			http.Error(w, "screen path parameter must be \"mainstream\" or \"adult\"", http.StatusBadRequest)
+			return
+		}
+		if denyIfAdultRowScreen(w, r) {
 			return
 		}
 

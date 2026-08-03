@@ -21,6 +21,24 @@ import (
 // and node routes can each enforce their own distinct credential type. The
 // unauthenticated pairing endpoint (GET /api/nodes/pair) is mounted separately
 // on the top-level mux as an exact match that beats this subtree.
+//
+// # sectionGate — why it has to be threaded in here rather than at the mount
+//
+// /api/nodes/* classifies as `settings` (sectionlock.Classify), so locking the
+// Settings tab is supposed to close it. Every other protected mux inherits that
+// from cmd/sakms wrapping it once; this one cannot, because its mount is bare.
+// Passing the options down is therefore the only way the section gate reaches
+// these routes at all — SL-10 (sectionlock_sl10_test.go) is what caught them
+// being reachable without it, and is what keeps them covered.
+//
+// It goes onto the OPERATOR paths only — op, and dualAuth's operator branch.
+// Node-agent routes authenticate with a per-node bearer key through
+// NodeKeyMiddleware; an agent holds no PIN and has no interactive surface to
+// enter one, so gating those would take every node offline the moment
+// `settings` was locked. They are allowlisted in SL-10 for that reason.
+//
+// Empty (the caller spreads a nil slice) under SAKMS_SECTION_LOCK_DISABLE=1,
+// which is exactly how every other mount disarms.
 func NewNodesMux(
 	reg *nodes.Registry,
 	pairingReg *nodes.PairingRegistry,
@@ -29,6 +47,7 @@ func NewNodesMux(
 	authStore *auth.Store,
 	settingsStore *settings.Store,
 	nodeSettingsStore *nodesettings.Store,
+	sectionGate ...auth.MiddlewareOption,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -40,7 +59,7 @@ func NewNodesMux(
 	mux.Handle("POST /api/nodes/browse/{requestId}/result", nodeKey(nodeBrowseResultHandler(reg)))
 
 	// Operator routes — validated by master API key or session cookie.
-	op := func(h http.Handler) http.Handler { return auth.Middleware(enc, authStore, h) }
+	op := func(h http.Handler) http.Handler { return auth.Middleware(enc, authStore, h, sectionGate...) }
 	mux.Handle("GET /api/nodes", op(listNodesHandler(reg, pairingReg, nodeSettingsStore)))
 	mux.Handle("POST /api/nodes/{id}/approve", op(approveNodeHandler(pairingReg, nodeKeyStore, settingsStore, nodeSettingsStore)))
 	mux.Handle("DELETE /api/nodes/{id}/pending", op(rejectPendingHandler(pairingReg)))
@@ -58,7 +77,7 @@ func NewNodesMux(
 	// authenticated (see updateNodeSettingsHandler).
 	dualAuth := func(h http.Handler) http.Handler {
 		node := auth.NodeKeyMiddleware(nodeKeyStore, h)
-		operator := auth.Middleware(enc, authStore, h)
+		operator := auth.Middleware(enc, authStore, h, sectionGate...)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 				node.ServeHTTP(w, r)

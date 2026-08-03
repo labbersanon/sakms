@@ -105,3 +105,32 @@ func TestSeedBundledOllamaDefaults_DoesNotOverwriteExistingModel(t *testing.T) {
 		t.Errorf("ai_model = %q, want the pre-existing gpt-4o-mini to survive untouched", model)
 	}
 }
+
+// SL-22's environment half. The disarm itself is asserted end-to-end in
+// internal/api's sectionlock_test.go; what can only be asserted here is that
+// nothing OTHER than "1" arms it.
+//
+// The =0 and =false rows are the point of this test: the codebase's one
+// existing boolean-ish env var (internal/tmdb/cache.go) is a bare `!= ""`,
+// and copying that convention here would silently disarm a security control
+// for an operator who explicitly wrote "off".
+func TestSectionLockDisabledByEnv(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"1", true},
+		{"", false},
+		{"0", false},
+		{"false", false},
+		{"true", false},
+		{"yes", false},
+	} {
+		t.Run("value="+tc.value, func(t *testing.T) {
+			t.Setenv("SAKMS_SECTION_LOCK_DISABLE", tc.value)
+			if got := sectionLockDisabledByEnv(); got != tc.want {
+				t.Fatalf("SAKMS_SECTION_LOCK_DISABLE=%q disarmed=%v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}

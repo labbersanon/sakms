@@ -1088,6 +1088,49 @@ describe("Authentication mode", () => {
     expect(put.body).toEqual({ mode: "password", acknowledgeInsecure: false });
   });
 
+  // Settings is the SECOND call site for PUT /api/auth/mode — OidcLogin.tsx's
+  // pre-session recovery form is the first, and only that one was wired for the
+  // section PIN. §4.4 gates this route on the PIN because switching to "none"
+  // disarms the section lock; the backend refuses with 400 "a PIN is required",
+  // NOT the 403 section_locked shape the PIN overlay reacts to, so an unwired
+  // screen shows an error it offers the operator no way to satisfy.
+  it("sends the section PIN as X-Section-Pin when one is entered", async () => {
+    let sent: Record<string, string> | undefined;
+    stubFetch((url, init) => {
+      if (url.includes("/api/auth/mode") && init?.method === "PUT")
+        sent = init.headers as Record<string, string>;
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Auth");
+    const pin = await screen.findByLabelText("Section PIN (only if one is set)");
+    fireEvent.input(pin, { target: { value: "hunter2" } });
+    fireEvent.click(screen.getByText("Switch to this mode"));
+    await waitFor(() => expect(sent).toBeDefined());
+    expect(sent!["X-Section-Pin"]).toBe("hunter2");
+    // api()'s options merge is shallow, so passing headers at all replaces the
+    // default object — the JSON content type has to be restated or the PUT
+    // body stops being parsed server-side.
+    expect(sent!["Content-Type"]).toBe("application/json");
+  });
+
+  it("omits X-Section-Pin entirely when the field is left blank", async () => {
+    // An empty header is not a WRONG pin, and the backend's brute-force counter
+    // must never see it as a failed attempt.
+    let sent: Record<string, string> | undefined;
+    stubFetch((url, init) => {
+      if (url.includes("/api/auth/mode") && init?.method === "PUT")
+        sent = init.headers as Record<string, string>;
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Auth");
+    await screen.findByText("Switch to this mode");
+    fireEvent.click(screen.getByText("Switch to this mode"));
+    await waitFor(() => expect(sent).toBeDefined());
+    expect(sent!["X-Section-Pin"]).toBeUndefined();
+  });
+
   it("surfaces a server-side precondition rejection inline (no client re-implementation)", async () => {
     stubFetch((url, init) => {
       if (url.includes("/api/auth/mode") && init?.method === "PUT")

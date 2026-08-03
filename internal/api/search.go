@@ -25,6 +25,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -544,6 +545,16 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 				}
 				sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
 				if err != nil {
+					// Layer 2 rejects an Adult g.Mode here. The security
+					// property already held via the generic 400 below — the
+					// grab was refused either way — but the SHAPE did not: a
+					// plaintext 400 cannot raise the frontend's PIN overlay,
+					// which keys on this exact code. Same mapping
+					// proposals.go's two single-item handlers use.
+					if errors.Is(err, sectionlock.ErrSectionLocked) {
+						writeSectionLocked(w, sectionlock.SectionAdultContent)
+						return
+					}
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
@@ -580,6 +591,12 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
 		if err != nil {
+			// Same Layer 2 mapping as the usenet branch above — see its
+			// comment for why the shape, not just the refusal, matters.
+			if errors.Is(err, sectionlock.ErrSectionLocked) {
+				writeSectionLocked(w, sectionlock.SectionAdultContent)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

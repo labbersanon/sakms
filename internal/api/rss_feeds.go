@@ -13,6 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/rssfeed"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
+	"github.com/labbersanon/sakms/internal/sectionlock"
 )
 
 // maxResolvedRssFeedItems caps how many items GET
@@ -72,6 +73,21 @@ func rssFeedStoreError(w http.ResponseWriter, err error) {
 	}
 }
 
+// The seven /api/discover/rss-feeds* routes are §4.3 item 1 — the family AC6
+// names explicitly. Layer 1 classifies all of them as {discover} and nothing
+// more, because a feed's Adult scope lives in its ROW (target: "adult"), not
+// in the URL. So Adult being locked while Discover is not leaves every one of
+// them wide open without the explicit checks below.
+//
+// Two shapes, and the split is deliberate:
+//
+//   - READS filter. GET rss-feeds drops the Adult rows and returns the rest,
+//     so Mainstream's feed list still works while Adult is locked — refusing
+//     the whole list would lock Discover's Settings panel whenever Adult was
+//     locked, the exact outcome AC6's closing clause forbids.
+//   - WRITES refuse, with 403 section_locked, so the frontend raises its PIN
+//     overlay.
+
 // listRssFeedsHandler returns every admin-defined RSS feed row, ordered by
 // display position — GET /api/discover/rss-feeds.
 func listRssFeedsHandler(store *rssfeeds.Store) http.HandlerFunc {
@@ -81,8 +97,47 @@ func listRssFeedsHandler(store *rssfeeds.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if adultLocked(r.Context()) {
+			feeds = withoutAdultFeeds(feeds)
+		}
 		writeJSON(w, toDTORssFeeds(feeds))
 	}
+}
+
+// withoutAdultFeeds drops every target:"adult" row. Returns a fresh slice
+// rather than filtering in place — the caller's slice comes straight from the
+// Store and must not be rearranged under it.
+func withoutAdultFeeds(feeds []rssfeeds.Feed) []rssfeeds.Feed {
+	out := make([]rssfeeds.Feed, 0, len(feeds))
+	for _, f := range feeds {
+		if f.Target == rssfeeds.TargetAdult {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// denyIfAdultFeed refuses a write addressed to an Adult feed row while
+// adult-content is locked. It reports true when it has answered the request.
+//
+// A lookup failure answers too (404/500), so a call site is a plain early
+// return; the feed is returned on the allow path so the caller does not pay a
+// second List.
+func denyIfAdultFeed(w http.ResponseWriter, r *http.Request, store *rssfeeds.Store, id int) (*rssfeeds.Feed, bool) {
+	f, err := findRssFeed(r.Context(), store, id)
+	if err != nil {
+		if errors.Is(err, rssfeeds.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return nil, true
+	}
+	if f.Target == rssfeeds.TargetAdult && denyIfAdultLocked(w, r) {
+		return nil, true
+	}
+	return f, false
 }
 
 // detectProtocolSampleSize caps how many of a feed's leading items
@@ -151,6 +206,12 @@ func createRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.H
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+		// Checked BEFORE the auto-detect fetch below: creating an Adult feed
+		// while Adult is locked must not first go and fetch the operator's
+		// Adult feed URL.
+		if rssfeeds.Target(req.Target) == rssfeeds.TargetAdult && denyIfAdultLocked(w, r) {
+			return
+		}
 
 		var protocol rssfeeds.Protocol
 		if req.Protocol != nil {
@@ -197,6 +258,15 @@ func updateRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+		// BOTH sides are checked: the stored row (editing an Adult feed) and
+		// the incoming target (re-pointing a Mainstream feed at Adult, which
+		// would otherwise create an Adult row from behind the lock).
+		if _, done := denyIfAdultFeed(w, r, store, id); done {
+			return
+		}
+		if rssfeeds.Target(req.Target) == rssfeeds.TargetAdult && denyIfAdultLocked(w, r) {
+			return
+		}
 		// req.FeedURL is three-state (*string): nil preserves the stored
 		// (encrypted) URL — the toggle/edit path the frontend uses when it only
 		// changes enabled/title never re-sends the masked URL — a non-empty value
@@ -219,6 +289,9 @@ func deleteRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 			http.Error(w, "id path parameter must be an integer", http.StatusBadRequest)
 			return
 		}
+		if _, done := denyIfAdultFeed(w, r, store, id); done {
+			return
+		}
 		if err := store.Delete(r.Context(), id); err != nil {
 			rssFeedStoreError(w, err)
 			return
@@ -237,6 +310,23 @@ func reorderRssFeedsHandler(store *rssfeeds.Store) http.HandlerFunc {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
+		}
+		// Reorder is all-or-nothing by construction — Store.Reorder demands
+		// every existing feed's id exactly once, across every target — so a
+		// reorder issued while Adult is locked necessarily rearranges the
+		// Adult rows too. Refuse it whole rather than inventing a partial
+		// semantic the Store cannot express. With no Adult feed configured
+		// there is nothing to protect and reordering stays available.
+		if adultLocked(r.Context()) {
+			feeds, err := store.List(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(withoutAdultFeeds(feeds)) != len(feeds) {
+				writeSectionLocked(w, sectionlock.SectionAdultContent)
+				return
+			}
 		}
 		if err := store.Reorder(r.Context(), req.IDs); err != nil {
 			rssFeedStoreError(w, err)
@@ -280,13 +370,8 @@ func rescanRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.H
 			return
 		}
 
-		f, err := findRssFeed(ctx, store, id)
-		if err != nil {
-			if errors.Is(err, rssfeeds.ErrNotFound) {
-				http.Error(w, err.Error(), http.StatusNotFound)
-			} else {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
+		f, done := denyIfAdultFeed(w, r, store, id)
+		if done {
 			return
 		}
 
@@ -349,13 +434,8 @@ func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store, relea
 			return
 		}
 
-		f, err := findRssFeed(ctx, store, id)
-		if err != nil {
-			if errors.Is(err, rssfeeds.ErrNotFound) {
-				http.Error(w, err.Error(), http.StatusNotFound)
-			} else {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
+		f, done := denyIfAdultFeed(w, r, store, id)
+		if done {
 			return
 		}
 

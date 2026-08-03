@@ -62,8 +62,23 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store, excludesS
 		items := []apidto.RequestStatusItem{}
 		index := map[string]int{} // dedup key -> position in items
 
+		// §4.3 item 3. This route classifies as {queue} and nothing else —
+		// its Adult scope lives in the grab and library ROWS, which the URL
+		// cannot express — so Adult stays visible here whenever Queue is
+		// unlocked unless the passes below skip it.
+		//
+		// FILTER, not refuse: this is a cross-mode rollup, so answering 403
+		// would take the entire Queue worklist away whenever Adult alone was
+		// locked, which is exactly what AC6's "without also locking
+		// Mainstream" forbids. Refusing a WRITE is enforcement; filtering a
+		// READ is confidentiality, and confidentiality is what a list owes.
+		modes := requestsModes
+		if adultLocked(ctx) {
+			modes = []mode.Mode{mode.Movies, mode.Series}
+		}
+
 		// Pass 1: tracked library items become "In Library" rows.
-		for _, m := range requestsModes {
+		for _, m := range modes {
 			switch m {
 			case mode.Movies:
 				tracked, err := libStore.List(ctx, m)
@@ -119,7 +134,7 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store, excludesS
 		// "Downloading" (grab wins) and gets its GrabID; a grab with no tracked
 		// match adds a new "Downloading" row (e.g. a brand-new title still
 		// downloading, not yet imported into the library).
-		for _, m := range requestsModes {
+		for _, m := range modes {
 			grabList, err := grabsStore.List(ctx, m)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -12,7 +12,7 @@ import (
 
 func TestAPIKeyStatus_NoKey(t *testing.T) {
 	authStore, _ := testAuthStore(t)
-	srv := httptest.NewServer(NewAPIKeyMux(authStore))
+	srv := httptest.NewServer(NewAPIKeyMux(authStore, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/apikey")
@@ -37,7 +37,7 @@ func TestAPIKeyStatus_SettingsKey(t *testing.T) {
 	if _, err := authStore.EnsureAPIKey(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewAPIKeyMux(authStore))
+	srv := httptest.NewServer(NewAPIKeyMux(authStore, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/apikey")
@@ -57,7 +57,7 @@ func TestAPIKeyStatus_SettingsKey(t *testing.T) {
 func TestAPIKeyStatus_EnvKey(t *testing.T) {
 	authStore, _ := testAuthStore(t)
 	authStore.UseEnvAPIKey("env-supplied-key-value")
-	srv := httptest.NewServer(NewAPIKeyMux(authStore))
+	srv := httptest.NewServer(NewAPIKeyMux(authStore, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/apikey")
@@ -79,7 +79,7 @@ func TestAPIKeyStatus_EnvKey(t *testing.T) {
 // a subsequent status call shows only the masked suffix — never the value.
 func TestAPIKeyRegenerate_ReturnsFullKeyOnce(t *testing.T) {
 	authStore, _ := testAuthStore(t)
-	srv := httptest.NewServer(NewAPIKeyMux(authStore))
+	srv := httptest.NewServer(NewAPIKeyMux(authStore, nil))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/apikey/regenerate", "application/json", nil)
@@ -121,7 +121,7 @@ func TestAPIKeyRegenerate_ReturnsFullKeyOnce(t *testing.T) {
 func TestAPIKeyRegenerate_EnvManaged_409(t *testing.T) {
 	authStore, _ := testAuthStore(t)
 	authStore.UseEnvAPIKey("env-supplied-key-value")
-	srv := httptest.NewServer(NewAPIKeyMux(authStore))
+	srv := httptest.NewServer(NewAPIKeyMux(authStore, nil))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/apikey/regenerate", "application/json", nil)

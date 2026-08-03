@@ -2517,3 +2517,50 @@ export interface PreReleaseRequestResponse {
   heldUntil: string;
   alreadyRequested: boolean;
 }
+/**
+ * SectionLockStatusResponse is GET /api/section-lock/status: what the Settings
+ * panel and the sidebar lock badges read. The PIN itself, and its hash, never
+ * cross this boundary — PinSet is the only thing said about it.
+ * EnforcementAvailable is false when the lock cannot enforce anything on this
+ * instance (SAKMS_SECTION_LOCK_DISABLE is set, or the instance runs auth mode
+ * "none"); the panel renders disabled on false.
+ */
+export interface SectionLockStatusResponse {
+  pinSet: boolean;
+  lockedSections: string[];
+  unlocked: boolean;
+  enforcementAvailable: boolean;
+}
+/**
+ * SectionLockUnlockRequest is POST /api/section-lock/unlock's body — the PIN
+ * exchanged for the sakms_unlock ticket cookie.
+ */
+export interface SectionLockUnlockRequest {
+  pin: string;
+}
+/**
+ * SectionLockPinRequest serves BOTH PUT /api/section-lock/pin (both fields)
+ * and DELETE /api/section-lock/pin (CurrentPin only) — one shape for two
+ * routes, matching the single handler-local struct it mirrors.
+ * CurrentPin is required whenever a PIN already exists, and is required from
+ * the BODY even when the caller already holds a live unlock ticket: the ticket
+ * says "the operator entered the PIN recently", which is the right bar for
+ * viewing a locked section and the wrong one for rewriting the lock's own
+ * configuration.
+ */
+export interface SectionLockPinRequest {
+  currentPin: string;
+  newPin: string;
+}
+/**
+ * SectionLockSectionsRequest is PUT /api/section-lock/sections' body: the
+ * complete replacement set of locked section ids, plus the same CurrentPin
+ * re-authentication SectionLockPinRequest carries.
+ * Sections is a full replacement, not a delta, and a non-empty array is
+ * rejected with 400 while no PIN is set — locking a section with no PIN in
+ * existence would deny with no credential that could ever satisfy the gate.
+ */
+export interface SectionLockSectionsRequest {
+  currentPin: string;
+  sections: string[];
+}

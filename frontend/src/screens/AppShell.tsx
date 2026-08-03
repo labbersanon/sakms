@@ -25,17 +25,28 @@ import {
   createSignal,
   onCleanup,
 } from "solid-js";
-import { A, Route, Router } from "@solidjs/router";
+import { A, Route, Router, useLocation } from "@solidjs/router";
 import {
   AdultModeContext,
   Button,
   ErrorText,
+  LockGlyph,
   Muted,
   ScreenTabBar,
   ScreenTabsContext,
+  SectionLockContext,
+  SectionLockOverlay,
+  type SectionLockControl,
   type ScreenTabsRegistration,
+  useSectionLock,
 } from "../components/ui";
 import { fetchAdultModeEnabled } from "../api/settings";
+import { setOnSectionLocked } from "../api/client";
+import {
+  fetchSectionLockStatus,
+  LOCKABLE_TAB_SECTIONS,
+  sectionLabel,
+} from "../api/sectionLock";
 import { Dashboard } from "./Dashboard";
 import { Discover } from "./Discover";
 import { Library } from "./Library";
@@ -195,7 +206,13 @@ const IconMenu: Component = () => (
 
 type NavItem = { href: string; label: string; icon: Component };
 
-const NAV_ITEMS: NavItem[] = [
+// NAV_ITEMS is EXPORTED (it was module-private until the section PIN lock) so
+// the nav-drift test can set-compare its hrefs against LOCKABLE_TAB_SECTIONS
+// in src/api/sectionLock.ts. Adding a sidebar tab without adding the matching
+// lockable section id fails that test — see sectionLock.nav.test.ts and the
+// note on LOCKABLE_TAB_SECTIONS for why the two lists are authored
+// independently rather than derived one from the other.
+export const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
   { href: "/discover", label: "Discover", icon: IconDiscover },
   { href: "/library", label: "Library", icon: IconLibrary },
@@ -235,6 +252,11 @@ export const Sidebar: Component<{
 }> = (props) => {
   const mobileOpen = () => props.mobileOpen?.() ?? false;
   const closeMobile = () => props.onCloseMobile?.();
+  // Locked tabs stay VISIBLE and stay clickable — clicking navigates
+  // normally and the content area renders the PIN overlay. Only the badge is
+  // added here. With no SectionLockContext Provider (a standalone Sidebar
+  // test harness) isLocked is always false, so nothing changes for them.
+  const lock = useSectionLock();
 
   return (
     <nav
@@ -270,12 +292,85 @@ export const Sidebar: Component<{
             <Show when={!props.collapsed()}>
               <span>{item.label}</span>
             </Show>
+            <Show when={lock.isLocked(item.href.slice(1))}>
+              <span
+                class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+                title={`${item.label} is locked`}
+                aria-label={`${item.label} is locked`}
+              >
+                <LockGlyph />
+              </span>
+            </Show>
           </A>
         )}
       </For>
     </nav>
   );
 };
+
+// createSectionLockControl builds the SectionLockContext value: one
+// GET /api/section-lock/status resource fetched at boot plus the paired
+// refetch, mirroring how ShellRoot backs AdultModeContext.
+//
+// Exported (rather than inlined into ShellRoot) so the unlock/overlay test can
+// exercise THIS control rather than a re-implementation of it — an
+// isLocked() that got the three-way conjunction wrong would otherwise pass a
+// test written against a hand-built stub.
+//
+// Must be called from a component body: createResource needs a reactive owner.
+export function createSectionLockControl(): SectionLockControl {
+  const [status, { refetch }] = createResource(fetchSectionLockStatus);
+
+  // ready is true once the INITIAL fetch has SETTLED, successfully or not — a
+  // later "refreshing" still counts (a previous value is in hand), only
+  // "unresolved"/"pending" are the not-yet-known window. Consumers need this
+  // to tell "we don't know yet" apart from "enforcement is off": both read as
+  // enforcementAvailable() === false and only the second is worth a banner.
+  const ready = () =>
+    status.state !== "unresolved" && status.state !== "pending";
+  const failed = () => status.state === "errored";
+
+  // value() is what every accessor below reads INSTEAD of status(). A Solid
+  // resource re-throws the fetcher's error on read (by design, for
+  // ErrorBoundary), and these accessors run mid-render in the sidebar and the
+  // content area — so a failed status fetch would throw out of the shell
+  // rather than degrade. Reading through this guard is what actually makes
+  // ShellRoot's "loading/error resolves to NOTHING LOCKED" note true.
+  const value = () => (failed() ? undefined : status());
+
+  return {
+    ready,
+    error: failed,
+    // Three facts, folded here so no consumer can get the conjunction wrong.
+    // `unlocked` is what makes one successful unlock clear every overlay at
+    // once; `enforcementAvailable` is false on an instance where the backend
+    // still REPORTS a stored locked set but gates nothing (disarmed by env
+    // var, or auth mode "none"), where an overlay would hide content the
+    // server serves happily.
+    isLocked: (section) => {
+      const s = value();
+      if (!s || !s.enforcementAvailable || s.unlocked) return false;
+      return s.lockedSections.includes(section);
+    },
+    lockedSections: () => value()?.lockedSections ?? [],
+    pinSet: () => value()?.pinSet ?? false,
+    unlocked: () => value()?.unlocked ?? false,
+    enforcementAvailable: () => value()?.enforcementAvailable ?? false,
+    refetch: () => void refetch(),
+  };
+}
+
+// sectionForPath maps a client route to the lockable section id that gates
+// it, or null for a route no section gates (the NotFound catch-all).
+//
+// "/" MAPS TO "discover" and that is the one non-obvious entry: "/" is in
+// APP_ROUTES and renders Discover, but it is NOT in NAV_ITEMS (the sidebar
+// links /discover), so a bare slice(1) would yield "" and leave the landing
+// view ungated while /discover itself was overlaid.
+export function sectionForPath(pathname: string): string | null {
+  const id = (pathname === "/" ? "/discover" : pathname).slice(1);
+  return (LOCKABLE_TAB_SECTIONS as readonly string[]).includes(id) ? id : null;
+}
 
 const NotFound: Component = () => (
   <div class="rounded-xl border border-border bg-surface p-6">
@@ -350,8 +445,33 @@ export const AppShell: Component<{
       enabled: () => adultModeResource() ?? false,
       refetch: () => void refetchAdultMode(),
     };
+
+    // The lock resource mirrors adultModeResource exactly: fetched once at
+    // boot, with a paired refetch called after a successful config PUT
+    // (SectionLock.tsx) and after a successful unlock (SectionLockOverlay).
+    // Its own loading/error state resolves to NOTHING LOCKED — presentation
+    // fail-open, because the middleware gate is the real boundary and fails
+    // closed independently. An overlay drawn over content the server would
+    // have served is a worse failure here than a missing one.
+    const sectionLockControl = createSectionLockControl();
+
+    // A 403 section_locked mid-session (the 30-minute non-sliding ticket
+    // expiring under an open tab) refetches the status, which raises the
+    // overlay instead of failing silently. Same registration shape as
+    // setOnSessionExpired in App.tsx — and pointedly NOT the same effect:
+    // this one never reboots the SPA, the operator stays logged in.
+    setOnSectionLocked(() => sectionLockControl.refetch());
+    onCleanup(() => setOnSectionLocked(null));
+
+    const location = useLocation();
+    const lockedSection = () => {
+      const id = sectionForPath(location.pathname);
+      return id && sectionLockControl.isLocked(id) ? id : null;
+    };
+
     return (
       <AdultModeContext.Provider value={adultModeControl}>
+        <SectionLockContext.Provider value={sectionLockControl}>
         <ScreenTabsContext.Provider value={setTabReg}>
           <div class="flex h-screen overflow-hidden">
             {/* No visible UI; lives here (persistent shell root, not a swapped
@@ -422,21 +542,37 @@ export const AppShell: Component<{
                 }}
               >
                 {logoutError() && <ErrorText>{logoutError()}</ErrorText>}
-                <Show when={tabReg()}>
-                  {(reg) => (
-                    <ScreenTabBar
-                      tabs={reg().tabs}
-                      current={reg().current}
-                      onSelect={reg().onSelect}
-                      trailing={reg().trailing}
-                    />
+                {/* A locked tab replaces the screen — including its tab bar,
+                    which is why this Show wraps both. The screen itself is
+                    never mounted, so it fires none of its own requests (each
+                    of which the backend would deny anyway). */}
+                <Show
+                  when={lockedSection()}
+                  fallback={
+                    <>
+                      <Show when={tabReg()}>
+                        {(reg) => (
+                          <ScreenTabBar
+                            tabs={reg().tabs}
+                            current={reg().current}
+                            onSelect={reg().onSelect}
+                            trailing={reg().trailing}
+                          />
+                        )}
+                      </Show>
+                      {rootProps.children}
+                    </>
+                  }
+                >
+                  {(section) => (
+                    <SectionLockOverlay label={sectionLabel(section())} />
                   )}
                 </Show>
-                {rootProps.children}
               </main>
             </div>
           </div>
         </ScreenTabsContext.Provider>
+        </SectionLockContext.Provider>
       </AdultModeContext.Provider>
     );
   };

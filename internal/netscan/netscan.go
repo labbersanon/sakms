@@ -1,12 +1,17 @@
-// Package netscan probes the local network for the download/indexer/player
-// services SAK talks to (Prowlarr, qBittorrent, NZBGet, Jellyfin),
-// so the setup wizard can offer to pre-fill a connection's URL instead of
-// making the operator type it by hand.
+// Package netscan probes the local network for two kinds of thing: the
+// download/indexer/player services SAK talks to (Prowlarr, qBittorrent,
+// NZBGet, Jellyfin, Stash), and the outbound-webhook TARGETS SAK can notify
+// but does not otherwise integrate with (ntfy, Gotify, Node-RED). Both exist
+// so a URL can be offered as a pre-fill — in the setup wizard for the former,
+// in the Add-webhook form for the latter — instead of making the operator
+// type it by hand.
 //
 // SECURITY POSTURE — every result is a HINT TO VERIFY, NEVER A TRUSTED FACT.
 // Each service here is identified by an UNAUTHENTICATED endpoint (Prowlarr's
-// /initialize.json, qBittorrent's
-// webapiVersion, NZBGet's Server header, Jellyfin's /System/Info/Public). Any
+// /initialize.json, qBittorrent's webapiVersion, NZBGet's Server header,
+// Jellyfin's /System/Info/Public, Stash's /graphql answering 401 with
+// Www-Authenticate: FormBased, ntfy's /v1/health, Gotify's /version,
+// Node-RED's /settings). Any
 // host reachable on the same network can serve a fake response and
 // impersonate one of these — so a Finding only ever says "possible X
 // instance," and nothing here auto-saves a connection or treats a URL as
@@ -48,12 +53,14 @@ const probeTimeout = 2 * time.Second
 // network. It never includes credentials (see the package doc for why, even
 // for Prowlarr).
 type Finding struct {
-	Service string `json:"service"` // "prowlarr" | "qbittorrent" | "nzbget" | "jellyfin" | "stash"
+	// "prowlarr" | "qbittorrent" | "nzbget" | "jellyfin" | "stash" | "ntfy" |
+	// "gotify" | "node-red"
+	Service string `json:"service"`
 	URL     string `json:"url"`
 	Label   string `json:"label"` // e.g. "possible Prowlarr instance" — for UI display
 }
 
-// knownService is one of the four services SAK knows how to identify, paired
+// knownService is one of the services SAK knows how to identify, paired
 // with the conventional container hostname and default port it's reached at
 // on sakms's own docker network.
 type knownService struct {
@@ -70,6 +77,13 @@ var knownServices = []knownService{
 	{name: "nzbget", port: 6789},
 	{name: "jellyfin", port: 8096},
 	{name: "stash", port: 9999},
+	// The three below are outbound-webhook TARGETS rather than services SAK
+	// itself talks to. Their `name` strings are mirrored verbatim in
+	// frontend/src/api/webhooks.ts's WEBHOOK_DISCOVERY_SERVICES — keep the two
+	// in sync; a mismatch silently renders no hint rather than failing.
+	{name: "ntfy", port: 80},
+	{name: "gotify", port: 80},
+	{name: "node-red", port: 1880},
 }
 
 // ProbeKnownHosts tries each known service at its conventional container
@@ -83,13 +97,13 @@ func ProbeKnownHosts(ctx context.Context, httpClient *http.Client) []Finding {
 	})
 }
 
-// ProbeHost probes exactly one operator-supplied host across the four known
+// ProbeHost probes exactly one operator-supplied host across the known
 // services' default ports. It REFUSES — before making any outbound request —
 // any host that doesn't resolve to a private/RFC1918 (or loopback/link-local)
 // address, which is the guardrail against SAK being used as an SSRF or
 // port-scanning pivot against arbitrary public hosts. host is a bare
 // hostname or IP (a scheme/port, if present, is stripped — the ports probed
-// are always the four known defaults, never an operator-chosen one).
+// are always the known defaults, never an operator-chosen one).
 func ProbeHost(ctx context.Context, httpClient *http.Client, host string) ([]Finding, error) {
 	host = normalizeHost(host)
 	if host == "" {
@@ -104,8 +118,8 @@ func ProbeHost(ctx context.Context, httpClient *http.Client, host string) ([]Fin
 }
 
 // probeAll fans out one probe per known service concurrently — so total
-// latency is bounded to roughly one probeTimeout rather than the sum of
-// four — and collects only the Findings that confirmed. baseURLFor supplies
+// latency is bounded to roughly one probeTimeout rather than the sum of all
+// of them — and collects only the Findings that confirmed. baseURLFor supplies
 // the host half of each service's URL: ProbeKnownHosts varies it per-service
 // (each service's own conventional hostname), ProbeHost holds it fixed at the
 // one operator-supplied host; the fan-out/collect shape is otherwise
@@ -158,6 +172,12 @@ func probeService(ctx context.Context, httpClient *http.Client, name, baseURL st
 		return probeJellyfin(ctx, httpClient, baseURL)
 	case "stash":
 		return probeStash(ctx, httpClient, baseURL)
+	case "ntfy":
+		return probeNtfy(ctx, httpClient, baseURL)
+	case "gotify":
+		return probeGotify(ctx, httpClient, baseURL)
+	case "node-red":
+		return probeNodeRED(ctx, httpClient, baseURL)
 	}
 	return Finding{}, false
 }
@@ -322,6 +342,127 @@ func probeStash(ctx context.Context, httpClient *http.Client, baseURL string) (F
 		return Finding{}, false
 	}
 	return Finding{Service: "stash", URL: baseURL, Label: "possible Stash instance"}, true
+}
+
+// probeNtfy confirms an ntfy instance via its unauthenticated /v1/health
+// endpoint. Modeled from ntfy's own server source (apiHealthPath is
+// dispatched with no ensureUser/ensureAdmin wrapper, so it answers without
+// credentials even on an auth-default-access:deny server), not observed
+// against a live instance. NOT confirmed against a live container: the docker
+// socket was not accessible to the running user, so this feature's planned
+// live check did not run. A degraded ntfy answers 503 and is deliberately NOT
+// discovered — httpx.DoJSON is 2xx-only, and requiring healthy==true is also
+// what rejects an arbitrary server answering {} here.
+func probeNtfy(ctx context.Context, httpClient *http.Client, baseURL string) (Finding, bool) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/health", nil)
+	if err != nil {
+		return Finding{}, false
+	}
+	var payload struct {
+		Healthy bool `json:"healthy"`
+	}
+	if err := httpx.DoJSON(httpClient, req, httpx.MaxResponseBodySize, &payload); err != nil {
+		return Finding{}, false
+	}
+	if !payload.Healthy {
+		return Finding{}, false
+	}
+	return Finding{Service: "ntfy", URL: baseURL, Label: "possible ntfy instance"}, true
+}
+
+// probeGotify confirms a Gotify instance via its unauthenticated /version
+// endpoint. Modeled from gotify/server's own OpenAPI spec (docs/spec.json's
+// /version path carries no security block), not observed against a live
+// instance. Identity is the two-field {version, buildDate} shape, not version
+// alone — /version is a generic path and a lone version string is a weak
+// fingerprint.
+//
+// The two-field signal is SCHEMA-sourced and runtime-unverified: OpenAPI marks
+// buildDate required, but it is a linker-injected variable in gotify/server, so
+// a source-built binary could plausibly emit "" and be missed by this probe.
+// The docker socket was not accessible to the running user, so the planned
+// live check of that field did not run. If a real instance is ever
+// observed serving an empty buildDate, drop to requiring Version alone and
+// delete TestProbeGotify_RejectsVersionWithoutBuildDate.
+//
+// Gotify is included DELIBERATELY. It is decommissioned in this project owner's
+// own homelab (replaced by ntfy), but sakms is general-purpose software other
+// operators run with Gotify still active — and finding a LEGACY instance is
+// itself useful, including to migrate off it. Raised explicitly and confirmed
+// during this feature's deep-interview (see the spec's Constraints section).
+// Do NOT delete this probe as a "no-Gotify" cleanup.
+func probeGotify(ctx context.Context, httpClient *http.Client, baseURL string) (Finding, bool) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/version", nil)
+	if err != nil {
+		return Finding{}, false
+	}
+	var payload struct {
+		Version   string `json:"version"`
+		BuildDate string `json:"buildDate"`
+	}
+	if err := httpx.DoJSON(httpClient, req, httpx.MaxResponseBodySize, &payload); err != nil {
+		return Finding{}, false
+	}
+	if payload.Version == "" || payload.BuildDate == "" {
+		return Finding{}, false
+	}
+	return Finding{Service: "gotify", URL: baseURL, Label: "possible Gotify instance"}, true
+}
+
+// probeNodeRED confirms a Node-RED instance via its admin API's /settings
+// endpoint (mounted at httpAdminRoot, default "/").
+//
+// PARTIALLY VERIFIED, per this project's honesty-about-unverified-assumptions
+// convention. CONFIRMED from Node-RED's admin API docs: GET /settings returns
+// {httpNodeRoot, version, user?}. NOT CONFIRMED from docs: that the required
+// settings.read permission is granted anonymously when adminAuth is unset
+// (the nodered/node-red image's out-of-the-box state).
+// That assumption remains unconfirmed in practice too: the docker socket was
+// not accessible to the running user, so the planned live check (status code,
+// version presence, and whether httpNodeRoot appears and as what JSON type)
+// did not run. This probe therefore ships the conservative
+// version-only identity signal, and httpNodeRoot is not decoded at all.
+//
+// DELIBERATELY does not decode httpNodeRoot as a string. Node-RED's documented
+// way to disable HTTP-in nodes is `httpNodeRoot: false` — a BOOLEAN — and
+// decoding that into a Go string yields *json.UnmarshalTypeError, which
+// httpx.DoJSON wraps and returns, which would make this probe REJECT a real
+// Node-RED. The Go semantics are certain; the premise that Node-RED emits a
+// boolean there is documentation-sourced, not observed. Either omit the field
+// or use json.RawMessage — never a string. See
+// TestProbeNodeRED_ToleratesNonStringHTTPNodeRoot.
+//
+// KNOWN LIMITATIONS, both false negatives and never false positives: with
+// adminAuth configured /settings answers 401, and with a non-default
+// httpAdminRoot the endpoint moves — this probe finds nothing in both cases.
+// No HTML-content sniff is used to compensate: the only marker anyone can name
+// is <title>Node-RED</title>, which is operator-configurable
+// (editorTheme.page.title) and so is false-positive-capable, exactly what this
+// package's security posture avoids.
+func probeNodeRED(ctx context.Context, httpClient *http.Client, baseURL string) (Finding, bool) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/settings", nil)
+	if err != nil {
+		return Finding{}, false
+	}
+	var payload struct {
+		Version string `json:"version"`
+	}
+	if err := httpx.DoJSON(httpClient, req, httpx.MaxResponseBodySize, &payload); err != nil {
+		return Finding{}, false
+	}
+	if payload.Version == "" {
+		return Finding{}, false
+	}
+	return Finding{Service: "node-red", URL: baseURL, Label: "possible Node-RED instance"}, true
 }
 
 // FetchProwlarrAPIKey re-fetches a Prowlarr instance's /initialize.json fresh

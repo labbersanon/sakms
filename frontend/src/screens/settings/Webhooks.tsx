@@ -7,6 +7,12 @@
 // No SectionSave batching — each webhook row saves inline (same as
 // SliderAdmin's per-row mutation pattern). The "Test" button fires a one-shot
 // delivery to verify the endpoint is reachable.
+//
+// The Add-webhook form also carries a LAN-discovery hint for the three
+// webhook-target services netscan can identify (ntfy / Gotify / Node-RED) —
+// confirm-first, never silently auto-filled, the same convention as Settings'
+// ConnectionRow and Discover's GrabError. It fills a BASE URL only; the
+// operator appends their own topic / token / path.
 
 import {
   type Component,
@@ -17,6 +23,7 @@ import {
 } from "solid-js";
 import {
   ALL_WEBHOOK_EVENTS,
+  WEBHOOK_DISCOVERY_SERVICES,
   WEBHOOK_EVENT_LABELS,
   browserNotificationsEnabled,
   createWebhook,
@@ -28,6 +35,11 @@ import {
   updateWebhook,
   type WebhookSummary,
 } from "../../api/webhooks";
+import {
+  fetchNetscanKnown,
+  probeNetscanHost,
+  type NetscanFinding,
+} from "../../api/settings";
 import {
   Button,
   Card,
@@ -266,6 +278,63 @@ const AddWebhookForm: Component<{ onCreated: () => void }> = (props) => {
   const [enabled, setEnabled] = createSignal(true);
   const save = useSaveStatus();
 
+  // LAN-discovery hint, gated on the form actually being open. A bare
+  // createResource(fetchNetscanKnown) would fan out 8 concurrent outbound LAN
+  // probes on EVERY Settings → Webhooks visit, including one whose only purpose
+  // was toggling browser notifications. Solid's two-arg form skips the fetcher
+  // while the source is falsey, so this fires exactly when the operator opens
+  // the form. Deliberately narrower than ConnectionRow's fetch-on-mount, and
+  // deliberately re-fires on reopen (the source resets when the form closes).
+  const [findings] = createResource(open, fetchNetscanKnown);
+  const [probeHost, setProbeHost] = createSignal("");
+  const [probed, setProbed] = createSignal<NetscanFinding[]>([]);
+  const [hint, setHint] = createSignal("");
+
+  // Both lists filter to the webhook-target services only: /api/netscan/{known,
+  // host} return findings for ALL known services, and a Prowlarr hit is
+  // meaningless here. findings.error is checked first because a Solid resource
+  // re-throws on read after its fetcher errored — reading it bare would take
+  // the whole create form down with it if /api/netscan/known fails.
+  const webhookFindings = () =>
+    findings.error
+      ? []
+      : (findings() ?? []).filter((f) =>
+          WEBHOOK_DISCOVERY_SERVICES.includes(f.service),
+        );
+
+  // Cleared on create AND on Cancel. The passive `findings` resource needs no
+  // reset (its source is `open`, so it clears itself), but these three are
+  // plain signals that would otherwise survive a close/reopen and show a stale
+  // "Found ntfy at …" result plus a stale "URL pre-filled…" hint above an
+  // empty URL field.
+  const resetLookup = () => {
+    setProbeHost("");
+    setProbed([]);
+    setHint("");
+  };
+
+  const useURL = (u: string) => {
+    setUrl(u);
+    setHint(
+      "URL pre-filled — a base URL only. Append your topic / token / path before creating.",
+    );
+  };
+
+  const doProbe = async () => {
+    setHint("probing…");
+    setProbed([]);
+    try {
+      const all = await probeNetscanHost(probeHost());
+      const mine = all.filter((f) =>
+        WEBHOOK_DISCOVERY_SERVICES.includes(f.service),
+      );
+      setProbed(mine);
+      setHint(mine.length ? "" : "No ntfy, Gotify, or Node-RED found at that host.");
+    } catch (e) {
+      setHint((e as Error).message);
+    }
+  };
+
   function toggleEvent(ev: string) {
     setEvents((prev) =>
       prev.includes(ev) ? prev.filter((e) => e !== ev) : [...prev, ev],
@@ -285,6 +354,7 @@ const AddWebhookForm: Component<{ onCreated: () => void }> = (props) => {
       setSecret("");
       setEvents([...ALL_WEBHOOK_EVENTS]);
       setEnabled(true);
+      resetLookup();
       save.set("");
       setOpen(false);
       props.onCreated();
@@ -313,6 +383,70 @@ const AddWebhookForm: Component<{ onCreated: () => void }> = (props) => {
               onInput={(e) => setUrl(e.currentTarget.value)}
               placeholder="https://example.com/hook"
             />
+            <div class="mt-1 rounded border border-dashed border-border p-2 text-xs text-muted">
+              <For each={webhookFindings()}>
+                {(f) => (
+                  <div class="mb-1">
+                    <div>
+                      Possible {f.service} at {f.url} — a hint only, verify it's
+                      yours.
+                    </div>
+                    <div class="mt-1">
+                      <Button
+                        class="!px-2 !py-1 !text-xs"
+                        aria-label={`Use ${f.service} URL`}
+                        onClick={() => useURL(f.url)}
+                      >
+                        Use this URL
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </For>
+              <div>
+                On a different host? Look up by IP or hostname:
+                <div class="mt-1 flex gap-2">
+                  <input
+                    type="text"
+                    class={`${inputClass} !w-40 !py-1 !text-xs`}
+                    placeholder="e.g. 10.1.10.4"
+                    aria-label="Look up webhook target host"
+                    value={probeHost()}
+                    onInput={(e) => setProbeHost(e.currentTarget.value)}
+                  />
+                  <Button
+                    class="!px-2 !py-1 !text-xs"
+                    onClick={() => void doProbe()}
+                  >
+                    Look up
+                  </Button>
+                </div>
+                <For each={probed()}>
+                  {(f) => (
+                    <div class="mt-1 flex items-center gap-2">
+                      <span>
+                        Found {f.service} at {f.url}
+                      </span>
+                      {/* The "from lookup" suffix disambiguates a manually
+                          probed result from a passive /known hint for the SAME
+                          service, which can legitimately both be on screen at
+                          once — without it getByLabelText throws on ambiguity
+                          and a screen reader announces two identical buttons. */}
+                      <Button
+                        class="!px-2 !py-1 !text-xs"
+                        aria-label={`Use ${f.service} URL from lookup`}
+                        onClick={() => useURL(f.url)}
+                      >
+                        Use this URL
+                      </Button>
+                    </div>
+                  )}
+                </For>
+              </div>
+              <Show when={hint()}>
+                <div class="mt-1">{hint()}</div>
+              </Show>
+            </div>
           </div>
 
           <div>
@@ -351,7 +485,7 @@ const AddWebhookForm: Component<{ onCreated: () => void }> = (props) => {
             >
               Create
             </Button>
-            <Button variant="secondary" onClick={() => { setOpen(false); save.set(""); }}>
+            <Button variant="secondary" onClick={() => { setOpen(false); resetLookup(); save.set(""); }}>
               Cancel
             </Button>
             <Show when={save.status().text}>

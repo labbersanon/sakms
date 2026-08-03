@@ -21,6 +21,9 @@ const (
 	prowlarrInitializeJSON = `{"apiRoot":"/api/v1","apiKey":"SUPERSECRETPROWLARRKEY","instanceName":"Prowlarr","urlBase":""}`
 	qbittorrentVersion     = `2.15.1`
 	jellyfinPublicInfoJSON = `{"ServerName":"MyJellyfin","Version":"10.9.11","Id":"abc123","ProductName":"Jellyfin Server"}`
+	ntfyHealthJSON         = `{"healthy":true}`
+	gotifyVersionJSON      = `{"version":"2.6.3","commit":"ae9512b","buildDate":"2018-02-27T19:36:10.5045044+01:00"}`
+	nodeREDSettingsJSON    = `{"httpNodeRoot":"/","version":"4.0.5"}`
 )
 
 // probeServer stands in for one real service: it routes each service's
@@ -46,6 +49,15 @@ func probeServer(t *testing.T, service string) *httptest.Server {
 			// Real Stash: 401 with Www-Authenticate: FormBased, empty body.
 			w.Header().Set("Www-Authenticate", "FormBased")
 			w.WriteHeader(http.StatusUnauthorized)
+		case service == "ntfy" && r.URL.Path == "/v1/health":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(ntfyHealthJSON))
+		case service == "gotify" && r.URL.Path == "/version":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(gotifyVersionJSON))
+		case service == "node-red" && r.URL.Path == "/settings":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(nodeREDSettingsJSON))
 		default:
 			http.NotFound(w, r)
 		}
@@ -193,6 +205,144 @@ func TestProbeStash_RejectsWithoutFormBasedHeader(t *testing.T) {
 	}
 }
 
+func TestProbeNtfy_ConfirmsIdentity(t *testing.T) {
+	srv := probeServer(t, "ntfy")
+	f, ok := probeNtfy(context.Background(), testHTTPClient(), srv.URL)
+	if !ok {
+		t.Fatal("expected ntfy to be confirmed")
+	}
+	if f.Service != "ntfy" || f.URL != srv.URL {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if !strings.Contains(strings.ToLower(f.Label), "ntfy") {
+		t.Errorf("label %q should mention ntfy", f.Label)
+	}
+}
+
+// TestProbeNtfy_RejectsUnhealthy guards the arbitrary-JSON-server case: a 200
+// whose body decodes but reports healthy:false (or omits the field entirely,
+// as an empty {} would) is not an ntfy hit.
+func TestProbeNtfy_RejectsUnhealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"healthy":false}`))
+	}))
+	defer srv.Close()
+	if _, ok := probeNtfy(context.Background(), testHTTPClient(), srv.URL); ok {
+		t.Fatal("a server reporting healthy:false should not confirm ntfy")
+	}
+}
+
+func TestProbeGotify_ConfirmsIdentity(t *testing.T) {
+	srv := probeServer(t, "gotify")
+	f, ok := probeGotify(context.Background(), testHTTPClient(), srv.URL)
+	if !ok {
+		t.Fatal("expected gotify to be confirmed")
+	}
+	if f.Service != "gotify" || f.URL != srv.URL {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if !strings.Contains(strings.ToLower(f.Label), "gotify") {
+		t.Errorf("label %q should mention gotify", f.Label)
+	}
+}
+
+// TestProbeGotify_RejectsVersionWithoutBuildDate pins the deliberate two-field
+// identity signal against a future "simplification" down to Version alone:
+// /version is a generic path, so a lone version string is a weak fingerprint
+// and the buildDate sibling is what makes the response distinctive.
+func TestProbeGotify_RejectsVersionWithoutBuildDate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"version":"2.6.3"}`))
+	}))
+	defer srv.Close()
+	if _, ok := probeGotify(context.Background(), testHTTPClient(), srv.URL); ok {
+		t.Fatal("a bare version with no buildDate should not confirm Gotify")
+	}
+}
+
+func TestProbeNodeRED_ConfirmsIdentity(t *testing.T) {
+	srv := probeServer(t, "node-red")
+	f, ok := probeNodeRED(context.Background(), testHTTPClient(), srv.URL)
+	if !ok {
+		t.Fatal("expected node-red to be confirmed")
+	}
+	if f.Service != "node-red" || f.URL != srv.URL {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if !strings.Contains(strings.ToLower(f.Label), "node-red") {
+		t.Errorf("label %q should mention node-red", f.Label)
+	}
+}
+
+func TestProbeNodeRED_RejectsWithoutVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"httpNodeRoot":"/"}`))
+	}))
+	defer srv.Close()
+	if _, ok := probeNodeRED(context.Background(), testHTTPClient(), srv.URL); ok {
+		t.Fatal("a /settings response with no version should not confirm Node-RED")
+	}
+}
+
+// TestProbeNodeRED_ToleratesNonStringHTTPNodeRoot is a REGRESSION GUARD, not a
+// behaviour test: it fails the moment anyone declares HTTPNodeRoot as a Go
+// `string` in probeNodeRED's payload struct. Node-RED's documented way to
+// disable HTTP-in nodes is `httpNodeRoot: false` — a BOOLEAN — and decoding
+// that into a string yields *json.UnmarshalTypeError, which httpx.DoJSON wraps
+// and returns, which would make the probe REJECT a genuine Node-RED. Omitting
+// the field (today) or declaring it json.RawMessage are both safe; a string is
+// not. Passes under either safe variant.
+func TestProbeNodeRED_ToleratesNonStringHTTPNodeRoot(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"version":"4.0.5","httpNodeRoot":false}`))
+	}))
+	defer srv.Close()
+	if _, ok := probeNodeRED(context.Background(), testHTTPClient(), srv.URL); !ok {
+		t.Fatal("a real Node-RED emitting httpNodeRoot:false must still confirm — " +
+			"HTTPNodeRoot must never be declared as a Go string")
+	}
+}
+
+// TestProbeNtfyGotifyPortCollision_DoNotCrossConfirm covers the real-world
+// case: ntfy and Gotify both default to port 80, so ProbeHost issues two
+// requests to the same :80 — one to /v1/health, one to /version. Each probe
+// must confirm only its own service.
+func TestProbeNtfyGotifyPortCollision_DoNotCrossConfirm(t *testing.T) {
+	ntfy := probeServer(t, "ntfy")
+	if _, ok := probeGotify(context.Background(), testHTTPClient(), ntfy.URL); ok {
+		t.Error("Gotify probe confirmed against an ntfy server")
+	}
+	gotify := probeServer(t, "gotify")
+	if _, ok := probeNtfy(context.Background(), testHTTPClient(), gotify.URL); ok {
+		t.Error("ntfy probe confirmed against a Gotify server")
+	}
+}
+
+// TestKnownServices_EveryEntryIsReachable is the guard against a knownServices
+// entry added without a matching probeService case — a silent no-op, since a
+// missing case and a probe that simply finds nothing both return
+// (Finding{}, false). Table-driving over knownServices with a server that DOES
+// serve each entry's identity endpoint is what gives the assertion
+// discriminating power: ok must be true for every entry.
+func TestKnownServices_EveryEntryIsReachable(t *testing.T) {
+	for _, svc := range knownServices {
+		t.Run(svc.name, func(t *testing.T) {
+			srv := probeServer(t, svc.name)
+			f, ok := probeService(context.Background(), testHTTPClient(), svc.name, srv.URL)
+			if !ok {
+				t.Fatalf("knownServices entry %q did not confirm — is a probeService case missing?", svc.name)
+			}
+			if f.Service != svc.name {
+				t.Errorf("probeService(%q) returned Finding.Service = %q", svc.name, f.Service)
+			}
+		})
+	}
+}
+
 // TestProbeService_WrongServiceDoesNotConfirm proves the probes are specific:
 // pointing the qBittorrent probe at a Prowlarr server (or vice-versa) yields
 // no confirmation.
@@ -203,6 +353,13 @@ func TestProbeService_WrongServiceDoesNotConfirm(t *testing.T) {
 	}
 	if _, ok := probeJellyfin(context.Background(), testHTTPClient(), prowlarr.URL); ok {
 		t.Error("Jellyfin probe confirmed against a Prowlarr server")
+	}
+	if _, ok := probeNodeRED(context.Background(), testHTTPClient(), prowlarr.URL); ok {
+		t.Error("Node-RED probe confirmed against a Prowlarr server")
+	}
+	jellyfin := probeServer(t, "jellyfin")
+	if _, ok := probeNtfy(context.Background(), testHTTPClient(), jellyfin.URL); ok {
+		t.Error("ntfy probe confirmed against a Jellyfin server")
 	}
 }
 

@@ -30,6 +30,18 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   "grab.completed": "Grab completed",
 };
 
+// WEBHOOK_DISCOVERY_SERVICES are the netscan service ids that are plausible
+// outbound-webhook TARGETS, as opposed to the media services netscan also
+// probes. These strings must match the `name` field of the corresponding
+// entries in internal/netscan.knownServices EXACTLY — Finding.service is an
+// untyped string on both sides, so a mismatch silently renders no hint at all
+// rather than failing loudly. Same mirror-a-Go-list convention as
+// ALL_WEBHOOK_EVENTS above, with ONE deliberate difference: NO `as const`
+// here. A readonly literal tuple's .includes() only accepts the literal
+// union, so `as const` would break `.includes(f.service)` where f.service is
+// a plain string.
+export const WEBHOOK_DISCOVERY_SERVICES = ["ntfy", "gotify", "node-red"];
+
 export function fetchWebhooks(): Promise<WebhookSummary[]> {
   return api<WebhookSummary[]>("/api/webhooks");
 }

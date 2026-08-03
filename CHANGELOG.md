@@ -5467,3 +5467,111 @@ worktree built for the size baseline above. `pnpm -C frontend build` (which
 runs `tsc --noEmit` with `noUnusedLocals` enforced) clean, 106.1 KB gzipped JS.
 `pnpm -C frontend test` **772 passed / 0 failed across 56 files**. There is no
 `lint` script in `frontend/package.json`, so no lint gate was run.
+
+---
+
+## 2026-08-02 — Webhook-target LAN auto-discovery (ntfy / Gotify / Node-RED), shipped UNVERIFIED against live instances
+
+Settings → Webhooks' Add-webhook form now offers LAN auto-discovery for the
+three webhook-target services: `internal/netscan` gained `probeNtfy`,
+`probeGotify` and `probeNodeRED`, surfaced both passively (a hint list from
+`/api/netscan/known`, gated on the form actually being open — a bare
+fetch-on-mount would fan out 8 outbound LAN probes on every Settings visit,
+including one whose only purpose was toggling browser notifications) and
+actively (an operator-typed host through `/api/netscan/host`). Both paths are
+**confirm-first and never auto-fill**: a discovered URL is applied only when
+the operator clicks "Use this URL", and it fills the **base URL only** — the
+topic / token / path is still theirs to append. Same convention `ConnectionRow`
+already established. Gotify is included **deliberately** despite being
+decommissioned in this project owner's own homelab: sakms is general-purpose
+software other operators run with Gotify live, and finding a legacy instance is
+itself useful, including to migrate off it (raised and confirmed during this
+feature's deep-interview). Do not delete that probe as a "no-Gotify" cleanup.
+
+**The load-bearing record this entry exists for: the planned live-verification
+step (Task 1, Step 0 of `.omc/plans/autopilot-impl-webhook-discovery.md`) NEVER
+RAN, so all three probes ship at their conservative documented defaults.** The
+docker socket was not accessible to the running user in the implementation
+environment (permission denied), so no probe was ever pointed at a real
+container. `podman` *was* functional on that host and was deliberately **not**
+used — deploying a container image requires explicit operator approval here, and
+that approval was not sought for an autonomous verification step. So this is a
+deliberate gap, not an oversight, and it is not the stronger claim "no container
+runtime was reachable" (which the probe doc comments briefly said and which
+overclaimed in the other direction — corrected in the same change). What each
+probe's confidence tier actually is:
+
+- **ntfy** — SOURCE-confirmed, not runtime-observed. ntfy's own server source
+  dispatches `apiHealthPath` with no `ensureUser`/`ensureAdmin` wrapper, so
+  `/v1/health` answers without credentials even on an `auth-default-access:
+  deny` server. Requiring `healthy == true` (not merely a 2xx) is what rejects
+  an arbitrary server answering `{}`; a degraded ntfy answering 503 is
+  deliberately NOT discovered.
+- **Gotify** — SCHEMA-confirmed, not runtime-observed. `gotify/server`'s
+  `docs/spec.json` carries no security block on `/version`. Identity is the
+  two-field `{version, buildDate}` shape, not version alone, because `/version`
+  is a generic path. Known residual risk, stated rather than hidden:
+  `buildDate` is a linker-injected variable, so a source-built binary could
+  plausibly emit `""` and be missed. If a real instance is ever observed doing
+  that, drop to requiring `Version` alone and delete
+  `TestProbeGotify_RejectsVersionWithoutBuildDate`.
+- **Node-RED** — PARTIALLY verified, and the **most conservative of the three
+  as a direct result.** The `/settings` response shape is documented; what is
+  NOT documented, and could only have been settled by Step 0, is whether the
+  required `settings.read` permission is granted anonymously when `adminAuth`
+  is unset (the stock image's out-of-the-box state). So this ships the
+  **version-only identity signal**, not the two-field `json.RawMessage` variant
+  that would also read `httpNodeRoot`. `httpNodeRoot` is not decoded at all —
+  and must never be decoded as a Go `string`, since Node-RED's documented way
+  to disable HTTP-in nodes is `httpNodeRoot: false`, a boolean, which would
+  make the probe reject a real Node-RED.
+
+**Legitimate follow-up for a future session: re-run Step 0 against real
+containers** (one ntfy, one Gotify, one stock Node-RED) and tighten whichever
+probes the observations justify — most concretely, Node-RED's two-field variant
+if `/settings` does answer anonymously on a default install. That requires
+operator approval to deploy the images, which is exactly why it is recorded here
+as a follow-up instead of having been done autonomously.
+
+**This single entry covers both the feature as implemented and the post-review
+fix pass folded on top of it** — nothing was logged here between the two, so a
+reader cannot otherwise tell them apart. Three fresh-context reviewers
+(architect, security-reviewer, code-reviewer) validated the implementation:
+PASS/COMMENT from all three, no CRITICAL or HIGH findings. Their MEDIUM/LOW
+findings are the fix pass — the missing CHANGELOG entry (this one, the top
+finding), the untested manual-lookup "Use this URL" button, the two overclaiming
+"CONFIRMED" lead verbs, the stale lookup/hint state surviving a form reopen, and
+the undocumented aria-label suffix. One security finding is **deliberately deferred,
+not silently dropped**: `netscan`'s HTTP client does not re-validate redirect
+targets against its private-host guard. That is optional hardening of
+security-sensitive code rather than something this feature broke, and it is the
+operator's call to make separately.
+
+| File | Change |
+|---|---|
+| `internal/netscan/netscan.go` | Three new probes (`probeNtfy`, `probeGotify`, `probeNodeRED`), plus their `knownServices` entries — that list is the single source of truth for what gets probed. Doc-comment lead verbs softened from "CONFIRMED against …" to "Modeled from …, not observed against a live instance" for ntfy and Gotify — source/spec reading is not live observation, per CLAUDE.md's honesty-about-unverified-assumptions convention. All three "no container runtime was reachable" phrasings replaced with the precise "the docker socket was not accessible to the running user" |
+| `internal/netscan/netscan_test.go` | Per-probe accept/reject cases, incl. `TestProbeGotify_RejectsVersionWithoutBuildDate` and `TestProbeNodeRED_ToleratesNonStringHTTPNodeRoot` |
+| `internal/api/netscan.go` | Doc comments only — the hardcoded "prowlarr/qbittorrent/nzbget/jellyfin" and "the four known services" enumerations now defer to `internal/netscan`'s `knownServices` instead of drifting from it. No behavior change; both handlers were already list-agnostic |
+| `internal/apidto/dto.go`, `internal/apidto/ts/dto.gen.ts` | `NetscanFinding`'s doc comment: `Service` one-of list extended with the four ids it had already drifted past (`stash`, `ntfy`, `gotify`, `node-red`). Comment only — no field change, and the `.ts` half is generated from the Go half via `go run ./cmd/gendto`, not hand-edited |
+| `frontend/src/api/webhooks.ts` | New `WEBHOOK_DISCOVERY_SERVICES` (`ntfy`/`gotify`/`node-red`), the filter both discovery paths apply so a Prowlarr hit never surfaces in a webhook form. Deliberately NOT `as const`: a readonly literal tuple's `.includes()` only accepts the literal union, which would break `.includes(f.service)` on a plain-string `service` |
+| `frontend/src/api/settings.ts` | Comment only. `SERVICES_WITH_HOST_LOOKUP` is deliberately **left unextended** — the three webhook targets are not connection types (no `serviceconn` entry, no `TestConnection` case), so no `ConnectionRow` is ever built for them and membership would be read by nothing. Their host lookup lives in the Add-webhook form, which surfaces all three from one probe rather than one row each. Recorded in-file so it does not read as an omission |
+| `frontend/src/screens/settings/Webhooks.tsx` | The discovery hint + manual host lookup UI. `resetLookup()` added and called at BOTH reset sites (post-create and Cancel) — `probeHost`/`probed`/`hint` are plain signals that previously survived a close/reopen and showed a stale "Found ntfy at …" result plus a stale "URL pre-filled…" hint above an empty URL field; the passive `findings` resource needed no reset since its source is `open`. Comment added explaining the lookup button's `from lookup` aria-label suffix |
+| `frontend/src/screens/settings/Webhooks.test.tsx` | Existing manual-lookup test extended to actually click the lookup result's "Use this URL" and assert the base-URL-only fill — that path's AC6 behavior was previously unpinned (only the passive-hint button's equivalent was tested) |
+| `CHANGELOG.md` | This entry |
+
+**Why the `from lookup` aria-label suffix exists** (recorded because it looks
+like an inconsistency a future session would "simplify" into a collision): the
+passive `/known` hint and a manual lookup result can legitimately be on screen
+**at the same time for the same service**. Without distinct labels,
+`getByLabelText` throws on ambiguity and a screen reader announces two
+identically-labeled buttons.
+
+**Verification:** `go build ./...` clean. `go test ./internal/netscan/...
+./internal/api/...` both `ok`. `go test ./...` green except `internal/sysinfo`'s
+four `TestReadGPUs_*` cases — the same pre-existing failures the 2026-08-02
+row-dnd entry above documents, which read this host's real sysfs and are
+untouched by this work. `pnpm -C frontend build` clean, **106.8 KB** gzipped JS
+(200 KB ceiling). `pnpm -C frontend test src/screens/settings/Webhooks.test.tsx`
+**13 passed**; full `pnpm -C frontend test` **779 passed / 0 failed across 56
+files**. **No live-instance verification of any probe was performed** — see the
+load-bearing paragraph above; that is the one gate this feature did not clear.

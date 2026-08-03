@@ -18,9 +18,11 @@ import (
 // credential.
 
 // netscanKnownHandler tries the fixed list of conventional container
-// hostnames (prowlarr/qbittorrent/nzbget/jellyfin) at their default ports and
-// returns whatever confirmed. Never returns a credential (Prowlarr's key is
-// fetched only via netscanProwlarrKeyHandler).
+// hostnames at their default ports and returns whatever confirmed — see
+// internal/netscan's knownServices for the current set, which spans both the
+// services SAK integrates with and the outbound-webhook targets it can only
+// notify. Never returns a credential (Prowlarr's key is fetched only via
+// netscanProwlarrKeyHandler).
 func netscanKnownHandler(httpClient *http.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		findings := netscan.ProbeKnownHosts(r.Context(), httpClient)
@@ -32,7 +34,7 @@ func netscanKnownHandler(httpClient *http.Client) http.HandlerFunc {
 	}
 }
 
-// netscanHostHandler probes one operator-supplied host across the four known
+// netscanHostHandler probes one operator-supplied host across the known
 // services' default ports. ProbeHost refuses any host that doesn't resolve to
 // a private address, so a bad request (e.g. a public IP) surfaces as a 400.
 func netscanHostHandler(httpClient *http.Client) http.HandlerFunc {

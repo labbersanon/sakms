@@ -1575,7 +1575,7 @@ type RecheckIntervalRequest struct {
 // (GET /api/netscan/known, POST /api/netscan/host) — an unauthenticated,
 // spoofable HINT to verify, never a confirmed fact. Mirrors
 // internal/netscan.Finding. Service is one of "prowlarr" | "qbittorrent" |
-// "nzbget" | "jellyfin".
+// "nzbget" | "jellyfin" | "stash" | "ntfy" | "gotify" | "node-red".
 type NetscanFinding struct {
 	Service string `json:"service"`
 	URL     string `json:"url"`

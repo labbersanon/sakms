@@ -45,7 +45,18 @@ const setPermissionOnRequest = (outcome: NotificationPermission) => {
 
 type Call = { url: string; method: string; body: unknown };
 
-const stubFetch = () => {
+type Finding = { service: string; url: string; label: string };
+
+const json = (v: unknown) =>
+  new Response(JSON.stringify(v), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+
+// stubFetch answers the three endpoints WebhooksSection can reach. known/host
+// default to empty so the pre-existing browser-notification tests are
+// unaffected; a test that cares supplies its own finding arrays.
+const stubFetch = (opts: { known?: Finding[]; host?: Finding[] } = {}) => {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -55,17 +66,50 @@ const stubFetch = () => {
       method,
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
+    // The LAN-discovery hint's passive fetch — only fired once the Add-webhook
+    // form is open (see the gating test below).
+    if (url.includes("/api/netscan/known")) return json(opts.known ?? []);
+    // The manual host lookup.
+    if (url.includes("/api/netscan/host")) return json(opts.host ?? []);
     // WebhooksSection mounts createResource(fetchWebhooks) → GET /api/webhooks.
     if (url.includes("/api/webhooks") && method === "GET")
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return json([]);
     // Every mutation (the PUT preference) defaults to a clean 204.
     return new Response(null, { status: 204 });
   });
   vi.stubGlobal("fetch", fn);
   return calls;
+};
+
+const ntfy: Finding = {
+  service: "ntfy",
+  url: "http://ntfy:80",
+  label: "possible ntfy instance",
+};
+const gotify: Finding = {
+  service: "gotify",
+  url: "http://gotify:80",
+  label: "possible Gotify instance",
+};
+const nodeRed: Finding = {
+  service: "node-red",
+  url: "http://node-red:1880",
+  label: "possible Node-RED instance",
+};
+const prowlarr: Finding = {
+  service: "prowlarr",
+  url: "http://prowlarr:9696",
+  label: "possible Prowlarr instance",
+};
+
+const netscanCalls = (calls: Call[]) =>
+  calls.filter((c) => c.url.includes("/api/netscan/known"));
+
+// openAddForm renders the section, waits for the collapsed state to settle, and
+// clicks through to the open form.
+const openAddForm = async () => {
+  fireEvent.click(await screen.findByText("Add webhook"));
+  return await screen.findByLabelText("Look up webhook target host");
 };
 
 beforeEach(() => {
@@ -203,5 +247,99 @@ describe("Browser notifications toggle", () => {
     // The imported accessor (the exact instance BrowserNotifications subscribes
     // to) reflects the flip — proving one shared signal, not a parallel copy.
     await waitFor(() => expect(browserNotificationsEnabled()).toBe(true));
+  });
+});
+
+// The Add-webhook form's LAN-discovery hint. The first test is the ONLY thing
+// pinning the createResource(open, …) gating: api() returns null on a 204
+// rather than throwing, so an ungated resource breaks none of the tests above.
+describe("Add-webhook LAN discovery hint", () => {
+  const urlInput = () =>
+    screen.getByPlaceholderText("https://example.com/hook") as HTMLInputElement;
+
+  it("fires no LAN probe until the Add-webhook form is opened", async () => {
+    const calls = stubFetch({ known: [ntfy] });
+    render(() => <WebhooksSection />);
+
+    // Settle the collapsed state first — asserting absence before an ungated
+    // resource would have had a chance to fire proves nothing.
+    await screen.findByText("Add webhook");
+    await screen.findByLabelText("Enable browser notifications");
+    expect(netscanCalls(calls)).toHaveLength(0);
+
+    fireEvent.click(screen.getByText("Add webhook"));
+
+    // The presence half is what proves the matcher above actually matches.
+    await waitFor(() => expect(netscanCalls(calls)).toHaveLength(1));
+  });
+
+  it("renders a discovery hint for a discovered ntfy", async () => {
+    stubFetch({ known: [ntfy] });
+    render(() => <WebhooksSection />);
+    await openAddForm();
+
+    expect(
+      await screen.findByText(/Possible ntfy at http:\/\/ntfy:80/),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores findings for non-webhook services", async () => {
+    // The ntfy finding is the settle point: it is a POSITIVE signal that only
+    // exists once the resource resolved and rendered, so the prowlarr absence
+    // below cannot pass merely because nothing has rendered yet. Asserting on
+    // the recorded fetch instead would NOT work — calls are recorded when the
+    // request is issued, before the response is even parsed.
+    stubFetch({ known: [ntfy, prowlarr] });
+    render(() => <WebhooksSection />);
+    await openAddForm();
+
+    await screen.findByText(/Possible ntfy/);
+    expect(screen.queryByText(/prowlarr/)).toBeNull();
+    expect(screen.queryByLabelText("Use prowlarr URL")).toBeNull();
+  });
+
+  it("'Use this URL' fills the base URL and nothing else", async () => {
+    stubFetch({ known: [ntfy] });
+    render(() => <WebhooksSection />);
+    await openAddForm();
+
+    fireEvent.click(await screen.findByLabelText("Use ntfy URL"));
+
+    // Exactly the base URL: no topic appended, port not elided.
+    await waitFor(() => expect(urlInput().value).toBe("http://ntfy:80"));
+  });
+
+  it("manual host lookup surfaces webhook-service findings only", async () => {
+    const calls = stubFetch({ known: [], host: [ntfy, prowlarr] });
+    render(() => <WebhooksSection />);
+    const lookup = await openAddForm();
+
+    fireEvent.input(lookup, { target: { value: "10.1.10.4" } });
+    fireEvent.click(screen.getByText("Look up"));
+
+    expect(
+      await screen.findByText(/Found ntfy at http:\/\/ntfy:80/),
+    ).toBeInTheDocument();
+    const probe = calls.find((c) => c.url.includes("/api/netscan/host"))!;
+    expect(probe.body).toEqual({ host: "10.1.10.4" });
+    expect(screen.queryByText(/prowlarr/)).toBeNull();
+
+    // The lookup result's own "Use this URL" — a DIFFERENT button from the
+    // passive hint's, hence the "from lookup" label suffix. Same AC6 contract:
+    // exactly the base URL, no topic appended, port not elided.
+    fireEvent.click(screen.getByLabelText("Use ntfy URL from lookup"));
+    await waitFor(() => expect(urlInput().value).toBe("http://ntfy:80"));
+  });
+
+  it("renders hints for all three webhook services at once", async () => {
+    stubFetch({ known: [ntfy, gotify, nodeRed] });
+    render(() => <WebhooksSection />);
+    await openAddForm();
+
+    // Queried by their distinct aria-labels — this is what pins the Go/TS
+    // service-string contract; a mismatch renders no hint at all.
+    expect(await screen.findByLabelText("Use ntfy URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Use gotify URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("Use node-red URL")).toBeInTheDocument();
   });
 });

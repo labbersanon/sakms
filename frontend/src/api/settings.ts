@@ -104,6 +104,12 @@ export const SERVICES_WITH_FIXED_URL = [
 // jellyfin is deliberately absent: media players moved out of `connections`
 // into the multi-connection registry (migration 0053), so their host lookup
 // belongs to the registry UI, not to a singleton ConnectionRow.
+// ntfy, gotify and node-red are deliberately absent for the same reason: they
+// are outbound-webhook targets, not connection types — no serviceconn entry,
+// no TestConnection case, so no ConnectionRow is ever built for them and
+// membership here would be read by nothing. Their host lookup lives in the
+// Add-webhook form (screens/settings/Webhooks.tsx), which surfaces all three
+// from one probe rather than one per row.
 export const SERVICES_WITH_HOST_LOOKUP = ["prowlarr", "stash"];
 
 // API_SECTION_SERVICES are the global, mode-independent singleton connections,

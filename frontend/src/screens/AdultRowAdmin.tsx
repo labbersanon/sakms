@@ -17,12 +17,20 @@
 // screen and Discover's Adult row editor are now two views of ONE order —
 // adultnewest's `sort_order` column, POST /api/modes/adult/newest-rows/reorder,
 // shared through useAdultRowOrder — so an order set on either is what the other
-// shows. The header used to say reordering was button-based "same as
-// SliderAdmin"; that comparison is TEMPORARILY FALSE BY DESIGN, not stale by
-// accident: SliderAdmin (and RssFeedAdmin) still use ▲▼ buttons, and converting
-// them is the sibling row-dnd-consolidation-and-pagination spec's job, not
-// this one's. It becomes true again — in the opposite direction — once that
-// lands.
+// shows.
+//
+// Claude 2026-08-02: the "same as SliderAdmin" comparison is TRUE AGAIN, in the
+// opposite direction — both screens drag now. The superseded annotation, quoted
+// so a future session can find it: "that comparison is TEMPORARILY FALSE BY
+// DESIGN, not stale by accident: SliderAdmin (and RssFeedAdmin) still use ▲▼
+// buttons, and converting them is the sibling
+// row-dnd-consolidation-and-pagination spec's job, not this one's."
+// Reason: that spec has now landed. Note its parenthetical was wrong about
+// RssFeedAdmin even when written — that screen never had ▲▼ buttons; it had its
+// OWN full @thisbeyond/solid-dnd wiring, a parallel duplicate of RowEditor's.
+// So the correct history is: SliderAdmin ▲▼ → RowEditor drag, RssFeedAdmin
+// duplicate solid-dnd → the SAME shared RowEditor. There is now exactly one
+// RowEditor and zero solid-dnd wiring anywhere else in the frontend.
 
 import {
   type Component,
@@ -44,6 +52,7 @@ import {
 } from "../api/adultNewestRows";
 import { RowEditor, type RowDescriptor } from "./discover/RowEditor";
 import { useAdultRowOrder } from "./discover/useAdultRowOrder";
+import Pencil from "lucide-solid/icons/pencil";
 import {
   fetchAdultNewestScanInterval,
   putAdultNewestScanInterval,
@@ -233,9 +242,7 @@ export const AdultRowAdminSection: Component = () => {
   // deliberately dropped, matching Discover's plain rows. Edit is carried as a
   // RowAction because RowEditor's built-in controls are enabled-toggle +
   // Delete only — this screen is the app's ONLY place to edit a row's
-  // title/rowType/genreFilter, so it cannot be lost. The glyph is a deliberate
-  // placeholder; the sibling row-dnd spec swaps in a real icon library, which
-  // is a call-site-only change because RowAction.icon is typed JSX.Element.
+  // title/rowType/genreFilter, so it cannot be lost.
   const descriptors = (): RowDescriptor[] =>
     orderedRows().map((row) => ({
       key: `newestrow:${row.id}`,
@@ -245,7 +252,7 @@ export const AdultRowAdminSection: Component = () => {
       actions: [
         {
           label: `Edit ${row.title}`,
-          icon: <span aria-hidden>✎</span>,
+          icon: <Pencil size={14} />,
           onClick: () => setEditing(row.id),
         },
       ],

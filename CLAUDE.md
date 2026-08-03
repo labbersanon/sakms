@@ -1089,6 +1089,129 @@ above, so don't drop them for convenience:
     (`main.go:104`). If a deploy lands with a broken auth-boot shell after a
     wipe, that key is the recovery net — the retrieval + use procedure is in
     `docs/break-glass-recovery.md`.
+  - **AMENDED 2026-08-02 — the frontend has an ICON LIBRARY now, and exactly
+    ONE `RowEditor` (see
+    `.omc/plans/autopilot-impl-row-dnd-consolidation-and-pagination.md`,
+    `docs/ROADMAP.md` item 2, and `CHANGELOG.md`).** Two claims elsewhere in
+    this file's frontend material are superseded; both are quoted rather than
+    rewritten, per this file's convention.
+
+    **1. `lucide-solid` is the frontend's FIRST icon dependency — 3 runtime
+    deps → 4.** Before this, every icon in the app was either a hand-rolled
+    inline SVG (`Carousel.tsx`'s chevrons, the sidebar's icon set) or a unicode
+    glyph. A real dependency was chosen deliberately over a local
+    `icons.tsx` of inline SVGs, which would have been smaller and
+    dependency-free — Wade chose the real library explicitly. It is used for
+    the new Edit/Re-scan **action-slot icons only**; the existing hand-rolled
+    chevrons and sidebar icons were **not** swapped, and swapping them is
+    unrequested scope.
+
+    **Deep per-icon imports are MANDATORY, and this is a real resolution
+    hazard, not a style preference:**
+    ```ts
+    import Pencil from "lucide-solid/icons/pencil";      // correct
+    import { Pencil } from "lucide-solid";               // NEVER
+    ```
+    The barrel re-exports ~1500 icons (dev-server transform cost, and a real
+    risk of a non-tree-shaken chunk). Worse, the package's `exports["./icons/*"]`
+    map lists `"solid": "./dist/source/icons/*.jsx"` **before**
+    `"import"`/`"browser": "./dist/esm/icons/*.mjs"`, and export-condition
+    matching is first-match-wins in key order. `vite-plugin-solid` injects the
+    `solid` condition, so both Vite and Vitest can resolve to **raw uncompiled
+    JSX inside `node_modules`**; `vitest.config.ts` additionally pins
+    `resolve.conditions: ["development","browser"]`, which interacts with it.
+    The deep import alone proved sufficient here — **no `optimizeDeps.exclude`
+    and no `test.server.deps.inline` were needed**, and neither is present.
+    If a future icon or a `lucide-solid` upgrade breaks with a JSX syntax error
+    from inside `node_modules`, that is this hazard: the remedy ladder is
+    (1) deep import, (2) `optimizeDeps: { exclude: ["lucide-solid"] }` in
+    `vite.config.ts`, (3) `test: { server: { deps: { inline: ["lucide-solid"] }}}`
+    in `vitest.config.ts`. Icon slugs are kebab-case and Lucide renames icons
+    between majors — verify a slug exists under
+    `node_modules/lucide-solid/dist/esm/icons/` before importing it.
+
+    **2. There is exactly ONE `RowEditor` and ZERO duplicate solid-dnd wiring
+    anywhere in the frontend.** SliderAdmin, RssFeedAdmin, AdultRowAdmin,
+    Mainstream and Adult Discover all render
+    `screens/discover/RowEditor.tsx`. SliderAdmin's ▲▼ pair, its `SliderRow`
+    and `move()`, and RssFeedAdmin's entire parallel `@thisbeyond/solid-dnd`
+    block and `FeedRow` are all deleted. `@thisbeyond/solid-dnd` is imported in
+    exactly one file.
+    - **`reorderAdultFeedIds` (`screens/settings/RssFeedAdmin.tsx`) SURVIVES,
+      and it is NOT drag wiring — do NOT delete it in a future dedup sweep.**
+      It sits immediately below the solid-dnd import block that WAS deleted and
+      looks exactly like part of it. It is the **adult-subset→full-id-list
+      mapping**: `reorderRssFeeds` → `Store.Reorder` demands the full set of
+      every existing feed's ids exactly once across ALL targets (Mainstream can
+      create movie/tv feeds too), so without it a reorder 422s as
+      `ErrReorderMismatch` on any install that also has a movie/tv feed. Its
+      own unit tests are the backstop.
+    - **Discover's rows deliberately carry NO actions**, and `RowEditor`'s
+      `actions` slot being optional and generic is exactly why nothing
+      structural stops that from changing. A test is what stops it —
+      `Discover.test.tsx`, "the row editor carries NO per-entity actions
+      (Settings-only)" — following the
+      `TestAdultDescriptionMakesNoProwlarrCall` precedent this file names for
+      guarantees of this shape. It asserts absence **structurally** (no
+      `Edit …`/`Re-scan …` control and no `<svg>` in any row), not "nothing
+      threw."
+    - **Accepted accessibility trade-off, recorded rather than glossed over:**
+      SliderAdmin's ▲▼ buttons were that screen's only keyboard-reachable
+      reorder path, and drag has no keyboard equivalent — so **keyboard-only
+      reorder access is REMOVED on that one screen.** Explicitly accepted
+      (single-operator, low-stakes: row order is cosmetic, and every other
+      control on the row stays keyboard-reachable), and consistent with
+      RssFeedAdmin and Discover, which have been drag-only all along.
+    - **Rows on both Settings screens are TITLE-ONLY now**, so two subtitles
+      disappeared. Neither is a loss: SliderAdmin's filter-type/value/target
+      summary is in `SliderForm`, reached by the new Edit action;
+      RssFeedAdmin's `protocol:` line moved into a new `ProtocolStatusDialog`,
+      which fires on Re-scan (scanning → detected/error) **and on a successful
+      Add** — without that second trigger an operator would have no way at all
+      to learn what protocol was auto-detected for a feed they just created.
+      **`ProtocolStatusDialog` is status-only and NEVER collects a protocol.**
+      `ProtocolFallbackDialog` remains the sole manual-pick path, on the
+      inconclusive-422 branch only, preserving that file's "protocol is a
+      derived, read-only fact, never an operator-typed field" invariant.
+    - **Documented spec deviation:** AC2 said Re-scan "opens the existing
+      status dialog." No such dialog existed — the only one was
+      `ProtocolFallbackDialog` ("Choose a protocol"), whose whole job is
+      collecting an operator's manual pick, so wiring Re-scan straight to it
+      would have broken the derived-protocol invariant. Read as "**a** status
+      dialog, from which the existing fallback picker is still reached."
+
+    **3. Carousel pagination.** The forward chevron is now a **track-trailing-
+    edge overlay** (absolutely positioned in a `relative` wrapper around the
+    scroll track) and is **visible on touch viewports too**. Three things about
+    it each look like a bug from the outside and are not:
+    - It is anchored to the wrapper's right edge, **not measured onto whichever
+      card is currently last-visible**. Netflix's own affordance is
+      viewport-edge-anchored, and per-card measurement would mean a
+      `getBoundingClientRect` sweep of every child on every scroll frame in a
+      handler that already runs `updateScrollState` + the lazy-load check — and
+      `Carousel` is generic over `renderItem`, so it can assume nothing about
+      child geometry. **Do not build per-card measurement.**
+    - **The back chevron is unchanged and still `hidden sm:flex`** (desktop-
+      only). So on touch a row has a forward overlay and no back arrow, relying
+      on native swipe to go back. That asymmetry is what the spec asked for —
+      **do not "fix" it.**
+    - The native scrollbar is hidden via a new `no-scrollbar` Tailwind v4
+      `@utility` (`index.css`) applied to **`Carousel` ONLY**.
+      **`PaginatedStrip` (`screens/discover/shared.tsx`) deliberately keeps its
+      native scrollbar**, and every Adult Discover row uses `PaginatedStrip` —
+      so Mainstream/Trakt/slider/RSS rows show no scrollbar while Adult's rows
+      do. That asymmetry is spec scope-boundary compliance, not an omission;
+      unifying it is a deferred follow-up in `docs/ROADMAP.md` item 2.
+
+    Scroll **mechanics** are semantically unchanged throughout —
+    `LOAD_MORE_THRESHOLD_PX`, `SCROLL_STEP_RATIO`, `updateScrollState`,
+    `onScroll`, `scrollByStep`, the item-count effect and the bounds-aware
+    disable are all untouched. `scrollbar-width: none` removes the scrollbar's
+    *rendering*, not the element's overflow behaviour, so
+    `scrollWidth`/`clientWidth`/`scrollLeft` are unaffected. Note that
+    `.omc/plans/autopilot-impl-discover-scheduled-refresh.md` cites
+    `Carousel.tsx` **by line number**; those citations have drifted, but every
+    symbol they name is semantically intact.
 - **Sidebar + section-tab redesign (2026-07-13)**: the horizontal top nav was
   replaced with a collapsible left sidebar (icon-only when collapsed,
   localStorage-persisted). A generic `useScreenTabs`/`ScreenTabs` mechanism

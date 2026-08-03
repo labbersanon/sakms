@@ -56,3 +56,16 @@ body {
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
+
+/*
+ * no-scrollbar hides the native horizontal scrollbar on Carousel's scroll
+ * track. Scoped deliberately: Carousel only. PaginatedStrip
+ * (screens/discover/shared.tsx) keeps its native scrollbar — see the
+ * row-dnd-consolidation plan's D11.
+ */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

@@ -1067,6 +1067,14 @@ numbered below by original idea order, not interview order.
      used to say reordering was button-based "same as SliderAdmin." SliderAdmin
      and RssFeedAdmin still use ▲▼ — converting them is item 2's job — so that
      comparison is annotated as temporarily false rather than silently dropped.
+     - **RESOLVED 2026-08-02 by item 2.** The comparison is true again, in the
+       opposite direction: all three screens drag, via one `RowEditor`. The
+       in-file annotation was flipped rather than deleted. Note the bullet
+       above was **wrong about RssFeedAdmin even when written** — it never had
+       ▲▼ buttons; it had its own full `@thisbeyond/solid-dnd` wiring, a
+       parallel duplicate of RowEditor's. Correct history: SliderAdmin ▲▼ →
+       RowEditor drag; RssFeedAdmin duplicate solid-dnd → the same shared
+       RowEditor.
 2. **Live drag-and-drop row reordering** — spec ready:
    `.omc/specs/deep-interview-row-dnd-consolidation-and-pagination.md`
    (15% ambiguity, PASSED). Converts SliderAdmin off button-based reorder,
@@ -1074,6 +1082,53 @@ numbered below by original idea order, not interview order.
    `RowEditor.tsx` with a new icon-based extra-actions slot; grew mid-interview
    to also cover a Discover row-pagination redesign (arrow overlay on the
    last poster, replacing the edge chevrons; native scrollbar hidden).
+
+   **Shipped 2026-08-02** — see `CHANGELOG.md` and `CLAUDE.md`'s frontend
+   note of the same date. Built via a 6-wave autopilot split per
+   `.omc/plans/autopilot-impl-row-dnd-consolidation-and-pagination.md`. What
+   actually landed, and the parts a future session needs before touching it:
+
+   - **There is now exactly ONE `RowEditor` and zero solid-dnd wiring anywhere
+     else in the frontend.** SliderAdmin, RssFeedAdmin, AdultRowAdmin,
+     Mainstream and Adult Discover all render it. SliderAdmin's ▲▼ pair,
+     `SliderRow`, `move()`, and RssFeedAdmin's whole parallel solid-dnd block
+     and `FeedRow` are gone.
+   - **`reorderAdultFeedIds` (`settings/RssFeedAdmin.tsx`) SURVIVES and is NOT
+     drag wiring.** It sat immediately below the deleted solid-dnd imports and
+     looks like part of them; it is the adult-subset→full-id-list mapping, and
+     without it a reorder 422s as `ErrReorderMismatch` on any install that also
+     has a movie/tv feed. **Do not delete it in a future dedup sweep.**
+   - **First icon library.** `lucide-solid` (3 runtime deps → 4), deep
+     per-icon imports only. See `CLAUDE.md` for the resolution hazard.
+   - **Rows on both Settings screens are title-only now.** SliderAdmin's
+     filter summary moved into `SliderForm`; RssFeedAdmin's protocol moved into
+     a new `ProtocolStatusDialog` (status-only, never collects a protocol —
+     `ProtocolFallbackDialog` is still the sole manual-pick path).
+   - **Discover's rows deliberately gained NO actions**, enforced by test
+     (`Discover.test.tsx`, "the row editor carries NO per-entity actions"),
+     following the `TestAdultDescriptionMakesNoProwlarrCall` precedent.
+   - **Accepted accessibility trade-off:** SliderAdmin's ▲▼ removal drops
+     keyboard-only reorder access on that one screen (single-operator,
+     low-stakes; row order is cosmetic).
+   - Bundle: 105.0 KB → 106.1 KB gzipped JS, against a 200 KB soft ceiling.
+
+   **Two deferred follow-ups, neither built:**
+   - **(a) Optimistic reorder override for the two Settings surfaces.** Both
+     `reorderSliders` and `reorderRssFeeds` return 204 with no body, so the new
+     order only appears after the follow-up `refetch()` — between drop and
+     refetch the dragged row snaps back to its original slot, then corrects.
+     Accepted as-is because RssFeedAdmin already shipped exactly this behaviour
+     and it went unremarked; SliderAdmin simply joins it (a button press hid it
+     before, a drag does not). Revisit only if it proves annoying in practice.
+     The shape would be generalising `useAdultRowOrder`'s override signal,
+     which is today typed to `AdultNewestRow[]`/`reorderAdultNewestRows`.
+   - **(b) Unify `PaginatedStrip`'s scrollbar treatment with Carousel's.** The
+     `no-scrollbar` utility is deliberately scoped to Carousel only, so
+     Mainstream/Trakt/slider/RSS rows have no visible scrollbar while Adult
+     Discover's rows (which use `PaginatedStrip`,
+     `screens/discover/shared.tsx`) still do. That asymmetry is spec
+     scope-boundary compliance, not an oversight. If it proves confusing it is
+     a one-class change on `PaginatedStrip`'s own `overflow-x-auto` track.
 3. **Eliminate Connections tab; Usenet multi-subscription settings** — spec
    ready: `.omc/specs/deep-interview-connections-elimination-usenet-multisub.md`
    (12% ambiguity, PASSED). Every one of the 9 services + Trakt + AI

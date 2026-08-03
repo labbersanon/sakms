@@ -288,7 +288,8 @@ describe("AdultRowAdminSection — edit", () => {
   // D1's regression test: RowEditor's built-in controls are Enabled + Delete
   // only, so adopting it verbatim would have deleted the app's ONLY affordance
   // for editing a row's title/rowType/genreFilter. It survives as an injected
-  // RowAction, reached by its aria-label (the ✎ glyph itself is aria-hidden).
+  // RowAction, reached by its aria-label (the button's lucide Pencil icon
+  // renders aria-hidden and no text, so the label is the only handle).
   it("the injected Edit action opens the form pre-filled, and Save PUTs the updated row", async () => {
     const calls = stubFetch((url) => {
       if (isRowsList(url))

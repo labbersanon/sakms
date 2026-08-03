@@ -5291,3 +5291,179 @@ this host's hardware config and are untouched by this work. `pnpm -C frontend
 build` (which runs `tsc --noEmit`, with `noUnusedLocals` enforced) clean;
 `pnpm -C frontend test` 754 passed / 0 failed across 56 files. There is no
 `lint` script in `frontend/package.json`, so no lint gate was run.
+
+## 2026-08-02 — Row drag-and-drop consolidation, first icon library, Carousel pagination redesign
+
+Shipped `docs/ROADMAP.md` item 2 (spec
+`.omc/specs/deep-interview-row-dnd-consolidation-and-pagination.md`, plan
+`.omc/plans/autopilot-impl-row-dnd-consolidation-and-pagination.md`), in six
+waves. **Frontend-only — zero backend changes**, zero migrations, no DTO
+regeneration. `go build ./... && go test ./...` was still run as a gate purely
+to prove that.
+
+**There is now exactly ONE `RowEditor` and ZERO duplicate solid-dnd wiring
+anywhere in the frontend.** `@thisbeyond/solid-dnd` is imported in exactly one
+file. Five screens render `screens/discover/RowEditor.tsx`: SliderAdmin,
+RssFeedAdmin, AdultRowAdmin, Mainstream Discover and Adult Discover.
+
+- **SliderAdmin converted off button-based reorder**, reversing an in-code
+  decision this repo had deliberately recorded. The superseded sentence, quoted
+  verbatim in the file's own header rather than deleted: *"Reordering is
+  button-based (up/down), not drag-and-drop — simpler to implement/test and
+  satisfies the task's 'drag-OR-button-based' requirement."* The ▲▼ pair,
+  `SliderRow` and `move()` are gone.
+- **RssFeedAdmin's entire parallel solid-dnd block and `FeedRow` deleted**,
+  replaced by the shared component. Note this screen never had ▲▼ buttons —
+  it had its own *duplicate drag implementation*, which is what "consolidation"
+  actually meant here.
+- **`reorderAdultFeedIds` deliberately SURVIVES**, and is called out loudly in
+  `CLAUDE.md` and `docs/ROADMAP.md` because it is the single most likely thing
+  for a future dedup sweep to delete by mistake: it sits immediately below the
+  solid-dnd imports that WERE deleted and looks like part of them. It is the
+  adult-subset→full-id-list mapping, without which a reorder 422s as
+  `ErrReorderMismatch` on any install that also has a movie/tv feed. Its
+  existing unit tests survive unmodified.
+- **`RowEditor.tsx`'s source was not edited at all.** The `actions`/`title`/
+  `description`/`footer` props and the optional `onToggleHidden` all shipped
+  with the preceding adult-rows-config-unification work; every change here is
+  at call sites. Consolidation was achieved by *deleting* wiring elsewhere.
+
+**First icon library: `lucide-solid` (3 runtime deps → 4).** Chosen explicitly
+over a dependency-free local `icons.tsx` of inline SVGs, which would have been
+smaller. Used for the new Edit/Re-scan action icons only — `Carousel`'s
+hand-rolled chevrons and the sidebar's icon set were deliberately **not**
+swapped. **Deep per-icon imports (`lucide-solid/icons/pencil`) are mandatory,
+never the barrel**: besides the barrel's ~1500 re-exports, the package's
+`exports["./icons/*"]` map lists the raw-JSX `"solid"` condition *before* the
+precompiled `"import"`/`"browser"` one, and condition matching is
+first-match-wins in key order — so with `vite-plugin-solid` injecting `solid`,
+both Vite and Vitest can resolve to uncompiled JSX inside `node_modules`. The
+deep import alone proved sufficient: **no `optimizeDeps.exclude` and no
+`test.server.deps.inline` were needed**, and neither was added. The full remedy
+ladder is recorded in `CLAUDE.md` so a future session hitting a JSX syntax
+error from inside `node_modules` recognises it immediately.
+
+**Rows on both Settings screens are title-only now**, so two subtitles
+disappeared — neither is a loss:
+- SliderAdmin's filter-type/value/target summary moved into `SliderForm`,
+  reached by the new Edit action. Its test was **rewritten to pin the move**
+  (assert the subtitle is absent from the row, then open Edit and assert the
+  form's filter-type field) rather than deleted, so the intent is asserted.
+- RssFeedAdmin's `protocol:` line moved into a **new `ProtocolStatusDialog`**,
+  which fires on Re-scan (scanning → detected/error) **and on a successful
+  Add**. That second trigger is not decorative: without it an operator would
+  have had no way at all to learn what protocol was auto-detected for a feed
+  they had just created. The dialog is **status-only and never collects a
+  protocol** — `ProtocolFallbackDialog` remains the sole manual-pick path, on
+  the inconclusive-422 branch only, preserving that file's "protocol is a
+  derived, read-only fact, never an operator-typed field" invariant.
+
+**Documented spec deviation:** AC2 said Re-scan *"opens the existing status
+dialog."* No such dialog existed — the only one was `ProtocolFallbackDialog`
+("Choose a protocol"), whose entire job is collecting a manual pick, so wiring
+Re-scan straight to it would have broken the derived-protocol invariant. Read
+as "**a** status dialog, from which the existing fallback picker is still
+reached." The 422 path's behaviour is byte-for-byte unchanged.
+
+**Accepted accessibility trade-off, recorded rather than glossed over:**
+SliderAdmin's ▲▼ buttons were that screen's only keyboard-reachable reorder
+path, and drag has no keyboard equivalent — **keyboard-only reorder access is
+removed on that one screen.** Accepted as single-operator/low-stakes (row order
+is cosmetic; every other control on the row stays keyboard-reachable), and
+consistent with RssFeedAdmin and Discover, which have been drag-only all along.
+
+**Carousel pagination redesign.** The forward chevron is now a
+track-trailing-edge overlay (absolutely positioned inside a `relative` wrapper
+around the scroll track) and is visible on touch viewports for the first time.
+The back chevron is unchanged and still `hidden sm:flex`, so on touch a row has
+a forward overlay and no back arrow, relying on native swipe — that asymmetry
+is what the spec asked for, not an oversight. The overlay is anchored to the
+wrapper's right edge rather than measured onto the currently-last-visible card,
+deliberately: per-card measurement would mean a `getBoundingClientRect` sweep of
+every child on every scroll frame, and `Carousel` is generic over `renderItem`
+so it can assume nothing about child geometry. A new `no-scrollbar` Tailwind v4
+`@utility` hides the native scrollbar on **`Carousel` only** —
+`PaginatedStrip` keeps its own, so Adult Discover's rows still show a scrollbar
+while Mainstream's do not. Scroll **mechanics** are semantically unchanged
+throughout (`LOAD_MORE_THRESHOLD_PX`, `SCROLL_STEP_RATIO`, `updateScrollState`,
+`onScroll`, `scrollByStep`, the item-count effect, bounds-aware disable), which
+is why **the entire pre-existing `Carousel.test.tsx` suite passes unmodified** —
+that was the deliverable, not a convenience.
+
+**Discover's own rows deliberately gained NO actions, and a test enforces it.**
+`RowEditor`'s `actions` slot is optional and generic, and four other screens now
+inject into it, so nothing structural stops those descriptors being threaded
+into Discover — where the whole point is that a row carries
+reorder/show-hide/enable/delete and nothing that acts on the underlying
+entity's configuration. `Discover.test.tsx`'s new "the row editor carries NO
+per-entity actions (Settings-only)" describe mounts Edit mode on **both**
+Mainstream (slider + RSS-feed entity rows) and Adult (newest-releases rows) and
+asserts absence **structurally** — no `Edit …` control, no `Re-scan …` control,
+and no `<svg>` anywhere in any row — following the
+`TestAdultDescriptionMakesNoProwlarrCall` precedent `CLAUDE.md` names for
+behavioural guarantees of this shape. The `<svg>` check is the load-bearing one:
+it is the only assertion that catches an action nobody predicted the label of,
+and it has real teeth because the identical query resolves *truthy* on the
+Settings screens (`SliderAdmin.test.tsx:184`,
+`settings/RssFeedAdmin.test.tsx:189`). Both tests also assert the controls
+Discover's rows DO carry (grip handle, Delete), so a regression that stripped
+the editor bare fails rather than passing the absence checks vacuously.
+
+**Bundle size: 105.0 KB → 106.1 KB gzipped JS** (+1.1 KB), against
+`scripts/report-size.mjs`'s 200 KB soft ceiling. **Provenance, stated honestly
+because earlier waves' baselines were not trustworthy:** the "before" number is
+NOT a re-used figure from a wave report — several of those were taken on a dirty
+tree with concurrent sibling work in flight, and Wave 0 flagged its own as
+contaminated. It was measured fresh for this entry by building commit `e25274f`
+(the pre-feature `HEAD`) in a throwaway `git worktree`, on the same host with
+the same toolchain, so both numbers are directly comparable and neither is
+contaminated. (A `git stash` baseline was explicitly ruled out — other agents'
+work was live on the shared tree.) The +1.1 KB is the first new runtime
+dependency's two deep-imported icons plus the new dialog component, and matches
+the ~1-2 KB the plan predicted.
+
+| File | Change |
+|---|---|
+| `frontend/package.json`, `pnpm-lock.yaml` | `lucide-solid@^1.28.0` added — the frontend's 4th runtime dep and first icon library |
+| `frontend/src/index.css` | New Tailwind v4 `@utility no-scrollbar`, scoped to Carousel by convention and documented as such |
+| `frontend/src/components/Carousel.tsx` | `arrowButtonClass` split into `leftArrowClass` (unchanged) + `rightArrowClass` (new overlay); track wrapped in a `relative` div; header rewritten with the three do-not-"fix" decisions. Scroll mechanics untouched |
+| `frontend/src/components/Carousel.test.tsx` | Four new assertions (overlay is `absolute` and not `hidden`; back arrow still `hidden sm:flex`; track carries `no-scrollbar`; overlay is a descendant of the track's wrapper and the back arrow is not). **Every pre-existing case unmodified** |
+| `frontend/src/screens/SliderAdmin.tsx` | `SliderRow`, `move()`, the ▲▼ pair, the `For`/`ul` block and the outer `<Card>` deleted; renders `<RowEditor>` with title/description/footer and one Edit action. New exported `sliderIdsFromRowKeys`. Header rewritten quoting the superseded decision |
+| `frontend/src/screens/SliderAdmin.test.tsx` | ▲▼ describe replaced by drag coverage; subtitle assertion rewritten to pin the move into `SliderForm`; new guards for the empty-state `+ New slider` footer, the `<svg>` Edit icon, and reorder-failure error visibility |
+| `frontend/src/screens/settings/RssFeedAdmin.tsx` | The whole solid-dnd import block, `FeedRow`, `onDragEnd`, the provider/`ul`/`For` block, the `reorderKeys` import and the outer `<Card>` deleted; new `ProtocolStatusDialog`; `rescan` and the Add success path rewired. **`reorderAdultFeedIds` kept** |
+| `frontend/src/screens/settings/RssFeedAdmin.test.tsx` | Selector updates for title-only rows and aria-labelled actions; new grip, empty-state-footer, Re-scan-error-dialog, `<svg>`-icon and `reorderAdultFeedIds ∘ reorderKeys` composition tests. The `reorderAdultFeedIds` describe unmodified |
+| `frontend/src/screens/AdultRowAdmin.tsx` | Unicode `✎` → `<Pencil size={14} />` (completes AC3 on the third icon consumer the spec's ACs never named). Two stale comment blocks removed/flipped in the deslop pass — see below |
+| `frontend/src/screens/Discover.test.tsx` | **New** "the row editor carries NO per-entity actions (Settings-only)" describe, two cases (Mainstream + Adult) |
+| `CLAUDE.md` | AMENDED 2026-08-02 note under Frontend: first icon library + the `exports`-map resolution hazard and remedy ladder; one `RowEditor`; the `reorderAdultFeedIds` do-not-delete warning; the accessibility trade-off; title-only rows; the Carousel decisions and the `PaginatedStrip` asymmetry |
+| `docs/ROADMAP.md` | Item 2 flipped to shipped with its own Shipped block; two deferred follow-ups recorded; the adult-rows item's "temporarily false" bullet resolved and its wrong claim about RssFeedAdmin corrected |
+| `CHANGELOG.md` | This entry |
+
+**Deslop pass** (CLAUDE.md's mandatory post-code-session gate) found no debug
+code, no `TODO`/`FIXME`/`HACK` markers and no `.only`/`.skip` in any changed
+file, and confirmed every exported symbol (`sliderIdsFromRowKeys`,
+`reorderAdultFeedIds`, `reorderKeys`) still has real call sites —
+`noUnusedLocals` does not flag exported declarations, so that was verified by
+review, not tooling. Two genuinely stale comment blocks were fixed, both in
+`AdultRowAdmin.tsx`, both left behind by the wave that landed the icon swap:
+1. The action descriptor's *"The glyph is a deliberate placeholder; the sibling
+   row-dnd spec swaps in a real icon library…"* — false the moment the swap
+   landed. Removed; the surrounding note about why Edit had to be carried as a
+   `RowAction` is still true and was kept.
+2. The file header's *"that comparison is TEMPORARILY FALSE BY DESIGN …
+   SliderAdmin (and RssFeedAdmin) still use ▲▼ buttons, and converting them is
+   the sibling row-dnd-consolidation-and-pagination spec's job."* Flipped
+   (quoted, not deleted) — both screens drag now. **That annotation was also
+   wrong about RssFeedAdmin when it was written**: that screen never had ▲▼, it
+   had its own duplicate solid-dnd wiring. Corrected in the same place, and in
+   `docs/ROADMAP.md` where the same wrong claim was mirrored. The identical
+   claim at `CHANGELOG.md:5211` was deliberately **left alone** — this file is
+   append-only, so this entry is the correction.
+
+**Verification:** `go build ./...` clean. `go test ./...` green except
+`internal/sysinfo`'s four `TestReadGPUs_*` cases, which read this host's real
+sysfs and are untouched by this frontend-only work. **That pre-existence was
+proven, not assumed** — the same four fail identically in the clean `e25274f`
+worktree built for the size baseline above. `pnpm -C frontend build` (which
+runs `tsc --noEmit` with `noUnusedLocals` enforced) clean, 106.1 KB gzipped JS.
+`pnpm -C frontend test` **772 passed / 0 failed across 56 files**. There is no
+`lint` script in `frontend/package.json`, so no lint gate was run.

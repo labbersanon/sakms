@@ -8,13 +8,30 @@
 // re-validates everything regardless.
 //
 // No bulk actions (project convention): create/update/delete/enable-toggle
-// each act on exactly one slider. Reordering is button-based (up/down), not
-// drag-and-drop — simpler to implement/test and satisfies the task's
-// "drag-OR-button-based" requirement. (This convention still holds HERE — slider
+// each act on exactly one slider. (This convention still holds HERE — slider
 // CRUD is genuinely single-item. It is not absolute across the whole app: two
 // bounded, documented bulk exceptions exist elsewhere — bulk-apply on
 // Rename/Dedup/Purge review queues, and bulk-grab in Discover's opt-in Select
 // mode — neither of which touches this screen.)
+//
+// SUPERSEDED — reordering is DRAG-AND-DROP now. The decision this file used to
+// record, quoted verbatim so a future session can find it: "Reordering is
+// button-based (up/down), not drag-and-drop — simpler to implement/test and
+// satisfies the task's 'drag-OR-button-based' requirement." That was true and
+// deliberate; it is reversed on purpose, so Settings and Discover share ONE
+// reorder mechanism instead of two parallel ones. This screen now renders
+// Discover's own <RowEditor> verbatim, so the ▲▼ pair, the SliderRow component
+// and the filter/target subtitle are all gone: a row is a title-only bar with a
+// ⠿ grip, an Enabled checkbox, Delete, and one injected Edit RowAction. The
+// summary that subtitle carried (filter type · value · target) now lives in
+// SliderForm, reached by that Edit action — moved, not lost.
+//
+// Accepted accessibility trade-off, recorded rather than glossed over: the ▲▼
+// buttons were this screen's only keyboard-reachable reorder path, and drag has
+// no keyboard equivalent — so keyboard-only reorder access is REMOVED here.
+// Explicitly accepted (single-operator, low-stakes: row order is cosmetic, and
+// every other control on the row stays keyboard-reachable), and consistent with
+// RssFeedAdmin and Discover, which have been drag-only all along.
 
 import {
   type Component,
@@ -25,6 +42,7 @@ import {
   on,
   Show,
 } from "solid-js";
+import Pencil from "lucide-solid/icons/pencil";
 import {
   FILTER_NEEDS_VALUE,
   FILTER_TYPES,
@@ -45,7 +63,6 @@ import {
 } from "../api/discoverSliders";
 import {
   Button,
-  Card,
   ErrorText,
   Muted,
   SaveStatus,
@@ -53,6 +70,17 @@ import {
   labelClass,
   useSaveStatus,
 } from "../components/ui";
+import { RowEditor, type RowDescriptor } from "./discover/RowEditor";
+
+// sliderIdsFromRowKeys converts RowEditor's ordered key list back to the full
+// id set reorderSliders demands. Bare stringified ids (not Discover's
+// "slider:{id}" prefix) — RowDescriptor.key only has to be unique within one
+// RowEditor instance, and this screen's list shares its namespace with nothing.
+// Exported so the exact body POSTed to /reorder has a unit test of its own,
+// independent of the pointer-drag simulation that covers it end to end.
+export function sliderIdsFromRowKeys(orderedKeys: string[]): number[] {
+  return orderedKeys.map(Number);
+}
 
 // targetsAllowedFor mirrors internal/discoversliders.resolveSlider's target
 // restriction: studio is movie-catalog-only, network is TV-catalog-only —
@@ -340,69 +368,6 @@ const SliderForm: Component<{
   );
 };
 
-// SliderRow is one existing slider's list entry: position controls, summary,
-// an inline enabled toggle (immediate save, no separate form), Edit/Delete.
-const SliderRow: Component<{
-  slider: Slider;
-  isFirst: boolean;
-  isLast: boolean;
-  editing: boolean;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onToggleEnabled: () => void;
-}> = (props) => (
-  <li class="flex items-center gap-3 border-b border-border/60 py-2">
-    <div class="flex flex-col gap-0.5">
-      <button
-        type="button"
-        aria-label={`Move ${props.slider.title} up`}
-        class="rounded border border-border px-1 text-xs text-fg disabled:opacity-30"
-        disabled={props.isFirst}
-        onClick={props.onMoveUp}
-      >
-        ▲
-      </button>
-      <button
-        type="button"
-        aria-label={`Move ${props.slider.title} down`}
-        class="rounded border border-border px-1 text-xs text-fg disabled:opacity-30"
-        disabled={props.isLast}
-        onClick={props.onMoveDown}
-      >
-        ▼
-      </button>
-    </div>
-    <div class="min-w-0 flex-1">
-      <div class="truncate text-sm text-fg">{props.slider.title}</div>
-      <div class="truncate text-xs text-muted">
-        {FILTER_TYPE_LABELS[props.slider.filterType as FilterType] ??
-          props.slider.filterType}
-        {props.slider.filterValue ? ` · ${props.slider.filterValue}` : ""} ·{" "}
-        {props.slider.target}
-      </div>
-    </div>
-    <label class="flex items-center gap-1 text-xs text-muted">
-      <input
-        type="checkbox"
-        aria-label={`${props.slider.title} enabled`}
-        checked={props.slider.enabled}
-        onChange={props.onToggleEnabled}
-      />
-      enabled
-    </label>
-    <div class="flex gap-1">
-      <Button class="!px-2 !py-1 !text-xs" onClick={props.onEdit}>
-        {props.editing ? "Editing…" : "Edit"}
-      </Button>
-      <Button class="!px-2 !py-1 !text-xs" onClick={props.onDelete}>
-        Delete
-      </Button>
-    </div>
-  </li>
-);
-
 // SliderAdminSection is the Settings "Sliders" tab's whole panel.
 export const SliderAdminSection: Component = () => {
   const [sliders, { refetch }] = createResource(fetchSliders, {
@@ -417,13 +382,15 @@ export const SliderAdminSection: Component = () => {
     void refetch();
   };
 
-  const move = async (id: number, direction: -1 | 1) => {
-    const list = sliders() ?? [];
-    const idx = list.findIndex((s) => s.id === id);
-    const swapWith = idx + direction;
-    if (idx < 0 || swapWith < 0 || swapWith >= list.length) return;
-    const ids = list.map((s) => s.id);
-    [ids[idx], ids[swapWith]] = [ids[swapWith]!, ids[idx]!];
+  const sliderForKey = (key: string): Slider | undefined =>
+    (sliders() ?? []).find((s) => String(s.id) === key);
+
+  // persistReorder is the tail of the deleted move(): RowEditor computes the
+  // new key order on drop, sliderIdsFromRowKeys maps it back to ids, and the
+  // POST body is still the full id set exactly once — Store.Reorder rejects
+  // anything else, so a stale list (a row created/deleted in another tab)
+  // surfaces as listError rather than silently half-applying.
+  const persistReorder = async (ids: number[]) => {
     setListError("");
     try {
       await reorderSliders(ids);
@@ -433,7 +400,13 @@ export const SliderAdminSection: Component = () => {
     }
   };
 
-  const remove = async (slider: Slider) => {
+  // remove/toggleEnabled keep their original bodies; only their entry changed —
+  // RowEditor hands back the RowDescriptor that was activated, so each starts
+  // with a key→slider lookup. RowEditor does NOT confirm on its own, so the
+  // confirm() here is what preserves the Delete-confirms behaviour.
+  const remove = async (descriptor: RowDescriptor) => {
+    const slider = sliderForKey(descriptor.key);
+    if (!slider) return;
     if (!confirm(`Delete the "${slider.title}" slider?`)) return;
     setListError("");
     try {
@@ -445,7 +418,9 @@ export const SliderAdminSection: Component = () => {
     }
   };
 
-  const toggleEnabled = async (slider: Slider) => {
+  const toggleEnabled = async (descriptor: RowDescriptor) => {
+    const slider = sliderForKey(descriptor.key);
+    if (!slider) return;
     setListError("");
     try {
       await updateSlider(slider.id, {
@@ -467,59 +442,71 @@ export const SliderAdminSection: Component = () => {
     return (sliders() ?? []).find((s) => s.id === e);
   };
 
-  return (
-    <Card title="Custom Discover sliders">
-      <Muted class="mb-3">
-        Admin-defined rows that appear on Discover alongside the built-in
-        Trending/Popular rows — filter by genre, keyword, studio, network, or
-        one of the fixed feeds, restrict to movies/TV/both, and control
-        display order.
-      </Muted>
-      <Show when={sliders.error}>
-        <ErrorText>{(sliders.error as Error)?.message}</ErrorText>
-      </Show>
-      <Show when={listError()}>
-        <ErrorText>{listError()}</ErrorText>
-      </Show>
-      <Show
-        when={(sliders() ?? []).length > 0}
-        fallback={<Muted>No custom sliders yet.</Muted>}
-      >
-        <ul>
-          <For each={sliders()}>
-            {(slider, i) => (
-              <SliderRow
-                slider={slider}
-                isFirst={i() === 0}
-                isLast={i() === (sliders() ?? []).length - 1}
-                editing={editing() === slider.id}
-                onMoveUp={() => void move(slider.id, -1)}
-                onMoveDown={() => void move(slider.id, 1)}
-                onEdit={() => setEditing(slider.id)}
-                onDelete={() => void remove(slider)}
-                onToggleEnabled={() => void toggleEnabled(slider)}
-              />
-            )}
-          </For>
-        </ul>
-      </Show>
+  // Title-only body, matching Discover's plain rows: the filter/target subtitle
+  // the old list entry carried is deliberately dropped, and Edit is carried as
+  // a RowAction because RowEditor's built-in controls are enabled-toggle +
+  // Delete only. No onToggleHidden is passed — every row here is an "entity"
+  // row with its own CRUD, so there is no structural row to show/hide.
+  const descriptors = (): RowDescriptor[] =>
+    (sliders() ?? []).map((s) => ({
+      key: String(s.id),
+      label: s.title,
+      kind: "entity" as const,
+      enabled: s.enabled,
+      actions: [
+        {
+          label: `Edit ${s.title}`,
+          icon: <Pencil size={14} />,
+          onClick: () => setEditing(s.id),
+        },
+      ],
+    }));
 
-      <Show
-        when={editing() !== null}
-        fallback={
-          <div class="mt-3">
-            <Button variant="primary" onClick={() => setEditing("new")}>
-              + New slider
-            </Button>
-          </div>
-        }
-      >
-        <SliderForm
-          slider={editingSlider()}
-          onSaved={afterSave}
-          onCancel={closeForm}
-        />
-      </Show>
-    </Card>
+  // RowEditor renders its own <Card>, so this is NOT wrapped in another one.
+  // title/description/footer exist precisely so a Settings host can supply its
+  // own heading, copy + error lines, and create affordance. The title string is
+  // load-bearing — Settings.test.tsx pins it as the Sliders panel's heading.
+  return (
+    <RowEditor
+      title="Custom Discover sliders"
+      description={
+        <>
+          <Muted class="mb-3">
+            Admin-defined rows that appear on Discover alongside the built-in
+            Trending/Popular rows — filter by genre, keyword, studio, network,
+            or one of the fixed feeds, restrict to movies/TV/both, and drag the
+            ⠿ handle to control display order.
+          </Muted>
+          <Show when={sliders.error}>
+            <ErrorText>{(sliders.error as Error)?.message}</ErrorText>
+          </Show>
+          <Show when={listError()}>
+            <ErrorText>{listError()}</ErrorText>
+          </Show>
+        </>
+      }
+      footer={
+        <Show
+          when={editing() !== null}
+          fallback={
+            <div class="mt-3">
+              <Button variant="primary" onClick={() => setEditing("new")}>
+                + New slider
+              </Button>
+            </div>
+          }
+        >
+          <SliderForm
+            slider={editingSlider()}
+            onSaved={afterSave}
+            onCancel={closeForm}
+          />
+        </Show>
+      }
+      rows={descriptors()}
+      onReorder={(keys) => void persistReorder(sliderIdsFromRowKeys(keys))}
+      onToggleEnabled={(r) => void toggleEnabled(r)}
+      onDelete={(r) => void remove(r)}
+    />
   );
 };

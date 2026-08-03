@@ -3,23 +3,31 @@
 // AdultRowAdmin's list/form/toggle/Edit/Delete shape, with two deliberate
 // departures the plan calls for (ralplan-adult-rss-feed-settings-relocation.md):
 //
-//   1. Reorder is DRAG-AND-DROP (a parallel sibling of RowEditor.tsx's
-//      @thisbeyond/solid-dnd primitives, not AdultRowAdmin's up/down buttons —
-//      the plan explicitly rejects the button reorder as a UX regression from
-//      the drag reorder Discover already had). The reorder API
-//      (reorderRssFeeds → Store.Reorder) requires the FULL set of every existing
-//      feed's ids exactly once, across ALL targets — Mainstream can create
-//      movie/tv feeds too — so a drag among the adult feeds is mapped back onto
-//      the full id list (reorderAdultFeedIds) before it's sent, never an
-//      adult-only subset (which would 422 as ErrReorderMismatch whenever a
-//      non-adult feed exists).
+//   1. Reorder is DRAG-AND-DROP, now via the SHARED RowEditor component
+//      (screens/discover/RowEditor.tsx) — the same one Discover, SliderAdmin
+//      and AdultRowAdmin render, so there is exactly one set of drag mechanics
+//      in the app. This file used to carry its own parallel @thisbeyond/solid-dnd
+//      wiring; that duplication is gone. The reorder API (reorderRssFeeds →
+//      Store.Reorder) still requires the FULL set of every existing feed's ids
+//      exactly once, across ALL targets — Mainstream can create movie/tv feeds
+//      too — so a drag among the adult feeds is still mapped back onto the full
+//      id list (reorderAdultFeedIds) before it's sent, never an adult-only
+//      subset (which would 422 as ErrReorderMismatch whenever a non-adult feed
+//      exists). RowEditor's sortable keys are bare stringified feed ids, the
+//      exact key vocabulary this file's own wiring already used, so that
+//      mapping — and its unit tests — are unchanged.
 //   2. Protocol is a DERIVED, read-only fact, never an operator-typed field:
 //      the add/edit form has no protocol input. Add auto-detects server-side;
 //      an existing feed re-detects via Re-scan; an inconclusive detection (Add
-//      or Re-scan) falls back to a one-time manual pick pop-up. Every PUT this
-//      panel makes reconstructs the FULL update body from the current row
-//      (protocol/enabled/target carried over, feedUrl null to preserve the
-//      masked secret) so an unrelated save never clears a field.
+//      or Re-scan) falls back to a one-time manual pick pop-up
+//      (ProtocolFallbackDialog). The invariant is unchanged but its SURFACE
+//      moved: RowEditor rows are title-only, so the old per-row `protocol:`
+//      subtitle is gone and the detected protocol is now reported by
+//      ProtocolStatusDialog — on Re-scan (scanning → detected/error) and on a
+//      successful Add. That dialog is status-only and NEVER collects a
+//      protocol. Every PUT this panel makes reconstructs the FULL update body
+//      from the current row (protocol/enabled/target carried over, feedUrl null
+//      to preserve the masked secret) so an unrelated save never clears a field.
 
 import {
   type Component,
@@ -28,15 +36,8 @@ import {
   createResource,
   createSignal,
 } from "solid-js";
-import {
-  DragDropProvider,
-  DragDropSensors,
-  SortableProvider,
-  closestCenter,
-  createSortable,
-  transformStyle,
-  type DragEvent,
-} from "@thisbeyond/solid-dnd";
+import Pencil from "lucide-solid/icons/pencil";
+import RefreshCw from "lucide-solid/icons/refresh-cw";
 import {
   PROTOCOLS,
   PROTOCOL_UNDETECTED,
@@ -55,7 +56,6 @@ import {
 } from "../../api/rssFeeds";
 import {
   Button,
-  Card,
   ErrorText,
   Muted,
   SaveStatus,
@@ -63,7 +63,7 @@ import {
   labelClass,
   useSaveStatus,
 } from "../../components/ui";
-import { reorderKeys } from "../discover/RowEditor";
+import { RowEditor, type RowDescriptor } from "../discover/RowEditor";
 import { Modal } from "../discover/shared";
 
 // reorderAdultFeedIds maps a new order of the ADULT feeds back onto the full
@@ -176,64 +176,6 @@ const RssFeedForm: Component<{
   );
 };
 
-// FeedRow is one existing feed's sortable list entry: a drag grip (the ONLY
-// drag initiator, so the controls stay independently clickable), title, the
-// read-only detected protocol, an inline Enabled toggle (immediate save),
-// Edit/Re-scan/Delete.
-const FeedRow: Component<{
-  feed: RssFeed;
-  editing: boolean;
-  onEdit: () => void;
-  onRescan: () => void;
-  onDelete: () => void;
-  onToggleEnabled: () => void;
-}> = (props) => {
-  const sortable = createSortable(String(props.feed.id));
-  return (
-    <li
-      ref={sortable.ref}
-      style={transformStyle(sortable.transform)}
-      class="flex items-center gap-3 border-b border-border/60 py-2"
-      classList={{ "opacity-25": sortable.isActiveDraggable }}
-    >
-      <span
-        {...sortable.dragActivators}
-        role="button"
-        aria-label={`Drag ${props.feed.title}`}
-        class="cursor-grab touch-none select-none rounded border border-border px-1.5 text-xs text-muted"
-      >
-        ⠿
-      </span>
-      <div class="min-w-0 flex-1">
-        <div class="truncate text-sm text-fg">{props.feed.title}</div>
-        <div class="truncate text-xs text-muted">
-          protocol: <span>{props.feed.protocol}</span>
-        </div>
-      </div>
-      <label class="flex items-center gap-1 text-xs text-muted">
-        <input
-          type="checkbox"
-          aria-label={`${props.feed.title} enabled`}
-          checked={props.feed.enabled}
-          onChange={props.onToggleEnabled}
-        />
-        enabled
-      </label>
-      <div class="flex gap-1">
-        <Button class="!px-2 !py-1 !text-xs" onClick={props.onEdit}>
-          {props.editing ? "Editing…" : "Edit"}
-        </Button>
-        <Button class="!px-2 !py-1 !text-xs" onClick={props.onRescan}>
-          Re-scan
-        </Button>
-        <Button class="!px-2 !py-1 !text-xs" onClick={props.onDelete}>
-          Delete
-        </Button>
-      </div>
-    </li>
-  );
-};
-
 // ProtocolFallbackDialog is the one-time manual protocol pick shown when Add or
 // Re-scan detection is inconclusive (the backend's protocol_undetected 422).
 // It only collects the operator's torrent/usenet choice; the caller (onPick)
@@ -298,6 +240,47 @@ const ProtocolFallbackDialog: Component<{
   );
 };
 
+// ProtocolStatus is what ProtocolStatusDialog renders. Three phases, one
+// signal — a null signal means no dialog. `protocol` is the generated DTO's
+// plain string, NOT the narrower RssFeedProtocol: it is echoed straight from
+// whatever the backend reported for display, so narrowing it here would be an
+// unchecked assertion about a field tygo emits as a bare string.
+type ProtocolStatus =
+  | { phase: "scanning"; title: string }
+  | { phase: "detected"; title: string; protocol: string }
+  | { phase: "error"; title: string; message: string };
+
+// ProtocolStatusDialog surfaces protocol auto-detection status now that rows
+// are title-only and no longer carry a `protocol:` subtitle. Two triggers: an
+// explicit Re-scan click (scanning → detected/error), and a successful Add
+// (straight to detected, so the operator learns what was auto-detected).
+// It NEVER collects a protocol — that stays ProtocolFallbackDialog's job on
+// the inconclusive-422 path only, preserving this file's "protocol is a
+// derived, read-only fact, never an operator-typed field" invariant.
+// Modal supplies the single Close button in its own header, so this body adds
+// none — a second one would make "Close" ambiguous.
+const ProtocolStatusDialog: Component<{
+  status: ProtocolStatus;
+  onClose: () => void;
+}> = (props) => {
+  const body = () => {
+    const s = props.status;
+    if (s.phase === "scanning") return <Muted>Re-scanning “{s.title}”…</Muted>;
+    if (s.phase === "detected")
+      return (
+        <div class="text-sm text-fg">
+          Detected protocol for “{s.title}”: <strong>{s.protocol}</strong>
+        </div>
+      );
+    return <ErrorText>{s.message}</ErrorText>;
+  };
+  return (
+    <Modal title="Protocol detection" onClose={props.onClose}>
+      {body()}
+    </Modal>
+  );
+};
+
 // Fallback carries the context needed to retry once the operator picks a
 // protocol: an Add retry re-submits the SAME stashed create body (the backend
 // created nothing on the inconclusive attempt, so this yields exactly one row,
@@ -315,6 +298,20 @@ export const RssFeedAdminSection: Component = () => {
   const [editing, setEditing] = createSignal<number | "new" | null>(null);
   const [listError, setListError] = createSignal("");
   const [fallback, setFallback] = createSignal<Fallback | null>(null);
+  const [status, setStatus] = createSignal<ProtocolStatus | null>(null);
+
+  // statusToken guards ProtocolStatusDialog against two races. Every path that
+  // reports a status captures a fresh token before its first await and writes
+  // setStatus only while the token is still current, so (a) a dialog the
+  // operator dismissed can't be resurrected by a slow response landing after
+  // the fact — closing the dialog moves the token too, which is what makes a
+  // dismissal stick — and (b) of two overlapping scans (a rapid double-click,
+  // or a Re-scan started right after an Add) the LAST STARTED one owns the
+  // dialog, rather than whichever happens to resolve last showing feed B's
+  // protocol under feed A's title. A plain `let` rather than a signal on
+  // purpose: it is an identity marker read imperatively after an await, never
+  // rendered, so making it reactive would only add a spurious dependency.
+  let statusToken = {};
 
   // Only adult feeds are managed here; movie/tv feeds live in Mainstream's own
   // (deferred) UI. The full list is still kept for the reorder id mapping.
@@ -330,7 +327,9 @@ export const RssFeedAdminSection: Component = () => {
   // submitForm handles both the add and edit submits from RssFeedForm. Edit
   // reconstructs the FULL update body from the current row (only title/target,
   // and URL if the operator typed one, come from the form). Add omits protocol
-  // so the backend auto-detects; an inconclusive detection surfaces as a thrown
+  // so the backend auto-detects; a confident detection opens the status dialog
+  // (the only place the operator ever learns what was detected, now that rows
+  // are title-only), while an inconclusive one surfaces as a thrown
   // PROTOCOL_UNDETECTED, which opens the fallback pop-up (stashing the create
   // body for a genuine same-request retry) instead of erroring.
   const submitForm = async (v: {
@@ -359,9 +358,19 @@ export const RssFeedAdminSection: Component = () => {
       target: v.target,
       enabled: true,
     };
+    const token = (statusToken = {});
     try {
-      await createRssFeed(body);
+      const created = await createRssFeed(body);
       closeForm();
+      // Only the STATUS REPORT is stale-able here — a superseded Add still
+      // created a real feed, so closeForm/refetch run unconditionally and only
+      // the dialog write is skipped.
+      if (statusToken === token)
+        setStatus({
+          phase: "detected",
+          title: created.title,
+          protocol: created.protocol,
+        });
       await refetch();
     } catch (e) {
       if (e instanceof Error && e.message === PROTOCOL_UNDETECTED) {
@@ -389,17 +398,45 @@ export const RssFeedAdminSection: Component = () => {
     }
   };
 
+  // rescan reports progress and the result through ProtocolStatusDialog. The
+  // inconclusive (422) branch is unchanged: it closes the status dialog and
+  // hands off to the manual-pick fallback exactly as before. The catch
+  // deliberately no longer writes listError — the dialog owns the message.
   const rescan = async (feed: RssFeed) => {
     setListError("");
+    const token = (statusToken = {});
+    setStatus({ phase: "scanning", title: feed.title });
     try {
       const result = await rescanRssFeed(feed.id);
+      const current = () => statusToken === token;
       if (isProtocolUndetected(result)) {
-        setFallback({ mode: "rescan", feed });
+        // A dismissed or superseded scan must not pop the manual picker
+        // either — that is the same resurrection bug wearing a different
+        // dialog.
+        if (current()) {
+          setStatus(null);
+          setFallback({ mode: "rescan", feed });
+        }
         return;
       }
+      if (current())
+        setStatus({
+          phase: "detected",
+          title: feed.title,
+          protocol: result.protocol,
+        });
+      // Deliberately OUTSIDE the guard: a superseded scan's detection still
+      // landed server-side, and feeds() is what every PUT body this panel
+      // reconstructs reads its protocol from — skipping the refetch would
+      // silently resend the pre-scan protocol on the next save.
       await refetch();
     } catch (e) {
-      setListError((e as Error).message);
+      if (statusToken !== token) return;
+      setStatus({
+        phase: "error",
+        title: feed.title,
+        message: (e as Error).message,
+      });
     }
   };
 
@@ -446,17 +483,6 @@ export const RssFeedAdminSection: Component = () => {
     }
   };
 
-  const onDragEnd = ({ draggable, droppable }: DragEvent) => {
-    if (!droppable) return;
-    const adultIds = adultFeeds().map((f) => f.id);
-    const newAdultOrder = reorderKeys(
-      adultIds.map(String),
-      String(draggable.id),
-      String(droppable.id),
-    ).map(Number);
-    void persistReorder(reorderAdultFeedIds(feeds() ?? [], newAdultOrder));
-  };
-
   const fallbackTitle = (): string => {
     const fb = fallback();
     if (!fb) return "";
@@ -469,64 +495,86 @@ export const RssFeedAdminSection: Component = () => {
     return fb?.mode === "add" ? fb.body.feedUrl : undefined;
   };
 
-  return (
-    <Card title="RSS feeds">
-      <Muted class="mb-3">
-        Admin-defined raw RSS feeds for Adult Discover (NZBGeek saved-search
-        style URLs). The download protocol is detected automatically when a feed
-        is added, re-detectable per feed with Re-scan, and only asked for
-        manually when detection is inconclusive.
-      </Muted>
-      <Show when={feeds.error}>
-        <ErrorText>{(feeds.error as Error)?.message}</ErrorText>
-      </Show>
-      <Show when={listError()}>
-        <ErrorText>{listError()}</ErrorText>
-      </Show>
-      <Show
-        when={adultFeeds().length > 0}
-        fallback={<Muted>No RSS feeds yet.</Muted>}
-      >
-        <DragDropProvider
-          onDragEnd={onDragEnd}
-          collisionDetector={closestCenter}
-        >
-          <DragDropSensors />
-          <SortableProvider ids={adultFeeds().map((f) => String(f.id))}>
-            <ul>
-              <For each={adultFeeds()}>
-                {(feed) => (
-                  <FeedRow
-                    feed={feed}
-                    editing={editing() === feed.id}
-                    onEdit={() => setEditing(feed.id)}
-                    onRescan={() => void rescan(feed)}
-                    onDelete={() => void remove(feed)}
-                    onToggleEnabled={() => void toggleEnabled(feed)}
-                  />
-                )}
-              </For>
-            </ul>
-          </SortableProvider>
-        </DragDropProvider>
-      </Show>
+  // RowEditor reports the new order as its own row keys, which are the bare
+  // stringified feed ids descriptors() sets — so Number-mapping them back is
+  // exactly the adult-only order reorderAdultFeedIds expects.
+  const feedByKey = (key: string): RssFeed | undefined =>
+    adultFeeds().find((f) => String(f.id) === key);
 
-      <Show
-        when={editing() !== null}
-        fallback={
-          <div class="mt-3">
-            <Button variant="primary" onClick={() => setEditing("new")}>
-              + New feed
-            </Button>
-          </div>
+  const descriptors = (): RowDescriptor[] =>
+    adultFeeds().map((f) => ({
+      key: String(f.id),
+      label: f.title,
+      kind: "entity",
+      enabled: f.enabled,
+      actions: [
+        {
+          label: `Edit ${f.title}`,
+          icon: <Pencil size={14} />,
+          onClick: () => setEditing(f.id),
+        },
+        {
+          label: `Re-scan ${f.title}`,
+          icon: <RefreshCw size={14} />,
+          onClick: () => void rescan(f),
+        },
+      ],
+    }));
+
+  return (
+    <>
+      <RowEditor
+        title="RSS feeds"
+        description={
+          <>
+            <Muted class="mb-3">
+              Admin-defined raw RSS feeds for Adult Discover (NZBGeek
+              saved-search style URLs). The download protocol is detected
+              automatically when a feed is added, re-detectable per feed with
+              Re-scan, and only asked for manually when detection is
+              inconclusive.
+            </Muted>
+            <Show when={feeds.error}>
+              <ErrorText>{(feeds.error as Error)?.message}</ErrorText>
+            </Show>
+            <Show when={listError()}>
+              <ErrorText>{listError()}</ErrorText>
+            </Show>
+          </>
         }
-      >
-        <RssFeedForm
-          feed={editingFeed()}
-          onSave={submitForm}
-          onCancel={closeForm}
-        />
-      </Show>
+        footer={
+          <Show
+            when={editing() !== null}
+            fallback={
+              <div class="mt-3">
+                <Button variant="primary" onClick={() => setEditing("new")}>
+                  + New feed
+                </Button>
+              </div>
+            }
+          >
+            <RssFeedForm
+              feed={editingFeed()}
+              onSave={submitForm}
+              onCancel={closeForm}
+            />
+          </Show>
+        }
+        rows={descriptors()}
+        onReorder={(keys) =>
+          void persistReorder(
+            reorderAdultFeedIds(feeds() ?? [], keys.map(Number)),
+          )
+        }
+        onToggleEnabled={(r) => {
+          const f = feedByKey(r.key);
+          if (f) void toggleEnabled(f);
+        }}
+        onDelete={(r) => {
+          const f = feedByKey(r.key);
+          if (f) void remove(f);
+        }}
+      />
 
       <Show when={fallback()}>
         <ProtocolFallbackDialog
@@ -536,6 +584,21 @@ export const RssFeedAdminSection: Component = () => {
           onPick={applyFallback}
         />
       </Show>
-    </Card>
+
+      <Show when={status()}>
+        {(s) => (
+          <ProtocolStatusDialog
+            status={s()}
+            onClose={() => {
+              // Moving the token is what makes a dismissal STICK: without it
+              // an in-flight scan's own token still matches on arrival and it
+              // reopens the dialog the operator just closed.
+              statusToken = {};
+              setStatus(null);
+            }}
+          />
+        )}
+      </Show>
+    </>
   );
 };

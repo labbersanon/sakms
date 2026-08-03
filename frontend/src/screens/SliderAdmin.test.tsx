@@ -1,7 +1,21 @@
 // SliderAdmin tests — create (fixed feed + reference-list-backed filter
-// types), edit, delete, reorder (button-based), enabled toggle, and the
+// types), edit, delete, reorder (drag-and-drop), enabled toggle, and the
 // target auto-correction for studio (movie-only) / network (tv-only) filter
 // types. Conventions mirror Settings.test.tsx (stubFetch/defaultGet/Call).
+//
+// This screen no longer owns its list rendering: it renders Discover's
+// <RowEditor> verbatim, so the row surface asserted here is RowEditor's — a ⠿
+// grip handle per row (drag-and-drop, NOT the ▲▼ buttons this file used to
+// test), a title-only body with no filter/target subtitle, an Enabled
+// checkbox, Delete, and this screen's one injected Edit RowAction.
+//
+// A real solid-dnd pointer drag IS simulable here — see dragRow below, copied
+// from AdultRowAdmin.test.tsx rather than hoisted into a shared helper (a
+// handful of callers duplicating is this repo's stance; RssFeedAdmin.test.tsx
+// carries a third copy). The "not simulable in jsdom" posture the earlier tests
+// recorded was true only of a drag against jsdom's default all-zero
+// getBoundingClientRect, which collapses every droppable onto one point; the
+// stale claim RowEditor.test.tsx used to carry has since been corrected there.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -11,7 +25,8 @@ import {
   waitFor,
   within,
 } from "@solidjs/testing-library";
-import { SliderAdminSection } from "./SliderAdmin";
+import { reorderKeys } from "./discover/RowEditor";
+import { SliderAdminSection, sliderIdsFromRowKeys } from "./SliderAdmin";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -78,14 +93,70 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// dragRow drives a REAL solid-dnd pointer drag of the row at fromIndex onto the
+// slot of the row at toIndex. jsdom computes no layout, so every
+// getBoundingClientRect is all-zero and solid-dnd's closestCenter sees every
+// droppable at the same point; stubbing a 100px-tall rect per row is what makes
+// the collision answer meaningful. The stubs are ELEMENT-LOCAL on purpose —
+// patching Element.prototype would leak into every other test in this file.
+// The [aria-label^="Drag "] filter is load-bearing too: FilterValuePicker's
+// keyword-result <li>s would otherwise be rect-stubbed as if they were rows.
+// Then: pointerdown on the ⠿ grip (the only activator), a pointermove past the
+// sensor's 10px activation distance, and pointerup to commit. Landing the move
+// exactly on the target row's centre is what makes the resulting order exact.
+const dragRow = (fromIndex: number, toIndex: number) => {
+  const lis = Array.from(document.querySelectorAll("li")).filter((li) =>
+    li.querySelector('[aria-label^="Drag "]'),
+  );
+  lis.forEach((li, i) => {
+    li.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: i * 100,
+        left: 0,
+        top: i * 100,
+        right: 500,
+        bottom: i * 100 + 100,
+        width: 500,
+        height: 100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+  });
+  const handle = lis[fromIndex]!.querySelector(
+    '[aria-label^="Drag "]',
+  ) as HTMLElement;
+  fireEvent.pointerDown(handle, {
+    clientX: 250,
+    clientY: fromIndex * 100 + 50,
+    button: 0,
+  });
+  const to = { clientX: 250, clientY: toIndex * 100 + 50 };
+  fireEvent.pointerMove(document, to);
+  fireEvent.pointerUp(document, to);
+};
+
+const isReorder = (c: Call) =>
+  c.method === "POST" && c.url.includes("/reorder");
+
 describe("SliderAdminSection — list", () => {
-  it("shows the empty state with no sliders", async () => {
+  it("shows RowEditor's empty state — and STILL offers '+ New slider' (C4)", async () => {
     stubFetch();
     render(() => <SliderAdminSection />);
-    expect(await screen.findByText("No custom sliders yet.")).toBeInTheDocument();
+    // The copy is RowEditor's own ("No custom sliders yet." was this screen's,
+    // and died with its list block).
+    expect(await screen.findByText("No rows yet.")).toBeInTheDocument();
+    // The create affordance lives in RowEditor's `footer`, which is a SIBLING
+    // of the empty-state <Show>, never nested inside it. Nested, a fresh
+    // install would render "No rows yet." with no way to create its first
+    // slider — the single most likely way to break this conversion.
+    expect(screen.getByText("+ New slider")).toBeInTheDocument();
   });
 
-  it("lists an existing slider with its summary", async () => {
+  // The row is title-only now: the "Trending · mixed" subtitle this test used
+  // to pin is deliberately gone. Asserting only its absence would record the
+  // loss without recording where it went, so this pins the MOVE — the filter
+  // type is still reachable, one Edit click away, in SliderForm.
+  it("renders a title-only row; the filter summary moved into the form", async () => {
     stubFetch((url) => {
       if (url.includes("/api/discover/sliders") && !url.includes("/reorder"))
         return jsonResponse([slider({ id: 1, title: "Trending Movies" })]);
@@ -93,7 +164,26 @@ describe("SliderAdminSection — list", () => {
     });
     render(() => <SliderAdminSection />);
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
-    expect(screen.getByText(/Trending · mixed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Trending · mixed/)).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Edit Trending Movies"));
+    const filterType = (await screen.findByLabelText(
+      "Filter type",
+    )) as HTMLSelectElement;
+    expect(filterType.value).toBe("trending");
+  });
+
+  // AC3: the Edit action renders a real icon-library SVG, not a unicode glyph.
+  it("the Edit action renders an <svg> icon and no unicode glyph", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/discover/sliders") && !url.includes("/reorder"))
+        return jsonResponse([slider({ id: 1, title: "Trending Movies" })]);
+      return undefined;
+    });
+    render(() => <SliderAdminSection />);
+    const edit = await screen.findByLabelText("Edit Trending Movies");
+    expect(edit.querySelector("svg")).toBeTruthy();
+    expect(edit.textContent).toBe("");
   });
 });
 
@@ -287,7 +377,11 @@ describe("SliderAdminSection — edit", () => {
       return undefined;
     });
     render(() => <SliderAdminSection />);
-    fireEvent.click(await screen.findByText("Edit"));
+    // The Edit affordance is an icon RowAction now — its aria-label is the
+    // only text it carries. (The old "Editing…" button-text swap is gone with
+    // it; nothing asserted that string, and the form rendering in RowEditor's
+    // footer below the list is the indicator.)
+    fireEvent.click(await screen.findByLabelText("Edit Old Title"));
     const titleInput = (await screen.findByLabelText(
       "Slider title",
     )) as HTMLInputElement;
@@ -335,8 +429,8 @@ describe("SliderAdminSection — delete", () => {
 });
 
 describe("SliderAdminSection — reorder", () => {
-  it("moving the second slider up sends the full new id order", async () => {
-    const calls = stubFetch((url) => {
+  it("every row carries a ⠿ drag handle and no ▲▼ buttons survive", async () => {
+    stubFetch((url) => {
       if (url.includes("/api/discover/sliders") && !url.includes("/reorder"))
         return jsonResponse([
           slider({ id: 1, title: "First" }),
@@ -346,31 +440,68 @@ describe("SliderAdminSection — reorder", () => {
     });
     render(() => <SliderAdminSection />);
     await screen.findByText("First");
-    const secondRow = screen.getByText("Second").closest("li")!;
-    fireEvent.click(within(secondRow).getByLabelText("Move Second up"));
-    await waitFor(() =>
-      expect(
-        calls.some(
-          (c) => c.method === "POST" && c.url.includes("/reorder"),
-        ),
-      ).toBe(true),
-    );
-    const reorder = calls.find(
-      (c) => c.method === "POST" && c.url.includes("/reorder"),
-    )!;
-    expect(reorder.body).toEqual({ ids: [2, 1] });
+    expect(screen.getByLabelText("Drag First")).toBeTruthy();
+    expect(screen.getByLabelText("Drag Second")).toBeTruthy();
+    // The ▲▼ pair this screen used to own is gone entirely — Settings and
+    // Discover now share ONE reorder mechanism.
+    expect(screen.queryByLabelText(/Move .* up/)).toBeNull();
+    expect(screen.queryByLabelText(/Move .* down/)).toBeNull();
   });
 
-  it("the first slider's Up button is disabled", async () => {
-    stubFetch((url) => {
+  it("a drag POSTs /reorder with the full new id order", async () => {
+    const calls = stubFetch((url) => {
       if (url.includes("/api/discover/sliders") && !url.includes("/reorder"))
-        return jsonResponse([slider({ id: 1, title: "Only One" })]);
+        return jsonResponse([
+          slider({ id: 1, title: "First" }),
+          slider({ id: 2, title: "Second" }),
+          slider({ id: 3, title: "Third" }),
+        ]);
       return undefined;
     });
     render(() => <SliderAdminSection />);
-    await screen.findByText("Only One");
-    expect(screen.getByLabelText("Move Only One up")).toBeDisabled();
-    expect(screen.getByLabelText("Move Only One down")).toBeDisabled();
+    await screen.findByLabelText("Drag First");
+    dragRow(0, 2);
+    await waitFor(() => expect(calls.some(isReorder)).toBe(true));
+    // "First" moved into "Third"'s slot — the full id set, every id exactly
+    // once, in the new display order (Store.Reorder rejects anything else).
+    expect(calls.find(isReorder)!.body).toEqual({ ids: [2, 3, 1] });
+  });
+
+  // The pure mapping the drag test exercises end to end, pinned on its own so
+  // the exact POST body is covered without a simulated pointer — this is what
+  // justifies sliderIdsFromRowKeys being exported rather than inlined.
+  it("sliderIdsFromRowKeys maps reorderKeys' output back to numeric ids", () => {
+    expect(sliderIdsFromRowKeys(reorderKeys(["1", "2"], "2", "1"))).toEqual([
+      2, 1,
+    ]);
+    expect(
+      sliderIdsFromRowKeys(reorderKeys(["11", "22", "33"], "11", "33")),
+    ).toEqual([22, 33, 11]);
+  });
+
+  // R3: the reorder-failure message lives in RowEditor's `description` slot
+  // now (above the list, where it always was). Moving it there must not have
+  // made it invisible — a 400 from Store.Reorder is the operator's only sign
+  // the drag didn't persist.
+  it("a failed reorder still renders listError", async () => {
+    stubFetch((url, init) => {
+      if ((init?.method ?? "GET").toUpperCase() === "POST" &&
+          url.includes("/reorder"))
+        return new Response(JSON.stringify({ error: "slider set changed" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (url.includes("/api/discover/sliders") && !url.includes("/reorder"))
+        return jsonResponse([
+          slider({ id: 1, title: "First" }),
+          slider({ id: 2, title: "Second" }),
+        ]);
+      return undefined;
+    });
+    render(() => <SliderAdminSection />);
+    await screen.findByLabelText("Drag First");
+    dragRow(0, 1);
+    expect(await screen.findByText(/slider set changed/)).toBeInTheDocument();
   });
 });
 

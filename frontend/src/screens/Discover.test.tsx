@@ -716,6 +716,136 @@ describe("Discover — row-editor Edit mode", () => {
   });
 });
 
+// AC4 / D9's enforcement mechanism, following the precedent CLAUDE.md names for
+// behavioural guarantees of this shape (TestAdultDescriptionMakesNoProwlarrCall,
+// and the sibling "Adult never touches the per-screen row-order KV store"
+// describe further down this file): a test, not a type that makes it
+// impossible. RowEditor's `actions` slot is OPTIONAL and generic, and the same
+// component is now rendered by four other screens — SliderAdmin (Edit),
+// RssFeedAdmin (Edit + Re-scan) and AdultRowAdmin (Edit) all inject actions
+// into it. Nothing structural stops someone from threading those descriptors
+// (or a copy of them) into Discover's own call sites, where the whole point is
+// that a row carries reorder/show-hide/enable/delete and NOTHING that acts on
+// the underlying entity's configuration. Discover's Mainstream and Adult call
+// sites deliberately pass no `actions` at all; this is what keeps it that way.
+//
+// Asserted STRUCTURALLY rather than as "nothing threw": three independent
+// checks per row — no `Edit …` control, no `Re-scan …` control, and no <svg>
+// anywhere in the row. The svg check is the load-bearing one: it is the only
+// one that catches an action nobody predicted the label of, and it works
+// because RowEditor renders an action as `<button>{action.icon}</button>` and
+// every icon in this codebase's action slot is now a lucide SVG. The rest of a
+// RowEditor row is svg-free by construction — the grip is the ⠿ character, the
+// toggles are native checkboxes, and Delete is a text <Button>.
+const expectNoRowActions = (editorCard: HTMLElement) => {
+  const rows = within(editorCard).getAllByRole("listitem");
+  // Guard the guard: a scoping change that silently matched zero rows would
+  // make every assertion below pass against nothing.
+  expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) {
+    expect(within(row).queryByLabelText(/^Edit /)).not.toBeInTheDocument();
+    expect(within(row).queryByLabelText(/^Re-scan /)).not.toBeInTheDocument();
+    expect(row.querySelectorAll("svg")).toHaveLength(0);
+  }
+  return rows;
+};
+
+describe("Discover — the row editor carries NO per-entity actions (Settings-only)", () => {
+  it("Mainstream's editor renders slider and RSS-feed rows with zero action buttons", async () => {
+    stubFetch((url) => {
+      if (url === "/api/discover/sliders") {
+        return jsonResponse([
+          { id: 1, title: "Heist Movies", filterType: "keyword", filterValue: "heist", target: "movie", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      }
+      if (url.includes("/api/discover/sliders/1/resolve")) return jsonResponse([]);
+      if (url === "/api/discover/rss-feeds") {
+        return jsonResponse([
+          { id: 7, title: "NZBGeek Movies", feedUrl: "https://example.com/rss", target: "movie", protocol: "usenet", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      }
+      if (url.includes("/api/discover/rss-feeds/7/resolve")) return jsonResponse([]);
+      if (url.includes("/api/discover/row-order/mainstream")) return jsonResponse({ keys: [] });
+      if (url.includes("/api/discover/row-hidden/mainstream")) return jsonResponse({ keys: [] });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    expect(await screen.findByText("Heist Movies")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Edit"));
+    const editorCard = (await screen.findByText("Reorder rows")).closest(
+      "div.rounded-xl",
+    ) as HTMLElement;
+
+    // Both entity kinds that gained an Edit action over in Settings are
+    // present here, so the absence assertion is about rows that genuinely
+    // could have grown one — not vacuous.
+    const sliderRow = within(editorCard)
+      .getByText("Heist Movies")
+      .closest("li") as HTMLElement;
+    const feedRow = within(editorCard)
+      .getByText("NZBGeek Movies")
+      .closest("li") as HTMLElement;
+    // The controls Discover's rows DO carry, so a regression that stripped the
+    // editor bare would fail here rather than passing the absence checks.
+    expect(within(sliderRow).getByLabelText("Drag Heist Movies")).toBeTruthy();
+    expect(within(feedRow).getByText("Delete")).toBeInTheDocument();
+
+    expectNoRowActions(editorCard);
+    // Belt-and-braces at editor scope: SliderAdmin's and RssFeedAdmin's exact
+    // aria-labels for these very entities must not resolve anywhere in it.
+    expect(
+      within(editorCard).queryByLabelText("Edit Heist Movies"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(editorCard).queryByLabelText("Re-scan NZBGeek Movies"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Adult's editor renders newest-releases rows with zero action buttons", async () => {
+    stubFetch((url) => {
+      if (url.includes("/newest-rows/1/resolve")) return jsonResponse([]);
+      if (url.includes("/newest-rows/2/resolve")) return jsonResponse([]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+          { id: 2, title: "Newest Movies", rowType: "movie", sortOrder: 1, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    fireEvent.click(await screen.findByText("Edit"));
+    // Await a GRIP, not the card title: the editor renders its "No rows yet."
+    // empty state while the newest-rows resource is still in flight, and every
+    // absence assertion below would pass vacuously against it.
+    const editorCard = (await screen.findByLabelText("Drag Newest Scenes"))
+      .closest("div.rounded-xl") as HTMLElement;
+
+    // AdultRowAdmin injects `Edit {title}` on these exact rows; Adult Discover
+    // renders the same descriptors' rows without it.
+    const sceneRow = within(editorCard)
+      .getByText("Newest Scenes")
+      .closest("li") as HTMLElement;
+    expect(within(sceneRow).getByLabelText("Drag Newest Scenes")).toBeTruthy();
+    expect(within(sceneRow).getByText("Delete")).toBeInTheDocument();
+
+    expectNoRowActions(editorCard);
+    expect(
+      within(editorCard).queryByLabelText("Edit Newest Scenes"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(editorCard).queryByLabelText("Edit Newest Movies"),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("Discover — Adult tab (row-based browse)", () => {
   it("appends the next page to an admin newest row on Show more (append, not replace)", async () => {
     // Page 1 returns a FULL page (20 items, matching PaginatedStrip's

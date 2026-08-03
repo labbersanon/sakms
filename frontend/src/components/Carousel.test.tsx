@@ -205,6 +205,47 @@ describe("Carousel", () => {
     expect(onLoadMoreLoading).not.toHaveBeenCalled();
   });
 
+  it("overlays the forward arrow and keeps it visible on mobile", () => {
+    render(() => (
+      <Carousel title="Row" items={items(5)} renderItem={(item) => <div>{item.label}</div>} />
+    ));
+    const right = screen.getByLabelText("Scroll right").getAttribute("class") ?? "";
+    expect(right).toContain("absolute");
+    expect(right).not.toContain("hidden");
+  });
+
+  it("keeps the back arrow desktop-only", () => {
+    render(() => (
+      <Carousel title="Row" items={items(5)} renderItem={(item) => <div>{item.label}</div>} />
+    ));
+    const left = screen.getByLabelText("Scroll left").getAttribute("class") ?? "";
+    expect(left).toContain("hidden sm:flex");
+  });
+
+  it("hides the track's native scrollbar", () => {
+    const { container } = render(() => (
+      <Carousel title="Row" items={items(5)} renderItem={(item) => <div>{item.label}</div>} />
+    ));
+    const track = container.querySelector("div.overflow-x-auto") as HTMLElement;
+    expect(track.getAttribute("class") ?? "").toContain("no-scrollbar");
+  });
+
+  it("nests the forward arrow in the track's wrapper and leaves the back arrow outside it", () => {
+    const { container } = render(() => (
+      <Carousel title="Row" items={items(5)} renderItem={(item) => <div>{item.label}</div>} />
+    ));
+    const track = container.querySelector("div.overflow-x-auto") as HTMLElement;
+    const wrapper = track.parentElement as HTMLElement;
+    expect(wrapper.contains(screen.getByLabelText("Scroll right"))).toBe(true);
+    // Both halves are needed: the track is ITSELF inside the wrapper, so the
+    // wrapper check alone would still pass with the arrow nested in the track —
+    // which is the exact regression this test exists to catch (an arrow inside
+    // the track scrolls away with the posters instead of staying pinned to the
+    // trailing edge as an overlay).
+    expect(track.contains(screen.getByLabelText("Scroll right"))).toBe(false);
+    expect(wrapper.contains(screen.getByLabelText("Scroll left"))).toBe(false);
+  });
+
   it("shows a trailing loading indicator inside the track while loading", () => {
     render(() => (
       <Carousel

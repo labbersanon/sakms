@@ -12,6 +12,31 @@
 // and after the item list changes (a rAF tick after render, since a newly
 // appended batch changes scrollWidth only once the DOM reflects it).
 //
+// Claude 2026-08-02: the forward arrow now overlays the track's trailing edge
+// (absolutely positioned inside a `relative` wrapper around the track) and is
+// visible on touch viewports; the back arrow is unchanged and stays a flex
+// sibling at the row's leading edge, still `hidden sm:flex`. The track's native
+// scrollbar is hidden via the new `no-scrollbar` utility.
+// Reason: three deliberate choices that each look like a bug from the outside.
+//   (1) The overlay is anchored to the WRAPPER's right edge, not measured onto
+//       whichever card is currently last-visible. Netflix's own affordance is
+//       viewport-edge-anchored, and per-card measurement would mean a
+//       getBoundingClientRect sweep of every child on every scroll frame in a
+//       handler that already runs updateScrollState + the lazy-load check —
+//       and Carousel is generic over renderItem, so it can assume nothing
+//       about child geometry. Do not build per-card measurement.
+//   (2) The mobile/desktop asymmetry is intentional: only the FORWARD arrow
+//       works on touch. Going back relies on native swipe, which is why the
+//       back arrow keeps `hidden sm:flex`. Do not "fix" the asymmetry.
+//   (3) `no-scrollbar` is scoped to Carousel only. PaginatedStrip
+//       (screens/discover/shared.tsx) deliberately keeps its native scrollbar,
+//       so Adult Discover's rows still show one while these rows do not.
+// Troubleshooting: the old single `arrowButtonClass` made both arrows
+// desktop-only flex siblings, so on a phone a row gave no forward affordance at
+// all, and on desktop a scrollbar sat under every row.
+// Review if: per-card overlay positioning is ever actually wanted, the back
+// arrow becomes touch-visible, or PaginatedStrip adopts `no-scrollbar` too.
+//
 // Lazy-load-more: the same scroll handler fires onLoadMore() once the
 // container scrolls within LOAD_MORE_THRESHOLD_PX of its right edge, gated on
 // hasMore/loading so it never double-fires while a fetch is in flight or past
@@ -61,13 +86,23 @@ const IconChevronRight: Component = () => (
   </svg>
 );
 
-// arrowButtonClass is shared by both arrows: a circular button overlaid at the
-// row's vertical center, hidden entirely below `sm` (mobile relies on native
-// touch-scroll, matching the task's responsive requirement) and hidden when
-// scrolling further that direction isn't possible.
-const arrowButtonClass =
+// leftArrowClass is TODAY'S arrowButtonClass, unchanged: a circular button
+// sitting at the row's leading edge as a flex sibling of the track, hidden
+// below `sm` (mobile relies on native touch-scroll) and invisible when
+// scrolling further left isn't possible.
+const leftArrowClass =
   "hidden sm:flex h-9 w-9 shrink-0 items-center justify-center rounded-full " +
   "border border-border bg-surface text-fg shadow transition hover:bg-surface-2 " +
+  "disabled:pointer-events-none disabled:opacity-0";
+
+// rightArrowClass overlays the forward chevron on the track's trailing edge —
+// i.e. on top of whichever poster is currently last-visible (Netflix-style
+// "peek next"), rather than floating outside the row. Unlike the left arrow
+// it is NOT `hidden sm:flex`: it must work on touch viewports too.
+const rightArrowClass =
+  "absolute right-2 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center " +
+  "justify-center rounded-full border border-border bg-surface/90 text-fg " +
+  "shadow backdrop-blur transition hover:bg-surface-2 " +
   "disabled:pointer-events-none disabled:opacity-0";
 
 export type CarouselProps<T> = {
@@ -140,33 +175,35 @@ export function Carousel<T>(props: CarouselProps<T>): JSX.Element {
           <button
             type="button"
             aria-label="Scroll left"
-            class={arrowButtonClass}
+            class={leftArrowClass}
             disabled={!canScrollLeft()}
             onClick={() => scrollByStep(-1)}
           >
             <IconChevronLeft />
           </button>
-          <div
-            ref={track}
-            onScroll={onScroll}
-            class="flex flex-1 items-stretch gap-3 overflow-x-auto scroll-smooth pb-2"
-          >
-            <For each={props.items}>{props.renderItem}</For>
-            <Show when={props.loading}>
-              <div class="flex w-28 shrink-0 items-center justify-center">
-                <Muted>Loading…</Muted>
-              </div>
-            </Show>
+          <div class="relative min-w-0 flex-1">
+            <div
+              ref={track}
+              onScroll={onScroll}
+              class="no-scrollbar flex items-stretch gap-3 overflow-x-auto scroll-smooth pb-2"
+            >
+              <For each={props.items}>{props.renderItem}</For>
+              <Show when={props.loading}>
+                <div class="flex w-28 shrink-0 items-center justify-center">
+                  <Muted>Loading…</Muted>
+                </div>
+              </Show>
+            </div>
+            <button
+              type="button"
+              aria-label="Scroll right"
+              class={rightArrowClass}
+              disabled={!canScrollRight()}
+              onClick={() => scrollByStep(1)}
+            >
+              <IconChevronRight />
+            </button>
           </div>
-          <button
-            type="button"
-            aria-label="Scroll right"
-            class={arrowButtonClass}
-            disabled={!canScrollRight()}
-            onClick={() => scrollByStep(1)}
-          >
-            <IconChevronRight />
-          </button>
         </div>
       </Show>
     </section>

@@ -2,11 +2,16 @@
 // "entity" rows (sliders, adult newest rows, rss feeds) get an Enabled toggle +
 // Delete; "structural" rows (built-ins, Studios/Performers, stash-box) get a
 // Show/Hide toggle and NO Delete. Reordering is drag-and-drop (via
-// @thisbeyond/solid-dnd); a real pointer drag isn't simulable in jsdom, so the
-// reorder *logic* is tested directly against the pure reorderKeys() function and
-// the callback wiring is asserted at the component level (a drag handle renders
-// per row, onReorder is a prop). RowEditor itself is presentational — the caller
-// (Mainstream/Adult) owns persistence.
+// @thisbeyond/solid-dnd). A real pointer drag IS simulable in jsdom — stubbing
+// a per-row getBoundingClientRect (jsdom's default all-zero rect collapses every
+// droppable onto one point) makes solid-dnd's collision answer meaningful; see
+// the dragRow helper in AdultRowAdmin.test.tsx / SliderAdmin.test.tsx /
+// RssFeedAdmin.test.tsx. Here the reorder *logic* is still tested directly
+// against the pure reorderKeys() function, with the callback wiring asserted at
+// the component level (a drag handle renders per row, onReorder is a prop) —
+// the drag-driven end-to-end coverage lives in those consumers' own suites,
+// where a real POST body is what a mistake would corrupt. RowEditor itself is
+// presentational — the caller (Mainstream/Adult) owns persistence.
 //
 // The host-supplied surface (actions / title / description / footer, and the now
 // OPTIONAL onToggleHidden) has its own describe below: RowEditor is no longer

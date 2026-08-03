@@ -41,8 +41,10 @@ import (
 //
 // Source names the upstream catalog this scene came from ("tpdb", "stashdb",
 // or "fansdb") so the card can show a provenance label — see
-// adultdiscover_stashbox.go for the optional stash-box sources and the merged
-// "Recently Released" feed. TPDB's own handlers here always set "tpdb".
+// adultdiscover_merged.go for the merged "Recently Released" feed. TPDB's own
+// handlers here always set "tpdb"; a "stashdb"/"fansdb" value now only ever
+// reaches a card via the pool's own entity_source (the optional stash-box
+// browse handlers that used to stamp it directly were deleted 2026-08-02).
 //
 // Slug is TPDB's URL-friendly scene identifier (see tpdbrest.Scene.Slug for
 // sourcing), used by the Discover detail popup's "More on TPDB" external
@@ -53,13 +55,12 @@ import (
 // Genres/Performers back the Discover detail popup's tags/performers list.
 // The two have DIFFERENT source coverage — don't read them as one field.
 // Genres is populated for TPDB-sourced scenes (tpdbrest.Scene.Tags, confirmed
-// present on SceneResource in TPDB's live OpenAPI schema) AND, since
-// 2026-08-02, for stash-box ("stashdb"/"fansdb") scenes constructed elsewhere
-// (adultdiscover_stashbox.go), which carry stashbox.Scene.Tags — live-verified
-// present on both stashdb.org and fansdb.cc.
+// present on SceneResource in TPDB's live OpenAPI schema). It briefly also came
+// straight off stashbox.Scene.Tags, but the two handlers that did that were
+// deleted with the stash-box browse rows (2026-08-02), so package api no longer
+// builds an adultScene from a stashbox.Scene at all.
 // Performers has no stash-box source: stashbox.Scene carries no performers
-// field at all, so the two stash-box construction sites leave it unset
-// ("omitempty"). A POOLED scene stamped Source "stashdb"/"fansdb" carries
+// field at all. A POOLED scene stamped Source "stashdb"/"fansdb" carries
 // whatever its own identification recorded (poolReleaseToAdultScene below) —
 // which is nothing today, since no stash-box lookup path supplies performers.
 type adultScene struct {
@@ -197,7 +198,7 @@ func adultPagination(r *http.Request) (page, perPage int) {
 
 // tpdbSceneToAdultScene converts one tpdbrest.Scene into the adultScene wire
 // shape — shared by writeAdultScenes (every plain TPDB response) and
-// adultDiscoverMergedRecentHandler (adultdiscover_stashbox.go), which needs
+// adultDiscoverMergedRecentHandler (adultdiscover_merged.go), which needs
 // the same conversion applied per-item while it accumulates a merged slice
 // rather than encoding scenes straight off a single tpdbrest call.
 func tpdbSceneToAdultScene(s tpdbrest.Scene) adultScene {

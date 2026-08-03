@@ -1243,6 +1243,37 @@ above, so don't drop them for convenience:
     for more than one entity per request, or ever construct a Prowlarr
     client, that's the rule being broken again — treat it the same way the
     original per-card badge was treated.
+
+    **CORRECTED 2026-08-02 (later, same day) — there are TWO drill-down entry
+    points now, not four (see
+    `.omc/plans/autopilot-impl-adult-rows-config-unification.md` §8,
+    `docs/ROADMAP.md`'s multi-idea-session item 1, and `CHANGELOG.md`).**
+    Appended rather than edited in place, per this file's own convention. The
+    superseded clause, quoted verbatim so a future session can find it:
+
+    > *"made specifically to get bio-banner coverage on all four drill-down
+    > entry points (stash-box studios, stash-box performers, newest-row
+    > studios, newest-row performers) instead of only the ones whose pool
+    > `entity_source` happened to be `tpdb`"*
+
+    Adult Discover's optional StashDB/FansDB structural rows were deleted
+    outright, along with their twelve backend routes and five frontend
+    fetchers, when Settings and Discover were unified onto one row order.
+    Nothing in the app can raise a stash-box studio or stash-box performer
+    drill any more. **Corrected enumeration: two entry points — newest-row
+    studios and newest-row performers.**
+
+    **The Option A decision itself is UNCHANGED and is still the right one —
+    do not read this as grounds to revert it.** A performer's or studio's bio
+    is still always resolved via TPDB regardless of the entity's own catalog
+    source, and it still has to be: a newest-row entity's pool
+    `entity_source` can perfectly well be `stashdb`/`fansdb` (that is exactly
+    what `sourceLabel` still renders provenance for), and neither stash box
+    exposes a performer bio or studio description field at all. Reverting to
+    strict-AC4 resolution would blank the banner on those entities — the same
+    failure Option A was chosen to avoid, just reached from the surviving
+    half of the surface. **The call budget is completely unchanged**: zero
+    Prowlarr, one upstream call for a scene, two for an entity.
   - **Library sidebar tab added (2026-08-01)** — a new `frontend/src/screens/Library.tsx`
     (own sidebar entry, `/library` route) is now the tracked-catalog browsing
     screen for Movies/Series (title search, genre filter, added-date sort via

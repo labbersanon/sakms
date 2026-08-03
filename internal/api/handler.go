@@ -238,19 +238,6 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// exclusive scenes when StashDB is configured (TPDB-only otherwise, fully
 	// backward compatible). See adultDiscoverMergedRecentHandler.
 	mux.HandleFunc("GET /api/modes/adult/discover/recent-merged", adultDiscoverMergedRecentHandler(adultNewestReleaseStore, feedHealth))
-	// Optional StashDB/FansDB Adult Discover sources — scene (recent/trending),
-	// studio, and performer browse rows per box. Unlike TPDB (required, 400 when
-	// absent) these are optional: an unconfigured box returns [] (200), never a
-	// setup prompt, so the frontend simply hides the row. See
-	// adultdiscover_stashbox.go.
-	for _, box := range []string{"stashdb", "fansdb"} {
-		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/recent", adultStashBoxRecentHandler(httpClient, connStore, box))
-		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/trending", adultStashBoxTrendingHandler(httpClient, connStore, box))
-		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/studios", adultStashBoxStudiosHandler(httpClient, connStore, box))
-		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/studios/{id}/scenes", adultStashBoxStudioScenesHandler(httpClient, connStore, box))
-		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/performers", adultStashBoxPerformersHandler(httpClient, connStore, box))
-		mux.HandleFunc("GET /api/modes/adult/discover/"+box+"/performers/{id}/scenes", adultStashBoxPerformerScenesHandler(httpClient, connStore, box))
-	}
 	// discoverHandler's category query param now also accepts upcoming/genre/
 	// studio/network (see discover.go) alongside trending/popular — this route
 	// is unchanged, just a richer dispatch behind it.

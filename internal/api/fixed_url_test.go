@@ -120,17 +120,33 @@ func TestAdultDiscover_TPDBIgnoresStoredConnectionURL(t *testing.T) {
 	}
 }
 
-// TestAdultDiscover_StashDBIgnoresStoredConnectionURL is the stash-box
-// (per-name lookup) counterpart: a bogus stored stashdb URL is ignored in favor
-// of stashbox.StashDBURL.
-func TestAdultDiscover_StashDBIgnoresStoredConnectionURL(t *testing.T) {
+// TestStashDBIgnoresStoredConnectionURL is the stash-box (per-name lookup)
+// counterpart: a bogus stored stashdb URL is ignored in favor of
+// stashbox.StashDBURL.
+//
+// Claude 2026-08-02: re-pointed from GET /api/modes/adult/discover/stashdb/recent
+// to POST /api/connections/{service}/test-stored, and renamed off the
+// "AdultDiscover_" prefix, which no longer describes it.
+// Reason: the stash-box Adult Discover browse routes were deleted with the
+// structural stash-box rows, so the old target now 404s. test-stored is the
+// closest surviving seam — it reads the STORED connection (preserving this
+// test's whole point) and, for stashdb/fansdb, hands TestConnection a conn.URL
+// it then discards in favor of stashbox.URLForBox (connections.go's
+// case "stashdb", "fansdb"). Other live non-HTTP callers of that same
+// fixed-endpoint lookup remain at mode.go:595, entity_sync.go:117,
+// connections.go:78 and parseentity/schedule.go:135.
+// Troubleshooting: without the re-point this test 404s and the stashdb leg of
+// the fixed-URL invariant loses HTTP-level coverage entirely.
+// Review if: an Adult read path that consumes stashdb over HTTP comes back —
+// it would be a more representative target than a connection-test route.
+// Related files: internal/api/handler.go, internal/api/connections.go
+func TestStashDBIgnoresStoredConnectionURL(t *testing.T) {
 	var hit bool
 	box := fakeStashBox(t, func(w http.ResponseWriter, r *http.Request) {
 		hit = true
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"queryScenes":{"scenes":[{"id":"sb1","title":"S",` +
-			`"release_date":"2024-06-06","studio":{"name":"Blacked","parent":null},` +
-			`"images":[],"duration":1200,"fingerprints":[]}]}}}`))
+		// test-stored drives stashbox.Client.Me, not queryScenes.
+		w.Write([]byte(`{"data":{"me":{"id":"u1","name":"tester"}}}`))
 	})
 
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
@@ -141,13 +157,23 @@ func TestAdultDiscover_StashDBIgnoresStoredConnectionURL(t *testing.T) {
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/stashdb/recent")
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/connections/stashdb/test-stored", nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("GET failed: %v", err)
+		t.Fatalf("POST failed: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 (fixed URL used, bogus stored URL ignored), got %d", resp.StatusCode)
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	// The handler writes 200 even for a FAILED test, so the status alone proves
+	// nothing — decode and assert OK, or a broken fake passes vacuously.
+	var result ConnectionTestResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected a passing connection test (fixed URL used, bogus stored URL ignored), got error %q", result.Error)
 	}
 	if !hit {
 		t.Error("expected the fixed-URL fake to be hit, not the stored Connection.URL")

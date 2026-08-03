@@ -1,16 +1,14 @@
-// Direct fetcher contract tests for the stash-box scenes-by-entity drill-down
-// fetchers. A card click always loads page 1 with the default perPage, so a
-// component-level routing test can't prove the query string threads `page`
-// through or emits `perPage=20`. These call the fetchers directly with a
-// non-default page to pin the exact URL contract the backend routes expect
-// (GET /api/modes/adult/discover/{box}/studios|performers/{id}/scenes?page&perPage).
+// Direct fetcher contract tests for src/api/discover.ts. A component-level
+// routing test can't prove a query string threads its params through, so these
+// call the fetchers directly to pin the exact URL contract the backend routes
+// expect.
+//
+// This file used to cover the stash-box scenes-by-entity drill-down fetchers
+// too; those fetchers and their backend routes were deleted 2026-08-02 along
+// with Adult Discover's optional StashDB/FansDB rows.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  fetchAdultDescription,
-  fetchStashBoxPerformerScenes,
-  fetchStashBoxStudioScenes,
-} from "./discover";
+import { fetchAdultDescription } from "./discover";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -25,34 +23,6 @@ const captureFetch = () => {
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 };
-
-describe("fetchStashBoxStudioScenes", () => {
-  it("hits the box-scoped studio scenes path with page + perPage", async () => {
-    const fetchMock = captureFetch();
-    await fetchStashBoxStudioScenes("stashdb", "abc", 2);
-    expect(String(fetchMock.mock.calls[0]![0])).toBe(
-      "/api/modes/adult/discover/stashdb/studios/abc/scenes?page=2&perPage=20",
-    );
-  });
-
-  it("defaults to page 1 and url-encodes the id", async () => {
-    const fetchMock = captureFetch();
-    await fetchStashBoxStudioScenes("fansdb", "a/b c");
-    expect(String(fetchMock.mock.calls[0]![0])).toBe(
-      "/api/modes/adult/discover/fansdb/studios/a%2Fb%20c/scenes?page=1&perPage=20",
-    );
-  });
-});
-
-describe("fetchStashBoxPerformerScenes", () => {
-  it("hits the box-scoped performer scenes path with page + perPage", async () => {
-    const fetchMock = captureFetch();
-    await fetchStashBoxPerformerScenes("fansdb", "pf9", 3);
-    expect(String(fetchMock.mock.calls[0]![0])).toBe(
-      "/api/modes/adult/discover/fansdb/performers/pf9/scenes?page=3&perPage=20",
-    );
-  });
-});
 
 describe("fetchAdultDescription", () => {
   it("builds the scene query string with kind, source, and id", async () => {

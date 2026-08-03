@@ -19,7 +19,7 @@
 // Adult.grab.test.tsx / Adult.rssfeed.test.tsx).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { AdultDiscover } from "./Adult";
 
 const jsonResponse = (obj: unknown): Response =>
@@ -49,11 +49,9 @@ const stubFetch = (override?: Override) => {
 // mounts answers AdultDiscover's mount fetches with empties, so each test
 // only special-cases what it asserts on.
 const mounts = (url: string): Response | undefined => {
-  if (url.includes("/api/connections")) return jsonResponse([]);
-  if (url.includes("/api/discover/row-order/adult"))
-    return jsonResponse({ keys: [] });
-  if (url.includes("/api/discover/row-hidden/adult"))
-    return jsonResponse({ keys: [] });
+  // No /api/connections, row-order or row-hidden stub: Adult reads none of them
+  // any more (the connections-gated stash-box rows are gone, and its row order
+  // lives in adultnewest's sort_order column, not the per-screen KV store).
   if (url.includes("/api/discover/rss-feeds")) return jsonResponse([]);
   return undefined;
 };
@@ -495,58 +493,5 @@ describe("AdultDiscover — drill-down row 2: no stale bio across a drill switch
 
     expect(await screen.findByText("Bio for B.")).toBeInTheDocument();
     expect(screen.queryByText("Bio for A.")).toBeNull();
-  });
-});
-
-describe("AdultDiscover — stash-box drill-down", () => {
-  const fansdbStub = (url: string): Response | undefined => {
-    if (url.includes("/api/connections"))
-      return jsonResponse([
-        { service: "fansdb", url: "https://fansdb.example", hasApiKey: true, updatedAt: "2026-01-01T00:00:00Z" },
-      ]);
-    if (url.includes("/api/modes/adult/discover/fansdb/studios/st-1/scenes"))
-      return jsonResponse([
-        { id: "sc1", title: "Box Scene", studio: "Some Other Studio", date: "2026-01-01", image: "https://cdn.theporndb.net/scenes/box.jpg", durationSeconds: 0, rating: 0, source: "fansdb", slug: "" },
-      ]);
-    if (url.includes("/api/modes/adult/discover/fansdb/studios"))
-      return jsonResponse([
-        { id: "st-1", name: "Vixen Media", image: "https://cdn.theporndb.net/sites/vixen.jpg" },
-      ]);
-    if (url.includes("/api/modes/adult/discover/fansdb/"))
-      return jsonResponse([]);
-    if (url.includes("/api/modes/adult/newest-rows")) return jsonResponse([]);
-    return mounts(url);
-  };
-
-  it("sends the entity name AND its box as the source, and renders the returned bio in the banner", async () => {
-    const calls = stubFetch((url) => {
-      if (url.includes(DESCRIPTION_URL))
-        return jsonResponse({ text: "Bio via the box hint.", source: "tpdb" });
-      return fansdbStub(url);
-    });
-
-    const { container } = render(() => <AdultDiscover />);
-    await openDrill("Vixen Media");
-
-    expect(await screen.findByText("Bio via the box hint.")).toBeInTheDocument();
-    expect(banner(container)).not.toBeNull();
-    // Strip heading is the literal "Scenes" here too, and the name still
-    // renders exactly once — in the promoted <h2>.
-    expect(await screen.findByText("Scenes")).toBeInTheDocument();
-    expect(screen.queryAllByText("Vixen Media")).toHaveLength(1);
-
-    await waitFor(() =>
-      expect(
-        calls.some((c) => {
-          const s = c.url;
-          return (
-            s.includes(DESCRIPTION_URL) &&
-            s.includes("kind=studio") &&
-            s.includes("name=Vixen+Media") &&
-            s.includes("source=fansdb")
-          );
-        }),
-      ).toBe(true),
-    );
   });
 });

@@ -7,11 +7,22 @@
 // optional (there is no required/forbidden pairing rule to enforce).
 //
 // No bulk actions (project convention): create/update/delete/enable-toggle each
-// act on exactly one row. Reordering is button-based (up/down), not
-// drag-and-drop — same as SliderAdmin. (Still holds HERE — Adult-row CRUD is
-// genuinely single-item. Not absolute app-wide: two bounded, documented bulk
-// exceptions exist elsewhere — bulk-apply on Rename/Dedup/Purge, and bulk-grab
-// in Discover's opt-in Select mode — neither touching this screen.)
+// act on exactly one row. (Still holds HERE — Adult-row CRUD is genuinely
+// single-item. Not absolute app-wide: two bounded, documented bulk exceptions
+// exist elsewhere — bulk-apply on Rename/Dedup/Purge, and bulk-grab in
+// Discover's opt-in Select mode — neither touching this screen.)
+//
+// Reordering is DRAG-AND-DROP, via Discover's own <RowEditor> rendered
+// literally (not reimplemented, not extracted into a shared helper). This
+// screen and Discover's Adult row editor are now two views of ONE order —
+// adultnewest's `sort_order` column, POST /api/modes/adult/newest-rows/reorder,
+// shared through useAdultRowOrder — so an order set on either is what the other
+// shows. The header used to say reordering was button-based "same as
+// SliderAdmin"; that comparison is TEMPORARILY FALSE BY DESIGN, not stale by
+// accident: SliderAdmin (and RssFeedAdmin) still use ▲▼ buttons, and converting
+// them is the sibling row-dnd-consolidation-and-pagination spec's job, not
+// this one's. It becomes true again — in the opposite direction — once that
+// lands.
 
 import {
   type Component,
@@ -27,11 +38,12 @@ import {
   deleteAdultNewestRow,
   fetchAdultNewestGenres,
   fetchAdultNewestRows,
-  reorderAdultNewestRows,
   updateAdultNewestRow,
   type AdultNewestRow,
   type RowType,
 } from "../api/adultNewestRows";
+import { RowEditor, type RowDescriptor } from "./discover/RowEditor";
+import { useAdultRowOrder } from "./discover/useAdultRowOrder";
 import {
   fetchAdultNewestScanInterval,
   putAdultNewestScanInterval,
@@ -177,67 +189,6 @@ const AdultRowForm: Component<{
   );
 };
 
-// AdultRow is one existing row's list entry: position controls, summary, an
-// inline enabled toggle (immediate save, no separate form), Edit/Delete.
-const AdultRow: Component<{
-  row: AdultNewestRow;
-  isFirst: boolean;
-  isLast: boolean;
-  editing: boolean;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onToggleEnabled: () => void;
-}> = (props) => (
-  <li class="flex items-center gap-3 border-b border-border/60 py-2">
-    <div class="flex flex-col gap-0.5">
-      <button
-        type="button"
-        aria-label={`Move ${props.row.title} up`}
-        class="rounded border border-border px-1 text-xs text-fg disabled:opacity-30"
-        disabled={props.isFirst}
-        onClick={props.onMoveUp}
-      >
-        ▲
-      </button>
-      <button
-        type="button"
-        aria-label={`Move ${props.row.title} down`}
-        class="rounded border border-border px-1 text-xs text-fg disabled:opacity-30"
-        disabled={props.isLast}
-        onClick={props.onMoveDown}
-      >
-        ▼
-      </button>
-    </div>
-    <div class="min-w-0 flex-1">
-      <div class="truncate text-sm text-fg">{props.row.title}</div>
-      <div class="truncate text-xs text-muted">
-        {ROW_TYPE_LABELS[props.row.rowType as RowType] ?? props.row.rowType}
-        {props.row.genreFilter ? ` · ${props.row.genreFilter}` : ""}
-      </div>
-    </div>
-    <label class="flex items-center gap-1 text-xs text-muted">
-      <input
-        type="checkbox"
-        aria-label={`${props.row.title} enabled`}
-        checked={props.row.enabled}
-        onChange={props.onToggleEnabled}
-      />
-      enabled
-    </label>
-    <div class="flex gap-1">
-      <Button class="!px-2 !py-1 !text-xs" onClick={props.onEdit}>
-        {props.editing ? "Editing…" : "Edit"}
-      </Button>
-      <Button class="!px-2 !py-1 !text-xs" onClick={props.onDelete}>
-        Delete
-      </Button>
-    </div>
-  </li>
-);
-
 // AdultRowAdminSection is the Settings "Adult Rows" tab's whole panel.
 export const AdultRowAdminSection: Component = () => {
   const [rows, { refetch }] = createResource(fetchAdultNewestRows, {
@@ -253,25 +204,59 @@ export const AdultRowAdminSection: Component = () => {
     void refetch();
   };
 
-  const move = async (id: number, direction: -1 | 1) => {
-    const list = rows() ?? [];
-    const idx = list.findIndex((r) => r.id === id);
-    const swapWith = idx + direction;
-    if (idx < 0 || swapWith < 0 || swapWith >= list.length) return;
-    const ids = list.map((r) => r.id);
-    [ids[idx], ids[swapWith]] = [ids[swapWith]!, ids[idx]!];
-    setListError("");
-    try {
-      await reorderAdultNewestRows(ids);
-      await refetch();
-    } catch (e) {
-      setListError((e as Error).message);
-    }
+  const {
+    orderedRows,
+    persistOrder,
+    error: reorderError,
+    clearError: clearReorderError,
+  } = useAdultRowOrder(rows, () => void refetch());
+
+  // A reorder failure (notably Store.Reorder's 400 when the id set no longer
+  // matches — reachable when this tab and Discover's row editor are both open
+  // and one deletes a row) lands on the hook's own error signal, not on
+  // listError. Both render through this one accessor so neither failure mode
+  // can go silent.
+  // Each mutation clears the OTHER signal on entry (remove/toggleEnabled clear
+  // reorderError, the onReorder call site clears listError), so at most one is
+  // ever set and only the LATEST failure shows. Without that, a stale delete
+  // error sat on the left of the || and permanently masked every later reorder
+  // failure. The || order is therefore decorative, not a precedence rule — it
+  // matches Adult.tsx's editError so the two surfaces read identically.
+  const displayError = () => reorderError() || listError();
+
+  const rowForKey = (key: string): AdultNewestRow | undefined => {
+    const id = Number(key.slice("newestrow:".length));
+    return orderedRows().find((r) => r.id === id);
   };
 
-  const remove = async (row: AdultNewestRow) => {
+  // Title-only body: the row-type/genre subtitle the old list entry carried is
+  // deliberately dropped, matching Discover's plain rows. Edit is carried as a
+  // RowAction because RowEditor's built-in controls are enabled-toggle +
+  // Delete only — this screen is the app's ONLY place to edit a row's
+  // title/rowType/genreFilter, so it cannot be lost. The glyph is a deliberate
+  // placeholder; the sibling row-dnd spec swaps in a real icon library, which
+  // is a call-site-only change because RowAction.icon is typed JSX.Element.
+  const descriptors = (): RowDescriptor[] =>
+    orderedRows().map((row) => ({
+      key: `newestrow:${row.id}`,
+      label: row.title,
+      kind: "entity" as const,
+      enabled: row.enabled,
+      actions: [
+        {
+          label: `Edit ${row.title}`,
+          icon: <span aria-hidden>✎</span>,
+          onClick: () => setEditing(row.id),
+        },
+      ],
+    }));
+
+  const remove = async (descriptor: RowDescriptor) => {
+    const row = rowForKey(descriptor.key);
+    if (!row) return;
     if (!confirm(`Delete the "${row.title}" row?`)) return;
     setListError("");
+    clearReorderError();
     try {
       await deleteAdultNewestRow(row.id);
       if (editing() === row.id) closeForm();
@@ -281,8 +266,11 @@ export const AdultRowAdminSection: Component = () => {
     }
   };
 
-  const toggleEnabled = async (row: AdultNewestRow) => {
+  const toggleEnabled = async (descriptor: RowDescriptor) => {
+    const row = rowForKey(descriptor.key);
+    if (!row) return;
     setListError("");
+    clearReorderError();
     try {
       await updateAdultNewestRow(row.id, {
         title: row.title,
@@ -314,60 +302,60 @@ export const AdultRowAdminSection: Component = () => {
         />
       </Card>
 
-      <Card title="Adult newest rows">
-        <Muted class="mb-3">
-          Admin-defined Adult Discover rows sourced from Prowlarr's newest
-          releases, matched to TPDB/StashDB/FansDB entities. The four default
-          rows (Movie/Scene/Performer/Studio) already exist — add more here,
-          e.g. a genre-narrowed variant of an existing type, and control display
-          order.
-        </Muted>
-        <Show when={rows.error}>
-          <ErrorText>{(rows.error as Error)?.message}</ErrorText>
-        </Show>
-        <Show when={listError()}>
-          <ErrorText>{listError()}</ErrorText>
-        </Show>
-        <Show
-          when={(rows() ?? []).length > 0}
-          fallback={<Muted>No custom rows yet.</Muted>}
-        >
-          <ul>
-            <For each={rows()}>
-              {(row, i) => (
-                <AdultRow
-                  row={row}
-                  isFirst={i() === 0}
-                  isLast={i() === (rows() ?? []).length - 1}
-                  editing={editing() === row.id}
-                  onMoveUp={() => void move(row.id, -1)}
-                  onMoveDown={() => void move(row.id, 1)}
-                  onEdit={() => setEditing(row.id)}
-                  onDelete={() => void remove(row)}
-                  onToggleEnabled={() => void toggleEnabled(row)}
-                />
-              )}
-            </For>
-          </ul>
-        </Show>
-
-        <Show
-          when={editing() !== null}
-          fallback={
-            <div class="mt-3">
-              <Button variant="primary" onClick={() => setEditing("new")}>
-                + New row
-              </Button>
-            </div>
-          }
-        >
-          <AdultRowForm
-            row={editingRow()}
-            onSaved={afterSave}
-            onCancel={closeForm}
-          />
-        </Show>
-      </Card>
+      {/* RowEditor renders its own <Card>, so this is NOT wrapped in another
+          one. title/description/footer exist precisely so a Settings host can
+          supply its own heading, copy + error lines, and create affordance
+          without nesting Cards or inheriting Discover's copy. */}
+      <RowEditor
+        title="Adult newest rows"
+        description={
+          <>
+            <Muted class="mb-3">
+              Admin-defined Adult Discover rows sourced from Prowlarr's newest
+              releases, matched to TPDB/StashDB/FansDB entities. The four
+              default rows (Movie/Scene/Performer/Studio) already exist — add
+              more here, e.g. a genre-narrowed variant of an existing type.
+              Drag the ⠿ handle to reorder; this is the same order Discover
+              shows, so a change here is a change there.
+            </Muted>
+            <Show when={rows.error}>
+              <ErrorText>{(rows.error as Error)?.message}</ErrorText>
+            </Show>
+            <Show when={displayError()}>
+              <ErrorText>{displayError()}</ErrorText>
+            </Show>
+          </>
+        }
+        footer={
+          <Show
+            when={editing() !== null}
+            fallback={
+              <div class="mt-3">
+                <Button variant="primary" onClick={() => setEditing("new")}>
+                  + New row
+                </Button>
+              </div>
+            }
+          >
+            <AdultRowForm
+              row={editingRow()}
+              onSaved={afterSave}
+              onCancel={closeForm}
+            />
+          </Show>
+        }
+        rows={descriptors()}
+        onReorder={(keys) => {
+          // Clear the other failure surface first: only the LATEST failure
+          // should ever be visible (see displayError above).
+          setListError("");
+          void persistOrder(
+            keys.map((k) => Number(k.slice("newestrow:".length))),
+          );
+        }}
+        onToggleEnabled={(r) => void toggleEnabled(r)}
+        onDelete={(r) => void remove(r)}
+      />
     </>
   );
 };

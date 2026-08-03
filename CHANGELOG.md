@@ -5077,3 +5077,217 @@ its separate review pass, not to this documentation pass. File paths and the
 route string above are contracts specified by the plan, not locations
 independently confirmed against the working tree; line numbers are
 deliberately not cited anywhere in this entry for the same reason.
+
+## 2026-08-02 — Adult rows: Settings and Discover unified onto one order; StashDB/FansDB structural rows deleted
+
+Settings' Adult Rows tab and Discover's Adult edit mode were two independent
+row-reordering surfaces writing to two different stores — Settings to
+`adultnewest`'s `sort_order` column, Discover to the per-screen KV order
+(`discover_row_order_adult`). Reordering on one silently had no effect on the
+other. They are now one order in one place: both read `adultnewest.Store.List`
+(ORDER BY `sort_order` ASC) and both write `POST
+/api/modes/adult/newest-rows/reorder`, through a new shared hook
+`frontend/src/screens/discover/useAdultRowOrder.ts`. Adult's use of the KV
+order/hidden store is retired.
+
+Implements the multi-idea planning session's item 1 (`docs/ROADMAP.md`), from
+`.omc/specs/deep-interview-adult-rows-config-unification.md`, built via a
+3-wave autopilot split per
+`.omc/plans/autopilot-impl-adult-rows-config-unification.md` (plan
+Critic-reviewed and revised before any executor ran; four CRITICAL findings
+about "delete this file" instructions written from filenames rather than file
+contents were folded in first — see the "gutted, not deleted" note below,
+which is exactly what those findings caught).
+
+**No migration, no backfill, and the reset is deliberate.** Nothing reads the
+old KV value. An order previously set only via Discover's drag-and-drop is
+reset to whatever `sort_order` says on the first load after deploy. Accepted
+as a one-time, low-stakes reset for a single-operator app, per the spec's own
+constraint — not a bug to "fix" later with a migration.
+
+**`useRowOrder` and both `/api/discover/{row-order,row-hidden}/{screen}` routes
+deliberately SURVIVE**, unchanged, because Mainstream is still a live consumer
+of them. That satisfies the spec's "removed, or confirmed still needed by
+another screen" criterion, but it also means nothing *structural* prevents
+Adult from quietly re-acquiring a second, divergent order source. A test is
+what prevents it: `Discover.test.tsx`'s "fires ZERO requests to
+/api/discover/row-order/adult or /row-hidden/adult", following the
+`TestAdultDescriptionMakesNoProwlarrCall` precedent `CLAUDE.md` names as the
+right enforcement mechanism for behavioural guarantees of this shape. The
+orphaned `discover_row_order_adult` / `discover_row_hidden_adult` settings rows
+are left in place; they are inert and harmless, and no cleanup migration was
+added for them.
+
+**The optional StashDB/FansDB Discover rows are deleted end to end** — twelve
+HTTP routes (two boxes × recent/trending/studios/studio-scenes/performers/
+performer-scenes), their handlers, the five `fetchStashBox*` client functions
+and the `StashBox` type in `frontend/src/api/discover.ts`, the `STASH_BOX_ROWS`
+/ `STASH_BOX_ORDERABLE_ROWS` tables, the connections-driven visibility gate, and
+`AdultDrill`'s `{box, id}` union member. Adult Discover now has **no structural
+rows at all**; every row it shows is an admin-defined newest row or an RSS feed
+row. `internal/stashbox` itself is **untouched** — same precedent as
+`internal/availability`: the Go package keeps its still-live callers
+(`internal/parseentity`'s `QueryStudios`/`QueryPerformers`,
+`internal/identify`'s `QueryScenesByStudio`/`QueryScenesByPerformer`), and only
+the Discover-facing HTTP surface was removed.
+
+**Two files were GUTTED, not deleted, and this is the entry's single most
+useful warning.** Their names lied about their contents:
+`internal/api/adultdiscover_stashbox.go` also held
+`adultDiscoverMergedRecentHandler` — live, registered, and serving the sort
+bar's "Newest Releases" row, which this work explicitly KEEPS — plus
+`optionalConnAPI`, used by `setup.go`. And
+`internal/api/adultdiscover_stashbox_test.go` is the `internal/api` package's
+de-facto shared test-helper file: `overrideFixedURL` alone has 19 external
+users, so deleting it is a compile failure of the entire test package. Both
+were reduced to their surviving contents and **renamed to match what they
+actually contain** — `adultdiscover_merged.go` and
+`adultdiscover_merged_test.go`.
+
+**A live Go test was RE-POINTED, not deleted.**
+`internal/api/fixed_url_test.go`'s stashdb case asserted the fixed-URL
+invariant by hitting `/api/modes/adult/discover/stashdb/recent`, a route this
+work deletes. It is now `TestStashDBIgnoresStoredConnectionURL`, asserting the
+same invariant against a surviving route (`POST
+/api/connections/{service}/test-stored`, decoding a `ConnectionTestResult` with
+`.OK` true). Coverage moved; it was not dropped.
+
+**`AdultRowAdmin` renders Discover's `<RowEditor>` verbatim** — not a second
+drag implementation, and not a shared `SortableList` primitive extracted from
+the two (that was priced and rejected; the sibling row-dnd spec's own decision
+is literal reuse). Its ▲▼ buttons, its `move()` handler and its hand-rolled row
+list are gone. RowEditor gained four additive, optional props to make that
+possible, plus one loosened one:
+
+- `actions?: RowAction[]` — an injected per-row control slot. **This is not a
+  nice-to-have: RowEditor's built-in controls are enabled-toggle + Delete only,
+  so adopting it as-is would have deleted the app's ONLY affordance for editing
+  a row's title/rowType/genreFilter.** `RowAction.icon` is typed `JSX.Element`,
+  not `string`, so the sibling spec's real-icon-library swap is a call-site-only
+  change with zero type churn (today it is a `<span aria-hidden>✎</span>`).
+- `title?` / `description?` / `footer?` — a non-Discover host supplies its own
+  Card heading, its own copy + error lines, and its own create affordance
+  instead of nesting Cards or inheriting Discover's wording. **`footer` renders
+  as a SIBLING after the empty-state `<Show>`, never inside it** — inside, a
+  fresh install shows "No rows yet." with no way to create a first row. There
+  is a dedicated test for exactly that.
+- `onToggleHidden` is now **optional**, and the structural `visible` checkbox
+  renders only when both `kind === "structural"` and a handler are present — an
+  always-rendered checkbox with an optional handler would be a silently inert
+  control on a screen that passes none.
+
+Discover passes none of the four new props, so its own row surface is
+byte-for-byte unchanged — which *is* the spec's AC5 deliverable ("confirm
+Discover's implementation is correct and leave it alone"), not an omission.
+
+**Behaviour worth knowing before editing either screen:**
+
+- The reorder is **optimistic**. `Store.Reorder` returns 204 with no body, so
+  the new order is only observable after a refetch; without the local override
+  a drag visibly snaps back and only then corrects. A failed persist reverts
+  the override and surfaces the error.
+- `Store.Reorder` rejects anything but the exact full current id set, each id
+  exactly once. Two windows can violate that, and the second is new and matters
+  precisely *because* two surfaces now share one column: (a) a row created
+  between fetch and drop on one surface; (b) cross-surface — Settings and
+  Discover open in two tabs, a row deleted in one, a drag committed in the
+  other. Both yield a 400, which is displayed rather than swallowed.
+- On Discover, a reorder's `onPersisted` calls the newest-rows resource's own
+  `refetch`, deliberately NARROWER than bumping `reloadToken` (which also
+  re-reads the RSS list, the performer/studio gender lists and every
+  `PaginatedStrip`). `deleteRow` still bumps `reloadToken`.
+- **A delete no longer re-sends the order.** DELETE + refetch is enough:
+  `List` only ORDERS BY `sort_order`, so the gap a removed row leaves is
+  harmless, and `Reorder` is never handed a stale id.
+- On AdultRowAdmin, `displayError = listError() || reorderError()` — a single
+  accessor so neither a CRUD failure nor a reorder 400 can render nowhere. It
+  is first-wins by construction; with a list error set, a reorder error is
+  hidden behind it.
+
+**Known temporary inconsistency, by design, not stale-by-accident:**
+`AdultRowAdmin`'s header used to say reordering was button-based "same as
+SliderAdmin." SliderAdmin and RssFeedAdmin still use ▲▼ — converting them is
+the sibling `row-dnd-consolidation-and-pagination` spec's job — so that
+comparison is annotated in-file as temporarily false rather than quietly
+dropped. It becomes true again, in the opposite direction, once the sibling
+lands.
+
+**Test changes, including two that moved coverage rather than deleting it:**
+
+- **NEW** `frontend/src/screens/discover/useAdultRowOrder.test.ts` — the
+  override contract in full (override order first; unmentioned rows appended in
+  `rows()` order; override ids no longer in `rows()` DROPPED — the post-delete,
+  pre-effect-clear window; override cleared once `rows()` changes; a rejected
+  persist reverts AND sets the error), plus the assertion that the **full** id
+  set reaches `reorderAdultNewestRows`. A real pointer drag is not simulable in
+  jsdom (this repo's long-standing accepted posture), so the screen tests assert
+  only that a grip handle renders per row and no ▲▼ survived; the resulting
+  order lives here and in `reorderKeys`' own unit tests.
+- **`Discover.grab.test.tsx`'s Adult runtime case was RE-POINTED, and its
+  justifying comment was CORRECTED rather than obeyed.** That comment claimed
+  admin newest rows "always send `durationSeconds: 0` by design (see
+  `toAdultDiscoverItem`)" and used a FansDB stash-box row as its data source
+  instead. The claim was false: `toAdultDiscoverItem` is a spread overriding
+  only `rating` and `slug`, and `AdultNewestReleaseItem.durationSeconds` is
+  declared non-optional in `dto.gen.ts` — a matched entity's real runtime
+  passes straight through. The stub now sources an admin newest scene row
+  (`/newest-rows/{id}/resolve`) with `durationSeconds: 2400`. This matters
+  because it is the **only** regression test for a real non-zero
+  `durationSeconds` reaching an Adult grab request, which is what lets
+  `autograb.GradeCandidate` qualify an Adult release at all — `CLAUDE.md`'s
+  bound 2 of the unattended auto-grab exception.
+- **`Adult.rssfeed.test.tsx`'s ordering assertion was HALVED, not deleted.** It
+  asserted feeds render after a "StashDB Trending" structural row *and* after
+  the admin newest row. The first half could only go with the row itself; the
+  second is the surviving, and now sole, expression of the guarantee ("feeds
+  render on an independent path, after everything the row editor manages"), and
+  is kept.
+- `Discover.test.tsx` — the five stash-box row tests deleted; the enclosing
+  describe renamed (what remains is about provenance labels on pool-sourced
+  scenes, never about stash-box rows); **added** the strengthened inverse of the
+  deleted "hides them when neither connection is configured" case: no
+  StashDB/FansDB row renders **even when BOTH connections ARE configured** —
+  the only version of that assertion that can actually fail if the rows return.
+- `AdultRowAdmin.test.tsx` — the two ▲▼ tests replaced by a grip-handle/no-▲▼
+  assertion; **added** the Edit-action regression test (the capability above),
+  a title-only-row assertion, the "+ New row still renders on an empty list"
+  guard, and an error-surface guard.
+- `RowEditor.test.tsx` — **added** coverage for `actions`, for the absent
+  `onToggleHidden` case, for the three copy overrides, and for `footer` with an
+  empty row list. Its existing per-kind and `reorderKeys` tests pass
+  **unmodified**, which is the AC5 evidence.
+- `useRowOrder.test.ts`'s hidden-block cases re-pointed from `"adult"` to
+  `"mainstream"` — **not** deleted; that logic is still live for its surviving
+  consumer.
+- Stash-box stubs removed from `Adult.grab.test.tsx`,
+  `Adult.newestdrill.test.tsx` (its whole stash-box drill describe) and
+  `Adult.rssfeed.test.tsx`; the `fetchStashBox*Scenes` describes removed from
+  `frontend/src/api/discover.test.ts`.
+
+**Deslop:** `AdultDrill.source` (`"newest"`) became write-only once the
+`{box, id}` union member was removed — the description fetcher resolves the box
+itself from the matched-entity pool now and reads no hint. Confirmed unread at
+every site and removed.
+
+| File | Change |
+|---|---|
+| `internal/api/handler.go` | The 12-route stash-box registration loop deleted. `GET /api/modes/adult/discover/recent-merged` deliberately untouched |
+| `internal/api/adultdiscover_stashbox.go` → `adultdiscover_merged.go` | **Renamed + gutted.** Keeps `optionalConnAPI` (used by `setup.go`) and `adultDiscoverMergedRecentHandler` (live); the client, the six handlers and the two write helpers deleted |
+| `internal/api/adultdiscover_stashbox_test.go` → `adultdiscover_merged_test.go` | **Renamed + gutted.** Keeps `overrideFixedURL` (19 external users), `fakeStashBox`, `newAdultPoolServer`, `getJSON` and the five `TestAdultMergedRecent_*` tests; the stash-box handler tests and `newAdultMux` deleted |
+| `internal/api/fixed_url_test.go` | `TestAdultDiscover_StashDBIgnoresStoredConnectionURL` → `TestStashDBIgnoresStoredConnectionURL`, re-pointed at `POST /api/connections/{service}/test-stored` |
+| `internal/api/adultdiscover.go`, `setup.go` | Doc comments corrected for the deleted handlers and the file rename |
+| `frontend/src/screens/discover/useAdultRowOrder.ts` | **New.** The shared optimistic reorder state machine |
+| `frontend/src/screens/discover/RowEditor.tsx` | `RowAction` + `actions?`; optional `onToggleHidden`; optional `title`/`description`/`footer`. Drag mechanics, `reorderKeys`, grip-handle activators and reflow all unchanged |
+| `frontend/src/screens/discover/Adult.tsx` | Structural rows, the connections gate, the `useRowOrder` call, the box drill variant and `AdultDrill.source` removed; rows derive from `useAdultRowOrder`. RSS render path untouched |
+| `frontend/src/api/discover.ts` | The `StashBox` type and five `fetchStashBox*` fetchers deleted — dead exports `noUnusedLocals` does not flag, so removal was verified by review, not tooling |
+| `frontend/src/screens/AdultRowAdmin.tsx` | Hand-rolled list + `move()` replaced by `<RowEditor>` with title/description/footer and one Edit action |
+| `CLAUDE.md` | CORRECTED 2026-08-02 note appended to the adult-popup-enrichment clarification: "all four drill-down entry points" → two |
+| `docs/ROADMAP.md` | Multi-idea-session item 1 flipped to shipped, with its own Shipped block; the section's "except items 3 and 12" blanket claim updated |
+| `CHANGELOG.md` | This entry |
+
+**Verification:** `go build ./...` clean; `go test ./...` green except the
+pre-existing, unrelated `internal/sysinfo` GPU-count failures, which fail on
+this host's hardware config and are untouched by this work. `pnpm -C frontend
+build` (which runs `tsc --noEmit`, with `noUnusedLocals` enforced) clean;
+`pnpm -C frontend test` 754 passed / 0 failed across 56 files. There is no
+`lint` script in `frontend/package.json`, so no lint gate was run.

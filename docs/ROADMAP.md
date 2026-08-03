@@ -994,8 +994,9 @@ after every spec lands and reconciled fully once the whole session
 completes (originally planned as a one-time end-of-session reconciliation;
 changed to update-as-you-go 2026-07-31 at Wade's request). None of these
 are authorized to build yet — every spec below is `pending approval`,
-**except items 3 and 12, both of which shipped 2026-08-01** (see each item's
-own "Shipped" block below, plus `CHANGELOG.md`). That blanket claim is
+**except items 3 and 12, which shipped 2026-08-01, and item 1, which shipped
+2026-08-02** (see each item's own "Shipped" block below, plus
+`CHANGELOG.md`). That blanket claim is
 corrected here rather than left to go stale silently — it is the same class
 of "was true when written" statement this file and `CLAUDE.md` both make a
 habit of superseding in place.
@@ -1012,6 +1013,60 @@ numbered below by original idea order, not interview order.
    ambiguity, PASSED). Unifies Settings' `AdultRowAdmin` and Discover's
    Adult edit mode onto one canonical `sort_order` store; deletes the
    StashDB/FansDB structural-rows feature entirely.
+
+   **Shipped 2026-08-02** — see `CHANGELOG.md` and `CLAUDE.md`'s CORRECTED
+   2026-08-02 note under the adult-popup-enrichment clarification. Built via a
+   3-wave autopilot split per
+   `.omc/plans/autopilot-impl-adult-rows-config-unification.md`. What actually
+   landed, and the parts a future session needs before touching it:
+
+   - **One order, two surfaces, one column.** Both Settings' Adult Rows tab
+     and Discover's Adult edit mode now read `adultnewest`'s `List` (ORDER BY
+     `sort_order` ASC) and write `POST /api/modes/adult/newest-rows/reorder`,
+     through a new shared hook `frontend/src/screens/discover/useAdultRowOrder.ts`.
+     Adult's old per-screen KV order (`useRowOrder("adult", …)`) is retired.
+     There is **no migration and no backfill** — an order previously set only
+     via Discover's drag-and-drop is reset to `sort_order`, a deliberate,
+     accepted one-time reset (single operator), not a bug.
+   - **`useRowOrder` and both `/api/discover/{row-order,row-hidden}/{screen}`
+     routes deliberately SURVIVE** — Mainstream is still a live consumer, so
+     deleting them was never on the table. That means nothing structural stops
+     Adult from quietly re-acquiring a second, divergent order source; a test
+     is what stops it (`Discover.test.tsx`, "fires ZERO requests to
+     /api/discover/row-order/adult or /row-hidden/adult"), following the
+     `TestAdultDescriptionMakesNoProwlarrCall` precedent `CLAUDE.md` names for
+     guarantees of this shape.
+   - **AdultRowAdmin renders Discover's `<RowEditor>` verbatim**, not a second
+     drag implementation and not a shared extracted primitive — its ▲▼ buttons
+     and hand-rolled list are gone. RowEditor gained four additive, optional
+     props to make that possible: `actions?: RowAction[]` (an injected per-row
+     control slot), `title?`, `description?`, `footer?`, plus `onToggleHidden`
+     becoming optional. **`footer` renders as a SIBLING after the empty-state
+     `<Show>`, never inside it** — inside, a fresh install shows "No rows yet."
+     with no way to create a first row. Discover passes none of the four, so
+     its own surface is unchanged, which is the AC5 deliverable.
+   - **The Edit affordance had to be carried explicitly.** RowEditor's built-in
+     controls are enabled-toggle + Delete only, so adopting it as-is would have
+     deleted the app's ONLY place to edit a row's title/rowType/genreFilter.
+     It survives as the one injected `RowAction`. `RowAction.icon` is typed
+     `JSX.Element` (not `string`) so item 2's real-icon-library swap is a
+     call-site-only change.
+   - **The StashDB/FansDB structural rows are gone end to end** — twelve
+     backend routes, their handlers, the five frontend fetchers in
+     `api/discover.ts`, and the `AdultDrill` box variant. **`internal/stashbox`
+     is untouched** (same precedent as `internal/availability`: the Go package
+     keeps its still-live callers in `internal/parseentity` and
+     `internal/identify`; only the Discover-facing HTTP surface was removed).
+     Two files were GUTTED rather than deleted, because their names lied about
+     their contents: `adultdiscover_stashbox.go` also held the live
+     `adultDiscoverMergedRecentHandler`, and `adultdiscover_stashbox_test.go`
+     is the `internal/api` package's shared test-helper file (`overrideFixedURL`
+     alone has 19 external users). Both were renamed to `*_merged*` to match
+     what they actually contain.
+   - **Known temporary inconsistency, by design:** `AdultRowAdmin`'s header
+     used to say reordering was button-based "same as SliderAdmin." SliderAdmin
+     and RssFeedAdmin still use ▲▼ — converting them is item 2's job — so that
+     comparison is annotated as temporarily false rather than silently dropped.
 2. **Live drag-and-drop row reordering** — spec ready:
    `.omc/specs/deep-interview-row-dnd-consolidation-and-pagination.md`
    (15% ambiguity, PASSED). Converts SliderAdmin off button-based reorder,

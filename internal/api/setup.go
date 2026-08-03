@@ -141,7 +141,7 @@ func modeStatusFor(ctx context.Context, m mode.Mode, allowStore *allowlist.Store
 }
 
 // connectionExists reports whether service has a stored connection —
-// delegates to optionalConnAPI (adultdiscover_stashbox.go) for the actual
+// delegates to optionalConnAPI (adultdiscover_merged.go) for the actual
 // "not-found is not an error" logic rather than re-implementing it, so
 // package api's "is this connection configured" idiom exists in exactly one
 // place.

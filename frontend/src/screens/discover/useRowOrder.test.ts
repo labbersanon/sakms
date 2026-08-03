@@ -51,13 +51,18 @@ describe("useRowOrder — order", () => {
   });
 });
 
+// The hidden-block cases run against "mainstream", not "adult": Adult retired
+// the per-screen KV order/hidden store entirely (its row order is adultnewest's
+// sort_order column now, and it has no structural rows left to hide). The logic
+// under test is unchanged and very much still live — Mainstream is the
+// surviving consumer, which is exactly why useRowOrder itself was kept.
 describe("useRowOrder — hidden", () => {
   it("isHidden defaults to false while the hidden set is still loading", () => {
     // A never-resolving fetch leaves hiddenKeys() null → visible by default, so
     // rows don't flash hidden during the initial load.
     mocked.fetchRowHidden.mockReturnValue(new Promise<string[]>(() => {}));
     const { result } = renderHook(() =>
-      useRowOrder("adult", () => ["studios"]),
+      useRowOrder("mainstream", () => ["studios"]),
     );
     expect(result.isHidden("studios")).toBe(false);
   });
@@ -65,7 +70,7 @@ describe("useRowOrder — hidden", () => {
   it("isHidden reflects the loaded hidden set", async () => {
     mocked.fetchRowHidden.mockResolvedValue(["studios"]);
     const { result } = renderHook(() =>
-      useRowOrder("adult", () => ["studios", "performers"]),
+      useRowOrder("mainstream", () => ["studios", "performers"]),
     );
     await flush();
     expect(result.isHidden("studios")).toBe(true);
@@ -74,17 +79,17 @@ describe("useRowOrder — hidden", () => {
 
   it("toggleHidden flips membership and persists each change", async () => {
     const { result } = renderHook(() =>
-      useRowOrder("adult", () => ["studios"]),
+      useRowOrder("mainstream", () => ["studios"]),
     );
     await flush();
     expect(result.isHidden("studios")).toBe(false);
 
     result.toggleHidden("studios");
     expect(result.isHidden("studios")).toBe(true);
-    expect(mocked.saveRowHidden).toHaveBeenLastCalledWith("adult", ["studios"]);
+    expect(mocked.saveRowHidden).toHaveBeenLastCalledWith("mainstream", ["studios"]);
 
     result.toggleHidden("studios");
     expect(result.isHidden("studios")).toBe(false);
-    expect(mocked.saveRowHidden).toHaveBeenLastCalledWith("adult", []);
+    expect(mocked.saveRowHidden).toHaveBeenLastCalledWith("mainstream", []);
   });
 });

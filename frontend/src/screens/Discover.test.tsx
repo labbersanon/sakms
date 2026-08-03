@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@solidjs/testing-library";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@solidjs/testing-library";
 import type {
   AdultDiscoverItem,
   DiscoverItem,
-  PerformerSummary,
   SeasonSummary,
-  StudioSummary,
   TrackedItem,
 } from "@dto";
 import { Discover } from "./Discover";
@@ -70,22 +74,6 @@ const tracked = (over: Partial<TrackedItem>): TrackedItem => ({
   tags: [],
   tmdbId: 500,
   year: 2020,
-  ...over,
-});
-
-const studio = (over: Partial<StudioSummary>): StudioSummary => ({
-  id: "st1",
-  name: "Vixen",
-  image: "https://cdn.theporndb.net/sites/vixen.jpg",
-  source: "tpdb",
-  ...over,
-});
-
-const performer = (over: Partial<PerformerSummary>): PerformerSummary => ({
-  id: "pf1",
-  name: "A Performer",
-  image: "",
-  source: "tpdb",
   ...over,
 });
 
@@ -816,10 +804,24 @@ const connectionSummary = (service: string): { service: string; url: string; has
   updatedAt: "2024-01-01T00:00:00Z",
 });
 
-describe("Discover — Adult optional StashDB/FansDB rows", () => {
-  it("hides the StashDB/FansDB rows entirely when neither connection is configured", async () => {
+// AC6's guard. The old describe here exercised the optional StashDB/FansDB
+// structural rows (a Trending scene row, FansDB's four rows, and the two
+// box-scoped drill-routing cases); those rows, their fetchers and their twelve
+// backend routes are gone, so those five tests went with them. What remains is
+// the one case that was never about stash-box ROWS at all — provenance labels
+// on a pool-sourced scene whose match happened to resolve against a stash box,
+// which is still live — plus the strengthened inverse of the deleted
+// "hides them when neither connection is configured" case: they must not
+// render even when BOTH connections ARE configured, which is the only version
+// of that assertion that can fail if the rows ever come back.
+describe("Discover — Adult stash-box provenance (no stash-box rows)", () => {
+  it("renders NO StashDB/FansDB row even when both connections are configured (AC6)", async () => {
     stubFetch((url) => {
-      if (url.includes("/api/connections")) return jsonResponse([]);
+      if (url.includes("/api/connections"))
+        return jsonResponse([
+          connectionSummary("stashdb"),
+          connectionSummary("fansdb"),
+        ]);
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -831,8 +833,7 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     // No newest-rows admin data in this fixture, so the browse view has
     // nothing but the search bar/sort bar — confirm that quiescent state
     // renders cleanly (no crash reading the empty-array resources) before
-    // asserting no StashDB/FansDB row header ever appears, not even with an
-    // empty "Nothing here yet" placeholder.
+    // asserting no StashDB/FansDB row header ever appears.
     expect(
       await screen.findByPlaceholderText("Search scenes by title…"),
     ).toBeInTheDocument();
@@ -843,54 +844,6 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     expect(screen.queryByText("FansDB Trending")).not.toBeInTheDocument();
     expect(screen.queryByText("FansDB Studios")).not.toBeInTheDocument();
     expect(screen.queryByText("FansDB Performers")).not.toBeInTheDocument();
-  });
-
-  it("shows only StashDB's Trending scene row when stashdb is configured (StashDB has no dedicated Studios/Performers row at all)", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/connections"))
-        return jsonResponse([connectionSummary("stashdb")]);
-      if (url.includes("/api/modes/adult/discover/stashdb/trending"))
-        return jsonResponse([scene({ id: "sb1", title: "StashDB Trend Scene", source: "stashdb" })]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    // StashDB's scene row (Trending) survives (G2)...
-    expect(await screen.findByText("StashDB Trending")).toBeInTheDocument();
-    expect(await screen.findByText("StashDB Trend Scene")).toBeInTheDocument();
-    // ...but StashDB has no dedicated Studios/Performers row at all (only
-    // FansDB does — see STASH_BOX_ORDERABLE_ROWS in Adult.tsx).
-    expect(screen.queryByText("StashDB Studios")).not.toBeInTheDocument();
-    expect(screen.queryByText("StashDB Performers")).not.toBeInTheDocument();
-
-    // FansDB stays hidden — only stashdb was in the connections list.
-    expect(screen.queryByText("FansDB Recently Released")).not.toBeInTheDocument();
-  });
-
-  it("shows FansDB's four rows when only fansdb is configured", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/connections"))
-        return jsonResponse([connectionSummary("fansdb")]);
-      if (url.includes("/api/modes/adult/discover/fansdb/recent"))
-        return jsonResponse([scene({ id: "fd1", title: "FansDB Recent Scene", source: "fansdb" })]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    expect(await screen.findByText("FansDB Recently Released")).toBeInTheDocument();
-    expect(screen.getByText("FansDB Trending")).toBeInTheDocument();
-    expect(screen.getByText("FansDB Studios")).toBeInTheDocument();
-    expect(screen.getByText("FansDB Performers")).toBeInTheDocument();
-    expect(await screen.findByText("FansDB Recent Scene")).toBeInTheDocument();
-    expect(screen.queryByText("StashDB Trending")).not.toBeInTheDocument();
   });
 
   it("shows a StashDB/FansDB provenance label on a merged-in scene's subtitle, but not on a plain TPDB scene", async () => {
@@ -942,79 +895,6 @@ describe("Discover — Adult optional StashDB/FansDB rows", () => {
     expect(stashSubtitle?.textContent).toBe("Blacked · 2023 · StashDB");
   });
 
-  // Drill routing guard (G1/G4): a stash-box studio card carries `box` so its
-  // drill hits the box-scoped scenes endpoint — a stash-box id must never be
-  // queried against TPDB. StashDB's Studios/Performers rows are gone (folded
-  // into the merged rows), so FansDB is now the box that still owns entity rows
-  // and exercises this path; its box-drill routing must stay untouched (G1).
-  it("routes a FansDB studio drill to the box endpoint (never TPDB)", async () => {
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/connections"))
-        return jsonResponse([connectionSummary("fansdb")]);
-      // Box-scoped drill — matched before the browse path (a substring of it).
-      if (url.includes("/api/modes/adult/discover/fansdb/studios/fbst1/scenes"))
-        return jsonResponse([scene({ id: "fbsc1", title: "FansDB Studio Scene", source: "fansdb" })]);
-      if (url.includes("/api/modes/adult/discover/fansdb/studios"))
-        return jsonResponse([studio({ id: "fbst1", name: "FansDB Studio", source: "fansdb" })]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    // FansDB studio → the box-scoped endpoint, and never TPDB with the box id.
-    fireEvent.click(await screen.findByText("FansDB Studio"));
-    expect(await screen.findByText("FansDB Studio Scene")).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/discover/fansdb/studios/fbst1/scenes"),
-      ),
-    ).toBe(true);
-    expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/studios/fbst1/scenes"),
-      ),
-    ).toBe(false);
-  });
-
-  it("routes a FansDB performer drill to the box endpoint (never TPDB)", async () => {
-    const fetchMock = stubFetch((url) => {
-      if (url.includes("/api/connections"))
-        return jsonResponse([connectionSummary("fansdb")]);
-      if (url.includes("/api/modes/adult/discover/fansdb/performers/fbpf1/scenes"))
-        return jsonResponse([scene({ id: "fbps1", title: "FansDB Perf Scene", source: "fansdb" })]);
-      if (url.includes("/api/modes/adult/discover/fansdb/performers"))
-        return jsonResponse([
-          performer({
-            id: "fbpf1",
-            name: "FansDB Performer",
-            image: "https://cdn.theporndb.net/performers/fb.jpg",
-            source: "fansdb",
-          }),
-        ]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
-
-    fireEvent.click(await screen.findByText("FansDB Performer"));
-    expect(await screen.findByText("FansDB Perf Scene")).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/discover/fansdb/performers/fbpf1/scenes"),
-      ),
-    ).toBe(true);
-    expect(
-      fetchMock.mock.calls.some(([u]) =>
-        String(u).includes("/api/modes/adult/performers/fbpf1/scenes"),
-      ),
-    ).toBe(false);
-  });
 });
 
 describe("Discover — Adult admin newest rows", () => {
@@ -1149,6 +1029,239 @@ describe("Discover — Adult admin newest rows", () => {
       (within(enabledRow).getByLabelText("Newest Scenes enabled") as HTMLInputElement)
         .checked,
     ).toBe(true);
+  });
+
+  // AC2's screen-level half: every Adult newest row carries the grip handle
+  // solid-dnd needs. The drag it enables is exercised for real by the two tests
+  // after this one — a pointer drag IS simulable once the row <li>s are given
+  // non-degenerate rects (see dragAdultRow), so the `newestrow:{id}` → id
+  // mapping and the resulting POST body are asserted here rather than inferred
+  // from useAdultRowOrder.test.ts, which can only prove the hook passes through
+  // whatever ids it was handed. reorderKeys' pure key-order logic keeps its own
+  // unit tests in RowEditor.test.tsx.
+  it("Adult's row editor makes every newest row draggable (drag persists to sort_order, not the KV store)", async () => {
+    stubFetch((url) => {
+      if (url.includes("/newest-rows/1/resolve")) return jsonResponse([]);
+      if (url.includes("/newest-rows/2/resolve")) return jsonResponse([]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+          { id: 2, title: "Newest Movies", rowType: "movie", sortOrder: 1, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    fireEvent.click(await screen.findByText("Edit"));
+
+    expect(await screen.findByLabelText("Drag Newest Scenes")).toBeTruthy();
+    expect(screen.getByLabelText("Drag Newest Movies")).toBeTruthy();
+  });
+
+  // dragAdultRow drives a REAL solid-dnd pointer drag of the row at fromIndex
+  // onto the slot of the row at toIndex. jsdom computes no layout, so every
+  // getBoundingClientRect is all-zero and solid-dnd's closestCenter sees every
+  // droppable at one point; a 100px-tall rect per row is what makes the
+  // collision answer meaningful. The stubs are ELEMENT-LOCAL on purpose —
+  // patching Element.prototype would leak into the ~40 other tests in this file.
+  // Then: pointerdown on the ⠿ grip (the only activator), a pointermove past the
+  // sensor's 10px activation distance, and pointerup to commit. Landing the move
+  // exactly on the target row's centre is what makes the resulting order exact.
+  const dragAdultRow = (fromIndex: number, toIndex: number) => {
+    const lis = Array.from(document.querySelectorAll("li")).filter((li) =>
+      li.querySelector('[aria-label^="Drag "]'),
+    );
+    lis.forEach((li, i) => {
+      li.getBoundingClientRect = () =>
+        ({
+          x: 0,
+          y: i * 100,
+          left: 0,
+          top: i * 100,
+          right: 500,
+          bottom: i * 100 + 100,
+          width: 500,
+          height: 100,
+          toJSON: () => ({}),
+        }) as DOMRect;
+    });
+    const handle = lis[fromIndex]!.querySelector(
+      '[aria-label^="Drag "]',
+    ) as HTMLElement;
+    fireEvent.pointerDown(handle, {
+      clientX: 250,
+      clientY: fromIndex * 100 + 50,
+      button: 0,
+    });
+    const to = { clientX: 250, clientY: toIndex * 100 + 50 };
+    fireEvent.pointerMove(document, to);
+    fireEvent.pointerUp(document, to);
+  };
+
+  const adultRows = [
+    { id: 11, title: "Newest Scenes", rowType: "scene" },
+    { id: 22, title: "Newest Movies", rowType: "movie" },
+    { id: 33, title: "Newest Studios", rowType: "studio" },
+  ].map((r, i) => ({
+    ...r,
+    sortOrder: i,
+    enabled: true,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  }));
+
+  // The only genuinely new logic on Discover's reorder path, and the one thing
+  // useAdultRowOrder.test.ts structurally cannot cover: it asserts persistOrder
+  // passes through the ids it is HANDED, never that this screen derived them
+  // from the `newestrow:{id}` keys correctly. An off-by-one on the prefix
+  // (`"newestrow".length`) yields NaN, which JSON.stringify writes as null — so
+  // the body would be {ids:[null,null,null]} with nothing else to catch it.
+  it("an Adult row drag POSTs /reorder with the ACTUAL numeric ids the newestrow: keys map to", async () => {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({
+          url,
+          method: (init?.method ?? "GET").toUpperCase(),
+          body: init?.body ? JSON.parse(init.body as string) : undefined,
+        });
+        if (url.includes("/newest-rows/reorder"))
+          return new Response(null, { status: 204 });
+        if (/\/newest-rows\/\d+\/resolve/.test(url)) return jsonResponse([]);
+        if (url.includes("/newest-rows")) return jsonResponse(adultRows);
+        const d = mainstreamDefaults(url);
+        if (d) return d;
+        throw new Error("unexpected fetch: " + url);
+      }),
+    );
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    fireEvent.click(await screen.findByText("Edit"));
+    await screen.findByLabelText("Drag Newest Scenes");
+
+    dragAdultRow(0, 2);
+
+    const isReorder = (c: (typeof calls)[number]) =>
+      c.method === "POST" && c.url.includes("/newest-rows/reorder");
+    await waitFor(() => expect(calls.some(isReorder)).toBe(true));
+    // "Newest Scenes" moved into "Newest Studios"' slot — the full id set, every
+    // id exactly once, in the new display order (Store.Reorder rejects anything
+    // else with a 400).
+    expect(calls.find(isReorder)!.body).toEqual({ ids: [22, 33, 11] });
+  });
+
+  // The regression guard for the <For> keying. refetchNewestRows (fired after
+  // every successful reorder) is only NARROWER than bumping reloadToken while
+  // the row <For> is keyed on stable numeric ids: it hands back brand-new row
+  // objects every time, so an object-keyed <For> would dispose and recreate
+  // every PaginatedStrip after each drag, resetting each strip's page/items/
+  // autoAdvanceCount signals and re-firing its loader — exactly the cost the
+  // narrower refetch exists to avoid.
+  //
+  // The signal is a CALL COUNT, not rendered order: the optimistic override
+  // reorders immediately and the refetch then clears it, so DOM order is not a
+  // stable thing to assert. The refetched list returns a renamed row instead,
+  // which proves the refetch really propagated (and that the strip's title
+  // accessor stays live) — while /resolve stays uncalled, proving the strip was
+  // UPDATED rather than remounted.
+  it("a drag-reorder refreshes the row data WITHOUT remounting the strips (no loader re-fire)", async () => {
+    const resolveCalls: string[] = [];
+    let reordered = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/newest-rows/reorder")) {
+          reordered = true;
+          return new Response(null, { status: 204 });
+        }
+        if (/\/newest-rows\/\d+\/resolve/.test(url)) {
+          resolveCalls.push(url);
+          return jsonResponse([]);
+        }
+        if (url.includes("/newest-rows"))
+          return jsonResponse(
+            reordered
+              ? adultRows.map((r) =>
+                  r.id === 11 ? { ...r, title: "Newest Scenes (refetched)" } : r,
+                )
+              : adultRows,
+          );
+        const d = mainstreamDefaults(url);
+        if (d) return d;
+        throw new Error("unexpected fetch: " + url);
+      }),
+    );
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    fireEvent.click(await screen.findByText("Edit"));
+    await screen.findByLabelText("Drag Newest Scenes");
+    // One /resolve per row's strip on first mount.
+    await waitFor(() => expect(resolveCalls).toHaveLength(3));
+    const before = resolveCalls.length;
+
+    dragAdultRow(0, 2);
+
+    // The refetch landed and reached the STRIP's own <h2> in place (queried by
+    // role — the row editor renders the same text in a plain div).
+    expect(
+      await screen.findByRole("heading", {
+        name: "Newest Scenes (refetched)",
+      }),
+    ).toBeInTheDocument();
+    // ...and not one strip re-ran its loader. Keyed on row objects this would
+    // be 6.
+    expect(resolveCalls).toHaveLength(before);
+  });
+});
+
+// AC3 / D4's enforcement mechanism, following the precedent CLAUDE.md names for
+// behavioural guarantees of this shape (TestAdultDescriptionMakesNoProwlarrCall):
+// a test, not a deleted route. useRowOrder and both
+// /api/discover/{row-order,row-hidden}/{screen} routes deliberately SURVIVE —
+// Mainstream is still a live consumer — so nothing structural stops Adult from
+// quietly re-acquiring a second, divergent source of row order. This is what
+// stops it.
+describe("Discover — Adult never touches the per-screen row-order KV store", () => {
+  it("fires ZERO requests to /api/discover/row-order/adult or /row-hidden/adult", async () => {
+    const seen: string[] = [];
+    const fetchMock = stubFetch((url) => {
+      seen.push(url);
+      // Belt and braces: a throw alone would be swallowed into a createResource
+      // error and pass vacuously, so the recorded-URL assertion below is the
+      // real check and this only makes a violation loud in the failure output.
+      if (/\/api\/discover\/row-(order|hidden)\/adult/.test(url))
+        throw new Error("Adult must not read the row-order KV store: " + url);
+      if (url.includes("/newest-rows/1/resolve")) return jsonResponse([]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Discover />);
+    fireEvent.click(await screen.findByText("Adult"));
+    // Await both the browse view AND the row editor: the KV reads this guards
+    // against were fired by useRowOrder, which the editor path is what used to
+    // mount. Awaiting a rendered row proves the mount's requests really ran.
+    expect(await screen.findByText("Newest Scenes")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Edit"));
+    expect(await screen.findByLabelText("Drag Newest Scenes")).toBeTruthy();
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(
+      seen.filter((u) => /\/api\/discover\/row-(order|hidden)\/adult/.test(u)),
+    ).toEqual([]);
   });
 });
 

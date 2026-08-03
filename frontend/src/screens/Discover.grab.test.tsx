@@ -25,7 +25,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
-import type { AdultDiscoverItem, DiscoverItem } from "@dto";
+import type { AdultNewestReleaseItem, DiscoverItem } from "@dto";
 import { Discover } from "./Discover";
 
 const jsonResponse = (obj: unknown): Response =>
@@ -45,16 +45,20 @@ const movie = (over: Partial<DiscoverItem>): DiscoverItem => ({
   ...over,
 });
 
-const scene = (over: Partial<AdultDiscoverItem>): AdultDiscoverItem => ({
+// One entry of a resolved admin newest row — the shape /newest-rows/{id}/resolve
+// returns, and the only Adult scene data an AdultCard renders now that the
+// optional stash-box rows are gone.
+const newestScene = (
+  over: Partial<AdultNewestReleaseItem>,
+): AdultNewestReleaseItem => ({
   id: "s1",
   title: "A Scene",
   studio: "Tushy",
   date: "2023-02-02",
   image: "",
-  durationSeconds: 1800,
-  rating: 0,
   source: "tpdb",
-  slug: "tushy-a-scene-1",
+  rowType: "scene",
+  durationSeconds: 1800,
   ...over,
 });
 
@@ -443,27 +447,46 @@ describe("Discover auto-grab — Series (per-item picker gates the grab)", () =>
 describe("Discover auto-grab — Adult (runtime-sourced, via select-mode bulk)", () => {
   it("carries a scene's real durationSeconds through as the scorer runtime", async () => {
     const calls = stubFetch((url) => {
-      // The admin "newest rows" (the default-leading Adult scene row today)
-      // are Prowlarr-matched cache entries with no real duration data — their
-      // AdultDiscoverItem adapter always sends durationSeconds: 0 by design
-      // (see toAdultDiscoverItem in Adult.tsx). To prove an AdultCard's grab
-      // request still correctly sources a REAL non-zero durationSeconds from
-      // an item that actually carries one, use the FansDB stash-box scene row
-      // instead — still native, unmodified AdultDiscoverItem data, and the
-      // only remaining always-rendered scene row that isn't run through that
-      // adapter (Studios/Performers render EntityCard, not AdultCard).
-      if (url.includes("/api/connections"))
-        return jsonResponse([
-          { service: "fansdb", url: "https://example.invalid", hasApiKey: true, updatedAt: "2024-01-01T00:00:00Z" },
-        ]);
-      if (url.includes("/api/modes/adult/discover/fansdb/recent"))
+      // Claude 2026-08-02: this used to source the card from the FansDB
+      // stash-box scene row, on the stated grounds that admin newest rows
+      // "always send durationSeconds: 0 by design (see toAdultDiscoverItem)".
+      // That justification was FALSE, and is corrected here rather than
+      // carried forward: toAdultDiscoverItem (Adult.tsx) is a SPREAD that
+      // overrides only `rating` and `slug`, and dto.gen.ts declares
+      // AdultNewestReleaseItem.durationSeconds NON-OPTIONAL — a matched
+      // entity's real runtime passes straight through. An admin newest scene
+      // row is therefore a fully valid source for this assertion.
+      // Reason: the stash-box rows and their routes are gone, so the old
+      // source no longer exists at all — but the coverage had to be MOVED,
+      // not deleted: this is the only regression test for a real non-zero
+      // durationSeconds reaching an Adult grab request, which is what lets
+      // autograb.GradeCandidate qualify an Adult release at all (its
+      // RuntimeSeconds <= 0 short-circuit is CLAUDE.md's bound 2 of the
+      // unattended auto-grab exception).
+      // Troubleshooting: substring-collision ordering — the /resolve item
+      // endpoint shares a prefix with its own list endpoint, so it must be
+      // matched FIRST.
+      // Review if: a single-item Adult auto-grab affordance is ever reinstated.
+      if (url.includes("/newest-rows/") && url.includes("/resolve"))
         // Non-empty image so the card renders an <img>, not the TextPoster
         // fallback — the fallback repeats the title, giving the click query
         // below two matches.
-        return jsonResponse([scene({ id: "s1", title: "Scene One", studio: "Vixen", durationSeconds: 2400, source: "fansdb", image: "https://cdn.example/scene-one.jpg" })]);
-      // No admin newest rows configured — keeps this test to exactly the one
-      // FansDB card, so "the" selectable scene card is unambiguous.
-      if (url.includes("/newest-rows")) return jsonResponse([]);
+        return jsonResponse([
+          newestScene({
+            id: "s1",
+            title: "Scene One",
+            studio: "Vixen",
+            durationSeconds: 2400,
+            image: "https://cdn.example/scene-one.jpg",
+          }),
+        ]);
+      if (url.includes("/newest-rows/performer-genders")) return jsonResponse([]);
+      // Exactly ONE enabled scene row, so "the" selectable scene card is
+      // unambiguous.
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
       if (url.includes("/api/autograb-batch"))
         return jsonResponse({
           results: [

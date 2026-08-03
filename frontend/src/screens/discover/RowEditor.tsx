@@ -18,8 +18,14 @@
 // actual row-order/hidden state and persistence (persistOrder / toggleHidden /
 // the entity update/delete APIs); RowEditor only reports the computed new order
 // (onReorder) and which control was activated.
+//
+// It is no longer Discover-only: Settings' AdultRowAdmin renders it too, which
+// is what the optional title/description/footer props and the optional
+// onToggleHidden exist for — a host with no structural rows passes no hidden
+// handler and gets no visible checkbox, and supplies its own Card heading,
+// copy/error lines, and create affordance instead of Discover's.
 
-import { type Component, For, Show } from "solid-js";
+import { type Component, type JSX, For, Show } from "solid-js";
 import {
   DragDropProvider,
   DragDropSensors,
@@ -31,6 +37,18 @@ import {
 } from "@thisbeyond/solid-dnd";
 import { Button, Card, Muted } from "../../components/ui";
 
+// RowAction is one extra per-row control a caller can inject between the row
+// label and the enabled/visible cluster — e.g. AdultRowAdmin's Edit affordance,
+// which has no equivalent in Discover and would otherwise be lost when that
+// screen adopts RowEditor. `icon` is JSX (not a string) so swapping today's
+// unicode glyph placeholders for a real icon library is a call-site-only
+// change with zero type churn.
+export type RowAction = {
+  label: string;
+  icon: JSX.Element;
+  onClick: (row: RowDescriptor) => void;
+};
+
 export type RowDescriptor = {
   key: string;
   label: string;
@@ -39,6 +57,7 @@ export type RowDescriptor = {
   kind: "structural" | "entity";
   enabled?: boolean; // entity rows only: the entity's own enabled flag
   hidden?: boolean; // structural rows only: current per-screen hidden state
+  actions?: RowAction[];
 };
 
 // reorderKeys is the pure move computed on drop: relocate fromKey so it occupies
@@ -66,7 +85,7 @@ export function reorderKeys(
 const RowItem: Component<{
   row: RowDescriptor;
   onToggleEnabled: (row: RowDescriptor) => void;
-  onToggleHidden: (row: RowDescriptor) => void;
+  onToggleHidden?: (row: RowDescriptor) => void;
   onDelete: (row: RowDescriptor) => void;
 }> = (props) => {
   const sortable = createSortable(props.row.key);
@@ -92,6 +111,18 @@ const RowItem: Component<{
       <div class="min-w-0 flex-1 truncate text-sm text-fg">
         {props.row.label}
       </div>
+      <For each={props.row.actions ?? []}>
+        {(action) => (
+          <button
+            type="button"
+            aria-label={action.label}
+            class="rounded border border-border px-1.5 py-0.5 text-xs text-fg"
+            onClick={() => action.onClick(props.row)}
+          >
+            {action.icon}
+          </button>
+        )}
+      </For>
       <Show when={props.row.kind === "entity"}>
         <label class="flex items-center gap-1 text-xs text-muted">
           <input
@@ -109,13 +140,16 @@ const RowItem: Component<{
           Delete
         </Button>
       </Show>
-      <Show when={props.row.kind === "structural"}>
+      {/* The visible checkbox needs BOTH a structural row and a handler: an
+          always-rendered checkbox with an optional handler would be a silently
+          inert control on a screen that passes none (D2). */}
+      <Show when={props.row.kind === "structural" && props.onToggleHidden}>
         <label class="flex items-center gap-1 text-xs text-muted">
           <input
             type="checkbox"
             aria-label={`${props.row.label} visible`}
             checked={!(props.row.hidden ?? false)}
-            onChange={() => props.onToggleHidden(props.row)}
+            onChange={() => props.onToggleHidden?.(props.row)}
           />
           visible
         </label>
@@ -128,8 +162,17 @@ export const RowEditor: Component<{
   rows: RowDescriptor[];
   onReorder: (orderedKeys: string[]) => void;
   onToggleEnabled: (row: RowDescriptor) => void;
-  onToggleHidden: (row: RowDescriptor) => void;
+  // Optional (D2): a screen with no structural rows passes none, and the
+  // visible checkbox is then not rendered at all.
+  onToggleHidden?: (row: RowDescriptor) => void;
   onDelete: (row: RowDescriptor) => void;
+  // title/description/footer let a non-Discover host (Settings' AdultRowAdmin,
+  // and later SliderAdmin/RssFeedAdmin) supply its own Card heading, its own
+  // explanatory copy + error lines, and its own create affordance, instead of
+  // nesting this Card inside another one with Discover-specific copy.
+  title?: string;
+  description?: JSX.Element;
+  footer?: JSX.Element;
 }> = (props) => {
   const ids = () => props.rows.map((r) => r.key);
   const onDragEnd = ({ draggable, droppable }: DragEvent) => {
@@ -139,12 +182,14 @@ export const RowEditor: Component<{
     );
   };
   return (
-    <Card title="Reorder rows">
-      <Muted class="mb-3">
-        Drag the ⠿ handle to reorder. Built-in rows can be shown or hidden;
-        dynamic rows (custom sliders, RSS feeds, and Adult newest rows) can also
-        be disabled or deleted here.
-      </Muted>
+    <Card title={props.title ?? "Reorder rows"}>
+      {props.description ?? (
+        <Muted class="mb-3">
+          Drag the ⠿ handle to reorder. Built-in rows can be shown or hidden;
+          dynamic rows (custom sliders, RSS feeds, and Adult newest rows) can
+          also be disabled or deleted here.
+        </Muted>
+      )}
       <Show when={props.rows.length > 0} fallback={<Muted>No rows yet.</Muted>}>
         <DragDropProvider onDragEnd={onDragEnd} collisionDetector={closestCenter}>
           <DragDropSensors />
@@ -164,6 +209,10 @@ export const RowEditor: Component<{
           </SortableProvider>
         </DragDropProvider>
       </Show>
+      {/* footer is a SIBLING of the empty-state <Show>, never inside it: a host
+          that puts its "+ New row" button here must still render it when the
+          list is empty, or a fresh install can never create its first row. */}
+      {props.footer}
     </Card>
   );
 };

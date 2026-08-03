@@ -89,9 +89,9 @@ const stubFetch = (override?: Override) => {
 // defaults answers AdultDiscover's mount fetches with empties so each test only
 // special-cases what it asserts on. Returns null for anything unrecognized.
 const defaults = (url: string): Response | null => {
-  if (url.includes("/api/connections")) return jsonResponse([]);
-  if (url.includes("/api/discover/row-order/adult"))
-    return jsonResponse({ keys: [] });
+  // No /api/connections and no row-order stub: Adult reads neither any more
+  // (the connections-gated stash-box rows are gone, and its row order lives in
+  // adultnewest's sort_order column, not the per-screen KV store).
   if (url.includes("/api/discover/rss-feeds")) return jsonResponse([]);
   if (url.includes("/api/modes/adult/newest-rows")) return jsonResponse([]);
   if (url.includes("/api/modes/adult/studios")) return jsonResponse([]);

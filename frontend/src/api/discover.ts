@@ -336,77 +336,17 @@ export function fetchAdultDiscoverMergedRecent(
   );
 }
 
-// StashBox names the two OPTIONAL Adult Discover sources (StashDB, FansDB) —
-// stash-box-protocol catalogs shown only when that connection is configured
-// (unlike TPDB, the required core source). The backend returns [] (200) for an
-// unconfigured box, so the frontend hides the row rather than showing an error.
-export type StashBox = "stashdb" | "fansdb";
-
-// fetchStashBoxScenes returns one page of an optional stash-box source's scene
-// feed — kind "recent" (date-sorted) or "trending" (stash-box's server-side
-// TRENDING order). An unconfigured box yields [] (the caller only renders the
-// row when the connection exists, so this is a defensive fallback).
-export function fetchStashBoxScenes(
-  box: StashBox,
-  kind: "recent" | "trending",
-  page = 1,
-): Promise<AdultDiscoverItem[]> {
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/discover/${box}/${kind}?page=${page}&perPage=20`,
-  );
-}
-
-// fetchStashBoxStudios returns one page of an optional stash-box source's studio
-// catalog. Same shape/drill-down contract as fetchAdultStudios (TPDB), just a
-// different source.
-export function fetchStashBoxStudios(
-  box: StashBox,
-  page = 1,
-): Promise<StudioSummary[]> {
-  return api<StudioSummary[]>(
-    `/api/modes/adult/discover/${box}/studios?page=${page}&perPage=20`,
-  );
-}
-
-// fetchStashBoxPerformers returns one page of an optional stash-box source's
-// performer catalog. Same shape as fetchAdultPerformers (TPDB).
-export function fetchStashBoxPerformers(
-  box: StashBox,
-  page = 1,
-): Promise<PerformerSummary[]> {
-  return api<PerformerSummary[]>(
-    `/api/modes/adult/discover/${box}/performers?page=${page}&perPage=20`,
-  );
-}
-
-// fetchStashBoxStudioScenes is the stash-box studio drill-down: one page of just
-// the scenes for a stash-box studio id, scoped to which box (StashDB/FansDB) the
-// id belongs to. Mirrors fetchStashBoxStudios' path family plus the {id}/scenes
-// segment fetchAdultStudioScenes uses; returns the same scene shape (Source is
-// stamped to box server-side, not "tpdb"). box is threaded so a stash-box id is
-// never queried against TPDB or the wrong box.
-export function fetchStashBoxStudioScenes(
-  box: StashBox,
-  id: string,
-  page = 1,
-): Promise<AdultDiscoverItem[]> {
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/discover/${box}/studios/${encodeURIComponent(id)}/scenes?page=${page}&perPage=20`,
-  );
-}
-
-// fetchStashBoxPerformerScenes is the stash-box performer drill-down: one page of
-// just the scenes for a stash-box performer id, scoped to its box. Mirrors
-// fetchStashBoxStudioScenes exactly, only the /performers path segment differs.
-export function fetchStashBoxPerformerScenes(
-  box: StashBox,
-  id: string,
-  page = 1,
-): Promise<AdultDiscoverItem[]> {
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/discover/${box}/performers/${encodeURIComponent(id)}/scenes?page=${page}&perPage=20`,
-  );
-}
+// The StashBox type and its five fetchers (fetchStashBoxScenes/Studios/
+// Performers/StudioScenes/PerformerScenes) lived here until 2026-08-02. They
+// went with Adult Discover's optional StashDB/FansDB rows: every caller was
+// deleted, and the 12 backend routes they addressed were deleted too, so they
+// could only ever have 404'd. Note they were EXPORTED — noUnusedLocals cannot
+// flag that shape, so this deletion was verified by grep, not by the build.
+// internal/stashbox itself is untouched and still backs identification/enrich.
+// Review if: an Adult Discover stash-box browse surface returns (any row, drill-
+// down or search that needs a stash box's own scene/studio/performer catalog
+// over HTTP) — then this tombstone has served its purpose and should be removed
+// along with whatever replaces it.
 
 // fetchAdultStudios/fetchAdultPerformers/fetchAdultStudioScenes/
 // fetchAdultPerformerScenes: TPDB-only, no longer wired into the Studios/

@@ -13,6 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/dedupscan"
+	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/gemini"
@@ -73,8 +74,46 @@ import (
 // single process-lifetime *imageproxy.Proxy built once in main.go and used by
 // imageProxyHandler (the request read path) — an in-memory LRU over the live
 // upstream fetch, so a poster requested during one grid render is not
-// re-fetched from the same upstream host on the next.
-func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy) *http.ServeMux {
+// re-fetched from the same upstream host on the next. discoverCache backs the
+// Discover row-content read-through cache (internal/discoverrefresh, plan
+// discover-scheduled-refresh §4.5) — it MAY BE NIL, and nil means "no cache",
+// i.e. every lookup misses and every handler behaves exactly as it does
+// today; see lookupDiscoverCache's doc comment.
+//
+// Claude 2026-08-03: added the trailing discoverCache param (BE-10,
+// discover-scheduled-refresh plan §4.5/§4.6).
+// Reason: the four Discover read handlers registered below need the store to
+// consult on a read-through cache hit; a decorator wrapping this mux was
+// considered and rejected because it cannot run "after every existing
+// precondition check" (see plan §4.5's rejected-alternative section).
+// Troubleshooting: if a NewMux call site fails to compile after this change,
+// it needs one more trailing argument — pass nil unless the caller actually
+// exercises the cache.
+// Review if: BE-11 through BE-14 wire discoverCache into discoverHandler /
+// resolveSliderHandler / traktWatchlistHandler / the stash-box handlers —
+// this comment does not need to change then, only the handler bodies do.
+func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy, discoverCache *discoverrefresh.Store) *http.ServeMux {
+	// Claude 2026-08-03: added discoverRefreshDeps, built from params NewMux
+	// already carries (BE-16, discover-scheduled-refresh plan §5.2/§5.3).
+	// Reason: the slider create/update and Trakt device-poll lifecycle hooks
+	// below need discoverrefresh.RefreshSlider/RefreshTrakt, which take the
+	// package's full Deps struct, not just discoverCache — building it once
+	// here (rather than growing NewMux's own signature further) keeps NewMux's
+	// public parameter list stable per BE-10's precedent. TraktBaseURL is
+	// trakt.DefaultBaseURL, matching every other production Trakt client
+	// construction in this file.
+	// Troubleshooting: RefreshSlider/RefreshTrakt both nil-guard Cache, so a
+	// nil discoverCache (every non-cache-exercising call site, same as
+	// today) makes the hooks silent no-ops, not panics.
+	discoverRefreshDeps := discoverrefresh.Deps{
+		HTTPClient:    httpClient,
+		ConnStore:     connStore,
+		SettingsStore: settingsStore,
+		SlidersStore:  slidersStore,
+		TraktStore:    traktStore,
+		TraktBaseURL:  trakt.DefaultBaseURL,
+		Cache:         discoverCache,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,
@@ -84,8 +123,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// deliberate no-detail error contract.
 	mux.HandleFunc("POST /api/connections/{service}/test-stored", connectionsTestStoredHandler(httpClient, connStore))
 	mux.HandleFunc("GET /api/connections", listConnectionsHandler(connStore))
-	mux.HandleFunc("PUT /api/connections/{service}", upsertConnectionHandler(connStore))
-	mux.HandleFunc("DELETE /api/connections/{service}", deleteConnectionHandler(connStore))
+	mux.HandleFunc("PUT /api/connections/{service}", upsertConnectionHandler(connStore, discoverCache))
+	mux.HandleFunc("DELETE /api/connections/{service}", deleteConnectionHandler(connStore, discoverCache))
 
 	// The multi-connection registry (internal/serviceconn): the service classes
 	// an operator can configure MORE THAN ONE of — Usenet subscriptions and
@@ -209,7 +248,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// (see searchHandler's doc comment). Grab is the one mutating action,
 	// tracked in grabsStore rather than propStore (see internal/grabs'
 	// package doc for why this isn't a proposals.Kind).
-	mux.HandleFunc("GET /api/modes/{mode}/discover", discoverHandler(httpClient, connStore, scStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover", discoverHandler(httpClient, connStore, scStore, settingsStore, discoverCache))
 	// Discover detail popup: on-demand, per-click availability preview (a
 	// single user-triggered Prowlarr search — same trigger shape/cost as the
 	// manual Search screen, NOT a reintroduction of the removed automatic
@@ -253,11 +292,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// plus resolve to fetch a slider's actual TMDB items (see
 	// discover_sliders.go).
 	mux.HandleFunc("GET /api/discover/sliders", listSlidersHandler(slidersStore))
-	mux.HandleFunc("POST /api/discover/sliders", createSliderHandler(slidersStore))
-	mux.HandleFunc("PUT /api/discover/sliders/{id}", updateSliderHandler(slidersStore))
-	mux.HandleFunc("DELETE /api/discover/sliders/{id}", deleteSliderHandler(slidersStore))
+	mux.HandleFunc("POST /api/discover/sliders", createSliderHandler(slidersStore, discoverRefreshDeps))
+	mux.HandleFunc("PUT /api/discover/sliders/{id}", updateSliderHandler(slidersStore, discoverRefreshDeps))
+	mux.HandleFunc("DELETE /api/discover/sliders/{id}", deleteSliderHandler(slidersStore, discoverCache))
 	mux.HandleFunc("POST /api/discover/sliders/reorder", reorderSlidersHandler(slidersStore))
-	mux.HandleFunc("GET /api/discover/sliders/{id}/resolve", resolveSliderHandler(httpClient, connStore, scStore, settingsStore, slidersStore))
+	mux.HandleFunc("GET /api/discover/sliders/{id}/resolve", resolveSliderHandler(httpClient, connStore, scStore, settingsStore, slidersStore, discoverCache))
 	// Admin-defined raw RSS 2.0 feed rows (NZBGeek saved-search style) — CRUD +
 	// reorder on the stored config, plus resolve to fetch+parse the feed's
 	// live items (see rss_feeds.go). A separate concept from the TMDB-backed
@@ -294,9 +333,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/trakt/status", traktStatusHandler(traktStore))
 	mux.HandleFunc("PUT /api/trakt/credentials", traktSaveCredentialsHandler(traktStore))
 	mux.HandleFunc("POST /api/trakt/device/start", traktDeviceStartHandler(traktStore, traktFlow, httpClient, trakt.DefaultBaseURL))
-	mux.HandleFunc("POST /api/trakt/device/poll", traktDevicePollHandler(traktStore, traktFlow, httpClient, trakt.DefaultBaseURL))
-	mux.HandleFunc("POST /api/trakt/disconnect", traktDisconnectHandler(traktStore))
-	mux.HandleFunc("GET /api/trakt/watchlist", traktWatchlistHandler(traktStore, httpClient, trakt.DefaultBaseURL))
+	mux.HandleFunc("POST /api/trakt/device/poll", traktDevicePollHandler(traktStore, traktFlow, httpClient, trakt.DefaultBaseURL, discoverRefreshDeps))
+	mux.HandleFunc("POST /api/trakt/disconnect", traktDisconnectHandler(traktStore, discoverCache))
+	mux.HandleFunc("GET /api/trakt/watchlist", traktWatchlistHandler(traktStore, httpClient, trakt.DefaultBaseURL, discoverCache))
 	// Adult Discover's row-based surface (parallel to Mainstream's rows): a
 	// Studios row and a Performers row (plain TPDB browse), each with a
 	// drill-down showing just that studio's/performer's scenes. All TPDB-backed
@@ -523,6 +562,17 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/settings/adult-newest-scan-interval", getAdultNewestScanIntervalHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/adult-newest-scan-interval", putAdultNewestScanIntervalHandler(settingsStore))
 
+	// Claude 2026-08-03: register the Discover cache background refresh
+	// interval GET/PUT pair (BE-9, discover-scheduled-refresh plan §6.4).
+	// Reason: mirrors adult-newest-scan-interval immediately above —
+	// on-by-default (24h), a settings scalar only; the scheduler goroutine
+	// itself is not started here (that lands with BE-17/main.go).
+	// Review if: BE-10+ lands and NewMux gains the discoverCache param —
+	// this block itself does not need to change then, only nearby test
+	// call sites.
+	mux.HandleFunc("GET /api/settings/discover-refresh-interval", getDiscoverRefreshIntervalHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/discover-refresh-interval", putDiscoverRefreshIntervalHandler(settingsStore))
+
 	// General Rename/Purge/Dedup scan scheduler settings (see
 	// internal/scanschedule) — one interval per workflow plus the Dedup
 	// eager-VMAF toggle, all 0/off by default. Settings scalars only; the
@@ -696,7 +746,15 @@ func rejectMovedConnectionService(w http.ResponseWriter, service string) bool {
 	return true
 }
 
-func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {
+// Claude 2026-08-03: added the discoverCache param + post-upsert
+// invalidation (BE-16, discover-scheduled-refresh plan §5.3's fourth
+// lifecycle gap).
+// Reason: re-keying the tmdb connection (a new API key, e.g.) must not leave
+// the OLD key's cached "tmdb"/"slider" content serving for up to a whole
+// refresh interval — see invalidateDiscoverCacheForConnectionChange, which
+// no-ops for every service except tmdb (stashdb/fansdb's stashbox source
+// was retired — see internal/discoverrefresh/consts.go's package doc).
+func upsertConnectionHandler(store *connections.Store, discoverCache *discoverrefresh.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		service := r.PathValue("service")
 		if rejectMovedConnectionService(w, service) {
@@ -715,11 +773,15 @@ func upsertConnectionHandler(store *connections.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		invalidateDiscoverCacheForConnectionChange(r.Context(), discoverCache, service)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func deleteConnectionHandler(store *connections.Store) http.HandlerFunc {
+// Claude 2026-08-03: added the discoverCache param + post-delete
+// invalidation, same reasoning as upsertConnectionHandler above (BE-16,
+// plan §5.3).
+func deleteConnectionHandler(store *connections.Store, discoverCache *discoverrefresh.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		service := r.PathValue("service")
 		if rejectMovedConnectionService(w, service) {
@@ -729,6 +791,7 @@ func deleteConnectionHandler(store *connections.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		invalidateDiscoverCacheForConnectionChange(r.Context(), discoverCache, service)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

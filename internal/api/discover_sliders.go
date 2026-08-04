@@ -4,17 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
-	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // toDTOSlider maps an internal discoversliders.Slider onto the exported
@@ -82,7 +81,17 @@ func listSlidersHandler(store *discoversliders.Store) http.HandlerFunc {
 // createSliderHandler is POST /api/discover/sliders — validated by
 // discoversliders.Store.Create (title/filter_type/target enums, the
 // filter_type/filter_value pairing rule).
-func createSliderHandler(store *discoversliders.Store) http.HandlerFunc {
+//
+// Claude 2026-08-03: added the post-create populate hook (BE-16, plan §5.2,
+// spec AC5).
+// Reason: fire-and-forget so a slider an operator just saved is cached
+// immediately instead of waiting up to a whole refresh interval; d's Cache
+// field may be nil (no discover cache configured), which RefreshSlider now
+// guards against (internal/discoverrefresh/sliders.go).
+// Troubleshooting: if the new slider's cache row never appears, check
+// RefreshSlider's own log lines — this handler never awaits or inspects its
+// error.
+func createSliderHandler(store *discoversliders.Store, d discoverrefresh.Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req apidto.SliderUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -94,6 +103,7 @@ func createSliderHandler(store *discoversliders.Store) http.HandlerFunc {
 			discoverSliderStoreError(w, err)
 			return
 		}
+		go discoverrefresh.RefreshSlider(context.Background(), d, sl.ID)
 		writeJSON(w, toDTOSlider(*sl))
 	}
 }
@@ -101,7 +111,20 @@ func createSliderHandler(store *discoversliders.Store) http.HandlerFunc {
 // updateSliderHandler is PUT /api/discover/sliders/{id} — overwrites every
 // editable field (sort_order is untouched; see Store.Update's doc comment,
 // reordering is a separate action below).
-func updateSliderHandler(store *discoversliders.Store) http.HandlerFunc {
+//
+// Claude 2026-08-03: added the invalidate-then-repopulate hook (BE-16, plan
+// §5.2/§5.3, spec AC5).
+// Reason: the synchronous Delete (before Update's response is written)
+// deliberately happens before the fire-and-forget RefreshSlider — between
+// the edit and the repopulate, a render must fall through to live (correct,
+// if slower) rather than serve the OLD filter's content (wrong). This
+// covers both the update AND the disable-via-update case (§5.3): a
+// disabled slider's row is removed and RefreshSlider's own Enabled check
+// leaves it uncached.
+// Troubleshooting: invalidateDiscoverCache never fails this request; a
+// cleanup failure is logged and caught within one cycle by
+// DeleteOrphanSliders.
+func updateSliderHandler(store *discoversliders.Store, d discoverrefresh.Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
 		if err != nil {
@@ -118,13 +141,20 @@ func updateSliderHandler(store *discoversliders.Store) http.HandlerFunc {
 			discoverSliderStoreError(w, err)
 			return
 		}
+		invalidateDiscoverCache(r.Context(), d.Cache, "slider", strconv.Itoa(id))
+		go discoverrefresh.RefreshSlider(context.Background(), d, id)
 		writeJSON(w, toDTOSlider(*sl))
 	}
 }
 
 // deleteSliderHandler is DELETE /api/discover/sliders/{id}. Deleting an id
 // that doesn't exist is not an error (Store.Delete's convention).
-func deleteSliderHandler(store *discoversliders.Store) http.HandlerFunc {
+//
+// Claude 2026-08-03: added the post-delete invalidation (BE-16, plan §5.3).
+// Reason: a deleted slider's cache row must not keep serving for up to a
+// whole refresh interval; only *discoverrefresh.Store is threaded through
+// (not the full Deps) since this handler never repopulates anything.
+func deleteSliderHandler(store *discoversliders.Store, cache *discoverrefresh.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.PathValue("id"))
 		if err != nil {
@@ -135,6 +165,7 @@ func deleteSliderHandler(store *discoversliders.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		invalidateDiscoverCache(r.Context(), cache, "slider", strconv.Itoa(id))
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -179,9 +210,13 @@ func findSlider(ctx context.Context, store *discoversliders.Store, id int) (*dis
 // stored slider's config, fetches its actual TMDB items for the requested
 // page, dispatching on FilterType (and Target) to the matching internal/tmdb
 // method. Response items reuse apidto.DiscoverItem's wire shape unchanged
-// (still just normalized TMDB movie/TV titles); see resolveSlider below for
-// the per-filter-type/target dispatch.
-func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, slidersStore *discoversliders.Store) http.HandlerFunc {
+// (still just normalized TMDB movie/TV titles); see
+// discoverrefresh.ResolveSlider for the per-filter-type/target dispatch.
+//
+// discoverCache backs the read-through cache lookup below (§4.2); it MAY BE
+// NIL, meaning "no cache" — every lookup misses and this handler behaves
+// exactly as it did before this cache existed.
+func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, slidersStore *discoversliders.Store, discoverCache *discoverrefresh.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		id, err := strconv.Atoi(r.PathValue("id"))
@@ -218,9 +253,28 @@ func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store,
 			return
 		}
 
-		items, err := resolveSlider(ctx, sess.TMDB, *sl, page)
+		// Claude 2026-08-03: read-through cache lookup, keyed on the
+		// slider's own id (BE-12, discover-scheduled-refresh plan §4.2).
+		// Reason: runs after findSlider (so an unknown id still 404s from
+		// the store, not from a cache miss) and after the TMDB-configured
+		// check above, matching §4.0's ordering rule. perPage is
+		// deliberately NOT recomputed here — lookupDiscoverCache uses the
+		// cached row's own stored page_size (Entry.PageSize), never a
+		// value this handler derives, since a mixed fixed-feed slider's
+		// page size (40) differs from every other slider's (20) and
+		// re-deriving it on the read path is the exact defect this plan
+		// already shipped once (§4.2).
+		upstreamPage := page
+		if items, hit, liveRawPage := lookupDiscoverCache(ctx, discoverCache, "slider", strconv.Itoa(sl.ID), page); hit {
+			writeRawJSONArray(w, items)
+			return
+		} else if liveRawPage > 0 {
+			upstreamPage = liveRawPage
+		}
+
+		items, err := discoverrefresh.ResolveSlider(ctx, sess.TMDB, *sl, upstreamPage)
 		if err != nil {
-			if errors.Is(err, errSliderMisconfigured) {
+			if errors.Is(err, discoverrefresh.ErrSliderMisconfigured) {
 				// A bad filter_value/target combination is a permanent
 				// per-slider config problem (fix by editing the slider), not
 				// a transient upstream failure — 400, not 502, so the
@@ -237,111 +291,9 @@ func resolveSliderHandler(httpClient *http.Client, connStore *connections.Store,
 	}
 }
 
-// resolveSlider fetches sl's items for the given 1-based page. Target ==
-// mixed concatenates the movie-catalog and TV-catalog results (movies
-// first, then TV) where both exist — the simplest well-defined combination;
-// Seerr-style interleaving-by-popularity is not attempted here (no
-// premature sorting logic ahead of a real need). Studio/network have no
-// cross-media equivalent (a movie production company isn't a TV concept and
-// vice versa — see tmdb.Studio/tmdb.Network's doc comments), so a "mixed"
-// studio/network slider degrades to its one applicable catalog rather than
-// erroring; a slider whose Target names ONLY the inapplicable catalog
-// (studio+tv, network+movie) is a genuine misconfiguration and errors.
-func resolveSlider(ctx context.Context, client *tmdb.Client, sl discoversliders.Slider, page int) ([]tmdb.Item, error) {
-	wantMovies := sl.Target == discoversliders.TargetMovie || sl.Target == discoversliders.TargetMixed
-	wantTV := sl.Target == discoversliders.TargetTV || sl.Target == discoversliders.TargetMixed
-
-	switch sl.FilterType {
-	case discoversliders.FilterUpcoming:
-		return fetchFixedFeed(ctx, client, wantMovies, wantTV, page, client.UpcomingMovies, client.UpcomingTV)
-	case discoversliders.FilterTrending:
-		return fetchFixedFeed(ctx, client, wantMovies, wantTV, page,
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.Trending(ctx, tmdb.Movie, "week", page) },
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.Trending(ctx, tmdb.TV, "week", page) })
-	case discoversliders.FilterPopular:
-		return fetchFixedFeed(ctx, client, wantMovies, wantTV, page,
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.Popular(ctx, tmdb.Movie, page) },
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.Popular(ctx, tmdb.TV, page) })
-	case discoversliders.FilterGenre:
-		id, err := sliderFilterValueInt(sl)
-		if err != nil {
-			return nil, err
-		}
-		return fetchFixedFeed(ctx, client, wantMovies, wantTV, page,
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.DiscoverMoviesByGenre(ctx, id, page) },
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.DiscoverTVByGenre(ctx, id, page) })
-	case discoversliders.FilterKeyword:
-		id, err := sliderFilterValueInt(sl)
-		if err != nil {
-			return nil, err
-		}
-		return fetchFixedFeed(ctx, client, wantMovies, wantTV, page,
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.DiscoverMoviesByKeyword(ctx, id, page) },
-			func(ctx context.Context, page int) ([]tmdb.Item, error) { return client.DiscoverTVByKeyword(ctx, id, page) })
-	case discoversliders.FilterStudio:
-		if sl.Target == discoversliders.TargetTV {
-			return nil, fmt.Errorf("%w: slider %d: studio filter is movie-only, not valid for a tv-target slider", errSliderMisconfigured, sl.ID)
-		}
-		id, err := sliderFilterValueInt(sl)
-		if err != nil {
-			return nil, err
-		}
-		return client.DiscoverMoviesByStudio(ctx, id, page)
-	case discoversliders.FilterNetwork:
-		if sl.Target == discoversliders.TargetMovie {
-			return nil, fmt.Errorf("%w: slider %d: network filter is series-only, not valid for a movie-target slider", errSliderMisconfigured, sl.ID)
-		}
-		id, err := sliderFilterValueInt(sl)
-		if err != nil {
-			return nil, err
-		}
-		return client.DiscoverTVByNetwork(ctx, id, page)
-	default:
-		return nil, fmt.Errorf("%w: slider %d: unrecognized filter type %q", errSliderMisconfigured, sl.ID, sl.FilterType)
-	}
-}
-
-// errSliderMisconfigured marks a resolveSlider error as a permanent,
-// per-slider configuration problem (bad filter_type/target pairing, a
-// non-numeric filter_value) rather than a transient TMDB call failure —
-// resolveSliderHandler maps it to 400 instead of 502, so the frontend can
-// tell "edit this slider" from "TMDB is down, retry."
-var errSliderMisconfigured = errors.New("slider misconfigured")
-
-// sliderFilterValueInt parses sl.FilterValue (a stringified TMDB id) as an
-// int — every non-fixed-feed FilterType stores one (see
-// discoversliders.Store's validate). A parse failure means the stored value
-// predates some future non-numeric FilterValue convention or was corrupted;
-// either way it's a config problem, not a transient TMDB error (see
-// errSliderMisconfigured).
-func sliderFilterValueInt(sl discoversliders.Slider) (int, error) {
-	id, err := strconv.Atoi(sl.FilterValue)
-	if err != nil {
-		return 0, fmt.Errorf("%w: slider %d: filter_value %q is not a valid TMDB id", errSliderMisconfigured, sl.ID, sl.FilterValue)
-	}
-	return id, nil
-}
-
-// fetchFixedFeed calls movieFn/tvFn depending on wantMovies/wantTV and
-// concatenates the results — the shared dispatch shape behind every
-// FilterType case above that has both a movie and a TV sibling method
-// (upcoming/trending/popular/genre/keyword all do; studio/network don't,
-// handled separately in resolveSlider).
-func fetchFixedFeed(ctx context.Context, client *tmdb.Client, wantMovies, wantTV bool, page int, movieFn, tvFn func(context.Context, int) ([]tmdb.Item, error)) ([]tmdb.Item, error) {
-	var items []tmdb.Item
-	if wantMovies {
-		mv, err := movieFn(ctx, page)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, mv...)
-	}
-	if wantTV {
-		tv, err := tvFn(ctx, page)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, tv...)
-	}
-	return items, nil
-}
+// resolveSlider, fetchFixedFeed, sliderFilterValueInt and
+// errSliderMisconfigured moved to internal/discoverrefresh (sliders.go) as
+// ResolveSlider / ErrSliderMisconfigured and their unexported helpers: the
+// background refresh scheduler resolves the same sliders this handler does, and
+// two copies would let the cached and live answers drift on what a slider
+// returns.

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/trakt"
 )
 
@@ -139,12 +140,23 @@ func traktStatusHandler(store *trakt.Store) http.HandlerFunc {
 // doesn't require re-entering client_id/secret — a normal "disconnect
 // account" action, distinct from forgetting the app entirely (that would be
 // store.Delete, not exposed here; not part of this contract).
-func traktDisconnectHandler(store *trakt.Store) http.HandlerFunc {
+//
+// Claude 2026-08-03: added the post-disconnect cache invalidation (BE-16,
+// discover-scheduled-refresh plan §5.3).
+// Reason: a disconnected account's watchlist row must not keep serving for
+// up to a whole refresh interval; cache may be nil (no discover cache
+// configured) — invalidateDiscoverCache degrades to a no-op in that case.
+// "" is the trakt source's one and only cache key (see
+// internal/discoverrefresh/trakt.go's traktCacheKey doc comment; that
+// identifier is unexported, so this is the same by-value literal every
+// other cross-package reference to it already uses).
+func traktDisconnectHandler(store *trakt.Store, cache *discoverrefresh.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := store.ClearTokens(r.Context()); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		invalidateDiscoverCache(r.Context(), cache, "trakt", "")
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -323,7 +335,17 @@ type traktDevicePollResponse struct {
 // /api/trakt/status) — one drives the Connect-flow UI's polling loop, the
 // other answers "is Trakt usable right now" everywhere else; conflating them
 // was an earlier draft's mistake, corrected per the authoritative contract.
-func traktDevicePollHandler(store *trakt.Store, flow *traktDeviceFlow, httpClient *http.Client, baseURL string) http.HandlerFunc {
+//
+// Claude 2026-08-03: added the linked-branch populate hook (BE-16, plan
+// §5.2, spec AC6).
+// Reason: the backend, not the frontend, is the single place every
+// client's device flow must pass through (an out-of-process/API-key client
+// hits this handler too), so hooking here — rather than the frontend's own
+// `if (r.linked)` completion point — cannot be bypassed by a UI change (see
+// plan §5.2's explicit rationale for this choice). Fire-and-forget with
+// context.Background(), same posture as the slider-create hook: never
+// cancelled by this request returning, never able to fail it.
+func traktDevicePollHandler(store *trakt.Store, flow *traktDeviceFlow, httpClient *http.Client, baseURL string, d discoverrefresh.Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		client, err := traktClientFromStore(ctx, store, httpClient, baseURL)
@@ -343,6 +365,9 @@ func traktDevicePollHandler(store *trakt.Store, flow *traktDeviceFlow, httpClien
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
+		}
+		if status == traktDeviceStatusLinked {
+			go discoverrefresh.RefreshTrakt(context.Background(), d)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(traktDevicePollResponse{
@@ -375,7 +400,29 @@ type traktWatchlistItem struct {
 // extra error-handling the frontend doesn't need for a read-only row. Any
 // other failure (e.g. Trakt itself erroring) is a real 502, since that's an
 // actual fetch failure worth surfacing.
-func traktWatchlistHandler(store *trakt.Store, httpClient *http.Client, baseURL string) http.HandlerFunc {
+//
+// discoverCache backs a read-through cache lookup inserted between the
+// not-linked check and the live Watchlist call (BE-13, discover-scheduled-
+// refresh plan §4.3); it MAY BE NIL, meaning "no cache" — every lookup
+// misses and this handler behaves exactly as it did before this cache
+// existed.
+//
+// Claude 2026-08-03: the not-configured/not-linked checks below are
+// deliberately ORDERED BEFORE the cache lookup (BE-13, plan §4.3).
+// Reason: both must keep returning their byte-identical empty `[]` without
+// ever consulting the cache — serving a cached watchlist for a connection
+// the operator has since removed or unlinked would silently resurrect
+// content for a state that no longer exists (§4.0's ordering rule, same
+// reasoning as discoverHandler's tmdb-not-configured check). Tokens.Linked()
+// is a purely local read (no network) that reproduces today's
+// trakt.ErrNotLinked outcome without making the call, which is what makes a
+// cache hit safe to serve from here.
+// Troubleshooting: a linked-but-expired token whose refresh fails now
+// returns 200 with stale cached content instead of the previous 502 — a
+// deliberate, named behaviour deviation (§4.3), not a regression.
+// Review if: the Linked()/ErrNotLinked precondition contract in
+// internal/trakt changes.
+func traktWatchlistHandler(store *trakt.Store, httpClient *http.Client, baseURL string, discoverCache *discoverrefresh.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		client, err := traktClientFromStore(ctx, store, httpClient, baseURL)
@@ -388,6 +435,26 @@ func traktWatchlistHandler(store *trakt.Store, httpClient *http.Client, baseURL 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		conn, err := store.Get(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !conn.Tokens.Linked() {
+			json.NewEncoder(w).Encode([]traktWatchlistItem{})
+			return
+		}
+
+		// Watchlist is unpaginated (§4.3) — page is always 1, and
+		// Entry.Slice's exhausted branch is what serves an empty watchlist's
+		// cached `[]` with zero external calls (RefreshTrakt's
+		// pageSize = max(len(payload), 1)).
+		if items, hit, _ := lookupDiscoverCache(ctx, discoverCache, "trakt", "", 1); hit {
+			writeRawJSONArray(w, items)
+			return
+		}
+
 		session := trakt.NewSession(store, client)
 		items, err := session.Watchlist(ctx)
 		if errors.Is(err, trakt.ErrNotLinked) {

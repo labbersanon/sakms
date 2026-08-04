@@ -5760,3 +5760,220 @@ this feature's code): no `TODO`/`FIXME`/`HACK`, no `.skip`/`.only`, no
 `t.Skip`, no `console.log`/`fmt.Print`/`debugger`, no commented-out code. The
 one `XXX` match is a pre-existing Newznab category term (the 6000-range) in
 `internal/api/search.go`, untouched by this work.
+
+## 2026-08-03 — Discover scheduled background refresh: THREE sources cached (stash-box retired mid-implementation), the seventh interval-driven scheduler
+
+Discover's Mainstream TMDB rows (Trending/Popular/Upcoming, movies + series),
+every enabled custom slider, and the Trakt watchlist now populate from a
+background cache instead of firing a live external API call on every page
+render. `internal/discoverrefresh` is a new package: a real goroutine, a real
+`time.NewTicker`, a real interval setting key
+(`discover_refresh_interval_seconds`), and a real launch line in
+`cmd/sakms/main.go` — **the SEVENTH interval-driven scheduler** (see
+`CLAUDE.md`'s AMENDED 2026-08-03 note under **Automation** for the corrected
+count and the full counting method).
+
+**Stash-box dropped from FOUR sources to THREE, mid-implementation, not by
+plan revision.** The spec and this feature's own plan
+(`.omc/plans/autopilot-impl-discover-scheduled-refresh.md`) scoped a fourth
+source — `refreshStashBox`, caching StashDB/FansDB Adult catalog rows. Commit
+`e25274f` (Adult row ordering unification, shipped 2026-08-02, earlier the
+same implementation session) deleted every StashDB/FansDB Adult Discover
+browse route/handler before this task's Wave 1 landed. A Wave-1 executor
+correctly refused to build cache-warming for a read path that no longer
+exists, rather than resurrecting dead code to satisfy a stale plan section.
+**This feature caches exactly three sources: `tmdb` (Mainstream's six fixed
+rows), `slider` (every enabled custom Discover slider), and `trakt` (the
+watchlist, one row).** `refreshStashBox`/`stashboxrows.go` were never
+written; `RefreshAll` (`internal/discoverrefresh/discoverrefresh.go`) documents
+the retirement in its own doc comment (a "Stash-box is NOT a fourth source"
+section) so a future reader who compares this feature against its own plan
+isn't misled by the plan's stale four-source text. Adult's StashDB/FansDB
+catalog rows are functionally unaffected — they were removed as a *read
+path* entirely by `e25274f`, independent of this feature's caching decision.
+
+**On by default, 24h, mirroring `internal/adultnewest`'s precedent — the
+second scheduler in this codebase to default on, and the first
+Mainstream-affecting one.** `discoverrefresh.LoadInterval` mirrors
+`adultnewest.LoadInterval`'s exact four-case table: a key that was never
+explicitly saved (fresh install, or an install predating this feature) reads
+as ON at the default (24h); an explicit `"0"` means an operator turned it
+off; a blank/non-numeric/negative value degrades to off; a real settings-store
+error degrades to off rather than guessing. Rationale recorded in
+`CLAUDE.md`'s AMENDED 2026-08-03 note and the plan's §1.7: every existing
+opt-in scheduler (`recheck`, `parseentity`, `scanschedule`, `RunUsenetRetry`)
+is 0/off by default, but a feature whose entire purpose is that Mainstream
+Discover is fast on a fresh install cannot hang off a toggle a fresh install
+never turns on.
+
+**Interval `<= 0` PURGES the cache rather than freezing it (Critic finding
+H4).** Nothing on the read path consults the interval — a cache hit serves
+regardless of whether the schedule that would refresh it is even running. An
+operator setting the interval to 0 expecting "off" would otherwise get every
+cached row serving indefinitely-stale content forever, with no refresh path
+and no staleness indicator to surface that. `Run` therefore calls
+`Store.DeleteAll` whenever it observes a non-positive interval, both at boot
+(an install that starts with the interval already at 0) and on a live
+retune-to-0 (the same branch that stops the ticker and returns). The manual
+"refresh now" trigger still works with the interval at 0 — it calls
+`RefreshAll(force=true)` independently of the ticker, so an operator can
+repopulate on demand while leaving the schedule off.
+
+**Manual "refresh now" trigger: 202 Accepted / 409 Conflict, same shape as
+`internal/recheck`'s precedent.** `POST /api/admin/discover-refresh/trigger`
+(`NewDiscoverRefreshTriggerMux`, a small separately-dependent mux mounted and
+`auth.Middleware`-wrapped in `main.go`, mirroring
+`NewRecheckTriggerMux` rather than growing `NewMux`'s signature for a route
+almost none of its call sites exercise) claims a package-level `cycleRunning`
+`atomic.Bool` via `TriggerAsync`: a successful claim launches a full forced
+refresh cycle (every key, every source, ignoring both `refreshed_at` and the
+10-minute TMDB response-cache TTL) in its own goroutine and answers **202**
+immediately; a cycle already in flight (another manual trigger, a scheduled
+tick, or the due-checked boot poll) answers **409 Conflict** rather than
+doubling the upstream fan-out. `TriggerAsync` is `TriggerOnce`'s deliberately
+non-blocking sibling — `TriggerOnce` itself stays fully synchronous (an
+existing test, T-12, depends on that), so the HTTP handler needed a second
+entry point rather than calling `TriggerOnce` directly and holding the
+request open for up to ~300 external calls.
+
+**Read path: cache hit serves with zero external calls; any miss falls
+through to today's live behaviour unchanged.** One shared helper,
+`lookupDiscoverCache` (`internal/api/discover_cache_lookup.go`), used by all
+three read paths (`discoverHandler`, `resolveSliderHandler`,
+`traktWatchlistHandler`) plus the Adult stash-box handlers (which now always
+miss, since no `stashbox` row is ever written): a nil store, a missing row, a
+store error, or an undecodable payload are ALL treated as a miss and
+logged, never as an HTTP error — a cache fault must degrade to today's live
+behaviour, not break Discover. On a genuinely cold install (no row ever
+written for a key), AC1 ("zero live calls") is a **steady-state** property
+that holds from the first completed refresh cycle onward, not before —
+matching the in-repo precedent migration `0045`'s (now-superseded) cache
+table set: an empty cache is not a regression because every read handler
+falls back to the live path it always had. `Entry.Slice` (a method on
+`Entry`, deliberately not `Store.Slice`, so it cannot be called without the
+row's own `PageSize`/`RawPages`/`Exhausted` in hand) returns a three-valued
+result: `(items, true, 0)` on a hit inside the cached window, or
+`(nil, false, liveRawPage)` to fall through — `liveRawPage > 0` means the
+caller MUST request that upstream page instead of the one the client asked
+for (accumulation stops on raw-upstream-page boundaries, so a request past
+the cached window needs the NEXT raw page, not a re-fetch of one whose
+survivors are already cached); `liveRawPage == 0` means "no opinion, use the
+page unchanged." **Byte-transparency is a hard constraint, enforced by test
+(T-9), not a style preference**: the cached writer emits the identical JSON
+shape the live encoder does, including the trailing `\n` every live
+`json.NewEncoder(w).Encode(...)` call already appends — a cache-vs-live
+divergence in envelope shape would silently give `PaginatedStrip` rows
+automatic multi-page auto-advance behaviour they don't have today.
+
+**`tmdb.Config.BypassCache` — a second, independent cache layer, added so
+the scheduler and the 10-minute TMDB response-cache LRU (`internal/tmdb/cache.go`,
+added 2026-08-02 for the season/episode picker work) don't interact.** That
+LRU sits behind every `tmdb.Client`'s `do()`. Left unaddressed, a manual
+"refresh now" fired within 10 minutes of any Discover read would return
+byte-identical cached bytes and report success without actually re-fetching
+anything — the opposite of what a troubleshooting trigger is for. A client
+built with `Config.BypassCache: true` skips that LRU in both directions (no
+read, no write); the scheduler's own `tmdb.Client` always sets it.
+`internal/discoverrefresh` is the second non-`mode.Build` consumer of
+`tmdb.New` (after `internal/recheck`'s, which deliberately keeps inheriting
+the shared LRU — see `CLAUDE.md`'s corrected "Complete consumer list" note).
+The two caches are NOT unified: the LRU is a passive, short-TTL, read-through
+de-duplicator for whatever a request happens to ask for and still serves the
+detail popup/season-episode/poster/availability/calendar/search paths this
+feature doesn't touch; this feature's cache is an actively-populated, 24h,
+operator-tunable, stale-on-failure content store for a fixed set of rows.
+
+**Four lifecycle hooks close gaps the spec named only two of — create and
+Trakt-connect. The other two (slider update/delete, Trakt disconnect) plus a
+fourth the spec never named at all (a `tmdb` connection re-key/removal) would
+each have left a wrong or orphaned row serving for up to 24h:**
+- **Slider create**: fire-and-forget `go discoverrefresh.RefreshSlider(...)`
+  after the row is saved, so a slider an operator just created is cached
+  within moments rather than waiting a full interval.
+- **Slider update** (including disable-via-update): `invalidateDiscoverCache`
+  deletes the OLD row synchronously, before the response is written, then a
+  fire-and-forget `RefreshSlider` repopulates. The ordering is deliberate — a
+  render between the edit and the repopulate must fall through to live
+  (correct, slower) rather than serve the previous filter's cached content
+  (wrong).
+- **Slider delete**: `invalidateDiscoverCache` deletes the row synchronously.
+  `DeleteOrphanSliders` (called every cycle from `refreshSlidersDue`) is the
+  backstop for any orphan that slips through.
+- **Trakt connect** (device-flow link succeeds): fire-and-forget
+  `go discoverrefresh.RefreshTrakt(...)`.
+- **Trakt disconnect**: `invalidateDiscoverCache` deletes the one `trakt`
+  row synchronously, so a cleared account's watchlist stops serving
+  immediately rather than for up to 24h.
+- **Connection change (the fourth gap, found by Critic pass 1, not in the
+  spec at all)**: `upsertConnectionHandler`/`deleteConnectionHandler` for the
+  `tmdb` service call `invalidateDiscoverCacheForConnectionChange`, which
+  clears BOTH the `tmdb` source (Mainstream's six rows) and the `slider`
+  source (every slider resolves through the same TMDB client) — re-keying or
+  removing that one credential backs both. `stashdb`/`fansdb` connection
+  changes are deliberately no-ops here: the `stashbox` source was retired
+  before this landed (see above), so there is nothing left to invalidate.
+
+**`NewMux` gains a trailing `*discoverrefresh.Store` parameter — 260+
+non-definition call sites, all but a handful passing `nil`.** The four
+read handlers (`discoverHandler`, `resolveSliderHandler`,
+`traktWatchlistHandler`, and the stash-box handlers) are all registered
+inside `NewMux`, so `NewMux` had to carry the store; a nil store is
+explicitly tolerant (every lookup misses, every handler behaves exactly as
+today), so the update to every test call site was mechanical — a Python
+script parsing each `NewMux(` call's balanced parentheses and inserting
+`, nil` before the matching close, per this repo's no-regex-editing/no-sed
+convention, with `go build ./... && go vet ./... && go test ./...` as the
+proof rather than a manual audit of 260+ sites.
+  - **The alternative — a cache-decorator `http.Handler` wrapping the whole
+    API mux, zero signature change — was seriously considered and rejected,
+    but not for the reason an earlier draft gave.** The earlier objection
+    (decorating would force re-applying `auth.Middleware` across many mounts)
+    is false: wrapping the decorator inside the one existing
+    `auth.Middleware(secretStore, authStore, apiMux)` call is one mount, zero
+    additional auth applications. **The real, decisive objection is
+    precondition ordering.** A decorator necessarily runs BEFORE the
+    handler, so it cannot honour "serve the cache only after every existing
+    precondition check has passed" — it would silently resurrect cached
+    content for a connection the operator just removed (today's live path
+    returns e.g. `400 "tmdb isn't configured yet"` in that case). Reproducing
+    four handlers' preconditions inside a decorator would duplicate logic in
+    a second place, strictly worse than one extra parameter.
+
+**Known limitation, unchanged, carried forward rather than silently
+fixed or hidden:** `filterReleasedMovies`'s pre-existing ACCEPTED LIMITATION
+(`internal/api/discover.go`) — a partially-filtered page's survivors can
+render twice — is structurally eliminated INSIDE and AT THE BOUNDARY of the
+cached window (the scheduler walks raw upstream pages sequentially and
+appends survivors to one flat list, so duplication cannot occur there at
+all), but **beyond that window, a fall-through still hits the same live
+retry loop with the same pre-existing limitation.** This feature deliberately
+does not fix that live-path edge case; it only prevents the cached window
+from freezing a duplicate set for 24h, which is what caching per rendered
+page (rather than one flat accumulated list) would have done.
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0058_discover_row_cache.sql` | **New** — `discover_row_cache` table, one flat accumulated-and-filtered item list per `(source, cache_key)`. Deliberately no `page` column (the upstreams paginate differently and the US-release filter desyncs frontend page from raw upstream page); `page_size`/`raw_pages`/`exhausted` are what let a fall-through ask the live path for the correct next upstream page |
+| `internal/discoverrefresh/` | **New package** — `consts.go` (constants + package doc, including the "stash-box is NOT a fourth source" note), `store.go` (`Store`/`Entry`/`Entry.Slice`, `Get`/`Put`/`MarkFailure`(UPDATE-only, never INSERT)/`Delete`/`DeleteAll`/`DeleteBySource`/`DeleteOrphanSliders`), `discoverrefresh.go` (`LoadInterval`, `RefreshAll`, `Run`, `TriggerOnce`/`TriggerAsync`, the two single-flight guards), `tmdbrows.go` (`FilterByUSRelease`, moved+exported from `internal/api/discover.go`), `sliders.go` (`ResolveSlider`, moved+exported from `internal/api/discover_sliders.go`; `RefreshSlider`), `trakt.go` (`RefreshTrakt`) |
+| `internal/tmdb/client.go` | `Config.BypassCache` + `Client.bypassCache` + the two `do()` guards (skip lookup, skip store) |
+| `internal/tmdb/cache.go` | "Complete consumer list" doc comment corrected to name the second non-`mode.Build` consumer (Claude 2026-08-03 comment block) |
+| `internal/api/discover.go` | `filterByUSRelease` moved out (now calls `discoverrefresh.FilterByUSRelease`) |
+| `internal/api/discover_sliders.go` | `resolveSlider` moved out (now calls `discoverrefresh.ResolveSlider`); slider create/update/delete lifecycle hooks |
+| `internal/api/trakt.go` | Trakt connect/disconnect lifecycle hooks; `traktWatchlistHandler` cache lookup |
+| `internal/api/discover_cache_lookup.go` | **New** — `lookupDiscoverCache`, `invalidateDiscoverCache`, `invalidateDiscoverCacheSource`, `invalidateDiscoverCacheForConnectionChange` |
+| `internal/api/discover_refresh.go` | **New** — `GET`/`PUT /api/settings/discover-refresh-interval` |
+| `internal/api/discover_refresh_trigger.go` | **New** — `NewDiscoverRefreshTriggerMux`, `triggerDiscoverRefreshHandler` (202/409) |
+| `internal/api/handler.go` | `NewMux`'s trailing `discoverCache` param + route registrations; the four read handlers' cache lookups; connection-change invalidation wired into `upsertConnectionHandler`/`deleteConnectionHandler` |
+| `cmd/sakms/main.go` | `discoverCache` store construction; `go discoverrefresh.Run(...)` (the seventh scheduler); `discoverRefreshTriggerMux` construction + `auth.Middleware` wrap + mount; two stale in-code ordinal/staleness comment fixes (the migration-0055 backfill's "NOT a seventh scheduler" → "NOT an eighth scheduler"; `adultnewest.Run`'s stale "Gated OFF by default" → corrected to ON by default, 24h) |
+| `frontend/src/api/settings.ts` | `fetchDiscoverRefreshInterval`/`putDiscoverRefreshInterval`/`triggerDiscoverRefresh` |
+| `frontend/src/screens/settings/Global.tsx` | `DiscoverRefreshSection` — a `DurationSetting` plus the trigger button with its 409 branch, wired into `GlobalSection` |
+| ~260 `internal/api/*_test.go` files | Mechanical `, nil` insertion at every `NewMux(` call site (Python script, balanced-paren parse — no regex, no sed) |
+| `CLAUDE.md`, `docs/ROADMAP.md`, `CHANGELOG.md` | The quote-then-correct amendments (scheduler count, TMDB consumer list); item 5 marked shipped; this entry |
+
+**Verification.** `go build ./...` clean; `go vet ./...` clean. `go test
+./...` green except `internal/sysinfo`'s four pre-existing `TestReadGPUs_*`
+failures (same host-sysfs-dependent, unrelated failures the 2026-08-02 and
+2026-08-03 (PIN lock) entries above already document). `pnpm -C frontend
+typecheck` clean. `pnpm -C frontend test` — **813 passed / 0 failed across 61
+files** (up from 806/61 in the prior entry, reflecting this feature's new
+frontend tests).

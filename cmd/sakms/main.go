@@ -22,6 +22,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/db"
 	"github.com/labbersanon/sakms/internal/dedupscan"
+	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/excludes"
@@ -191,6 +192,13 @@ func run() error {
 	// internal/trakt's package doc for why); secretStore encrypts the same
 	// way it does for connStore.
 	traktStore := trakt.NewStore(sqlDB, secretStore)
+	// discoverCache backs the Discover row-content read-through cache
+	// (internal/discoverrefresh, plan discover-scheduled-refresh §3.8) — its
+	// own table (migration 0058), constructed the same way every other
+	// sqlDB-backed store here is. Injected into api.NewMux below (the read
+	// path + the lifecycle hooks) and into discoverrefresh.Run further down
+	// (the write path).
+	discoverCache := discoverrefresh.NewStore(sqlDB)
 	// watchStore backs the opt-in background recheck job (internal/recheck) —
 	// its own table, shared with nothing else. Constructed here only so the one
 	// start-call below can be handed it; nothing else in the program reads it.
@@ -304,7 +312,18 @@ func run() error {
 	// internal/api.NewAuthMux's doc comment) — NewMux stays unaware auth
 	// exists either way, so its own large test suite never had to change
 	// for auth specifically.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy)
+	//
+	// Claude 2026-08-03: trailing arg is the real discoverCache store, not a
+	// scripted nil (BE-17, discover-scheduled-refresh plan §3.8).
+	// Reason: BE-10 landed NewMux's trailing *discoverrefresh.Store param
+	// with every call site (production and tests) passing nil so
+	// `go build ./...` stayed green before the real store existed; this is
+	// the one production call site, now wired to the store constructed
+	// above. Every test call site in internal/api still passes nil
+	// deliberately (see BE-10's own note there) — only this one needed to
+	// change.
+	// Troubleshooting: N/A — the cache is live from here on.
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy, discoverCache)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux, sectionGate...)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -356,6 +375,22 @@ func run() error {
 	recheckTriggerMux := api.NewRecheckTriggerMux(connStore, watchStore)
 	protectedRecheckTrigger := auth.Middleware(secretStore, authStore, recheckTriggerMux, sectionGate...)
 
+	// Manual "Refresh now" trigger for the discover-refresh feature (see
+	// api.NewDiscoverRefreshTriggerMux's doc comment) — same precedent as
+	// recheckTriggerMux above, since it needs the full discoverrefresh.Deps
+	// shape (built once, mirroring NewMux's own discoverRefreshDeps), a
+	// dependency NewMux doesn't carry (plan §5.1).
+	discoverRefreshTriggerMux := api.NewDiscoverRefreshTriggerMux(discoverrefresh.Deps{
+		HTTPClient:    &http.Client{Timeout: outboundTimeout},
+		ConnStore:     connStore,
+		SettingsStore: settingsStore,
+		SlidersStore:  slidersStore,
+		TraktStore:    traktStore,
+		TraktBaseURL:  trakt.DefaultBaseURL,
+		Cache:         discoverCache,
+	})
+	protectedDiscoverRefreshTrigger := auth.Middleware(secretStore, authStore, discoverRefreshTriggerMux, sectionGate...)
+
 	// Requests worklist + excluded-titles endpoints — its own mux because it
 	// needs excludesStore, a dependency NewMux doesn't carry (same precedent as
 	// recheckTriggerMux above). Mounted exact ("/api/requests", GET list) +
@@ -390,11 +425,12 @@ func run() error {
 	// exists).
 	top.Handle("/api/auth/", api.NewAuthMux(authStore, secretStore))
 	top.HandleFunc("GET /api/openapi.yaml", api.OpenapiHandler())
-	top.Handle("/api/apikey", protectedAPIKey)                        // exact match: GET status
-	top.Handle("/api/apikey/", protectedAPIKey)                       // subtree: POST .../regenerate
-	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger) // exact match: manual "Refresh now"
-	top.Handle("/api/requests", protectedRequests)                    // exact match: GET worklist (excluded-title-suppressed)
-	top.Handle("/api/requests/", protectedRequests)                   // subtree: POST exclude, exclude-batch
+	top.Handle("/api/apikey", protectedAPIKey)                                         // exact match: GET status
+	top.Handle("/api/apikey/", protectedAPIKey)                                        // subtree: POST .../regenerate
+	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)                  // exact match: manual "Refresh now"
+	top.Handle("/api/admin/discover-refresh/trigger", protectedDiscoverRefreshTrigger) // exact match: manual "Refresh now" (discover cache)
+	top.Handle("/api/requests", protectedRequests)                                     // exact match: GET worklist (excluded-title-suppressed)
+	top.Handle("/api/requests/", protectedRequests)                                    // subtree: POST exclude, exclude-batch
 	// BOTH forms are required, same precedent as /api/apikey and /api/requests
 	// above. The subtree pattern is what beats the general "/api/" one for
 	// every real route here; the exact one exists because without it the bare
@@ -463,13 +499,26 @@ func run() error {
 	// this line, and watchStore's construction above.
 	go recheck.Run(ctx, recheck.LoadInterval(ctx, settingsStore), connStore, settingsStore, watchStore)
 
+	// Claude 2026-08-03: corrected "Gated OFF by default (interval 0)" below
+	// (discover-scheduled-refresh plan §7.1).
+	// Reason: adultnewest.LoadInterval (scan.go:141-154) returns
+	// defaultIntervalHours (24h) when the interval key was never explicitly
+	// set — this job is ON by default, same as internal/discoverrefresh
+	// further down this file. The stale claim contradicted
+	// internal/discoverrefresh's own comment ("the second scheduler that is
+	// on by default") and CLAUDE.md's AMENDED 2026-08-03 note under
+	// Automation. Pre-existing staleness, not caused by this feature, but
+	// left uncorrected it would make that note look wrong to the next
+	// reader. An explicit "0" saved via Settings still turns it off.
+	//
 	// Same deliberate, opt-in exception as recheck above (see
 	// internal/adultnewest's package doc + CLAUDE.md's "Discover never
 	// queries Prowlarr" note for why this is a safe exception, not a
 	// reversal, of that rule): a background job that scans Prowlarr's
 	// newest Adult releases and caches matched TPDB/StashDB/FansDB entities
-	// for Adult Discover's newest-releases rows to read. Gated OFF by
-	// default (interval 0). To remove entirely: delete internal/adultnewest,
+	// for Adult Discover's newest-releases rows to read. ON by default (24h,
+	// mirrored by internal/discoverrefresh below); an explicit "0" in
+	// Settings turns it off. To remove entirely: delete internal/adultnewest,
 	// this line, its NewMux params, and the two stores' construction above.
 	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, serviceConnStore, settingsStore, adultNewestReleaseStore, entityStore, rssFeedsStore, feedHealth)
 
@@ -479,6 +528,38 @@ func run() error {
 	// per-source "Sync now" buttons. Gated OFF by default (interval 0). To
 	// remove entirely: delete internal/parseentity/schedule.go and this line.
 	go parseentity.Run(ctx, parseentity.LoadInterval(ctx, settingsStore), connStore, settingsStore, entityStore)
+
+	// Claude 2026-08-03: corrected the CLAUDE.md note reference below from
+	// "AMENDED 2026-08-02" to "AMENDED 2026-08-03" (discover-scheduled-refresh
+	// plan §7.1). Reason: this line's own construction is what makes the
+	// count seven in the first place — the 2026-08-02 note above still
+	// documents six.
+	//
+	// Discover row-content background refresh — the SEVENTH interval-driven
+	// scheduler (count the launch block, not any prose ordinal; see CLAUDE.md's
+	// AMENDED 2026-08-03 note under Automation). Populates internal/discoverrefresh's
+	// cache for Mainstream's six TMDB rows, every enabled custom slider, and
+	// the Trakt watchlist (stash-box is NOT a fourth source — see RefreshAll's
+	// own doc comment), so Discover renders with zero live external calls.
+	// UNLIKE recheck/parseentity/scanschedule above, this one is ON BY DEFAULT
+	// (24h) — the second scheduler in this codebase to be (after adultnewest's
+	// browse pass just above) and the first Mainstream-affecting one — a fresh
+	// install gets fast Discover out of the box, which is the entire point of
+	// the feature; an explicit "0" in Settings turns it off. Read-only
+	// content caching: it never proposes, applies or grabs anything, so no
+	// Scan-only boundary test applies.
+	// To remove entirely: delete internal/discoverrefresh, this line,
+	// discoverCache's construction above, its NewMux param, and
+	// discoverRefreshTriggerMux's construction + mount.
+	go discoverrefresh.Run(ctx, discoverrefresh.LoadInterval(ctx, settingsStore), discoverrefresh.Deps{
+		HTTPClient:    &http.Client{Timeout: outboundTimeout},
+		ConnStore:     connStore,
+		SettingsStore: settingsStore,
+		SlidersStore:  slidersStore,
+		TraktStore:    traktStore,
+		TraktBaseURL:  trakt.DefaultBaseURL,
+		Cache:         discoverCache,
+	})
 
 	// Watch-folders: monitors each mode's library root folder for new content
 	// and triggers a Rename Scan automatically (never auto-Apply). Gated OFF
@@ -511,8 +592,17 @@ func run() error {
 	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, allowStore, libStore, prober, phashDispatcher, videoDispatcher, entityStore)
 	scanschedule.Run(ctx, scanScheduler, settingsStore, dedupHub)
 
+	// Claude 2026-08-03: corrected the ordinal below from "seventh" to
+	// "eighth" (discover-scheduled-refresh plan §7.1).
+	// Reason: internal/discoverrefresh.Run (further up this file) is now the
+	// real seventh interval-driven scheduler, so this one-shot backfill
+	// would be the eighth position if it were counted as a scheduler at all
+	// — which, per the sentence below, it still is not. CLAUDE.md's own
+	// "count the launch block, not any prose ordinal" instruction exists
+	// precisely to stop ordinals like this one from rotting.
+	//
 	// One-shot backfill of the size/quality_tier columns added in migration
-	// 0055, for library rows that predate them. This is NOT a seventh
+	// 0055, for library rows that predate them. This is NOT an eighth
 	// scheduler and must not be counted as one in CLAUDE.md's enumeration:
 	// it has no interval, no toggle and no re-trigger, it runs exactly once
 	// per boot, and it is a cheap no-op once every tracked row is captured.

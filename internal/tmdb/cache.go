@@ -47,6 +47,17 @@ const (
 // which builds its own Client outside mode.Build and inherits this cache
 // harmlessly — it is a background availability re-check whose repeated TMDB
 // reads are exactly the kind that benefit.
+//
+// Claude 2026-08-03: added the second non-mode.Build consumer.
+// Reason: internal/discoverrefresh (plan discover-scheduled-refresh §3.2, §7.1)
+// also builds its own Client outside mode.Build, but — UNLIKE recheck — with
+// Config.BypassCache: true, so it deliberately does NOT inherit this cache.
+// See Config.BypassCache's doc comment (client.go:78-97) for why: a manual
+// "refresh now" fired within this cache's 10-minute TTL of any Discover read
+// would otherwise return byte-identical cached bytes and report success
+// without actually re-fetching.
+// Troubleshooting: if this list gains a third consumer, update it here too —
+// it exists precisely so nobody has to grep for tmdb.New call sites.
 var defaultCache = newCache(defaultCacheCap, defaultCacheTTL)
 
 // ResetDefaultCache empties the package-level cache. TEST-ONLY.

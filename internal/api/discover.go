@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -48,6 +46,22 @@ func mapSortBy(uiSort string, mt tmdb.MediaType) string {
 	}
 }
 
+// cachedDiscoverCategory reports whether category is one of the three
+// mount-time rows the Discover row-content cache (internal/discoverrefresh)
+// backs — trending/popular/upcoming, each a fixed per-mode key
+// ("{mode}:{category}", matching tmdbTarget.cacheKey's spelling). The other
+// four categories (genre/studio/network/filter) are an operator-driven
+// browse with an unbounded or cross-product key space and are deliberately
+// never cached (discover-scheduled-refresh plan §0.3/§4.1).
+func cachedDiscoverCategory(category string) bool {
+	switch category {
+	case "trending", "popular", "upcoming":
+		return true
+	default:
+		return false
+	}
+}
+
 // discoverHandler returns TMDB's trending or popular titles for {mode}'s
 // media type — a read-only proxy+normalize, nothing staged or persisted.
 // Series items carry only their TMDB id here;
@@ -55,7 +69,12 @@ func mapSortBy(uiSort string, mt tmdb.MediaType) string {
 // resolveTVDBIDHandler, called only once a user picks a specific title to
 // search+grab — not eagerly for every item in a trending list, which would
 // multiply this one TMDB call into one-plus-N for results nobody clicks.
-func discoverHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
+//
+// discoverCache backs cachedDiscoverCategory's three rows via the shared
+// lookupDiscoverCache/writeRawJSONArray read-through helpers (§4.1); it MAY
+// BE NIL, meaning "no cache" — every lookup misses and this handler behaves
+// exactly as it did before this cache existed.
+func discoverHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, discoverCache *discoverrefresh.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -82,21 +101,43 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			return
 		}
 
+		// Claude 2026-08-03: read-through cache lookup for the three
+		// mount-time rows (BE-11, discover-scheduled-refresh plan §4.1).
+		// Reason: must run AFTER the TMDB-not-configured check above so an
+		// unconfigured connection still 400s byte-identically (§4.0's
+		// ordering rule) — a decorator wrapping this handler could not do
+		// that (§4.5). liveRawPage (not the client's page) is what the
+		// upstream fetch below must use once filtering has made cached and
+		// raw TMDB pages diverge (§4.0/H5) — every switch case, the movies
+		// release-date filter's fetchPage closure, and its third argument
+		// all read upstreamPage, never the raw page, from here down.
+		upstreamPage := page
+		if cachedDiscoverCategory(category) {
+			items, hit, liveRawPage := lookupDiscoverCache(ctx, discoverCache, "tmdb", string(m)+":"+category, page)
+			if hit {
+				writeRawJSONArray(w, items)
+				return
+			}
+			if liveRawPage > 0 {
+				upstreamPage = liveRawPage
+			}
+		}
+
 		mt := mediaTypeForMode(m)
 		var items []tmdb.Item
 		switch category {
 		case "trending":
-			items, err = sess.TMDB.Trending(ctx, mt, "week", page)
+			items, err = sess.TMDB.Trending(ctx, mt, "week", upstreamPage)
 		case "popular":
-			items, err = sess.TMDB.Popular(ctx, mt, page)
+			items, err = sess.TMDB.Popular(ctx, mt, upstreamPage)
 		case "upcoming":
 			// UpcomingTV is TMDB's /tv/on_the_air — the closest TV analog to
 			// Upcoming Movies' "future release date" (see tmdb.UpcomingTV's
 			// doc comment); TMDB has no direct TV equivalent.
 			if mt == tmdb.TV {
-				items, err = sess.TMDB.UpcomingTV(ctx, page)
+				items, err = sess.TMDB.UpcomingTV(ctx, upstreamPage)
 			} else {
-				items, err = sess.TMDB.UpcomingMovies(ctx, page)
+				items, err = sess.TMDB.UpcomingMovies(ctx, upstreamPage)
 			}
 		case "genre":
 			genreID, gerr := strconv.Atoi(r.URL.Query().Get("genreId"))
@@ -105,9 +146,9 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, scSt
 				return
 			}
 			if mt == tmdb.TV {
-				items, err = sess.TMDB.DiscoverTVByGenre(ctx, genreID, page)
+				items, err = sess.TMDB.DiscoverTVByGenre(ctx, genreID, upstreamPage)
 			} else {
-				items, err = sess.TMDB.DiscoverMoviesByGenre(ctx, genreID, page)
+				items, err = sess.TMDB.DiscoverMoviesByGenre(ctx, genreID, upstreamPage)
 			}
 		case "studio":
 			// Studios are a movie-catalog concept (TMDB production companies) —
@@ -122,7 +163,7 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, scSt
 				http.Error(w, "studioId query parameter is required and must be an integer", http.StatusBadRequest)
 				return
 			}
-			items, err = sess.TMDB.DiscoverMoviesByStudio(ctx, studioID, page)
+			items, err = sess.TMDB.DiscoverMoviesByStudio(ctx, studioID, upstreamPage)
 		case "network":
 			// Symmetric restriction to studio above: networks are a TV-catalog
 			// concept, series only.
@@ -135,7 +176,7 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, scSt
 				http.Error(w, "networkId query parameter is required and must be an integer", http.StatusBadRequest)
 				return
 			}
-			items, err = sess.TMDB.DiscoverTVByNetwork(ctx, networkID, page)
+			items, err = sess.TMDB.DiscoverTVByNetwork(ctx, networkID, upstreamPage)
 		case "filter":
 			// The Discover filter bar's ad-hoc genre/year/rating/sort browse.
 			// Unlike genre/studio/network above, none of these params are
@@ -158,12 +199,12 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, scSt
 				if n, nerr := strconv.Atoi(r.URL.Query().Get("networkId")); nerr == nil {
 					opts.NetworkID = n
 				}
-				items, err = sess.TMDB.DiscoverTVFiltered(ctx, opts, page)
+				items, err = sess.TMDB.DiscoverTVFiltered(ctx, opts, upstreamPage)
 			} else {
 				if s, serr := strconv.Atoi(r.URL.Query().Get("studioId")); serr == nil {
 					opts.StudioID = s
 				}
-				items, err = sess.TMDB.DiscoverMoviesFiltered(ctx, opts, page)
+				items, err = sess.TMDB.DiscoverMoviesFiltered(ctx, opts, upstreamPage)
 			}
 		default:
 			http.Error(w, fmt.Sprintf("unrecognized category %q", category), http.StatusBadRequest)
@@ -189,7 +230,7 @@ func discoverHandler(httpClient *http.Client, connStore *connections.Store, scSt
 				}
 				return sess.TMDB.Popular(ctx, mt, p)
 			}
-			items, err = filterReleasedMovies(ctx, sess, page, items, fetchPage)
+			items, err = filterReleasedMovies(ctx, sess, upstreamPage, items, fetchPage)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
@@ -238,7 +279,7 @@ const maxUnreleasedFilterRetries = 3
 // threading a "last raw TMDB page consumed" cursor back to the frontend, a
 // bigger wire-contract change out of scope for this pass.
 func filterReleasedMovies(ctx context.Context, sess *mode.Session, page int, items []tmdb.Item, fetchPage func(int) ([]tmdb.Item, error)) ([]tmdb.Item, error) {
-	filtered := filterByUSRelease(ctx, sess, items)
+	filtered := discoverrefresh.FilterByUSRelease(ctx, sess.TMDB, items)
 	var err error
 	for attempt := page; len(filtered) == 0 && len(items) > 0 && attempt < page+maxUnreleasedFilterRetries; {
 		attempt++
@@ -249,45 +290,9 @@ func filterReleasedMovies(ctx context.Context, sess *mode.Session, page int, ite
 		if len(items) == 0 {
 			break
 		}
-		filtered = filterByUSRelease(ctx, sess, items)
+		filtered = discoverrefresh.FilterByUSRelease(ctx, sess.TMDB, items)
 	}
 	return filtered, nil
-}
-
-// filterByUSRelease checks every item's US release status concurrently
-// (bounded to 5 in flight, to avoid firing dozens of simultaneous TMDB calls
-// for one page) and returns the survivors in their original order. Fails
-// OPEN on a per-item HasUSRelease error: logs it and keeps the item rather
-// than failing the whole page. One transient TMDB hiccup among up to 20
-// per-item calls (more during a retry burst) must not blank the entire
-// Trending/Popular Movies row for every viewer — the same never-an-error
-// posture this page's other per-item TMDB lookups already have (see
-// fetchTitlePoster/posterHandler).
-func filterByUSRelease(ctx context.Context, sess *mode.Session, items []tmdb.Item) []tmdb.Item {
-	keep := make([]bool, len(items))
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(5)
-	for i, item := range items {
-		i, item := i, item
-		g.Go(func() error {
-			ok, err := sess.TMDB.HasUSRelease(gctx, item.ID)
-			if err != nil {
-				log.Printf("discover: HasUSRelease failed for tmdbId=%d, keeping the item rather than filtering the row to empty: %v", item.ID, err)
-				keep[i] = true
-				return nil
-			}
-			keep[i] = ok
-			return nil
-		})
-	}
-	_ = g.Wait() // every goroutine above always returns nil — see the fail-open note.
-	out := make([]tmdb.Item, 0, len(items))
-	for i, item := range items {
-		if keep[i] {
-			out = append(out, item)
-		}
-	}
-	return out
 }
 
 // discoverGenresHandler returns TMDB's fixed genre list for {mode}'s media

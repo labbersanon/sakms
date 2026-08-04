@@ -1274,6 +1274,64 @@ numbered below by original idea order, not interview order.
    scheduler, on by default, 24h global interval, immediate one-off
    populate on slider-create/Trakt-connect, plus an operator-triggered
    manual refresh for all 4 sources as a troubleshooting backup.
+
+   **CORRECTED 2026-08-03 — the "4 other row categories" / "all 4 sources"
+   claims above are stale, retracted here rather than silently rewritten.**
+   The superseded clause, quoted verbatim: *"the real gap is 4 other row
+   categories making a live external API call on every page load with zero
+   caching (Mainstream TMDB Trending/Popular/Upcoming, custom Discover
+   sliders, Trakt watchlist, Adult StashDB/FansDB catalog rows)."* Commit
+   `e25274f` (Adult row ordering unification, shipped 2026-08-02 — see that
+   entry below) deleted every StashDB/FansDB Adult Discover browse
+   route/handler before this feature's implementation started, so there was
+   nothing left for a fourth source to cache. **This feature caches THREE
+   sources, not four: Mainstream TMDB rows, custom sliders, and the Trakt
+   watchlist.** Stash-box Adult catalog rows are unaffected functionally —
+   they still work exactly as before, live, via the same cold-miss
+   fall-through this feature's other three sources use — they are simply
+   not warmed by a background scheduler, because the read path they would
+   have warmed no longer exists.
+
+   **Shipped 2026-08-03** — see `CHANGELOG.md` and `CLAUDE.md`'s AMENDED
+   2026-08-03 note under **Automation** (the scheduler count) and under
+   **TMDB response cache** (the consumer-list correction). Four corrections
+   a future reader most needs, found during planning and verified against
+   source rather than inferred:
+   - **§0.1 — there is no single `adultDiscoverStashBoxHandler`.** The
+     spec's Technical Context named one function that never existed; the
+     real surface was five constructors registering six route templates ×
+     2 boxes = 12 routes (moot now that the routes themselves are deleted,
+     but recorded so a future reader doesn't go looking for the wrong
+     symbol in old specs/plans).
+   - **§0.2 — three of the (now-deleted) stash-box routes had zero frontend
+     call sites** (`stashdb/recent`, `stashdb/studios`, `stashdb/performers`)
+     even before `e25274f` removed them — the live-rendered set was always
+     five of twelve, not eight, and warming the other seven would have been
+     pure waste.
+   - **§0.3 — the cached TMDB key space is exactly the six Mainstream rows,
+     nothing else.** `discoverHandler` serves seven categories
+     (`trending`/`popular`/`upcoming`/`genre`/`studio`/`network`/`filter`);
+     the last four are operator-driven browse actions with an unbounded or
+     large cross-product key space and stay live, uncached, same carve-out
+     shape as the Adult drill-downs.
+   - **§0.4 — caching had to move onto the write path, not just wrap the
+     read path.** Movies trending/popular additionally run a
+     post-list US-release filter (up to 20 live TMDB calls per page,
+     `internal/api/discover.go`). Caching pre-filter items would have left
+     the read path still making those calls on every render, so the
+     scheduler filters as it accumulates and the read path serves an
+     already-filtered list with zero calls — this also structurally
+     prevents a pre-existing, documented duplicate-item edge case from ever
+     surviving inside the cached window.
+
+   **AC1 is a steady-state property, stated so out loud a future reader
+   doesn't read it as a gap.** "Discover hits zero live external APIs"
+   holds from the first completed refresh cycle onward, not on a genuinely
+   cold install with no cache row ever written — a cold miss falls through
+   to today's live handler and behaves exactly as it does now, the same
+   in-repo precedent migration `0045`'s (now-superseded) cache table set.
+   Because the scheduler boot-polls anything due and is on by default, the
+   cold window in practice is one cycle's duration at first start, not 24h.
 6. **Adult pop-up enrichment** (ratings/description/tags; performer
    bio/tags) — spec ready: `.omc/specs/deep-interview-adult-popup-enrichment.md`
    (~15% ambiguity, PASSED). **Real finding: description/bio are

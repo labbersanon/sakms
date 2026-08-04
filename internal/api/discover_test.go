@@ -12,6 +12,112 @@ import (
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
+// TestDiscoverHandler_CachedCategoryServesFromCacheWithoutUpstreamCall is a
+// T-7-style test (discover-scheduled-refresh plan §9.1): a populated
+// discover-cache row for a cached category (trending/popular/upcoming) is
+// served verbatim with zero calls to the upstream fake TMDB server (BE-11,
+// §4.1).
+func TestDiscoverHandler_CachedCategoryServesFromCacheWithoutUpstreamCall(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	var upstreamHit bool
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		t.Errorf("unexpected upstream call to %s — a cache hit must make zero external calls", r.URL.Path)
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	discoverCache := newTestDiscoverCache(t)
+	payload := []json.RawMessage{
+		json.RawMessage(`{"id":1,"title":"Cached Movie","mediaType":"movie"}`),
+		json.RawMessage(`{"id":2,"title":"Cached Movie 2","mediaType":"movie"}`),
+	}
+	if err := discoverCache.Put(context.Background(), "tmdb", "movies:trending", payload, 20, 1, true); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, discoverCache))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 2 || items[0].Title != "Cached Movie" || items[1].Title != "Cached Movie 2" {
+		t.Errorf("unexpected items: %+v", items)
+	}
+	if upstreamHit {
+		t.Error("expected the fake upstream to never be hit on a cache hit")
+	}
+}
+
+// TestDiscoverHandler_ColdCacheMissFallsThroughToLive is a T-10-style test
+// (discover-scheduled-refresh plan §9.1): a real, non-nil discover-cache
+// store with NO row written for the requested key must fall through to the
+// existing live TMDB path unchanged — a cold install must never 500 or
+// blank a row just because the cache exists (BE-11, §4.0/§4.6).
+func TestDiscoverHandler_ColdCacheMissFallsThroughToLive(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	// category=upcoming, deliberately: it is one of the three cached
+	// categories AND is exempt from the release-date filter
+	// (filterReleasedMovies is trending/popular only — see that function's
+	// doc comment), so this test isolates the cold-miss fall-through
+	// without also exercising the unrelated US-release retry loop.
+	var gotPath string
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[{"id":9,"title":"Live Movie"}]}`))
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A real store with no row for "movies:upcoming" — the cold-install case.
+	discoverCache := newTestDiscoverCache(t)
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, discoverCache))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=upcoming")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if gotPath != "/movie/upcoming" {
+		t.Errorf("expected the live upcoming path to be hit on a cold cache miss, got %s", gotPath)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Live Movie" {
+		t.Errorf("unexpected items: %+v", items)
+	}
+}
+
 func fakeTMDB(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -69,7 +175,7 @@ func TestDiscoverHandler_MoviesUsesMovieMediaType(t *testing.T) {
 	if err := connStore.Upsert(ctx, "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover")
@@ -109,7 +215,7 @@ func TestDiscoverHandler_SeriesUsesTVMediaType(t *testing.T) {
 	if err := connStore.Upsert(ctx, "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/series/discover?category=popular")
@@ -134,7 +240,7 @@ func TestDiscoverHandler_TMDBNotConfigured(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "radarr", "http://radarr.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover")
@@ -173,7 +279,7 @@ func TestDiscoverHandler_PageParamForwarded(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover")
@@ -211,7 +317,7 @@ func TestPosterHandler_ReturnsPosterPath(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/poster?tmdbId=99")
@@ -238,7 +344,7 @@ func TestPosterHandler_RequiresTmdbID(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/poster")
@@ -256,7 +362,7 @@ func TestPosterHandler_RequiresTmdbID(t *testing.T) {
 // to look up a poster by (see posterHandler's doc comment).
 func TestPosterHandler_RejectsAdultMode(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/adult/poster?tmdbId=99")
@@ -287,7 +393,7 @@ func TestResolveTVDBIDHandler_ResolvesID(t *testing.T) {
 	if err := connStore.Upsert(ctx, "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/series/discover/tvdb-id?tmdbId=2")
@@ -312,7 +418,7 @@ func TestResolveTVDBIDHandler_RequiresTmdbIDParam(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "sonarr", "http://sonarr.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/series/discover/tvdb-id")
@@ -342,7 +448,7 @@ func TestDiscoverHandler_UpcomingUsesOnTheAirForSeries(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/series/discover?category=upcoming")
@@ -365,7 +471,7 @@ func TestDiscoverHandler_GenreRequiresGenreID(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=genre")
@@ -394,7 +500,7 @@ func TestDiscoverHandler_GenreSendsWithGenres(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=genre&genreId=28")
@@ -418,7 +524,7 @@ func TestDiscoverHandler_StudioRejectsSeries(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/series/discover?category=studio&studioId=420")
@@ -438,7 +544,7 @@ func TestDiscoverHandler_NetworkRequiresSeriesMode(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=network&networkId=213")
@@ -469,7 +575,7 @@ func TestDiscoverHandler_FilterZeroParams(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=filter")
@@ -509,7 +615,7 @@ func TestDiscoverHandler_FilterFullCombination(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=filter&genreIds=28,12&year=2023&minRating=7&sortBy=rating")
@@ -554,7 +660,7 @@ func TestDiscoverHandler_FilterInvalidSortByFallsBack(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover?category=filter&sortBy=drop%20table")
@@ -586,7 +692,7 @@ func TestDiscoverGenresHandler_MoviesUsesMovieGenreList(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/genres")
@@ -613,7 +719,7 @@ func TestDiscoverGenresHandler_MoviesUsesMovieGenreList(t *testing.T) {
 // serves directly with no TMDB connection required.
 func TestDiscoverStudiosHandler_ReturnsKnownStudios(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/studios")
@@ -637,7 +743,7 @@ func TestDiscoverStudiosHandler_ReturnsKnownStudios(t *testing.T) {
 // TestDiscoverStudiosHandler_ReturnsKnownStudios' direct sibling.
 func TestDiscoverNetworksHandler_ReturnsKnownNetworks(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/networks")
@@ -671,7 +777,7 @@ func TestDiscoverKeywordsHandler_SearchesTMDB(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/keywords?q=heist")
@@ -727,7 +833,7 @@ func TestDiscoverHandler_FiltersUnreleasedMoviesFromTrending(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer apiSrv.Close()
 
 	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover")
@@ -770,7 +876,7 @@ func TestDiscoverHandler_UpcomingMoviesNotFiltered(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer apiSrv.Close()
 
 	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover?category=upcoming")
@@ -815,7 +921,7 @@ func TestDiscoverHandler_SeriesNeverFiltered(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer apiSrv.Close()
 
 	resp, err := http.Get(apiSrv.URL + "/api/modes/series/discover?category=popular")
@@ -866,7 +972,7 @@ func TestDiscoverHandler_RetriesNextPageWhenWholePageFilteredOut(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer apiSrv.Close()
 
 	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover")
@@ -909,7 +1015,7 @@ func TestDiscoverHandler_GivesUpAfterMaxRetries(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer apiSrv.Close()
 
 	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover?category=popular")
@@ -934,7 +1040,7 @@ func TestDiscoverHandler_GivesUpAfterMaxRetries(t *testing.T) {
 }
 
 // TestDiscoverHandler_FailsOpenOnPerItemReleaseDatesError proves
-// filterByUSRelease's fail-open behavior: a transient error on one item's
+// discoverrefresh.FilterByUSRelease's fail-open behavior: a transient error on one item's
 // /movie/{id}/release_dates call must not blank the whole row — the failing
 // item is kept (not dropped), and the request still succeeds with 200.
 func TestDiscoverHandler_FailsOpenOnPerItemReleaseDatesError(t *testing.T) {
@@ -958,7 +1064,7 @@ func TestDiscoverHandler_FailsOpenOnPerItemReleaseDatesError(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", srv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	apiSrv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer apiSrv.Close()
 
 	resp, err := http.Get(apiSrv.URL + "/api/modes/movies/discover")
@@ -993,7 +1099,7 @@ func TestDiscoverTrailerHandler_ReturnsURL(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/trailer?tmdbId=42")
@@ -1031,7 +1137,7 @@ func TestDiscoverTrailerHandler_SeriesUsesTVPath(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/series/discover/trailer?tmdbId=7")
@@ -1058,7 +1164,7 @@ func TestDiscoverTrailerHandler_SeriesUsesTVPath(t *testing.T) {
 // Adult has no TMDB id to resolve a trailer from.
 func TestDiscoverTrailerHandler_RejectsAdult(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/adult/discover/trailer?tmdbId=1")
@@ -1078,7 +1184,7 @@ func TestDiscoverTrailerHandler_RequiresTmdbID(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/trailer")
@@ -1099,7 +1205,7 @@ func TestDiscoverTrailerHandler_RejectsNonPositiveTmdbID(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	for _, id := range []string{"0", "-5"} {
@@ -1118,7 +1224,7 @@ func TestDiscoverTrailerHandler_RejectsNonPositiveTmdbID(t *testing.T) {
 // tmdb isn't configured, matching every other Discover handler's convention.
 func TestDiscoverTrailerHandler_TMDBNotConfigured(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/trailer?tmdbId=1")
@@ -1137,7 +1243,7 @@ func TestDiscoverKeywordsHandler_RequiresQParam(t *testing.T) {
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/keywords")

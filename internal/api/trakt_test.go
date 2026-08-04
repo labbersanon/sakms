@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/trakt"
 )
@@ -39,15 +40,42 @@ func newTraktTestStore(t *testing.T) *trakt.Store {
 // (minus the /api prefix, irrelevant for a standalone test mux).
 // traktSrvURL is the fake upstream Trakt server every handler's baseURL
 // parameter points at.
+//
+// Claude 2026-08-03: added the trailing discoverCache param (BE-13).
+// Reason: traktWatchlistHandler now takes a *discoverrefresh.Store; every
+// existing caller of this helper passes nil (no cache, today's behaviour),
+// matching NewMux's own nil-tolerant convention (§4.5).
+// Review if: a test here needs to exercise the cache directly — see
+// newTraktTestMuxWithCache below instead of widening this signature further.
 func newTraktTestMux(store *trakt.Store, flow *traktDeviceFlow, traktSrvURL string) *http.ServeMux {
+	return newTraktTestMuxWithCache(store, flow, traktSrvURL, nil)
+}
+
+// newTraktTestMuxWithCache is newTraktTestMux plus an explicit
+// *discoverrefresh.Store, for the tests that actually exercise the BE-13
+// watchlist cache lookup.
+//
+// Claude 2026-08-03: threaded discoverCache into a discoverrefresh.Deps for
+// traktDevicePollHandler and traktDisconnectHandler (BE-16, plan §5.2/§5.3).
+// Reason: those two handlers now fire the RefreshTrakt populate / cache
+// Delete hooks; TraktStore/HTTPClient/TraktBaseURL mirror the same values
+// already passed to the handlers above so the hook's client construction
+// matches this file's fake-Trakt-server convention.
+func newTraktTestMuxWithCache(store *trakt.Store, flow *traktDeviceFlow, traktSrvURL string, discoverCache *discoverrefresh.Store) *http.ServeMux {
 	httpClient := testHTTPClient()
+	d := discoverrefresh.Deps{
+		HTTPClient:   httpClient,
+		TraktStore:   store,
+		TraktBaseURL: traktSrvURL,
+		Cache:        discoverCache,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /trakt/credentials", traktSaveCredentialsHandler(store))
 	mux.HandleFunc("GET /trakt/status", traktStatusHandler(store))
-	mux.HandleFunc("POST /trakt/disconnect", traktDisconnectHandler(store))
+	mux.HandleFunc("POST /trakt/disconnect", traktDisconnectHandler(store, discoverCache))
 	mux.HandleFunc("POST /trakt/device/start", traktDeviceStartHandler(store, flow, httpClient, traktSrvURL))
-	mux.HandleFunc("POST /trakt/device/poll", traktDevicePollHandler(store, flow, httpClient, traktSrvURL))
-	mux.HandleFunc("GET /trakt/watchlist", traktWatchlistHandler(store, httpClient, traktSrvURL))
+	mux.HandleFunc("POST /trakt/device/poll", traktDevicePollHandler(store, flow, httpClient, traktSrvURL, d))
+	mux.HandleFunc("GET /trakt/watchlist", traktWatchlistHandler(store, httpClient, traktSrvURL, discoverCache))
 	return mux
 }
 
@@ -461,6 +489,95 @@ func TestTraktWatchlistHandler_MapsToContractShape(t *testing.T) {
 	}
 	if items[1].TMDBID != 200 || items[1].Title != "Some Show" || items[1].Type != "show" || items[1].Year != 2021 {
 		t.Errorf("unexpected show item: %+v", items[1])
+	}
+}
+
+// TestTraktWatchlistHandler_CachedServesFromCacheWithoutUpstreamCall is a
+// T-7-style test (discover-scheduled-refresh plan §9.1): a linked account
+// with a populated discover-cache row for ("trakt", "") is served verbatim
+// with zero calls to the upstream fake Trakt server (BE-13, §4.3).
+func TestTraktWatchlistHandler_CachedServesFromCacheWithoutUpstreamCall(t *testing.T) {
+	var upstreamHit bool
+	traktSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		t.Errorf("unexpected upstream call to %s — a cache hit must make zero external calls", r.URL.Path)
+	}))
+	defer traktSrv.Close()
+
+	store := newTraktTestStore(t)
+	secret := "secret-xyz"
+	if err := store.SaveCredentials(context.Background(), "client-abc", &secret); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := store.SaveTokens(context.Background(), "at", "rt", time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	discoverCache := newTestDiscoverCache(t)
+	payload := []json.RawMessage{
+		json.RawMessage(`{"type":"movie","title":"Cached Watchlist Movie","year":2022,"tmdbId":7}`),
+	}
+	if err := discoverCache.Put(context.Background(), "trakt", "", payload, 1, 1, true); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	mux := newTraktTestMuxWithCache(store, newTraktDeviceFlow(), traktSrv.URL, discoverCache)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/trakt/watchlist")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var items []traktWatchlistItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Cached Watchlist Movie" || items[0].TMDBID != 7 {
+		t.Errorf("unexpected items: %+v", items)
+	}
+	if upstreamHit {
+		t.Error("expected the fake upstream to never be hit on a cache hit")
+	}
+}
+
+// TestTraktWatchlistHandler_NotLinkedIgnoresCache proves the §4.3 reorder:
+// the Tokens.Linked() precondition must be checked BEFORE the cache lookup,
+// so a populated cache row for a connection that is configured-but-not-
+// linked is never served — it must still return the byte-identical empty
+// `[]` today's handler returns for that state.
+func TestTraktWatchlistHandler_NotLinkedIgnoresCache(t *testing.T) {
+	store := newTraktTestStore(t)
+	secret := "secret-xyz"
+	if err := store.SaveCredentials(context.Background(), "client-abc", &secret); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Configured, but never linked — no SaveTokens call.
+
+	discoverCache := newTestDiscoverCache(t)
+	payload := []json.RawMessage{
+		json.RawMessage(`{"type":"movie","title":"Should Never Serve","year":2022,"tmdbId":7}`),
+	}
+	if err := discoverCache.Put(context.Background(), "trakt", "", payload, 1, 1, true); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	mux := newTraktTestMuxWithCache(store, newTraktDeviceFlow(), "", discoverCache)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/trakt/watchlist")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var items []traktWatchlistItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected the not-linked precondition to be checked before the cache, got cached items: %+v", items)
 	}
 }
 

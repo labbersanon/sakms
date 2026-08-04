@@ -13,11 +13,66 @@ import (
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
+// TestResolveSliderHandler_CachedSliderServesFromCacheWithoutUpstreamCall is
+// a T-7-style test (discover-scheduled-refresh plan §9.1): a populated
+// discover-cache row keyed on the slider's own id is served verbatim with
+// zero calls to the upstream fake TMDB server (BE-12, §4.2).
+func TestResolveSliderHandler_CachedSliderServesFromCacheWithoutUpstreamCall(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	var upstreamHit bool
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		t.Errorf("unexpected upstream call to %s — a cache hit must make zero external calls", r.URL.Path)
+	})
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sl, err := slidersStore.Create(context.Background(), "Action", "genre", "28", "movie", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	discoverCache := newTestDiscoverCache(t)
+	payload := []json.RawMessage{
+		json.RawMessage(`{"id":5,"title":"Cached Slider Movie","mediaType":"movie"}`),
+	}
+	if err := discoverCache.Put(context.Background(), "slider", strconv.Itoa(sl.ID), payload, 20, 1, true); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, discoverCache))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/discover/sliders/" + strconv.Itoa(sl.ID) + "/resolve")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Cached Slider Movie" {
+		t.Errorf("unexpected items: %+v", items)
+	}
+	if upstreamHit {
+		t.Error("expected the fake upstream to never be hit on a cache hit")
+	}
+}
+
 // TestSliderCRUD_EndToEnd exercises create/list/update/delete against the
 // real HTTP handlers backed by a real migrated SQLite file.
 func TestSliderCRUD_EndToEnd(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	createBody, _ := json.Marshal(apidto.SliderUpsertRequest{
@@ -103,7 +158,7 @@ func TestSliderCRUD_EndToEnd(t *testing.T) {
 // discoversliders.Store's validation errors surface as 400s, not 500s.
 func TestCreateSliderHandler_RejectsInvalidFilterType(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(apidto.SliderUpsertRequest{Title: "Bad", FilterType: "not-a-real-type", Target: "movie"})
@@ -131,7 +186,7 @@ func TestReorderSlidersHandler_Reorders(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(apidto.SliderReorderRequest{IDs: []int{second.ID, first.ID}})
@@ -174,7 +229,7 @@ func TestResolveSliderHandler_GenreDispatchesToDiscoverMovieGenre(t *testing.T) 
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/sliders/" + strconv.Itoa(sl.ID) + "/resolve")
@@ -222,7 +277,7 @@ func TestResolveSliderHandler_MixedConcatenatesMovieAndTV(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/sliders/" + strconv.Itoa(sl.ID) + "/resolve")
@@ -249,7 +304,7 @@ func TestResolveSliderHandler_MixedConcatenatesMovieAndTV(t *testing.T) {
 // studio+tv slider is reported as a 400 (a permanent per-slider config
 // problem the admin fixes by editing the slider), not a 502 (which would
 // wrongly suggest a transient TMDB outage worth retrying) — see
-// errSliderMisconfigured's doc comment.
+// discoverrefresh.ErrSliderMisconfigured's doc comment.
 func TestResolveSliderHandler_StudioRejectsTVTarget(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	if err := connStore.Upsert(context.Background(), "tmdb", "http://tmdb.local", "key"); err != nil {
@@ -260,7 +315,7 @@ func TestResolveSliderHandler_StudioRejectsTVTarget(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/sliders/" + strconv.Itoa(sl.ID) + "/resolve")
@@ -277,7 +332,7 @@ func TestResolveSliderHandler_StudioRejectsTVTarget(t *testing.T) {
 // nonexistent slider id 404s instead of panicking or 500ing.
 func TestResolveSliderHandler_UnknownIDReturns404(t *testing.T) {
 	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/discover/sliders/999/resolve")

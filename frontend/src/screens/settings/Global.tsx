@@ -18,6 +18,7 @@ import {
   useContext,
 } from "solid-js";
 import {
+  fetchDiscoverRefreshInterval,
   fetchEntitySyncInterval,
   fetchEntitySyncStatus,
   fetchRecheckInterval,
@@ -25,14 +26,17 @@ import {
   fetchWatchFoldersPollInterval,
   putAdultModeEnabled,
   putAdultNewestScanInterval,
+  putDiscoverRefreshInterval,
   putEntitySyncInterval,
   putRecheckInterval,
   putWatchFoldersEnabled,
   putWatchFoldersPollInterval,
+  triggerDiscoverRefresh,
   triggerEntitySync,
   triggerRecheck,
   type EntitySyncSource,
 } from "../../api/settings";
+import { ApiError } from "../../api/client";
 import { AdultModeContext, Button, Muted } from "../../components/ui";
 import { Card, SaveStatus, useSaveStatus } from "./shared";
 import { DurationSetting } from "./Advanced";
@@ -106,6 +110,101 @@ const RecheckSection: Component = () => {
         onSave={(v) => putRecheckInterval(v)}
       />
       <RecheckTriggerButton />
+    </Card>
+  );
+};
+
+// Claude 2026-08-03: added DiscoverRefreshTriggerButton + DiscoverRefreshSection
+// (FE-2, discover-scheduled-refresh plan §6.1-6.3).
+// Reason: DiscoverRefreshTriggerButton is a near-verbatim copy of
+// RecheckTriggerButton above — same four-state signal, same button/status
+// copy — except a 409 (a refresh is already running, §5.1) must render a
+// dedicated message rather than the generic thrown-error text, since that
+// is the one outcome this button has that recheck's does not.
+const DiscoverRefreshTriggerButton: Component = () => {
+  const [state, setState] = createSignal<
+    "idle" | "triggering" | "started" | "error"
+  >("idle");
+  const [error, setError] = createSignal<string | null>(null);
+
+  const trigger = async () => {
+    setState("triggering");
+    setError(null);
+    try {
+      await triggerDiscoverRefresh();
+      setState("started");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setError("A refresh is already running");
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      setState("error");
+    }
+  };
+
+  return (
+    <div class="mb-3 flex items-center gap-2">
+      <Button
+        variant="secondary"
+        onClick={() => void trigger()}
+        disabled={state() === "triggering"}
+      >
+        {state() === "triggering" ? "Starting…" : "Refresh now"}
+      </Button>
+      <Show when={state() === "started"}>
+        <span class="text-xs text-muted">
+          Refresh started — runs in the background.
+        </span>
+      </Show>
+      <Show when={state() === "error"}>
+        <span class="text-xs text-red-500">{error()}</span>
+      </Show>
+    </div>
+  );
+};
+
+// DiscoverRefreshSection owns the global Discover background-refresh
+// cadence (Mainstream rows, custom sliders, and the Trakt watchlist) and
+// its manual trigger. Deliberately NOT wrapped in a SectionSave, same
+// standalone-save shape as RecheckSection right above — DurationSetting
+// renders its own Save button unbatched.
+//
+// Claude 2026-08-03: StashDB/FansDB catalog rows removed from this copy.
+// Reason: e25274f deleted those browse routes; caching them was retired
+// mid-implementation (plan header note). Listing them here would promise
+// a cache that does not exist.
+// Review if: Adult Discover re-adds structural stash-box catalog rows.
+//
+// zeroLabel is passed deliberately (plan §6.1 H4 / §6.2 Critic M5):
+// DurationSetting's default zero-suffix ("(0 = off, the default)") would be
+// WRONG here — 0 is not this scheduler's default (86400/24h is), and 0 does
+// more than "turn it off": it clears the cache so Discover goes back to
+// fetching live on every render, rather than freezing on the last cached
+// payload forever (§3.5 exists specifically to make that true).
+const DiscoverRefreshSection: Component = () => {
+  const [interval] = createResource(fetchDiscoverRefreshInterval);
+
+  return (
+    <Card title="Discover — background refresh">
+      <p class="mb-3 text-sm text-muted">
+        Keeps Mainstream rows, custom sliders, and the Trakt watchlist warm
+        in the cache on this cadence.
+      </p>
+      <DurationSetting
+        id="discover-refresh-interval"
+        label="Discover refresh interval — global"
+        help="Refreshes the cached Discover rows on this cadence."
+        value={() => interval()}
+        onSave={(v) => putDiscoverRefreshInterval(v)}
+        zeroLabel="(0 = off — clears the cache and returns Discover to fetching live; default is 24h)"
+      />
+      <p class="mb-3 text-xs text-muted">
+        With the schedule off, Discover fetches live on every render instead
+        of from cache. "Refresh now" below still works either way and
+        repopulates the cache until the next change.
+      </p>
+      <DiscoverRefreshTriggerButton />
     </Card>
   );
 };
@@ -475,6 +574,7 @@ export const GlobalSection: Component = () => (
     <AdultModeSection />
     <SectionLockSection />
     <RecheckSection />
+    <DiscoverRefreshSection />
     <EntityDatabaseSection />
     <WatchFoldersSection />
   </>

@@ -94,6 +94,17 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/settings/ai-model")) return jsonResponse({ model: "" });
   if (url.includes("/api/settings/recheck-interval"))
     return jsonResponse({ intervalSeconds: 0 });
+  // Claude 2026-08-03: added discover-refresh-interval default GET (FT-4,
+  // discover-scheduled-refresh plan §6.1-6.3). Reason: DiscoverRefreshSection
+  // now mounts unconditionally alongside RecheckSection on every Advanced-tab
+  // render, same as the recheck-interval line above — without this, every
+  // existing GlobalSection test hits an unmocked fetch (falls through to the
+  // 204 default -> api() resolves null -> fetchDiscoverRefreshInterval's
+  // `.then((r) => r.intervalSeconds)` throws on null). 86400 (24h) mirrors
+  // this scheduler's real backend default (internal/api/discover_refresh.go's
+  // discoverRefreshDefaultSeconds), unlike recheck-interval's off-by-default 0.
+  if (url.includes("/api/settings/discover-refresh-interval"))
+    return jsonResponse({ intervalSeconds: 86400 });
   // adult_mode_enabled — only fetched by whichever test wraps renderSettings
   // in an AdultModeContext.Provider harness that itself calls
   // fetchAdultModeEnabled (see renderSettingsWithAdultMode below); the plain
@@ -1739,6 +1750,23 @@ const clickStandaloneSave = (input: HTMLElement) => {
   fireEvent.click(within(container).getByRole("button", { name: "Save" }));
 };
 
+// Claude 2026-08-03: added refreshNowButtonIn (discover-scheduled-refresh
+// plan §6.1-6.3, FE-2/FT-2/FT-3). Reason: DiscoverRefreshTriggerButton's
+// "Refresh now" button shares the exact same accessible name as
+// RecheckTriggerButton's — once DiscoverRefreshSection mounts alongside
+// RecheckSection on the same Advanced-tab render, an unscoped
+// `screen.getByRole("button", { name: "Refresh now" })` throws "multiple
+// elements found" for either button. Scopes to the named Card's own
+// wrapper div (Card's `class="mb-4 ..."`, components/ui.tsx) the same way
+// clickStandaloneSave above scopes to a field's own `div.mb-3`.
+// Troubleshooting: this is why the three pre-existing recheck "Refresh now"
+// assertions below were changed from a bare screen.getByRole to this.
+// Review if: either button's accessible name changes so they no longer collide.
+const refreshNowButtonIn = (cardTitle: string): HTMLElement => {
+  const card = screen.getByText(cardTitle).closest("div.mb-4") as HTMLElement;
+  return within(card).getByRole("button", { name: "Refresh now" });
+};
+
 describe("Global Settings", () => {
   it("recheck-interval (Days/Hours/Minutes picker) saves to the GLOBAL /api/settings/recheck-interval as seconds", async () => {
     const calls = stubFetch((url) => {
@@ -1853,7 +1881,11 @@ describe("Global Settings", () => {
     renderSettings();
     goToSection("Advanced");
     await screen.findByLabelText("Monitored title refresh interval — global");
-    fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
+    // Claude 2026-08-03: was `screen.getByRole("button", { name: "Refresh
+    // now" })` — DiscoverRefreshSection's own "Refresh now" button now
+    // shares this accessible name, so the unscoped query throws "multiple
+    // elements found" (see refreshNowButtonIn's doc comment above).
+    fireEvent.click(refreshNowButtonIn("Monitored Title Refresh — global"));
     await waitFor(() =>
       expect(
         calls.some(
@@ -1881,9 +1913,97 @@ describe("Global Settings", () => {
     renderSettings();
     goToSection("Advanced");
     await screen.findByLabelText("Monitored title refresh interval — global");
-    fireEvent.click(screen.getByRole("button", { name: "Refresh now" }));
+    // Claude 2026-08-03: was `screen.getByRole("button", { name: "Refresh
+    // now" })` — see refreshNowButtonIn's doc comment above (same collision
+    // as the "confirms it started" test right above this one).
+    fireEvent.click(refreshNowButtonIn("Monitored Title Refresh — global"));
     expect(
       await screen.findByText(/prowlarr not configured/i),
+    ).toBeInTheDocument();
+  });
+
+  // Claude 2026-08-03: added the three discover-refresh-interval tests below
+  // (FT-1/FT-2/FT-3, discover-scheduled-refresh plan §6.1-6.3), modelled on
+  // the recheck-interval cases directly above.
+  it("discover-refresh-interval (Days/Hours/Minutes picker) saves to the GLOBAL /api/settings/discover-refresh-interval as seconds, with the custom zeroLabel copy", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/settings/discover-refresh-interval"))
+        return jsonResponse({ intervalSeconds: 0 });
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Advanced");
+    const input = (await screen.findByLabelText(
+      "Discover refresh interval — global",
+    )) as HTMLInputElement;
+    // Confirms the custom zeroLabel actually took effect (plan §6.2 Critic
+    // pass 2 M5) — this scheduler's default is 86400 (24h), not 0, and 0
+    // also clears the cache, so the shared "(0 = off, the default)" fallback
+    // every other DurationSetting call site uses would assert something
+    // false here.
+    expect(
+      screen.getByText(
+        /0 = off — clears the cache and returns Discover to fetching live; default is 24h/i,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.input(input, { target: { value: "1" } });
+    clickStandaloneSave(input);
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/settings/discover-refresh-interval"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) =>
+        c.method === "PUT" &&
+        c.url.includes("/api/settings/discover-refresh-interval"),
+    )!;
+    expect(put.body).toEqual({ intervalSeconds: 3600 });
+  });
+
+  it("Discover 'Refresh now' fires the manual discover-refresh trigger and confirms it started", async () => {
+    const calls = stubFetch();
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByLabelText("Discover refresh interval — global");
+    fireEvent.click(refreshNowButtonIn("Discover — background refresh"));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.url.includes("/api/admin/discover-refresh/trigger"),
+        ),
+      ).toBe(true),
+    );
+    // No scoping needed here (unlike the button click above): only Discover's
+    // trigger fired, so only its own <Show> renders the started text — Recheck's
+    // sibling copy of this same text stays hidden since its state is still "idle".
+    expect(await screen.findByText(/refresh started/i)).toBeInTheDocument();
+  });
+
+  it("Discover 'Refresh now' renders \"A refresh is already running\" on a 409, not a generic error", async () => {
+    stubFetch((url, init) => {
+      if (
+        url.includes("/api/admin/discover-refresh/trigger") &&
+        (init?.method ?? "GET").toUpperCase() === "POST"
+      ) {
+        return new Response("a discover refresh is already running", {
+          status: 409,
+        });
+      }
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByLabelText("Discover refresh interval — global");
+    fireEvent.click(refreshNowButtonIn("Discover — background refresh"));
+    expect(
+      await screen.findByText("A refresh is already running"),
     ).toBeInTheDocument();
   });
 
@@ -1943,8 +2063,12 @@ describe("Global Settings", () => {
     expect(
       await screen.findByLabelText("Monitored title refresh interval — global"),
     ).toBeInTheDocument();
+    // Claude 2026-08-03: was `screen.getByRole("button", { name: "Refresh
+    // now" })` — see refreshNowButtonIn's doc comment above; this smoke
+    // test's un-scoped lookup would now match both RecheckSection's and
+    // DiscoverRefreshSection's identically-named buttons.
     expect(
-      screen.getByRole("button", { name: "Refresh now" }),
+      refreshNowButtonIn("Monitored Title Refresh — global"),
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText("Config poll interval — global"),

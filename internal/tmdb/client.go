@@ -75,6 +75,26 @@ var nowFn = time.Now
 type Config struct {
 	BaseURL string
 	APIKey  string
+	// BypassCache makes this client ignore the shared response cache in both
+	// directions: it neither reads from it nor writes to it. Default false, so
+	// every existing caller keeps today's behavior.
+	//
+	// It exists for internal/discoverrefresh, which populates its own 24h
+	// Discover row cache. Its scheduled tick would miss the LRU's 10-minute TTL
+	// anyway (see cache.go's defaultCacheTTL) — the paths that genuinely break
+	// without this are the ones an operator triggers by hand: a manual "refresh
+	// now" fired minutes after any Discover read would re-serve the identical
+	// cached bytes and report success while changing nothing, and the
+	// populate-on-slider-create / populate-on-Trakt-connect hooks have the same
+	// shape with lower stakes.
+	//
+	// The write half is skipped too, and that is not an oversight: one refresh
+	// cycle fetches ~18 list pages plus up to ~120 US-release checks, which
+	// would evict most of the 512-entry LRU's detail/season/poster entries — the
+	// ones it exists to serve — in favour of entries the read path will never
+	// ask for again, since serving those rows from the row cache is the whole
+	// point of that feature.
+	BypassCache bool
 }
 
 type Client struct {
@@ -84,10 +104,15 @@ type Client struct {
 	// defaultCache — see cache.go for why it cannot live on the Client value.
 	// Tests in this package replace it with a per-client cache.
 	cache *cache
+	// bypassCache mirrors Config.BypassCache; see that field for why it exists.
+	// Note that c.cache still points at the shared cache even when this is set —
+	// do() dereferences it unconditionally, so a nil cache would panic. The
+	// bypass is a behavioral flag, not a wiring change.
+	bypassCache bool
 }
 
 func New(cfg Config, httpClient *http.Client) *Client {
-	return &Client{cfg: cfg, http: httpClient, cache: defaultCache}
+	return &Client{cfg: cfg, http: httpClient, cache: defaultCache, bypassCache: cfg.BypassCache}
 }
 
 // cacheKey derives this request's cache key. It is computed BEFORE api_key is
@@ -125,16 +150,21 @@ func (c *Client) cacheKey(path string, query url.Values) string {
 // Nothing is cached on failure: a non-2xx or transport error returns before
 // put, and put runs only after a successful unmarshal, so neither a TMDB blip
 // nor a truncated body is pinned for the whole TTL.
+//
+// A client built with Config.BypassCache skips both the lookup and the store,
+// always fetching live and leaving the shared cache exactly as it found it.
 func (c *Client) do(ctx context.Context, path string, query url.Values, out any) error {
 	if query == nil {
 		query = url.Values{}
 	}
 	key := c.cacheKey(path, query)
-	if body, ok := c.cache.get(key); ok {
-		if err := json.Unmarshal(body, out); err != nil {
-			return fmt.Errorf("decoding cached response for %s: %w", path, err)
+	if !c.bypassCache {
+		if body, ok := c.cache.get(key); ok {
+			if err := json.Unmarshal(body, out); err != nil {
+				return fmt.Errorf("decoding cached response for %s: %w", path, err)
+			}
+			return nil
 		}
-		return nil
 	}
 	logCacheMiss(path)
 
@@ -163,7 +193,17 @@ func (c *Client) do(ctx context.Context, path string, query url.Values, out any)
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decoding response from %s: %w", req.URL.Host, err)
 	}
-	c.cache.put(key, body)
+	// Claude 2026-08-03: the write is guarded by the same flag as the read above.
+	// Reason: a bypassing caller is a bulk background populator, so letting its
+	// traffic into the shared 512-entry LRU would evict the per-title entries the
+	// cache exists for, to warm entries nothing will read again. See
+	// Config.BypassCache.
+	// Troubleshooting: without this half, "bypass" would still poison the cache.
+	// Review if: the cache grows per-caller partitioning, which would make one
+	// populator's writes harmless to everyone else.
+	if !c.bypassCache {
+		c.cache.put(key, body)
+	}
 	return nil
 }
 

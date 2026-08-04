@@ -240,6 +240,55 @@ retrieval failures into `pending_retry`/`failed`, (2) the due re-search,
 was corrected in lockstep and is the authoritative description of the ordering
 and of why pass 4 runs last.
 
+**AMENDED 2026-08-03 — the SIX count above is now stale; the discover-scheduled-refresh
+feature is a real SEVENTH interval-driven scheduler, and `cmd/sakms/main.go` IS touched.**
+The superseded sentence, quoted verbatim from the CORRECTED 2026-08-02 note above so a
+future session can find it: *"There are still SIX interval-driven schedulers, not seven.
+This feature adds no goroutine, no ticker, no interval key, and **no line in
+`cmd/sakms/main.go`** — that file is untouched by this feature."* That sentence described
+`releaseDueGrabs`/`monitorAirDates`/`syncSeriesCatalog`, not this feature, and does not
+carry over to it. `internal/discoverrefresh` (plan
+`.omc/plans/autopilot-impl-discover-scheduled-refresh.md`) adds a real `go
+discoverrefresh.Run(...)` goroutine, a real `time.NewTicker`, a real interval key
+(`discover_refresh_interval_seconds`), and a real line in `cmd/sakms/main.go` — so **there
+are now SEVEN.**
+
+Count the launch block in `main.go`, not any prose ordinal — same instruction the
+CORRECTED 2026-08-02 note above gives, repeated here because it is what makes this count
+reproducible rather than asserted: `internal/recheck`, `internal/adultnewest`,
+`internal/parseentity`, `internal/api`'s `RunWatchFolders`, `internal/scanschedule`
+(still not a bare `go` statement — it starts one goroutine per workflow internally),
+`internal/api`'s `RunUsenetRetry`, and now `internal/discoverrefresh`'s `Run`. Air-date
+monitoring, `releaseDueGrabs`, and series-catalog sync are still plain function calls
+inside `runUsenetRetryCycle`, not separate entries — unchanged by this feature.
+
+**This seven is verified by reading the launch block, not proven by a test — the same
+honesty qualifier the CORRECTED 2026-08-02 note above states for its own six.** There is
+no static AST test for `internal/discoverrefresh`, and none is warranted: the
+`scanschedule`/`airdatemonitor` static tests exist to bound *dispatch* authority (proving a
+scheduler cannot reach Apply/AutoGrab), and `internal/discoverrefresh` has no dispatch
+authority at all to bound — it is read-only content caching (see the staged-for-approval
+note below).
+
+**On-by-default deviation, recorded explicitly so a future session does not "align" it to
+the off-by-default majority and silently kill the feature.** `internal/discoverrefresh` is
+the **second** scheduler in this codebase that is on by default (after `internal/adultnewest`'s
+browse pass) and the **first Mainstream-affecting one** — every other scheduler in the
+enumeration above (`recheck`, `parseentity`, `scanschedule`, `RunUsenetRetry`) is 0/off by
+default. This is deliberate: a feature whose entire purpose is that Mainstream Discover is
+fast on a fresh install cannot hang off an opt-in toggle a fresh install never turns on. See
+the plan's §1.7 for the full reasoning (the two worked "looks like a scheduler and isn't"
+examples this file already carries, and why this one is genuinely different from both).
+
+**Staged-for-approval is untouched by this feature — this is not a sixth exception.** It
+adds no `AutoGrabTrigger` and the trigger enumeration under **Staged-for-approval** below
+(`TriggerOperator` / `TriggerRequest` / `TriggerRetry` / `TriggerAirDate` /
+`TriggerPreRelease`) stays unchanged at five. Stated explicitly because every recent
+CLAUDE.md amendment about a new background thing has been about widening unattended
+dispatch, and a reader will pattern-match this one the same way by default — it is not: this
+scheduler cannot reach any mutating call site by construction (its only writes are to its
+own read cache table).
+
 (Bulk apply, added 2026-07-17, is a same-screen multi-select of
 already-reviewed Pending proposals — see the amended engineering-convention
 note below. It doesn't change this section: there is still no automation,
@@ -1097,6 +1146,22 @@ above, so don't drop them for convenience:
     in setup. Two `internal/api` tests that differ only in a *request-level*
     detail the upstream TMDB traffic does not reflect will otherwise have one
     of them fully cache-served — passing vacuously, or failing confusingly.
+  - **AMENDED 2026-08-03 — `Config.BypassCache` added; the "complete consumer
+    list" in `internal/tmdb/cache.go`'s doc comment now names two non-`mode.Build`
+    consumers, not one (discover-scheduled-refresh plan §7.1).** A client built
+    with `BypassCache: true` skips this cache in both directions (no read, no
+    write) — `internal/discoverrefresh`'s scheduler is the second such consumer,
+    after `internal/recheck`'s own `tmdb.Client` (`recheck.go:222`). It bypasses
+    deliberately: this cache's 10-minute TTL sits behind every `tmdb.Client` a
+    manual "refresh now" would otherwise silently hit within, turning a
+    troubleshooting action into a no-op that reports success without actually
+    re-fetching anything (see `Config.BypassCache`'s own doc comment,
+    `internal/tmdb/client.go:78-97`, for the full three-interaction analysis).
+    Unlike `internal/recheck`, which inherits the shared cache harmlessly (its
+    repeated reads are exactly what a cache benefits), `internal/discoverrefresh`
+    opts OUT of it entirely — its own read-through row cache (a different,
+    24h/operator-tunable store) is the one that is supposed to absorb repeat
+    reads here, not this 10-minute LRU.
 - **Naming, scanning, and Season-0 (Stage 2c)**:
   - `library.ScanRootFolder` is now recursive (`filepath.WalkDir`,
     `internal/library/library.go`) — a directory is reported whole only if

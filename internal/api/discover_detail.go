@@ -54,7 +54,8 @@ const maxPrefetchedSeasons = 30
 // the banned automatic per-card page-load probe, and it never touches Prowlarr
 // (see CLAUDE.md's "Discover never queries Prowlarr" note).
 //
-// Soft-fail mechanics (mirrors filterByUSRelease in discover.go): each
+// Soft-fail mechanics (mirrors discoverrefresh.FilterByUSRelease, which moved
+// out of discover.go when the scheduled Discover row cache landed): each
 // goroutine captures its own result + error into its own local variable, logs
 // on error, and ALWAYS returns nil — so a plain errgroup.Group (not
 // errgroup.WithContext, which would cancel the group's shared context on the

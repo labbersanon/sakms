@@ -588,6 +588,46 @@ export function triggerRecheck(): Promise<void> {
   return api<void>("/api/admin/recheck/trigger", { method: "POST" });
 }
 
+// Claude 2026-08-03: added fetchDiscoverRefreshInterval/putDiscoverRefreshInterval/
+// triggerDiscoverRefresh (FE-1, discover-scheduled-refresh plan §6.2-6.3).
+// Reason: mirrors fetchRecheckInterval/putRecheckInterval/triggerRecheck above
+// exactly — same unwrap-the-envelope shape as adult-newest-scan-interval
+// below, since this endpoint also has no generated DTO (internal/api's
+// discoverRefreshIntervalResponse/Request are local structs, not
+// internal/apidto types — plan §6.2 Critic finding M2). Global (not
+// per-mode) Discover background-refresh cadence in whole seconds (>= 0,
+// backend-validated; 0 = off — clears the Discover cache and returns it to
+// fetching live, NOT this scheduler's default; the default is 86400/24h,
+// unlike recheck-interval's off-by-default 0 — see internal/api/
+// discover_refresh.go's discoverRefreshDefaultSeconds).
+// Review if: a generated DTO is ever added for this endpoint.
+export function fetchDiscoverRefreshInterval(): Promise<number> {
+  return api<{ intervalSeconds: number }>(
+    "/api/settings/discover-refresh-interval",
+  ).then((r) => r.intervalSeconds);
+}
+
+export function putDiscoverRefreshInterval(
+  intervalSeconds: number,
+): Promise<void> {
+  return api<void>("/api/settings/discover-refresh-interval", {
+    method: "PUT",
+    body: JSON.stringify({ intervalSeconds }),
+  });
+}
+
+// Manual "Refresh now" trigger for the Discover background refresh — same
+// fire-and-forget contract as triggerRecheck above (202 once the cycle
+// STARTS, not once it finishes; nothing to poll afterward). Unlike
+// triggerRecheck, this endpoint can also answer 409 when a cycle is already
+// running (internal/api/discover_refresh_trigger.go) — callers should
+// branch on `e instanceof ApiError && e.status === 409` (see
+// isRebuildRefused in api/torrent.ts for the same by-status, never
+// by-message-text pattern), not on the thrown message text.
+export function triggerDiscoverRefresh(): Promise<void> {
+  return api<void>("/api/admin/discover-refresh/trigger", { method: "POST" });
+}
+
 // BYOAI fallback toggle (off by default — DB-first parsing runs alone).
 export function fetchAIFallbackEnabled(): Promise<boolean> {
   return api<{ enabled: boolean }>("/api/settings/ai-fallback-enabled").then(

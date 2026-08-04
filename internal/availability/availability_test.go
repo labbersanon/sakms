@@ -123,17 +123,18 @@ func TestCheckMovie(t *testing.T) {
 }
 
 // TestCheckMovie_PassesIMDBID proves the movie's IMDB id flows from
-// MovieDetails into the Prowlarr query (the whole point of the details lookup:
-// a precise id-scoped probe), with the "tt" prefix stripped by SearchByID.
-// Also proves the same MovieDetails call's Title travels as query= — the
-// regression case for a real "nothing is being found to grab" bug (id
-// params alone weren't a reliable filter for every indexer).
+// MovieDetails into the Prowlarr query as a {ImdbId:...} brace token (the
+// whole point of the details lookup: a precise id-scoped probe), keeping
+// its "tt" prefix — see prowlarr.SearchByID's doc for why the brace form
+// differs from the old top-level imdbid= param, which stripped it. Also
+// proves the same MovieDetails call's Title travels alongside the brace
+// tokens in query= — the regression case for a real "nothing is being
+// found to grab" bug (id params alone weren't a reliable filter for every
+// indexer).
 func TestCheckMovie_PassesIMDBID(t *testing.T) {
-	var gotIMDB, gotTMDB, gotType, gotCats, gotQuery string
+	var gotType, gotCats, gotQuery string
 	tmdbClient := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(movieDetails)) })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotIMDB = r.URL.Query().Get("imdbid")
-		gotTMDB = r.URL.Query().Get("tmdbid")
 		gotType = r.URL.Query().Get("type")
 		gotCats = r.URL.Query().Get("categories")
 		gotQuery = r.URL.Query().Get("query")
@@ -146,20 +147,17 @@ func TestCheckMovie_PassesIMDBID(t *testing.T) {
 	if _, err := CheckMovie(context.Background(), tmdbClient, prowlarrClient, 42); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if gotIMDB != "1234567" { // "tt" stripped by SearchByID
-		t.Errorf("expected imdbid=1234567 (tt stripped), got %q", gotIMDB)
-	}
-	if gotTMDB != "42" {
-		t.Errorf("expected tmdbid=42, got %q", gotTMDB)
-	}
 	if gotType != "movie" {
 		t.Errorf("expected type=movie, got %q", gotType)
 	}
 	if gotCats != "2000" {
 		t.Errorf("expected categories=2000, got %q", gotCats)
 	}
-	if gotQuery != "Some Movie" { // movieDetails' "title" field, see the const above
-		t.Errorf("expected the MovieDetails title to travel alongside the id params as query=, got %q", gotQuery)
+	// {TmdbId:42} + {ImdbId:tt1234567} (tt KEPT, unlike the old top-level
+	// imdbid= param) + movieDetails' "title" field (see the const above).
+	wantQuery := "{TmdbId:42} {ImdbId:tt1234567} Some Movie"
+	if gotQuery != wantQuery {
+		t.Errorf("expected query=%q, got %q", wantQuery, gotQuery)
 	}
 }
 
@@ -361,15 +359,16 @@ func TestCheckAdultScene_TrimsBlankStudio(t *testing.T) {
 	}
 }
 
-// TestCheckSeries_PassesTVDBIDAndSeasonEpisode proves the resolved TVDB id and
-// the season/episode scope flow into the Prowlarr tvsearch query.
+// TestCheckSeries_PassesTVDBIDAndSeasonEpisode proves the resolved TVDB id
+// and the season/episode scope flow into the Prowlarr tvsearch query as
+// {TvdbId:...}/{Season:...}/{Episode:...} brace tokens (see
+// prowlarr.SearchByID's doc — Prowlarr's /api/v1/search does not read
+// standalone tvdbid=/season=/ep= params at all).
 func TestCheckSeries_PassesTVDBIDAndSeasonEpisode(t *testing.T) {
-	var gotTVDB, gotSeason, gotEp, gotType, gotCats string
+	var gotQuery, gotType, gotCats string
 	tmdbClient := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(externalIDs)) })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotTVDB = r.URL.Query().Get("tvdbid")
-		gotSeason = r.URL.Query().Get("season")
-		gotEp = r.URL.Query().Get("ep")
+		gotQuery = r.URL.Query().Get("query")
 		gotType = r.URL.Query().Get("type")
 		gotCats = r.URL.Query().Get("categories")
 		w.Header().Set("Content-Type", "application/json")
@@ -381,11 +380,16 @@ func TestCheckSeries_PassesTVDBIDAndSeasonEpisode(t *testing.T) {
 	if _, err := CheckSeries(context.Background(), tmdbClient, prowlarrClient, 100, 3, 5); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if gotTVDB != "789" {
-		t.Errorf("expected tvdbid=789, got %q", gotTVDB)
-	}
-	if gotSeason != "3" || gotEp != "5" {
-		t.Errorf("expected season=3 ep=5, got season=%q ep=%q", gotSeason, gotEp)
+	// {TvdbId:789} + {Season:3} + {Episode:5}; this fixture's fakeTMDB
+	// handler returns the same externalIDs body for every path, including
+	// TVDetails' bare /tv/{id} call, which has no "name" field — so Query's
+	// title contribution degrades to "" and contributes nothing here. The
+	// title travelling alongside the braces is covered instead by
+	// TestCheckSeries_PassesQueryTitle below, which stubs the two paths
+	// distinctly.
+	wantQuery := "{TvdbId:789} {Season:3} {Episode:5}"
+	if gotQuery != wantQuery {
+		t.Errorf("expected query=%q, got %q", wantQuery, gotQuery)
 	}
 	if gotType != "tvsearch" {
 		t.Errorf("expected type=tvsearch, got %q", gotType)
@@ -402,7 +406,7 @@ func TestCheckSeries_PassesTVDBIDAndSeasonEpisode(t *testing.T) {
 // needs" — that assumption was the bug) purely for its Title, which must
 // travel into the Prowlarr query alongside the id params.
 func TestCheckSeries_PassesQueryTitle(t *testing.T) {
-	var gotQuery, gotTVDB string
+	var gotQuery string
 	// Path-branching fake: /external_ids and the bare /tv/{id} (TVDetails)
 	// must return DIFFERENT bodies, unlike this file's other fakeTMDB uses —
 	// otherwise this test couldn't distinguish "title really came from
@@ -417,7 +421,6 @@ func TestCheckSeries_PassesQueryTitle(t *testing.T) {
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query().Get("query")
-		gotTVDB = r.URL.Query().Get("tvdbid")
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(oneRelease))
 	}))
@@ -427,11 +430,11 @@ func TestCheckSeries_PassesQueryTitle(t *testing.T) {
 	if _, err := CheckSeries(context.Background(), tmdbClient, prowlarrClient, 100, 3, 5); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if gotQuery != "Some Show" {
-		t.Errorf("expected the TVDetails title to travel alongside the id params as query=, got %q", gotQuery)
-	}
-	if gotTVDB != "789" {
-		t.Errorf("expected tvdbid=789 to still be present alongside query, got %q", gotTVDB)
+	// {TvdbId:789} (still present alongside the title) + {Season:3} +
+	// {Episode:5} + the TVDetails title.
+	wantQuery := "{TvdbId:789} {Season:3} {Episode:5} Some Show"
+	if gotQuery != wantQuery {
+		t.Errorf("expected the TVDetails title to travel alongside the id braces as query=, got %q, want %q", gotQuery, wantQuery)
 	}
 }
 

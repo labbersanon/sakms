@@ -100,6 +100,22 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			req.TMDBID = queryInt(q, "tmdbId", 0)
 			req.SeasonNumber = queryInt(q, "season", 0)
 			req.EpisodeNumber = queryInt(q, "episode", 0)
+			// Claude 2026-08-03: set SeasonSpecified from whether the
+			// `season` query key is present at all, not from SeasonNumber !=
+			// 0.
+			// Reason: SeasonEpisodePicker (frontend) only ever sends
+			// `season`/`episode` together once an operator has actually
+			// picked a season — a genuine Season-0/Specials pick would
+			// otherwise be indistinguishable from "no season picked yet"
+			// (see grabs.Grab.SeasonSpecified's doc for the same
+			// zero-value ambiguity). Load-bearing for TWO things downstream:
+			// autoGrabSearch's SearchByID call needs it to include the
+			// {Season:N} brace token at all (see prowlarr.SearchByID), and
+			// this handler's own FilterSeasonScope call below needs it to
+			// know whether a season scope applies.
+			// Troubleshooting: root-cause fix for "picking Season 4 grabs
+			// S1E1" — see FilterSeasonScope's doc in releasematch.go.
+			req.SeasonSpecified = q.Has("season")
 		default: // Movies
 			req.TMDBID = queryInt(q, "tmdbId", 0)
 		}
@@ -132,6 +148,14 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		}
 
 		filtered := FilterReleases(ctx, releases, title, m, sess.MainstreamAI)
+		if m == mode.Series {
+			// See FilterSeasonScope's doc (releasematch.go) — drops any
+			// release whose title carries a recognizable, CONFLICTING season
+			// marker (wrong season, or an episode marker excluding the
+			// requested episode). A no-op when req.SeasonSpecified is
+			// false (no season picked at all).
+			filtered = FilterSeasonScope(filtered, req.SeasonNumber, req.EpisodeNumber, req.SeasonSpecified)
+		}
 
 		// A real per-episode runtime (Series single-episode grab) mustn't be
 		// applied to season packs the indexer returned for the episode

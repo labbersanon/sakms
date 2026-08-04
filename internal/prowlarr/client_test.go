@@ -128,55 +128,99 @@ func TestSearch_QueryStringUnaffectedByStructuredSearch(t *testing.T) {
 	}
 }
 
+// TestSearchByID is the regression test for a real "picking Season 4 grabs
+// S1E1" bug: Prowlarr's /api/v1/search does NOT read standalone
+// tmdbid=/imdbid=/tvdbid=/season=/ep= params at all — it only extracts ids
+// from bracketed tokens ({TmdbId:550}, {ImdbId:tt0137523}, {TvdbId:81189},
+// {Season:4}, {Episode:5}) embedded in the free-text query= string (see
+// SearchByID's doc comment for the confirmed Prowlarr source reference).
+// Every case below asserts the EXACT resulting query= value (via the
+// server's parsed r.URL.Query(), not raw path substring matching, since
+// brace tokens URL-encode into "%7B...%7D" which is unreadable to match
+// against directly) and separately proves none of the old top-level params
+// ever appear on the wire again.
 func TestSearchByID(t *testing.T) {
 	tests := []struct {
-		name        string
-		params      SearchByIDParams
-		wantType    string
-		wantPresent []string // substrings that must appear in the query string
-		wantAbsent  []string // substrings that must NOT appear
+		name      string
+		params    SearchByIDParams
+		wantType  string
+		wantQuery string
+		wantCats  string // "" means don't check
 	}{
 		{
-			name:        "TMDBID only routes to movie search",
-			params:      SearchByIDParams{TMDBID: 550, Categories: []int{2000}},
-			wantType:    "type=movie",
-			wantPresent: []string{"tmdbid=550", "categories=2000"},
-			wantAbsent:  []string{"type=tvsearch", "imdbid", "tvdbid", "season", "ep=", "query="},
+			name:      "TMDBID only routes to movie search",
+			params:    SearchByIDParams{TMDBID: 550, Categories: []int{2000}},
+			wantType:  "movie",
+			wantQuery: "{TmdbId:550}",
+			wantCats:  "2000",
 		},
 		{
 			// Regression for a real "nothing is being found to grab" bug: an
-			// id-only request (no query text) wasn't reliably honored as a
-			// precise filter by every indexer — some fall back to Torznab's
-			// "empty query = list recent releases" RSS-style behavior,
-			// silently ignoring the id params. Query must travel ALONGSIDE
-			// the id params, not replace them.
-			name:        "Query travels alongside id params, not instead of them",
-			params:      SearchByIDParams{Query: "Moana", TMDBID: 550, Categories: []int{2000}},
-			wantType:    "type=movie",
-			wantPresent: []string{"query=Moana", "tmdbid=550", "categories=2000"},
-			wantAbsent:  []string{"type=tvsearch"},
+			// id-only request (no free-text title) wasn't reliably honored
+			// as a precise filter by every indexer — some fall back to
+			// Torznab's "empty query = list recent releases" RSS-style
+			// behavior, silently ignoring the id params. The title must
+			// travel ALONGSIDE the brace tokens, not replace them.
+			name:      "Query travels alongside id braces, not instead of them",
+			params:    SearchByIDParams{Query: "Moana", TMDBID: 550, Categories: []int{2000}},
+			wantType:  "movie",
+			wantQuery: "{TmdbId:550} Moana",
+			wantCats:  "2000",
 		},
 		{
-			name:        "IMDBID only strips tt prefix and routes to movie search",
-			params:      SearchByIDParams{IMDBID: "tt0137523"},
-			wantType:    "type=movie",
-			wantPresent: []string{"imdbid=0137523"},
-			wantAbsent:  []string{"imdbid=tt0137523", "tmdbid", "tvdbid", "type=tvsearch"},
+			name:      "IMDBID with tt prefix routes to movie search, tt kept in the brace",
+			params:    SearchByIDParams{IMDBID: "tt0137523"},
+			wantType:  "movie",
+			wantQuery: "{ImdbId:tt0137523}",
 		},
 		{
-			name:        "TVDBID with season and episode routes to tv search",
-			params:      SearchByIDParams{TVDBID: 81189, Season: 2, Episode: 5},
-			wantType:    "type=tvsearch",
-			wantPresent: []string{"tvdbid=81189", "season=2", "ep=5"},
-			wantAbsent:  []string{"type=movie", "tmdbid", "imdbid"},
+			name:      "IMDBID without a tt prefix gets tt added for the brace form",
+			params:    SearchByIDParams{IMDBID: "0137523"},
+			wantType:  "movie",
+			wantQuery: "{ImdbId:tt0137523}",
+		},
+		{
+			name:      "TVDBID with season and episode routes to tv search",
+			params:    SearchByIDParams{TVDBID: 81189, Season: 2, SeasonSpecified: true, Episode: 5},
+			wantType:  "tvsearch",
+			wantQuery: "{TvdbId:81189} {Season:2} {Episode:5}",
+		},
+		{
+			// Season 0 is Specials — a real, deliberate scope, distinct from
+			// "no season was picked at all" (Season's own zero value). It
+			// must still produce a {Season:0} token when SeasonSpecified is
+			// true.
+			name:      "Season 0 (Specials) is included when SeasonSpecified is true",
+			params:    SearchByIDParams{TVDBID: 81189, SeasonSpecified: true},
+			wantType:  "tvsearch",
+			wantQuery: "{TvdbId:81189} {Season:0}",
+		},
+		{
+			// The inverse: a nonzero Season number with SeasonSpecified left
+			// false must NOT produce a {Season:...} token at all — this is
+			// what lets an unscoped whole-show probe stay unscoped even if a
+			// caller happens to carry a stale Season number.
+			name:      "Season omitted entirely when SeasonSpecified is false, even with a nonzero Season number",
+			params:    SearchByIDParams{TVDBID: 81189, Season: 4},
+			wantType:  "tvsearch",
+			wantQuery: "{TvdbId:81189}",
+		},
+		{
+			name:      "Query travels alongside braces for a TV search too",
+			params:    SearchByIDParams{Query: "Some Show", TVDBID: 81189, Season: 4, SeasonSpecified: true},
+			wantType:  "tvsearch",
+			wantQuery: "{TvdbId:81189} {Season:4} Some Show",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var gotPath string
+			var gotType, gotQuery, gotCats, gotRawPath string
 			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-				gotPath = r.URL.String()
+				gotType = r.URL.Query().Get("type")
+				gotQuery = r.URL.Query().Get("query")
+				gotCats = r.URL.Query().Get("categories")
+				gotRawPath = r.URL.String()
 				if r.Header.Get("X-Api-Key") != "test-key" {
 					t.Error("missing X-Api-Key header")
 				}
@@ -191,17 +235,21 @@ func TestSearchByID(t *testing.T) {
 			if len(releases) != 2 || releases[0].Protocol != Torrent || releases[1].Protocol != Usenet {
 				t.Errorf("unexpected releases from shared parse path: %+v", releases)
 			}
-			if !strings.Contains(gotPath, tt.wantType) {
-				t.Errorf("expected %q in %q", tt.wantType, gotPath)
+			if gotType != tt.wantType {
+				t.Errorf("expected type=%q, got %q", tt.wantType, gotType)
 			}
-			for _, want := range tt.wantPresent {
-				if !strings.Contains(gotPath, want) {
-					t.Errorf("expected %q in %q", want, gotPath)
-				}
+			if gotQuery != tt.wantQuery {
+				t.Errorf("expected query=%q, got %q (raw path %q)", tt.wantQuery, gotQuery, gotRawPath)
 			}
-			for _, absent := range tt.wantAbsent {
-				if strings.Contains(gotPath, absent) {
-					t.Errorf("did not expect %q in %q", absent, gotPath)
+			if tt.wantCats != "" && gotCats != tt.wantCats {
+				t.Errorf("expected categories=%q, got %q", tt.wantCats, gotCats)
+			}
+			// The core regression check: none of the old top-level
+			// structured params may ever appear on the wire again —
+			// Prowlarr's /api/v1/search silently ignores every one of them.
+			for _, oldParam := range []string{"tmdbid=", "imdbid=", "tvdbid=", "season=", "ep="} {
+				if strings.Contains(gotRawPath, oldParam) {
+					t.Errorf("old top-level structured param %q leaked into the request: %q", oldParam, gotRawPath)
 				}
 			}
 		})

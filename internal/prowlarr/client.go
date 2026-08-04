@@ -128,73 +128,108 @@ func (c *Client) Search(ctx context.Context, query string, categories []int) ([]
 // exactly this reason (broader indexer compatibility, not redundancy) —
 // SearchByID previously didn't, which was the actual bug. Always send the
 // title here; there is no real caller that has ids but not a title.
+//
+// Claude 2026-08-03: added SeasonSpecified.
+// Reason: Season 0 (Specials) is a legitimate, deliberate scope — but
+// Season==0 is also Go's zero value for "no season was ever picked" (a
+// whole-show/whole-series probe). Without a separate boolean, SearchByID
+// cannot tell those two apart, so a genuine Specials request would silently
+// omit the {Season:0} token and search unscoped instead.
+// Troubleshooting: mirrors the exact same Season-0-vs-unspecified ambiguity
+// grabs.Grab.SeasonSpecified already exists to solve (see that field's doc).
+// Review if: SearchByIDParams gains a richer season/episode scope type that
+// makes the "was a season picked at all" question structurally unambiguous
+// without a side boolean.
 type SearchByIDParams struct {
-	Query      string // the title — see the field's own doc comment above
-	TMDBID     int    // 0 if not applicable
-	IMDBID     string // "" if not applicable ("tt" prefix is stripped — see SearchByID)
-	TVDBID     int    // 0 if not applicable (Series only)
-	Season     int    // 0 if not applicable
-	Episode    int    // 0 if not applicable
-	Categories []int
+	Query           string // the title — see the field's own doc comment above
+	TMDBID          int    // 0 if not applicable
+	IMDBID          string // "" if not applicable (a missing "tt" prefix is added for the brace form — see SearchByID)
+	TVDBID          int    // 0 if not applicable (Series only)
+	Season          int    // meaningful only when SeasonSpecified is true
+	SeasonSpecified bool   // true when a season (possibly 0/Specials) was deliberately picked
+	Episode         int    // 0 if not applicable
+	Categories      []int
 }
 
 // SearchByID runs a structured, id-based Prowlarr search — the id-scoped
 // equivalent of the free-text Search, sharing its response shape and its
 // do+parse mechanics (only the query-string construction differs).
 //
-// UNVERIFIED-ASSUMPTION NOTE (matching this package's existing
-// honesty-about-unverified-assumptions posture — see the package doc): the
-// exact wire contract of Prowlarr's /api/v1/search for id-based queries has
-// NOT been confirmed against a live instance. This models the standard
-// Newznab/Torznab "separate structured params" convention:
-//
-//   - type=movie   for a movie search (Newznab's `t=movie` function),
-//     carrying imdbid/tmdbid — used when TMDBID/IMDBID are present without a
-//     season/episode.
-//   - type=tvsearch for a TV search (Newznab's `t=tvsearch` function),
-//     carrying tvdbid/season/ep (and imdbid, valid there too) — used when a
-//     TVDBID or a Season/Episode is present.
-//
-// The `t=`-function values are `movie`/`tvsearch` (Newznab's caps XML
-// advertises these as the `<movie-search>`/`<tv-search>` capability
-// *elements*, but the invoked function values are the shorter `movie`/
-// `tvsearch` — the same value-space as the existing free-text
-// `type=search`). The `imdbid` param is Newznab-conventionally the numeric
-// id with no leading "tt", so any "tt" prefix is stripped below. Episode is
-// the `ep` param, not `episode`.
-//
-// If the real endpoint instead expects these ids embedded in the free-text
-// `query` string, only this query-building differs — the shared do+parse
-// path decodes into releaseResource, so a wire mismatch stays isolated to
-// this one method, exactly as the package doc describes for Release.
+// Claude 2026-08-03: rewrote the query-building from separate top-level
+// params (tmdbid=/imdbid=/tvdbid=/season=/ep=) to brace tokens embedded in
+// the query= string.
+// Reason: Prowlarr's /api/v1/search does NOT parse standalone
+// tmdbid/imdbid/tvdbid/season/ep query params for a manual search request —
+// its SearchRequest DTO has no such fields. The only place those ids are
+// read from is QueryToParams, which regex-parses bracketed tokens
+// (`{TvdbId:81189}`, `{Season:4}`, `{Episode:5}`, `{TmdbId:550}`,
+// `{ImdbId:tt0137523}`) out of the free-text query string itself — this is
+// documented on the Servarr wiki's Prowlarr indexer-search page and
+// confirmed against Prowlarr's own source (QueryToParams). The previous
+// top-level-params version was an UNVERIFIED ASSUMPTION (modeled on the
+// generic Newznab/Torznab convention, which Prowlarr's OWN manual-search
+// endpoint does not actually follow) and was the root cause of a real
+// "picking Season 4 grabs S1E1" bug: every structured id/season/episode
+// param was silently ignored, so SearchByID always ran an unscoped
+// title-only search and returned whatever release the query-title
+// similarity/scoring pass ranked first, regardless of which season was
+// requested.
+// Troubleshooting: if a season/episode-scoped grab starts returning
+// wrong-season or wrong-episode releases again, check this brace-token
+// construction first — a regression here reintroduces exactly the bug
+// above. type=tvsearch vs type=movie is unaffected by this change (that
+// selector is a real, working Prowlarr param) and Categories is unaffected
+// (categories= is also a real, working param) — only the id/season/episode
+// encoding moved.
+// Review if: Prowlarr adds real top-level id params to its manual-search
+// API in a future version (there is no such indication as of this date).
 func (c *Client) SearchByID(ctx context.Context, params SearchByIDParams) ([]Release, error) {
 	q := url.Values{}
 
-	isTV := params.TVDBID != 0 || params.Season != 0 || params.Episode != 0
+	isTV := params.TVDBID != 0 || params.SeasonSpecified || params.Season != 0 || params.Episode != 0
 	if isTV {
 		q.Set("type", "tvsearch")
 	} else {
 		q.Set("type", "movie")
 	}
 
-	if params.Query != "" {
-		q.Set("query", params.Query)
-	}
+	var tokens []string
 	if params.TMDBID != 0 {
-		q.Set("tmdbid", strconv.Itoa(params.TMDBID))
+		tokens = append(tokens, fmt.Sprintf("{TmdbId:%d}", params.TMDBID))
 	}
 	if params.IMDBID != "" {
-		q.Set("imdbid", strings.TrimPrefix(params.IMDBID, "tt"))
+		// The brace form carries the "tt" prefix (unlike the old top-level
+		// imdbid= param, which was the bare numeric id) — add it back if the
+		// caller passed a bare number.
+		imdb := params.IMDBID
+		if !strings.HasPrefix(imdb, "tt") {
+			imdb = "tt" + imdb
+		}
+		tokens = append(tokens, fmt.Sprintf("{ImdbId:%s}", imdb))
 	}
 	if params.TVDBID != 0 {
-		q.Set("tvdbid", strconv.Itoa(params.TVDBID))
+		tokens = append(tokens, fmt.Sprintf("{TvdbId:%d}", params.TVDBID))
 	}
-	if params.Season != 0 {
-		q.Set("season", strconv.Itoa(params.Season))
+	if params.SeasonSpecified {
+		// Season 0 (Specials) is deliberately included here — the whole
+		// point of SeasonSpecified is to distinguish "Season 0 was picked"
+		// from "no season was picked at all" (Season's own zero value).
+		tokens = append(tokens, fmt.Sprintf("{Season:%d}", params.Season))
 	}
 	if params.Episode != 0 {
-		q.Set("ep", strconv.Itoa(params.Episode))
+		tokens = append(tokens, fmt.Sprintf("{Episode:%d}", params.Episode))
 	}
+
+	// Braces first, then the free-text title (see this type's Query doc
+	// comment for why the title must still travel alongside the ids).
+	queryParts := tokens
+	if params.Query != "" {
+		queryParts = append(queryParts, params.Query)
+	}
+	if queryStr := strings.TrimSpace(strings.Join(queryParts, " ")); queryStr != "" {
+		q.Set("query", queryStr)
+	}
+
 	addCategories(q, params.Categories)
 
 	return c.search(ctx, q)

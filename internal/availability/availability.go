@@ -145,11 +145,22 @@ func CheckSeries(ctx context.Context, tmdbClient *tmdb.Client, prowlarrClient *p
 	}
 
 	releases, err := prowlarrClient.SearchByID(ctx, prowlarr.SearchByIDParams{
-		Query:      query,
-		TVDBID:     tvdbID,
-		Season:     season,
-		Episode:    episode,
-		Categories: []int{seriesCategory},
+		Query:  query,
+		TVDBID: tvdbID,
+		// Claude 2026-08-03: pass SeasonSpecified through as season != 0 ||
+		// episode != 0.
+		// Reason: CheckSeries's own doc contract already treats season==0
+		// (with episode==0) as "not scoped" (a whole-show probe) — there is
+		// no Specials-probe caller here, so this function has no separate
+		// "was a season deliberately picked" signal to plumb through beyond
+		// season/episode themselves being non-zero.
+		// Review if: a caller needs a genuine Season-0/Specials-scoped
+		// availability probe — CheckSeries would then need its own
+		// SeasonSpecified parameter rather than deriving it from season != 0.
+		Season:          season,
+		SeasonSpecified: season != 0 || episode != 0,
+		Episode:         episode,
+		Categories:      []int{seriesCategory},
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("probing prowlarr for tmdb id %d: %w", tmdbID, err)

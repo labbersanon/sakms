@@ -247,6 +247,21 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		}
 	}
 
+	// Claude 2026-08-03: apply FilterSeasonScope before scoring.
+	// Reason: half of the "picking Season 4 grabs S1E1" fix — see
+	// FilterSeasonScope's doc (releasematch.go) for the full root-cause
+	// chain. Runs regardless of whether releases came from autoGrabSearch
+	// above or arrived pre-fetched via req.Releases (the Search-hook path):
+	// either source can carry a wrong-season release Prowlarr's own
+	// query-scoping didn't exclude. A no-op when req.SeasonSpecified is
+	// false (FilterSeasonScope's own contract).
+	// Troubleshooting: if a Series auto-grab dispatches the wrong season
+	// again, confirm this call is still present before assuming the
+	// regression is back in prowlarr.SearchByID itself.
+	if req.Mode == mode.Series {
+		releases = FilterSeasonScope(releases, req.Season, req.Episode, req.SeasonSpecified)
+	}
+
 	// A real per-episode runtime mustn't be applied to season packs the indexer
 	// returned for the episode query — neutralize those so they can't
 	// over-qualify (see buildAutoGrabCandidates).

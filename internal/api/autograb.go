@@ -320,7 +320,7 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req ap
 		}
 		releases, err := sess.Prowlarr.SearchByID(ctx, prowlarr.SearchByIDParams{
 			Query:  req.Title,
-			TVDBID: tvdbID, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
+			TVDBID: tvdbID, Season: req.SeasonNumber, SeasonSpecified: req.SeasonSpecified, Episode: req.EpisodeNumber,
 			Categories: categoriesForSearch(mode.Series),
 		})
 		return releases, seriesEpisodeRuntimeSeconds(ctx, sess, req.TMDBID, req.SeasonNumber, req.EpisodeNumber), err

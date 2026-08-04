@@ -4,11 +4,13 @@ import (
 	"context"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/identify"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 )
@@ -274,4 +276,121 @@ func cleanReleaseTitle(ctx context.Context, releaseTitle string, m mode.Mode, ai
 		return parsed.Title, nil
 	}
 	return identify.GuessTitle(ctx, aiClient, releaseTitle)
+}
+
+// Claude 2026-08-03: added FilterSeasonScope + seasonOnlyPattern/
+// extractSeasonOnly — the season-scope half of the "picking Season 4 grabs
+// S1E1" bug fix (the other half is prowlarr.SearchByID's brace-token
+// rewrite).
+// Reason: even once the Prowlarr query itself correctly scopes to a season
+// (see internal/prowlarr/client.go's SearchByID doc), Prowlarr aggregates
+// many indexers, several of which fall back to loose title-only matching
+// for a season/episode-scoped tvsearch — a real search can still come back
+// with releases from the WRONG season mixed in among the right ones
+// (confirmed by the exact reported symptom: Season 4 requested, S1E1
+// returned). Nothing downstream of the Prowlarr call (FilterReleases' title/
+// language pass, the bitrate scorer) has any season awareness at all, so a
+// wrong-season release could freely win the scoring pass and get grabbed.
+// Troubleshooting: if a season-scoped grab starts returning a release from
+// a different season again, confirm this filter is still wired into both
+// call sites — internal/api/discover_availability.go (after FilterReleases)
+// and internal/api/autograb_shared.go's RunAutoGrab (before
+// buildAutoGrabCandidates) — before assuming the regression is back in
+// SearchByID itself.
+// Review if: a release-title season/episode parser more authoritative than
+// library.ParseEpisodeNumbers + this file's own seasonOnlyPattern is added
+// elsewhere in this codebase — this filter should reuse it rather than
+// keeping a third parser in sync.
+
+// seasonOnlyPattern recognizes a release title's season-only marker — no
+// SxxExx/NxNN episode marker anywhere in the title, just a season number:
+// "Season 4", "Season.04", "Season4", or a bare "S04" (e.g.
+// "Show.S04.Complete"). Deliberately does NOT match "S04E01": in that
+// shape, "04" is immediately followed by a same-word-class character ("E"),
+// so `\b` never closes between them and the bare-S alternative simply fails
+// to match — library.ParseEpisodeNumbers (checked first, see
+// seasonScopeMatches) already owns that shape.
+var seasonOnlyPattern = regexp.MustCompile(`(?i)\bSeason[.\s]?(\d{1,2})\b|\bS(\d{1,2})\b`)
+
+// extractSeasonOnly returns the season number from a season-only title
+// marker (see seasonOnlyPattern), or ok=false when neither alternative
+// matches.
+func extractSeasonOnly(title string) (season int, ok bool) {
+	m := seasonOnlyPattern.FindStringSubmatch(title)
+	if m == nil {
+		return 0, false
+	}
+	numStr := m[1]
+	if numStr == "" {
+		numStr = m[2]
+	}
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// seasonScopeMatches reports whether a release title is compatible with a
+// wantSeason/wantEpisode request (see FilterSeasonScope for the full
+// contract). Checked in order:
+//
+//  1. A real SxxExx/NxNN episode marker (library.ParseEpisodeNumbers) is the
+//     most specific signal available — the release's season must match
+//     exactly, and if an episode was requested (wantEpisode > 0) it must be
+//     among the release's bundled episode numbers (covers concatenated
+//     multi-episode and range releases, not just a single exact episode).
+//  2. A season-only marker (extractSeasonOnly) — a season pack or
+//     "Season N Complete"-style title with no episode marker at all — is
+//     matched by season alone, regardless of wantEpisode: a season pack
+//     legitimately satisfies a single-episode request for that season (the
+//     existing isSeasonPackTitle/neutralizeSeasonPacks machinery in
+//     autograb.go already handles grading it safely, this filter only
+//     decides whether it's in-scope at all).
+//  3. No recognizable season marker whatsoever — err toward KEEPING it: a
+//     false negative here (a real wrong-season release slipping through)
+//     is caught downstream by title/language matching and scoring same as
+//     always, while a false positive (dropping a legitimately-scoped
+//     release with nonstandard naming) would silently empty out a
+//     perfectly good result.
+func seasonScopeMatches(title string, wantSeason, wantEpisode int) bool {
+	if season, episodes, ok := library.ParseEpisodeNumbers(title); ok {
+		if season != wantSeason {
+			return false
+		}
+		if wantEpisode <= 0 {
+			return true
+		}
+		for _, e := range episodes {
+			if e == wantEpisode {
+				return true
+			}
+		}
+		return false
+	}
+	if season, ok := extractSeasonOnly(title); ok {
+		return season == wantSeason
+	}
+	return true
+}
+
+// FilterSeasonScope keeps releases compatible with a Series season/episode
+// request — the season-scope half of the fix for a real "picking Season 4
+// grabs S1E1" bug (see this section's Claude comment above for the full
+// root-cause chain). When seasonSpecified is false, releases is returned
+// unchanged: no season was deliberately picked, so there is no scope to
+// filter against (a plain series-wide grab/probe). See seasonScopeMatches
+// for the per-title matching rules (SxxExx exact match, season-only pack
+// match, or "no marker at all" keeps by default).
+func FilterSeasonScope(releases []prowlarr.Release, wantSeason, wantEpisode int, seasonSpecified bool) []prowlarr.Release {
+	if !seasonSpecified {
+		return releases
+	}
+	out := make([]prowlarr.Release, 0, len(releases))
+	for _, rel := range releases {
+		if seasonScopeMatches(rel.Title, wantSeason, wantEpisode) {
+			out = append(out, rel)
+		}
+	}
+	return out
 }

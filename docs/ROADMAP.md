@@ -55,6 +55,57 @@ to touch it. If it now appears fixed, that is an observation to hand to the
 Ralph task, not a claim to make: silently absorbing a bug fix into a feature
 is exactly what the correction above exists to prevent.
 
+**FIXED 2026-08-03 — root cause was diagnosed and confirmed as TWO
+independent bugs, both now closed.** This entry stays for historical
+record per this file's own append-vs-edit convention; nothing above is
+deleted.
+
+1. **Prowlarr wire-format bug (the actual "grabs S1E1" trigger)**:
+   `internal/prowlarr/client.go`'s `SearchByID` sent `tvdbid`/`season`/`ep`/
+   `tmdbid`/`imdbid` as top-level HTTP query parameters. Prowlarr's
+   `/api/v1/search` endpoint (confirmed against Prowlarr's own source,
+   `QueryToParams`) never reads those top-level params at all for an
+   ID-scoped search — it only recognizes brace tokens embedded inside the
+   `query` parameter itself (e.g. `query={TvdbId:81189} {Season:4}`). So
+   every "Season 4" request was, on the wire, an unscoped title-only search
+   that could return releases from any season — S1E1 included. Fixed by
+   rewriting `SearchByID` to build brace tokens (`{TmdbId:}`/`{ImdbId:}`/
+   `{TvdbId:}`/`{Season:}`/`{Episode:}`) into `query` alongside the title
+   text (keeping the existing single-word-title fix), and adding
+   `SeasonSpecified bool` to `SearchByIDParams` so a deliberate Season 0/
+   Specials pick can still be distinguished from "no season picked."
+2. **No season-scope filter on returned releases**: even with the wire
+   format fixed, Prowlarr aggregates many indexers and some fall back to
+   loose title-only matching for a season-scoped search, so a wrong-season
+   release could still come back mixed in with correct ones — and nothing
+   downstream (title/language filtering, bitrate scoring) had any season
+   awareness to catch it. Fixed by adding `FilterSeasonScope` (`internal/
+   api/releasematch.go`), wired into both `RunAutoGrab`
+   (`internal/api/autograb_shared.go`) and the Discover availability
+   handler (`internal/api/discover_availability.go`) — drops any release
+   whose title carries a recognizable, conflicting season/episode marker
+   before it ever reaches scoring.
+
+Regression coverage: `internal/prowlarr/client_test.go` (wire format),
+`internal/api/releasematch_test.go` (`FilterSeasonScope` unit cases), and
+`internal/api/autograb_handler_test.go`'s
+`TestAutoGrabHandler_Series_WrongSeasonReleaseNeverWins` (full handler
+end-to-end, fake Prowlarr returning both S01E01 and S04E05, proving S01E01
+never wins). Known residual risk: Season 0/Specials pick-then-grab wasn't
+part of the original bug report and has no dedicated end-to-end regression
+test beyond `SeasonSpecified`'s unit-level plumbing — worth a follow-up
+proof if Specials grabs are ever reported as still wrong.
+
+**CORRECTED 2026-08-03 (same day) — batch path was initially missed.**
+Architect review found `grabOneBatchItem` (`internal/api/autograb_batch.go`)
+reimplements score-and-dispatch without calling `RunAutoGrab`, so the first
+`FilterSeasonScope` wiring left Discover bulk select (`BulkBar` →
+`autoGrabBatch`) unfiltered even though per-item `seasonSpecified: true` was
+already plumbed. Closed by wiring `FilterSeasonScope` into `grabOneBatchItem`
+and adding `TestAutoGrabBatch_WrongSeasonReleaseNeverWins`. The FIXED claim
+above is now accurate for single-item auto-grab, Discover availability, AND
+bulk batch.
+
 ## In progress
 
 ### Node CPU governor — backend + node-side enforcement shipped; slider, server-side reporting, and production verification still open

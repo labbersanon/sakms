@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -208,10 +209,14 @@ func TestAutoGrabBatchHandler_OverCapRejectedBeforeAnySearch(t *testing.T) {
 // aborting. The response is always 200; per-item outcomes live in Results.
 func TestAutoGrabBatchHandler_ThreeStateMixedBatch(t *testing.T) {
 	srv, _ := batchTestServer(t, "gid-auto", 0, func(q url.Values) (int, string) {
-		switch q.Get("query") {
-		case "Fallback Movie":
+		// query= now carries {TmdbId:...}/{ImdbId:...} brace tokens ahead of
+		// the title (see prowlarr.SearchByID's doc) — Contains, not an exact
+		// match, is what still discriminates on the title text.
+		query := q.Get("query")
+		switch {
+		case strings.Contains(query, "Fallback Movie"):
 			return http.StatusOK, tinyMovieRelease
-		case "Error Movie":
+		case strings.Contains(query, "Error Movie"):
 			// A deliberate indexer failure mid-batch → autoGrabSearch returns an
 			// error → grabOneBatchItem returns an error → this item is recorded
 			// as Error and the loop moves on (never a panic — httpx.DoJSON turns
@@ -513,11 +518,15 @@ func TestAutoGrabBatch_CountsEpisodeItemsIndividually(t *testing.T) {
 // clears the Low 1080p floor) and can genuinely qualify and grab.
 func TestAutoGrabBatch_MixedSeasonAndEpisodeItems(t *testing.T) {
 	srv, stats := seriesBatchTestServer(t, "gid-auto", 5, 58, 0, func(q url.Values) (int, string) {
-		if q.Get("ep") == "5" {
+		// "ep" is no longer a standalone query param — Prowlarr only reads it
+		// as a {Episode:5} brace token inside query= (see prowlarr.SearchByID's
+		// doc), so the discriminating check moved from q.Get("ep") to a
+		// query= substring match.
+		if strings.Contains(q.Get("query"), "{Episode:5}") {
 			return http.StatusOK, `[{"guid":"1","title":"Some.Show.S03E05.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:BBBBBB1234567890abcdef1234567890abcdef12"}]`
 		}
-		// Whole-season request (no "ep" param): runtime resolves to 0
-		// regardless of what's returned here, so this release always falls
+		// Whole-season request (no {Episode:...} token): runtime resolves to
+		// 0 regardless of what's returned here, so this release always falls
 		// back — included only to prove the fallback isn't from an empty
 		// result set.
 		return http.StatusOK, `[{"guid":"2","title":"Some.Show.S03.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":12000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:AAAAAA1234567890abcdef1234567890abcdef12"}]`
@@ -564,6 +573,56 @@ func TestAutoGrabBatch_MixedSeasonAndEpisodeItems(t *testing.T) {
 	total, _ := stats.snapshot()
 	if total != 2 {
 		t.Errorf("expected exactly 2 Prowlarr searches (one per item), got %d", total)
+	}
+}
+
+// Claude 2026-08-03: added TestAutoGrabBatch_WrongSeasonReleaseNeverWins.
+// Reason: grabOneBatchItem is a third score-and-dispatch path that does NOT
+// go through RunAutoGrab — architect review rejected the first FilterSeasonScope
+// pass for leaving Discover bulk select unfiltered. This is the batch-path
+// twin of TestAutoGrabHandler_Series_WrongSeasonReleaseNeverWins.
+// Troubleshooting: if this fails while the single-item handler test passes,
+// FilterSeasonScope was wired into RunAutoGrab but not grabOneBatchItem.
+// Review if: grabOneBatchItem is refactored to delegate to RunAutoGrab.
+//
+// TestAutoGrabBatch_WrongSeasonReleaseNeverWins proves a Season 4 Episode 5
+// bulk-batch item never auto-grabs (or offers as a fallback candidate) a
+// wrong-season S01E01 release, even when that release's raw size would
+// otherwise out-score the correct S04E05 under the shared per-episode runtime.
+func TestAutoGrabBatch_WrongSeasonReleaseNeverWins(t *testing.T) {
+	srv, _ := seriesBatchTestServer(t, "gid-auto", 5, 58, 0, func(url.Values) (int, string) {
+		return http.StatusOK, `[
+		  {"guid":"1","title":"Some.Show.S01E01.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":3000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:AAAAAA1234567890abcdef1234567890abcdef12"},
+		  {"guid":"2","title":"Some.Show.S04E05.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:BBBBBB1234567890abcdef1234567890abcdef12"}
+		]`
+	})
+
+	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
+		{Mode: "series", Request: apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 4, EpisodeNumber: 5, SeasonSpecified: true}},
+	}}
+
+	resp, out := postBatch(t, srv.URL, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(out.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d: %+v", len(out.Results), out.Results)
+	}
+	r := out.Results[0]
+	if strings.Contains(r.Message, "S01E01") {
+		t.Fatalf("wrong-season release (S01E01) must never win a Season 4 Episode 5 batch item, got %+v", r)
+	}
+	for _, c := range r.Candidates {
+		if strings.Contains(c.Title, "S01E01") {
+			t.Errorf("wrong-season release (S01E01) must never be offered as a batch fallback candidate, got %+v", r.Candidates)
+		}
+	}
+	if !r.Grabbed || r.Fallback || r.Grab == nil {
+		t.Fatalf("expected the correct-season release (S04E05) to qualify and auto-grab, got %+v", r)
+	}
+	if !strings.Contains(r.Message, "S04E05") {
+		t.Errorf("expected the correct-season release (S04E05) to be the one grabbed, got %q", r.Message)
 	}
 }
 

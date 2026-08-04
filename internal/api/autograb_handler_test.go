@@ -133,11 +133,13 @@ func TestAutoGrabHandler_Movies_SearchIncludesQueryAlongsideIDs(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	if got := lastQuery.Get("tmdbid"); got != "42" {
-		t.Errorf("expected the id-scoped search to still carry tmdbid=42, got query %v", lastQuery)
-	}
-	if got := lastQuery.Get("query"); got != "Some Movie" {
-		t.Errorf("expected the title to travel alongside the id params as query=, got %q (full query: %v)", got, lastQuery)
+	// {TmdbId:42} + {ImdbId:tt1234567} (fakeTMDBMovieRuntime's fixed
+	// imdb_id) + the title — see prowlarr.SearchByID's doc: Prowlarr's
+	// /api/v1/search reads ids from brace tokens in query=, not from
+	// standalone tmdbid=/imdbid= params.
+	wantQuery := "{TmdbId:42} {ImdbId:tt1234567} Some Movie"
+	if got := lastQuery.Get("query"); got != wantQuery {
+		t.Errorf("expected the id-scoped search to carry query=%q, got %q (full query: %v)", wantQuery, got, lastQuery)
 	}
 }
 
@@ -466,6 +468,94 @@ func TestAutoGrabHandler_Series_SeasonPackGrabFallsBack(t *testing.T) {
 	}
 	if got := len(dl.List()); got != 0 {
 		t.Errorf("expected zero download-client adds for a season-pack fallback, got %d", got)
+	}
+}
+
+// Claude 2026-08-03: added TestAutoGrabHandler_Series_WrongSeasonReleaseNeverWins
+// — the US-003 handler-level regression proof for the "picking Season 4
+// grabs S1E1" bug.
+// Reason: neither of this bug's two root causes (prowlarr.SearchByID
+// sending season/episode as top-level query params Prowlarr's /api/v1/search
+// silently ignores, and no season-scope filter on the releases Prowlarr
+// actually returns) had a test that exercised the full autograb HTTP
+// handler end-to-end with BOTH a right-season and a wrong-season release in
+// play — every prior Series test in this file only ever returned releases
+// for the one season being requested.
+// Troubleshooting: if this test starts failing, check FilterSeasonScope is
+// still wired into internal/api/autograb_shared.go's RunAutoGrab (see
+// releasematch.go's FilterSeasonScope doc) before assuming the regression
+// is back in prowlarr.SearchByID itself.
+// Review if: n/a — this proves a fixed bug stays fixed.
+//
+// TestAutoGrabHandler_Series_WrongSeasonReleaseNeverWins proves a Season 4
+// Episode 5 request never auto-grabs (or offers as a candidate) a wrong-
+// season S01E01 release, even when that release's raw size would otherwise
+// out-score the correct S04E05 release under the shared per-episode runtime
+// every candidate is scored against (the exact mechanism that let a
+// wrong-season release win before this fix: scoring has no season
+// awareness of its own — only FilterSeasonScope keeps it out of scoring at
+// all).
+func TestAutoGrabHandler_Series_WrongSeasonReleaseNeverWins(t *testing.T) {
+	dl := newTestDownloader("gid-auto", t.TempDir())
+	tmdbSrv := fakeTMDBSeriesRuntime(t, 5, 58) // episode 5, 58 min = 3480 s
+	// S01E01 is deliberately given a much larger size than S04E05 — without
+	// the season-scope filter, this raw size difference alone would make
+	// S01E01 out-score S04E05 under the single shared per-episode runtime
+	// both get scored against, reproducing the exact reported bug ("picking
+	// Season 4 grabs S1E1").
+	prowlarr := fakeProwlarr(t, `[
+	  {"guid":"1","title":"Some.Show.S01E01.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":3000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:AAAAAA1234567890abcdef1234567890abcdef12"},
+	  {"guid":"2","title":"Some.Show.S04E05.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:BBBBBB1234567890abcdef1234567890abcdef12"}
+	]`)
+
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarr.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Series), string(quality.Low)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/series"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: "Some Show", TMDBID: 100, SeasonNumber: 4, EpisodeNumber: 5, SeasonSpecified: true})
+	resp, err := http.Post(srv.URL+"/api/modes/series/autograb", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out apidto.AutoGrabResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if strings.Contains(out.Message, "S01E01") {
+		t.Fatalf("wrong-season release (S01E01) must never win the grab for a Season 4 Episode 5 request, got %+v", out)
+	}
+	for _, c := range out.Candidates {
+		if strings.Contains(c.Title, "S01E01") {
+			t.Errorf("wrong-season release (S01E01) must never even be offered as a candidate for a Season 4 Episode 5 request, got %+v", out.Candidates)
+		}
+	}
+	if !out.Grabbed || out.Fallback || out.Grab == nil {
+		t.Fatalf("expected the correct-season release (S04E05) to qualify and auto-grab, got %+v", out)
+	}
+	if !strings.Contains(out.Message, "S04E05") {
+		t.Errorf("expected the correct-season release (S04E05) to be the one grabbed, got %q", out.Message)
+	}
+	if got := len(dl.List()); got != 1 {
+		t.Errorf("expected exactly ONE download-client add (the correct-season release), got %d", got)
 	}
 }
 

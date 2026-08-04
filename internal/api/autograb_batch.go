@@ -286,6 +286,20 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, sett
 		return nil, false, false, nil, "", err
 	}
 
+	// Claude 2026-08-03: apply FilterSeasonScope on the batch path too.
+	// Reason: grabOneBatchItem reimplements score-and-dispatch rather than
+	// delegating to RunAutoGrab, so wiring the filter only into RunAutoGrab
+	// left Discover bulk select (BulkBar → autoGrabBatch) unfiltered — the
+	// same UI surface that can pick Season 4 across many cards. Architect
+	// review rejected the first pass for exactly this gap.
+	// Troubleshooting: if a bulk Series grab still dispatches a wrong-season
+	// release, check this call before assuming the brace wire format failed.
+	// Review if: grabOneBatchItem is refactored to delegate to RunAutoGrab
+	// (then this copy becomes dead and should be removed with that change).
+	if m == mode.Series {
+		releases = FilterSeasonScope(releases, req.SeasonNumber, req.EpisodeNumber, req.SeasonSpecified)
+	}
+
 	neutralizeSeasonPacks := m == mode.Series && runtimeSeconds > 0
 	cands := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
 	sel := autograb.Select(cands, autoGrabTier(ctx, settingsStore, m), minSeedersFor(m))

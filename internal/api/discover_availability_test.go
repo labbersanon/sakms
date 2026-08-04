@@ -59,16 +59,16 @@ func TestDiscoverAvailabilityHandler_Movies_BasicFetch(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	// SearchByID's id-scoped movie query, not a free-text Search — see
-	// prowlarr.SearchByID's query-building doc.
-	if got := lastQuery.Get("tmdbid"); got != "42" {
-		t.Errorf("expected an id-scoped search carrying tmdbid=42, got query %v", lastQuery)
-	}
+	// SearchByID's id-scoped movie query, not a free-text Search — ids
+	// travel as {TmdbId:...}/{ImdbId:...} brace tokens inside query=, not
+	// standalone tmdbid=/imdbid= params (see prowlarr.SearchByID's
+	// query-building doc — confirmed against Prowlarr's own source).
 	// Regression: the id params alone weren't reliably honored as a precise
 	// filter by every indexer (see prowlarr.SearchByIDParams' Query field
-	// doc) — the title must travel alongside them.
-	if got := lastQuery.Get("query"); got != "Some Movie" {
-		t.Errorf("expected the title to travel alongside the id params as query=, got %q", got)
+	// doc) — the title must travel alongside them too.
+	wantQuery := "{TmdbId:42} {ImdbId:tt1234567} Some Movie"
+	if got := lastQuery.Get("query"); got != wantQuery {
+		t.Errorf("expected an id-scoped search carrying query=%q, got %q (full query %v)", wantQuery, got, lastQuery)
 	}
 	if got := lastQuery.Get("type"); got != "movie" {
 		t.Errorf("expected type=movie for a Movies id-scoped search, got %q", got)
@@ -125,17 +125,13 @@ func TestDiscoverAvailabilityHandler_Series_SeasonEpisodeParams(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	if got := lastQuery.Get("tvdbid"); got != "789" { // fakeTMDBSeriesRuntime's external_ids stub
-		t.Errorf("expected an id-scoped tvsearch carrying tvdbid=789, got query %v", lastQuery)
-	}
-	if got := lastQuery.Get("query"); got != "Some Show" {
-		t.Errorf("expected the title to travel alongside the id params as query=, got %q", got)
-	}
-	if got := lastQuery.Get("season"); got != "3" {
-		t.Errorf("expected season=3, got %q", got)
-	}
-	if got := lastQuery.Get("ep"); got != "5" {
-		t.Errorf("expected ep=5, got %q", got)
+	// {TvdbId:789} (fakeTMDBSeriesRuntime's external_ids stub) +
+	// {Season:3} + {Episode:5} + the title — see prowlarr.SearchByID's doc:
+	// ids/season/episode travel as brace tokens inside query=, not as
+	// standalone tvdbid=/season=/ep= params.
+	wantQuery := "{TvdbId:789} {Season:3} {Episode:5} Some Show"
+	if got := lastQuery.Get("query"); got != wantQuery {
+		t.Errorf("expected an id-scoped tvsearch carrying query=%q, got %q (full query %v)", wantQuery, got, lastQuery)
 	}
 
 	var out apidto.AvailabilityPreview

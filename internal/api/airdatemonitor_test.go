@@ -34,16 +34,36 @@ const (
 	// sqliteTimeFormat mirrors grabs.FormatTime's layout, which is unexported
 	// there. Only used to step a test's injected clock past a row's retry_after.
 	sqliteTimeFormat = "2006-01-02T15:04:05.000Z"
-	// qualifyingSeriesRelease clears every 1080p tier floor against the 45-minute
-	// per-episode runtime the fake TMDB season serves: 8 GB / 2700 s ≈ 23 Mbps
-	// implied, roughly doubled again by the x265 equivalence. Its title carries a
-	// single-episode SxxEyy marker so isSeasonPackTitle cannot neutralize it.
-	qualifyingSeriesRelease = `[{"guid":"1","title":"Some.Show.S01E01.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`
 	// noQualifyingRelease is an empty indexer result: autograb.Select reaches
 	// Selection.Fallback, so a gated trigger parks a pending_retry row instead of
 	// dispatching. This is the ordinary outcome for an episode that aired today.
 	noQualifyingRelease = `[]`
 )
+
+// qualifyingSeriesRelease builds a single-release Prowlarr fixture whose
+// title carries the given season/episode as an SxxEyy marker, clearing
+// every 1080p tier floor against the 45-minute per-episode runtime the fake
+// TMDB season serves: 8 GB / 2700 s ≈ 23 Mbps implied, roughly doubled again
+// by the x265 equivalence. Its title's single-episode SxxEyy marker (not a
+// season pack) means isSeasonPackTitle cannot neutralize it.
+//
+// Claude 2026-08-03: was a fixed `S01E01` const string; now built per-call
+// from the actual season/episode under test.
+// Reason: RunAutoGrab now runs FilterSeasonScope (see releasematch.go)
+// before scoring, which drops a release whose title's season/episode
+// conflicts with the request. A fixed S01E01 fixture silently worked for
+// EVERY season/episode combination before that filter existed — several
+// call sites in this file exercise season 3 or episode 4, and a fixed
+// S01E01 body would now get filtered out as a wrong-season/wrong-episode
+// release, parking a pending_retry row instead of the dispatched row these
+// tests assert on.
+// Troubleshooting: if a test using this helper unexpectedly parks instead
+// of dispatching, confirm the season/episode passed here matches the
+// season/episode actually being monitored/searched in that test.
+func qualifyingSeriesRelease(season, episode int) string {
+	title := fmt.Sprintf("Some.Show.S%02dE%02d.1080p.WEB-DL.x265-GROUP", season, episode)
+	return fmt.Sprintf(`[{"guid":"1","title":%q,"indexer":"I","protocol":"torrent","size":8000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`, title)
+}
 
 // fakeTMDBEpisode is one episode of the fake TMDB season catalog.
 type fakeTMDBEpisode struct {
@@ -524,7 +544,7 @@ func TestAirDateIgnoresEpisodesAlreadyOnDisk(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: {
 		{Number: 1, Name: "One", AirDate: dayOffset(now, -30)},
-	}}, qualifyingSeriesRelease)
+	}}, qualifyingSeriesRelease(1, 1))
 	series := env.trackSeries(t)
 	env.seedOnDiskEpisode(t, series.ID, 1, 1, dayOffset(now, -30), "/series/Some Show/S01E01.mkv")
 	env.monitor(t, series.ID, 1, true)
@@ -555,7 +575,7 @@ func TestAirDateDoesNotDispatchTwiceForOneEpisode(t *testing.T) {
 		now := time.Now()
 		env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: {
 			{Number: 1, Name: "One", AirDate: dayOffset(now, -3)},
-		}}, qualifyingSeriesRelease)
+		}}, qualifyingSeriesRelease(1, 1))
 		series := env.trackSeries(t)
 		env.seedMissingEpisode(t, series.ID, 1, 1, dayOffset(now, -3))
 		env.monitor(t, series.ID, 1, true)
@@ -584,7 +604,7 @@ func TestAirDateDoesNotDispatchTwiceForOneEpisode(t *testing.T) {
 		env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{3: {
 			{Number: 1, Name: "One", AirDate: dayOffset(now, -9)},
 			{Number: 2, Name: "Two", AirDate: dayOffset(now, -2)},
-		}}, qualifyingSeriesRelease)
+		}}, qualifyingSeriesRelease(3, 1))
 		series := env.trackSeries(t)
 		env.seedMissingEpisode(t, series.ID, 3, 1, dayOffset(now, -9))
 		env.seedMissingEpisode(t, series.ID, 3, 2, dayOffset(now, -2))
@@ -617,7 +637,7 @@ func TestAirDateRespectsTheAutoGrabGate(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: {
 		{Number: 1, Name: "One", AirDate: dayOffset(now, -3)},
-	}}, qualifyingSeriesRelease)
+	}}, qualifyingSeriesRelease(1, 1))
 	setAutoGrabToggle(t, env.settings, false)
 	series := env.trackSeries(t)
 	env.seedMissingEpisode(t, series.ID, 1, 1, dayOffset(now, -3))
@@ -648,7 +668,7 @@ func TestAirDateTakesThePatternBCreatePath(t *testing.T) {
 		now := time.Now()
 		env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: {
 			{Number: 4, Name: "Four", AirDate: dayOffset(now, -1)},
-		}}, qualifyingSeriesRelease)
+		}}, qualifyingSeriesRelease(1, 4))
 		series := env.trackSeries(t)
 		env.seedMissingEpisode(t, series.ID, 1, 4, dayOffset(now, -1))
 		env.monitor(t, series.ID, 1, true)
@@ -702,7 +722,7 @@ func TestAirDateSkipsExcludedSeries(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: {
 		{Number: 1, Name: "One", AirDate: dayOffset(now, -3)},
-	}}, qualifyingSeriesRelease)
+	}}, qualifyingSeriesRelease(1, 1))
 	series := env.trackSeries(t)
 	env.seedMissingEpisode(t, series.ID, 1, 1, dayOffset(now, -3))
 	env.monitor(t, series.ID, 1, true)
@@ -1011,7 +1031,7 @@ func TestUnMonitoringCancelsQueuedAirDateRetries(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{3: {
 		{Number: 1, Name: "One", AirDate: dayOffset(now, -3)},
-	}}, qualifyingSeriesRelease)
+	}}, qualifyingSeriesRelease(3, 1))
 	series := env.trackSeries(t)
 	env.seedMissingEpisode(t, series.ID, 3, 1, dayOffset(now, -3))
 	env.monitor(t, series.ID, 3, true)
@@ -1145,7 +1165,7 @@ func TestDispatchedThenReparkedAirDateRowTwoTierBound(t *testing.T) {
 	base := time.Now().Add(-time.Hour)
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{3: {
 		{Number: 1, Name: "One", AirDate: dayOffset(base, -3)},
-	}}, qualifyingSeriesRelease)
+	}}, qualifyingSeriesRelease(3, 1))
 	series := env.trackSeries(t)
 	env.seedMissingEpisode(t, series.ID, 3, 1, dayOffset(base, -3))
 	env.monitor(t, series.ID, 3, true)
@@ -1339,7 +1359,7 @@ func TestNeverMonitoredSeasonRowIsLeftAloneBySweep(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{3: {
 		{Number: 1, Name: "One", AirDate: dayOffset(now, -3)},
-	}}, qualifyingSeriesRelease)
+	}}, qualifyingSeriesRelease(3, 1))
 	series := env.trackSeries(t)
 	// The episode row is what supplies the per-episode runtime the bitrate
 	// scorer needs; without it nothing qualifies and nothing dispatches.

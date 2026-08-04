@@ -401,3 +401,96 @@ func TestFilterReleases_AIEscalation_RespectsOverallTimeout(t *testing.T) {
 		t.Errorf("expected zero matches (every call cut off before returning a result), got %+v", got)
 	}
 }
+
+// Claude 2026-08-03: added the FilterSeasonScope test coverage below (US-002
+// of the "picking Season 4 grabs S1E1" bug fix).
+// Reason: FilterSeasonScope/seasonScopeMatches/extractSeasonOnly had zero
+// test coverage before this — the exact bug this whole fix targets (a wrong
+// season's release winning scoring) would have been invisible to `go test`
+// without it.
+// Troubleshooting: n/a (new coverage, not a fix for a test failure).
+// Review if: seasonOnlyPattern or seasonScopeMatches' matching rules change
+// — these cases assert the documented contract in releasematch.go's
+// FilterSeasonScope/seasonScopeMatches doc comments and should track it.
+
+// seasonScopeRelease is a minimal prowlarr.Release fixture for
+// FilterSeasonScope tests — only Title matters to the filter itself; GUID
+// is set so failure output can name which fixture didn't behave as
+// expected.
+func seasonScopeRelease(guid, title string) prowlarr.Release {
+	return prowlarr.Release{GUID: guid, Title: title}
+}
+
+// TestFilterSeasonScope_NotSeasonSpecified proves the no-op case: when the
+// operator hasn't deliberately picked a season at all (seasonSpecified ==
+// false), every release passes through unchanged — including ones that
+// would otherwise be dropped as wrong-season, since there is no scope to
+// filter against.
+func TestFilterSeasonScope_NotSeasonSpecified(t *testing.T) {
+	releases := []prowlarr.Release{
+		seasonScopeRelease("1", "Some.Show.S01E01.1080p.WEB-DL.x265-GROUP"),
+		seasonScopeRelease("2", "Some.Show.S04E01.1080p.WEB-DL.x265-GROUP"),
+	}
+	got := FilterSeasonScope(releases, 4, 0, false)
+	if len(got) != len(releases) {
+		t.Fatalf("seasonSpecified=false must be a no-op, got %d releases (want %d): %+v", len(got), len(releases), got)
+	}
+}
+
+// TestFilterSeasonScope_WholeSeasonRequest covers a whole-season pick
+// (wantSeason=4, wantEpisode=0): a matching SxxExx release, a matching
+// season-only pack, and an unparseable title are all kept; a
+// different-season SxxExx release is dropped.
+func TestFilterSeasonScope_WholeSeasonRequest(t *testing.T) {
+	keepS04E01 := seasonScopeRelease("keep-s04e01", "Some.Show.S04E01.1080p.WEB-DL.x265-GROUP")
+	keepPack := seasonScopeRelease("keep-pack", "Some.Show.Season.4.Complete.1080p.WEB-DL.x265-GROUP")
+	keepUnparseable := seasonScopeRelease("keep-unparseable", "Some.Show.Collection.1080p.WEB-DL.x265-GROUP")
+	dropS01E01 := seasonScopeRelease("drop-s01e01", "Some.Show.S01E01.1080p.WEB-DL.x265-GROUP")
+
+	releases := []prowlarr.Release{keepS04E01, keepPack, keepUnparseable, dropS01E01}
+	got := FilterSeasonScope(releases, 4, 0, true)
+
+	gotGUIDs := make(map[string]bool, len(got))
+	for _, r := range got {
+		gotGUIDs[r.GUID] = true
+	}
+	for _, want := range []prowlarr.Release{keepS04E01, keepPack, keepUnparseable} {
+		if !gotGUIDs[want.GUID] {
+			t.Errorf("expected %q (%s) to be kept for a whole-season-4 request, got %+v", want.Title, want.GUID, got)
+		}
+	}
+	if gotGUIDs[dropS01E01.GUID] {
+		t.Errorf("expected %q (%s) to be dropped (wrong season) for a whole-season-4 request, got %+v", dropS01E01.Title, dropS01E01.GUID, got)
+	}
+}
+
+// TestFilterSeasonScope_SpecificEpisodeRequest covers a specific-episode
+// pick (wantSeason=4, wantEpisode=5): a matching single-episode release, a
+// multi-episode release that bundles the wanted episode, and an
+// unparseable title are all kept; a same-season-wrong-episode release and a
+// wrong-season release are both dropped.
+func TestFilterSeasonScope_SpecificEpisodeRequest(t *testing.T) {
+	keepS04E05 := seasonScopeRelease("keep-s04e05", "Some.Show.S04E05.1080p.WEB-DL.x265-GROUP")
+	keepS04E05E06 := seasonScopeRelease("keep-s04e05e06", "Some.Show.S04E05E06.1080p.WEB-DL.x265-GROUP")
+	keepUnparseable := seasonScopeRelease("keep-unparseable", "Some.Show.Collection.1080p.WEB-DL.x265-GROUP")
+	dropS04E01 := seasonScopeRelease("drop-s04e01", "Some.Show.S04E01.1080p.WEB-DL.x265-GROUP")
+	dropS01E01 := seasonScopeRelease("drop-s01e01", "Some.Show.S01E01.1080p.WEB-DL.x265-GROUP")
+
+	releases := []prowlarr.Release{keepS04E05, keepS04E05E06, keepUnparseable, dropS04E01, dropS01E01}
+	got := FilterSeasonScope(releases, 4, 5, true)
+
+	gotGUIDs := make(map[string]bool, len(got))
+	for _, r := range got {
+		gotGUIDs[r.GUID] = true
+	}
+	for _, want := range []prowlarr.Release{keepS04E05, keepS04E05E06, keepUnparseable} {
+		if !gotGUIDs[want.GUID] {
+			t.Errorf("expected %q (%s) to be kept for a Season 4 Episode 5 request, got %+v", want.Title, want.GUID, got)
+		}
+	}
+	for _, drop := range []prowlarr.Release{dropS04E01, dropS01E01} {
+		if gotGUIDs[drop.GUID] {
+			t.Errorf("expected %q (%s) to be dropped for a Season 4 Episode 5 request, got %+v", drop.Title, drop.GUID, got)
+		}
+	}
+}

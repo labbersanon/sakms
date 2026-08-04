@@ -27,14 +27,19 @@ if [ -z "$DB_PASS" ]; then
   exit 1
 fi
 
-umask 077
+# Claude 2026-08-04: chmod 644 (not 600) — sakms runs as PUID 1001 via gosu; root-owned
+#   600 files under /run/secrets cause "permission denied" on SAKMS_DATABASE_URL_FILE.
+# Reason: volume is only mounted into sakms-init / sakms-db / sakms; world-readable is OK.
+# Troubleshooting: if sakms loops on "permission denied" for db_url, check modes here.
+# Review if: sakms runs as root or secrets move to Docker secrets with uid mapping.
+umask 022
 printf '%s' "$DB_PASS" > /config/db_password
-chmod 600 /config/db_password
+chmod 644 /config/db_password
 
 # Full DSN for sakms (SAKMS_DATABASE_URL_FILE). sslmode=disable — internal compose network.
 # Password is hex-only so it is URL-safe without encoding.
 printf 'postgres://sakms:%s@sakms-db:5432/sakms?sslmode=disable' "$DB_PASS" > /config/db_url
-chmod 600 /config/db_url
+chmod 644 /config/db_url
 
 # Sanity: DSN must parse (catches accidental non-URL-safe passwords).
 python3 -c "

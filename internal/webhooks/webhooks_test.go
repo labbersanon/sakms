@@ -4,13 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 )
 
@@ -18,11 +17,7 @@ import (
 // and a real secret store, the same way the api package's handler tests do.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)

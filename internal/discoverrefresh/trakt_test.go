@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/trakt"
 )
@@ -31,11 +30,7 @@ import (
 func newTraktDeps(t *testing.T, h http.HandlerFunc) (Deps, *trakt.Store, *atomic.Int32) {
 	t.Helper()
 
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {

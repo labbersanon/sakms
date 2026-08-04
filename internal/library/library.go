@@ -121,7 +121,7 @@ func (s *Store) Upsert(ctx context.Context, item Item) (Item, error) {
 			"cast" = excluded."cast",
 			size = excluded.size,
 			quality_tier = excluded.quality_tier,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		RETURNING id, created_at, updated_at
 	`, string(item.Mode), item.TMDBID, item.Title, item.Year, item.FilePath, item.RootFolderPath, item.PHash, item.PHashFileSize, item.PHashFileMTime, genresJSON, castJSON, item.Size, item.QualityTier)
 
@@ -141,7 +141,7 @@ func (s *Store) UpdatePHash(ctx context.Context, id int64, phash string, fileSiz
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE library_items
 		SET phash = ?, phash_file_size = ?, phash_file_mtime = ?,
-		    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		    updated_at = sakms_now()
 		WHERE id = ?
 	`, phash, fileSize, fileMTime, id)
 	if err != nil {
@@ -267,10 +267,12 @@ func (s *Store) Tags(ctx context.Context, itemID int64) ([]string, error) {
 }
 
 // AddTag assigns tag to itemID. A no-op (not an error) if already assigned.
+// Claude 2026-08-04: ON CONFLICT uses lower(tag) unique index (Postgres; SQLite
+// COLLATE NOCASE PK equivalent). Stored casing preserved.
 func (s *Store) AddTag(ctx context.Context, itemID int64, tag string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO library_tags (item_id, tag) VALUES (?, ?)
-		ON CONFLICT(item_id, tag) DO NOTHING
+		ON CONFLICT (item_id, (lower(tag))) DO NOTHING
 	`, itemID, tag)
 	if err != nil {
 		return fmt.Errorf("adding tag %q to item %d: %w", tag, itemID, err)
@@ -280,7 +282,7 @@ func (s *Store) AddTag(ctx context.Context, itemID int64, tag string) error {
 
 // RemoveTag unassigns tag from itemID. A no-op (not an error) if it wasn't assigned.
 func (s *Store) RemoveTag(ctx context.Context, itemID int64, tag string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM library_tags WHERE item_id = ? AND tag = ?`, itemID, tag)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM library_tags WHERE item_id = ? AND lower(tag) = lower(?)`, itemID, tag)
 	if err != nil {
 		return fmt.Errorf("removing tag %q from item %d: %w", tag, itemID, err)
 	}
@@ -334,7 +336,7 @@ func (s *Store) UpsertCollection(ctx context.Context, tmdbCollectionID int, name
 func (s *Store) SetItemCollection(ctx context.Context, itemID, collectionID int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE library_items
-		SET collection_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		SET collection_id = ?, updated_at = sakms_now()
 		WHERE id = ?
 	`, collectionID, itemID)
 	if err != nil {

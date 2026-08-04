@@ -2,21 +2,16 @@ package nodesettings_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/nodesettings"
 )
 
 func newTestStore(t *testing.T) *nodesettings.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return nodesettings.New(sqlDB)
 }
 

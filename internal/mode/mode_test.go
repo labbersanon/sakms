@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +15,7 @@ import (
 	"github.com/labbersanon/sakms/internal/anthropic"
 	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/gemini"
 	"github.com/labbersanon/sakms/internal/jellyfin"
 	"github.com/labbersanon/sakms/internal/openai"
@@ -64,11 +63,7 @@ func overrideAIProviderBaseURL(t *testing.T, provider, u string) {
 // and the Ollama-model setting that Build reads.
 func newTestStores(t *testing.T) (*connections.Store, *settings.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)
@@ -237,11 +232,7 @@ func TestBuild_AdultStashConnectionConfigured_PopulatesSessionStash(t *testing.T
 // swallowing it would look identical to "identification not configured" from
 // the caller's side, hiding an actual outage behind a misleading success.
 func TestBuild_AdultSettingsStoreError_Propagates(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)
@@ -761,11 +752,7 @@ func TestBuild_AIClient_UnknownProviderErrors(t *testing.T) {
 // propagate, not be silently swallowed as "just use the default provider"
 // because the zero-value string also happens to equal "".
 func TestBuild_AIClient_ProviderStoreError_Propagates(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)
@@ -958,11 +945,7 @@ func TestBuild_TMDB_PopulatedWhenConfigured(t *testing.T) {
 // connections table and would fail first, masking whether this function's
 // own error handling is what's actually being exercised.
 func TestBuildDownloadPipeline_StoreError_Propagates(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)
@@ -1249,11 +1232,7 @@ func TestNotifyPlayers_BestEffort_StashScanFailureStillCleans(t *testing.T) {
 // players and singleton connections against the same install.
 func newTestPlayerStores(t *testing.T) (*connections.Store, *serviceconn.Store, *settings.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)

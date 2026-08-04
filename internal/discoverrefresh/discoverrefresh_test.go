@@ -5,14 +5,13 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -26,11 +25,7 @@ import (
 // a *settings.Store.
 func newTestSettingsStore(t *testing.T) *settings.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return settings.New(sqlDB)
 }
 
@@ -88,11 +83,7 @@ func TestLoadInterval_ValidPositiveRoundTrips(t *testing.T) {
 // the same production meaning §3.7 documents — not a nil-pointer shortcut.
 func fullDeps(t *testing.T) (Deps, *sql.DB) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)

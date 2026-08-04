@@ -121,7 +121,7 @@ func (s *Store) Create(ctx context.Context, title string, rowType RowType, genre
 	}
 	row := s.db.QueryRowContext(ctx, `
 		INSERT INTO adult_newest_rows (title, row_type, genre_filter, sort_order, enabled, updated_at)
-		VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM adult_newest_rows), ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM adult_newest_rows), ?, sakms_now())
 		RETURNING id, sort_order, created_at, updated_at
 	`, title, string(rowType), genreFilter, enabled)
 
@@ -142,7 +142,7 @@ func (s *Store) Update(ctx context.Context, id int, title string, rowType RowTyp
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE adult_newest_rows SET
 			title = ?, row_type = ?, genre_filter = ?, enabled = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		WHERE id = ?
 		RETURNING id, sort_order, created_at, updated_at
 	`, title, string(rowType), genreFilter, enabled, id)
@@ -226,7 +226,7 @@ func (s *Store) Reorder(ctx context.Context, ids []int) error {
 
 	for i, id := range ids {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE adult_newest_rows SET sort_order = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			UPDATE adult_newest_rows SET sort_order = ?, updated_at = sakms_now()
 			WHERE id = ?
 		`, i, id); err != nil {
 			return fmt.Errorf("reordering adult newest row %d: %w", id, err)

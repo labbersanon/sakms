@@ -88,7 +88,14 @@ func run() error {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return err
 	}
-	sqlDB, err := db.Open(filepath.Join(cfg.DataDir, "sakms.db"))
+	dsn, err := cfg.ResolveDatabaseURL()
+	if err != nil {
+		return err
+	}
+	sqlDB, err := db.Open(context.Background(), dsn, db.PoolOptions{
+		MaxOpen: cfg.DBMaxOpenConns,
+		MaxIdle: cfg.DBMaxIdleConns,
+	})
 	if err != nil {
 		return err
 	}
@@ -422,7 +429,14 @@ func run() error {
 	protectedSectionLock := auth.Middleware(secretStore, authStore, sectionLockMux, sectionGate...)
 
 	top := http.NewServeMux()
+	// Claude 2026-08-04: /healthz pings Postgres — deploy gate must not pass on a dead DB.
+	// Reason: Postgres migration; sakms-auto-update health_ok previously only checked HTTP 200.
+	// Review if: readiness vs liveness split is introduced.
 	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := sqlDB.PingContext(r.Context()); err != nil {
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.Write([]byte("ok"))
 	})
 	top.Handle("/api/auth/mode", protectedAuthMode)

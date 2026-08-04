@@ -2,23 +2,16 @@ package adultnewest
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 )
 
 func newTestReleaseStore(t *testing.T) *ReleaseStore {
 	t.Helper()
-	dir := t.TempDir()
-
-	sqlDB, err := db.Open(filepath.Join(dir, "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	return NewReleaseStore(sqlDB)
 }

@@ -14,6 +14,8 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-newsgroups/par2 v0.1.0
 	github.com/gzuidhof/tygo v0.2.21
+	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/mnightingale/rapidyenc v0.0.0-20260606125752-cdd7bcd89529
 	github.com/pressly/goose/v3 v3.27.2
 	golang.org/x/crypto v0.54.0
@@ -80,6 +82,9 @@ require (
 	github.com/hack-pad/go-indexeddb v0.3.2 // indirect
 	github.com/hack-pad/safejs v0.1.0 // indirect
 	github.com/huandu/xstrings v1.3.2 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jeandeaual/go-locale v0.0.0-20250612000132-0ef82f21eade // indirect
 	github.com/jsummers/gobmp v0.0.0-20230614200233-a9de23ed2e25 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.3 // indirect

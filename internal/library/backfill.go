@@ -170,7 +170,7 @@ func (s *Store) writeBackfilledSizeAndTier(ctx context.Context, table string, id
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE `+table+`
 		   SET size = ?, quality_tier = ?,
-		       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		       updated_at = sakms_now()
 		 WHERE id = ? AND size = 0 AND quality_tier = ''
 	`, size, tier, id)
 	if err != nil {

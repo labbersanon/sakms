@@ -3,11 +3,10 @@ package trakt
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 )
 
@@ -16,13 +15,7 @@ import (
 // exercise actual encryption and actual SQL, not mocks.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-
-	sqlDB, err := db.Open(filepath.Join(dir, "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {

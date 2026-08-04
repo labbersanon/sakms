@@ -4,10 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 )
 
 // newTestStoreWithDB is newTestStore (auth_test.go) plus the raw *sql.DB
@@ -15,11 +14,7 @@ import (
 // DROP TABLE settings) rather than exercising the happy path.
 func newTestStoreWithDB(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return newStoreFromDB(t, sqlDB), sqlDB
 }
 

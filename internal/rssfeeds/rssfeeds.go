@@ -173,7 +173,7 @@ func (s *Store) Create(ctx context.Context, title, feedURL string, target Target
 	// must be supplied explicitly (see migration 0043's build note).
 	row := s.db.QueryRowContext(ctx, `
 		INSERT INTO rss_feeds (title, feed_url, feed_url_encrypted, target, protocol, sort_order, enabled, updated_at)
-		VALUES (?, '', ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM rss_feeds), ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		VALUES (?, '', ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM rss_feeds), ?, sakms_now())
 		RETURNING id, sort_order, created_at, updated_at
 	`, title, encrypted, string(target), string(protocol), enabled)
 
@@ -213,7 +213,7 @@ func (s *Store) Update(ctx context.Context, id int, title string, feedURL *strin
 		row = s.db.QueryRowContext(ctx, `
 			UPDATE rss_feeds SET
 				title = ?, feed_url = '', feed_url_encrypted = ?, target = ?, protocol = ?, enabled = ?,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = sakms_now()
 			WHERE id = ?
 			RETURNING id, sort_order, created_at, updated_at
 		`, title, encrypted, string(target), string(protocol), enabled, id)
@@ -222,7 +222,7 @@ func (s *Store) Update(ctx context.Context, id int, title string, feedURL *strin
 		row = s.db.QueryRowContext(ctx, `
 			UPDATE rss_feeds SET
 				title = ?, target = ?, protocol = ?, enabled = ?,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = sakms_now()
 			WHERE id = ?
 			RETURNING id, sort_order, created_at, updated_at
 		`, title, string(target), string(protocol), enabled, id)
@@ -372,7 +372,7 @@ func (s *Store) Reorder(ctx context.Context, ids []int) error {
 
 	for i, id := range ids {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE rss_feeds SET sort_order = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			UPDATE rss_feeds SET sort_order = ?, updated_at = sakms_now()
 			WHERE id = ?
 		`, i, id); err != nil {
 			return fmt.Errorf("reordering rss feed %d: %w", id, err)

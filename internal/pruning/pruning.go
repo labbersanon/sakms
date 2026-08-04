@@ -132,7 +132,7 @@ func (s *Store) Update(ctx context.Context, r Rule) (Rule, error) {
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE pruning_rules SET
 			name = ?, mode = ?, age_days = ?, size_bytes = ?, quality_tier_floor = ?, enabled = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		WHERE id = ?
 		RETURNING id, created_at, updated_at
 	`, r.Name, r.Mode, r.AgeDays, r.SizeBytes, r.QualityTierFloor, r.Enabled, r.ID)
@@ -186,7 +186,7 @@ func (s *Store) ListEnabledForMode(ctx context.Context, m mode.Mode) ([]Rule, er
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, mode, age_days, size_bytes, quality_tier_floor, enabled, created_at, updated_at
 		FROM pruning_rules
-		WHERE mode = ? AND enabled = 1
+		WHERE mode = ? AND enabled = true
 		ORDER BY id ASC
 	`, string(m))
 	if err != nil {

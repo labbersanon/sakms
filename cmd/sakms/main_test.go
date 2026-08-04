@@ -2,11 +2,10 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -17,13 +16,7 @@ import (
 // package's tests in this repo (see internal/connections/connections_test.go).
 func newTestStores(t *testing.T) (*connections.Store, *settings.Store) {
 	t.Helper()
-	dir := t.TempDir()
-
-	sqlDB, err := db.Open(filepath.Join(dir, "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {

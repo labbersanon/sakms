@@ -3,12 +3,11 @@ package scanschedule
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/dedupscan"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -18,11 +17,7 @@ import (
 // same pattern internal/settings' own tests use.
 func newTestSettings(t *testing.T) *settings.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return settings.New(sqlDB)
 }
 

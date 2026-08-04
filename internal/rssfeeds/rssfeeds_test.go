@@ -4,10 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 )
 
@@ -24,12 +23,7 @@ func newTestStore(t *testing.T) *Store {
 // building the Store over it.
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	dir := t.TempDir()
-	sqlDB, err := db.Open(filepath.Join(dir, "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return sqlDB
 }
 
@@ -272,7 +266,7 @@ func TestBackfillEncryption_MigratesPlaintextAndIsIdempotent(t *testing.T) {
 	const plainURL = "https://legacy.example/rss?apikey=LEGACY"
 	if _, err := sqlDB.ExecContext(ctx, `
 		INSERT INTO rss_feeds (title, feed_url, feed_url_encrypted, target, protocol, sort_order, enabled, updated_at)
-		VALUES ('Legacy', ?, '', 'adult', 'torrent', 0, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		VALUES ('Legacy', ?, '', 'adult', 'torrent', 0, true, sakms_now())
 	`, plainURL); err != nil {
 		t.Fatalf("seeding plaintext row: %v", err)
 	}

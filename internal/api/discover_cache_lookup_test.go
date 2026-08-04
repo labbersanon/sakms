@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/discoverrefresh"
 )
 
@@ -78,11 +77,7 @@ func TestLookupDiscoverCache_HitServesStoredSlice(t *testing.T) {
 // SQLite file, mirroring discoverrefresh's own newTestStore helper.
 func newTestDiscoverCache(t *testing.T) *discoverrefresh.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return discoverrefresh.NewStore(sqlDB)
 }
 

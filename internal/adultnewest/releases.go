@@ -162,7 +162,7 @@ func (s *ReleaseStore) MarkSeen(ctx context.Context, releaseGUID string) error {
 // independently on a (row_type, entity_source, entity_id) conflict (M1):
 //
 //   - browse_confirmed = MAX(existing, incoming) — a boolean OR: a feed insert
-//     (browse_confirmed=0) never clears an existing browse confirmation, and a
+//     (browse_confirmed = false) never clears an existing browse confirmation, and a
 //     browse insert (1) raises it. Visibility is preserved regardless of order.
 //   - the enclosure (download_url/protocol/size/feed_id/feed_item_key/
 //     last_confirmed_seen) is adopted ONLY onto a row that has none yet
@@ -203,7 +203,7 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 			 download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(row_type, entity_source, entity_id) DO UPDATE SET
-			browse_confirmed  = MAX(adult_newest_releases.browse_confirmed, excluded.browse_confirmed),
+			browse_confirmed  = GREATEST(adult_newest_releases.browse_confirmed, excluded.browse_confirmed),
 			download_url      = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
 			                    THEN excluded.download_url      ELSE adult_newest_releases.download_url      END,
 			download_protocol = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
@@ -460,7 +460,8 @@ func (s *ReleaseStore) ListByGender(ctx context.Context, rowType RowType, genreF
 // nameExpr is a raw SQL expression: a "?" placeholder (forward query) or a
 // correlated column reference (browse-strip EXISTS filter).
 func performerLinkPredicate(sceneAlias, nameExpr string) string {
-	return `EXISTS (SELECT 1 FROM json_each(` + sceneAlias + `.performers) je WHERE TRIM(LOWER(je.value)) = TRIM(LOWER(` + nameExpr + `)))`
+	// Claude 2026-08-04: json_each → jsonb_array_elements_text for Postgres.
+	return `EXISTS (SELECT 1 FROM jsonb_array_elements_text((` + sceneAlias + `.performers)::jsonb) AS je(value) WHERE TRIM(LOWER(je.value)) = TRIM(LOWER(` + nameExpr + `)))`
 }
 
 // studioLinkPredicate is performerLinkPredicate's studio counterpart: true when
@@ -598,7 +599,7 @@ func (s *ReleaseStore) SearchScenes(ctx context.Context, q string, page int) ([]
 	args = append(args, `%`+q+`%`, perPage, offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+releaseColumns+`
 		FROM adult_newest_releases
-		WHERE row_type IN (?, ?) AND entity_title LIKE ? COLLATE NOCASE
+		WHERE row_type IN (?, ?) AND entity_title ILIKE ?
 		ORDER BY first_seen_at DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("searching pooled scenes: %w", err)

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,7 +15,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
@@ -52,10 +51,7 @@ func newestScenesMuxWithReleaseStore(t *testing.T) (*httptest.Server, *connectio
 // backend, see CLAUDE.md).
 func brokenReleaseStore(t *testing.T) *adultnewest.ReleaseStore {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "broken.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	sqlDB := dbtest.New(t)
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("closing db: %v", err)
 	}

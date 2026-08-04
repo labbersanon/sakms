@@ -15,14 +15,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/apidto"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
@@ -44,11 +43,7 @@ type pruningEnv struct {
 
 func newPruningEnv(t *testing.T) *pruningEnv {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	libStore := library.New(sqlDB)
 	pruningStore := pruning.New(sqlDB)

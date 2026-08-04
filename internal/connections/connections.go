@@ -118,7 +118,7 @@ func (s *Store) UpsertWithUsername(ctx context.Context, service, url, username, 
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO connections (service, url, username, api_key_encrypted, updated_at)
-		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		VALUES (?, ?, ?, ?, sakms_now())
 		ON CONFLICT(service) DO UPDATE SET
 			url = excluded.url,
 			username = excluded.username,
@@ -150,7 +150,7 @@ func (s *Store) UpsertPreservingSecret(ctx context.Context, service, url, userna
 	// secret to preserve) correctly gets '' — there's nothing to keep yet.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO connections (service, url, username, api_key_encrypted, updated_at)
-		VALUES (?, ?, ?, '', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		VALUES (?, ?, ?, '', sakms_now())
 		ON CONFLICT(service) DO UPDATE SET
 			url = excluded.url,
 			username = excluded.username,

@@ -18,9 +18,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/labbersanon/sakms/internal/dbutil"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -79,7 +80,7 @@ const (
 	PendingRetry Status = "pending_retry"
 )
 
-// sqliteTimeLayout is the shape strftime('%Y-%m-%dT%H:%M:%fZ', 'now') writes
+// sqliteTimeLayout is the shape sakms_now() writes
 // throughout this schema. retry_after is compared lexicographically in SQL, so
 // a Go-written timestamp MUST be UTC and in exactly this layout or the
 // due-for-retry comparison silently misbehaves.
@@ -250,17 +251,9 @@ func (s *Store) Create(ctx context.Context, g Grab) (Grab, error) {
 		encrypted, g.RetryAfter, g.RetryCount, g.RetryReason, g.HoldUntil)
 
 	if err := row.Scan(&g.ID, &g.CreatedAt, &g.UpdatedAt); err != nil {
-		// A unique-constraint failure on a HELD row can only be
-		// idx_grabs_held_request: it is the only unique index on this table
-		// (idx_grabs_mode_status, from 0009, is not unique), and the g.HoldUntil
-		// test reads the value AFTER the arm above zeroed it for every
-		// non-PendingRetry caller — so no ordinary grab path can reach this
-		// translation. Matched on the driver's message rather than an extended
-		// result code to avoid importing modernc.org/sqlite here purely to
-		// classify one error; the text is the observed one
-		// ("constraint failed: UNIQUE constraint failed: grabs.mode,
-		// grabs.tmdb_id (2067)").
-		if g.HoldUntil != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		// Claude 2026-08-04: Postgres UNIQUE is SQLSTATE 23505 (was SQLite message match).
+		var pgErr *pgconn.PgError
+		if g.HoldUntil != "" && errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
 			return Grab{}, fmt.Errorf("inserting held request for %q: %w", g.Title, ErrHeldRequestExists)
 		}
 		return Grab{}, fmt.Errorf("inserting grab for %q: %w", g.Title, err)
@@ -318,7 +311,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Grab, error) {
 // completed the import).
 func (s *Store) UpdateStatus(ctx context.Context, id int64, status Status) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE grabs SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
+		UPDATE grabs SET status = ?, updated_at = sakms_now() WHERE id = ?
 	`, string(status), id)
 	if err != nil {
 		return fmt.Errorf("updating grab %d status: %w", id, err)
@@ -334,7 +327,7 @@ func (s *Store) UpdateStatus(ctx context.Context, id int64, status Status) error
 // harmless no-op beyond the updated_at bump.
 func (s *Store) Flag(ctx context.Context, id int64, reason string) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE grabs SET flagged_for_review = 1, flag_reason = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
+		UPDATE grabs SET flagged_for_review = true, flag_reason = ?, updated_at = sakms_now() WHERE id = ?
 	`, reason, id)
 	if err != nil {
 		return fmt.Errorf("flagging grab %d: %w", id, err)
@@ -348,7 +341,7 @@ func (s *Store) Flag(ctx context.Context, id int64, reason string) error {
 // to aria2.
 func (s *Store) SetDownloadGID(ctx context.Context, id int64, gid string) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE grabs SET download_gid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
+		UPDATE grabs SET download_gid = ?, updated_at = sakms_now() WHERE id = ?
 	`, gid, id)
 	if err != nil {
 		return fmt.Errorf("setting grab %d download gid: %w", id, err)
@@ -362,7 +355,7 @@ func (s *Store) SetDownloadGID(ctx context.Context, id int64, gid string) error 
 // lifecycle Status.
 func (s *Store) SetDownloadStatus(ctx context.Context, id int64, downloadStatus, stagingPath string) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE grabs SET download_status = ?, download_staging_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
+		UPDATE grabs SET download_status = ?, download_staging_path = ?, updated_at = sakms_now() WHERE id = ?
 	`, downloadStatus, stagingPath, id)
 	if err != nil {
 		return fmt.Errorf("setting grab %d download status: %w", id, err)
@@ -492,7 +485,7 @@ func (s *Store) SetPendingRetry(ctx context.Context, id int64, after time.Time, 
 			retry_after  = ?,
 			retry_reason = ?,
 			download_gid = '',
-			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at   = sakms_now()
 		WHERE id = ?
 	`, FormatTime(after), reason, id)
 	if err != nil {
@@ -531,7 +524,7 @@ func (s *Store) SetRetryAfter(ctx context.Context, id int64, after time.Time, re
 		UPDATE grabs SET
 			retry_after  = ?,
 			retry_reason = ?,
-			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at   = sakms_now()
 		WHERE id = ?
 	`, FormatTime(after), reason, id)
 	if err != nil {
@@ -576,7 +569,7 @@ func (s *Store) SetHoldUntil(ctx context.Context, id int64, until time.Time, rea
 		UPDATE grabs SET
 			hold_until   = ?,
 			retry_reason = ?,
-			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at   = sakms_now()
 		WHERE id = ?
 	`, FormatTime(until), reason, id)
 	if err != nil {
@@ -643,7 +636,7 @@ func (s *Store) RearmHeldRequest(ctx context.Context, id int64, until time.Time,
 			retry_after  = '',
 			hold_until   = ?,
 			retry_reason = ?,
-			updated_at   = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at   = sakms_now()
 		WHERE id = ? AND status = ? AND hold_until != ''
 	`, string(PendingRetry), FormatTime(until), reason, id, string(Failed))
 	if err != nil {
@@ -700,7 +693,7 @@ func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 			download_gid          = ?,
 			retry_after           = '',
 			retry_reason          = '',
-			updated_at            = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at            = sakms_now()
 		WHERE id = ?
 	`, d.Indexer, d.Protocol, d.DownloadClient, d.RootFolderPath, encrypted, d.GID, id)
 	if err != nil {

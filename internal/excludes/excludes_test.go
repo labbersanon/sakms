@@ -2,20 +2,15 @@ package excludes_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/excludes"
 )
 
 func newStore(t *testing.T) *excludes.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return excludes.New(sqlDB)
 }
 

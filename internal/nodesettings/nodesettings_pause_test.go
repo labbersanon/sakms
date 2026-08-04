@@ -2,10 +2,9 @@ package nodesettings_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/nodesettings"
 )
 
@@ -128,15 +127,12 @@ func TestSet_DoesNotChangePauseDispatch(t *testing.T) {
 }
 
 // TestPauseDispatch_PersistsAcrossReopen proves server-restart durability: the
-// pause bit survives closing and reopening the SQLite store on the same file.
+// pause bit survives closing and reopening the store on the same Postgres schema.
 func TestPauseDispatch_PersistsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "sakms.db")
+	schema := dbtest.SharedSchema(t)
 
-	sqlDB, err := db.Open(path)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
+	sqlDB := dbtest.OpenSchema(t, schema)
 	if err := nodesettings.New(sqlDB).SetPauseDispatch(ctx, "node-a", true); err != nil {
 		t.Fatalf("SetPauseDispatch: %v", err)
 	}
@@ -144,12 +140,8 @@ func TestPauseDispatch_PersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("close db: %v", err)
 	}
 
-	// Reopen the same file — simulates a server restart.
-	sqlDB2, err := db.Open(path)
-	if err != nil {
-		t.Fatalf("reopen db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB2.Close() })
+	// Reopen the same schema — simulates a server restart.
+	sqlDB2 := dbtest.OpenSchema(t, schema)
 
 	got, ok, err := nodesettings.New(sqlDB2).Get(ctx, "node-a")
 	if err != nil {

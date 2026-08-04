@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/nodes"
 	"github.com/labbersanon/sakms/internal/nodesettings"
 )
@@ -90,10 +89,7 @@ func TestNodeHeartbeatHandler_OmittedGovernorFields_BackwardCompatible(t *testin
 func TestListNodesHandler_ReturnsGovernorStatus(t *testing.T) {
 	reg := nodes.New()
 	pairingReg := nodes.NewPairingRegistry()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	sqlDB := dbtest.New(t)
 	defer sqlDB.Close()
 	nodeSettingsStore := nodesettings.New(sqlDB)
 

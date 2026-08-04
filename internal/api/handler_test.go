@@ -7,14 +7,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
@@ -90,11 +89,7 @@ func testStores(t *testing.T) (*connections.Store, *proposals.Store, *allowlist.
 // produces a player — mode.Build sources sess.Players from the registry.
 func testStoresWithRegistry(t *testing.T) (*connections.Store, *proposals.Store, *allowlist.Store, *settings.Store, *grabs.Store, *library.Store, *discoversliders.Store, *trakt.Store, *adultnewest.Store, *adultnewest.ReleaseStore, *rssfeeds.Store, *serviceconn.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)

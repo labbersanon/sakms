@@ -25,7 +25,7 @@ import (
 	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/secrets"
@@ -43,11 +43,7 @@ type stashBoxEnv struct {
 
 func newStashBoxEnv(t *testing.T) *stashBoxEnv {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	key, err := secrets.LoadOrCreateKey(filepath.Join(t.TempDir(), "secret.key"))
 	if err != nil {
@@ -477,11 +473,7 @@ func TestStashBoxDatabases_TestStoredHidesDetail(t *testing.T) {
 // rather than panicking — every mux built without a connections store (most
 // of this package's other tests) has no registry to serve.
 func TestStashBoxDatabases_Unavailable(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), nil, nil, proposals.New(sqlDB), allowlist.New(sqlDB),
 		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB), nil, library.New(sqlDB),
 		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, nil))

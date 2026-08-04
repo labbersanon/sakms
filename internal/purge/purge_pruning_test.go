@@ -15,12 +15,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/pruning"
@@ -30,11 +29,7 @@ import (
 // the one test that needs to make an episode query observably fail.
 func newTestLibraryStoreDB(t *testing.T) (*library.Store, *sql.DB) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return library.New(sqlDB), sqlDB
 }
 

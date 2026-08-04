@@ -7,11 +7,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/auth"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/settings"
 )
@@ -28,11 +27,7 @@ func testAuthStore(t *testing.T) (*auth.Store, *secrets.Store) {
 // internal/auth/apikey_test.go's newTestStoreWithDB pattern.
 func testAuthStoreWithDB(t *testing.T) (*auth.Store, *secrets.Store, *sql.DB) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -722,12 +717,17 @@ func TestSetup_OIDCMintFailure_LeavesUnconfigured(t *testing.T) {
 	defer srv.Close()
 
 	const trigger = `
+		CREATE OR REPLACE FUNCTION block_apikey_hash_insert() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.key = 'auth_apikey_hash' THEN
+				RAISE EXCEPTION 'simulated settings write failure for Regenerate';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
 		CREATE TRIGGER block_apikey_hash_insert
 		BEFORE INSERT ON settings
-		WHEN NEW.key = 'auth_apikey_hash'
-		BEGIN
-			SELECT RAISE(ABORT, 'simulated settings write failure for Regenerate');
-		END;`
+		FOR EACH ROW EXECUTE FUNCTION block_apikey_hash_insert();`
 	if _, err := sqlDB.Exec(trigger); err != nil {
 		t.Fatalf("installing failure trigger: %v", err)
 	}

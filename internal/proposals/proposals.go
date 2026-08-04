@@ -298,7 +298,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Proposal, error) {
 // trackedID in the target *arr app.
 func (s *Store) MarkApplied(ctx context.Context, id int64, trackedID int) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE proposals SET status = ?, tracked_id = ?, applied_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		UPDATE proposals SET status = ?, tracked_id = ?, applied_at = sakms_now()
 		WHERE id = ?
 	`, string(Applied), trackedID, id)
 	if err != nil {
@@ -343,7 +343,7 @@ func (s *Store) Repick(ctx context.Context, id int64, title string, tmdbID, year
 // up for others to identify.
 func (s *Store) MarkDraftSubmitted(ctx context.Context, id int64, draftID string) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE proposals SET draft_id = ?, draft_submitted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		UPDATE proposals SET draft_id = ?, draft_submitted_at = sakms_now()
 		WHERE id = ?
 	`, draftID, id)
 	if err != nil {
@@ -357,7 +357,7 @@ func (s *Store) MarkDraftSubmitted(ctx context.Context, id int64, draftID string
 // Does not change Status.
 func (s *Store) MarkFingerprintSubmitted(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE proposals SET fingerprint_submitted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		UPDATE proposals SET fingerprint_submitted_at = sakms_now()
 		WHERE id = ?
 	`, id)
 	if err != nil {

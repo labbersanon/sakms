@@ -7,11 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
@@ -83,11 +82,7 @@ func (f tmdbFixture) server(t *testing.T) *httptest.Server {
 // internal/tmdb's package-level LRU entirely.
 func sliderTestEnv(t *testing.T, f tmdbFixture) (Deps, *tmdb.Client, *discoversliders.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	srv := f.server(t)
 	client := tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key", BypassCache: true}, srv.Client())

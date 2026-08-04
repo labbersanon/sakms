@@ -2,10 +2,9 @@ package api
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/nodes"
 	"github.com/labbersanon/sakms/internal/nodesettings"
 )
@@ -13,11 +12,7 @@ import (
 // newPauseTestStore builds a nodesettings.Store on a fresh temp DB.
 func newPauseTestStore(t *testing.T) *nodesettings.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return nodesettings.New(sqlDB)
 }
 

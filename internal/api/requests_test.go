@@ -6,12 +6,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
@@ -25,11 +24,7 @@ import (
 // carry (and adding it there would churn all 51 testStores call sites).
 func requestsTestStores(t *testing.T) (*grabs.Store, *library.Store, *excludes.Store) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	// A real secret store, not nil: these tests create grabs, and grabs.Store
 	// encrypts a grab's download URL at rest.
 	secretStore, err := secrets.New(make([]byte, 32))

@@ -661,7 +661,7 @@ func newMonitoredSeasonCache(libStore *library.Store) *monitoredSeasonCache {
 //
 // SeasonMonitorFlags, NOT MonitoredSeasons, and the difference is the whole
 // reason this cache exists in its current shape: MonitoredSeasons drops
-// monitored = 0 rows, which collapses "explicitly un-monitored" and "never
+// monitored = false rows, which collapses "explicitly un-monitored" and "never
 // touched" into one indistinguishable answer. The sweep's reap branch is
 // destructive and must tell them apart.
 //

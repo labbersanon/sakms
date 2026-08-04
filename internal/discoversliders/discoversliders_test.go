@@ -3,10 +3,9 @@ package discoversliders
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 )
 
 // newTestStore builds a Store against a real, freshly migrated SQLite file —
@@ -14,13 +13,7 @@ import (
 // other store in this repo is tested (see connections_test.go).
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	dir := t.TempDir()
-
-	sqlDB, err := db.Open(filepath.Join(dir, "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	return New(sqlDB)
 }

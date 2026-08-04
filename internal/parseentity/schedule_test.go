@@ -4,12 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/settings"
 )
@@ -19,11 +18,7 @@ import (
 // convention (see internal/recheck/recheck_test.go's newTestStores).
 func newTestSettingsStore(t *testing.T) *settings.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return settings.New(sqlDB)
 }
 
@@ -82,11 +77,7 @@ func TestRun_ZeroIntervalStartsNothing(t *testing.T) {
 // ticker in this fast-redeploy deployment never actually fired between
 // redeploys, leaving the entity DB empty. Mirrors adultnewest's boot-poll test.
 func TestRun_BootPollFiresBeforeInterval(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)

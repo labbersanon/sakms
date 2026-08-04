@@ -3,10 +3,9 @@ package main
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -16,12 +15,7 @@ import (
 // real, freshly migrated SQLite file — same convention as newTestStores above.
 func newUsenetTestStores(t *testing.T) (*serviceconn.Store, *settings.Store, func()) {
 	t.Helper()
-	dir := t.TempDir()
-
-	sqlDB, err := db.Open(filepath.Join(dir, "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	sqlDB := dbtest.New(t)
 
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {

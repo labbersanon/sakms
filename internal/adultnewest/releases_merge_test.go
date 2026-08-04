@@ -35,7 +35,7 @@ func feedRow(id string, feedID int64, url string, now int64) MatchedRelease {
 }
 
 // TestInsert_CaseMerge_BrowseThenFeed: a feed match on a pre-cached browse row
-// upgrades the grab path (adopts the enclosure) while keeping browse_confirmed=1
+// upgrades the grab path (adopts the enclosure) while keeping browse_confirmed = true
 // (visibility preserved). This is the M1 / BLOCKING fix.
 func TestInsert_CaseMerge_BrowseThenFeed(t *testing.T) {
 	s := newTestReleaseStore(t)
@@ -108,7 +108,7 @@ func TestInsert_CaseMerge_FeedThenFeed(t *testing.T) {
 }
 
 // TestInsert_CaseMerge_BrowseThenBrowse: two browse inserts keep
-// browse_confirmed=1, no enclosure, and preserve the first writer's metadata.
+// browse_confirmed = true, no enclosure, and preserve the first writer's metadata.
 func TestInsert_CaseMerge_BrowseThenBrowse(t *testing.T) {
 	s := newTestReleaseStore(t)
 	ctx := context.Background()
@@ -126,7 +126,7 @@ func TestInsert_CaseMerge_BrowseThenBrowse(t *testing.T) {
 
 	got := findByID(t, s, RowScene, "e4")
 	if !got.BrowseConfirmed || got.DownloadURL != "" || got.FeedID != 0 {
-		t.Errorf("expected browse_confirmed=1, no enclosure, got %+v", got)
+		t.Errorf("expected browse_confirmed = true, no enclosure, got %+v", got)
 	}
 	if got.EntityTitle != "First" {
 		t.Errorf("first-writer-wins metadata expected, got %q", got.EntityTitle)

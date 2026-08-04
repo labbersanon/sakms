@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/mode"
 )
 
@@ -19,11 +19,7 @@ import (
 // this repo.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return New(sqlDB)
 }
 

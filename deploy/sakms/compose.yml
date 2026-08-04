@@ -1,0 +1,100 @@
+# Claude 2026-07-10: New service — SAKMS deployed to server1
+# Reason: media-admin.zaena.us — self-hosted media review console (Wade's own repo,
+#   github.com/labbersanon/sakms); no published image yet, built from the GitHub
+#   repo directly as the Compose build context
+# Troubleshooting: app data (secret.key, downloads, dated sakms.db backup) at
+#   /mnt/iscsi/sakms; Postgres data at /mnt/iscsi/sakms_db; media mounts match
+#   radarr/sonarr/whisparr (/mnt/Media-NAS, /mnt/Downloads-NAS, /mnt/Adult-NAS)
+# Review if: repo publishes a versioned image to a registry — switch from build: to
+#   image: and add to docker-updater.py at that point
+#
+# Claude 2026-08-04: Added dedicated Postgres (sakms-db) + BW SM init container
+# Reason: SQLite→Postgres migration — sole-conn starvation; see
+#   .omc/specs/deep-interview-sakms-postgres-migration.md
+# Troubleshooting: sakms-init writes /data/volumes/sakms/config/{db_password,db_url};
+#   password UUID 549214e6-db88-4dc0-aed1-b49c0151b428 (bitwarden_sm.md).
+#   Until cutover, running sakms binary may still use sqlite at /data/sakms.db;
+#   SAKMS_DATABASE_URL_FILE is ignored by pre-Postgres builds.
+# Review if: cutover complete — remove sqlite references from comments.
+
+services:
+  # Runs once per compose up: fetch BW SM password → db_password + db_url
+  sakms-init:
+    image: python:3-slim
+    container_name: sakms-init
+    restart: "no"
+    volumes:
+      - /usr/local/bin/bws:/usr/local/bin/bws:ro
+      - /etc/bws/machine-token:/etc/bws/machine-token:ro
+      - ./generate-config.sh:/generate-config.sh:ro
+      - /data/volumes/sakms/config:/config
+    command: ["/bin/bash", "/generate-config.sh"]
+
+  sakms-db:
+    # Official Postgres image (Docker Hub) — same pattern as sogo-db / immich
+    image: postgres:16-alpine
+    container_name: sakms-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sakms
+      POSTGRES_USER: sakms
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_pass
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - /mnt/iscsi/sakms_db:/var/lib/postgresql/data
+      - /data/volumes/sakms/config/db_password:/run/secrets/db_pass:ro
+    networks:
+      - sakms_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sakms -d sakms"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      sakms-init:
+        condition: service_completed_successfully
+
+  sakms:
+    build:
+      context: https://github.com/labbersanon/sakms.git#67c27783c7b7e295e8780df15024b24621f3cd9e
+      dockerfile: Dockerfile
+    image: sakms:local
+    container_name: sakms
+    runtime: nvidia
+    restart: unless-stopped
+    environment:
+      - TZ=America/New_York
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+      - PUID=1001
+      - PGID=1001
+      # Claude 2026-08-04: Postgres DSN from init container (post-cutover binary).
+      # Pre-Postgres builds ignore unknown env vars.
+      - SAKMS_DATABASE_URL_FILE=/run/secrets/db_url
+    volumes:
+      - /mnt/iscsi/sakms:/data
+      - /mnt/Media-NAS:/media
+      - /mnt/Downloads-NAS:/downloads
+      - /mnt/Adult-NAS:/adult
+      - /data/volumes/sakms/config/db_url:/run/secrets/db_url:ro
+    networks:
+      - webui
+      - sakms_internal
+    depends_on:
+      sakms-init:
+        condition: service_completed_successfully
+      sakms-db:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.sakms.rule=Host(`media-admin.zaena.us`)
+      - traefik.http.routers.sakms.entrypoints=websecure
+      - traefik.http.routers.sakms.tls.certresolver=cloudflare
+      - traefik.http.routers.sakms.middlewares=internal-ip@file,crowdsec@file,secure-headers@file
+      - traefik.http.services.sakms.loadbalancer.server.port=8080
+      - traefik.docker.network=webui
+
+networks:
+  webui:
+    external: true
+  sakms_internal:

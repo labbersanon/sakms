@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/secrets"
@@ -40,11 +39,7 @@ func overrideTPDBBaseURL(t *testing.T, u string) {
 // store-test convention (see recheck_test.go's newTestStores).
 func newTestScanStores(t *testing.T) (*connections.Store, *settings.Store, *ReleaseStore) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {

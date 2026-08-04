@@ -240,14 +240,14 @@ func (s *Store) List(ctx context.Context) ([]Summary, error) {
 	for rows.Next() {
 		var id int64
 		var url, secretEnc, eventsRaw, createdAt, updatedAt string
-		var enabledInt int
-		if err := rows.Scan(&id, &url, &secretEnc, &eventsRaw, &enabledInt, &createdAt, &updatedAt); err != nil {
+		var enabled bool
+		if err := rows.Scan(&id, &url, &secretEnc, &eventsRaw, &enabled, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, Summary{
 			ID: id, URL: url, SecretSet: secretEnc != "",
 			Events:    eventsFromJSON(eventsRaw),
-			Enabled:   enabledInt == 1,
+			Enabled:   enabled,
 			CreatedAt: createdAt, UpdatedAt: updatedAt,
 		})
 	}
@@ -276,18 +276,16 @@ func (s *Store) Create(ctx context.Context, url, secret string, events []string,
 			return 0, fmt.Errorf("encrypting secret: %w", err)
 		}
 	}
-	enabledInt := 0
-	if enabled {
-		enabledInt = 1
-	}
-	res, err := s.db.ExecContext(ctx, `
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO webhooks (url, secret_enc, events, enabled)
-		VALUES (?, ?, ?, ?)`,
-		url, encSecret, eventsToJSON(events), enabledInt)
+		VALUES (?, ?, ?, ?)
+		RETURNING id`,
+		url, encSecret, eventsToJSON(events), enabled).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // Update modifies an existing subscription. secret follows three-state
@@ -301,18 +299,19 @@ func (s *Store) Update(ctx context.Context, id int64, url string, secret *string
 			return fmt.Errorf("%w: %q", ErrInvalidEvent, e)
 		}
 	}
-	enabledInt := 0
-	if enabled {
-		enabledInt = 1
+	for _, e := range events {
+		if !validEvents[e] {
+			return fmt.Errorf("%w: %q", ErrInvalidEvent, e)
+		}
 	}
 
 	if secret == nil {
 		// Preserve existing secret — don't touch secret_enc.
 		res, err := s.db.ExecContext(ctx, `
 			UPDATE webhooks SET url=?, events=?, enabled=?,
-			updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			updated_at=sakms_now_sec()
 			WHERE id=?`,
-			url, eventsToJSON(events), enabledInt, id)
+			url, eventsToJSON(events), enabled, id)
 		if err != nil {
 			return err
 		}
@@ -329,9 +328,9 @@ func (s *Store) Update(ctx context.Context, id int64, url string, secret *string
 	}
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE webhooks SET url=?, secret_enc=?, events=?, enabled=?,
-		updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		updated_at=sakms_now_sec()
 		WHERE id=?`,
-		url, encSecret, eventsToJSON(events), enabledInt, id)
+		url, encSecret, eventsToJSON(events), enabled, id)
 	if err != nil {
 		return err
 	}
@@ -363,7 +362,7 @@ func checkRowsAffected(res sql.Result) error {
 func (s *Store) listEnabled(ctx context.Context, event string) ([]Webhook, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, url, secret_enc, events, enabled, created_at, updated_at
-		FROM webhooks WHERE enabled=1`)
+		FROM webhooks WHERE enabled = true`)
 	if err != nil {
 		return nil, err
 	}
@@ -372,11 +371,9 @@ func (s *Store) listEnabled(ctx context.Context, event string) ([]Webhook, error
 	for rows.Next() {
 		var w Webhook
 		var eventsRaw string
-		var enabledInt int
-		if err := rows.Scan(&w.ID, &w.URL, &w.Secret, &eventsRaw, &enabledInt, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.URL, &w.Secret, &eventsRaw, &w.Enabled, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
-		w.Enabled = enabledInt == 1
 		w.Events = eventsFromJSON(eventsRaw)
 
 		subscribed := false

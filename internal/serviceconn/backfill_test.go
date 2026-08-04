@@ -19,7 +19,7 @@ func TestBackfillUsenetURL_NormalizesAndIsIdempotent(t *testing.T) {
 	var id int64
 	if err := s.db.QueryRowContext(ctx, `
 		INSERT INTO service_connections (kind, provider, label, url, username, secret_encrypted, enabled)
-		VALUES ('usenet', 'nntp', 'Usenet', 'nntps://news.example.com:563', 'u', '', 1)
+		VALUES ('usenet', 'nntp', 'Usenet', 'nntps://news.example.com:563', 'u', '', true)
 		RETURNING id`).Scan(&id); err != nil {
 		t.Fatalf("seeding legacy row: %v", err)
 	}
@@ -63,12 +63,12 @@ func TestBackfillUsenetURL_SkipsUnparseableRows(t *testing.T) {
 	var bad, good int64
 	if err := s.db.QueryRowContext(ctx, `
 		INSERT INTO service_connections (kind, provider, label, url, enabled)
-		VALUES ('usenet', 'nntp', 'Broken', 'http://not-an-nntp-url', 1) RETURNING id`).Scan(&bad); err != nil {
+		VALUES ('usenet', 'nntp', 'Broken', 'http://not-an-nntp-url', true) RETURNING id`).Scan(&bad); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 	if err := s.db.QueryRowContext(ctx, `
 		INSERT INTO service_connections (kind, provider, label, url, enabled)
-		VALUES ('usenet', 'nntp', 'Fine', 'nntp://news.example.com', 1) RETURNING id`).Scan(&good); err != nil {
+		VALUES ('usenet', 'nntp', 'Fine', 'nntp://news.example.com', true) RETURNING id`).Scan(&good); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 

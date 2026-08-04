@@ -77,9 +77,13 @@ func enrichNVIDIAWithNVML(gpus []GPURaw) []GPURaw {
 		if idx, ok := byName[name]; ok && !matched[idx] {
 			gpus[idx] = g // update existing sysfs entry
 			matched[idx] = true
-		} else {
-			gpus = append(gpus, g) // NVML-only discovery (rare)
 		}
+		// Claude 2026-08-04: do not append NVML-only devices here.
+		// Reason: appending injected host GPUs into unit tests that pass a
+		// TempDir drm tree (and could double-count on real hosts).
+		// Troubleshooting: TestReadGPUs_* saw len=2 / want 1 with CGO+NVML.
+		// Review if: a host with NVML but no /sys/class/drm NVIDIA card needs
+		// discovery — then add an explicit Sample()-level path, not enrich.
 	}
 	return gpus
 }

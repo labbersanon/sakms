@@ -500,7 +500,7 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 // These entities carry NO feed enclosure and are never feed-gated, so they are
 // always BrowseConfirmed=true — i.e. always visible via FeedHealth.Available,
 // regardless of which pass identified them (matching the 0044 migration's
-// backfill of every pre-existing row to browse_confirmed=1).
+// backfill of every pre-existing row to browse_confirmed = true).
 func identifyStudioPerformers(ctx context.Context, id *identify.Identifier, detail identify.DetailedMatch) []MatchedRelease {
 	var out []MatchedRelease
 	if detail.StudioName != "" {
@@ -763,7 +763,7 @@ func runFeedCycle(ctx context.Context, httpClient *http.Client, connStore *conne
 }
 
 // processFeedItem identifies one feed item and upserts every entity it resolved
-// to — a scene/movie with the feed's enclosure attached (browse_confirmed=0),
+// to — a scene/movie with the feed's enclosure attached (browse_confirmed = false),
 // plus its studio/performers (browse-confirmed, no enclosure, shared with the
 // browse pass). The D3 upsert merges browse_confirmed, so if the browse pass
 // already confirmed this entity that fact is preserved. No confirmAvailable.

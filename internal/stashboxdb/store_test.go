@@ -4,12 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 )
 
@@ -20,11 +19,7 @@ import (
 // secret_ref and half of what this package does is route between the two.
 func newTestStore(t *testing.T) (*Store, *connections.Store, *sql.DB) {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
@@ -83,7 +78,7 @@ func TestList_SeedsStashDBThenFansDBInPriorityOrder(t *testing.T) {
 		t.Error("stashdb must not be fansite-only")
 	}
 	if !got[1].FansiteOnly {
-		t.Error("fansdb must seed fansite_only = 1 (today's FansDB text-search gate)")
+		t.Error("fansdb must seed fansite_only = true (today's FansDB text-search gate)")
 	}
 	if got[0].SecretRef != "stashdb" || got[1].SecretRef != "fansdb" {
 		t.Errorf("seeded rows must point at their connections secret, got %q / %q", got[0].SecretRef, got[1].SecretRef)

@@ -109,7 +109,7 @@ func (s *Store) Get(ctx context.Context, nodeID string) (settings Settings, ok b
 	}
 
 	var maxJobs sql.NullInt64
-	var pauseDispatch sql.NullInt64
+	var pauseDispatch sql.NullBool
 	var cpuCapPercent sql.NullInt64
 	row := s.db.QueryRowContext(ctx, `SELECT max_jobs, pause_dispatch, cpu_cap_percent FROM node_max_jobs WHERE node_id = ?`, nodeID)
 	switch err := row.Scan(&maxJobs, &pauseDispatch, &cpuCapPercent); {
@@ -120,7 +120,7 @@ func (s *Store) Get(ctx context.Context, nodeID string) (settings Settings, ok b
 		return Settings{}, false, err
 	default:
 		settings.MaxJobs = int(maxJobs.Int64)
-		settings.PauseDispatch = pauseDispatch.Int64 != 0
+		settings.PauseDispatch = pauseDispatch.Valid && pauseDispatch.Bool
 		settings.CPUCapPercent = int(cpuCapPercent.Int64)
 	}
 
@@ -183,10 +183,6 @@ func (s *Store) Set(ctx context.Context, nodeID string, settings Settings) error
 // the no-row default); the ON CONFLICT clause leaves an existing max_jobs
 // untouched.
 func (s *Store) SetPauseDispatch(ctx context.Context, nodeID string, paused bool) error {
-	pauseInt := 0
-	if paused {
-		pauseInt = 1
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO node_max_jobs (node_id, max_jobs, pause_dispatch, updated_at)
@@ -194,7 +190,7 @@ func (s *Store) SetPauseDispatch(ctx context.Context, nodeID string, paused bool
 		 ON CONFLICT (node_id) DO UPDATE SET
 		   pause_dispatch = excluded.pause_dispatch,
 		   updated_at     = excluded.updated_at`,
-		nodeID, pauseInt, now,
+		nodeID, paused, now,
 	)
 	return err
 }

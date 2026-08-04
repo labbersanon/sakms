@@ -146,7 +146,7 @@ func (s *Store) List(ctx context.Context, connGet ConnGet) ([]Database, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, endpoint, api_key_encrypted, priority, enabled, fansite_only, secret_ref
 		FROM stashbox_databases
-		WHERE enabled = 1
+		WHERE enabled = true
 		ORDER BY priority ASC, id ASC
 	`)
 	if err != nil {
@@ -308,8 +308,16 @@ func (s *Store) Create(ctx context.Context, name, endpoint, apiKey string) (Data
 		return Database{}, fmt.Errorf("acquiring connection: %w", err)
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+	// Claude 2026-08-04: BEGIN IMMEDIATE is SQLite-only; PG uses BEGIN + xact advisory lock.
+	// Reason: concurrent Create must still serialize the cap check (pool MaxOpen > 1 now).
+	// Troubleshooting: "syntax error at or near IMMEDIATE".
+	// Review if: Create moves to a single INSERT…ON CONFLICT / exclusion constraint.
+	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
 		return Database{}, fmt.Errorf("beginning stash-box database create: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_xact_lock(872014)"); err != nil {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		return Database{}, fmt.Errorf("locking stash-box database create: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -332,7 +340,7 @@ func (s *Store) Create(ctx context.Context, name, endpoint, apiKey string) (Data
 	out := Database{Name: name, Endpoint: endpoint, APIKey: apiKey, Enabled: true}
 	row := conn.QueryRowContext(ctx, `
 		INSERT INTO stashbox_databases (name, endpoint, api_key_encrypted, priority, enabled, fansite_only, secret_ref)
-		VALUES (?, ?, ?, COALESCE((SELECT MAX(priority) + 1 FROM stashbox_databases), 0), 1, 0, '')
+		VALUES (?, ?, ?, COALESCE((SELECT MAX(priority) + 1 FROM stashbox_databases), 0), true, false, '')
 		RETURNING id, priority
 	`, name, endpoint, encrypted)
 	if err := row.Scan(&out.ID, &out.Priority); err != nil {
@@ -416,9 +424,9 @@ func (s *Store) Update(ctx context.Context, id int64, in UpdateInput, connSet Co
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE stashbox_databases SET
 			name = ?, endpoint = ?, api_key_encrypted = ?, priority = ?, enabled = ?, fansite_only = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		WHERE id = ?
-	`, next.Name, next.Endpoint, next.apiKeyEncrypted, next.Priority, boolToInt(next.Enabled), boolToInt(next.FansiteOnly), id)
+	`, next.Name, next.Endpoint, next.apiKeyEncrypted, next.Priority, next.Enabled, next.FansiteOnly, id)
 	if err != nil {
 		return fmt.Errorf("updating stash-box database %d: %w", id, err)
 	}
@@ -455,7 +463,7 @@ func (s *Store) Reorder(ctx context.Context, ids []int64) error {
 	for i, id := range ids {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE stashbox_databases SET priority = ?,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = sakms_now()
 			WHERE id = ?
 		`, i, id); err != nil {
 			return fmt.Errorf("reordering stash-box database %d: %w", id, err)
@@ -609,7 +617,7 @@ func (s *Store) nameFree(ctx context.Context, name string, excludeID int64) erro
 func nameFreeInTx(ctx context.Context, q queryRower, name string, excludeID int64) error {
 	var taken int
 	if err := q.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM stashbox_databases WHERE name = ? COLLATE NOCASE AND id <> ?`,
+		`SELECT COUNT(*) FROM stashbox_databases WHERE lower(name) = lower(?) AND id <> ?`,
 		name, excludeID).Scan(&taken); err != nil {
 		return fmt.Errorf("checking stash-box database name %q: %w", name, err)
 	}
@@ -623,8 +631,8 @@ func nameFreeInTx(ctx context.Context, q queryRower, name string, excludeID int6
 	var haunted int
 	if err := q.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM library_scenes
-		WHERE box = ? COLLATE NOCASE
-		  AND box <> COALESCE((SELECT name FROM stashbox_databases WHERE id = ?), '')
+		WHERE lower(box) = lower(?)
+		  AND lower(box) <> lower(COALESCE((SELECT name FROM stashbox_databases WHERE id = ?), ''))
 	`, name, excludeID).Scan(&haunted); err != nil {
 		return fmt.Errorf("checking tracked scenes for stash-box database name %q: %w", name, err)
 	}
@@ -632,11 +640,4 @@ func nameFreeInTx(ctx context.Context, q queryRower, name string, excludeID int6
 		return ErrNameHaunted
 	}
 	return nil
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

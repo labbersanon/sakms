@@ -6,11 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/nodekeys"
 	"github.com/labbersanon/sakms/internal/nodes"
 	"github.com/labbersanon/sakms/internal/nodesettings"
@@ -204,10 +203,7 @@ func TestListNodes_ReportsStoredMaxJobs(t *testing.T) {
 // wiped on save but left untouched on the very next reconnect. Blank must
 // mean "leave it alone" on every push path, consistently.
 func TestResolvePathMap_BlankNodePathSkipped(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	sqlDB := dbtest.New(t)
 	defer sqlDB.Close()
 	settingsStore := settings.New(sqlDB)
 
@@ -225,10 +221,7 @@ func TestResolvePathMap_BlankNodePathSkipped(t *testing.T) {
 }
 
 func TestResolvePathMap_UnconfiguredLibraryPathSkipped(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	sqlDB := dbtest.New(t)
 	defer sqlDB.Close()
 	settingsStore := settings.New(sqlDB)
 
@@ -241,10 +234,7 @@ func TestResolvePathMap_UnconfiguredLibraryPathSkipped(t *testing.T) {
 }
 
 func TestResolvePathMap_ConfiguredWithNodePath_Included(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	sqlDB := dbtest.New(t)
 	defer sqlDB.Close()
 	settingsStore := settings.New(sqlDB)
 
@@ -267,10 +257,7 @@ func TestResolvePathMap_ConfiguredWithNodePath_Included(t *testing.T) {
 // independent server-side conversion sites; the reconnect site
 // (pushPersistedNodeSettings) is covered separately.
 func TestResolvePathMap_PopulatesWireKey(t *testing.T) {
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
+	sqlDB := dbtest.New(t)
 	defer sqlDB.Close()
 	settingsStore := settings.New(sqlDB)
 

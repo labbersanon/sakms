@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,7 +15,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
@@ -194,11 +193,7 @@ func newAirDateEnv(t *testing.T, seasons map[int][]fakeTMDBEpisode, prowlarrBody
 	t.Helper()
 	ctx := context.Background()
 
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)
@@ -1316,10 +1311,7 @@ func TestDeletedSeriesAirDateRowsAreReaped(t *testing.T) {
 		if err != nil {
 			t.Fatalf("creating the air-date row: %v", err)
 		}
-		brokenDB, err := db.Open(filepath.Join(t.TempDir(), "broken.db"))
-		if err != nil {
-			t.Fatalf("opening the throwaway db: %v", err)
-		}
+		brokenDB := dbtest.New(t)
 		brokenDB.Close()
 
 		airDateBackoffSweep(env2.ctx, env2.deps, library.New(brokenDB), now)
@@ -1337,7 +1329,7 @@ func TestDeletedSeriesAirDateRowsAreReaped(t *testing.T) {
 // TestNeverMonitoredSeasonRowIsLeftAloneBySweep is the regression guard for the
 // bug all three Phase-4 reviewers independently found: the sweep's reap branch
 // used the WIDE airDateShaped predicate together with MonitoredSeasons, which
-// only returns monitored = 1 rows. Since an ABSENT row means unmonitored, that
+// only returns monitored = true rows. Since an ABSENT row means unmonitored, that
 // pair cannot distinguish "explicitly un-monitored" from "never touched by this
 // feature at all" — the state of EVERY season on EVERY install by default.
 //
@@ -1826,7 +1818,7 @@ func TestMonitoringAZeroRowSeasonSyncsItsEpisodes(t *testing.T) {
 }
 
 // TestUnMonitoredZeroRowSeasonIsNotSynced is the other side of the guard above:
-// the sync seeds from MonitoredSeasons (monitored = 1 only), never
+// the sync seeds from MonitoredSeasons (monitored = true only), never
 // SeasonMonitorFlags, so an explicitly un-monitored episode-less season must not
 // burn a SeasonDetails call every cycle forever.
 func TestUnMonitoredZeroRowSeasonIsNotSynced(t *testing.T) {

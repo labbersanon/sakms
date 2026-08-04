@@ -71,7 +71,7 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 			phash_file_mtime = excluded.phash_file_mtime,
 			size = excluded.size,
 			quality_tier = excluded.quality_tier,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		RETURNING id, created_at, updated_at
 	`, scene.Box, scene.SceneID, scene.Title, scene.Studio, scene.Date, scene.FilePath, scene.RootFolderPath, scene.PHash, scene.PHashFileSize, scene.PHashFileMTime, scene.Size, scene.QualityTier)
 
@@ -153,7 +153,7 @@ func (s *Store) UpdateScenePHash(ctx context.Context, id int64, phash string, fi
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE library_scenes
 		SET phash = ?, phash_file_size = ?, phash_file_mtime = ?,
-		    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		    updated_at = sakms_now()
 		WHERE id = ?
 	`, phash, fileSize, fileMTime, id)
 	if err != nil {
@@ -187,7 +187,7 @@ func (s *Store) SceneTags(ctx context.Context, sceneID int64) ([]string, error) 
 func (s *Store) AddSceneTag(ctx context.Context, sceneID int64, tag string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO library_scene_tags (scene_id, tag) VALUES (?, ?)
-		ON CONFLICT(scene_id, tag) DO NOTHING
+		ON CONFLICT (scene_id, (lower(tag))) DO NOTHING
 	`, sceneID, tag)
 	if err != nil {
 		return fmt.Errorf("adding tag %q to scene %d: %w", tag, sceneID, err)
@@ -197,7 +197,7 @@ func (s *Store) AddSceneTag(ctx context.Context, sceneID int64, tag string) erro
 
 // RemoveSceneTag unassigns tag from sceneID. A no-op if it wasn't assigned.
 func (s *Store) RemoveSceneTag(ctx context.Context, sceneID int64, tag string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM library_scene_tags WHERE scene_id = ? AND tag = ?`, sceneID, tag)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM library_scene_tags WHERE scene_id = ? AND lower(tag) = lower(?)`, sceneID, tag)
 	if err != nil {
 		return fmt.Errorf("removing tag %q from scene %d: %w", tag, sceneID, err)
 	}

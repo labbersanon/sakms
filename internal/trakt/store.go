@@ -167,7 +167,7 @@ func (s *Store) SaveCredentials(ctx context.Context, clientID string, clientSecr
 		}
 		_, err := s.db.ExecContext(ctx, `
 			INSERT INTO trakt_connection (id, client_id, client_secret_encrypted, updated_at)
-			VALUES (1, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+			VALUES (1, ?, ?, sakms_now())
 			ON CONFLICT(id) DO UPDATE SET
 				client_id = excluded.client_id,
 				client_secret_encrypted = excluded.client_secret_encrypted,
@@ -183,7 +183,7 @@ func (s *Store) SaveCredentials(ctx context.Context, clientID string, clientSecr
 	// secret to preserve) correctly gets '' via the INSERT default.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO trakt_connection (id, client_id, updated_at)
-		VALUES (1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		VALUES (1, ?, sakms_now())
 		ON CONFLICT(id) DO UPDATE SET
 			client_id = excluded.client_id,
 			updated_at = excluded.updated_at
@@ -214,7 +214,7 @@ func (s *Store) SaveTokens(ctx context.Context, accessToken, refreshToken string
 			access_token_encrypted = ?,
 			refresh_token_encrypted = ?,
 			token_expires_at = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		WHERE id = 1
 	`, accessEnc, refreshEnc, expiresAt.UTC().Format(time.RFC3339))
 	if err != nil {
@@ -239,7 +239,7 @@ func (s *Store) ClearTokens(ctx context.Context) error {
 			access_token_encrypted = '',
 			refresh_token_encrypted = '',
 			token_expires_at = '',
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		WHERE id = 1
 	`)
 	if err != nil {

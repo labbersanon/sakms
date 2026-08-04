@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
@@ -14,11 +14,7 @@ import (
 
 func newTestLibraryStore(t *testing.T) *library.Store {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	return library.New(sqlDB)
 }
 
@@ -175,11 +171,7 @@ func TestApplyLibrary_TrackedLoserDBDeleteFails_StillReportsPhysicalDeletion(t *
 	trackedFile := writeVideoFile(t, dir, "tracked.mkv", 10)
 	winnerPath := writeVideoFile(t, dir, "winner.mkv", 10)
 
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	libStore := library.New(sqlDB)
 
 	tracked, err := libStore.Upsert(context.Background(), library.Item{

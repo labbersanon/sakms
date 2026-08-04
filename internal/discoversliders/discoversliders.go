@@ -145,7 +145,7 @@ func (s *Store) Create(ctx context.Context, title string, filterType FilterType,
 	}
 	row := s.db.QueryRowContext(ctx, `
 		INSERT INTO discover_sliders (title, filter_type, filter_value, target, sort_order, enabled, updated_at)
-		VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM discover_sliders), ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM discover_sliders), ?, sakms_now())
 		RETURNING id, sort_order, created_at, updated_at
 	`, title, string(filterType), filterValue, string(target), enabled)
 
@@ -166,7 +166,7 @@ func (s *Store) Update(ctx context.Context, id int, title string, filterType Fil
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE discover_sliders SET
 			title = ?, filter_type = ?, filter_value = ?, target = ?, enabled = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		WHERE id = ?
 		RETURNING id, sort_order, created_at, updated_at
 	`, title, string(filterType), filterValue, string(target), enabled, id)
@@ -254,7 +254,7 @@ func (s *Store) Reorder(ctx context.Context, ids []int) error {
 
 	for i, id := range ids {
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE discover_sliders SET sort_order = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			UPDATE discover_sliders SET sort_order = ?, updated_at = sakms_now()
 			WHERE id = ?
 		`, i, id); err != nil {
 			return fmt.Errorf("reordering slider %d: %w", id, err)

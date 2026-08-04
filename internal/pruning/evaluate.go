@@ -122,7 +122,7 @@ func BestTier(tiers []string) string {
 //
 // An empty or unparseable createdAt means the age condition does NOT
 // match — same fail-closed direction as matchesTier's sentinel handling.
-// created_at is written by SQLite as strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+// created_at is written by SQLite as sakms_now(),
 // which time.RFC3339 parses fine (Go's time.Parse accepts the fractional
 // seconds even though the RFC3339 layout constant doesn't spell them out).
 func matchesAge(createdAt string, thresholdDays int, now time.Time) (int, bool) {

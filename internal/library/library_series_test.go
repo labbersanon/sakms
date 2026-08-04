@@ -667,7 +667,7 @@ func TestMonitoredSeasons_AbsentRowMeansUnmonitored(t *testing.T) {
 	}
 
 	// Flipping back to false must remove it from the set, not leave a
-	// monitored = 0 row showing up as monitored.
+	// monitored = false row showing up as monitored.
 	if err := s.SetSeasonMonitored(ctx, series.ID, 2, false); err != nil {
 		t.Fatalf("clearing monitored: %v", err)
 	}

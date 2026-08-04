@@ -94,7 +94,7 @@ func (s *Store) UpsertSeries(ctx context.Context, series Series) (Series, error)
 			root_folder_path = excluded.root_folder_path,
 			genres = excluded.genres,
 			"cast" = excluded."cast",
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		RETURNING id, created_at, updated_at
 	`, series.TMDBID, series.TVDBID, series.Title, series.Year, series.RootFolderPath, genresJSON, castJSON)
 
@@ -217,7 +217,7 @@ func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) 
 			phash_file_mtime = excluded.phash_file_mtime,
 			size = excluded.size,
 			quality_tier = excluded.quality_tier,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 		RETURNING id, created_at, updated_at
 	`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime, ep.Size, ep.QualityTier)
 
@@ -262,7 +262,7 @@ func (s *Store) UpsertEpisodes(ctx context.Context, eps []Episode) ([]Episode, e
 				phash_file_mtime = excluded.phash_file_mtime,
 				size = excluded.size,
 				quality_tier = excluded.quality_tier,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = sakms_now()
 			RETURNING id, created_at, updated_at
 		`, ep.SeriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.AirDate, ep.FilePath, ep.PHash, ep.PHashFileSize, ep.PHashFileMTime, ep.Size, ep.QualityTier)
 		if err := row.Scan(&ep.ID, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
@@ -304,9 +304,9 @@ func (s *Store) UpsertEpisodeCatalog(ctx context.Context, seriesID int64, season
 		INSERT INTO library_episodes (series_id, season_number, episode_number, title, air_date)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
-			title      = COALESCE(NULLIF(excluded.title, ''), title),
-			air_date   = COALESCE(NULLIF(excluded.air_date, ''), air_date),
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			title      = COALESCE(NULLIF(excluded.title, ''), library_episodes.title),
+			air_date   = COALESCE(NULLIF(excluded.air_date, ''), library_episodes.air_date),
+			updated_at = sakms_now()
 	`, seriesID, seasonNumber, episodeNumber, title, airDate)
 	if err != nil {
 		return fmt.Errorf("upserting episode catalog s%de%d for series %d: %w", seasonNumber, episodeNumber, seriesID, err)
@@ -326,7 +326,7 @@ func (s *Store) UpdateEpisodePHash(ctx context.Context, id int64, phash string, 
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE library_episodes
 		SET phash = ?, phash_file_size = ?, phash_file_mtime = ?,
-		    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+		    updated_at = sakms_now()
 		WHERE id = ?
 	`, phash, fileSize, fileMTime, id)
 	if err != nil {
@@ -447,13 +447,13 @@ type SeasonState struct {
 
 // MonitoredSeasons returns seriesID's monitored season numbers as a set.
 //
-// ONE query per series, returning only monitored = 1 rows — deliberately not a
+// ONE query per series, returning only monitored = true rows — deliberately not a
 // per-season SeasonMonitored lookup, which would be an N+1 inside the auto-grab
 // cycle's per-series loop. An absent key means unmonitored, which is the same
 // answer an absent ROW gives: there is no tri-state (see migration 0056).
 func (s *Store) MonitoredSeasons(ctx context.Context, seriesID int64) (map[int]bool, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT season_number FROM library_season_monitored WHERE series_id = ? AND monitored = 1
+		SELECT season_number FROM library_season_monitored WHERE series_id = ? AND monitored = true
 	`, seriesID)
 	if err != nil {
 		return nil, fmt.Errorf("listing monitored seasons for series %d: %w", seriesID, err)
@@ -473,7 +473,7 @@ func (s *Store) MonitoredSeasons(ctx context.Context, seriesID int64) (map[int]b
 
 // SeasonMonitorFlags returns every (season -> monitored) row that EXISTS for
 // seriesID, unfiltered by value — unlike MonitoredSeasons, which only returns
-// monitored = 1 rows. An absent key here means "never toggled"; a present key
+// monitored = true rows. An absent key here means "never toggled"; a present key
 // with value false means "explicitly un-monitored".
 //
 // The destructive reap branch in airdatemonitor.go's backoff sweep needs that
@@ -512,7 +512,7 @@ func (s *Store) SetSeasonMonitored(ctx context.Context, seriesID int64, seasonNu
 		VALUES (?, ?, ?)
 		ON CONFLICT(series_id, season_number) DO UPDATE SET
 			monitored  = excluded.monitored,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+			updated_at = sakms_now()
 	`, seriesID, seasonNumber, monitored)
 	if err != nil {
 		return fmt.Errorf("setting season %d monitored for series %d: %w", seasonNumber, seriesID, err)
@@ -528,7 +528,7 @@ func (s *Store) SetSeasonMonitored(ctx context.Context, seriesID int64, seasonNu
 // install that predates this feature), and a season with a monitored row but no
 // episode rows yet (a season discovered from TMDB before its episodes are
 // synced). The monitored side of that union is deliberately NOT filtered to
-// monitored = 1, unlike MonitoredSeasons: an episode-less season the operator
+// monitored = true, unlike MonitoredSeasons: an episode-less season the operator
 // un-monitors would otherwise vanish from this list and become impossible to
 // re-enable.
 func (s *Store) ListSeasonStates(ctx context.Context, seriesID int64) ([]SeasonState, error) {
@@ -536,7 +536,7 @@ func (s *Store) ListSeasonStates(ctx context.Context, seriesID int64) ([]SeasonS
 		SELECT seasons.season_number,
 		       COALESCE(counts.episode_count, 0),
 		       COALESCE(counts.missing_count, 0),
-		       COALESCE(flags.monitored, 0)
+		       COALESCE(flags.monitored, false)
 		  FROM (SELECT DISTINCT season_number FROM library_episodes WHERE series_id = ?
 		        UNION
 		        SELECT season_number FROM library_season_monitored WHERE series_id = ?) AS seasons
@@ -660,7 +660,7 @@ func (s *Store) SeriesTags(ctx context.Context, seriesID int64) ([]string, error
 func (s *Store) AddSeriesTag(ctx context.Context, seriesID int64, tag string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO library_series_tags (series_id, tag) VALUES (?, ?)
-		ON CONFLICT(series_id, tag) DO NOTHING
+		ON CONFLICT (series_id, (lower(tag))) DO NOTHING
 	`, seriesID, tag)
 	if err != nil {
 		return fmt.Errorf("adding tag %q to series %d: %w", tag, seriesID, err)
@@ -670,7 +670,7 @@ func (s *Store) AddSeriesTag(ctx context.Context, seriesID int64, tag string) er
 
 // RemoveSeriesTag unassigns tag from seriesID. A no-op if it wasn't assigned.
 func (s *Store) RemoveSeriesTag(ctx context.Context, seriesID int64, tag string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM library_series_tags WHERE series_id = ? AND tag = ?`, seriesID, tag)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM library_series_tags WHERE series_id = ? AND lower(tag) = lower(?)`, seriesID, tag)
 	if err != nil {
 		return fmt.Errorf("removing tag %q from series %d: %w", tag, seriesID, err)
 	}

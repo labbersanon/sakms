@@ -23,7 +23,7 @@ func New(db *sql.DB) *Store {
 // List returns every allowlisted tag for m, alphabetically.
 func (s *Store) List(ctx context.Context, m mode.Mode) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tag FROM purge_allowlist WHERE mode = ? ORDER BY tag COLLATE NOCASE`, string(m))
+		`SELECT tag FROM purge_allowlist WHERE mode = ? ORDER BY lower(tag)`, string(m))
 	if err != nil {
 		return nil, fmt.Errorf("listing allowlist for %q: %w", m, err)
 	}
@@ -58,7 +58,7 @@ func (s *Store) Add(ctx context.Context, m mode.Mode, tag string) error {
 // that isn't present is not an error.
 func (s *Store) Remove(ctx context.Context, m mode.Mode, tag string) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM purge_allowlist WHERE mode = ? AND tag = ? COLLATE NOCASE`, string(m), tag)
+		`DELETE FROM purge_allowlist WHERE mode = ? AND lower(tag) = lower(?)`, string(m), tag)
 	if err != nil {
 		return fmt.Errorf("removing %q from %q's allowlist: %w", tag, m, err)
 	}

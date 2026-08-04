@@ -284,7 +284,7 @@ func (s *Store) Update(ctx context.Context, id int64, c Connection, secret *stri
 			UPDATE service_connections SET
 				kind = ?, provider = ?, label = ?, url = ?, host = ?, port = ?, tls = ?, username = ?,
 				max_conns = ?, secret_encrypted = ?, enabled = ?,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = sakms_now()
 			WHERE id = ?
 			RETURNING id, sort_order, created_at, updated_at
 		`, string(c.Kind), string(c.Provider), c.Label, c.URL, c.Host, c.Port, c.TLS, c.Username, c.MaxConns, encrypted, c.Enabled, id)
@@ -294,7 +294,7 @@ func (s *Store) Update(ctx context.Context, id int64, c Connection, secret *stri
 			UPDATE service_connections SET
 				kind = ?, provider = ?, label = ?, url = ?, host = ?, port = ?, tls = ?, username = ?,
 				max_conns = ?, enabled = ?,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = sakms_now()
 			WHERE id = ?
 			RETURNING id, sort_order, created_at, updated_at
 		`, string(c.Kind), string(c.Provider), c.Label, c.URL, c.Host, c.Port, c.TLS, c.Username, c.MaxConns, c.Enabled, id)
@@ -475,7 +475,7 @@ func (s *Store) PlayersForMode(ctx context.Context, m string) ([]Connection, err
 	}
 	conns, encrypted, err := s.query(ctx, `
 		SELECT `+selectColumns+` FROM service_connections c
-		WHERE c.kind = 'player' AND c.enabled = 1
+		WHERE c.kind = 'player' AND c.enabled = true
 		  AND EXISTS (SELECT 1 FROM service_connection_modes m WHERE m.connection_id = c.id AND m.mode = ?)
 		ORDER BY c.sort_order ASC, c.id ASC
 	`, m)

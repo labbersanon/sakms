@@ -62,7 +62,7 @@ func (s *Store) BackfillUsenetURL(ctx context.Context) error {
 		}
 		if _, err := s.db.ExecContext(ctx, `
 			UPDATE service_connections SET host = ?, port = ?, tls = ?, url = '',
-				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+				updated_at = sakms_now()
 			WHERE id = ?
 		`, cfg.Host, cfg.Port, cfg.TLS, p.id); err != nil {
 			return fmt.Errorf("backfilling host/port for usenet connection %d: %w", p.id, err)

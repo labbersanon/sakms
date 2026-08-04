@@ -130,28 +130,19 @@ func (s *SQLiteStore) UpsertStudio(ctx context.Context, name, source, extID stri
 	if norm == "" {
 		return nil
 	}
-	res, err := s.db.ExecContext(ctx,
+	var id int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO parse_studios (name, name_norm, source, ext_id)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(name_norm) DO UPDATE SET
 		   name       = excluded.name,
 		   source     = excluded.source,
 		   ext_id     = excluded.ext_id,
-		   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
-		name, norm, source, nullableStr(extID))
+		   updated_at = sakms_now()
+		 RETURNING id`,
+		name, norm, source, nullableStr(extID)).Scan(&id)
 	if err != nil {
 		return err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	// ON CONFLICT update returns 0 for LastInsertId on SQLite — re-query.
-	if id == 0 {
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT id FROM parse_studios WHERE name_norm = ?`, norm).Scan(&id); err != nil {
-			return err
-		}
 	}
 	return s.upsertAliases(ctx, "studio", id, aliases)
 }
@@ -161,27 +152,19 @@ func (s *SQLiteStore) UpsertPerformer(ctx context.Context, name, source, extID s
 	if norm == "" {
 		return nil
 	}
-	res, err := s.db.ExecContext(ctx,
+	var id int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO parse_performers (name, name_norm, source, ext_id)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(name_norm) DO UPDATE SET
 		   name       = excluded.name,
 		   source     = excluded.source,
 		   ext_id     = excluded.ext_id,
-		   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
-		name, norm, source, nullableStr(extID))
+		   updated_at = sakms_now()
+		 RETURNING id`,
+		name, norm, source, nullableStr(extID)).Scan(&id)
 	if err != nil {
 		return err
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return err
-	}
-	if id == 0 {
-		if err := s.db.QueryRowContext(ctx,
-			`SELECT id FROM parse_performers WHERE name_norm = ?`, norm).Scan(&id); err != nil {
-			return err
-		}
 	}
 	return s.upsertAliases(ctx, "performer", id, aliases)
 }
@@ -212,7 +195,7 @@ func (s *SQLiteStore) upsertAliases(ctx context.Context, kind string, parentID i
 func (s *SQLiteStore) SetSyncCursor(ctx context.Context, source, cursor string) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO parse_entity_sync (source, cursor, synced_at)
-		 VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		 VALUES (?, ?, sakms_now())
 		 ON CONFLICT(source) DO UPDATE SET
 		   cursor    = excluded.cursor,
 		   synced_at = excluded.synced_at`,

@@ -1,0 +1,41 @@
+# Claude 2026-08-04: Go unit tests against Postgres (SQLite removed from sakms).
+# Reason: WS5.5 — SAKMS_TEST_DATABASE_URL required; schema via dbtest template DB.
+# Troubleshooting: failures often mean missing GREATEST/bool coerce / baseline drift.
+# Review if: compose Postgres major version changes from 16.
+name: go-test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sakms
+          POSTGRES_PASSWORD: sakms
+          POSTGRES_DB: sakms_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sakms -d sakms_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SAKMS_TEST_DATABASE_URL: postgres://sakms:sakms@localhost:5432/sakms_test?sslmode=disable
+      SAKMS_TEST_DATABASE_URL_REQUIRED: "1"
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test
+        run: go test -count=1 -timeout 45m -p 4 ./...

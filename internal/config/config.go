@@ -3,7 +3,10 @@ package config
 
 import (
 	"cmp"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 // SidecarExts are files that must never be treated as orphaned media content
@@ -33,8 +36,21 @@ var ExcludedDirNames = map[string]bool{
 type Config struct {
 	// Addr is the HTTP listen address, e.g. ":8080".
 	Addr string
-	// DataDir holds sakms.db and anything else SAK owns on disk.
+	// DataDir holds secret.key, downloads staging, and (post-Postgres cutover)
+	// a dated sakms.db backup — not the live database file.
 	DataDir string
+	// DatabaseURL is the Postgres DSN (postgres://…). Prefer DatabaseURLFile
+	// in production so the password never lands in compose env.
+	// Claude 2026-08-04: added for SQLite→Postgres migration.
+	// Reason: Postgres-only open path; no sakms.db path DSN.
+	// Review if: dual-driver returns (spec forbids).
+	DatabaseURL string
+	// DatabaseURLFile, if set, is a path whose contents override DatabaseURL
+	// (trimmed). Used with the compose init-container / *_FILE pattern.
+	DatabaseURLFile string
+	// DBMaxOpenConns / DBMaxIdleConns size the sql.DB pool (Postgres).
+	DBMaxOpenConns int
+	DBMaxIdleConns int
 	// APIKey, if set, is the X-Api-Key clients must send to authenticate
 	// without a session cookie (see internal/auth). Deliberately has no
 	// default and is read via plain os.Getenv below, NOT cmp.Or like
@@ -55,7 +71,43 @@ func FromEnv() Config {
 	return Config{
 		Addr:               cmp.Or(os.Getenv("SAKMS_ADDR"), ":8080"),
 		DataDir:            cmp.Or(os.Getenv("SAKMS_DATA_DIR"), "./data"),
+		DatabaseURL:        os.Getenv("SAKMS_DATABASE_URL"),
+		DatabaseURLFile:    os.Getenv("SAKMS_DATABASE_URL_FILE"),
+		DBMaxOpenConns:     envInt("SAKMS_DB_MAX_OPEN_CONNS", 20),
+		DBMaxIdleConns:     envInt("SAKMS_DB_MAX_IDLE_CONNS", 5),
 		APIKey:             os.Getenv("SAKMS_API_KEY"),
 		BundledOllamaModel: os.Getenv("SAKMS_BUNDLED_OLLAMA_MODEL"),
 	}
+}
+
+// ResolveDatabaseURL returns the DSN from DatabaseURLFile (preferred) or
+// DatabaseURL. File contents are trimmed of surrounding whitespace/newlines.
+func (c Config) ResolveDatabaseURL() (string, error) {
+	if c.DatabaseURLFile != "" {
+		b, err := os.ReadFile(c.DatabaseURLFile)
+		if err != nil {
+			return "", fmt.Errorf("reading SAKMS_DATABASE_URL_FILE %q: %w", c.DatabaseURLFile, err)
+		}
+		dsn := strings.TrimSpace(string(b))
+		if dsn == "" {
+			return "", fmt.Errorf("SAKMS_DATABASE_URL_FILE %q is empty", c.DatabaseURLFile)
+		}
+		return dsn, nil
+	}
+	if strings.TrimSpace(c.DatabaseURL) == "" {
+		return "", fmt.Errorf("set SAKMS_DATABASE_URL or SAKMS_DATABASE_URL_FILE")
+	}
+	return strings.TrimSpace(c.DatabaseURL), nil
+}
+
+func envInt(key string, def int) int {
+	s := os.Getenv(key)
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
 }

@@ -14,7 +14,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
-	"github.com/labbersanon/sakms/internal/db"
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
@@ -40,11 +40,7 @@ type staleTestStores struct {
 
 func newStaleTestStores(t *testing.T) staleTestStores {
 	t.Helper()
-	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "sakms.db"))
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
+	sqlDB := dbtest.New(t)
 	secretStore, err := secrets.New(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("building secret store: %v", err)

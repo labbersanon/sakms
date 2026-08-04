@@ -93,6 +93,18 @@ func Classify(rawPath string) Set {
 	case "connections", "service-connections", "webhooks", "nodes",
 		"netscan", "browse", "downloader", "ollama":
 		out.Add(SectionSettings)
+	case "pruning-rules":
+		// Claude 2026-08-03: added for the propose-only pruning rules feature.
+		// Reason: the rules are authored on a Settings tab, so they follow the
+		// shared-route attribution rule above and get {settings} — the LESS
+		// restrictive of the two screens they touch. Attributing them to
+		// {organize} instead would take the whole Pruning settings surface
+		// away whenever the Organize tab alone was locked, while Organize is
+		// already gated by its own /api/modes/{mode}/purge/* routes.
+		// Note a rule's own mode lives in the request BODY, never the path, so
+		// an adult-scoped rule is NOT gated by Layer 1's adult rule here.
+		// Review if: pruning rules ever move onto the Organize screen.
+		out.Add(SectionSettings)
 	case "images", "notifications", "apikey", "auth", "setup",
 		"section-lock", "openapi.yaml":
 		// Deliberately unclassified, each for its own reason:

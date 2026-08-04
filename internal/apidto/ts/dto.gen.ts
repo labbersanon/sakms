@@ -2564,3 +2564,41 @@ export interface SectionLockSectionsRequest {
   currentPin: string;
   sections: string[];
 }
+/**
+ * PruningRule is the full read shape for GET /api/pruning-rules and its
+ * per-id counterpart — one operator-authored rule for the Purge workflow.
+ */
+export interface PruningRule {
+  id: number /* int64 */;
+  name: string;
+  mode: string;
+  ageDays?: number /* int */;
+  sizeBytes?: number /* int64 */;
+  qualityTierFloor?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+/**
+ * PruningRuleUpsertRequest is the body of POST /api/pruning-rules (create)
+ * and PUT /api/pruning-rules/{id} (update) — every editable field, mirroring
+ * SliderUpsertRequest's plain-non-pointer shape: nothing here is a secret, so
+ * a save always sends the full rule rather than a partial "preserve
+ * unchanged" update.
+ */
+export interface PruningRuleUpsertRequest {
+  name: string;
+  mode: string;
+  ageDays: number /* int */;
+  sizeBytes: number /* int64 */;
+  qualityTierFloor: string;
+  enabled: boolean;
+}
+/**
+ * PruningRulePreviewResponse is POST .../pruning-rules/preview's response
+ * (spec §13.1) — the soft-warning match count for a draft or existing rule,
+ * shown before/after save without ever blocking it.
+ */
+export interface PruningRulePreviewResponse {
+  matchCount: number /* int */;
+}

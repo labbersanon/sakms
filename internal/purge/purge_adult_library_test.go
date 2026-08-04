@@ -34,7 +34,7 @@ func TestScanLibraryAdult_ProposesOnlyScenesMatchingAllowlist(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibraryAdult(ctx, libStore, []string{"BDSM"})
+	got, err := ScanLibraryAdult(ctx, libStore, []string{"BDSM"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestScanLibraryAdult_EmptyAllowlistMatchesNothing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibraryAdult(ctx, libStore, nil)
+	got, err := ScanLibraryAdult(ctx, libStore, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

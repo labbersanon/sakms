@@ -10,6 +10,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/purge"
 	"github.com/labbersanon/sakms/internal/settings"
 )
@@ -22,27 +23,47 @@ import (
 // to purge.ScanLibraryAdult (Whisparr eliminated, Stage 4). connStore/
 // settingsStore/httpClient are retained on the signature (NewMux wires them)
 // but no longer used here, since no mode builds a Servarr session.
-func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store) http.HandlerFunc {
+//
+// Claude 2026-08-03: added pruningStore + the pruning-rule load below
+// (B4, plan §3.3).
+// Reason: the propose phase now stages items matching an enabled pruning rule
+// for {mode} alongside the tag allowlist. The rules are loaded here and passed
+// down as a parameter so cmd/sakms/scanadapter.go's scheduled ScanPurge runs
+// the byte-identical propose logic without needing a new exported purge symbol
+// (which internal/scanschedule's allowlist test would reject — see purge.go's
+// own header comment).
+// Troubleshooting: pruningStore MAY BE NIL in tests that don't exercise rules;
+// a nil store means "no rules," not a panic.
+func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store, pruningStore *pruning.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 
-		rules, err := allowStore.List(ctx, m)
+		tags, err := allowStore.List(ctx, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		var rules []pruning.Rule
+		if pruningStore != nil {
+			rules, err = pruningStore.ListEnabledForMode(ctx, m)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
 		var found []proposals.Proposal
 		switch m {
 		case mode.Movies:
-			found, err = purge.ScanLibrary(ctx, libStore, rules)
+			found, err = purge.ScanLibrary(ctx, libStore, tags, rules)
 		case mode.Series:
-			found, err = purge.ScanLibrarySeries(ctx, libStore, rules)
+			found, err = purge.ScanLibrarySeries(ctx, libStore, tags, rules)
 		case mode.Adult:
 			// Adult owns its own library now too (Whisparr eliminated, Stage 4)
 			// — served straight from libStore, no *arr app to ask.
-			found, err = purge.ScanLibraryAdult(ctx, libStore, rules)
+			found, err = purge.ScanLibraryAdult(ctx, libStore, tags, rules)
 		default:
 			http.Error(w, fmt.Sprintf("unknown mode %q", m), http.StatusBadRequest)
 			return

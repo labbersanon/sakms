@@ -37,6 +37,7 @@ import (
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/phash"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/recheck"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/scanschedule"
@@ -199,6 +200,15 @@ func run() error {
 	// path + the lifecycle hooks) and into discoverrefresh.Run further down
 	// (the write path).
 	discoverCache := discoverrefresh.NewStore(sqlDB)
+	// Claude 2026-08-03: pruningStore added for propose-only pruning rules
+	// (plan .omc/plans/autopilot-impl-pruning-rules.md §3.3).
+	// Reason: ONE store instance feeds both the request path (api.NewMux — the
+	// CRUD/preview routes and purgeScanHandler's propose phase) and the
+	// scheduled path (newScanAdapter's ScanPurge), so a manual and a scheduled
+	// Purge scan evaluate the identical rule set.
+	// Troubleshooting: nothing here ever deletes — rules are read-only inputs
+	// to Purge's propose phase, and every match still needs a human Apply.
+	pruningStore := pruning.New(sqlDB)
 	// watchStore backs the opt-in background recheck job (internal/recheck) —
 	// its own table, shared with nothing else. Constructed here only so the one
 	// start-call below can be handed it; nothing else in the program reads it.
@@ -323,7 +333,7 @@ func run() error {
 	// deliberately (see BE-10's own note there) — only this one needed to
 	// change.
 	// Troubleshooting: N/A — the cache is live from here on.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy, discoverCache)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy, discoverCache, pruningStore)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux, sectionGate...)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -589,7 +599,7 @@ func run() error {
 	// returns; all are cancelled via ctx on shutdown. Dedup cycles share the
 	// same dedupHub concurrency guard as manual Dedup scans. To remove entirely:
 	// delete internal/scanschedule, scanadapter.go, and this block.
-	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, allowStore, libStore, prober, phashDispatcher, videoDispatcher, entityStore)
+	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, allowStore, libStore, pruningStore, prober, phashDispatcher, videoDispatcher, entityStore)
 	scanschedule.Run(ctx, scanScheduler, settingsStore, dedupHub)
 
 	// Claude 2026-08-03: corrected the ordinal below from "seventh" to

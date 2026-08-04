@@ -24,6 +24,7 @@ import (
 	"github.com/labbersanon/sakms/internal/openai"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/serviceconn"
@@ -92,7 +93,17 @@ import (
 // Review if: BE-11 through BE-14 wire discoverCache into discoverHandler /
 // resolveSliderHandler / traktWatchlistHandler / the stash-box handlers —
 // this comment does not need to change then, only the handler bodies do.
-func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy, discoverCache *discoverrefresh.Store) *http.ServeMux {
+//
+// Claude 2026-08-03: added the trailing pruningStore param (B4/B5, plan
+// .omc/plans/autopilot-impl-pruning-rules.md §3.3).
+// Reason: it backs both the propose-phase rule evaluation in purgeScanHandler
+// and the /api/pruning-rules CRUD + preview routes. Threaded in as a param
+// rather than constructed here because NewMux has no *sql.DB — every other
+// store arrives the same way.
+// Troubleshooting: it MAY BE NIL, and nil means "no pruning rules" — a Purge
+// scan then behaves exactly as it did before this feature, and the CRUD routes
+// return 503. Every test call site that does not exercise rules passes nil.
+func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy, discoverCache *discoverrefresh.Store, pruningStore *pruning.Store) *http.ServeMux {
 	// Claude 2026-08-03: added discoverRefreshDeps, built from params NewMux
 	// already carries (BE-16, discover-scheduled-refresh plan §5.2/§5.3).
 	// Reason: the slider create/update and Trakt device-poll lifecycle hooks
@@ -213,11 +224,28 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/{mode}/rename/kids-root-path", getKidsRootPathHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/rename/kids-root-path", putKidsRootPathHandler(settingsStore))
 
-	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, settingsStore, propStore, allowStore, libStore))
+	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, settingsStore, propStore, allowStore, libStore, pruningStore))
 	mux.HandleFunc("GET /api/modes/{mode}/purge/proposals", listProposalsHandler(propStore, proposals.Purge))
 	mux.HandleFunc("GET /api/modes/{mode}/purge/allowlist", listAllowlistHandler(allowStore))
 	mux.HandleFunc("POST /api/modes/{mode}/purge/allowlist", addAllowlistTagHandler(allowStore))
 	mux.HandleFunc("DELETE /api/modes/{mode}/purge/allowlist/{tag}", removeAllowlistTagHandler(allowStore))
+
+	// Operator-authored propose-only pruning rules for the Purge workflow
+	// (internal/pruning) — CRUD plus a match-count preview. Flat, NOT
+	// mode-scoped under /api/modes/{mode}/: a rule carries its own single mode
+	// (plan §1.4), the same way a discover slider carries its own target, so
+	// these mirror /api/discover/sliders' shape rather than the per-mode
+	// allowlist routes above.
+	mux.HandleFunc("GET /api/pruning-rules", listPruningRulesHandler(pruningStore))
+	mux.HandleFunc("POST /api/pruning-rules", createPruningRuleHandler(pruningStore))
+	mux.HandleFunc("PUT /api/pruning-rules/{id}", updatePruningRuleHandler(pruningStore))
+	mux.HandleFunc("DELETE /api/pruning-rules/{id}", deletePruningRuleHandler(pruningStore))
+	// Preview is a soft warning only (plan §13.1): it counts what the draft
+	// rule WOULD match and stages nothing. Registered before the {id} routes
+	// read as an ordering hint only — Go 1.22's mux resolves this by method
+	// and specificity, and "preview" is a literal segment so it wins over
+	// {id} regardless.
+	mux.HandleFunc("POST /api/pruning-rules/preview", previewPruningRuleHandler(pruningStore, libStore))
 
 	mux.HandleFunc("POST /api/modes/{mode}/dedup/scan", dedupScanHandler(httpClient, connStore, scStore, settingsStore, propStore, prober, hasher, libStore, hub))
 	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals", listProposalsHandler(propStore, proposals.Dedup))

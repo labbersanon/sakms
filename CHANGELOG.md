@@ -5977,3 +5977,89 @@ failures (same host-sysfs-dependent, unrelated failures the 2026-08-02 and
 typecheck` clean. `pnpm -C frontend test` — **813 passed / 0 failed across 61
 files** (up from 806/61 in the prior entry, reflecting this feature's new
 frontend tests).
+
+## 2026-08-03 — Propose-only pruning rules for Purge, plus the two Critic safety amendments that closed its 2026-08-01 CRITICAL deferral
+
+Operators can now author named, per-mode pruning rules (age / size /
+quality-tier-floor, AND'd within a rule, OR'd across rules) that stage
+Purge proposals automatically, on top of Purge's existing allowlist-tag
+matching. New package `internal/pruning` (migration
+`0059_pruning_rules.sql` — one table, three sentinel-defaulted condition
+columns, same shape/tradeoff as `discover_sliders`, not a child table:
+the condition set is closed at exactly three and each has a different
+natural type). `purge.ScanLibrary`/`ScanLibrarySeries`/`ScanLibraryAdult`
+gained a `rules []pruning.Rule` parameter and evaluate it inside their
+existing per-item loop — one proposal per item even when both a tag and a
+rule match (`Reason` fields are joined, never duplicated), byte-identical
+`Reason` output when no rule is configured or none matches, so every
+pre-existing purge test assertion needed zero edits. Still fully
+**propose-only**: this is the manual Scan button and the pre-existing
+opt-in, default-off `purge-scan-interval` scheduler — that interval
+already existed end-to-end on the backend (`internal/scanschedule`,
+`GET`/`PUT /api/settings/purge-scan-interval`); the real AC3 gap this
+feature closes is the missing frontend control for it, not backend
+wiring. Every match, tag- or rule-triggered, still requires an explicit
+human Apply — no Apply-family code path was touched.
+
+**Sentinel safety (the single most dangerous defect this feature could
+ship, per the Critic's original CRITICAL-severity review).** `quality_tier`
+has two non-tier values in live data — `''` (row predates the migration
+0055 backfill) and `library.TierUnknown` ("unknown", backfill ran and
+could not infer a tier). A local `tierRank` map in `internal/pruning`
+(deliberately not exported from `internal/quality` for a single
+consumer) omits both, so a rank-lookup miss is "does not satisfy the tier
+condition" rather than a match — an un-backfilled or un-inferrable row can
+never satisfy even the broadest "lossless or below" rule. Pinned by
+dedicated tests (`TestMatch_EmptyQualityTier_NeverSatisfiesTierCondition`,
+`TestMatch_UnknownQualityTier_NeverSatisfiesTierCondition`). Series rules
+aggregate from that series' episodes (`library_series` carries no
+size/tier of its own): size is summed, but tier uses the **best**
+(highest-rank) tier across episodes with a real tier, not the worst —
+`ApplyLibrarySeries` deletes every episode file in one Apply, so one
+high-quality episode protecting the whole show from staging is the safe
+failure direction for an irreversible bulk delete. Episode aggregation is
+skipped entirely (no N+1 query) when no enabled rule for that mode
+configures a size or tier condition.
+
+**The two amendments that resolved the 2026-08-01 Critic CRITICAL
+deferral** (`.omc/plans/autopilot-impl-pruning-rules.md` §13,
+Architect+Critic reviewed; ROADMAP's "Propose-only pruning rules" entry
+now marked shipped with the same detail):
+1. **Match-count preview — a soft warning, not a hard block.** New `POST
+   /api/pruning-rules/preview` counts how many library subjects (for the
+   rule's mode, same `Subject` projection and Series aggregation Scan
+   uses) a draft or saved rule alone would currently match, without
+   staging anything. The Settings → Pruning create/edit form shows the
+   count as a non-blocking banner; Save/Update stays enabled no matter how
+   large the count is — there is deliberately no cap on how broad a rule's
+   preview can be.
+2. **Purge's apply-batch is capped at 20 items per request.** New
+   `MaxBatchPurgeItems = 20` (`internal/api/proposals.go`, parity with the
+   existing `MaxBatchGrabItems`), enforced only when the batch is
+   Purge-scoped — Rename and Dedup are unchanged at the existing shared
+   `maxBatchItems = 200`. A Purge `apply-batch` request over 20 items
+   returns 400 before any Apply runs, so a rule that floods the queue
+   cannot wipe the library in one click. Neither amendment substitutes for
+   actually reviewing the queue: the preview warns but never blocks, and
+   the cap only bounds how much one click can do.
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0059_pruning_rules.sql` | **New** — `pruning_rules` table: `name`, `mode`, `age_days`/`size_bytes`/`quality_tier_floor` (sentinel-defaulted, not nullable), `enabled`, timestamps |
+| `internal/pruning/` | **New package** — `pruning.go` (`Store`, `Rule`, CRUD, `Validate`, sentinel errors incl. `ErrNoConditions`), `evaluate.go` (`Subject`, local `tierRank`, `Match`, `MatchAny`, `humanBytes`, Reason formatting) |
+| `internal/purge/purge.go`, `purge_adult_library.go` | `ScanLibrary`/`ScanLibrarySeries`/`ScanLibraryAdult` gained a `rules []pruning.Rule` parameter; rule evaluation folded into the existing per-item loop; Series episode aggregation for size/tier |
+| `internal/api/pruning_rules.go` | **New** — CRUD handlers + `previewPruningRuleHandler` (§13.1) |
+| `internal/api/proposals.go` | `MaxBatchPurgeItems = 20`, enforced for Purge-scoped apply-batch requests only (§13.2) |
+| `internal/api/purge.go`, `handler.go` | `purgeScanHandler` and `NewMux` thread a `*pruning.Store`, loading `ListEnabledForMode` alongside the existing tag allowlist |
+| `cmd/sakms/scanadapter.go`, `main.go` | `scanAdapter` gained a `pruningStore` field; `pruning.New(db)` constructed once and threaded through — kept to `Scan*`/`ReplacePending` only, so `internal/scanschedule`'s allowlist test needed no change |
+| `internal/apidto/dto.go`, `internal/apidto/ts/dto.gen.ts` | `PruningRule`, `PruningRuleUpsertRequest`, `PruningRulePreviewResponse` |
+| `frontend/src/screens/Purge.tsx` | Apply Selected respects the 20-item Purge cap |
+| `docs/ROADMAP.md`, `CHANGELOG.md` | "Propose-only pruning rules" entry marked shipped with this detail; this entry |
+
+**Verification.** `internal/scanschedule -run 'TestScanOnlyAllowlist|TestScanScheduleImportFirewall'`
+passes with `allowlist_test.go` unchanged — the compliant design threads
+`rules` as an added parameter to the existing `Scan*` functions rather than
+adding any new exported `purge`/`proposals` symbol. All pre-existing
+`purge_test.go`/`purge_library_test.go`/`purge_library_series_test.go`/
+`purge_adult_library_test.go` Reason assertions pass unedited, confirming
+the byte-identical backward-compatibility invariant.

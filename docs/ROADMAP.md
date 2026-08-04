@@ -1962,6 +1962,36 @@ rather than replacing it.
   Purge review queue via the existing `Proposal.Reason` field (rule name +
   matched values), no new UI queue.
 
+  **SHIPPED 2026-08-03 — Critic CRITICAL-risk deferral (2026-08-01) resolved
+  via `.omc/plans/autopilot-impl-pruning-rules.md` §13 (Architect+Critic
+  reviewed); migration `0059_pruning_rules.sql`.** Still explicitly
+  **propose-only**: rule evaluation runs only inside Purge's existing
+  Scan/propose phase (the manual Scan button and the pre-existing, opt-in,
+  default-off `purge-scan-interval` scheduler — see the correction above;
+  that interval already existed on the backend, this feature only added the
+  missing operator-facing control for it), and every rule match still lands
+  as an ordinary Pending proposal requiring an explicit human Apply — no
+  Apply-family code path was touched. Two safety amendments closed the
+  deferral:
+  1. **Match-count preview is a SOFT warning, not a hard block.** `POST
+     /api/pruning-rules/preview` returns how many library items a
+     draft/saved rule would currently match; the Settings → Pruning
+     create/edit form shows it as a non-blocking banner ("this rule would
+     currently match N items"). Save/Update stays enabled regardless of how
+     large N is — there is no cap on the preview count, by design (§13.1).
+  2. **Purge's apply-batch is capped at 20 items per request**
+     (`MaxBatchPurgeItems`, `internal/api/proposals.go` — parity with the
+     existing `MaxBatchGrabItems`), Purge-workflow-only: Rename and Dedup
+     are unchanged at the existing shared 200-item cap (`maxBatchItems`). A
+     Purge `apply-batch` request over 20 items returns 400 before any Apply
+     runs, so a rule that floods the queue can't wipe the library in one
+     click (§13.2).
+
+  Neither amendment is a substitute for actually reviewing the queue before
+  applying: the preview warns but never blocks, and the batch cap only
+  bounds how much damage one click can do, not whether the operator looked
+  first.
+
 ### Discover card UI cleanup (grab buttons, poster size) — shipped 2026-08-02
 `.omc/specs/deep-interview-discover-card-cleanup.md` (~9% ambiguity,
 PASSED). Both open questions resolved: "remove grab buttons" means the

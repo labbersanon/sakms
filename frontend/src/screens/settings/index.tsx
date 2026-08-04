@@ -4,7 +4,10 @@
 // fallback when rendered standalone in a unit test): Library (per-mode metadata
 // source connections + root folder + quality prefs for all three modes; naming
 // preset and kids path for Movies/Series only — Adult has a fixed naming scheme
-// and no kids classification; new-season discovery for Series only); Usenet (the multi-subscription page + the
+// and no kids classification; new-season discovery for Series only); Pruning
+// (Claude 2026-08-03: operator-authored propose-only Purge rules — CRUD list +
+// per-rule age/size/quality-tier conditions with a soft match-count preview,
+// plus the Purge background-scan interval control, see PruningRules.tsx); Usenet (the multi-subscription page + the
 // auto-grab toggle, its own tab because a subscription's field set is richer
 // than a connection row, see Usenet.tsx); Torrent (the torrent engine's
 // counterpart to Usenet — engine/performance/seeding/stale-handling settings,
@@ -73,6 +76,7 @@ import { SectionSave } from "./shared";
 import { UISection } from "./UI";
 import { WebhooksSection } from "./Webhooks";
 import { NodesSection } from "./Nodes";
+import { PruningRulesSection } from "./PruningRules";
 
 // SECTION_TABS is the section-level tab set (distinct from the Movies/Series/
 // Adult mode selector). There is no Connections tab: its rows were redistributed
@@ -82,6 +86,7 @@ import { NodesSection } from "./Nodes";
 // tab of its own. Library leads, so it is the default.
 const SECTION_TABS: TabDef[] = [
   { id: "library", label: "Library" },
+  { id: "pruning", label: "Pruning" },
   { id: "usenet", label: "Usenet" },
   { id: "torrent", label: "Torrent" },
   { id: "ui", label: "UI" },
@@ -168,6 +173,10 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
             <SeriesNewSeasonDiscoverySection />
           </Show>
         </SectionSave>
+      </Show>
+
+      <Show when={section() === "pruning"}>
+        <PruningRulesSection />
       </Show>
 
       <Show when={section() === "usenet"}>

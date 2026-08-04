@@ -2639,3 +2639,46 @@ type SectionLockSectionsRequest struct {
 	CurrentPin string   `json:"currentPin"`
 	Sections   []string `json:"sections"`
 }
+
+// --- Pruning rules (internal/pruning) — propose-only Purge safety rules ----
+//
+// Mirrors pruning.Rule's wire shape (see .omc/plans/autopilot-impl-pruning-rules.md
+// §2.1). AgeDays/SizeBytes/QualityTierFloor use the same NOT NULL DEFAULT
+// sentinel convention as the migration (0/0/"" means "condition not
+// configured"), so unlike ConnectionUpsertRequest.APIKey these are plain
+// values, never *T.
+
+// PruningRule is the full read shape for GET /api/pruning-rules and its
+// per-id counterpart — one operator-authored rule for the Purge workflow.
+type PruningRule struct {
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	Mode             string `json:"mode"`
+	AgeDays          int    `json:"ageDays,omitempty"`
+	SizeBytes        int64  `json:"sizeBytes,omitempty"`
+	QualityTierFloor string `json:"qualityTierFloor,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt"`
+}
+
+// PruningRuleUpsertRequest is the body of POST /api/pruning-rules (create)
+// and PUT /api/pruning-rules/{id} (update) — every editable field, mirroring
+// SliderUpsertRequest's plain-non-pointer shape: nothing here is a secret, so
+// a save always sends the full rule rather than a partial "preserve
+// unchanged" update.
+type PruningRuleUpsertRequest struct {
+	Name             string `json:"name"`
+	Mode             string `json:"mode"`
+	AgeDays          int    `json:"ageDays"`
+	SizeBytes        int64  `json:"sizeBytes"`
+	QualityTierFloor string `json:"qualityTierFloor"`
+	Enabled          bool   `json:"enabled"`
+}
+
+// PruningRulePreviewResponse is POST .../pruning-rules/preview's response
+// (spec §13.1) — the soft-warning match count for a draft or existing rule,
+// shown before/after save without ever blocking it.
+type PruningRulePreviewResponse struct {
+	MatchCount int `json:"matchCount"`
+}

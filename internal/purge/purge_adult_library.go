@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/pruning"
 )
 
 // ScanLibraryAdult is Purge's Adult-library counterpart to ScanLibrary — used
@@ -21,11 +22,16 @@ import (
 // SourcePath is set to the scene's on-disk file: ApplyLibraryAdult trusts it
 // for the file removal (there is no GetScene-by-id to re-fetch through, unlike
 // Movies' ApplyLibrary), so it is load-bearing, not merely informational.
-func ScanLibraryAdult(ctx context.Context, libStore *library.Store, allowlist []string) ([]proposals.Proposal, error) {
+// rules are evaluated in the same per-scene loop as the tag match (one
+// proposal per scene, combined Reason — see joinReasons); a Scene carries
+// Size/QualityTier/CreatedAt directly, so no aggregation is needed.
+func ScanLibraryAdult(ctx context.Context, libStore *library.Store, allowlist []string, rules []pruning.Rule) ([]proposals.Proposal, error) {
 	scenes, err := libStore.ListScenes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading scenes: %w", err)
 	}
+
+	now := time.Now().UTC()
 
 	var out []proposals.Proposal
 	for _, sc := range scenes {
@@ -37,14 +43,17 @@ func ScanLibraryAdult(ctx context.Context, libStore *library.Store, allowlist []
 		for _, tag := range tags {
 			matched = append(matched, MatchedEntries(tag, allowlist)...)
 		}
-		if len(matched) == 0 {
+		ruleReasons := pruning.MatchAny(rules, pruning.Subject{
+			CreatedAt: sc.CreatedAt, SizeBytes: sc.Size, QualityTier: sc.QualityTier,
+		}, now)
+		if len(matched) == 0 && len(ruleReasons) == 0 {
 			continue
 		}
 		out = append(out, proposals.Proposal{
 			Mode: mode.Adult, Workflow: proposals.Purge, Status: proposals.Pending,
 			SourceName: sc.Title, SourcePath: sc.FilePath, RootFolderPath: sc.RootFolderPath,
 			Title: sc.Title, Studio: sc.Studio, Date: sc.Date, TrackedID: int(sc.ID),
-			Reason: fmt.Sprintf("matched allowlist tag(s): %s", strings.Join(matched, ", ")),
+			Reason: joinReasons(matched, ruleReasons),
 		})
 	}
 	return out, nil

@@ -374,6 +374,25 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 // one click, not an unbounded firehose.
 const maxBatchItems = 200
 
+// Claude 2026-08-03: added MaxBatchPurgeItems (plan
+// .omc/plans/autopilot-impl-pruning-rules.md §13.2, the Critic safety
+// amendment that unblocked propose-only pruning rules).
+// Reason: Purge is the only workflow whose Apply DELETES files, and pruning
+// rules can flood its queue with hundreds of proposals in one Scan. A 20-item
+// cap — parity with MaxBatchGrabItems — means a flooded queue cannot wipe the
+// library in one click. Rename and Dedup keep the shared 200: bulk rename and
+// multi-keep dedup legitimately need larger same-screen batches, and neither
+// deletes an operator's only copy of anything.
+// Troubleshooting: the cap is enforced BEFORE any Apply runs, so an
+// over-cap request applies exactly zero items rather than the first 20.
+// Review if: Purge ever gains an undo, or the queue gains server-side
+// pagination that bounds a selection some other way.
+
+// MaxBatchPurgeItems bounds one apply-batch request whose proposals are
+// Purge-workflow. Exported for the frontend contract test / parity with
+// MaxBatchGrabItems.
+const MaxBatchPurgeItems = 20
+
 // applyBatchItem is one entry in an apply-batch request. It carries the same
 // per-item Dedup override fields as applyProposalRequest
 // (KeepIndex/KeepAll/AdditionalKeepIndices); Rename and Purge items ignore them,
@@ -438,6 +457,18 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		if len(req.Items) > maxBatchItems {
 			http.Error(w, fmt.Sprintf("too many items: %d exceeds the %d-item batch cap", len(req.Items), maxBatchItems), http.StatusBadRequest)
 			return
+		}
+		// The Purge-only lower cap (§13.2). A batch is scoped to one screen and
+		// therefore one workflow, so the first item's proposal is what decides
+		// which cap applies — no need to load all of them just to classify the
+		// request. A first item that can't be loaded falls through: the loop
+		// below reports it as that item's own ok:false result, which is a
+		// better answer than a whole-batch 400 about a cap that may not apply.
+		if len(req.Items) > MaxBatchPurgeItems {
+			if first, err := propStore.Get(ctx, req.Items[0].ID); err == nil && first.Workflow == proposals.Purge {
+				http.Error(w, fmt.Sprintf("too many items: %d exceeds the %d-item cap for purge batches — purge deletes files, so a batch this large must be split", len(req.Items), MaxBatchPurgeItems), http.StatusBadRequest)
+				return
+			}
 		}
 
 		// A batch is scoped to one screen (single workflow+mode), so every

@@ -36,6 +36,7 @@ import (
 	"github.com/labbersanon/sakms/internal/nodes"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/purge"
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/scanschedule"
@@ -57,15 +58,25 @@ type scanAdapter struct {
 	propStore     *proposals.Store
 	allowStore    *allowlist.Store
 	libStore      *library.Store
-	prober        *mediainfo.Prober
-	phashHasher   *nodes.Dispatcher // dedup's video perceptual hasher (all modes)
-	videoHasher   *nodes.Dispatcher // rename Adult's StashDB-compatible hasher
-	entityStore   parseentity.EntityStore
+	// Claude 2026-08-03: added pruningStore (B4, plan §3.3).
+	// Reason: ScanPurge loads the mode's enabled pruning rules and passes them
+	// to the same purge.Scan* functions the manual handler calls, so a
+	// scheduled Purge scan proposes exactly what a manual one does.
+	// Troubleshooting: internal/pruning is NOT in allowlist_test.go's
+	// restrictedPkgs (dedup/rename/purge/proposals only), so calling
+	// ListEnabledForMode from this file is intentionally outside that scan's
+	// scope. Do not "helpfully" move this load into internal/purge as a new
+	// exported function — that is exactly what the allowlist would reject.
+	pruningStore *pruning.Store
+	prober       *mediainfo.Prober
+	phashHasher  *nodes.Dispatcher // dedup's video perceptual hasher (all modes)
+	videoHasher  *nodes.Dispatcher // rename Adult's StashDB-compatible hasher
+	entityStore  parseentity.EntityStore
 }
 
 // newScanAdapter wires the scheduler's Scanner from the same stores main.go
 // already constructed for NewMux.
-func newScanAdapter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store, prober *mediainfo.Prober, phashHasher, videoHasher *nodes.Dispatcher, entityStore parseentity.EntityStore) *scanAdapter {
+func newScanAdapter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store, pruningStore *pruning.Store, prober *mediainfo.Prober, phashHasher, videoHasher *nodes.Dispatcher, entityStore parseentity.EntityStore) *scanAdapter {
 	return &scanAdapter{
 		httpClient:    httpClient,
 		connStore:     connStore,
@@ -74,6 +85,7 @@ func newScanAdapter(httpClient *http.Client, connStore *connections.Store, scSto
 		propStore:     propStore,
 		allowStore:    allowStore,
 		libStore:      libStore,
+		pruningStore:  pruningStore,
 		prober:        prober,
 		phashHasher:   phashHasher,
 		videoHasher:   videoHasher,
@@ -161,19 +173,27 @@ func (a *scanAdapter) ScanRename(ctx context.Context, m mode.Mode) error {
 // identical to purgeScanHandler, minus the HTTP shell. Purge needs no session,
 // root folder, or hasher: it reads the tracked library directly. Never Applies.
 func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
-	rules, err := a.allowStore.List(ctx, m)
+	tags, err := a.allowStore.List(ctx, m)
 	if err != nil {
 		return err
+	}
+
+	var rules []pruning.Rule
+	if a.pruningStore != nil {
+		rules, err = a.pruningStore.ListEnabledForMode(ctx, m)
+		if err != nil {
+			return err
+		}
 	}
 
 	var found []proposals.Proposal
 	switch m {
 	case mode.Movies:
-		found, err = purge.ScanLibrary(ctx, a.libStore, rules)
+		found, err = purge.ScanLibrary(ctx, a.libStore, tags, rules)
 	case mode.Series:
-		found, err = purge.ScanLibrarySeries(ctx, a.libStore, rules)
+		found, err = purge.ScanLibrarySeries(ctx, a.libStore, tags, rules)
 	case mode.Adult:
-		found, err = purge.ScanLibraryAdult(ctx, a.libStore, rules)
+		found, err = purge.ScanLibraryAdult(ctx, a.libStore, tags, rules)
 	default:
 		return nil
 	}

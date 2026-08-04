@@ -45,7 +45,7 @@ func TestScanLibrary_ProposesOnlyItemsMatchingAllowlist(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(ctx, libStore, []string{"BDSM"})
+	got, err := ScanLibrary(ctx, libStore, []string{"BDSM"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestScanLibrary_EmptyAllowlistMatchesNothing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(ctx, libStore, nil)
+	got, err := ScanLibrary(ctx, libStore, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

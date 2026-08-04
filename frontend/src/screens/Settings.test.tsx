@@ -143,6 +143,10 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/settings/adult-newest-scan-interval"))
     return jsonResponse({ intervalSeconds: 0 });
   if (url.includes("/api/modes/adult/newest-rows")) return jsonResponse([]);
+  // PruningRulesSection (Pruning tab) mount GETs — Claude 2026-08-03, F1.
+  if (url.includes("/api/pruning-rules")) return jsonResponse([]);
+  if (url.includes("/api/settings/purge-scan-interval"))
+    return jsonResponse({ intervalSeconds: 0 });
   // FolderPicker's as-you-type fetch; the empty-path case returns the fixed
   // browsable roots, matching the real backend.
   if (url.includes("/api/browse"))
@@ -226,7 +230,7 @@ const renderSettingsWithAdultMode = () => {
 const sectionTabBar = () =>
   within(screen.getByRole("button", { name: "Auth" }).parentElement!);
 const goToSection = (
-  name: "Auth" | "AI" | "Library" | "Usenet" | "Advanced" | "UI",
+  name: "Auth" | "AI" | "Library" | "Usenet" | "Advanced" | "UI" | "Pruning",
 ) => fireEvent.click(sectionTabBar().getByRole("button", { name }));
 
 // clickSectionSave clicks the one section-level Save button per tab. The batched-
@@ -3601,6 +3605,26 @@ describe("AI is its own top-level section tab", () => {
     expect(screen.getByLabelText("brave API key")).toBeInTheDocument();
     expect(screen.queryByLabelText("prowlarr URL")).toBeNull();
     expect(screen.queryByText("Media players")).toBeNull();
+  });
+});
+
+// --- Pruning tab registration (F1, plan §6.1) -------------------------------
+
+describe("Pruning is its own top-level section tab", () => {
+  it("renders the Pruning rules panel when selected", async () => {
+    stubFetch();
+    renderSettings();
+    await screen.findByLabelText("Library root folder");
+    expect(
+      sectionTabBar().getByRole("button", { name: "Pruning" }),
+    ).toBeInTheDocument();
+    goToSection("Pruning");
+    expect(await screen.findByText("Pruning rules")).toBeInTheDocument();
+    // "Purge scan interval" also labels the DurationSetting's own field —
+    // scope to the Card's heading to avoid ambiguity.
+    expect(
+      screen.getByRole("heading", { name: "Purge scan interval" }),
+    ).toBeInTheDocument();
   });
 });
 

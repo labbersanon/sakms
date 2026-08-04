@@ -144,12 +144,24 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
     const p = (proposals() ?? []).find((x) => x.id === id);
     return p ? p.title || p.sourceName || "" : "";
   };
+  // Claude 2026-08-03: MAX_BATCH_PURGE_ITEMS mirrors internal/api's
+  // MaxBatchPurgeItems (plan .omc/plans/autopilot-impl-pruning-rules.md §13.2).
+  // Reason: the backend refuses an over-cap purge batch with a 400 before
+  // applying anything. Disabling the button (rather than silently slicing to
+  // the first 20) lets the operator choose WHICH 20 — a slice would delete an
+  // arbitrary subset of what they checked.
+  // Troubleshooting: if the backend cap changes, this number must change with
+  // it; the mismatch surfaces as a 400 the operator cannot act on.
+  const MAX_BATCH_PURGE_ITEMS = 20;
+  const overBatchCap = (): boolean => selection.size() > MAX_BATCH_PURGE_ITEMS;
+
   // applySelected deletes the selected Pending rows in one apply-batch. Guarded
   // by the same confirm the single delete has, worded for the count — bulk must
   // not skip the safety check single-item delete enforces.
   const applySelected = (): void => {
     const ids = [...selection.selected()];
     if (ids.length === 0) return;
+    if (ids.length > MAX_BATCH_PURGE_ITEMS) return;
     if (!window.confirm(`Delete ${ids.length} items from ${props.mode}?`)) return;
     const items: ApplyBatchItem[] = ids.map((id) => ({ id }));
     setBatchResult(null);
@@ -192,9 +204,16 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
           <Button
             class="!bg-danger !text-accent-fg"
             onClick={applySelected}
+            disabled={overBatchCap()}
           >
             Apply Selected ({selection.size()})
           </Button>
+          <Show when={overBatchCap()}>
+            <Muted>
+              Purge applies at most {MAX_BATCH_PURGE_ITEMS} items per batch —
+              deselect {selection.size() - MAX_BATCH_PURGE_ITEMS} to continue.
+            </Muted>
+          </Show>
         </Show>
       </div>
 

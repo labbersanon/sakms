@@ -80,8 +80,38 @@ func (id *Identifier) EnrichNewestScenes(ctx context.Context, kind, name, box st
 // when the box isn't configured, the throttle wait is cancelled, the box errors,
 // or no exact-name candidate exists.
 func (id *Identifier) resolveEntityInBox(ctx context.Context, box, kind, name string) string {
+	// Claude 2026-08-04: the stash-box arm moved from `case "stashdb",
+	// "fansdb":` to `default:` (Stage 5 Wave 3) — any configured database name
+	// can reach here now, and the existing nil-client guard already returns ""
+	// for a name with no client, which is what an unknown box should do.
 	switch box {
-	case "stashdb", "fansdb":
+	case "tpdb":
+		if id.Boxes.tpdb == nil {
+			return ""
+		}
+		if err := id.Throttle.Wait(ctx, "tpdb"); err != nil {
+			return ""
+		}
+		if kind == "studio" {
+			if sites, err := id.Boxes.tpdb.SearchSites(ctx, name); err == nil {
+				for _, s := range sites {
+					if s.Name == name && s.ID != "" {
+						return s.ID
+					}
+				}
+			}
+			return ""
+		}
+		if performers, err := id.Boxes.tpdb.SearchPerformers(ctx, name); err == nil {
+			for _, p := range performers {
+				if p.Name == name && p.ID != "" {
+					return p.ID
+				}
+			}
+		}
+		return ""
+
+	default:
 		client := id.Boxes.stashBoxes[box]
 		if client == nil {
 			return ""
@@ -109,34 +139,7 @@ func (id *Identifier) resolveEntityInBox(ctx context.Context, box, kind, name st
 			}
 		}
 		return ""
-
-	case "tpdb":
-		if id.Boxes.tpdb == nil {
-			return ""
-		}
-		if err := id.Throttle.Wait(ctx, "tpdb"); err != nil {
-			return ""
-		}
-		if kind == "studio" {
-			if sites, err := id.Boxes.tpdb.SearchSites(ctx, name); err == nil {
-				for _, s := range sites {
-					if s.Name == name && s.ID != "" {
-						return s.ID
-					}
-				}
-			}
-			return ""
-		}
-		if performers, err := id.Boxes.tpdb.SearchPerformers(ctx, name); err == nil {
-			for _, p := range performers {
-				if p.Name == name && p.ID != "" {
-					return p.ID
-				}
-			}
-		}
-		return ""
 	}
-	return ""
 }
 
 // fetchCatalog fetches up to catalogPages of the entity's NEWEST scenes for one
@@ -150,25 +153,9 @@ func (id *Identifier) fetchCatalog(ctx context.Context, box, kind, entityID stri
 		if err := id.Throttle.Wait(ctx, box); err != nil {
 			return out
 		}
+		// Claude 2026-08-04: stash-box arm is now `default:` for the same
+		// reason as resolveEntityInBox above (Stage 5 Wave 3).
 		switch box {
-		case "stashdb", "fansdb":
-			client := id.Boxes.stashBoxes[box]
-			if client == nil {
-				return out
-			}
-			var scenes []stashbox.Scene
-			var err error
-			if kind == "studio" {
-				scenes, err = client.QueryScenesByStudio(ctx, entityID, page, 0)
-			} else {
-				scenes, err = client.QueryScenesByPerformer(ctx, entityID, page, 0)
-			}
-			if err != nil {
-				return out
-			}
-			for _, s := range scenes {
-				out = append(out, stashboxSceneToMatch(box, s))
-			}
 		case "tpdb":
 			if id.Boxes.tpdb == nil {
 				return out
@@ -185,6 +172,25 @@ func (id *Identifier) fetchCatalog(ctx context.Context, box, kind, entityID stri
 			}
 			for _, s := range scenes {
 				out = append(out, tpdbSceneToMatch(s))
+			}
+
+		default:
+			client := id.Boxes.stashBoxes[box]
+			if client == nil {
+				return out
+			}
+			var scenes []stashbox.Scene
+			var err error
+			if kind == "studio" {
+				scenes, err = client.QueryScenesByStudio(ctx, entityID, page, 0)
+			} else {
+				scenes, err = client.QueryScenesByPerformer(ctx, entityID, page, 0)
+			}
+			if err != nil {
+				return out
+			}
+			for _, s := range scenes {
+				out = append(out, stashboxSceneToMatch(box, s))
 			}
 		}
 	}

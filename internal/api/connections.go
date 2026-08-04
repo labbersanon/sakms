@@ -73,8 +73,20 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 	case "plex":
 		return testPlex(ctx, httpClient, req)
 	case "stashdb", "fansdb":
-		// Fixed public stash-box endpoints — the URL is the hardcoded per-name
-		// constant, never req.URL (the UI collects no URL for these).
+		// Claude 2026-08-04: this case is now LEGACY (Stage 5 Wave 5, plan
+		// .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md).
+		// Reason: StashDB and FansDB are ordinary rows of the configurable
+		// registry as of migration 0061, and the UI tests them through
+		// POST /api/stashbox-databases/test{,-stored}, which takes the
+		// endpoint from the ROW (operator-editable) instead of the hardcoded
+		// constant below. Kept rather than removed because the two names are
+		// still valid `connections` services holding the seeded secrets, and
+		// a direct API caller hitting the old route should get a working test
+		// against the default endpoint rather than "unsupported service".
+		// Troubleshooting: a row whose endpoint the operator has EDITED will
+		// not be tested correctly here — this branch cannot see the registry.
+		// Use the stashbox-databases routes for anything UI-driven.
+		// Review if: the seeded `connections` rows are ever dropped (OQ7).
 		endpoint, _ := stashbox.URLForBox(req.Service)
 		return testStashBox(ctx, httpClient, req, endpoint)
 	case "tpdb":
@@ -174,9 +186,10 @@ func testPlex(ctx context.Context, httpClient *http.Client, req ConnectionTestRe
 
 // testStashBox covers both StashDB and FansDB — same stash-box protocol,
 // ApiKey-header auth (as opposed to TPDB's GraphQL endpoint, which is
-// Bearer-authed and reached separately via testTPDB). endpoint is the fixed
-// per-name public GraphQL URL (stashbox.StashDBURL / FansDBURL), not a
-// user-supplied value — StashDB/FansDB collect no URL in Settings.
+// Bearer-authed and reached separately via testTPDB). endpoint is the caller's
+// to supply: the legacy TestConnection cases pass the fixed per-name public
+// GraphQL URL (stashbox.StashDBURL / FansDBURL), while the registry test
+// routes in stashboxdb.go pass the row's own operator-editable endpoint.
 func testStashBox(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest, endpoint string) ConnectionTestResult {
 	c := stashbox.New(stashbox.Config{Endpoint: endpoint, APIKey: req.APIKey, IsBearer: false, HasVoteField: true}, httpClient)
 	if _, err := c.Me(ctx); err != nil {

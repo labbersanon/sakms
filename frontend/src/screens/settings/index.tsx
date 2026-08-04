@@ -77,6 +77,7 @@ import { UISection } from "./UI";
 import { WebhooksSection } from "./Webhooks";
 import { NodesSection } from "./Nodes";
 import { PruningRulesSection } from "./PruningRules";
+import { StashBoxDatabases } from "./StashBoxDatabases";
 
 // SECTION_TABS is the section-level tab set (distinct from the Movies/Series/
 // Adult mode selector). There is no Connections tab: its rows were redistributed
@@ -151,6 +152,25 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
             so the button reflects only the currently-shown mode. */}
         <SectionSave>
           <LibraryConnectionsSection mode={mode} />
+          {/* Claude 2026-08-04: mounted StashBoxDatabases here (Stage 5 Wave
+              4.5, plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md
+              §4.5). Reason: it lives INSIDE this SectionSave's JSX tree
+              (adjacent to LibraryConnectionsSection, matching the plan's
+              placement decision) but does NOT join its batched-save
+              registry — StashBoxDatabases never calls useSectionSaveItem, so
+              every one of its mutations (create/update/reorder/delete/
+              enable-toggle) persists immediately on its own, exactly like
+              RssFeedAdmin. A child only joins the SectionSave batch by
+              explicitly registering; simply rendering inside the JSX tree
+              does not opt it in.
+              Troubleshooting: if this ever needs to become batched instead,
+              wire it through useSectionSaveItem like ConnectionRow does —
+              do not assume position alone controls batching.
+              Review if: StashBoxDatabases starts calling
+              useSectionSaveItem, which would make this comment stale. */}
+          <Show when={mode() === "adult"}>
+            <StashBoxDatabases />
+          </Show>
           <LibraryRootFolderSection mode={mode} />
           <QualityPrefsSection mode={mode} />
           <Show

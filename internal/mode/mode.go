@@ -35,6 +35,7 @@ import (
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/stashapi"
 	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/stashboxdb"
 	"github.com/labbersanon/sakms/internal/throttle"
 	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
@@ -597,30 +598,57 @@ func buildAIClient(ctx context.Context, store *connections.Store, settingsStore 
 // EntityStore after Build() without re-entering this constructor. AI features
 // (ParseFilename BYOAI path) are available when aiClient is non-nil; the
 // DB-first path (ParseFilenameDB) is available when EntityStore is non-nil
-// (injected by api handlers that need it). Original rationale for the old
-// nil guard:
-// on a missing AI client). Every other client (stashdb/fansdb/tpdb/brave) is
-// optional: a missing connection yields a nil client, which BoxSearcher and
-// Identify already treat as "not configured" rather than erroring. A real
-// store error (anything other than "not configured") propagates.
+// (injected by api handlers that need it). Every other client
+// (stashdb/fansdb/tpdb/brave) is optional: a missing connection yields a nil
+// client, which BoxSearcher and Identify already treat as "not configured"
+// rather than erroring. A real store error (anything other than "not
+// configured") propagates.
 func buildIdentifier(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client, aiClient identify.AIClient) (*identify.Identifier, error) {
+	// Claude 2026-08-04: the two-name loop is now a registry snapshot (Stage 5
+	// Wave 3, plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md §3.4).
+	// Reason: names, endpoints, order and the fansite gate are all operator
+	// config now (internal/stashboxdb), so this reads them instead of the
+	// stashbox.URLForBox constants. The store is DERIVED from the connections
+	// store rather than threaded through Build's signature — see
+	// connections.Store.DB's comment for why (~400 call sites).
+	// Troubleshooting: this runs per Build, i.e. per Scan, so `refs` is that
+	// Scan's immutable cascade. A row with no resolvable key is SKIPPED
+	// entirely (no client, not in refs) — identical to how a missing
+	// connection behaved before.
+	// Review if: Build ever stops being per-Scan, at which point an operator's
+	// reorder would no longer take effect on the next Scan.
+	// Related files: internal/stashboxdb/store.go, internal/identify/cascade.go
+	//
+	// for _, name := range []string{"stashdb", "fansdb"} {   // ← was: the two hardcoded names
 	boxes := map[string]*stashbox.Client{}
 	giveBackBoxes := map[string]*stashbox.Client{}
-	for _, name := range []string{"stashdb", "fansdb"} {
-		conn, err := optionalConn(ctx, store, name)
-		if err != nil {
-			return nil, err
+	var refs []identify.DatabaseRef
+	var order []string
+	databases, err := stashboxdb.New(store.DB(), store.Secrets()).List(ctx,
+		func(ctx context.Context, service string) (string, error) {
+			// A seeded row's key still lives in `connections` under its
+			// secret_ref — resolved here, with "not configured" reported as
+			// ("", nil) exactly as optionalConn does.
+			conn, err := optionalConn(ctx, store, service)
+			if err != nil || conn == nil {
+				return "", err
+			}
+			return conn.APIKey, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	for _, database := range databases {
+		if database.APIKey == "" {
+			continue
 		}
-		if conn != nil {
-			// StashDB/FansDB are fixed public stash-box instances — the endpoint
-			// is the hardcoded per-name constant, never conn.URL (not collected).
-			endpoint, _ := stashbox.URLForBox(name)
-			client := stashbox.New(stashbox.Config{
-				Endpoint: endpoint, APIKey: conn.APIKey, IsBearer: false, HasVoteField: true,
-			}, httpClient)
-			boxes[name] = client
-			giveBackBoxes[name] = client
-		}
+		client := stashbox.New(stashbox.Config{
+			Endpoint: database.Endpoint, APIKey: database.APIKey, IsBearer: false, HasVoteField: true,
+		}, httpClient)
+		boxes[database.Name] = client
+		giveBackBoxes[database.Name] = client
+		refs = append(refs, identify.DatabaseRef{Name: database.Name, FansiteOnly: database.FansiteOnly})
+		order = append(order, database.Name)
 	}
 
 	var tpdb *tpdbrest.Client
@@ -644,12 +672,16 @@ func buildIdentifier(ctx context.Context, store *connections.Store, settingsStor
 		brave = bravesearch.New(bravesearch.DefaultBaseURL, conn.APIKey, httpClient)
 	}
 
+	giveBack := identify.NewGiveBack(giveBackBoxes)
+	giveBack.Order = order
+
 	return &identify.Identifier{
-		Boxes:    identify.NewBoxSearcher(boxes, tpdb),
-		AI:       aiClient,
-		Brave:    brave,
-		Throttle: throttle.New(adultThrottleInterval),
-		GiveBack: identify.NewGiveBack(giveBackBoxes),
+		Boxes:      identify.NewBoxSearcher(boxes, tpdb),
+		AI:         aiClient,
+		Brave:      brave,
+		Throttle:   throttle.New(adultThrottleInterval),
+		GiveBack:   giveBack,
+		StashBoxes: refs,
 	}, nil
 }
 

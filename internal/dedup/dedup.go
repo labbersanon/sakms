@@ -4,25 +4,24 @@
 // to keep the better-quality copy instead of leaving both silently in
 // place (today's behavior in both source CLIs).
 //
-// Movies groups by TMDB id (ScanLibrary); Adult groups by the resolved
-// scene's foreignID (ScanLibraryAdult); Series groups by
-// (show TMDB id, season, episode) — see ScanLibrarySeries, whose grouping
-// resolves both questions an earlier version of this comment used to flag
-// as undecided: "the tracked copy" is just the one library.Episode row for
-// that exact key (the schema's own UNIQUE constraint rules out ambiguity),
-// and a duplicate season-pack file groups with a duplicate single-episode
-// file naturally, since a season pack is broken into individual files
-// (library.ResolveEpisodeVideoFiles) before grouping ever happens. Every mode
-// runs its own libStore-backed ScanLibrary*/ApplyLibrary* sibling, dispatched
-// at the API layer.
+// Movies and Series both group PURELY by perceptual hash now (ScanLibraryPHash /
+// ScanLibrarySeriesPHash, shipped 2026-07-18 in 50dd970) — no TMDB id or
+// (show,season,episode) key gates the union; two files perceptually similar
+// enough group regardless of what either resolves to, or whether either
+// resolves at all (see dedup_phash_primary.go's own doc comments and
+// .omc/specs/deep-interview-phash-grouping.md). Adult still groups by the
+// resolved scene's foreignID (ScanLibraryAdult) and refines with the shared
+// refineByPHash helper. Every mode runs its own libStore-backed
+// ScanLibrary*/ApplyLibrary* sibling, dispatched at the API layer.
 //
-// CORRECTION (logical episode-splitting): the UNIQUE(series_id, season,
-// episode) constraint rules out ambiguity for ONE key, but does NOT mean a
-// file backing that key is exclusively used there — a logical-episode-split
-// file (library.ParseEpisodeNumbers) legitimately backs TWO keys' FilePath
-// at once (e.g. a "S01E01-E02" file is both episode 1's and episode 2's
-// row). ApplyLibrarySeries' delete step accounts for this: see its own doc
-// comment and library.Store.CountEpisodesByFilePath.
+// CORRECTION (logical episode-splitting): Series' UNIQUE(series_id, season,
+// episode) constraint rules out ambiguity for ONE (series,season,episode)
+// row, but does NOT mean a file backing that row is exclusively used
+// there — a logical-episode-split file (library.ParseEpisodeNumbers)
+// legitimately backs TWO rows' FilePath at once (e.g. a "S01E01-E02" file is
+// both episode 1's and episode 2's row). ApplyLibrarySeries' delete step
+// accounts for this: see its own doc comment and
+// library.Store.CountEpisodesByFilePath.
 //
 // Quality comparison never trusts a *arr app's own reported file quality —
 // every candidate, tracked or not, gets ffprobed directly by SAK itself
@@ -43,14 +42,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/config"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/phash"
 	"github.com/labbersanon/sakms/internal/place"
 	"github.com/labbersanon/sakms/internal/proposals"
-	"github.com/labbersanon/sakms/internal/searchterm"
 )
 
 // Prober is the subset of *mediainfo.Prober Scan needs — an interface so
@@ -59,12 +56,13 @@ type Prober interface {
 	Probe(ctx context.Context, path string) (*mediainfo.Probe, error)
 }
 
-// PHasher is the subset of *phash.Hasher the phash-refined Scans need — an
+// PHasher is the subset of *phash.Hasher the phash-driven Scans need — an
 // interface so tests can inject a fake without a real ffmpeg binary or video
-// file, exactly as Prober does for ffprobe. All three modes refine their groups
-// with it: the library-backed Movies (ScanLibrary), Series (ScanLibrarySeries),
-// and Adult (ScanLibraryAdult). Adult alone recomputes every scan (no SAK-owned
-// row to cache against).
+// file, exactly as Prober does for ffprobe. Movies (ScanLibraryPHash) and
+// Series (ScanLibrarySeriesPHash) use it to compute every candidate's hash
+// for union-find grouping; Adult (ScanLibraryAdult) uses it to refine an
+// already-TMDB-grouped set via refineByPHash. Adult alone recomputes every
+// scan (no SAK-owned row to cache against).
 type PHasher interface {
 	Hash(ctx context.Context, path string) (string, error)
 }
@@ -82,74 +80,6 @@ func fileIdentity(path string) (size int64, mtime string, err error) {
 	return fi.Size(), fi.ModTime().UTC().Format(time.RFC3339Nano), nil
 }
 
-// attachPHashes computes a perceptual hash for each candidate and returns only
-// those it could hash, each with PHash set. The tracked candidate reuses its
-// cached library hash when the file's identity (size+mtime) AND the hash's
-// scheme still match — the decode-once win — otherwise it, like every orphan,
-// is hashed fresh, and a freshly computed tracked hash is written back via
-// UpdatePHash. A candidate whose hash can't be computed is dropped, matching
-// probeCandidate's tolerant "report whatever could be measured" posture. A
-// UpdatePHash failure is a best-effort cache miss (dedup has no logger — see
-// the package doc): it only costs a recompute next Scan, never a failed Scan.
-func attachPHashes(ctx context.Context, hasher PHasher, libStore *library.Store, candidates []proposals.Candidate, tracked *library.Item) []proposals.Candidate {
-	out := make([]proposals.Candidate, 0, len(candidates))
-	for _, c := range candidates {
-		if c.TrackedID != 0 && tracked != nil && tracked.PHash != "" &&
-			strings.HasPrefix(tracked.PHash, phash.Scheme+":") {
-			if size, mtime, err := fileIdentity(c.Path); err == nil &&
-				size == tracked.PHashFileSize && mtime == tracked.PHashFileMTime {
-				c.PHash = tracked.PHash
-				out = append(out, c)
-				continue
-			}
-		}
-		h, err := hasher.Hash(ctx, c.Path)
-		if err != nil {
-			continue // uncomputable — drop this candidate, same tolerance as probeCandidate
-		}
-		c.PHash = h
-		if c.TrackedID != 0 {
-			if size, mtime, statErr := fileIdentity(c.Path); statErr == nil {
-				_ = libStore.UpdatePHash(ctx, int64(c.TrackedID), h, size, mtime)
-			}
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-// attachPHashesSeries is attachPHashes' Series-typed sibling — identical body,
-// differing only in the tracked type (*library.Episode) and the write-back
-// method (UpdateEpisodePHash on library_episodes). Kept as a parallel sibling
-// rather than a shared generic helper (CLAUDE.md's "prefer parallel sibling
-// functions" convention), so the just-shipped Movies path stays untouched.
-func attachPHashesSeries(ctx context.Context, hasher PHasher, libStore *library.Store, candidates []proposals.Candidate, tracked *library.Episode) []proposals.Candidate {
-	out := make([]proposals.Candidate, 0, len(candidates))
-	for _, c := range candidates {
-		if c.TrackedID != 0 && tracked != nil && tracked.PHash != "" &&
-			strings.HasPrefix(tracked.PHash, phash.Scheme+":") {
-			if size, mtime, err := fileIdentity(c.Path); err == nil &&
-				size == tracked.PHashFileSize && mtime == tracked.PHashFileMTime {
-				c.PHash = tracked.PHash
-				out = append(out, c)
-				continue
-			}
-		}
-		h, err := hasher.Hash(ctx, c.Path)
-		if err != nil {
-			continue // uncomputable — drop this candidate, same tolerance as probeCandidate
-		}
-		c.PHash = h
-		if c.TrackedID != 0 {
-			if size, mtime, statErr := fileIdentity(c.Path); statErr == nil {
-				_ = libStore.UpdateEpisodePHash(ctx, int64(c.TrackedID), h, size, mtime)
-			}
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
 // refineByPHash keeps only the candidates perceptually similar to a reference:
 // the tracked candidate if the group has one, else the first candidate. A
 // candidate whose hash is outside perFrameThreshold average Hamming bits/frame
@@ -162,8 +92,8 @@ func refineByPHash(candidates []proposals.Candidate, frames, perFrameThreshold i
 	if len(candidates) < 2 {
 		// Nothing to refine — 0 survivors (every candidate was uncomputable,
 		// e.g. ffmpeg missing or every file corrupt) or 1 survivor. Return as-is
-		// so the caller's own len<2 check (ScanLibrary) makes the no-proposal
-		// call; indexing candidates[0] below would panic on the 0 case.
+		// so the caller's own len<2 check (ScanLibraryAdult) makes the
+		// no-proposal call; indexing candidates[0] below would panic on the 0 case.
 		return candidates
 	}
 	refIdx := 0
@@ -270,110 +200,6 @@ func winnerIndex(candidates []proposals.Candidate) int {
 		}
 	}
 	return 0
-}
-
-// ScanLibrary is Dedup's Movies-library scan — used only for Movies mode now
-// that Radarr no longer sits between SAK and the filesystem/TMDB (see
-// internal/library's package doc). Identifies every unmapped file (via TMDB
-// search instead of Servarr's Lookup) and groups it, and any already-tracked
-// library item, by TMDB id.
-func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
-	if sess.TMDB == nil {
-		return nil, fmt.Errorf("tmdb isn't configured yet — add it in Settings first")
-	}
-	if rootFolderPath == "" {
-		return nil, fmt.Errorf("no Movies library root folder configured yet — add one in Settings first")
-	}
-
-	tracked, err := libStore.List(ctx, mode.Movies)
-	if err != nil {
-		return nil, fmt.Errorf("loading library items: %w", err)
-	}
-	trackedByTMDB := make(map[int]library.Item, len(tracked))
-	known := make(map[string]bool, len(tracked))
-	for _, t := range tracked {
-		trackedByTMDB[t.TMDBID] = t
-		// Marking just the file path is enough — ScanRootFolder's recursive
-		// walk decides atomicity dynamically from known at whatever depth it
-		// encounters a directory, so it doesn't need the wrapping folder
-		// pre-marked too.
-		known[t.FilePath] = true
-	}
-
-	type orphanHit struct {
-		name, path, title string
-	}
-	orphansByTMDB := make(map[int][]orphanHit)
-
-	entries, err := library.ScanRootFolder(rootFolderPath, known)
-	if err != nil {
-		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
-	}
-	for _, entry := range entries {
-		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
-			continue
-		}
-		items, err := sess.TMDB.SearchMovies(ctx, searchterm.FromName(entry.Name))
-		if err != nil || len(items) == 0 {
-			continue // not Dedup's concern — Rename's own ScanLibrary surfaces unmatched items
-		}
-		match := items[0]
-		orphansByTMDB[match.ID] = append(orphansByTMDB[match.ID], orphanHit{name: entry.Name, path: entry.Path, title: match.Title})
-	}
-
-	var out []proposals.Proposal
-	for tmdbID, orphans := range orphansByTMDB {
-		trackedItem, isTracked := trackedByTMDB[tmdbID]
-		if !isTracked && len(orphans) < 2 {
-			continue // a single new, untracked item — nothing to dedup
-		}
-
-		title := orphans[0].title
-		rootPath := ""
-		var candidates []proposals.Candidate
-		if isTracked {
-			if c := probeCandidate(ctx, prober, "tracked", trackedItem.FilePath, int(trackedItem.ID)); c != nil {
-				candidates = append(candidates, *c)
-			}
-			title, rootPath = trackedItem.Title, trackedItem.RootFolderPath
-		}
-		for _, o := range orphans {
-			if c := probeCandidate(ctx, prober, o.name, o.path, 0); c != nil {
-				candidates = append(candidates, *c)
-				if rootPath == "" {
-					rootPath = filepath.Dir(o.path)
-				}
-			}
-		}
-		if len(candidates) < 2 {
-			continue // couldn't probe enough of the group to compare
-		}
-
-		// Refine the same-TMDB group by perceptual similarity: hash each
-		// candidate (reusing a tracked item's cached hash when its file is
-		// unchanged), then drop any candidate outside the threshold of the
-		// group's reference. A group refined below 2 survivors is not a
-		// duplicate — the strictly-more-conservative keep-both behavior.
-		var trackedPtr *library.Item
-		if isTracked {
-			ti := trackedItem
-			trackedPtr = &ti
-		}
-		candidates = attachPHashes(ctx, hasher, libStore, candidates, trackedPtr)
-		candidates = refineByPHash(candidates, phash.Frames, perFrameThreshold)
-		if len(candidates) < 2 {
-			continue // perceptually dissimilar — keep both, no proposal
-		}
-		markWinner(candidates)
-
-		out = append(out, proposals.Proposal{
-			Mode: mode.Movies, Workflow: proposals.Dedup, Status: proposals.Pending,
-			SourceName: title, Title: title, TMDBID: tmdbID, RootFolderPath: rootPath,
-			Candidates: candidates,
-			Reason:     fmt.Sprintf("%d copies identified as %q", len(candidates), title),
-		})
-	}
-	return out, nil
 }
 
 // ApplyLibrary is Dedup's Movies-library apply — resolves p against libStore:
@@ -509,151 +335,6 @@ func removeLibraryCandidate(ctx context.Context, libStore *library.Store, c prop
 		return removedPath, err
 	}
 	return removedPath, nil
-}
-
-// episodeDedupKey groups Series duplicates at the episode level — the
-// answer to "what does a duplicate mean for Series": two files are
-// duplicates of each other only if they resolve to the same show AND the
-// same season/episode. A season-pack orphan is broken into individual
-// files (library.ResolveEpisodeVideoFiles) before this key is ever
-// computed, so a duplicate episode inside a pack groups naturally with a
-// duplicate loose file for that same episode.
-type episodeDedupKey struct {
-	tmdbID, season, episode int
-}
-
-// ScanLibrarySeries is Dedup's Series-library counterpart to ScanLibrary —
-// identifies every unmapped file (or file inside an unmapped season-pack
-// directory) via TMDB TV search, and groups it, and any already-tracked
-// episode, by episodeDedupKey. "The tracked copy" for a key is simply the
-// one library.Episode row for that exact (series, season, episode) —
-// the schema's own UNIQUE(series_id, season_number, episode_number)
-// constraint already rules out there ever being more than one, unlike
-// Adult's string-matched foreignID grouping.
-func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int) ([]proposals.Proposal, error) {
-	if sess.TMDB == nil {
-		return nil, fmt.Errorf("tmdb isn't configured yet — add it in Settings first")
-	}
-	if rootFolderPath == "" {
-		return nil, fmt.Errorf("no Series library root folder configured yet — add one in Settings first")
-	}
-
-	allSeries, err := libStore.ListSeries(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("loading series: %w", err)
-	}
-
-	trackedByKey := make(map[episodeDedupKey]library.Episode)
-	seriesByID := make(map[int64]library.Series, len(allSeries))
-	known := map[string]bool{}
-	for _, s := range allSeries {
-		seriesByID[s.ID] = s
-		episodes, err := libStore.ListEpisodes(ctx, s.ID)
-		if err != nil {
-			return nil, fmt.Errorf("loading episodes for %q: %w", s.Title, err)
-		}
-		for _, ep := range episodes {
-			if ep.FilePath == "" {
-				continue // known from TMDB but not on disk — not a duplicate target
-			}
-			// Marking just the file path is enough — ScanRootFolder's
-			// recursive walk decides atomicity dynamically from known at
-			// whatever depth it encounters a directory.
-			known[ep.FilePath] = true
-			trackedByKey[episodeDedupKey{tmdbID: s.TMDBID, season: ep.SeasonNumber, episode: ep.EpisodeNumber}] = ep
-		}
-	}
-
-	type orphanHit struct {
-		name, path, title string
-	}
-	orphansByKey := make(map[episodeDedupKey][]orphanHit)
-
-	entries, err := library.ScanRootFolder(rootFolderPath, known)
-	if err != nil {
-		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
-	}
-	for _, entry := range entries {
-		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
-			continue
-		}
-		videoFiles, err := library.ResolveEpisodeVideoFiles(entry.Path)
-		if err != nil {
-			continue // not Dedup's concern — Rename's own ScanLibrarySeries surfaces unmatched items
-		}
-		for _, videoPath := range videoFiles {
-			name := filepath.Base(videoPath)
-			season, episode, ok := library.ParseEpisodeFilename(name)
-			if !ok {
-				continue
-			}
-			items, err := sess.TMDB.SearchTV(ctx, searchterm.FromName(library.StripEpisodeMarker(name)))
-			if err != nil || len(items) == 0 {
-				continue
-			}
-			match := items[0]
-			key := episodeDedupKey{tmdbID: match.ID, season: season, episode: episode}
-			orphansByKey[key] = append(orphansByKey[key], orphanHit{name: name, path: videoPath, title: match.Title})
-		}
-	}
-
-	var out []proposals.Proposal
-	for key, orphans := range orphansByKey {
-		trackedEp, isTracked := trackedByKey[key]
-		if !isTracked && len(orphans) < 2 {
-			continue // a single new, untracked episode — nothing to dedup
-		}
-
-		title := orphans[0].title
-		rootPath := ""
-		var candidates []proposals.Candidate
-		if isTracked {
-			if c := probeCandidate(ctx, prober, "tracked", trackedEp.FilePath, int(trackedEp.ID)); c != nil {
-				candidates = append(candidates, *c)
-			}
-			if s, ok := seriesByID[trackedEp.SeriesID]; ok {
-				title, rootPath = s.Title, s.RootFolderPath
-			}
-		}
-		for _, o := range orphans {
-			if c := probeCandidate(ctx, prober, o.name, o.path, 0); c != nil {
-				candidates = append(candidates, *c)
-				if rootPath == "" {
-					rootPath = filepath.Dir(o.path)
-				}
-			}
-		}
-		if len(candidates) < 2 {
-			continue // couldn't probe enough of the group to compare
-		}
-
-		// Refine the same-(show,season,episode) group by perceptual
-		// similarity, exactly as ScanLibrary does per-TMDB: hash each
-		// candidate (reusing a tracked episode's cached hash when its file is
-		// unchanged), then drop any candidate outside the threshold of the
-		// group's reference. A group refined below 2 survivors is not a
-		// duplicate — the strictly-more-conservative keep-both behavior.
-		var trackedPtr *library.Episode
-		if isTracked {
-			te := trackedEp
-			trackedPtr = &te
-		}
-		candidates = attachPHashesSeries(ctx, hasher, libStore, candidates, trackedPtr)
-		candidates = refineByPHash(candidates, phash.Frames, perFrameThreshold)
-		if len(candidates) < 2 {
-			continue // perceptually dissimilar — keep both, no proposal
-		}
-		markWinner(candidates)
-
-		out = append(out, proposals.Proposal{
-			Mode: mode.Series, Workflow: proposals.Dedup, Status: proposals.Pending,
-			SourceName: title, Title: title, TMDBID: key.tmdbID,
-			SeasonNumber: key.season, EpisodeNumber: key.episode, RootFolderPath: rootPath,
-			Candidates: candidates,
-			Reason:     fmt.Sprintf("%d copies identified as %q S%02dE%02d", len(candidates), title, key.season, key.episode),
-		})
-	}
-	return out, nil
 }
 
 // ApplyLibrarySeries is Dedup's Series-library counterpart to ApplyLibrary.

@@ -31,7 +31,15 @@ func (id *Identifier) SceneDescription(ctx context.Context, box, sceneID string)
 		}
 		return scene.Description, nil
 
-	case "stashdb", "fansdb":
+	// Claude 2026-08-04: was `case "stashdb", "fansdb":` (Stage 5 Wave 3).
+	// Reason: any configured database name can reach here now, so the branch
+	// is selected by "is there a stash-box client under this name" rather than
+	// by a closed list of two. The nil-client guard already gave the right
+	// answer for an unrecognised name, so widening the case changes nothing
+	// for the routinely-reachable "prowlarr" a Show More drill-down carries —
+	// it has no client, and still returns ("", nil) with no call made.
+	// default:   // ← was: case "stashdb", "fansdb":
+	default:
 		client := id.Boxes.stashBoxes[box]
 		if client == nil {
 			return "", nil
@@ -45,9 +53,6 @@ func (id *Identifier) SceneDescription(ctx context.Context, box, sceneID string)
 		}
 		return scene.Details, nil
 	}
-	// Unknown box (including the routinely-reachable "prowlarr" a Show More
-	// drill-down scene carries): no source to ask, so no call and no error.
-	return "", nil
 }
 
 // EntityBio fetches a performer's bio or a studio's description from TPDB.

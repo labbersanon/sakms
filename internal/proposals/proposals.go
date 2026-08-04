@@ -116,6 +116,13 @@ type Proposal struct {
 	// [0.0–1.0], populated only by phash-primary scans (ScanLibraryPHash /
 	// ScanLibrarySeriesPHash). Zero means the proposal was produced by the
 	// legacy TMDB-keyed path and no similarity score was computed.
+	//
+	// Claude 2026-08-04: backed by the phash_similarity column (migration
+	// 0060) as of this comment. Reason: from 50dd970 (2026-07-18) until this
+	// migration, this field had no column to persist to — ReplacePending's
+	// INSERT silently dropped it, so List/Get always read back 0 regardless
+	// of what Scan computed, defeating the Dedup card's similarity badge.
+	// See .omc/plans/autopilot-impl-phash-grouping.md §2 for the traced break.
 	PHashSimilarity float64 `json:"pHashSimilarity,omitempty"`
 	// Studio and Date are captured from Adult identification alongside Title,
 	// even on an Unmatched (web-identified-only) proposal — SubmitDraft needs
@@ -201,20 +208,26 @@ func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fr
 		if err != nil {
 			return nil, fmt.Errorf("encoding cast for %q: %w", p.SourceName, err)
 		}
+		// Claude 2026-08-04: added phash_similarity (migration 0060). Reason: it
+		// was computed by ScanLibraryPHash/ScanLibrarySeriesPHash but had no
+		// column to land in, silently dying here before it ever reached List/Get
+		// — see the plan's §2 trace. Appended at the end of the column list
+		// rather than inserted alongside PHash/DurationSeconds so this diff
+		// can't accidentally shift any of the 26 existing positional slots.
 		row := tx.QueryRowContext(ctx, `
 			INSERT INTO proposals (
 				mode, workflow, status, source_name, source_path, root_folder_path,
 				title, tvdb_id, tmdb_id, season_number, episode_number, year, quality_profile_id, reason, tracked_id,
 				foreign_id, item_type, candidates_json, studio, scene_date,
 				phash, duration_seconds, give_back_box, give_back_scene_id, extra_episode_numbers,
-				genres, "cast"
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				genres, "cast", phash_similarity
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING id, created_at
 		`, string(p.Mode), string(p.Workflow), string(p.Status), p.SourceName, p.SourcePath, p.RootFolderPath,
 			p.Title, p.TVDBID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber, p.Year, p.QualityProfileID, p.Reason, p.TrackedID,
 			p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio, p.Date,
 			p.PHash, p.DurationSeconds, p.GiveBackBox, p.GiveBackSceneID, extraEpisodesJSON,
-			genresJSON, castJSON)
+			genresJSON, castJSON, p.PHashSimilarity)
 		if err := row.Scan(&p.ID, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("inserting proposal for %q: %w", p.SourceName, err)
 		}
@@ -236,7 +249,7 @@ func (s *Store) List(ctx context.Context, m mode.Mode, wf Workflow) ([]Proposal,
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
 		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
-		       COALESCE(genres, '[]'), COALESCE("cast", '[]')
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
 		FROM proposals WHERE mode = ? AND workflow = ? ORDER BY id DESC
 	`, string(m), string(wf))
 	if err != nil {
@@ -268,7 +281,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Proposal, error) {
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
 		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
-		       COALESCE(genres, '[]'), COALESCE("cast", '[]')
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
 		FROM proposals WHERE id = ?
 	`, id)
 	p, err := scanProposal(row)
@@ -366,7 +379,7 @@ func scanProposal(row rowScanner) (Proposal, error) {
 		&p.DraftID, &p.DraftSubmittedAt,
 		&p.PHash, &p.DurationSeconds, &p.GiveBackBox, &p.GiveBackSceneID, &p.FingerprintSubmittedAt,
 		&p.CreatedAt, &p.AppliedAt, &extraEpisodesJSON,
-		&genresJSON, &castJSON); err != nil {
+		&genresJSON, &castJSON, &p.PHashSimilarity); err != nil {
 		return Proposal{}, err
 	}
 	p.Mode, p.Workflow, p.Status = mode.Mode(m), Workflow(wf), Status(status)

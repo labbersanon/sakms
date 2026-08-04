@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -99,6 +100,23 @@ func testStoresWithRegistry(t *testing.T) (*connections.Store, *proposals.Store,
 		t.Fatalf("building secret store: %v", err)
 	}
 	return connections.New(sqlDB, secretStore), proposals.New(sqlDB), allowlist.New(sqlDB), settings.New(sqlDB), grabs.New(sqlDB, secretStore), library.New(sqlDB), discoversliders.New(sqlDB), trakt.NewStore(sqlDB, secretStore), adultnewest.New(sqlDB), adultnewest.NewReleaseStore(sqlDB), rssfeeds.NewStore(sqlDB, secretStore), serviceconn.NewStore(sqlDB, secretStore)
+}
+
+// retargetStashBoxDatabase points a SEEDED stashbox_databases row's endpoint at
+// url. Tests that drive identification through mode.Build must call this in
+// addition to overrideFixedURL: buildIdentifier reads the endpoint from the
+// registry (migration 0061), so mutating stashbox.StashDBURL alone leaves the
+// real public endpoint in play and the fake is never hit.
+func retargetStashBoxDatabase(t *testing.T, sqlDB *sql.DB, name, url string) {
+	t.Helper()
+	res, err := sqlDB.ExecContext(context.Background(),
+		`UPDATE stashbox_databases SET endpoint = ? WHERE name = ?`, url, name)
+	if err != nil {
+		t.Fatalf("retargeting stash-box database %q at %s: %v", name, url, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		t.Fatalf("no seeded stash-box database named %q to retarget", name)
+	}
 }
 
 // seedJellyfinPlayer registers url as an ENABLED Jellyfin player assigned to

@@ -2037,6 +2037,12 @@ export interface WebhookUpdateRequest {
  * GET /api/downloads and the /api/downloads/stream SSE). All numeric fields
  * are real int64s here — the api layer parses aria2's decimal-string wire
  * values before this DTO is emitted.
+ * Claude 2026-08-04: SeedCount and UploadSpeed are torrent-only. Reason: a
+ * usenet download has no seeder/upload concept at all — toUsenetDTODownload
+ * leaves both at their zero value, and the frontend hides both fields
+ * entirely for protocol == "usenet" rather than rendering a zero, so a zero
+ * here always means "torrent, no seeders / no upload yet", never "usenet".
+ * Review if: usenet ever gains a peer-exchange or reciprocation concept.
  */
 export interface Download {
   gid: string;
@@ -2045,9 +2051,29 @@ export interface Download {
   totalLength: number /* int64 */;
   completedLength: number /* int64 */;
   downloadSpeed: number /* int64 */;
-  connections: number /* int64 */;
+  seedCount: number /* int64 */;
+  uploadSpeed: number /* int64 */;
+  protocol: string; // "torrent" | "usenet"
   errorMessage: string;
 }
+/**
+ * DownloadProtocolTorrent and DownloadProtocolUsenet are the two values
+ * Download.Protocol can take. Exported so the mappers in internal/api set a
+ * literal from here rather than each spelling its own string, per D-2 in the
+ * implementing plan — Protocol is a per-mapper constant (the caller's
+ * argument type already knows it with certainty), not a re-derived GID-prefix
+ * convention.
+ */
+export const DownloadProtocolTorrent = "torrent";
+/**
+ * DownloadProtocolTorrent and DownloadProtocolUsenet are the two values
+ * Download.Protocol can take. Exported so the mappers in internal/api set a
+ * literal from here rather than each spelling its own string, per D-2 in the
+ * implementing plan — Protocol is a per-mapper constant (the caller's
+ * argument type already knows it with certainty), not a re-derived GID-prefix
+ * convention.
+ */
+export const DownloadProtocolUsenet = "usenet";
 /**
  * DownloaderConfig is the unified downloader's operator-tunable settings
  * (GET/PUT /api/downloader/config).
@@ -2601,4 +2627,70 @@ export interface PruningRuleUpsertRequest {
  */
 export interface PruningRulePreviewResponse {
   matchCount: number /* int */;
+}
+/**
+ * StashBoxDatabase is one configured stash-box-protocol database as exposed
+ * over the API — GET /api/stashbox-databases returns a list of these, and
+ * POST/PUT return the affected row. Redacted the same way ConnectionSummary
+ * is: never the secret, only HasAPIKey plus its last 4 characters.
+ */
+export interface StashBoxDatabase {
+  id: number /* int64 */;
+  name: string;
+  endpoint: string;
+  priority: number /* int */;
+  enabled: boolean;
+  fansiteOnly: boolean;
+  hasApiKey: boolean;
+  keySuffix?: string;
+  updatedAt: string;
+}
+/**
+ * StashBoxDatabaseCreateRequest is POST /api/stashbox-databases' body. APIKey
+ * is a plain (non-pointer) string here, unlike the update below: a create has
+ * no stored secret to preserve, so all three states collapse to "this is the
+ * key", and an empty one is rejected outright.
+ */
+export interface StashBoxDatabaseCreateRequest {
+  name: string;
+  endpoint: string;
+  apiKey: string;
+}
+/**
+ * StashBoxDatabaseUpdateRequest is PUT /api/stashbox-databases/{id}'s body.
+ * Every field is a pointer so an omitted field means "leave it alone" — and
+ * APIKey specifically carries the SAME three-state secret rule as
+ * ConnectionUpsertRequest.APIKey (absent = preserve, "" = clear, non-empty =
+ * set). Read that type's doc comment before touching this one: sending "" for
+ * an untouched key field is the exact bug that silently wipes a working
+ * stored secret, and it is a real incident class in this project's history.
+ */
+export interface StashBoxDatabaseUpdateRequest {
+  name?: string;
+  endpoint?: string;
+  priority?: number /* int */;
+  enabled?: boolean;
+  fansiteOnly?: boolean;
+  apiKey?: string;
+}
+/**
+ * StashBoxDatabaseReorderRequest is PUT /api/stashbox-databases/reorder's
+ * body: the complete set of stored ids in their new cascade order (index 0 is
+ * consulted first). A partial list is rejected rather than silently leaving
+ * an unlisted row at a stale priority — same full-set contract as
+ * RssFeedReorderRequest.
+ */
+export interface StashBoxDatabaseReorderRequest {
+  ids: number /* int64 */[];
+}
+/**
+ * StashBoxDatabaseTestRequest is POST /api/stashbox-databases/test's body —
+ * the STATELESS test, run against field values the operator has typed but not
+ * necessarily saved. The saved-row counterpart is
+ * POST /api/stashbox-databases/{id}/test-stored, which takes no body and
+ * resolves the key server-side (the client never holds it).
+ */
+export interface StashBoxDatabaseTestRequest {
+  endpoint: string;
+  apiKey: string;
 }

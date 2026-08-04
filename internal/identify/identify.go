@@ -33,6 +33,21 @@ type Identifier struct {
 	// (fingerprints, or scene drafts for web-identified-only matches). Nil if
 	// neither TPDB nor StashDB/FansDB is configured — callers must nil-check.
 	GiveBack *GiveBack
+	// StashBoxes is the ordered snapshot of configured stash-box databases
+	// (enabled only, cascade order, TPDB NOT included — it is appended
+	// separately as a literal). It drives ITERATION; Boxes.stashBoxes and
+	// GiveBack.Boxes stay name-keyed maps and drive CLIENT LOOKUP.
+	//
+	// EMPTY MEANS LEGACY, NOT "none configured": an Identifier built without
+	// this field behaves exactly as the pre-Stage-5 code did, against
+	// "stashdb" then "fansdb" (see cascade.go's legacyCascade). That is what
+	// keeps every hand-built Identifier in tests, and any caller that has not
+	// been taught about the registry, working unchanged.
+	//
+	// mode.Build snapshots this per Scan, so it is immutable for the life of
+	// one Scan — an operator reordering databases mid-Scan does not reorder
+	// the cascade underneath a run in progress.
+	StashBoxes []DatabaseRef
 }
 
 var skipParentNames = map[string]bool{
@@ -173,11 +188,12 @@ func (id *Identifier) tryUUIDLookup(ctx context.Context, stem, parentName string
 		return nil, nil
 	}
 
-	boxes := []string{"stashdb", "fansdb"}
-	if strings.Contains(strings.ToLower(stem), "fansdb") || strings.Contains(strings.ToLower(parentName), "fansdb") {
-		boxes = []string{"fansdb", "stashdb"}
-	}
-	for _, box := range boxes {
+	// Claude 2026-08-04: was []string{"stashdb","fansdb"} with a literal
+	// "fansdb" filename flip (Stage 5 Wave 3). uuidBoxes generalises both:
+	// cascade order, ungated (a UUID lookup is exact, so a fansite catalog
+	// carries no false-match risk), with a name-mentioned database promoted.
+	// for _, box := range boxes {   // ← was: the two hardcoded names above
+	for _, box := range id.uuidBoxes(stem, parentName) {
 		if err := id.Throttle.Wait(ctx, box); err != nil {
 			return nil, err
 		}
@@ -192,13 +208,14 @@ func (id *Identifier) tryUUIDLookup(ctx context.Context, stem, parentName string
 	return nil, nil
 }
 
-// searchInternalDBs: StashDB always, FansDB only if fansite-hinted, then TPDB.
+// searchInternalDBs: every configured database in cascade order (fansite-only
+// ones skipped unless the file is fansite-hinted), then TPDB.
+//
+// Claude 2026-08-04: was hardcoded "stashdb" always + "fansdb" if hinted
+// (Stage 5 Wave 3). textBoxes reproduces exactly that on a default install —
+// the gate is now the row's FansiteOnly flag rather than its name.
 func (id *Identifier) searchInternalDBs(ctx context.Context, title, studio, stem string) (*MatchResult, error) {
-	boxes := []string{"stashdb"}
-	if IsFansiteHinted(stem, studio) {
-		boxes = append(boxes, "fansdb")
-	}
-	for _, box := range boxes {
+	for _, box := range id.textBoxes(stem, studio) {
 		if err := id.Throttle.Wait(ctx, box); err != nil {
 			return nil, err
 		}
@@ -270,11 +287,24 @@ func (id *Identifier) webSearchAndGround(ctx context.Context, stem, parentName s
 // (more accurate) title/studio — a real DB match is still strictly better
 // than a bare web result if one now exists.
 //
-// Source-tagging is intentionally asymmetric: a StashDB/FansDB match gets its
+// Source-tagging is intentionally asymmetric: a stash-box match gets its
 // Source prefixed "web+" (e.g. "web+stashdb_text"), while a TPDB match does
 // not (stays plain "tpdb_text").
+//
+// Claude 2026-08-04: was []string{"stashdb","fansdb"} (Stage 5 Wave 3).
+// Reason: uses exactBoxes (UNGATED), deliberately NOT textBoxes, even though
+// this is a text search. ralplan §2.3 asks for the fansite gate here and
+// claims it "reproduces today's behaviour exactly" — it does not: unlike
+// searchInternalDBs, this site never had a fansite gate and always consulted
+// FansDB. Applying one would change the SET of databases queried on a default
+// install, which AC15 (byte-identical default-install cascade) forbids, so the
+// existing ungated behaviour is preserved and the ralplan line is the one
+// that's wrong.
+// Review if: AC15 is retired, at which point gating this is probably the
+// better behaviour — a web-grounded title is exactly the kind of generic text
+// that spuriously matches FansDB's clip catalog.
 func (id *Identifier) reSearchAfterGrounding(ctx context.Context, grounded GroundedExtraction) (*MatchResult, error) {
-	for _, box := range []string{"stashdb", "fansdb"} {
+	for _, box := range id.exactBoxes() {
 		if err := id.Throttle.Wait(ctx, box); err != nil {
 			return nil, err
 		}

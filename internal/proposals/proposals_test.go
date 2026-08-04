@@ -159,6 +159,67 @@ func TestReplacePending_PersistsCandidatePHash(t *testing.T) {
 	}
 }
 
+// TestReplacePending_PersistsPHashSimilarity is the regression test for the
+// defect fixed by migration 0060: ScanLibraryPHash/ScanLibrarySeriesPHash
+// compute PHashSimilarity, but before this column existed, ReplacePending's
+// INSERT silently dropped it and List/Get always read back 0 — defeating the
+// Dedup card's similarity badge end to end. Proves the value now survives
+// both the insert and a subsequent List.
+func TestReplacePending_PersistsPHashSimilarity(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	saved, err := s.ReplacePending(ctx, mode.Movies, Dedup, []Proposal{
+		{
+			Status: Pending, SourceName: "Movie A", Title: "Movie A", TMDBID: 1,
+			PHashSimilarity: 0.87,
+			Candidates: []Candidate{
+				{Label: "tracked", Path: "/media/Movies/Movie A/a.mkv", TrackedID: 9},
+				{Label: "Movie.A.1080p", Path: "/media/Movies/Movie.A.1080p/b.mkv", Winner: true},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if saved[0].PHashSimilarity != 0.87 {
+		t.Fatalf("expected PHashSimilarity 0.87 to survive the insert, got %v", saved[0].PHashSimilarity)
+	}
+
+	got, err := s.Get(ctx, saved[0].ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.PHashSimilarity != 0.87 {
+		t.Fatalf("expected PHashSimilarity to round-trip via Get, got %v", got.PHashSimilarity)
+	}
+
+	list, err := s.List(ctx, mode.Movies, Dedup)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || list[0].PHashSimilarity != 0.87 {
+		t.Fatalf("expected PHashSimilarity to round-trip via List, got %+v", list)
+	}
+}
+
+// TestReplacePending_PHashSimilarityDefaultsToZeroForNonPHashWorkflows proves
+// a Rename proposal — which never sets PHashSimilarity — reads back exactly
+// 0, the same sentinel apidto/dto.go's omitempty tag treats as "no score",
+// so a legacy/non-Dedup row is unaffected by this column's existence.
+func TestReplacePending_PHashSimilarityDefaultsToZeroForNonPHashWorkflows(t *testing.T) {
+	s := newTestStore(t)
+	saved, err := s.ReplacePending(context.Background(), mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "x", Title: "X"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if saved[0].PHashSimilarity != 0 {
+		t.Fatalf("expected PHashSimilarity 0 for a Rename proposal, got %v", saved[0].PHashSimilarity)
+	}
+}
+
 func TestReplacePending_EmptyCandidatesForNonDedupWorkflows(t *testing.T) {
 	s := newTestStore(t)
 	saved, err := s.ReplacePending(context.Background(), mode.Movies, Rename, []Proposal{

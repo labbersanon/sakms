@@ -131,7 +131,8 @@ type Download struct {
 	TotalLength     int64
 	CompletedLength int64
 	DownloadSpeed   int64
-	Connections     int64
+	SeedCount       int64
+	UploadSpeed     int64
 	Files           []string
 	ErrorMessage    string
 }
@@ -154,10 +155,22 @@ type entry struct {
 	prevTime  time.Time
 	speed     int64
 
+	// Claude 2026-08-04: upload-speed delta state, deliberately a SEPARATE
+	// triple from prevBytes/prevTime/speed above.
+	// Reason: the upload pass in pollSnapshot runs for complete-and-seeding
+	// entries too (F-1 in the plan), which the download-speed pass above
+	// does not — sharing prevTime would let the upload pass advance the
+	// download pass's delta base on a tick where only upload ran, corrupting
+	// download speed. Never cross-assign between the two triples.
+	// Review if: the two passes are ever merged into one guard.
+	prevUpBytes int64
+	prevUpTime  time.Time
+	upSpeed     int64
+
 	// Cached for terminal states after the handle may be dropped.
 	cachedCompleted int64
 	cachedTotal     int64
-	cachedConns     int64
+	cachedSeeds     int64
 
 	// Stale-detection clock. lastProgressAt is initialized in AddTorrent, reset
 	// in Resume, and advanced by pollSnapshot whenever completed bytes grow —
@@ -280,8 +293,9 @@ func (m *Manager) SeedState(d Download) {
 		filename:        d.Filename,
 		cachedCompleted: d.CompletedLength,
 		cachedTotal:     d.TotalLength,
-		cachedConns:     d.Connections,
+		cachedSeeds:     d.SeedCount,
 		speed:           d.DownloadSpeed,
+		upSpeed:         d.UploadSpeed,
 		// Start the stale clock, same as AddTorrent. A zero time.Time would
 		// read as decades of no progress and make every seeded test entry look
 		// instantly stale.
@@ -750,6 +764,23 @@ func (m *Manager) readdTorrents(newTC *torrentlib.Client, snaps []rebuildTorrent
 			// separately by rebuildRefusalLocked.
 			if !e.seedStartedAt.IsZero() {
 				e.seedBaselineUp = 0
+				// Claude 2026-08-04: reset the upload-speed delta base
+				// alongside seedBaselineUp, same handle-swap hazard (F-4).
+				// Reason: prevUpBytes is a snapshot of the OLD handle's
+				// BytesWrittenData; the new handle's counter restarts at 0,
+				// so an un-reset prevUpBytes makes the next delta negative
+				// and (via the delta > 0 guard) publishes false 0 B/s until
+				// the new counter climbs back past the old value — minutes
+				// of wrong data for a long seed.
+				// prevBytes (download) is deliberately NOT reset here:
+				// BytesCompleted() is derived from verified on-disk pieces,
+				// not a process counter, so it survives a handle swap intact
+				// and resetting it would introduce a download-speed glitch
+				// on every reconfigure. That asymmetry is intentional.
+				// Review if: BytesCompleted() ever becomes a process counter
+				// too.
+				e.prevUpBytes = 0
+				e.prevUpTime = time.Time{}
 			}
 		}
 		m.mu.Unlock()
@@ -1099,6 +1130,7 @@ func (m *Manager) watchTorrent(t *torrentlib.Torrent, gid string) {
 		e.cachedCompleted = completed
 		e.cachedTotal = total
 		e.speed = 0
+		e.upSpeed = 0
 		seedingEnabled := m.cfg.SeedingEnabled
 		m.mu.Unlock()
 
@@ -1238,7 +1270,8 @@ func (m *Manager) buildEntry(gid string, e *entry) Download {
 		TotalLength:     e.cachedTotal,
 		CompletedLength: e.cachedCompleted,
 		DownloadSpeed:   e.speed,
-		Connections:     e.cachedConns,
+		SeedCount:       e.cachedSeeds,
+		UploadSpeed:     e.upSpeed,
 		Files:           e.files,
 		ErrorMessage:    e.errorMsg,
 	}
@@ -1272,7 +1305,7 @@ func (m *Manager) readSnapshot() []Download {
 //     without this, a 4h pause would delete the operator's partial files. It
 //     also excludes "waiting", the pre-GotInfo state a magnet sits in before it
 //     has any metadata: nothing about that is dead, it just hasn't started.
-//   - Stats() is read live rather than from e.cachedConns, which caches only
+//   - Stats() is read live rather than from e.cachedSeeds, which caches only
 //     ConnectedSeeders. A swarm of leechers with no seeders is still connected
 //     peers and must not be reaped, so both counters are checked. Reading the
 //     handle under m.mu is exactly what pollSnapshot already does one branch up.
@@ -1620,7 +1653,6 @@ func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGI
 				if e.t.Info() != nil {
 					total = e.t.Length()
 				}
-				conns := int64(e.t.Stats().ConnectedSeeders)
 				var speed int64
 				if e.status == "active" && !e.prevTime.IsZero() {
 					if dt := now.Sub(e.prevTime).Seconds(); dt > 0 {
@@ -1634,7 +1666,6 @@ func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGI
 				e.speed = speed
 				e.cachedCompleted = completed
 				e.cachedTotal = total
-				e.cachedConns = conns
 			}
 
 			// Stale collect pass. Marked fired under the lock so the next tick
@@ -1663,6 +1694,67 @@ func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGI
 				})
 				// Clear the discriminator so the next tick cannot re-collect it.
 				e.seedStartedAt = time.Time{}
+				// Upload window just closed: publish 0 rather than freezing at
+				// the last observed rate for the rest of this entry's lifetime.
+				e.upSpeed = 0
+				e.prevUpTime = time.Time{}
+			}
+		}
+
+		// Claude 2026-08-04: upload-speed + seed-count pass — its OWN guard,
+		// deliberately AFTER the seeding collect pass above and NOT nested
+		// inside the active||waiting guard.
+		// Reason: upload only happens once a torrent is complete-and-seeding
+		// (per-torrent AllowDataUpload happens in beginSeeding), which is
+		// exactly the state the active||waiting guard excludes — nesting this
+		// there would make UploadSpeed structurally always 0. Seed count
+		// (cachedSeeds, née cachedConns) is refreshed here too, not in the
+		// active||waiting block above, so it keeps reporting a live value
+		// while an entry is seeding rather than freezing at its last active
+		// reading — always-showing a stale number is worse than hiding it.
+		// Same benign-TOCTOU reasoning as the active||waiting block above
+		// applies to the alive-handle check below.
+		// Review if: upload accounting changes to something other than
+		// BytesWrittenData, or seed count gains its own independent gate.
+		if e.t != nil && (e.status == "active" || e.status == "waiting" || (e.status == "complete" && !e.seedStartedAt.IsZero())) {
+			alive := true
+			select {
+			case <-e.t.Closed():
+				alive = false
+			default:
+			}
+			if alive {
+				e.cachedSeeds = int64(e.t.Stats().ConnectedSeeders)
+
+				// Count.Int64 has a pointer receiver (F-5), so Stats() must
+				// land in an addressable local before .BytesWrittenData.Int64().
+				stats := e.t.Stats()
+				// Claude 2026-08-04: BytesWrittenData, not the spec-text
+				// BytesWritten — deliberate deviation.
+				// Reason: BytesWrittenData is payload-only (excludes wire
+				// protocol overhead), matching how download speed already
+				// measures via BytesCompleted(), and it is the exact counter
+				// seedStopReason already uses for ratio accounting — keeping
+				// the displayed rate arithmetically consistent with the number
+				// that decides when seeding stops. Every other upload-counter
+				// site in this file (seedStopReason, beginSeeding) uses
+				// BytesWrittenData; using BytesWritten here would introduce a
+				// second, subtly different upload counter with no precedent.
+				// Review if: someone "corrects" this back to BytesWritten to
+				// match the spec text — don't, see above.
+				written := stats.BytesWrittenData.Int64()
+
+				var upSpeed int64
+				if !e.prevUpTime.IsZero() {
+					if dt := now.Sub(e.prevUpTime).Seconds(); dt > 0 {
+						if delta := written - e.prevUpBytes; delta > 0 {
+							upSpeed = int64(float64(delta) / dt)
+						}
+					}
+				}
+				e.prevUpBytes = written
+				e.prevUpTime = now
+				e.upSpeed = upSpeed
 			}
 		}
 

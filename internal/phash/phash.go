@@ -3,9 +3,10 @@
 // concatenating them into one scheme-tagged composite. It mirrors
 // internal/mediainfo's injected-runner test seam exactly: the ffmpeg
 // shell-out is a single injected func, so Hasher is unit-testable with canned
-// frame bytes and needs no real ffmpeg binary or video file. Used only by
-// Movies Dedup, to refine a same-TMDB duplicate group by perceptual
-// similarity (see internal/dedup.ScanLibrary).
+// frame bytes and needs no real ffmpeg binary or video file. Used by every
+// Dedup mode: Movies and Series group PURELY by perceptual similarity (see
+// internal/dedup.ScanLibraryPHash / ScanLibrarySeriesPHash), while Adult
+// refines an already-TMDB-grouped set by it (internal/dedup.refineByPHash).
 //
 // No interface is exported — house pattern (no premature abstraction): dedup
 // depends on the concrete *phash.Hasher, faked on its own side via a tiny

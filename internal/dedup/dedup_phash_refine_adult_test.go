@@ -65,3 +65,27 @@ func TestRefineByPHash_TrackedCandidateSelectedRegardlessOfPosition(t *testing.T
 		t.Errorf("expected exactly 2 survivors (tracked + near), got %d: %+v", len(got), got)
 	}
 }
+
+// Claude 2026-08-04: ported here (Wave 4, legacy-scan retirement per
+// .omc/plans/autopilot-impl-phash-grouping.md) from the now-deleted
+// dedup_phash_refine_test.go's TestScanLibrary_PHashAllCandidatesUncomputable,
+// which exercised this guard indirectly through the (now-deleted) ScanLibrary
+// + attachPHashes pipeline. Reason: this is a regression test for
+// refineByPHash's own 0-length guard, not for anything ScanLibrary-specific
+// — calling refineByPHash directly proves the guard regardless of which
+// caller (Movies/Series/Adult) feeds it an empty slice.
+// Troubleshooting: refineByPHash previously indexed candidates[0]
+// unconditionally, which panicked when every candidate in a group failed to
+// hash (e.g. ffmpeg missing or every file corrupt).
+// Review if: never — this guard is permanent, not a transitional fix.
+
+// TestRefineByPHash_EmptySliceDoesNotPanic proves refineByPHash handles a
+// 0-length input without panicking — the caller-agnostic case where every
+// candidate in a group was uncomputable and dropped before refineByPHash was
+// ever called.
+func TestRefineByPHash_EmptySliceDoesNotPanic(t *testing.T) {
+	got := refineByPHash(nil, phash.Frames, 2)
+	if len(got) != 0 {
+		t.Errorf("expected refineByPHash(nil, ...) to return an empty slice, got %+v", got)
+	}
+}

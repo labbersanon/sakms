@@ -21,7 +21,10 @@ import (
 
 // Download mirrors the downloader.Download shape so the api layer can build a
 // unified queue from both torrent and usenet downloads without a shared
-// interface. Fields with no usenet equivalent (Connections) are always zero.
+// interface. Usenet has no seeder concept, so it carries neither a seed-count
+// nor an upload-speed field at all — those are torrent-only in apidto.Download,
+// and the frontend hides them entirely for this protocol rather than showing a
+// zero.
 type Download struct {
 	GID             string
 	Status          string   // "active" | "paused" | "error" | "complete" | "removed"
@@ -30,7 +33,6 @@ type Download struct {
 	TotalLength     int64    // sum of NZB segment byte counts (approximate before download)
 	CompletedLength int64    // decoded bytes written so far
 	DownloadSpeed   int64    // bytes/sec (computed per 500 ms poll tick)
-	Connections     int64    // always 0; reserved for interface parity with torrent downloads
 	Files           []string // absolute paths of assembled files (populated on complete)
 	ErrorMessage    string
 	// Err is the unflattened retrieval failure, Go-side only — it is never

@@ -179,11 +179,10 @@ func (id *Identifier) verifyStudio(ctx context.Context, guess, stem string) stri
 	}
 	cleaned := normalizeForSearch(guess)
 
-	boxes := []string{"stashdb"}
-	if IsFansiteHinted(stem, guess) {
-		boxes = append(boxes, "fansdb")
-	}
-	for _, box := range boxes {
+	// Claude 2026-08-04: was "stashdb" always + "fansdb" if hinted (Stage 5
+	// Wave 3). textBoxes applies the same gate off the row's FansiteOnly flag,
+	// so a default install queries the identical set in the identical order.
+	for _, box := range id.textBoxes(stem, guess) {
 		client := id.Boxes.stashBoxes[box]
 		if client == nil {
 			continue
@@ -233,11 +232,9 @@ func (id *Identifier) verifyOnePerformer(ctx context.Context, guess, stem, studi
 	}
 	cleaned := normalizeForSearch(guess)
 
-	boxes := []string{"stashdb"}
-	if IsFansiteHinted(stem, studioGuess) {
-		boxes = append(boxes, "fansdb")
-	}
-	for _, box := range boxes {
+	// Claude 2026-08-04: same FansiteOnly-flag gate as verifyStudio above
+	// (Stage 5 Wave 3) — was the "stashdb" + hinted-"fansdb" literal pair.
+	for _, box := range id.textBoxes(stem, studioGuess) {
 		client := id.Boxes.stashBoxes[box]
 		if client == nil {
 			continue
@@ -284,7 +281,10 @@ func (id *Identifier) StudioImage(ctx context.Context, name string) (image, sour
 	if name == "" {
 		return "", ""
 	}
-	for _, box := range []string{"stashdb", "fansdb"} {
+	// Claude 2026-08-04: exactBoxes replaces the []string{"stashdb","fansdb"}
+	// literal (Stage 5 Wave 3). Ungated on purpose — display art carries no
+	// false-match risk worth gating a database out for.
+	for _, box := range id.exactBoxes() {
 		client := id.Boxes.stashBoxes[box]
 		if client == nil {
 			continue
@@ -324,7 +324,10 @@ func (id *Identifier) PerformerImage(ctx context.Context, name string) (image, s
 	if name == "" {
 		return "", "", ""
 	}
-	for _, box := range []string{"stashdb", "fansdb"} {
+	// Claude 2026-08-04: exactBoxes replaces the []string{"stashdb","fansdb"}
+	// literal (Stage 5 Wave 3). Ungated on purpose — display art carries no
+	// false-match risk worth gating a database out for.
+	for _, box := range id.exactBoxes() {
 		client := id.Boxes.stashBoxes[box]
 		if client == nil {
 			continue
@@ -389,7 +392,13 @@ func (id *Identifier) PerformerGender(ctx context.Context, name string) (gender 
 	}
 	var lastErr error
 	reached := false
-	for _, box := range []string{"stashdb", "fansdb"} {
+	// Claude 2026-08-04: exactBoxes replaces the []string{"stashdb","fansdb"}
+	// literal (Stage 5 Wave 3). Ungated on purpose, and here that is
+	// load-bearing beyond preserving old behaviour: the `reached` flag's whole
+	// contract is "every CONFIGURED box was consulted", so silently skipping a
+	// fansite-only database would make a NULL-vs-"" decision on incomplete
+	// evidence.
+	for _, box := range id.exactBoxes() {
 		client := id.Boxes.stashBoxes[box]
 		if client == nil {
 			continue

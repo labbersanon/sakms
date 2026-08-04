@@ -58,6 +58,16 @@ export type RowDescriptor = {
   enabled?: boolean; // entity rows only: the entity's own enabled flag
   hidden?: boolean; // structural rows only: current per-screen hidden state
   actions?: RowAction[];
+  // Claude 2026-08-04: added danger (Stage 5 Wave 4.4, plan
+  // .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md §4.4). Reason:
+  // StashBoxDatabases ports ConnectionServiceTable's red-tint-on-failing-test
+  // convention (ConnectionRow.tsx isFailing()) onto a RowEditor row, and the
+  // plan calls for tinting the ROW, not a separate status icon (AC6/AC12).
+  // Optional so every other RowEditor host (Discover, SliderAdmin,
+  // AdultRowAdmin, RssFeedAdmin) is unaffected — none of them pass it.
+  // Review if: a second host needs the same tint; consider promoting the
+  // failing-map pattern itself into a shared hook at that point.
+  danger?: boolean;
 };
 
 // reorderKeys is the pure move computed on drop: relocate fromKey so it occupies
@@ -98,6 +108,7 @@ const RowItem: Component<{
         "opacity-50":
           props.row.kind === "structural" && (props.row.hidden ?? false),
         "opacity-25": sortable.isActiveDraggable,
+        "border-danger bg-danger/10": props.row.danger ?? false,
       }}
     >
       <span

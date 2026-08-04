@@ -2,14 +2,13 @@ package identify
 
 import "context"
 
-// fingerprintCascadeOrder is the fixed lookup order restored from the prior
-// CLI this project descended from: StashDB, then FansDB, then TPDB's
-// stash-box-protocol GraphQL endpoint (NOT the tpdbrest.Client used for text
-// search — see GiveBack's doc comment for why the same stashbox.Client map
-// serves both give-back and lookup). A stale comment in the prior CLI once
-// claimed a 4th "TPDB-REST" fingerprint stage; it never existed in the real
-// implementation and is deliberately not restored here.
-var fingerprintCascadeOrder = []string{"stashdb", "fansdb", "tpdb"}
+// Claude 2026-08-04: fingerprintCascadeOrder is gone — the order is now
+// id.fingerprintBoxes() (cascade.go), which is the configured databases in
+// cascade order plus TPDB last (Stage 5 Wave 3). Commented out rather than
+// deleted per the repo's never-delete-lines rule; its doc comment moved to
+// fingerprintBoxes verbatim, including the note about the prior CLI's
+// never-existing 4th "TPDB-REST" stage.
+// var fingerprintCascadeOrder = []string{"stashdb", "fansdb", "tpdb"}
 
 // fingerprintBatchSize matches stashapi.FindSceneInfoByPaths' existing chunk
 // size, for consistency rather than any protocol requirement.
@@ -30,7 +29,7 @@ func (id *Identifier) LookupFingerprints(ctx context.Context, phashes []string) 
 
 	order := dedupPreserveOrder(phashes)
 	remaining := order
-	for _, box := range fingerprintCascadeOrder {
+	for _, box := range id.fingerprintBoxes() {
 		if len(remaining) == 0 {
 			break
 		}

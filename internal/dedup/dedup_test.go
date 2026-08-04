@@ -64,6 +64,31 @@ func matchingPHasher(paths ...string) *fakePHasher {
 	return &fakePHasher{byPath: byPath}
 }
 
+// Claude 2026-08-04: seededHash/refHash/nearHash/farHash moved here from the
+// now-deleted dedup_phash_refine_test.go (Wave 4 legacy-scan retirement,
+// .omc/plans/autopilot-impl-phash-grouping.md). Reason: these hash fixtures
+// are used by dedup_phash_primary_test.go and dedup_progress_test.go too —
+// generic package-wide fixtures, not specific to the legacy refine tests
+// that used to be their only definer.
+// Troubleshooting: n/a — pure relocation, no behavior change.
+// Review if: never — this is this package's one shared-fixtures file.
+
+// seededHash builds a scheme-tagged 160-byte (5-frame PDQ) composite whose
+// leading bytes are hexPrefix, zero-padded — so a test controls the exact
+// Hamming distance between two candidates. "" is the all-zero reference.
+func seededHash(hexPrefix string) string {
+	return "pdq256/5f:" + hexPrefix + strings.Repeat("0", 320-len(hexPrefix))
+}
+
+// refHash is the all-zero reference; nearHash differs by 4 bits (0x0f), well
+// within a per-frame threshold of 2 (budget 2×5 = 10); farHash sets every bit
+// (1280 differing), far outside it.
+var (
+	refHash  = seededHash("")
+	nearHash = seededHash("0f")
+	farHash  = seededHash(strings.Repeat("f", 320))
+)
+
 // writeVideoFile creates dir (if needed) and a dummy video file inside it,
 // returning the file's full path.
 func writeVideoFile(t *testing.T, dir, name string, size int) string {

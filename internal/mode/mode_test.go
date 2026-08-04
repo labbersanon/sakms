@@ -25,7 +25,9 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/stashapi"
-	"github.com/labbersanon/sakms/internal/stashbox"
+	// Claude 2026-08-04: stashbox import commented out — TestBuild_AdultIdentifierIsFunctional
+	// no longer mutates stashbox.StashDBURL (registry endpoint instead).
+	// "github.com/labbersanon/sakms/internal/stashbox"
 )
 
 // overrideAIProviderBaseURL points a cloud AI provider's hardcoded
@@ -384,15 +386,23 @@ func TestBuild_AdultIdentifierIsFunctional(t *testing.T) {
 		}}})
 	}))
 	defer stashSrv.Close()
-	// buildIdentifier now builds the stash-box client against the hardcoded
-	// stashbox.StashDBURL, not Connection.URL — point it at the fake for this
-	// test so the identification call lands on stashSrv.
-	prevStashDBURL := stashbox.StashDBURL
-	stashbox.StashDBURL = stashSrv.URL
-	defer func() { stashbox.StashDBURL = prevStashDBURL }()
+	// Claude 2026-08-04: buildIdentifier reads the endpoint from
+	// stashbox_databases (migration 0061), not stashbox.StashDBURL.
+	// Reason: Stage 5 made endpoints operator-configurable; mutating the
+	//   package constant no longer redirects the live client. Point the
+	//   seeded stashdb row at the fake instead.
+	// Review if: the seed migration stops inserting a stashdb row.
+	// Related files: internal/mode/mode.go buildIdentifier, migration 0061.
+	// prevStashDBURL := stashbox.StashDBURL
+	// stashbox.StashDBURL = stashSrv.URL
+	// defer func() { stashbox.StashDBURL = prevStashDBURL }()
 
 	store, settingsStore := newTestStores(t)
 	ctx := context.Background()
+	if _, err := store.DB().ExecContext(ctx,
+		`UPDATE stashbox_databases SET endpoint = ? WHERE name = 'stashdb'`, stashSrv.URL); err != nil {
+		t.Fatalf("retargeting seeded stashdb endpoint at fake: %v", err)
+	}
 	// Placeholder whisparr — Build constructs a servarr client but never calls
 	// it before the Adult identifier branch.
 	if err := store.Upsert(ctx, "whisparr", "http://whisparr.invalid", "k"); err != nil {

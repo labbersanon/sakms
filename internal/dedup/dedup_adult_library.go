@@ -17,8 +17,13 @@ import (
 )
 
 // sceneDedupKey groups Adult duplicates by a scene's stable stash-box
-// identity — the direct analogue of Series' episodeDedupKey, with (box,
-// scene_id) as SEPARATE fields for the same reason library.Scene stores
+// identity, with (box, scene_id) as SEPARATE fields for the same reason
+// library.Scene stores
+// (Claude 2026-08-04: this comment used to call itself "the direct analogue
+// of Series' episodeDedupKey" — that type was deleted in Wave 4 of
+// .omc/plans/autopilot-impl-phash-grouping.md, since Series now groups
+// purely by phash similarity, not by a (show,season,episode) key. Adult
+// alone still groups by an explicit identity key.)
 // them separately (a StashDB and a FansDB match both yield raw UUIDs in the
 // same shape, and give-back needs to know which box a scene came from; see
 // internal/library/library_scene.go). "The tracked copy" for a key is just

@@ -247,6 +247,26 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// {id} regardless.
 	mux.HandleFunc("POST /api/pruning-rules/preview", previewPruningRuleHandler(pruningStore, libStore))
 
+	// Claude 2026-08-04: stash-box database registry routes (Stage 5 Wave 2,
+	// plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md).
+	// Reason: the store is DERIVED from connStore rather than threaded in as a
+	// new NewMux parameter — see connections.Store.DB's comment for why (~400
+	// call sites, zero behavioural content). It is nil whenever connStore is,
+	// and every handler answers 503 in that case.
+	// Troubleshooting: "reorder" and "test" are literal segments so they win
+	// over {id} by specificity regardless of registration order, same as
+	// pruning-rules/preview above.
+	// Related files: internal/api/stashboxdb.go, internal/stashboxdb/store.go
+	stashBoxStore := newStashBoxStore(connStore)
+	stashBoxSecrets := newStashBoxSecretHandles(connStore)
+	mux.HandleFunc("GET /api/stashbox-databases", listStashBoxDatabasesHandler(stashBoxStore, stashBoxSecrets))
+	mux.HandleFunc("POST /api/stashbox-databases", createStashBoxDatabaseHandler(stashBoxStore, stashBoxSecrets))
+	mux.HandleFunc("PUT /api/stashbox-databases/reorder", reorderStashBoxDatabasesHandler(stashBoxStore, stashBoxSecrets))
+	mux.HandleFunc("POST /api/stashbox-databases/test", testStashBoxDatabaseHandler(httpClient))
+	mux.HandleFunc("PUT /api/stashbox-databases/{id}", updateStashBoxDatabaseHandler(stashBoxStore, stashBoxSecrets))
+	mux.HandleFunc("DELETE /api/stashbox-databases/{id}", deleteStashBoxDatabaseHandler(stashBoxStore, stashBoxSecrets))
+	mux.HandleFunc("POST /api/stashbox-databases/{id}/test-stored", testStoredStashBoxDatabaseHandler(httpClient, stashBoxStore, stashBoxSecrets))
+
 	mux.HandleFunc("POST /api/modes/{mode}/dedup/scan", dedupScanHandler(httpClient, connStore, scStore, settingsStore, propStore, prober, hasher, libStore, hub))
 	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals", listProposalsHandler(propStore, proposals.Dedup))
 	// Live per-file progress stream + a status backstop for a running Dedup
@@ -533,7 +553,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/settings/adult-mode-enabled", getAdultModeEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/adult-mode-enabled", putAdultModeEnabledHandler(settingsStore))
 	// Entity cache admin — counts, per-source sync state, on-demand sync triggers
-	mux.HandleFunc("GET /api/admin/entity-sync", entitySyncStatusHandler(entityStore))
+	mux.HandleFunc("GET /api/admin/entity-sync", entitySyncStatusHandler(entityStore, connStore))
 	mux.HandleFunc("POST /api/admin/entity-sync/{source}", triggerEntitySyncHandler(entityStore, connStore, settingsStore, httpClient))
 	// Tracked-library size/count grid split by mode and quality tier, for the
 	// Dashboard's Storage Allocation table. Pure DB read — see the handler's
@@ -692,11 +712,35 @@ func listConnectionsHandler(store *connections.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Claude 2026-08-04: filter the two stash-box registry services out of
+		// this list (Stage 5 AC13, plan
+		// .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md Wave 5).
+		// Reason: migration 0061 turned "stashdb"/"fansdb" into rows of the
+		// configurable registry, which Settings renders in its own section via
+		// GET /api/stashbox-databases. Their `connections` rows still exist and
+		// still hold the encrypted keys (that is the whole point of secret_ref
+		// — no key re-entry), so they would otherwise appear in BOTH lists,
+		// with the old one able to overwrite a key the new one can't see.
+		// Filtering server-side rather than in the frontend keeps the backend
+		// the single source of truth for what the old surface contains.
+		// Troubleshooting: this hides them, it does NOT delete them. Removing
+		// this filter restores the old double-listing bug, it does not restore
+		// a lost secret.
+		// Review if: OQ7 lands and the seeded keys move inline into
+		// stashbox_databases — the `connections` rows are then genuinely gone
+		// and there is nothing left to filter.
+		// Related files: internal/api/stashboxdb.go (stashBoxRegistryServices),
+		// frontend/src/screens/settings/index.tsx
+		visible := make([]connections.Summary, 0, len(list))
 		for i := range list {
+			if stashBoxRegistryServices[list[i].Service] {
+				continue
+			}
 			list[i].FixedURL = fixedURLValues[list[i].Service]
+			visible = append(visible, list[i])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(list)
+		json.NewEncoder(w).Encode(visible)
 	}
 }
 
@@ -724,6 +768,18 @@ type upsertConnectionRequest struct {
 // them simply stops being read (see buildAIClient/buildIdentifier in
 // internal/mode/mode.go), not that they never had one.
 // Mirrors SERVICES_WITH_FIXED_URL in the frontend (frontend/src/api/settings.ts).
+//
+// Claude 2026-08-04: stashdb/fansdb are INERT here as of Stage 5 Wave 5
+// (plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md §5.3).
+// Reason: both are filtered out of listConnectionsHandler, so nothing renders
+// a row for them and nothing reads their fixedUrl. Their entries are KEPT
+// rather than removed for one reason only: this map also relaxes the "url is
+// required" gate on PUT /api/connections/{service}, and a direct API caller
+// (or the legacy TestConnection case in connections.go) can still upsert
+// either service's key. Removing them would start rejecting those writes with
+// "url is required" for a URL that has never existed.
+// Review if: the seeded `connections` rows are ever dropped (OQ7) — the whole
+// pair becomes genuinely dead at that point.
 var fixedURLServices = map[string]bool{
 	"tmdb": true, "tvdb": true, "stashdb": true, "fansdb": true, "tpdb": true,
 	"openai": true, "gemini": true, "anthropic": true, "brave": true,
@@ -734,8 +790,12 @@ var fixedURLServices = map[string]bool{
 // in-use URL over the API instead of the frontend hardcoding (and drifting
 // from) these Go values. Keyed identically to fixedURLServices above.
 var fixedURLValues = map[string]string{
-	"tmdb":      tmdb.DefaultBaseURL,
-	"tvdb":      tvdb.DefaultBaseURL,
+	"tmdb": tmdb.DefaultBaseURL,
+	"tvdb": tvdb.DefaultBaseURL,
+	// Claude 2026-08-04: inert as of Stage 5 Wave 5 — listConnectionsHandler
+	// filters both services out before it reads this map, and a registry row's
+	// endpoint is operator-editable so these constants no longer describe it.
+	// Kept only to stay in step with fixedURLServices above; see its comment.
 	"stashdb":   stashbox.StashDBURL,
 	"fansdb":    stashbox.FansDBURL,
 	"tpdb":      tpdbrest.DefaultBaseURL,

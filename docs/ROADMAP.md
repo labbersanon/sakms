@@ -195,7 +195,17 @@ ceiling regardless of this gap), but it is not a substitute for fixing
 limits on the same node. Fixing `MaxJobs` enforcement is its own,
 not-yet-scheduled follow-up — out of scope for the CPU governor work.
 
-### phash-based Dedup — Movies/Series/Adult refinement shipped; phash-primary grouping still open
+### phash-based Dedup — refinement + phash-primary grouping shipped; PDQ migration open
+<!-- Claude 2026-08-04: heading corrected. Reason: this heading said
+     phash-primary grouping was "still open," but its own section body
+     (below) documents it as shipped 2026-07-18 in 50dd970 — a stale heading
+     contradicted by its own text. See
+     .omc/plans/autopilot-impl-phash-grouping.md §0 for the full trace.
+     Troubleshooting: n/a — docs-only staleness, no code defect.
+     Review if: never — this heading now matches the body it introduces. -->
+<!-- Original stale heading, kept per house rule (never delete, comment with
+     a reason): "phash-based Dedup — Movies/Series/Adult refinement shipped;
+     phash-primary grouping still open" -->
 The other half of "phash as the defacto standard across all media." Unlike
 Adult, there's no Stash instance for Movies/Series to lean on — SAK computes
 perceptual hashes itself (real frame-decode work via ffmpeg).
@@ -346,6 +356,35 @@ false-positive risk for Movies). `PHashSimilarity float64` on
 `proposals.Proposal` surfaces minimum pairwise similarity in the group card
 header. Commit `50dd970`.
 
+<!-- Claude 2026-08-04: the 25/10 numbers two paragraphs above, and the
+     entire "Still open" PDQ bullet below, are now STALE — verified against
+     internal/phash/algo.go and distance.go while executing
+     .omc/plans/autopilot-impl-phash-grouping.md. Corrected inline below
+     rather than rewritten in place, per house rule (never delete, comment
+     with a reason): this paragraph's 25/10 were correct AS OF 50dd970
+     (2026-07-18), on the PHash 64-bit-per-frame scale of that time.
+     Troubleshooting: nobody updated this ROADMAP section after the PDQ
+     migration below actually landed — three commits after the "Still open"
+     bullet was written (3579a04 Stage 2, 60ece48 Stage 3, 1f1d4c5 Stage 4)
+     completed exactly the migration that bullet was still describing as
+     future work.
+     Review if: never — this note documents a completed migration; nothing
+     here is pending. -->
+**CORRECTED 2026-08-04: PDQ migration is DONE, not open.** The "Still open"
+bullet immediately below predates three commits that completed it:
+`3579a04` (Stage 2 — width-agnostic distance.go), `60ece48` (Stage 3 — swap
+PHash→PDQ via `internal/phash/algo.go`'s one-file seam, exactly as planned),
+and `1f1d4c5` (Stage 4 — calibrate real defaults from measured PDQ harness
+evidence). The scheme tag is `pdq256/5f` (256 bits/frame, up from PHash's 64),
+so every old-scheme cached hash self-invalidated on upgrade — see
+`internal/phash/algo.go`'s `Scheme` doc comment for why the tag had to change.
+**Recalibrated thresholds (PDQ 256-bit-per-frame scale, replacing the 25/10
+PHash-scale numbers above):** `DefaultMoviesThreshold = 64`,
+`DefaultThreshold` (Series) `= 40` — see `internal/phash/distance.go`'s doc
+comments for the measured perturbed-duplicate/distinct-content bounds (12 and
+98 respectively) those two values were chosen against. The Movies-more-
+permissive-than-Series posture the original 25/10 established is preserved.
+
 **Still open (next slices):**
 - **PDQ's upstream blocker is resolved — now a real migration, not a wait.**
   Corrected 2026-07-21: this entry previously said `imghash`'s latest tag
@@ -368,6 +407,9 @@ header. Commit `50dd970`.
   model-weight download into the main module require, but v2.5.2 split
   that out specifically so PDQ-only consumers don't inherit it — no CGo or
   non-Go dependencies anywhere in the PDQ/core path.)
+  **CORRECTED 2026-08-04: this bullet is done — see the note directly above
+  the "Still open" heading. Kept verbatim below it for history, per house
+  rule (never delete, comment with a reason).**
 
 **Shipped 2026-07-19: Vendor-agnostic worker node (`cmd/sakms-node`).** Optional
 installable binary that offloads phash/videophash computation to any machine with
@@ -393,6 +435,63 @@ unchanged — unit tests are unaffected. Commit `29a56f3`.
 ---
 
 ## Recently shipped (outside this backlog)
+
+<!-- Claude 2026-08-04: added for Stage 5 (configurable stash-box databases).
+     Reason: the Stage 5 spec described a UI layered on an "approved backend
+     design" that did not exist; this entry records that BOTH layers landed in
+     one session, so a future reader doesn't re-derive the same discovery.
+     Review if: OQ7 (moving the seeded keys inline) is ever decided. -->
+### Configurable stash-box databases (Stage 5) — shipped 2026-08-04
+`.omc/specs/deep-interview-stage5-stashboxdb-ui.md`, built per
+`.omc/plans/autopilot-impl-stage5-stashboxdb-ui.md` on the backend design in
+`.omc/plans/ralplan-adult-identify-configurable-databases.md`. StashDB and
+FansDB are no longer hardcoded singleton connections with hardcoded endpoints:
+they are two rows of an operator-managed registry (migration 0061,
+`internal/stashboxdb`, `/api/stashbox-databases`) holding up to 5 stash-box
+databases, each with its own name, GraphQL endpoint, key, cascade priority,
+enabled flag and fansite-only gate. `internal/identify` iterates that registry
+everywhere it used to write `["stashdb","fansdb"]`. The UI is a `RowEditor`
+host in Settings → Library → Adult. See the 2026-08-04 CHANGELOG entry for the
+full file list and the five recorded deviations.
+
+Things a future session should not quietly undo:
+- **There is no "built-in" tier, and adding one would be a regression.** The
+  two seeded rows are fully renameable, re-pointable, reorderable and
+  deletable, and the wire format carries no flag that would let the UI treat
+  them differently (AC11). What constrains renames is not a protected tier but
+  two guards: the reserved name `tpdb`, and the `library_scenes` name-reuse
+  tombstone (`ErrNameHaunted`) that stops a name with tracked-scene history
+  being rebound to a different database.
+- **`secret_ref` is an internal handle, not a user-visible tier.** It exists so
+  the two seeded rows keep reading their EXISTING `connections` keys (no
+  re-entry, ever). It is never serialized, has zero matching effect, and
+  `hasApiKey`/`keySuffix` always report the RESOLVED key so the UI cannot tell
+  which table a secret lives in.
+- **An `Identifier` with no `StashBoxes` snapshot means LEGACY, not "no
+  databases".** It falls back to `stashdb` then `fansdb`. Changing that to an
+  empty cascade would silently disable identification for every hand-built
+  `Identifier` — which is all of them in tests.
+- **`reSearchAfterGrounding` is ungated on purpose**, despite ralplan §2.3
+  asking for the fansite gate there. That site never had one, and adding it
+  changes the databases queried on a default install (AC15). It is probably
+  the better behaviour once AC15 is retired — see the comment at the call site.
+- **The registry panel is deliberately NOT inside Library's `SectionSave`
+  batch.** Reorder-on-drop and Delete are immediate and irreversible; putting
+  them behind a Save button that might never be pressed would make the shared
+  dirty flag lie. Same call `RssFeedAdmin` made.
+- **`stashdb`/`fansdb` are filtered out of `GET /api/connections` server-side**,
+  not in the frontend. Removing that filter restores a double-listing bug where
+  the old surface could overwrite a key the new one cannot see.
+
+Still open (deliberately, not forgotten):
+- The plan's two LIVE checks were not run: a real reachable-vs-unreachable
+  endpoint test (AC12) and a manual AC15 spot-check against a known scene.
+  Both need real stash-box credentials.
+- OQ7 — whether to move the seeded keys inline into `stashbox_databases` and
+  drop their `connections` rows — is still undecided. Several "inert, kept on
+  purpose" comments (`fixedURLServices`, the legacy `TestConnection` case)
+  point at it as their review trigger.
+
 
 ### Season/episode picker redesign (poster grid + TMDB response cache) — shipped 2026-08-02
 `.omc/specs/deep-interview-season-episode-picker-redesign.md`, built per
@@ -1611,19 +1710,34 @@ numbered below by original idea order, not interview order.
 items remain queued from mid-session additions (Adult section security,
 Library sidebar tab, Streaming media player — items 11-13 below), all
 explicitly deferred.
-10. **Downloads progress bar with speed + seed count** — spec ready:
+10. **Downloads progress bar with speed + seed count** — **SHIPPED
+    2026-08-04** (plan `.omc/plans/autopilot-impl-downloads-progress-speed-seeds.md`,
+    all 5 waves executed same day; `go build/vet/test` and frontend
+    `pnpm typecheck/test/build` green). Spec:
     `.omc/specs/deep-interview-downloads-progress-speed-seeds.md` (~13%
-    ambiguity, PASSED). Fixes a real bug found during interview: today's
-    "Connections" field is a misnomer (actually `Stats().ConnectedSeeders`
-    for torrents, hardcoded 0 for usenet, no protocol field exists to
-    explain why) — becomes a correctly-labeled, protocol-scoped seed count
-    (torrents only, hidden entirely for usenet, not shown as 0/N/A). New
-    upload-speed tracking (reads `ConnStats.BytesWritten`, currently
-    unused) always shows on torrent rows even at 0 KB/s — deliberately
-    won't read non-zero until item 7's seeding work actually ships, but
-    can be built independently of that timing. Explicitly flags one open
-    item this interview couldn't resolve: exact visual layout needs a
-    design pass before/during implementation.
+    ambiguity, PASSED). Fixed the misnomer found during interview: the
+    unified downloader's "Connections" field (actually
+    `Stats().ConnectedSeeders` for torrents, always-zero-by-omission for
+    usenet, no protocol field existed to explain why) is now a
+    correctly-labeled, protocol-scoped `seedCount` (torrents only, hidden
+    entirely for usenet — not shown as 0/N/A) plus a new `uploadSpeed`
+    field and an explicit `protocol: "torrent" | "usenet"` field on
+    `apidto.Download`. Real architectural finding during implementation
+    (Architect review, not foreseen by the spec): upload speed and the
+    live seed-count refresh both had to be computed in their own pass,
+    structurally outside `pollSnapshot`'s `active||waiting` guard — a
+    seeding entry's status is `"complete"`, so nesting either there would
+    have shipped an upload-speed number that reads 0 forever. Deliberate
+    deviation from the spec's wording: upload accounting uses
+    `BytesWrittenData` (payload-only), not `BytesWritten` (wire bytes),
+    matching every other upload-counter site in `internal/downloader` and
+    the ratio accounting that decides when seeding stops. Frontend: two
+    Unicode arrow glyphs (`↓`/`↑`, no new icon dependency), upload speed
+    always shows on torrent rows including a true `0 KB/s` (a new
+    `formatUpBps` sibling to the existing `formatBps`, which is left
+    untouched since download speed still relies on its `"—"` case), seed
+    count always-shows on torrent rows too (including while seeding) per
+    an Architect-locked decision resolving an AC gap the spec left open.
 11. **Security for Adult sections** — spec ready:
     `.omc/specs/deep-interview-section-pin-lock.md` (~11% ambiguity,
     PASSED). **Reframed mid-interview from an Adult-specific ask into a

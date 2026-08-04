@@ -200,7 +200,9 @@ const downloadsGlobalPausedKey = "downloads_global_paused"
 var errDownloadsPaused = errors.New("downloads are globally paused — resume in the Downloads screen before grabbing new releases")
 
 // toDTODownload maps a downloader.Download to the wire DTO, deriving a display
-// filename (basename of the first file, GID fallback).
+// filename (basename of the first file, GID fallback). Protocol is a literal
+// "torrent" — this mapper's argument type already tells it that with
+// certainty, so it does not need to re-derive it from the GID (D-2).
 func toDTODownload(d downloader.Download) apidto.Download {
 	name := d.Filename
 	if name != "" {
@@ -216,12 +218,19 @@ func toDTODownload(d downloader.Download) apidto.Download {
 		TotalLength:     d.TotalLength,
 		CompletedLength: d.CompletedLength,
 		DownloadSpeed:   d.DownloadSpeed,
-		Connections:     d.Connections,
+		SeedCount:       d.SeedCount,
+		UploadSpeed:     d.UploadSpeed,
+		Protocol:        apidto.DownloadProtocolTorrent,
 		ErrorMessage:    d.ErrorMessage,
 	}
 }
 
-// toUsenetDTODownload maps a usenet.Download to the wire DTO. Mirrors toDTODownload.
+// toUsenetDTODownload maps a usenet.Download to the wire DTO. Mirrors
+// toDTODownload, except SeedCount and UploadSpeed are left at their zero
+// value: usenet has no seeder/upload concept, and that omission is
+// intentional, not a missed field — the frontend hides both entirely for
+// protocol == "usenet" rather than rendering "0 seeds" / "0 KB/s", so a
+// future reader must not "fix" this by wiring up fake values.
 func toUsenetDTODownload(d usenet.Download) apidto.Download {
 	name := d.Filename
 	if name != "" {
@@ -237,7 +246,7 @@ func toUsenetDTODownload(d usenet.Download) apidto.Download {
 		TotalLength:     d.TotalLength,
 		CompletedLength: d.CompletedLength,
 		DownloadSpeed:   d.DownloadSpeed,
-		Connections:     d.Connections,
+		Protocol:        apidto.DownloadProtocolUsenet,
 		ErrorMessage:    d.ErrorMessage,
 	}
 }

@@ -24,6 +24,6 @@ func seedActive(dl *downloader.Manager, gid string) {
 	dl.SeedState(downloader.Download{
 		GID: gid, Status: "active",
 		TotalLength: 100, CompletedLength: 50,
-		DownloadSpeed: 1024, Connections: 4,
+		DownloadSpeed: 1024, SeedCount: 4,
 	})
 }

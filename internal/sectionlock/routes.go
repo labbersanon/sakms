@@ -105,6 +105,18 @@ func Classify(rawPath string) Set {
 		// an adult-scoped rule is NOT gated by Layer 1's adult rule here.
 		// Review if: pruning rules ever move onto the Organize screen.
 		out.Add(SectionSettings)
+	case "stashbox-databases":
+		// Claude 2026-08-04: added for the configurable stash-box registry
+		// (Stage 5, plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md).
+		// Reason: same attribution as "connections" above — this IS the
+		// connections surface for stash-box rows, authored on Settings →
+		// Library → Adult, and it carries API keys, so it must be locked
+		// exactly when Settings is. Deliberately NOT {adult} as well: the
+		// routes are addressed by row id with no mode in the path, and pairing
+		// them with adult would leave a locked-Adult install unable to manage
+		// its own credentials from an otherwise-unlocked Settings screen.
+		// Review if: the registry ever gains a mode-scoped route.
+		out.Add(SectionSettings)
 	case "images", "notifications", "apikey", "auth", "setup",
 		"section-lock", "openapi.yaml":
 		// Deliberately unclassified, each for its own reason:

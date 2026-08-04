@@ -51,6 +51,12 @@ type Override = (
 // override the handful it actually cares about.
 function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/connections")) return jsonResponse([]);
+  // Claude 2026-08-04: StashBoxDatabases (Stage 5 Wave 5.4) now mounts
+  // unconditionally inside Library -> Adult, alongside LibraryConnectionsSection.
+  // Without this, every existing Adult-mode Library render hits an unmocked
+  // GET and falls through to the 204 default -> fetchStashBoxDatabases
+  // resolves null, overwriting createResource's initialValue: [] with null.
+  if (url.includes("/api/stashbox-databases")) return jsonResponse([]);
   // The multi-connection registry (migration 0053) that backs BOTH the Usenet
   // page's subscriptions and Advanced -> API Connections' media players. Two
   // separate createResource(fetchServiceConnections) calls hit this on a single
@@ -634,12 +640,19 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     expect(screen.queryByLabelText("tvdb URL")).toBeNull();
     expect(screen.queryByLabelText("tmdb API key")).toBeNull();
 
+    // Claude 2026-08-04: Adult's fixed-URL set is TPDB alone now (Stage 5
+    // Wave 5, plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md §5.4).
+    // StashDB and FansDB are rows of the configurable stash-box registry and
+    // render in their own panel with a REAL, editable endpoint field — the
+    // opposite of what this test asserts — so their absence here is the
+    // criterion (AC2/AC13), not a regression.
+    // for (const fixed of ["stashdb", "fansdb", "tpdb"]) {   // ← was
     await goToLibraryConnections("Adult");
-    for (const fixed of ["stashdb", "fansdb", "tpdb"]) {
-      // No URL input for these fixed-URL services...
-      expect(screen.queryByLabelText(`${fixed} URL`)).toBeNull();
-      // ...but their API Key field is still present, so the row is usable.
-      expect(await screen.findByLabelText(`${fixed} API key`)).toBeInTheDocument();
+    expect(screen.queryByLabelText("tpdb URL")).toBeNull();
+    expect(await screen.findByLabelText("tpdb API key")).toBeInTheDocument();
+    for (const relocated of ["stashdb", "fansdb"]) {
+      expect(screen.queryByLabelText(`${relocated} API key`)).toBeNull();
+      expect(screen.queryByLabelText(`${relocated} URL`)).toBeNull();
     }
 
     // A URL-required service still shows a URL input.
@@ -2286,12 +2299,16 @@ describe("Adult mode disable switch", () => {
   it("propagates live (no page reload): disabling from Global hides stash, and takes StashDB/FansDB/TPDB with the Adult mode itself", async () => {
     stubFetch(adultModeFetch(true).override);
     renderSettingsWithAdultMode();
-    // The Adult-only connection rows now sit in two places: stashdb/fansdb/tpdb
-    // under Library -> Adult, and stash under Advanced -> API Connections.
+    // Claude 2026-08-04: stashdb/fansdb moved out of the connection rows
+    // (Stage 5 Wave 5, §5.4). The Adult-only surfaces are now: tpdb as a
+    // connection row under Library -> Adult, the stash-box registry panel on
+    // that same tab, and stash under Advanced -> API Connections. The two
+    // relocated names are asserted through the registry panel's own heading
+    // rather than as connection rows, because that is where they live now.
+    // expect(await screen.findByText("stashdb")).toBeInTheDocument();   // ← was
     await goToLibraryConnections("Adult");
-    expect(await screen.findByText("stashdb")).toBeInTheDocument();
-    expect(screen.getByText("fansdb")).toBeInTheDocument();
-    expect(screen.getByText("tpdb")).toBeInTheDocument();
+    expect(await screen.findByText("tpdb")).toBeInTheDocument();
+    expect(screen.getByText("Stash-box databases")).toBeInTheDocument();
 
     goToAPIConnections();
     expect(await screen.findByText("stash")).toBeInTheDocument();
@@ -2318,9 +2335,10 @@ describe("Adult mode disable switch", () => {
       expect(screen.queryByRole("button", { name: "Adult" })).toBeNull(),
     );
     expect(await screen.findByText("tmdb")).toBeInTheDocument();
-    expect(screen.queryByText("stashdb")).toBeNull();
-    expect(screen.queryByText("fansdb")).toBeNull();
     expect(screen.queryByText("tpdb")).toBeNull();
+    // The registry panel goes with the mode too — it is rendered inside the
+    // Adult branch, so losing the mode loses the whole card, not just its rows.
+    expect(screen.queryByText("Stash-box databases")).toBeNull();
   });
 
   it("mode-fallback: a screen with Adult selected falls back to Movies when disabled from elsewhere", async () => {

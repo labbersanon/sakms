@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -66,6 +67,7 @@ func brokenReleaseStore(t *testing.T) *adultnewest.ReleaseStore {
 type connectionsUpserter struct {
 	connStore interface {
 		Upsert(ctx context.Context, service, url, apiKey string) error
+		DB() *sql.DB
 	}
 	rssFeedsStore *rssfeeds.Store
 }
@@ -79,11 +81,15 @@ func (u *connectionsUpserter) setProwlarr(t *testing.T, rawURL string) {
 
 func (u *connectionsUpserter) setStashdb(t *testing.T) {
 	t.Helper()
-	// The endpoint is hardcoded (stashbox.URLForBox → StashDBURL, overridden to
-	// a fake in-test); only presence + a key matter to buildIdentifier.
+	// The stored URL is still ignored — buildIdentifier reads the endpoint from
+	// the stashbox_databases registry (migration 0061) rather than from
+	// stashbox.URLForBox, so the seeded row is retargeted at whatever fake the
+	// caller already pointed stashbox.StashDBURL at. Keeping the package var as
+	// the single source here means the ~8 callers need no change.
 	if err := u.connStore.Upsert(context.Background(), "stashdb", "https://stashdb.invalid", "key"); err != nil {
 		t.Fatalf("seeding stashdb connection: %v", err)
 	}
+	retargetStashBoxDatabase(t, u.connStore.DB(), "stashdb", stashbox.StashDBURL)
 }
 
 func (u *connectionsUpserter) setTPDB(t *testing.T) {

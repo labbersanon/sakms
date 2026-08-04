@@ -87,11 +87,18 @@ export type {
 // openai/gemini/anthropic/brave that URL supersedes any value the operator
 // stored back when it was user-supplied; tmdb/tvdb/stashdb/fansdb/tpdb never
 // collected one in the first place.
+// Claude 2026-08-04: stashdb/fansdb commented out (Stage 5 Wave 5, §5.2).
+// Reason: neither renders a ConnectionRow anymore (see LIBRARY_MODE_SERVICES
+// above), so their membership here is read by nothing. Their registry rows
+// carry a REAL, operator-editable endpoint field instead of the fixed constant
+// this list exists to describe — leaving them here would state the opposite of
+// what is now true.
+// Review if: a stash-box service ever returns to the singleton connections UI.
 export const SERVICES_WITH_FIXED_URL = [
   "tmdb",
   "tvdb",
-  "stashdb",
-  "fansdb",
+  // "stashdb",
+  // "fansdb",
   "tpdb",
   "openai",
   "gemini",
@@ -118,10 +125,22 @@ export const API_SECTION_SERVICES = ["prowlarr", "stash"];
 
 // LIBRARY_MODE_SERVICES are the metadata-source connections that belong to one
 // specific mode, rendered inside Settings' Library tab under that mode.
+// Claude 2026-08-04: adult trimmed from ["stashdb","fansdb","tpdb"] to
+// ["tpdb"] (Stage 5 Wave 5, plan
+// .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md §5.1, AC2/AC13).
+// Reason: StashDB and FansDB are rows of the configurable stash-box registry
+// now and render in Settings → Library → Adult's own StashBoxDatabases panel.
+// The backend ALSO filters them out of GET /api/connections, so leaving them
+// here would render two empty, permanently-unconfigurable ConnectionRows.
+// TPDB stays: it is a singleton on a different protocol, with no registry row.
+// Troubleshooting: if the Adult metadata-sources table looks empty apart from
+// TPDB, that is correct — the stash-box entries moved, they were not lost.
+// Review if: TPDB ever gains a stash-box-protocol registry row of its own.
+//  adult: ["stashdb", "fansdb", "tpdb"],   // ← was
 export const LIBRARY_MODE_SERVICES: Record<Mode, string[]> = {
   movies: ["tmdb"],
   series: ["tvdb"],
-  adult: ["stashdb", "fansdb", "tpdb"],
+  adult: ["tpdb"],
 };
 
 // CONNECTION_SERVICES is the full set of SINGLETON services — the ones whose
@@ -156,9 +175,16 @@ export const CONNECTION_SERVICES = [
 // of the rendered table when the global adult_mode_enabled switch (see
 // fetchAdultModeEnabled below) is off — see ralplan-adult-disable-switch.md
 // step 9.
+// Claude 2026-08-04: stashdb/fansdb commented out (Stage 5 Wave 5, §5.1).
+// Reason: this list exists so APISection can HIDE adult-only rows when
+// adult_mode_enabled is off. Those two no longer produce a row anywhere in the
+// connections UI, so there is nothing left for their entries to hide.
+// Troubleshooting: hiding the registry panel itself is not this list's job —
+// ModeSelector omits the Adult mode entirely when the switch is off, which
+// takes the whole panel with it.
 export const ADULT_ONLY_CONNECTION_SERVICES = [
-  "stashdb",
-  "fansdb",
+  // "stashdb",
+  // "fansdb",
   "tpdb",
   "stash",
 ];

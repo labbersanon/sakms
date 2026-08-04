@@ -1085,6 +1085,74 @@ describe("Dedup — primary keeper invariant (safety-critical, AC16)", () => {
   });
 });
 
+// Claude 2026-08-04: new describe block — AC6 (spec: phash similarity %
+// displayed on the card) had NO test referencing pHashSimilarity anywhere in
+// this file before this change, despite the badge/confidence-label rendering
+// logic existing at Dedup.tsx:99-109/628-633 since 50dd970. Reason: see the
+// residual-gap plan's Wave 2 (T2.4) — the backend persistence half of this
+// same defect is fixed by migration 0060 (internal/proposals/proposals.go).
+// Troubleshooting: n/a — new coverage, no prior bug in this describe block.
+// Review if: the confidence-band boundaries change in Dedup.tsx's
+// similarityLabel — these thresholds (0.9 / 0.7) are read directly from that
+// function, not from the spec's original (superseded) 0.95/0.78/0.62 numbers.
+describe("Dedup — phash similarity badge and confidence label (AC6)", () => {
+  it("renders the similarity percentage and 'high confidence' label at/above 0.9", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({ id: 1, title: "High Confidence", pHashSimilarity: 0.95 }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("High Confidence");
+    expect(screen.getByText("95% similar · high confidence duplicate")).toBeInTheDocument();
+  });
+
+  it("renders 'likely duplicate' for a mid-band similarity (>= 0.7, < 0.9)", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({ id: 2, title: "Likely", pHashSimilarity: 0.8 }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Likely");
+    expect(screen.getByText("80% similar · likely duplicate")).toBeInTheDocument();
+  });
+
+  it("renders 'possible duplicate — review carefully' below the 0.7 boundary", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({ id: 3, title: "Possible", pHashSimilarity: 0.5 }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Possible");
+    expect(
+      screen.getByText("50% similar · possible duplicate — review carefully"),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the badge entirely when pHashSimilarity is absent (legacy/Adult proposals)", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 4, title: "No Score" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("No Score");
+    expect(screen.queryByText(/% similar/)).toBeNull();
+  });
+});
+
 describe("Dedup — VMAF card wiring (AC17)", () => {
   const vmafGroup = () =>
     dedupProposal({

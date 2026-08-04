@@ -128,8 +128,19 @@ func minPairwiseSimilarity(group []pHashFileItem, frames int) float64 {
 // similarity. TMDB is consulted only for display labels; it never gates
 // whether two files are considered duplicates.
 //
-// perFrameThreshold is the Movies per-frame Hamming distance ceiling — default
-// 25 bits (~60% similarity), configurable via movies_phash_dedup_threshold.
+// perFrameThreshold is the Movies per-frame Hamming distance ceiling —
+// default 64 bits (of 256 per frame, PDQ scale — see phash.DefaultMoviesThreshold's
+// doc comment for the measured calibration this was chosen against),
+// configurable via movies_phash_dedup_threshold.
+//
+// Claude 2026-08-04: corrected from "default 25 bits (~60% similarity)".
+// Reason: that number was PHash-64-bit-scale, obsolete since 1f1d4c5
+// recalibrated to PDQ's 256-bit-per-frame scale; the "~60% similarity" gloss
+// was dropped rather than recomputed because it was never load-bearing (the
+// actual gate is SimilarityWithin's raw bit comparison, not a percentage).
+// Troubleshooting: an executor reading only this comment (not distance.go)
+// would otherwise "fix" the real 64 back to a stale 25.
+// Review if: internal/phash/algo.go swaps the hash algorithm again.
 func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Movies library root folder configured yet — add one in Settings first")
@@ -268,9 +279,10 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 // ScanLibrarySeriesPHash is Dedup's phash-primary scan for Series mode — the
 // Movies sibling with two differences: (1) it loads tracked episodes (not items)
 // and resolves orphan entries through library.ResolveEpisodeVideoFiles, and
-// (2) it uses a stricter default threshold (40 Hamming bits/frame, same as
-// phash.DefaultThreshold) to reduce false positives from shared intros/credits
-// between genuinely different episodes of the same show.
+// (2) it uses a stricter default threshold (40 Hamming bits/frame, of 256 per
+// frame — same PDQ scale as phash.DefaultThreshold) to reduce false positives
+// from shared intros/credits between genuinely different episodes of the same
+// show.
 //
 // perFrameThreshold is configurable via series_phash_dedup_threshold.
 func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {

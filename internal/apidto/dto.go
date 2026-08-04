@@ -2110,6 +2110,13 @@ var AllWebhookEvents = []string{
 // GET /api/downloads and the /api/downloads/stream SSE). All numeric fields
 // are real int64s here — the api layer parses aria2's decimal-string wire
 // values before this DTO is emitted.
+//
+// Claude 2026-08-04: SeedCount and UploadSpeed are torrent-only. Reason: a
+// usenet download has no seeder/upload concept at all — toUsenetDTODownload
+// leaves both at their zero value, and the frontend hides both fields
+// entirely for protocol == "usenet" rather than rendering a zero, so a zero
+// here always means "torrent, no seeders / no upload yet", never "usenet".
+// Review if: usenet ever gains a peer-exchange or reciprocation concept.
 type Download struct {
 	GID             string `json:"gid"`
 	Status          string `json:"status"` // "active" | "waiting" | "paused" | "error" | "complete" | "removed"
@@ -2117,9 +2124,22 @@ type Download struct {
 	TotalLength     int64  `json:"totalLength"`
 	CompletedLength int64  `json:"completedLength"`
 	DownloadSpeed   int64  `json:"downloadSpeed"`
-	Connections     int64  `json:"connections"`
+	SeedCount       int64  `json:"seedCount"`
+	UploadSpeed     int64  `json:"uploadSpeed"`
+	Protocol        string `json:"protocol"` // "torrent" | "usenet"
 	ErrorMessage    string `json:"errorMessage"`
 }
+
+// DownloadProtocolTorrent and DownloadProtocolUsenet are the two values
+// Download.Protocol can take. Exported so the mappers in internal/api set a
+// literal from here rather than each spelling its own string, per D-2 in the
+// implementing plan — Protocol is a per-mapper constant (the caller's
+// argument type already knows it with certainty), not a re-derived GID-prefix
+// convention.
+const (
+	DownloadProtocolTorrent = "torrent"
+	DownloadProtocolUsenet  = "usenet"
+)
 
 // DownloaderConfig is the unified downloader's operator-tunable settings
 // (GET/PUT /api/downloader/config).
@@ -2681,4 +2701,77 @@ type PruningRuleUpsertRequest struct {
 // shown before/after save without ever blocking it.
 type PruningRulePreviewResponse struct {
 	MatchCount int `json:"matchCount"`
+}
+
+// --- Stash-box databases (internal/stashboxdb) — the configurable registry --
+//
+// Mirrors stashboxdb.Summary's wire shape (see
+// .omc/plans/ralplan-adult-identify-configurable-databases.md §2.1/§2.6).
+// EVERY row is a peer: the two rows migration 0061 seeds for StashDB and
+// FansDB are fully editable, reorderable and deletable, and there is
+// deliberately NO "builtin"/reserved flag on the wire — the UI renders every
+// row identically (Stage 5 AC11). The internal secret_ref handle that routes
+// where a row's key is stored is likewise never exposed: HasAPIKey/KeySuffix
+// already report the RESOLVED key, so the UI masks uniformly with no idea
+// which table the secret lives in.
+
+// StashBoxDatabase is one configured stash-box-protocol database as exposed
+// over the API — GET /api/stashbox-databases returns a list of these, and
+// POST/PUT return the affected row. Redacted the same way ConnectionSummary
+// is: never the secret, only HasAPIKey plus its last 4 characters.
+type StashBoxDatabase struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Endpoint    string `json:"endpoint"`
+	Priority    int    `json:"priority"`
+	Enabled     bool   `json:"enabled"`
+	FansiteOnly bool   `json:"fansiteOnly"`
+	HasAPIKey   bool   `json:"hasApiKey"`
+	KeySuffix   string `json:"keySuffix,omitempty"`
+	UpdatedAt   string `json:"updatedAt"`
+}
+
+// StashBoxDatabaseCreateRequest is POST /api/stashbox-databases' body. APIKey
+// is a plain (non-pointer) string here, unlike the update below: a create has
+// no stored secret to preserve, so all three states collapse to "this is the
+// key", and an empty one is rejected outright.
+type StashBoxDatabaseCreateRequest struct {
+	Name     string `json:"name"`
+	Endpoint string `json:"endpoint"`
+	APIKey   string `json:"apiKey"`
+}
+
+// StashBoxDatabaseUpdateRequest is PUT /api/stashbox-databases/{id}'s body.
+// Every field is a pointer so an omitted field means "leave it alone" — and
+// APIKey specifically carries the SAME three-state secret rule as
+// ConnectionUpsertRequest.APIKey (absent = preserve, "" = clear, non-empty =
+// set). Read that type's doc comment before touching this one: sending "" for
+// an untouched key field is the exact bug that silently wipes a working
+// stored secret, and it is a real incident class in this project's history.
+type StashBoxDatabaseUpdateRequest struct {
+	Name        *string `json:"name,omitempty"`
+	Endpoint    *string `json:"endpoint,omitempty"`
+	Priority    *int    `json:"priority,omitempty"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+	FansiteOnly *bool   `json:"fansiteOnly,omitempty"`
+	APIKey      *string `json:"apiKey,omitempty"`
+}
+
+// StashBoxDatabaseReorderRequest is PUT /api/stashbox-databases/reorder's
+// body: the complete set of stored ids in their new cascade order (index 0 is
+// consulted first). A partial list is rejected rather than silently leaving
+// an unlisted row at a stale priority — same full-set contract as
+// RssFeedReorderRequest.
+type StashBoxDatabaseReorderRequest struct {
+	IDs []int64 `json:"ids"`
+}
+
+// StashBoxDatabaseTestRequest is POST /api/stashbox-databases/test's body —
+// the STATELESS test, run against field values the operator has typed but not
+// necessarily saved. The saved-row counterpart is
+// POST /api/stashbox-databases/{id}/test-stored, which takes no body and
+// resolves the key server-side (the client never holds it).
+type StashBoxDatabaseTestRequest struct {
+	Endpoint string `json:"endpoint"`
+	APIKey   string `json:"apiKey"`
 }

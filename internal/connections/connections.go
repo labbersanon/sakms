@@ -20,6 +20,37 @@ type encryptor interface {
 	Decrypt(encoded string) (string, error)
 }
 
+// Encryptor is encryptor's exported form, so a SIBLING store built over the
+// same database and the same secret key can be constructed from an existing
+// *Store without every call site having to carry both dependencies
+// separately. See DB/Secrets below.
+type Encryptor = encryptor
+
+// Claude 2026-08-04: added DB()/Secrets() accessors (Stage 5,
+// .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md Wave 2.2).
+// Reason: internal/stashboxdb is a sibling store over the SAME *sql.DB and
+// the SAME secrets key. The plan called for threading a *stashboxdb.Store
+// from main.go through api.NewMux and mode.Build, but those two functions
+// have ~40 and ~400 call sites respectively (almost all in tests), so a new
+// parameter would be a mechanical several-hundred-line diff with no
+// behavioural content. Constructing the sibling from the connections store
+// that every one of those call sites ALREADY passes gets the same object with
+// a three-line change, and keeps the per-Scan snapshot semantics intact
+// (mode.buildIdentifier still builds it fresh on every Build).
+// Troubleshooting: these are the ONLY two accessors — do not add setters, and
+// do not reach through them to bypass this store's encrypt-on-write rule.
+// Review if: a dependency-injection container is ever introduced, or
+// stashboxdb stops sharing this database.
+
+// DB returns the underlying handle, for constructing a sibling store over the
+// same database (internal/stashboxdb). Read-only in intent: nothing outside
+// this package may write to `connections` except through the methods above.
+func (s *Store) DB() *sql.DB { return s.db }
+
+// Secrets returns the encryptor this store was built with, so a sibling store
+// encrypts its own inline secrets with the identical key.
+func (s *Store) Secrets() Encryptor { return s.secrets }
+
 // Store persists connections against a database, encrypting API keys with
 // secretStore before they're written and decrypting them on read.
 type Store struct {

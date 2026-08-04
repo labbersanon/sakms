@@ -13,6 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/stashapi"
 	"github.com/labbersanon/sakms/internal/stashbox"
+	"github.com/labbersanon/sakms/internal/stashboxdb"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
 
@@ -103,8 +104,9 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 // rest); a source's own sync error is likewise logged and skipped rather than
 // aborting its siblings — same fault-isolation convention as
 // recheck.runCycle. Client construction mirrors triggerEntitySyncHandler's
-// per-source branches exactly (same fixed public endpoints for TPDB/
-// StashDB/FansDB, same stash connection shape).
+// per-source branches exactly (same fixed public endpoint for TPDB, same
+// registry-resolved endpoints for the stash-box databases, same stash
+// connection shape).
 func runCycle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, store EntityStore) {
 	if conn, err := connStore.Get(ctx, "stash"); err == nil {
 		client := stashapi.New(stashapi.Config{URL: conn.URL, APIKey: conn.APIKey}, httpClient)
@@ -124,20 +126,44 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 		log.Printf("parseentity: loading tpdb connection: %v", err)
 	}
 
-	for _, source := range []string{"stashdb", "fansdb"} {
-		conn, err := connStore.Get(ctx, source)
-		if err != nil {
-			if !errors.Is(err, connections.ErrNotFound) {
-				log.Printf("parseentity: loading %s connection: %v", source, err)
+	// Claude 2026-08-04: was `for _, source := range []string{"stashdb",
+	// "fansdb"}` reading each name's fixed endpoint (Stage 5 Wave 3, plan
+	// §3.5).
+	// Reason: the set of stash-box databases, their endpoints and their order
+	// are operator config now (internal/stashboxdb). Reading the registry also
+	// fixes the case a renamed seeded row would otherwise break — its key
+	// still lives in `connections` under the original secret_ref, which only
+	// stashboxdb resolves.
+	// Troubleshooting: a row whose key does not resolve is SKIPPED silently,
+	// which is the same outcome the old ErrNotFound branch produced; a
+	// registry read error is logged once and the whole stash-box leg is
+	// skipped, leaving stash/TPDB above unaffected (same fault isolation as
+	// the rest of this function).
+	// endpoint, _ := stashbox.URLForBox(source)   // ← was: the fixed constant
+	databases, err := stashboxdb.New(connStore.DB(), connStore.Secrets()).List(ctx,
+		func(ctx context.Context, service string) (string, error) {
+			conn, err := connStore.Get(ctx, service)
+			if errors.Is(err, connections.ErrNotFound) {
+				return "", nil
 			}
+			if err != nil {
+				return "", err
+			}
+			return conn.APIKey, nil
+		})
+	if err != nil {
+		log.Printf("parseentity: loading stash-box databases: %v", err)
+		return
+	}
+	for _, database := range databases {
+		if database.APIKey == "" {
 			continue
 		}
-		endpoint, _ := stashbox.URLForBox(source)
 		client := stashbox.New(stashbox.Config{
-			Endpoint: endpoint, APIKey: conn.APIKey, IsBearer: false, HasVoteField: true,
+			Endpoint: database.Endpoint, APIKey: database.APIKey, IsBearer: false, HasVoteField: true,
 		}, httpClient)
-		if err := SyncFromStashBox(ctx, store, client, source, DefaultSyncPages); err != nil {
-			log.Printf("parseentity: background sync (%s): %v", source, err)
+		if err := SyncFromStashBox(ctx, store, client, database.Name, DefaultSyncPages); err != nil {
+			log.Printf("parseentity: background sync (%s): %v", database.Name, err)
 		}
 	}
 }

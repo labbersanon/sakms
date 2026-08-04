@@ -25,12 +25,39 @@ var (
 type GiveBack struct {
 	Boxes map[string]*stashbox.Client
 
+	// Claude 2026-08-04: added Order (Stage 5 Wave 3, plan
+	// .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md §3.2).
+	// Reason: SubmitDraft's non-TPDB fallback was the literal
+	// Boxes["stashdb"], which silently stops working on an install whose
+	// first-priority database is something else. Boxes is a MAP and so has no
+	// order of its own; this is the cascade order alongside it.
+	// Troubleshooting: EMPTY MEANS LEGACY — an empty Order falls back to
+	// "stashdb", so every hand-built GiveBack (all of them in tests) behaves
+	// exactly as before.
+	// Review if: GiveBack ever gains a second order-dependent operation, at
+	// which point this should probably become []DatabaseRef like
+	// Identifier.StashBoxes rather than a bare name list.
+
+	// Order is the configured databases' cascade order, TPDB excluded — used
+	// to pick SubmitDraft's fallback target. Client lookup still goes through
+	// Boxes; this only decides which name to try first.
+	Order []string
+
 	mu                    sync.Mutex
 	draftSubmissionBroken bool // latched true after a "not authorized" response — for this run only
 }
 
 func NewGiveBack(boxes map[string]*stashbox.Client) *GiveBack {
 	return &GiveBack{Boxes: boxes}
+}
+
+// draftOrder is Order with the pre-Stage-5 default applied. See Order's
+// comment for why empty means "stashdb" rather than "nothing".
+func (g *GiveBack) draftOrder() []string {
+	if len(g.Order) == 0 {
+		return []string{"stashdb"}
+	}
+	return g.Order
 }
 
 // SubmitFingerprint submits a pHash for an existing scene. Requires a valid
@@ -67,12 +94,23 @@ func (g *GiveBack) SubmitDraft(ctx context.Context, title, studio, date string) 
 		return "", ErrDraftSubmissionDisabled
 	}
 
+	// Claude 2026-08-04: the fallback walks Order instead of reading the
+	// literal Boxes["stashdb"] (Stage 5 Wave 3). On a default install Order is
+	// ["stashdb","fansdb"], so the first configured client IS stashdb and the
+	// behaviour is unchanged; the walk only matters once an operator has
+	// reordered or removed it.
+	// client, ok = g.Boxes["stashdb"]   // ← was: the single hardcoded fallback
 	client, ok := g.Boxes["tpdb"]
 	if !ok || client == nil {
-		client, ok = g.Boxes["stashdb"]
+		for _, name := range g.draftOrder() {
+			if c := g.Boxes[name]; c != nil {
+				client, ok = c, true
+				break
+			}
+		}
 	}
 	if !ok || client == nil {
-		return "", fmt.Errorf("neither tpdb nor stashdb configured — cannot submit a draft")
+		return "", fmt.Errorf("neither tpdb nor any configured stash-box database is available — cannot submit a draft")
 	}
 
 	draftID, err := client.SubmitSceneDraft(ctx, title, studio, date)

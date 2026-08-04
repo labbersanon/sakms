@@ -79,6 +79,7 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		}
 		overrideFixedURL(t, c.service, c.url)
 	}
+	retargetStashBoxDatabase(t, connStore.DB(), "stashdb", fakeStashDB.URL)
 	// Without the model set, buildIdentifier returns nil and Scan fast-fails.
 	if err := settingsStore.Set(ctx, mode.AIModelKey, "test-model"); err != nil {
 		t.Fatalf("seeding ollama model: %v", err)

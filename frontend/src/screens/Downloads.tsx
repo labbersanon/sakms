@@ -41,6 +41,14 @@ function formatBps(bps: number): string {
   return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
 }
 
+// formatUpBps mirrors formatBps but renders a true zero as "0 KB/s" rather
+// than "—". Upload speed is always shown on torrent rows, so 0 has to read as
+// a real measured rate, not as "no data" — which is exactly what formatBps's
+// "—" means for download speed, and why that function is left alone.
+function formatUpBps(bps: number): string {
+  return bps <= 0 ? "0 KB/s" : formatBps(bps);
+}
+
 // formatSize renders a byte count as MB/GB for the progress label.
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -84,6 +92,8 @@ const DownloadRow: Component<{
   const isActive = () => props.dl.status === "active";
   const isDone = () =>
     props.dl.status === "complete" || props.dl.status === "error";
+  const isTorrent = () => props.dl.protocol === "torrent";
+  const seedLabel = () => (props.dl.seedCount === 1 ? "seed" : "seeds");
 
   // Cancelling now also deletes the download's files server-side (the backend
   // DELETE changed), so the confirm makes that explicit before firing.
@@ -121,13 +131,36 @@ const DownloadRow: Component<{
 
       <ProgressBar percent={percent()} />
 
+      {/* Claude 2026-08-04: upload speed and seed count always show on
+          torrent rows (including seeding/complete), not gated to isActive()
+          like download speed is.
+          Reason: a seeding torrent's status is "complete", so gating either
+          metric to isActive() would hide both on the one row where they
+          matter most — the row where upload speed is actually non-zero. This
+          is also why formatUpBps exists instead of reusing formatBps: a true
+          zero upload rate must read as "0 KB/s" (a real measurement), not as
+          formatBps's "—" ("no data"). Usenet has no seeder/upload concept, so
+          isTorrent() hides both fields entirely rather than rendering a zero.
+          Review if: usenet ever gains an upload concept, or the always-show
+          rule is revisited. */}
       <div class="flex items-center gap-3 text-xs text-muted">
         <span>
           {formatSize(props.dl.completedLength)} / {formatSize(props.dl.totalLength)}
         </span>
         <Show when={isActive()}>
-          <span>{formatBps(props.dl.downloadSpeed)}</span>
-          <span>{props.dl.connections} conns</span>
+          <span class="text-fg" aria-label="Download speed">
+            <span aria-hidden="true">↓ </span>
+            {formatBps(props.dl.downloadSpeed)}
+          </span>
+        </Show>
+        <Show when={isTorrent()}>
+          <span aria-label="Upload speed">
+            <span aria-hidden="true">↑ </span>
+            {formatUpBps(props.dl.uploadSpeed)}
+          </span>
+          <span aria-label="Connected seeders">
+            {props.dl.seedCount} {seedLabel()}
+          </span>
         </Show>
         <div class="ml-auto flex gap-2">
           <Show when={isActive()}>

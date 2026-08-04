@@ -6063,3 +6063,420 @@ adding any new exported `purge`/`proposals` symbol. All pre-existing
 `purge_test.go`/`purge_library_test.go`/`purge_library_series_test.go`/
 `purge_adult_library_test.go` Reason assertions pass unedited, confirming
 the byte-identical backward-compatibility invariant.
+
+## 2026-08-04 — Downloads row: upload speed, live seed count, protocol field
+
+Plan `.omc/plans/autopilot-impl-downloads-progress-speed-seeds.md` (Architect
+authored, all 5 waves executed same day). Spec:
+`.omc/specs/deep-interview-downloads-progress-speed-seeds.md` (~13%
+ambiguity, PASSED), written before seeding shipped (`c2c494f`) — its "uploads
+are currently disabled" claim was stale by the time this was implemented, and
+its `Connections`/line-number references had drifted; both re-verified
+against current code before any edit (Wave 0).
+
+**Fixed the misnomer.** The unified downloader's `Connections` field was
+actually `Stats().ConnectedSeeders` for torrents and always zero **by
+omission** for usenet (the field was declared in `usenet.Download` but
+`snapshot()` never set it) — no protocol field existed anywhere to explain
+either fact. `apidto.Download.Connections` is now `SeedCount` (protocol-scoped:
+torrent rows only, hidden entirely on usenet rows rather than shown as 0/N/A),
+plus a new `UploadSpeed int64` and an explicit `Protocol string` field typed
+`"torrent" | "usenet"` (two exported constants, `DownloadProtocolTorrent`/
+`DownloadProtocolUsenet`, set as a literal by each mapper — not re-derived
+from a GID-prefix convention, which stays where it belongs, in routing). The
+dead usenet `Connections` field was deleted outright rather than left
+commented out (git history preserves it; the invariant it stated now lives in
+`toUsenetDTODownload`'s doc comment, where a reader will actually see it).
+
+**The load-bearing architectural finding (Architect review, not foreseen by
+the spec).** `pollSnapshot` has a download-speed pass gated on
+`active||waiting`, and a separate seeding-collect pass deliberately OUTSIDE
+that guard — a seeding entry's status is `"complete"`, set the instant
+`Complete()` fires, so anything nested inside `active||waiting` can never run
+for it. Upload speed inherits that constraint exactly: nesting it in the
+existing guard would compile, pass review, and ship as a number that reads 0
+forever, indistinguishable from "seeding isn't uploading." Upload speed (and,
+per an Architect-locked design decision resolving an AC gap the spec left
+open, the live `cachedSeeds` refresh too — otherwise always-showing seed
+count while seeding would display a value frozen at its last active-phase
+reading) now runs in its own pass, AFTER the seeding-collect pass, guarded on
+`active || waiting || (complete && seeding)`. It carries its own delta triple
+(`prevUpBytes`/`prevUpTime`/`upSpeed`) — deliberately never sharing
+`prevBytes`/`prevTime` with the download-speed pass, since that pass also now
+runs during the `complete`-and-seeding state and a shared clock would corrupt
+download speed's delta base on every mixed tick. `prevUpBytes` is reset on an
+engine rebuild (`readdTorrents`) for the same reason `seedBaselineUp` already
+is — it is a per-handle process counter that restarts at 0 on a new handle,
+so a carried-over value degrades to false `0 B/s` readings for a full seed
+duration if not cleared. `prevBytes` (download) is deliberately **not**
+reset there: `BytesCompleted()` is derived from verified on-disk pieces, not
+a process counter, and survives a handle swap intact.
+
+**Deliberate deviation from the spec's wording, recorded per Architect
+instruction so it is not "corrected" back later:** upload accounting reads
+`Stats().BytesWrittenData` (payload only), not the spec's literal
+`BytesWritten` (wire bytes, includes protocol overhead). Every existing
+upload-counter site in `internal/downloader` (`seedStopReason`,
+`beginSeeding`) already uses `BytesWrittenData`, and it keeps the displayed
+rate arithmetically consistent with the ratio accounting that decides when
+seeding stops.
+
+**Frontend** (`Downloads.tsx`): two Unicode arrow glyphs (`↓`/`↑`, no new
+icon dependency — `pnpm build`'s tracked bundle-size ceiling and an existing
+repo preference against reaching for lucide where a hand-rolled glyph does
+the job). Upload speed always shows on torrent rows, including a genuine
+`0 KB/s` — a new `formatUpBps` sibling function, because the existing
+`formatBps` renders `0` as `"—"` ("no data"), which download speed still
+relies on and which `formatUpBps` deliberately does not touch. Seed count
+always-shows on torrent rows too, matching upload speed's rule (the
+Architect-locked decision above). Both fields are entirely absent, not
+zero/N/A, on usenet rows. `aria-label`s on each metric span, both for screen
+readers and as stable Vitest handles.
+
+No migration (highest is still `0059_pruning_rules.sql` — every new value is
+in-memory poll state or a wire-DTO field). No push, no deploy — Wave 5 stops
+short of both per the plan.
+
+| File | Change |
+|---|---|
+| `internal/downloader/downloader.go` | `entry` gains `prevUpBytes`/`prevUpTime`/`upSpeed` (independent delta triple); `cachedConns`→`cachedSeeds`; `Download.Connections`→`SeedCount`, +`UploadSpeed`; `pollSnapshot` gains the upload+seed-refresh pass (own guard, after the seeding-collect pass); `readdTorrents` resets `prevUpBytes`/`prevUpTime` alongside `seedBaselineUp` |
+| `internal/downloader/upload_speed_test.go` | **New** — G-1…G-7: real seeder/leecher loopback pair for the two cases needing genuinely growing `BytesWrittenData` (upload speed while seeding; download speed uncorrupted by the concurrent upload pass), direct-entry-manipulation for the rest (fresh-entry zero, post-rebuild-shaped counter reset, seed-window-close reset, live seed-count refresh, readdTorrents delta-reset asymmetry) |
+| `internal/usenet/manager.go` | removed the dead, always-unset `Connections` field; fixed the struct's doc comment that named it |
+| `internal/apidto/dto.go` | `Download`: `Connections`→`SeedCount`, +`UploadSpeed`, +`Protocol`; `DownloadProtocolTorrent`/`DownloadProtocolUsenet` constants |
+| `internal/apidto/ts/dto.gen.ts` | regenerated via `make dto` (`TestNoDrift` is the tripwire that catches a skipped regen) |
+| `internal/api/downloads.go` | `toDTODownload`/`toUsenetDTODownload`: renamed/new fields, `Protocol` literal per mapper (not derived from the GID) |
+| `internal/api/aria2_fake_test.go` | `Connections: 4` → `SeedCount: 4` |
+| `internal/api/downloads_protocol_test.go` | **New** — G-8…G-11: per-mapper protocol/field assertions, a mixed-queue GID-prefix-independence guard, and a raw-JSON wire-shape check (`seedCount`/`uploadSpeed`/`protocol` present, `connections` gone) |
+| `frontend/src/screens/Downloads.tsx` | `formatUpBps`; `isTorrent()`; metrics band rewrite (arrow-prefixed download speed, always-shown upload speed + seed count on torrents, both absent on usenet) |
+| `frontend/src/screens/Downloads.test.tsx` | factory update (`seedCount`/`uploadSpeed`/`protocol`) + V-1…V-8 |
+| `docs/ROADMAP.md`, `CHANGELOG.md` | "Downloads progress bar with speed + seed count" entry marked shipped with this detail; this entry |
+
+**Verification.** `go build ./... && go vet ./...` clean;
+`go test ./internal/downloader/... ./internal/api/...` green including the
+new G-1…G-11, plus a temporary mutation test confirming G-1
+(`TestUploadSpeed_ComputedWhileSeeding`) actually goes red if the upload pass
+is nested back inside the `active||waiting` guard, then reverted; full
+`go test ./...` shows only the pre-existing, unrelated `internal/sysinfo` GPU
+test failures (present on the unmodified baseline, environment-dependent, out
+of this feature's scope). `cd frontend && pnpm typecheck && pnpm test && pnpm
+build` all green (833 tests, up from 825; bundle size unchanged within its
+tracked ceiling).
+
+## 2026-08-04 — Downloads row: protocol, seed count, upload speed
+
+Ships `.omc/specs/deep-interview-downloads-progress-speed-seeds.md` (PASSED ~13%).
+Companion seeding (`c2c494f`) already landed, so upload speed can be genuinely
+non-zero. Plan: `.omc/plans/autopilot-impl-downloads-progress-speed-seeds.md`.
+
+- **`apidto.Download`:** adds `protocol` (`torrent`|`usenet`); renames mislabeled
+  `connections` → `seedCount` (torrent ConnectedSeeders); adds `uploadSpeed`.
+- **Upload-speed poll** runs in its own guard covering active/waiting/complete-
+  while-seeding (NOT nested in the download-speed `active||waiting` branch —
+  seeding status is `"complete"`, so nesting would leave UploadSpeed stuck at 0).
+- **Rate source:** `ConnStats.BytesWrittenData` (documented deviation from the
+  spec's `BytesWritten` wording — keeps the displayed rate arithmetically
+  consistent with the seeding ratio limit).
+- **UI:** torrent metrics band shows `↓ …  ↑ …  N seeds` (upload always shown,
+  including `0 KB/s` via `formatUpBps`); seed count and upload speed are entirely
+  absent on usenet rows. No migration.
+
+| File | Change |
+|---|---|
+| `internal/downloader/downloader.go` | Independent upload delta state; `SeedCount`/`UploadSpeed` on entry snapshot |
+| `internal/downloader/upload_speed_test.go` | **New** — upload-speed / seed-refresh coverage |
+| `internal/apidto/dto.go`, `ts/dto.gen.ts` | `protocol`, `seedCount`, `uploadSpeed` |
+| `internal/api/downloads.go`, `downloads_protocol_test.go` | Protocol mapping + tests |
+| `internal/usenet/manager.go` | Drop dead `Connections` field |
+| `frontend/src/screens/Downloads.tsx`, `Downloads.test.tsx` | Metrics band + protocol-conditional rendering |
+
+**Verification.** `go test ./internal/downloader/ ./internal/api/ -run 'Download|Protocol|Seed|Upload'`
+and `pnpm test -- src/screens/Downloads.test.tsx` (12/12) pass. Not pushed.
+
+## 2026-08-04 — Note on duplicate Downloads changelog entries
+
+A shorter mid-session draft entry titled "Downloads row: protocol, seed count,
+upload speed" was appended while the executor was still writing the fuller
+entry titled "Downloads row: upload speed, live seed count, protocol field"
+above it. Per this file's append-only rule neither was deleted. **The fuller
+earlier entry is authoritative**; the shorter draft may be ignored.
+
+## 2026-08-04 — phash-primary Dedup: fixed a silent PHashSimilarity
+persistence bug, residual-gap test coverage, and legacy ScanLibrary/
+ScanLibrarySeries retirement
+
+Plan: `.omc/plans/autopilot-impl-phash-grouping.md` (residual-gap run only —
+`ScanLibraryPHash`/`ScanLibrarySeriesPHash` themselves, shipped 2026-07-18 in
+`50dd970`, were NOT re-implemented; this closes the gaps a review of that
+commit found between the code and its own spec/docs). Locked decisions from
+Wade: persist-bug fix and Wave 4 legacy deletion both in scope; the
+intentional divergences from `.omc/specs/deep-interview-phash-grouping.md`
+(PDQ-scale 64/40 thresholds, min-pairwise not best-pair similarity,
+`ProgressFunc`) are correct as shipped and were left alone, only annotated.
+
+**Fixed the bug: `Proposal.PHashSimilarity` was computed but never
+persisted.** `dedup_phash_primary.go` has calculated this field since
+`50dd970`, but `proposals.go`'s `ReplacePending` INSERT / `List`/`Get` SELECT
+/ `scanProposal` never had a `phash_similarity` column to write or read it
+through — the value lived only in the in-memory `[]proposals.Proposal` slice
+returned by `Scan`, and died the instant that slice went out of scope. The
+frontend's AC6 similarity badge/confidence label (`Dedup.tsx`) was rendering
+from a `GET` path that could never have carried a nonzero value, for every
+proposal ever created since the phash-primary scan shipped. Fixed with
+migration `0060_proposal_phash_similarity.sql` (`ALTER TABLE proposals ADD
+COLUMN phash_similarity REAL NOT NULL DEFAULT 0`) plus the INSERT/SELECT/scan
+wire-through in `proposals.go`. `DEFAULT 0` matches `apidto/dto.go`'s existing
+`omitempty` sentinel, so every pre-existing row (legacy Movies/Series
+proposals made before this fix, and Adult proposals, which never set this
+field) reads back exactly as before — no backfill needed or attempted.
+
+**New regression coverage for `ScanLibraryPHash`/`ScanLibrarySeriesPHash`,
+which had none of their own** (only two progress-accounting tests in
+`dedup_progress_test.go` had ever touched either function).
+`dedup_phash_primary_test.go` is new and covers: AC1 (pure orphan-vs-orphan
+grouping, no TMDB id or tracked row on either side), AC2 (two tracked items
+resolved to DIFFERENT TMDB ids still group by phash), AC3 (a tracked item
+groups with a genuinely unnamed orphan), AC4/AC5 (dissimilar Movies/Series
+files stay ungrouped), AC7 (a second scan reuses both the tracked-item cache
+and the orphan_phashes cache — zero rehash calls), the §1b transitive-grouping
+contract (A~B, B~C group into {A,B,C} even though A-C individually fails the
+threshold, and the reported `PHashSimilarity` is the WORST/minimum pairwise
+score in the group, not the best or an arbitrary edge), and orphan-cache
+pruning (`DeleteOrphanPHashesNotIn`) after a file is removed from disk.
+
+**Frontend AC6 coverage.** `Dedup.test.tsx` gained a describe block asserting
+the actual shipped confidence bands (`>= 0.9` high confidence, `>= 0.7` likely
+duplicate, `< 0.7` possible-duplicate-review-carefully) rather than the
+plan's proposed 0.95/0.78/0.62 thresholds — `Dedup.tsx`'s real implementation
+uses 0.9/0.7, so tests were written against shipped behavior, not the stale
+spec numbers. Also covers the badge being entirely absent when
+`pHashSimilarity` is the omitempty-zero sentinel.
+
+**Docs truth pass (comment-only, nothing deleted per house style).**
+`docs/ROADMAP.md`'s "phash-primary grouping still open" heading was stale —
+it shipped 2026-07-18; corrected to "refinement + phash-primary grouping
+shipped; PDQ migration open" with inline comments explaining the actual
+64/40 PDQ-scale thresholds (the doc still showed the old 25/10 PHash-64-bit
+values). `.omc/specs/deep-interview-phash-grouping.md`'s status header now
+notes it's superseded by `50dd970`, with inline comments at the specific
+best-pair-vs-min-pairwise and threshold-scale points where shipped code
+diverged from the written spec.
+
+**Wave 4: retired the now-fully-superseded `ScanLibrary`/`ScanLibrarySeries`/
+`attachPHashes`/`attachPHashesSeries`** — confirmed zero production callers
+(`dedup.ScanLibrary`/`ScanLibrarySeries` only ever appeared in the dedup
+package's own tests; the API layer already dispatches to the PHash-primary
+functions exclusively). `refineByPHash` is KEPT — `ScanLibraryAdult` still
+calls it to refine an already-TMDB-grouped set by perceptual similarity, a
+fundamentally different design (Adult groups by resolved scene identity
+first, phash second; Movies/Series now group by phash alone). Before
+deleting the legacy scan functions' dedicated test files
+(`dedup_phash_refine_test.go`, `dedup_phash_refine_series_test.go`,
+entirely `ScanLibrary`/`ScanLibrarySeries`-shaped), ported the coverage that
+had no equivalent elsewhere: `refineByPHash`'s own 0-length-input guard
+(moved into `dedup_phash_refine_adult_test.go`, called directly rather than
+through a deleted scan path), `ScanLibraryPHash`'s
+root-folder-required/single-orphan-not-a-duplicate guards (moved into
+`dedup_phash_primary_test.go`), and a season-pack-orphan
+selective-grouping case for `ScanLibrarySeriesPHash` (the existing
+`dedup_progress_test.go` season-pack fixture gives every file an identical
+hash and never asserts which specific files end up grouped — this new test
+uses a distinguishing hash so only the matching episode groups, proving pack
+expansion AND phash-selectivity together). `ScanRootFolder`'s own recursion
+contract already has independent coverage in
+`internal/library/library_test.go`, so the legacy files' sibling-duplicate-
+via-recursion tests needed no porting. Shared hash fixtures
+(`seededHash`/`refHash`/`nearHash`/`farHash`), previously defined only in the
+now-deleted `dedup_phash_refine_test.go`, moved to `dedup_test.go` since
+`dedup_phash_primary_test.go` and `dedup_progress_test.go` both depend on
+them. `dedup_library_test.go`/`dedup_library_series_test.go` kept their
+`ApplyLibrary`/`ApplyLibrarySeries` coverage untouched, losing only the
+now-uncompilable `ScanLibrary*`-shaped tests and their now-dead
+`fakeTMDBSearch`/`fakeTMDBSeriesSearch`/`tmdbTo42` helpers. Package doc
+comments in `dedup.go` and `phash.go` that described the old TMDB-gated
+grouping design were corrected to describe the actual phash-primary design.
+
+No push, no deploy, no `git commit` — per Wade's explicit instruction.
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0060_proposal_phash_similarity.sql` | **New** — `proposals.phash_similarity REAL NOT NULL DEFAULT 0` |
+| `internal/db/migration_proposal_phash_similarity_test.go` | **New** — up/down round-trip + pre-existing-row-default check |
+| `internal/proposals/proposals.go` | `ReplacePending` INSERT, `List`/`Get` SELECT, `scanProposal`: wire through `phash_similarity` |
+| `internal/proposals/proposals_test.go` | **New** — `TestReplacePending_PersistsPHashSimilarity`, `TestReplacePending_PHashSimilarityDefaultsToZeroForNonPHashWorkflows` |
+| `internal/dedup/dedup_phash_primary_test.go` | **New** — AC1-5,7, transitive min-pairwise, orphan-cache pruning, plus the ported root-folder/single-orphan/season-pack-selectivity cases |
+| `internal/dedup/dedup_phash_refine_adult_test.go` | + `TestRefineByPHash_EmptySliceDoesNotPanic` (ported guard test) |
+| `internal/dedup/dedup_test.go` | + `seededHash`/`refHash`/`nearHash`/`farHash` (moved from the deleted refine-test file) |
+| `internal/dedup/dedup.go` | Deleted `ScanLibrary`, `ScanLibrarySeries`, `attachPHashes`, `attachPHashesSeries`, `episodeDedupKey`; corrected package/`PHasher`/`refineByPHash` doc comments; dropped now-unused `config`/`searchterm` imports |
+| `internal/dedup/dedup_adult_library.go` | Corrected a comment referencing the now-deleted `episodeDedupKey` |
+| `internal/dedup/dedup_library_test.go`, `dedup_library_series_test.go` | Removed now-uncompilable `ScanLibrary*` tests + dead TMDB fake helpers; `ApplyLibrary*` coverage untouched |
+| `internal/dedup/dedup_phash_refine_test.go`, `dedup_phash_refine_series_test.go` | **Deleted** — exclusively tested the now-deleted `ScanLibrary`/`ScanLibrarySeries` |
+| `internal/phash/phash.go` | Corrected a doc comment naming the deleted `internal/dedup.ScanLibrary` |
+| `docs/ROADMAP.md` | Corrected stale "still open"/threshold-value claims (comment-annotated, nothing deleted) |
+| `.omc/specs/deep-interview-phash-grouping.md` | Status header + inline comments noting where shipped code (`50dd970`) diverged from the written spec (gitignored, not in this repo's git history) |
+
+**Verification.** `go build ./... && go vet ./...` clean. `go test -count=1
+./internal/dedup/... ./internal/proposals/... ./internal/db/...
+./internal/phash/... ./internal/apidto/...` all green (53 dedup tests, 0
+failures). `go test ./...` full-repo run shows only the pre-existing,
+unrelated `internal/sysinfo` GPU-detection failures (untouched by this
+session, environment-dependent on the host's real `/sys/class/drm` state —
+also independently confirmed pre-existing by the same-day Downloads-progress
+entry above). Migration 0060 verified up→down→up via
+`TestMigration0060ProposalPHashSimilarityRoundTrips`. Frontend: `pnpm
+typecheck` clean; `pnpm test -- src/screens/Dedup.test.tsx` 35/35 passed.
+No `downloads-progress` files (`Downloads.tsx`, `downloader.go`, etc.) were
+touched — that work was mid-flight in the same tree and out of this plan's
+scope.
+
+## 2026-08-04 — Configurable stash-box databases (Stage 5): registry backend, dynamic identification cascade, Settings UI
+
+**What changed.** StashDB and FansDB stopped being two hardcoded singleton
+connections with hardcoded endpoints and became rows of an operator-managed
+registry: up to 5 stash-box-protocol databases, each with its own name,
+GraphQL endpoint, API key, cascade priority, enabled flag and fansite-only
+gate. Everything that previously wrote `[]string{"stashdb","fansdb"}` in
+`internal/identify` now iterates that registry instead.
+
+Implements `.omc/plans/autopilot-impl-stage5-stashboxdb-ui.md` (Waves 0-6),
+following the backend design in
+`.omc/plans/ralplan-adult-identify-configurable-databases.md` (§2.1-§2.8) with
+migration number 0061 rather than the 0047 that plan assumed (0047 has been
+`adult_newest_gender.sql` since long before this).
+
+**Why it took a backend.** The Stage 5 spec described itself as covering "ONLY
+the UI/UX shape layered on top of the approved backend design." That backend
+did not exist — no table, no store, no routes, no dynamic cascade. Stage 5 was
+0% built at both layers, not a UI-polish task.
+
+**No key re-entry.** The two seeded rows keep their existing API keys, which
+still live in the `connections` table. A `secret_ref` column routes each
+seeded row's key reads/writes back to its `connections` service; it is an
+internal handle, never exposed on the wire and with zero matching effect. The
+UI cannot tell which table a given row's secret lives in, and reports
+`hasApiKey`/`keySuffix` off the RESOLVED key either way. Migration 0061 is a
+pure metadata insert: it touches no existing encrypted value, verified by
+`TestMigration0061...` decrypting both keys before and after.
+
+**Every row is a peer.** There is deliberately no "built-in" flag anywhere —
+not in the schema, not on the wire, not in the UI. The two seeded rows can be
+renamed, re-pointed at a different endpoint, reordered, disabled and deleted
+exactly like an operator-added one. Two guards constrain this rather than a
+protected tier: the name `tpdb` is reserved (it names the separate built-in
+TPDB lane), and a name that already has `library_scenes` history cannot be
+rebound to a different row (`ErrNameHaunted`, ralplan §2.8) — that would
+silently reattribute tracked scenes to a database that never matched them.
+
+**AC15 (the hard gate) held.** Default-install cascade order is byte-identical
+to the pre-change behaviour, asserted case-by-case in
+`internal/identify/cascade_test.go` against the exact literals that were
+removed: UUID lookup `[stashdb fansdb]` (flipping to `[fansdb stashdb]` when
+the filename names FansDB), text search `[stashdb]` unhinted and
+`[stashdb fansdb]` fansite-hinted, ungated art/gender `[stashdb fansdb]`,
+fingerprint `[stashdb fansdb tpdb]`. An `Identifier` with no snapshot injected
+falls back to that same legacy pair rather than to "nothing configured", so
+every hand-built `Identifier` (all of them in tests, and any caller not yet
+taught about the registry) behaves exactly as before.
+
+**Deviations from the plans, each deliberate:**
+
+1. **No new `NewMux`/`mode.Build` parameter.** Ralplan §2.4 called for
+   threading a `*stashboxdb.Store` from `main.go` through both. Those have ~40
+   and ~400 call sites respectively (almost all in tests), so that would have
+   been a several-hundred-line mechanical diff with no behavioural content.
+   Instead `connections.Store` gained `DB()`/`Secrets()` accessors and the
+   sibling store is constructed from the connections store every one of those
+   call sites already passes. Same object, same per-Scan snapshot semantics,
+   three-line change.
+2. **`reSearchAfterGrounding` stays UNGATED.** Ralplan §2.3 asks for the
+   fansite gate there and claims it "reproduces today's behaviour exactly" —
+   it does not. Unlike `searchInternalDBs`, that site never had a gate and
+   always consulted FansDB. Adding one would change the SET of databases
+   queried on a default install, which AC15 forbids. Noted in a comment at the
+   call site as the better behaviour once AC15 is retired.
+3. **Failed-test signal is a row marker, not a red tint.** Plan §4.4 asked to
+   port `ConnectionServiceTable`'s tint. `RowEditor` owns the `<li>` markup and
+   exposes no styling hook, and forking it was explicitly out of scope, so a
+   failed stored test prefixes the row label instead. Same signal (the row
+   itself is marked, no separate status column), only surface available.
+4. **Rows are title-only.** `RowEditor` derives every per-row aria-label from
+   the row label, so folding the endpoint and key state into it would produce
+   control names like `"stashdb — https://… · key ••••1234 enabled"`. Detail
+   lives in the Edit form, matching `RssFeedAdmin`'s own title-only choice.
+5. **The legacy `TestConnection` "stashdb"/"fansdb" case was kept, not
+   deleted.** Plan §2.4 allowed deleting it after an AC18 grep. Both names are
+   still valid `connections` services holding the seeded secrets, so the old
+   route is left working against the default endpoint rather than starting to
+   answer "unsupported service". It is marked legacy and cannot see an edited
+   endpoint; everything UI-driven uses the new routes.
+
+**Not touched, per the plan's non-goals:** `internal/throttle`,
+`internal/tpdbrest`, `internal/identify/cache.go`, `adultdiscover*.go`,
+`giveback.go`'s locking. TPDB remains a plain `ConnectionRow` under Metadata
+sources and a hardcoded `"tpdb"` tail on every cascade.
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0061_stashbox_databases.sql` | **New** — `stashbox_databases` table + `(enabled, priority)` index; seeds stashdb/fansdb with `secret_ref` pointing at their existing `connections` rows |
+| `internal/db/migration_stashbox_databases_test.go` | **New** — pure-metadata proof (keys decrypt identically before/after), up→down→up round-trip, clean fresh-install seed |
+| `internal/stashboxdb/store.go` | **New** — `List`/`ListSummaries`/`Get`/`Create`/`Update`/`Reorder`/`Delete`, cap of 5, reserved-name + duplicate-name + name-reuse-tombstone guards, three-state secret handling, `secret_ref` key routing |
+| `internal/stashboxdb/store_test.go` | **New** — seeding, key resolution without relocation, cap (incl. concurrent creates), all four name guards, full seeded-row editability, three-state key legs, delete-clears-paired-secret, reorder full-set contract |
+| `internal/connections/connections.go` | + `DB()`/`Secrets()` accessors and the exported `Encryptor` alias (see deviation 1) |
+| `internal/apidto/dto.go` | + `StashBoxDatabase` and its Create/Update/Reorder/Test request DTOs; regenerated `ts/dto.gen.ts` |
+| `internal/api/stashboxdb.go` | **New** — 7 routes (list/create/update/reorder/delete/test/test-stored), `secret_ref` plumbing onto `connections`, 503 when no store, detail-free stored-test errors |
+| `internal/api/stashboxdb_test.go` | **New** — 13 cases through the real mux, incl. AC13 filtering, redaction, cap, three-state preservation, and the no-detail stored-test contract |
+| `internal/api/handler.go` | Registered the 7 routes; `listConnectionsHandler` filters stashdb/fansdb (AC13); fixed-URL maps annotated inert |
+| `internal/api/connections.go` | `TestConnection`'s stash-box case marked legacy; `testStashBox` doc corrected (endpoint is now caller-supplied) |
+| `internal/api/entity_sync.go` | Manual entity-sync accepts any configured database name; 400 lists the live names |
+| `internal/sectionlock/routes.go` | Classified `stashbox-databases` into `{settings}` (it carries API keys) |
+| `internal/identify/cascade.go` | **New** — `DatabaseRef`, the snapshot fallback, and the four order helpers (`exactBoxes`/`textBoxes`/`uuidBoxes`/`fingerprintBoxes`) |
+| `internal/identify/cascade_test.go` | **New** — the AC15 gate, legacy-fallback, N=3 and N=1 (incl. fansite-only-alone) cases |
+| `internal/identify/identify.go` | + `StashBoxes` snapshot field; `tryUUIDLookup`/`searchInternalDBs`/`reSearchAfterGrounding` de-hardcoded |
+| `internal/identify/entityverify.go` | 5 cascades de-hardcoded (2 gated, 3 ungated) |
+| `internal/identify/fingerprint.go` | `fingerprintCascadeOrder` commented out; `LookupFingerprints` iterates `fingerprintBoxes()` |
+| `internal/identify/giveback.go` | + `Order`; `SubmitDraft`'s fallback walks it instead of reading `Boxes["stashdb"]` |
+| `internal/identify/entitydetail.go`, `enrichnewest.go` | `case "stashdb","fansdb"` → `default:` (client presence selects the branch) |
+| `internal/mode/mode.go` | `buildIdentifier` builds clients + the snapshot from the registry; TPDB lane untouched |
+| `internal/parseentity/schedule.go` | Background entity sync iterates the registry |
+| `frontend/src/api/stashboxdb.ts` | **New** — client; reuses `buildConnectionUpsertBody` for the three-state rule rather than re-deriving it |
+| `frontend/src/screens/settings/StashBoxDatabases.tsx` | **New** — `RowEditor` host (consumed, not forked), add/edit form, per-row Test, reorder-on-drop, cap note |
+| `frontend/src/screens/settings/StashBoxDatabases.test.tsx` | **New** — 14 cases: AC11 peer rendering, AC9 drag-persists, AC7 cap note, AC8 confirm-delete, AC6/AC12 failure marking, three-state omit-vs-send |
+| `frontend/src/screens/settings/index.tsx` | Mounts the panel in Library → Adult, deliberately OUTSIDE the `SectionSave` batch |
+| `frontend/src/api/settings.ts` | `LIBRARY_MODE_SERVICES.adult` → `["tpdb"]`; stashdb/fansdb commented out of `SERVICES_WITH_FIXED_URL` and `ADULT_ONLY_CONNECTION_SERVICES` |
+| `frontend/src/screens/Settings.test.tsx` | Updated the two tests that asserted stashdb/fansdb `ConnectionRow`s |
+
+**Verification.** `go build ./... && go vet ./...` clean. `go test ./...`
+green except the pre-existing, unrelated `internal/sysinfo` GPU-detection
+failures (that package is untouched by this session; same failures recorded in
+the 2026-08-03 entries above). `go test -race` green for
+`./internal/identify/... ./internal/mode/... ./internal/parseentity/...
+./internal/adultnewest/... ./internal/dedup/... ./internal/rename/...` — the
+set Wave 3's exit criterion names. `make dto` regenerated with no drift beyond
+the intended additions. Frontend: `tsc --noEmit` clean, `vitest run` 851/851
+across 63 files, `npm run build` clean at 115.2 KB gzipped (200 KB ceiling).
+
+**Not done, deliberately:** no commit, no push, no deploy. The plan's two
+LIVE checks (§6: a real reachable-vs-unreachable endpoint test, and a manual
+AC15 spot-check identifying a known scene) need real credentials against real
+stash-box instances and are Wade's to run.
+
+**Corrections made later in the same session (recorded here as additions
+rather than rewrites of the paragraphs above, per this file's append-only
+rule):**
+
+- **Deviation 3 above is superseded — the red tint SHIPPED after all.**
+  `RowEditor` gained one optional `danger?: boolean` field on `RowDescriptor`,
+  applying `border-danger bg-danger/10` to the `<li>` it already owns. That is
+  an additive prop on the shared component, not a fork, so it stays inside the
+  "consume `RowEditor`, don't fork it" constraint the deviation was written to
+  respect. A failed stored test now both tints the row and prefixes its label
+  with `⚠`; only the plain database name is used for the per-row Edit/Test
+  aria-labels, so those controls stay addressable regardless of tint state.
+  `frontend/src/screens/discover/RowEditor.tsx` therefore belongs in the file
+  table above (one added prop + one `classList` entry); it is the only file
+  outside this feature's own set that this work modified.
+- **Final test counts.** `StashBoxDatabases.test.tsx` is 16 cases, not the 14
+  listed in the table. Full frontend suite: 853/853 across 63 files.
+  `npm run build` clean at 114.8 KB gzipped against the 200 KB ceiling.
+  `go test ./...` green except the pre-existing `internal/sysinfo` GPU tests,
+  which read the host's real sysfs and fail on any machine with a GPU
+  installed — unrelated to and untouched by this work.

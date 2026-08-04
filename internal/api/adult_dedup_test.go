@@ -52,6 +52,7 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		}
 		overrideFixedURL(t, c.service, c.url)
 	}
+	retargetStashBoxDatabase(t, connStore.DB(), "stashdb", fakeStashDB.URL)
 	if err := settingsStore.Set(ctx, mode.AIModelKey, "test-model"); err != nil {
 		t.Fatalf("seeding ollama model: %v", err)
 	}

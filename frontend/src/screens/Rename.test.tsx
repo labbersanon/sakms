@@ -162,6 +162,21 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     // Scan POST fired, then a proposals GET re-ran.
     expect(calls.some((c) => c.url.includes("/rename/scan") && c.method === "POST")).toBe(true);
   });
+
+  it("wraps the proposal table in a frosted panel for wallpaper contrast", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 1, sourceName: "Contrast.Check.mkv", status: "pending" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Rename />);
+    const cell = await screen.findByText("Contrast.Check.mkv");
+    const panel = cell.closest(".backdrop-blur-md");
+    expect(panel).toBeTruthy();
+    expect((panel as HTMLElement).className).toContain("bg-surface/95");
+  });
 });
 
 describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {

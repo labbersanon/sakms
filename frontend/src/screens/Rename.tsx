@@ -336,12 +336,28 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         <ErrorText>{(page.error as Error)?.message}</ErrorText>
       </Show>
 
-      <Show when={!page.loading} fallback={<Muted class="mt-4">Loading…</Muted>}>
+      <Show
+        when={!page.loading}
+        fallback={
+          <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
+            <Muted>Loading…</Muted>
+          </div>
+        }
+      >
         <Show
           when={proposals().length > 0}
-          fallback={<Muted class="mt-4">No proposals yet — click Scan.</Muted>}
+          fallback={
+            <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
+              <Muted>No proposals yet — click Scan.</Muted>
+            </div>
+          }
         >
-          <div class="mt-4 overflow-x-auto">
+          {/* Claude 2026-08-05: frosted panel under Rename table
+              Reason: deep-interview-rename-frosted-panel — navy/muted text was
+                unreadable on ticket wallpaper (main bg-image)
+              Troubleshooting: if text still washes out, raise opacity or solid bg-surface
+              Review if: Purge/Dedup get the same treatment */}
+          <div class="mt-4 overflow-x-auto rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
             <table class="w-full text-left text-sm">
               <thead>
                 <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">

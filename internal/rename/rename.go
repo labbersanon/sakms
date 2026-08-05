@@ -369,45 +369,21 @@ func proposeOneLibrary(
 		return *fb
 	}
 
-	// Claude 2026-08-05: GuessTitle after TMDB+TVDB fail (AI unmatched fallback v1)
-	// Reason: deep-interview-rename-alts-ai-fallback — wire existing identify.GuessTitle
-	// Troubleshooting: opaque filenames stayed Unmatched despite MainstreamAI configured
-	// Review if: Brave web grounding (phase 2) replaces or precedes this
+	// Claude 2026-08-05: GuessTitle then Brave Phase 2 (deep-interview-rename-brave-phase2)
+	// Reason: slight filename inaccuracy needs web grounding after GuessTitle near-miss
+	// Troubleshooting: Jo Jo Dancer 2007 autobiography framing → 1986 film via Brave
+	// Review if: Brave runs before GuessTitle
+	guessed := ""
 	if sess.MainstreamAI != nil {
-		if guessed, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && guessed != "" {
-			for _, term := range searchterm.SearchQueries(guessed) {
-				items, err := sess.TMDB.SearchMovies(ctx, term)
-				if err != nil || len(items) == 0 {
-					continue
-				}
-				limit := pickLimit(cfg.CandidateN, len(items))
-				var weakAI *weakMovie
-				for i := 0; i < limit; i++ {
-					match := items[i]
-					candYear, runtimeMin, cast := movieCandidateMeta(ctx, sess.TMDB, match.ID, match.ReleaseDate, sig)
-					rank := SignalsCorroborate(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct)
-					if rank == CorroborationNone {
-						continue
-					}
-					if rank == CorroborationStrong {
-						return acceptMovie(match, candYear)
-					}
-					if weakAI == nil {
-						weakAI = &weakMovie{match: match, candYear: candYear}
-					}
-				}
-				if weakAI != nil {
-					return acceptMovie(weakAI.match, weakAI.candYear)
-				}
+		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && g != "" {
+			guessed = g
+			if got := tryMovieQueries(ctx, sess, sig, cfg, acceptMovie, searchterm.SearchQueries(guessed)); got != nil {
+				return *got
 			}
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("AI guessed %q but no TMDB candidate passed corroboration", guessed)
-			return p
-		} else if gerr != nil {
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("AI title guess failed: %v", gerr)
-			return p
 		}
+	}
+	if got := bravePhase2Movie(ctx, sess, sig, cfg, acceptMovie, guessed, entry.Name); got != nil {
+		return *got
 	}
 
 	if lastLimit == 0 {
@@ -418,6 +394,83 @@ func proposeOneLibrary(
 	p.Status = proposals.Unmatched
 	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration (last query %q)", lastLimit, lastTerm)
 	return p
+}
+
+func tryMovieQueries(
+	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
+	acceptMovie func(tmdb.Item, int) proposals.Proposal, queries []string,
+) *proposals.Proposal {
+	cfg = cfg.Normalize()
+	type weakHit struct {
+		match    tmdb.Item
+		candYear int
+	}
+	var weak *weakHit
+	for _, term := range queries {
+		items, err := sess.TMDB.SearchMovies(ctx, term)
+		if err != nil || len(items) == 0 {
+			continue
+		}
+		limit := pickLimit(cfg.CandidateN, len(items))
+		for i := 0; i < limit; i++ {
+			match := items[i]
+			candYear, runtimeMin, cast := movieCandidateMeta(ctx, sess.TMDB, match.ID, match.ReleaseDate, sig)
+			rank := SignalsCorroborate(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct)
+			if rank == CorroborationNone {
+				continue
+			}
+			if rank == CorroborationStrong {
+				out := acceptMovie(match, candYear)
+				return &out
+			}
+			if weak == nil {
+				weak = &weakHit{match: match, candYear: candYear}
+			}
+		}
+	}
+	if weak != nil {
+		out := acceptMovie(weak.match, weak.candYear)
+		return &out
+	}
+	return nil
+}
+
+// bravePhase2Movie grounds via Brave then TMDB with Phase-2 year trust
+// (filename year ignored when this path produced the candidate).
+func bravePhase2Movie(
+	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
+	acceptMovie func(tmdb.Item, int) proposals.Proposal, guessed, entryName string,
+) *proposals.Proposal {
+	if sess.Brave == nil || sess.MainstreamAI == nil {
+		return nil
+	}
+	query := strings.TrimSpace(guessed)
+	if query == "" {
+		query = entryName
+	}
+	grounded, err := identify.GroundTitleViaBrave(ctx, sess.Brave, sess.MainstreamAI, query)
+	if err != nil || grounded.Title == "" {
+		return nil
+	}
+	cfg = cfg.Normalize()
+	for _, term := range searchterm.SearchQueries(grounded.Title) {
+		items, err := sess.TMDB.SearchMovies(ctx, term)
+		if err != nil || len(items) == 0 {
+			continue
+		}
+		limit := pickLimit(cfg.CandidateN, len(items))
+		for i := 0; i < limit; i++ {
+			match := items[i]
+			candYear, _, _ := movieCandidateMeta(ctx, sess.TMDB, match.ID, match.ReleaseDate, sig)
+			year := candYear
+			if year == 0 {
+				year = grounded.Year
+			}
+			out := acceptMovie(match, year)
+			return &out
+		}
+	}
+	return nil
 }
 
 // RelocateMovie moves sourcePath into a preset-formatted wrapping folder
@@ -759,6 +812,24 @@ func proposeOneEpisodeLibrary(
 	if fb := tvdbFallbackSeries(ctx, sess, lastTerm, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
 		return *fb
 	}
+
+	// Claude 2026-08-05: Series GuessTitle + Brave Phase 2 (parity with Movies)
+	// Reason: deep-interview-rename-brave-phase2
+	// Troubleshooting: wrong show title with valid SxxExx stayed Unmatched
+	// Review if: Series Brave should re-parse SxxExx from grounded title
+	guessed := ""
+	if sess.MainstreamAI != nil {
+		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, name); gerr == nil && g != "" {
+			guessed = g
+			if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, season, episode, searchterm.SearchQueries(guessed)); got != nil {
+				return *got
+			}
+		}
+	}
+	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, name); got != nil {
+		return *got
+	}
+
 	if lastLimit == 0 {
 		p.Status = proposals.Unmatched
 		p.Reason = fmt.Sprintf("no TMDB match for queries derived from %q", name)
@@ -767,6 +838,87 @@ func proposeOneEpisodeLibrary(
 	p.Status = proposals.Unmatched
 	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration (last query %q)", lastLimit, lastTerm)
 	return p
+}
+
+func trySeriesQueries(
+	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
+	acceptSeries func(tmdb.Item, int) proposals.Proposal, season, episode int, queries []string,
+) *proposals.Proposal {
+	cfg = cfg.Normalize()
+	type weakHit struct {
+		match    tmdb.Item
+		candYear int
+	}
+	var weak *weakHit
+	for _, term := range queries {
+		items, err := sess.TMDB.SearchTV(ctx, term)
+		if err != nil || len(items) == 0 {
+			continue
+		}
+		limit := pickLimit(cfg.CandidateN, len(items))
+		for i := 0; i < limit; i++ {
+			match := items[i]
+			candYear, runtimeMin, cast := seriesCandidateMeta(ctx, sess.TMDB, match.ID, season, episode, match.ReleaseDate, sig)
+			rank := SignalsCorroborate(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct)
+			if rank == CorroborationNone {
+				continue
+			}
+			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+				continue
+			}
+			if rank == CorroborationStrong {
+				out := acceptSeries(match, candYear)
+				return &out
+			}
+			if weak == nil {
+				weak = &weakHit{match: match, candYear: candYear}
+			}
+		}
+	}
+	if weak != nil {
+		out := acceptSeries(weak.match, weak.candYear)
+		return &out
+	}
+	return nil
+}
+
+func bravePhase2Series(
+	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
+	acceptSeries func(tmdb.Item, int) proposals.Proposal, season, episode int, guessed, entryName string,
+) *proposals.Proposal {
+	if sess.Brave == nil || sess.MainstreamAI == nil {
+		return nil
+	}
+	query := strings.TrimSpace(guessed)
+	if query == "" {
+		query = entryName
+	}
+	grounded, err := identify.GroundTitleViaBrave(ctx, sess.Brave, sess.MainstreamAI, query)
+	if err != nil || grounded.Title == "" {
+		return nil
+	}
+	cfg = cfg.Normalize()
+	for _, term := range searchterm.SearchQueries(grounded.Title) {
+		items, err := sess.TMDB.SearchTV(ctx, term)
+		if err != nil || len(items) == 0 {
+			continue
+		}
+		limit := pickLimit(cfg.CandidateN, len(items))
+		for i := 0; i < limit; i++ {
+			match := items[i]
+			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+				continue
+			}
+			candYear, _, _ := seriesCandidateMeta(ctx, sess.TMDB, match.ID, season, episode, match.ReleaseDate, sig)
+			year := candYear
+			if year == 0 {
+				year = grounded.Year
+			}
+			out := acceptSeries(match, year)
+			return &out
+		}
+	}
+	return nil
 }
 
 // tvdbFallbackMovie resolves via TheTVDB when TMDB search/drilldown finds nothing.

@@ -180,6 +180,17 @@ type Session struct {
 	// before use.
 	MainstreamAI identify.AIClient
 
+	// Brave is the optional web-search client for Movies/Series Rename Phase 2
+	// grounding (after GuessTitle). Populated from the same connections.brave
+	// row Adult Identify uses; nil when unset. Adult Rename uses Identify.Brave
+	// instead — this field is for MainstreamAI sessions.
+	//
+	// Claude 2026-08-05: Movies/Series Brave for Rename Phase 2
+	// Reason: deep-interview-rename-brave-phase2
+	// Troubleshooting: GuessTitle near-misses that a Brave hit would correct
+	// Review if: Brave moves onto a shared helper and this field is removed
+	Brave *bravesearch.Client
+
 	// KidsRootPath is m's paired Kids root folder path (see
 	// KidsRootPathKey), or "" if unset/not applicable to m (Adult, or a
 	// Movies/Series install that hasn't configured one) — Rename simply
@@ -396,6 +407,17 @@ func Build(ctx context.Context, store *connections.Store, scStore *serviceconn.S
 		return nil, fmt.Errorf("mode %q: building AI client: %w", m, err)
 	}
 	sess.MainstreamAI = aiClient
+	// Claude 2026-08-05: attach Brave for Movies/Series Rename Phase 2 grounding
+	// Reason: deep-interview-rename-brave-phase2 — same connections.brave as Adult
+	// Troubleshooting: sess.Brave nil → Phase 2 skipped soft
+	// Review if: Adult Identify.Brave and Session.Brave share a single builder helper
+	if m == Movies || m == Series {
+		if conn, err := optionalConn(ctx, store, "brave"); err != nil {
+			return nil, fmt.Errorf("mode %q: loading brave connection: %w", m, err)
+		} else if conn != nil {
+			sess.Brave = bravesearch.New(bravesearch.DefaultBaseURL, conn.APIKey, httpClient)
+		}
+	}
 	if key, ok := m.KidsRootPathKey(); ok {
 		path, err := settingsStore.Get(ctx, key)
 		if err != nil && !errors.Is(err, settings.ErrNotFound) {

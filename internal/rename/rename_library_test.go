@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -52,7 +53,6 @@ func fakeTMDBSearch(t *testing.T, results map[string]string) *tmdb.Client {
 	t.Cleanup(srv.Close)
 	return tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
 }
-
 
 func seedMovieRelease(t *testing.T, root, folderName string) {
 	t.Helper()
@@ -318,6 +318,86 @@ func TestScanLibrary_SilentlyOmitsNonVideo(t *testing.T) {
 	}
 }
 
+func TestScanLibrary_BravePhase2_JoJoDancerYearTrust(t *testing.T) {
+	root := t.TempDir()
+	// Filename year 2007 is wrong; Brave+ground must recover 1986 film.
+	seedMovieRelease(t, root, "JoJo.Dancer.Pryor.Autobiography.2007.GROUP")
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/search/movie" {
+			term := r.URL.Query().Get("query")
+			if strings.Contains(strings.ToLower(term), "jo jo dancer") || strings.Contains(strings.ToLower(term), "jojo dancer, your") {
+				w.Write([]byte(`{"results":[{"id":11449,"title":"Jo Jo Dancer, Your Life Is Calling","release_date":"1986-05-02"}]}`))
+				return
+			}
+			w.Write([]byte(`{"results":[]}`))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/movie/") {
+			w.Write([]byte(`{"id":11449,"title":"Jo Jo Dancer, Your Life Is Calling","release_date":"1986-05-02","runtime":97,"genres":[]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(tmdbSrv.Close)
+
+	braveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"web": map[string]any{
+				"results": []map[string]any{{
+					"title":       "Jo Jo Dancer, Your Life Is Calling - Wikipedia",
+					"description": "1986 American film; not a 2007 autobiography. Richard Pryor directed and starred.",
+					"url":         "https://en.wikipedia.org/wiki/Jo_Jo_Dancer,_Your_Life_Is_Calling",
+				}},
+			},
+		})
+	}))
+	t.Cleanup(braveSrv.Close)
+
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		prompt := ""
+		if len(body.Messages) > 0 {
+			prompt = body.Messages[len(body.Messages)-1].Content
+		}
+		content := `{"title":null}`
+		if strings.Contains(prompt, "Web search results") {
+			content = `{"title":"Jo Jo Dancer, Your Life Is Calling","year":1986}`
+		}
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": content}})
+	}))
+	t.Cleanup(aiSrv.Close)
+
+	sess := &mode.Session{
+		Mode:         mode.Movies,
+		TMDB:         tmdb.New(tmdb.Config{BaseURL: tmdbSrv.URL, APIKey: "k"}, tmdbSrv.Client()),
+		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
+		Brave:        bravesearch.New(braveSrv.URL, "k", braveSrv.Client()),
+	}
+
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending {
+		t.Fatalf("expected Brave Phase2 Pending, got %+v", got)
+	}
+	if got[0].TMDBID != 11449 || got[0].Year != 1986 {
+		t.Errorf("expected Jo Jo Dancer 1986 tmdb 11449, got title=%q year=%d tmdb=%d", got[0].Title, got[0].Year, got[0].TMDBID)
+	}
+	if !strings.Contains(got[0].Title, "Jo Jo Dancer") {
+		t.Errorf("unexpected title %q", got[0].Title)
+	}
+}
+
 func TestScanLibrary_GuessTitleFallbackRecoversMatch(t *testing.T) {
 	root := t.TempDir()
 	seedMovieRelease(t, root, "xyz.opaque.release.2001.GROUP")
@@ -359,16 +439,14 @@ func TestScanLibrary_GuessTitleDeclineStaysUnmatched(t *testing.T) {
 	}))
 	defer aiSrv.Close()
 	sess.MainstreamAI = ollama.New(aiSrv.URL, "test-model", aiSrv.Client())
+	// No Brave — Phase 2 skipped; stay Unmatched after GuessTitle decline.
 
 	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 1 || got[0].Status != proposals.Unmatched {
-		t.Fatalf("expected Unmatched after GuessTitle decline, got %+v", got)
-	}
-	if !strings.Contains(got[0].Reason, "AI") {
-		t.Errorf("expected AI-related reason, got %q", got[0].Reason)
+		t.Fatalf("expected Unmatched after GuessTitle decline without Brave, got %+v", got)
 	}
 }
 

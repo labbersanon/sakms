@@ -366,7 +366,8 @@ const AIProviderModelCard: Component = () => {
 
         <Card title="Web search grounding (Brave)">
           <Muted class="mb-3">
-            Used for Adult identification regardless of which AI provider above
+            Used for Adult identification and Movies/Series Rename web
+            grounding (after GuessTitle), regardless of which AI provider above
             is active.
           </Muted>
           <Show when={conns() !== undefined}>

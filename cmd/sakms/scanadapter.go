@@ -141,21 +141,21 @@ func (a *scanAdapter) ScanRename(ctx context.Context, m mode.Mode) error {
 		if pErr != nil {
 			return pErr
 		}
-		threshold, tErr := api.ResolveConfidenceThreshold(ctx, a.settingsStore, m)
+		matchCfg, tErr := api.ResolveMatchConfig(ctx, a.settingsStore, m)
 		if tErr != nil {
 			return tErr
 		}
-		found, err = rename.ScanLibrary(ctx, sess, a.libStore, rootPath, preset, threshold)
+		found, err = rename.ScanLibrary(ctx, sess, a.libStore, rootPath, preset, matchCfg, a.prober)
 	case mode.Series:
 		preset, pErr := api.ResolveNamingPreset(ctx, a.settingsStore, m)
 		if pErr != nil {
 			return pErr
 		}
-		threshold, tErr := api.ResolveConfidenceThreshold(ctx, a.settingsStore, m)
+		matchCfg, tErr := api.ResolveMatchConfig(ctx, a.settingsStore, m)
 		if tErr != nil {
 			return tErr
 		}
-		found, err = rename.ScanLibrarySeries(ctx, sess, a.libStore, rootPath, preset, threshold)
+		found, err = rename.ScanLibrarySeries(ctx, sess, a.libStore, rootPath, preset, matchCfg, a.prober)
 	case mode.Adult:
 		found, err = rename.ScanLibraryAdult(ctx, sess, a.libStore, a.videoHasher, a.prober, rootPath)
 	default:

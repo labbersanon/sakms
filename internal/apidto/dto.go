@@ -1438,7 +1438,7 @@ type StorageAllocation struct {
 //
 // The DTOs backing the ported Settings view (Connections, API Access, Auth
 // mode, AI provider/model, per-mode library/quality/naming/kids, plus the new
-// Advanced Settings section: phash-threshold, match-confidence-threshold,
+// Advanced Settings section: phash-threshold, rename-match-config,
 // identify-enabled, recheck-interval). Each mirrors the exact wire shape of the
 // matching handler in internal/api (settings.go, library.go, recheck.go,
 // rename.go, connections.go, netscan.go) so a future handler swap onto these
@@ -1561,16 +1561,17 @@ type PHashThresholdRequest struct {
 	Threshold int `json:"threshold"`
 }
 
-// ConfidenceThresholdResponse / ConfidenceThresholdRequest back
-// GET/PUT /api/modes/{mode}/match-confidence-threshold — the Rename
-// match-confidence cut (a 0–100 percentage). The frontend mirrors that bound
-// before submitting (backend re-validates).
-type ConfidenceThresholdResponse struct {
-	Threshold int `json:"threshold"`
+// MatchConfigResponse / MatchConfigRequest back
+// GET/PUT /api/modes/{mode}/rename-match-config — Rename drilldown candidate
+// walk size and duration tolerance percentage.
+type MatchConfigResponse struct {
+	CandidateN           int `json:"candidateN"`
+	DurationTolerancePct int `json:"durationTolerancePct"`
 }
 
-type ConfidenceThresholdRequest struct {
-	Threshold int `json:"threshold"`
+type MatchConfigRequest struct {
+	CandidateN           int `json:"candidateN"`
+	DurationTolerancePct int `json:"durationTolerancePct"`
 }
 
 // IdentifyEnabledResponse / IdentifyEnabledRequest back

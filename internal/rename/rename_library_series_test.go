@@ -55,16 +55,16 @@ func fakeTMDBSeriesServer(t *testing.T, searchResults map[string]string, failSea
 
 func TestScanLibrarySeries_ProducesPendingProposalForNewEpisode(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Show.Name.S01E01.mkv"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Show.Name.2020.S01E01.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name","overview":"..."}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","overview":"...","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,18 +83,18 @@ func TestScanLibrarySeries_SeasonPackProducesOneProposalPerEpisode(t *testing.T)
 	if err := os.Mkdir(packDir, 0o755); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, name := range []string{"Show.Name.S01E01.mkv", "Show.Name.S01E02.mkv"} {
+	for _, name := range []string{"Show.Name.2020.S01E01.mkv", "Show.Name.2020.S01E02.mkv"} {
 		if err := os.WriteFile(filepath.Join(packDir, name), []byte("x"), 0o644); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,16 +121,16 @@ func TestScanLibrarySeries_SeasonPackProducesOneProposalPerEpisode(t *testing.T)
 // rest.
 func TestScanLibrarySeries_LogicalSplitProducesOneProposalWithExtraEpisodes(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Show.Name.S01E01-E02.mkv"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Show.Name.2020.S01E01-E02.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,13 +156,13 @@ func TestScanLibrarySeries_DiscoversNewEpisodeAlongsideAlreadyTrackedOne(t *test
 	if err := os.WriteFile(tracked, []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	newFile := filepath.Join(seasonDir, "Show.Name.S01E02.mkv")
+	newFile := filepath.Join(seasonDir, "Show.Name.2020.S01E02.mkv")
 	if err := os.WriteFile(newFile, []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
@@ -176,7 +176,7 @@ func TestScanLibrarySeries_DiscoversNewEpisodeAlongsideAlreadyTrackedOne(t *test
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,17 +198,17 @@ func TestScanLibrarySeries_SkipsAlreadyConformantEpisodeInMixedSeasonPack(t *tes
 	if err := os.WriteFile(filepath.Join(seasonDir, "Show Name S01E01.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	nonConformant := filepath.Join(seasonDir, "Show.Name.S01E02.mkv")
+	nonConformant := filepath.Join(seasonDir, "Show.Name.2020.S01E02.mkv")
 	if err := os.WriteFile(nonConformant, []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -219,12 +219,12 @@ func TestScanLibrarySeries_SkipsAlreadyConformantEpisodeInMixedSeasonPack(t *tes
 
 func TestScanLibrarySeries_SkipsAlreadyTrackedWithFile(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Show.Name.S01E01.mkv"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Show.Name.2020.S01E01.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
@@ -238,7 +238,7 @@ func TestScanLibrarySeries_SkipsAlreadyTrackedWithFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,12 +249,12 @@ func TestScanLibrarySeries_SkipsAlreadyTrackedWithFile(t *testing.T) {
 
 func TestScanLibrarySeries_DoesNotSkipEpisodeKnownAsMissing(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Show.Name.S01E02.mkv"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Show.Name.2020.S01E02.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
@@ -269,7 +269,7 @@ func TestScanLibrarySeries_DoesNotSkipEpisodeKnownAsMissing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestScanLibrarySeries_UnmatchedWhenParseFails(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, nil, nil)}
-	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -296,15 +296,15 @@ func TestScanLibrarySeries_UnmatchedWhenParseFails(t *testing.T) {
 
 func TestScanLibrarySeries_UnmatchedWhenSeasonDetailsFail(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Show.Name.S01E01.mkv"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Show.Name.2020.S01E01.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name": `{"results":[{"id":555,"name":"Show Name"}]}`,
+		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, map[int]bool{1: true})}
 
-	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestScanLibrarySeries_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T)
 		"xyz123": `{"results":[{"id":555,"name":"Completely Unrelated Show"}]}`,
 	}, nil)}
 
-	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -340,9 +340,9 @@ func TestScanLibrarySeries_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T)
 	}
 }
 
-// TestScanLibrarySeries_ThresholdZeroAcceptsAnyTMDBResult is Series'
-// counterpart to Movies' TestScanLibrary_ThresholdZeroAcceptsAnyTMDBResult.
-func TestScanLibrarySeries_ThresholdZeroAcceptsAnyTMDBResult(t *testing.T) {
+// TestScanLibrarySeries_ThresholdZeroAcceptsAnyTMDBResult is obsolete under
+// drilldown — no year/actor/duration means Unmatched (same as Movies).
+func TestScanLibrarySeries_NoSignalsUnmatchedEvenIfTMDBReturnsHit(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "xyz123.S01E01.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -352,12 +352,12 @@ func TestScanLibrarySeries_ThresholdZeroAcceptsAnyTMDBResult(t *testing.T) {
 		"xyz123": `{"results":[{"id":555,"name":"Completely Unrelated Show"}]}`,
 	}, nil)}
 
-	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, 0)
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 555 {
-		t.Fatalf("expected a threshold of 0 to accept the weak match, got %+v", got)
+	if len(got) != 1 || got[0].Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched without corroborating signals, got %+v", got)
 	}
 }
 
@@ -371,7 +371,7 @@ func TestApplyLibrarySeries_RelocatesIntoSeasonFolderAndPreservesMetadata(t *tes
 	if err := os.MkdirAll(destRoot, 0o755); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sourcePath := filepath.Join(sourceRoot, "Show.Name.S01E01.mkv")
+	sourcePath := filepath.Join(sourceRoot, "Show.Name.2020.S01E01.mkv")
 	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestApplyLibrarySeries_LogicalSplitCreatesOneEpisodeRowPerNumber(t *testing
 	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sourcePath := filepath.Join(sourceRoot, "Show.Name.S01E01-E02.mkv")
+	sourcePath := filepath.Join(sourceRoot, "Show.Name.2020.S01E01-E02.mkv")
 	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -582,7 +582,7 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 	if err := os.MkdirAll(destRoot, 0o755); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sourcePath := filepath.Join(base, "Show.Name.S01E01.mkv")
+	sourcePath := filepath.Join(base, "Show.Name.2020.S01E01.mkv")
 	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

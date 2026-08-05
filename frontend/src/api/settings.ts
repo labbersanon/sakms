@@ -29,8 +29,8 @@ import type {
   AuthModeRequest,
   AuthModeResponse,
   BrowseResponse,
-  ConfidenceThresholdRequest,
-  ConfidenceThresholdResponse,
+  MatchConfigRequest,
+  MatchConfigResponse,
   ConnectionSummary,
   ConnectionTestRequest,
   ConnectionTestResult,
@@ -552,19 +552,18 @@ export function putPHashThreshold(
   });
 }
 
-// Per-mode Rename match-confidence threshold (0–100 percentage, backend-validated).
-export function fetchConfidenceThreshold(mode: Mode): Promise<number> {
-  return api<ConfidenceThresholdResponse>(
-    `/api/modes/${mode}/match-confidence-threshold`,
-  ).then((r) => r.threshold);
+// Per-mode Rename drilldown match config (candidate N + duration tolerance %).
+export function fetchMatchConfig(mode: Mode): Promise<MatchConfigResponse> {
+  return api<MatchConfigResponse>(`/api/modes/${mode}/rename-match-config`);
 }
 
-export function putConfidenceThreshold(
+export function putMatchConfig(
   mode: Mode,
-  threshold: number,
+  candidateN: number,
+  durationTolerancePct: number,
 ): Promise<void> {
-  const body: ConfidenceThresholdRequest = { threshold };
-  return api<void>(`/api/modes/${mode}/match-confidence-threshold`, {
+  const body: MatchConfigRequest = { candidateN, durationTolerancePct };
+  return api<void>(`/api/modes/${mode}/rename-match-config`, {
     method: "PUT",
     body: JSON.stringify(body),
   });

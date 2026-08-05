@@ -7,6 +7,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/naming"
+	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -25,10 +26,10 @@ func ResolveNamingPreset(ctx context.Context, settingsStore *settings.Store, m m
 	return resolveNamingPreset(ctx, settingsStore, m)
 }
 
-// ResolveConfidenceThreshold is the exported wrapper over
-// resolveConfidenceThreshold, for the scan scheduler's adapter (Rename cycles).
-func ResolveConfidenceThreshold(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (int, error) {
-	return resolveConfidenceThreshold(ctx, settingsStore, m)
+// ResolveMatchConfig is the exported wrapper over resolveMatchConfig, for the
+// scan scheduler's adapter (Rename cycles).
+func ResolveMatchConfig(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (rename.MatchConfig, error) {
+	return resolveMatchConfig(ctx, settingsStore, m)
 }
 
 // ResolvePHashThreshold is the exported wrapper over resolvePHashThreshold, for

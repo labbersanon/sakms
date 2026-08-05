@@ -1,0 +1,220 @@
+// Claude 2026-08-05: Rename drilldown matcher — title ranks TMDB hits; year/actor/duration corroborate
+// Reason: Dice confidence alone accepted weak top hits; operators want multi-signal verification
+// Troubleshooting: unmatched/wrong Pending — check FileSignals.HasAny and MatchConfig N/tolerance
+// Review if: Adult Rename adopts the same drilldown or a different identify path remains sole Adult matcher
+// Related files: rename.go, confidence.go (legacy Dice retained for transitional TVDB paths until removed)
+// Context: see .omc/specs/deep-interview-rename-match-drilldown.md
+package rename
+
+import (
+	"context"
+	"math"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/labbersanon/sakms/internal/tmdb"
+)
+
+// DefaultCandidateN / DefaultDurationTolerancePct are Advanced Settings defaults
+// when per-mode keys are unset.
+const (
+	DefaultCandidateN           = 5
+	DefaultDurationTolerancePct = 5
+	MaxCandidateN               = 20
+	MaxDurationTolerancePct     = 50
+)
+
+// MatchConfig is the operator-tunable drilldown cut for Movies/Series Rename.
+type MatchConfig struct {
+	CandidateN           int
+	DurationTolerancePct int
+}
+
+// DefaultMatchConfig returns N=5 and ±5% duration tolerance.
+func DefaultMatchConfig() MatchConfig {
+	return MatchConfig{
+		CandidateN:           DefaultCandidateN,
+		DurationTolerancePct: DefaultDurationTolerancePct,
+	}
+}
+
+// Normalize clamps empty/invalid fields to defaults (and max caps).
+func (c MatchConfig) Normalize() MatchConfig {
+	if c.CandidateN < 1 {
+		c.CandidateN = DefaultCandidateN
+	}
+	if c.CandidateN > MaxCandidateN {
+		c.CandidateN = MaxCandidateN
+	}
+	if c.DurationTolerancePct < 0 {
+		c.DurationTolerancePct = DefaultDurationTolerancePct
+	}
+	if c.DurationTolerancePct > MaxDurationTolerancePct {
+		c.DurationTolerancePct = MaxDurationTolerancePct
+	}
+	return c
+}
+
+// FileSignals are corroborating hints extracted from an orphan name/path.
+// Zero / empty means the signal is absent (ignore for that check).
+type FileSignals struct {
+	Year        int
+	Actor       string
+	DurationSec float64
+}
+
+// HasAny reports whether at least one corroborating signal is available.
+func (s FileSignals) HasAny() bool {
+	return s.Year != 0 || s.Actor != "" || s.DurationSec > 0
+}
+
+var (
+	creditActorYearRe = regexp.MustCompile(`(?i)^(.+?)\s*-\s+(.+)\((\d{4})\)\s*$`)
+	fileYearParenRe   = regexp.MustCompile(`\((19\d{2}|20\d{2})\)`)
+	fileYearBareRe    = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
+	fileYearBracketRe = regexp.MustCompile(`\[(19\d{2}|20\d{2})\]`)
+)
+
+// ExtractFileSignals pulls year/actor from the orphan display name and optional
+// ffprobe duration from videoPath. A nil prober skips duration.
+func ExtractFileSignals(ctx context.Context, name, videoPath string, prober Prober) FileSignals {
+	var sig FileSignals
+	base := name
+	if filepath.Ext(name) != "" {
+		base = strings.TrimSuffix(filepath.Base(name), filepath.Ext(filepath.Base(name)))
+	} else {
+		base = filepath.Base(name)
+	}
+	if m := creditActorYearRe.FindStringSubmatch(base); m != nil {
+		sig.Actor = strings.TrimSpace(m[2])
+		if y, err := strconv.Atoi(m[3]); err == nil {
+			sig.Year = y
+		}
+	}
+	if sig.Year == 0 {
+		sig.Year = extractFileYear(base)
+	}
+	if prober != nil && videoPath != "" {
+		if probe, err := prober.Probe(ctx, videoPath); err == nil && probe != nil && probe.Duration > 0 {
+			sig.DurationSec = probe.Duration
+		}
+	}
+	return sig
+}
+
+func extractFileYear(s string) int {
+	if m := fileYearParenRe.FindStringSubmatch(s); m != nil {
+		y, _ := strconv.Atoi(m[1])
+		return y
+	}
+	if m := fileYearBracketRe.FindStringSubmatch(s); m != nil {
+		y, _ := strconv.Atoi(m[1])
+		return y
+	}
+	if m := fileYearBareRe.FindStringSubmatch(s); m != nil {
+		y, _ := strconv.Atoi(m[1])
+		return y
+	}
+	return 0
+}
+
+// SignalsPass reports whether every *present* file signal agrees with the
+// candidate. Missing TMDB runtime (0) skips the duration check for that
+// candidate. Missing cast with a present actor fails the candidate.
+func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPct int) bool {
+	if !sig.HasAny() {
+		return false
+	}
+	if sig.Year != 0 {
+		if candYear == 0 || sig.Year != candYear {
+			return false
+		}
+	}
+	if sig.Actor != "" {
+		if !actorInCast(sig.Actor, cast) {
+			return false
+		}
+	}
+	if sig.DurationSec > 0 {
+		if runtimeMin <= 0 {
+			// TMDB runtime unknown — treat duration as missing for this candidate.
+		} else if !durationWithinTolerance(sig.DurationSec, runtimeMin, tolPct) {
+			return false
+		}
+	}
+	return true
+}
+
+func actorInCast(credit string, cast []string) bool {
+	want := strings.ToLower(strings.TrimSpace(credit))
+	if want == "" {
+		return false
+	}
+	for _, name := range cast {
+		if strings.ToLower(strings.TrimSpace(name)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func durationWithinTolerance(fileSec float64, runtimeMin, tolPct int) bool {
+	if runtimeMin <= 0 || fileSec <= 0 {
+		return false
+	}
+	want := float64(runtimeMin) * 60
+	diff := math.Abs(fileSec - want)
+	return diff <= want*float64(tolPct)/100
+}
+
+func movieCandidateMeta(ctx context.Context, client *tmdb.Client, id int, sig FileSignals) (runtimeMin int, cast []string) {
+	if client == nil {
+		return 0, nil
+	}
+	if sig.DurationSec > 0 {
+		if det, err := client.MovieDetails(ctx, id); err == nil {
+			runtimeMin = det.Runtime
+		}
+	}
+	if sig.Actor != "" {
+		if names, err := client.MovieCredits(ctx, id); err == nil {
+			cast = names
+		}
+	}
+	return runtimeMin, cast
+}
+
+func seriesCandidateMeta(
+	ctx context.Context, client *tmdb.Client,
+	id, season, episode int, sig FileSignals,
+) (runtimeMin int, cast []string) {
+	if client == nil {
+		return 0, nil
+	}
+	if sig.DurationSec > 0 {
+		eps, err := client.SeasonDetails(ctx, id, season)
+		if err == nil {
+			for _, ep := range eps {
+				if ep.EpisodeNumber == episode {
+					runtimeMin = ep.Runtime
+					break
+				}
+			}
+		}
+	}
+	if sig.Actor != "" {
+		if names, err := client.TVAggregateCredits(ctx, id); err == nil {
+			cast = names
+		}
+	}
+	return runtimeMin, cast
+}
+
+func pickLimit(n, total int) int {
+	if total < n {
+		return total
+	}
+	return n
+}

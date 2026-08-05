@@ -1479,16 +1479,18 @@ export interface PHashThresholdRequest {
   threshold: number /* int */;
 }
 /**
- * ConfidenceThresholdResponse / ConfidenceThresholdRequest back
+ * MatchConfigResponse / MatchConfigRequest back
  * GET/PUT /api/modes/{mode}/match-confidence-threshold — the Rename
  * match-confidence cut (a 0–100 percentage). The frontend mirrors that bound
  * before submitting (backend re-validates).
  */
-export interface ConfidenceThresholdResponse {
-  threshold: number /* int */;
+export interface MatchConfigResponse {
+  candidateN: number;
+  durationTolerancePct: number /* int */;
 }
-export interface ConfidenceThresholdRequest {
-  threshold: number /* int */;
+export interface MatchConfigRequest {
+  candidateN: number;
+  durationTolerancePct: number /* int */;
 }
 /**
  * IdentifyEnabledResponse / IdentifyEnabledRequest back

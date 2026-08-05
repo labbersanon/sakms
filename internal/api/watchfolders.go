@@ -226,12 +226,12 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 			log.Printf("watchfolders: resolving preset for %s: %v", m, err)
 			return
 		}
-		threshold, err := resolveConfidenceThreshold(ctx, settingsStore, m)
+		matchCfg, err := resolveMatchConfig(ctx, settingsStore, m)
 		if err != nil {
-			log.Printf("watchfolders: resolving threshold for %s: %v", m, err)
+			log.Printf("watchfolders: resolving match config for %s: %v", m, err)
 			return
 		}
-		found, err = rename.ScanLibrary(ctx, sess, libStore, rootPath, preset, threshold)
+		found, err = rename.ScanLibrary(ctx, sess, libStore, rootPath, preset, matchCfg, prober)
 		if err != nil {
 			log.Printf("watchfolders: scan movies: %v", err)
 			return
@@ -242,12 +242,12 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 			log.Printf("watchfolders: resolving preset for %s: %v", m, err)
 			return
 		}
-		threshold, err := resolveConfidenceThreshold(ctx, settingsStore, m)
+		matchCfg, err := resolveMatchConfig(ctx, settingsStore, m)
 		if err != nil {
-			log.Printf("watchfolders: resolving threshold for %s: %v", m, err)
+			log.Printf("watchfolders: resolving match config for %s: %v", m, err)
 			return
 		}
-		found, err = rename.ScanLibrarySeries(ctx, sess, libStore, rootPath, preset, threshold)
+		found, err = rename.ScanLibrarySeries(ctx, sess, libStore, rootPath, preset, matchCfg, prober)
 		if err != nil {
 			log.Printf("watchfolders: scan series: %v", err)
 			return

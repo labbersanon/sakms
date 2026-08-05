@@ -138,8 +138,8 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/naming-preset")) return jsonResponse({ preset: "jellyfin" });
   if (url.includes("/rename/kids-root-path")) return jsonResponse({ path: "" });
   if (url.includes("/phash-threshold")) return jsonResponse({ threshold: 8 });
-  if (url.includes("/match-confidence-threshold"))
-    return jsonResponse({ threshold: 70 });
+  if (url.includes("/rename-match-config"))
+    return jsonResponse({ candidateN: 5, durationTolerancePct: 5 });
   if (url.includes("/identify-enabled")) return jsonResponse({ enabled: true });
   if (url.includes("/api/trakt/status"))
     return jsonResponse({ configured: false, linked: false });
@@ -2472,12 +2472,12 @@ describe("Advanced Settings", () => {
     renderSettings();
     goToSection("Advanced");
     expect(
-      await screen.findByLabelText("Rename match-confidence threshold (0–100)"),
+      await screen.findByLabelText("Rename match candidate count (1–20)"),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByText("Adult"));
     await waitFor(() =>
       expect(
-        screen.queryByLabelText("Rename match-confidence threshold (0–100)"),
+        screen.queryByLabelText("Rename match candidate count (1–20)"),
       ).toBeNull(),
     );
   });
@@ -2492,7 +2492,7 @@ describe("Advanced Settings", () => {
     goToSection("Advanced");
     // Not present for Movies (default mode) — wait for a Movies-only Advanced
     // field to confirm the tab mounted before asserting the toggle's absence.
-    await screen.findByLabelText("Rename match-confidence threshold (0–100)");
+    await screen.findByLabelText("Rename match candidate count (1–20)");
     expect(
       screen.queryByLabelText("Adult phash-first identification enabled"),
     ).toBeNull();
@@ -2666,7 +2666,7 @@ describe("Section tabs", () => {
       await screen.findByLabelText("Adult phash-first identification enabled"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByLabelText("Rename match-confidence threshold (0–100)"),
+      screen.queryByLabelText("Rename match candidate count (1–20)"),
     ).toBeNull();
   });
 });

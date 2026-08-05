@@ -71,7 +71,7 @@ func TestScanLibrary_ProducesPendingProposalForNewItem(t *testing.T) {
 	})}
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,14 +89,14 @@ func TestScanLibrary_ProducesPendingProposalForNewItem(t *testing.T) {
 
 func TestScanLibrary_RequiresTMDBConfigured(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Movies}
-	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), naming.Jellyfin, DefaultConfidenceThreshold); err == nil {
+	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), naming.Jellyfin, DefaultMatchConfig(), nil); err == nil {
 		t.Fatal("expected an error when TMDB isn't configured")
 	}
 }
 
 func TestScanLibrary_RequiresRootFolderPath(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, nil)}
-	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), "", naming.Jellyfin, DefaultConfidenceThreshold); err == nil {
+	if _, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), "", naming.Jellyfin, DefaultMatchConfig(), nil); err == nil {
 		t.Fatal("expected an error when no root folder path is configured")
 	}
 }
@@ -106,7 +106,7 @@ func TestScanLibrary_MarksUnmatchedForAlreadyInLibrary(t *testing.T) {
 	seedMovieRelease(t, root, "A.Beautiful.Mind.2001.1080p.BluRay.x264-GROUP")
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
-		"A Beautiful Mind 2001": `{"results":[{"id":453,"title":"A Beautiful Mind"}]}`,
+		"A Beautiful Mind 2001": `{"results":[{"id":453,"title":"A Beautiful Mind","release_date":"2001-12-21"}]}`,
 	})}
 	libStore := newTestLibraryStore(t)
 	if _, err := libStore.Upsert(context.Background(), library.Item{
@@ -115,7 +115,7 @@ func TestScanLibrary_MarksUnmatchedForAlreadyInLibrary(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestScanLibrary_MarksUnmatchedWhenNoTMDBMatch(t *testing.T) {
 		"xyz123": `{"results":[]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,12 +141,10 @@ func TestScanLibrary_MarksUnmatchedWhenNoTMDBMatch(t *testing.T) {
 	}
 }
 
-// TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch proves the
-// confidence gate itself, not just its unit-level scoring function: a
-// garbled/opaque search term that still returns SOME TMDB result (unlike
-// the zero-results case above) is routed to Unmatched instead of silently
-// accepting a confidently-wrong top hit.
-func TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T) {
+// TestScanLibrary_MarksUnmatchedWhenNoCorroboratingSignals proves drilldown
+// requires at least one of year/actor/duration — a garbled name with none
+// stays Unmatched even if TMDB returns a top hit.
+func TestScanLibrary_MarksUnmatchedWhenNoCorroboratingSignals(t *testing.T) {
 	root := t.TempDir()
 	seedMovieRelease(t, root, "FathersLLDVD")
 
@@ -154,36 +152,37 @@ func TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T) {
 		"FathersLLDVD": `{"results":[{"id":999,"title":"Father's Day","overview":"...","release_date":"1997-05-09"}]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 1 || got[0].Status != proposals.Unmatched {
-		t.Fatalf("expected the weak match to route to unmatched, got %+v", got)
+		t.Fatalf("expected no-signal orphan to route to unmatched, got %+v", got)
 	}
 	if got[0].TMDBID != 0 {
-		t.Errorf("expected no TMDB id to be assigned on a rejected weak match, got %d", got[0].TMDBID)
+		t.Errorf("expected no TMDB id on a no-signal reject, got %d", got[0].TMDBID)
 	}
 }
 
-// TestScanLibrary_ThresholdZeroAcceptsAnyTMDBResult proves the threshold
-// parameter is actually load-bearing (not a hardcoded gate): a threshold of
-// 0 must let even a zero-similarity result through, same as today's
-// pre-feature unconditional-items[0] behavior.
-func TestScanLibrary_ThresholdZeroAcceptsAnyTMDBResult(t *testing.T) {
+// TestScanLibrary_WalksTopNUntilYearCorroborates proves candidate walk: wrong
+// year on #1, correct year on #2 → Pending on #2.
+func TestScanLibrary_WalksTopNUntilYearCorroborates(t *testing.T) {
 	root := t.TempDir()
-	seedMovieRelease(t, root, "FathersLLDVD")
+	seedMovieRelease(t, root, "Some.Movie.2001")
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
-		"FathersLLDVD": `{"results":[{"id":999,"title":"Father's Day","overview":"...","release_date":"1997-05-09"}]}`,
+		"Some Movie 2001": `{"results":[
+			{"id":1,"title":"Wrong Year","release_date":"1999-01-01"},
+			{"id":2,"title":"Right Year","release_date":"2001-06-01"}
+		]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, 0)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 999 {
-		t.Fatalf("expected a threshold of 0 to accept the weak match, got %+v", got)
+	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 2 {
+		t.Fatalf("expected Pending on second candidate, got %+v", got)
 	}
 }
 
@@ -218,7 +217,7 @@ func TestScanLibrary_DiscoversNewFileAlongsideAlreadyTrackedItem(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -250,10 +249,10 @@ func TestScanLibrary_SkipsAlreadyConformantEntry(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
-		"A Beautiful Mind 2001": `{"results":[{"id":453,"title":"A Beautiful Mind"}]}`,
+		"A Beautiful Mind 2001": `{"results":[{"id":453,"title":"A Beautiful Mind","release_date":"2001-12-21"}]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,7 +268,7 @@ func TestScanLibrary_SkipsSidecarFiles(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, nil)}
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -295,7 +294,7 @@ func TestScanLibrary_SilentlyOmitsNonVideo(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
 		"Real Movie 2020": `{"results":[{"id":99,"title":"Real Movie","overview":"...","release_date":"2020-01-01"}]}`,
 	})}
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -316,7 +315,7 @@ func TestScanLibrary_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
 	seedMovieRelease(t, generalRoot, "Kids.Movie.2020")
 
 	sess := &mode.Session{Mode: mode.Movies, KidsRootPath: kidsRoot, TMDB: fakeTMDBSearch(t, map[string]string{
-		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie."}]}`,
+		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie.","release_date":"2020-01-01"}]}`,
 	})}
 	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -325,7 +324,7 @@ func TestScanLibrary_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
 	defer aiSrv.Close()
 	sess.MainstreamAI = ollama.New(aiSrv.URL, "test-model", aiSrv.Client())
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -340,10 +339,10 @@ func TestScanLibrary_NoRerouteWithoutMainstreamAI(t *testing.T) {
 	seedMovieRelease(t, generalRoot, "Kids.Movie.2020")
 
 	sess := &mode.Session{Mode: mode.Movies, KidsRootPath: kidsRoot, TMDB: fakeTMDBSearch(t, map[string]string{
-		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie."}]}`,
+		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie.","release_date":"2020-01-01"}]}`,
 	})}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), generalRoot, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -516,7 +515,7 @@ func TestScanLibrary_NFOSidecarSkipsFuzzySearch(t *testing.T) {
 			`{"id":603,"title":"The Matrix","release_date":"1999-03-31","overview":"A hacker discovers reality."}`),
 	}
 
-	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -565,7 +564,7 @@ func TestScanLibrary_NFODuplicateMarkedUnmatched(t *testing.T) {
 		TMDB: tmdb.New(tmdb.Config{BaseURL: "http://127.0.0.1:0", APIKey: "test"}, nil),
 	}
 
-	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultConfidenceThreshold)
+	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

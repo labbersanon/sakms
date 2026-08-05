@@ -1,5 +1,5 @@
 // Advanced section — the per-mode bounded-integer settings (phash threshold,
-// match-confidence threshold) and the Adult-only identify-enabled toggle.
+// rename match config) and the Adult-only identify-enabled toggle.
 // Extracted from the original single-file Settings.tsx. The genuinely global
 // settings that used to live here (recheck interval, Entity Database, Watch
 // Folders) moved to Global.tsx — this tab only holds fields that actually
@@ -16,10 +16,10 @@ import {
 } from "solid-js";
 import type { Mode } from "../../api/discover";
 import {
-  fetchConfidenceThreshold,
   fetchIdentifyEnabled,
+  fetchMatchConfig,
   fetchPHashThreshold,
-  putConfidenceThreshold,
+  putMatchConfig,
   putIdentifyEnabled,
   putPHashThreshold,
 } from "../../api/settings";
@@ -473,9 +473,9 @@ export const AdvancedSection: Component<{ mode: () => Mode }> = (props) => {
   // phash-threshold is per-mode-generic; confidence is Movies/Series only;
   // identify-enabled is Adult only. Each keyed on the mode accessor.
   const [phash] = createResource(props.mode, fetchPHashThreshold);
-  const [confidence] = createResource(
+  const [matchCfg] = createResource(
     () => (props.mode() === "adult" ? undefined : props.mode()),
-    fetchConfidenceThreshold,
+    fetchMatchConfig,
   );
 
   return (
@@ -493,13 +493,30 @@ export const AdvancedSection: Component<{ mode: () => Mode }> = (props) => {
         />
         <Show when={props.mode() !== "adult"}>
           <NumberSetting
-            id="match-confidence-threshold"
-            label="Rename match-confidence threshold (0–100)"
-            help="Minimum TMDB match confidence (a percentage) before Rename auto-accepts a match instead of surfacing it for manual re-pick."
-            value={() => confidence()}
+            id="rename-candidate-n"
+            label="Rename match candidate count (1–20)"
+            help="How many TMDB search hits Rename walks, in rank order, until year/actor/duration corroboration passes."
+            value={() => matchCfg()?.candidateN}
+            min={1}
+            max={20}
+            onSave={(v) =>
+              putMatchConfig(
+                props.mode(),
+                v,
+                matchCfg()?.durationTolerancePct ?? 5,
+              )
+            }
+          />
+          <NumberSetting
+            id="rename-duration-tolerance"
+            label="Rename duration tolerance % (0–50)"
+            help="Max percent difference between ffprobe duration and TMDB runtime for a candidate to pass. Missing duration on the file is ignored."
+            value={() => matchCfg()?.durationTolerancePct}
             min={0}
-            max={100}
-            onSave={(v) => putConfidenceThreshold(props.mode(), v)}
+            max={50}
+            onSave={(v) =>
+              putMatchConfig(props.mode(), matchCfg()?.candidateN ?? 5, v)
+            }
           />
         </Show>
         <Show when={props.mode() === "adult" && adultEnabled()}>

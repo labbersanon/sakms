@@ -183,7 +183,7 @@ func classifyModes(rest []string, out Set) {
 			out.Add(SectionLibrary)
 		}
 	case "identify-enabled", "naming-preset", "phash-threshold",
-		"quality-prefs", "match-confidence-threshold":
+		"quality-prefs", "rename-match-config":
 		out.Add(SectionSettings)
 	case "poster":
 		// Same reasoning as images/proxy: a poster is fetched by whichever

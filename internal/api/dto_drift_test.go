@@ -93,8 +93,8 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"namingPresetRequest/NamingPresetRequest", namingPresetRequest{}, apidto.NamingPresetRequest{}},
 		{"phashThresholdResponse/PHashThresholdResponse", phashThresholdResponse{}, apidto.PHashThresholdResponse{}},
 		{"phashThresholdRequest/PHashThresholdRequest", phashThresholdRequest{}, apidto.PHashThresholdRequest{}},
-		{"confidenceThresholdResponse/ConfidenceThresholdResponse", confidenceThresholdResponse{}, apidto.ConfidenceThresholdResponse{}},
-		{"confidenceThresholdRequest/ConfidenceThresholdRequest", confidenceThresholdRequest{}, apidto.ConfidenceThresholdRequest{}},
+		{"matchConfigResponse/MatchConfigResponse", matchConfigResponse{}, apidto.MatchConfigResponse{}},
+		{"matchConfigRequest/MatchConfigRequest", matchConfigRequest{}, apidto.MatchConfigRequest{}},
 		{"identifyEnabledResponse/IdentifyEnabledResponse", identifyEnabledResponse{}, apidto.IdentifyEnabledResponse{}},
 		{"identifyEnabledRequest/IdentifyEnabledRequest", identifyEnabledRequest{}, apidto.IdentifyEnabledRequest{}},
 		// recheck.go

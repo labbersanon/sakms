@@ -214,8 +214,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/modes/{mode}/naming-preset", putNamingPresetHandler(settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/phash-threshold", getPHashThresholdHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/phash-threshold", putPHashThresholdHandler(settingsStore))
-	mux.HandleFunc("GET /api/modes/{mode}/match-confidence-threshold", getConfidenceThresholdHandler(settingsStore))
-	mux.HandleFunc("PUT /api/modes/{mode}/match-confidence-threshold", putConfidenceThresholdHandler(settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/rename-match-config", getMatchConfigHandler(settingsStore))
+	mux.HandleFunc("PUT /api/modes/{mode}/rename-match-config", putMatchConfigHandler(settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/identify-enabled", getIdentifyEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/identify-enabled", putIdentifyEnabledHandler(settingsStore))
 

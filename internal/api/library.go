@@ -473,74 +473,84 @@ type phashThresholdRequest struct {
 	Threshold int `json:"threshold"`
 }
 
-// confidenceThresholdKey is per-mode — the Rename match-confidence cut is
-// configured independently per mode (only Movies/Series read it today, since
-// Adult's identification path doesn't use TMDB's items[0]-style search at
-// all), mirroring phashThresholdKey's per-mode shape. Stored as the string
-// form of an int (a 0-100 percentage, see internal/rename's matchConfidence).
-func confidenceThresholdKey(m mode.Mode) string { return string(m) + "_rename_confidence_threshold" }
+// Claude 2026-08-05: per-mode Rename drilldown MatchConfig (N + duration %)
+// Reason: replaced Dice match-confidence threshold with multi-signal walk settings
+// Troubleshooting: wrong Pending/Unmatched rates — check candidateN / durationTolerancePct
+// Review if: confidence threshold keys are fully migrated off disk
+func renameCandidateNKey(m mode.Mode) string { return string(m) + "_rename_candidate_n" }
+func renameDurationToleranceKey(m mode.Mode) string {
+	return string(m) + "_rename_duration_tolerance_pct"
+}
 
-// resolveConfidenceThreshold loads m's Rename match-confidence threshold,
-// defaulting to rename.DefaultConfidenceThreshold when unset — the same
-// fallback getConfidenceThresholdHandler reports, reused by rename.go's Scan
-// handler so ScanLibrary/ScanLibrarySeries gate on whatever is configured. A
-// stored value is always a validated int (putConfidenceThresholdHandler
-// rejects otherwise), so a parse failure falls back to the default rather
-// than failing a Scan — same tolerance as resolvePHashThreshold.
-func resolveConfidenceThreshold(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (int, error) {
-	raw, err := settingsStore.Get(ctx, confidenceThresholdKey(m))
+// resolveMatchConfig loads Movies/Series Rename drilldown settings.
+func resolveMatchConfig(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (rename.MatchConfig, error) {
+	cfg := rename.DefaultMatchConfig()
+	rawN, err := settingsStore.Get(ctx, renameCandidateNKey(m))
 	if err != nil && !errors.Is(err, settings.ErrNotFound) {
-		return 0, err
+		return cfg, err
 	}
-	if raw == "" {
-		return rename.DefaultConfidenceThreshold, nil
+	if rawN != "" {
+		if v, err := strconv.Atoi(rawN); err == nil {
+			cfg.CandidateN = v
+		}
 	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		return rename.DefaultConfidenceThreshold, nil
+	rawT, err := settingsStore.Get(ctx, renameDurationToleranceKey(m))
+	if err != nil && !errors.Is(err, settings.ErrNotFound) {
+		return cfg, err
 	}
-	return v, nil
+	if rawT != "" {
+		if v, err := strconv.Atoi(rawT); err == nil {
+			cfg.DurationTolerancePct = v
+		}
+	}
+	return cfg.Normalize(), nil
 }
 
-type confidenceThresholdResponse struct {
-	Threshold int `json:"threshold"`
+type matchConfigResponse struct {
+	CandidateN           int `json:"candidateN"`
+	DurationTolerancePct int `json:"durationTolerancePct"`
 }
 
-type confidenceThresholdRequest struct {
-	Threshold int `json:"threshold"`
+type matchConfigRequest struct {
+	CandidateN           int `json:"candidateN"`
+	DurationTolerancePct int `json:"durationTolerancePct"`
 }
 
-// getConfidenceThresholdHandler returns {mode}'s Rename match-confidence
-// threshold (0-100 percentage) — defaults to rename.DefaultConfidenceThreshold
-// when unset.
-func getConfidenceThresholdHandler(settingsStore *settings.Store) http.HandlerFunc {
+func getMatchConfigHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		threshold, err := resolveConfidenceThreshold(r.Context(), settingsStore, mode.Mode(r.PathValue("mode")))
+		cfg, err := resolveMatchConfig(r.Context(), settingsStore, mode.Mode(r.PathValue("mode")))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(confidenceThresholdResponse{Threshold: threshold})
+		json.NewEncoder(w).Encode(matchConfigResponse{
+			CandidateN: cfg.CandidateN, DurationTolerancePct: cfg.DurationTolerancePct,
+		})
 	}
 }
 
-// putConfidenceThresholdHandler stores {mode}'s Rename match-confidence
-// threshold. Rejects a value outside 0-100 (a percentage), mirroring
-// putPHashThresholdHandler's invalid-input rejection.
-func putConfidenceThresholdHandler(settingsStore *settings.Store) http.HandlerFunc {
+func putMatchConfigHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
-		var req confidenceThresholdRequest
+		var req matchConfigRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if req.Threshold < 0 || req.Threshold > 100 {
-			http.Error(w, "threshold must be between 0 and 100", http.StatusBadRequest)
+		if req.CandidateN < 1 || req.CandidateN > rename.MaxCandidateN {
+			http.Error(w, fmt.Sprintf("candidateN must be between 1 and %d", rename.MaxCandidateN), http.StatusBadRequest)
 			return
 		}
-		if err := settingsStore.Set(r.Context(), confidenceThresholdKey(m), strconv.Itoa(req.Threshold)); err != nil {
+		if req.DurationTolerancePct < 0 || req.DurationTolerancePct > rename.MaxDurationTolerancePct {
+			http.Error(w, fmt.Sprintf("durationTolerancePct must be between 0 and %d", rename.MaxDurationTolerancePct), http.StatusBadRequest)
+			return
+		}
+		if err := settingsStore.Set(r.Context(), renameCandidateNKey(m), strconv.Itoa(req.CandidateN)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := settingsStore.Set(r.Context(), renameDurationToleranceKey(m), strconv.Itoa(req.DurationTolerancePct)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

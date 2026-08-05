@@ -150,10 +150,10 @@ func SearchQueries(name string) []string {
 	add(stripped)
 	add(base) // last-resort with year still in string
 
-	// "Copacabana Marx, Groucho" → "Copacabana Groucho Marx"
+	// "Copacabana Marx, Groucho" → "Copacabana Groucho Marx" (not bare "Groucho Marx",
+	// which matches the person and wrong titles).
 	if m := commaPersonRe.FindStringSubmatch(stripped); m != nil {
 		add(strings.TrimSpace(m[1] + " " + m[3] + " " + m[2]))
-		add(strings.TrimSpace(m[3] + " " + m[2]))
 	}
 
 	// Drop trailing " - leftover" fragments after codec strip left a dash.
@@ -161,15 +161,9 @@ func SearchQueries(name string) []string {
 		add(strings.TrimSpace(stripped[:i]))
 	}
 
-	// Progressively drop trailing words (helps "… interview with Garrison") —
-	// capped so we do not spray TMDB with every prefix of a long title.
-	words := strings.Fields(stripped)
-	if len(words) > 4 {
-		add(strings.Join(words[:len(words)-2], " "))
-	}
-	if len(words) > 3 {
-		add(strings.Join(words[:3], " "))
-	}
+	// Do not truncate long titles by word count — "Austin Powers International Man of"
+	// / three-word shortenings matched the wrong TMDB hits after the primary query failed
+	// corroboration on missing metadata.
 	return out
 }
 

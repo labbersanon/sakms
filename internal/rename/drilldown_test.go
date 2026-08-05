@@ -35,6 +35,27 @@ func TestSignalsPass_YearExact(t *testing.T) {
 	if SignalsPass(sig, 2002, 0, nil, 5) {
 		t.Fatal("wrong year should fail")
 	}
+	if SignalsPass(sig, 0, 0, nil, 5) {
+		t.Fatal("unknown candidate year must not count as corroboration")
+	}
+}
+
+func TestSignalsPass_YearMismatchDurationOverride(t *testing.T) {
+	// Wrong filename year, duration within ±5% → pass
+	sig := FileSignals{Year: 2007, DurationSec: 97 * 60}
+	if !SignalsPass(sig, 1986, 97, nil, 5) {
+		t.Fatal("duration should override wrong year")
+	}
+	// Actor alone must not override year
+	sig = FileSignals{Year: 2007, Actor: "Richard Pryor"}
+	if SignalsPass(sig, 1986, 0, []string{"Richard Pryor"}, 5) {
+		t.Fatal("actor must not override wrong year")
+	}
+	// Wrong year + duration outside tolerance → fail
+	sig = FileSignals{Year: 2007, DurationSec: 120 * 60}
+	if SignalsPass(sig, 1986, 97, nil, 5) {
+		t.Fatal("bad duration must not override year")
+	}
 }
 
 func TestSignalsPass_ActorCast(t *testing.T) {
@@ -45,15 +66,21 @@ func TestSignalsPass_ActorCast(t *testing.T) {
 	if SignalsPass(sig, 0, 0, []string{"Someone Else"}, 5) {
 		t.Fatal("cast miss should fail")
 	}
+	sig = FileSignals{Actor: "Richard Pryor Autobiography"}
+	if !SignalsPass(sig, 0, 0, []string{"Richard Pryor"}, 5) {
+		t.Fatal("credit containing cast name should pass")
+	}
+	// Year+actor file, credits unavailable: year alone must still corroborate.
+	sig = FileSignals{Year: 1977, Actor: "Richard Pryor"}
+	if !SignalsPass(sig, 1977, 0, nil, 5) {
+		t.Fatal("empty cast must ignore actor when year matches")
+	}
 }
 
 func TestSignalsPass_DurationTolerance(t *testing.T) {
 	sig := FileSignals{DurationSec: 100 * 60} // 100 min
 	if !SignalsPass(sig, 0, 100, nil, 5) {
 		t.Fatal("exact duration should pass")
-	}
-	if !SignalsPass(sig, 0, 100, nil, 5) {
-		t.Fatal("dup")
 	}
 	// 6% off with 5% tol
 	sig.DurationSec = 106 * 60

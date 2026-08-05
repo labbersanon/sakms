@@ -149,6 +149,34 @@ func TestSearchQueries_MinorityReport(t *testing.T) {
 	}
 }
 
+func TestSearchQueries_AustinPowersNoTruncation(t *testing.T) {
+	q := SearchQueries("Austin Powers International Man of Mystery (1997).mp4")
+	if len(q) == 0 || q[0] != "Austin Powers International Man of Mystery" {
+		t.Fatalf("got %#v", q)
+	}
+	for _, s := range q {
+		if s == "Austin Powers International" || s == "Austin Powers International Man of" {
+			t.Fatalf("must not emit truncated query %q; got %#v", s, q)
+		}
+	}
+}
+
+func TestSearchQueries_GrouchoCommaInvert(t *testing.T) {
+	q := SearchQueries("Copacabana Marx, Groucho (1947).mp4")
+	found := false
+	for _, s := range q {
+		if s == "Copacabana Groucho Marx" {
+			found = true
+		}
+		if s == "Groucho Marx" {
+			t.Fatalf("bare person name must not be a query: %#v", q)
+		}
+	}
+	if !found {
+		t.Fatalf("want comma-inverted title, got %#v", q)
+	}
+}
+
 func TestStripYear(t *testing.T) {
 	if got := StripYear("Minority Report (2002)"); got != "Minority Report" {
 		t.Fatalf("%q", got)

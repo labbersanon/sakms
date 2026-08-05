@@ -120,31 +120,59 @@ func extractFileYear(s string) int {
 	return 0
 }
 
-// SignalsPass reports whether every *present* file signal agrees with the
-// candidate. Missing TMDB runtime (0) skips the duration check for that
-// candidate. Missing cast with a present actor fails the candidate.
+// SignalsPass reports whether file signals agree with the candidate.
+// Missing candidate metadata for a signal is ignored (not a hard fail), but
+// at least one signal must positively corroborate.
+//
+// Year mismatch normally fails the candidate. Exception: when file duration
+// is within tolerance of TMDB runtime, duration may override a wrong filename
+// year (actor match alone cannot).
 func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPct int) bool {
 	if !sig.HasAny() {
 		return false
 	}
+	corroborated := false
+	yearMismatch := false
+	// Claude 2026-08-05: missing candidate metadata ≠ mismatch (ignore that signal)
+	// Reason: empty search release_date + failed MovieDetails made year fail with candYear=0
+	// Troubleshooting: "top N passed corroboration" on titles with correct year on file — check MovieDetails
+	// Review if: accepting candidates with no year metadata causes wrong Pending too often
 	if sig.Year != 0 {
-		if candYear == 0 || sig.Year != candYear {
-			return false
+		if candYear != 0 {
+			if sig.Year == candYear {
+				corroborated = true
+			} else {
+				yearMismatch = true
+			}
 		}
 	}
 	if sig.Actor != "" {
-		if !actorInCast(sig.Actor, cast) {
-			return false
+		// Empty cast = credits unavailable — ignore actor signal (same as candYear==0).
+		if len(cast) > 0 {
+			if !actorInCast(sig.Actor, cast) {
+				return false
+			}
+			corroborated = true
 		}
 	}
+	durationOK := false
 	if sig.DurationSec > 0 {
-		if runtimeMin <= 0 {
-			// TMDB runtime unknown — treat duration as missing for this candidate.
-		} else if !durationWithinTolerance(sig.DurationSec, runtimeMin, tolPct) {
-			return false
+		if runtimeMin > 0 {
+			if !durationWithinTolerance(sig.DurationSec, runtimeMin, tolPct) {
+				return false
+			}
+			durationOK = true
+			corroborated = true
 		}
 	}
-	return true
+	// Claude 2026-08-05: duration-only soft override for wrong filename year
+	// Reason: JoJo Dancer tagged (2007) but film is 1986; actor alone must not override year
+	// Troubleshooting: wrong-year file matches with actor but no ffprobe — should stay Unmatched
+	// Review if: duration override accepts wrong titles with similar runtimes too often
+	if yearMismatch && !durationOK {
+		return false
+	}
+	return corroborated
 }
 
 func actorInCast(credit string, cast []string) bool {
@@ -153,8 +181,15 @@ func actorInCast(credit string, cast []string) bool {
 		return false
 	}
 	for _, name := range cast {
-		if strings.ToLower(strings.TrimSpace(name)) == want {
-			return true
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n == "" {
+			continue
+		}
+		if n == want || strings.Contains(want, n) {
+			// Require a real person token (avoid tiny substring false positives).
+			if n == want || len(strings.Fields(n)) >= 2 || len(n) >= 8 {
+				return true
+			}
 		}
 	}
 	return false

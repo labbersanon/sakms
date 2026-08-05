@@ -1317,6 +1317,23 @@ export interface TrackedItem {
   cast?: string[];
   createdAt?: string;
   qualityTiers?: string[];
+  files?: TrackedItemFile[];
+}
+/**
+ * TrackedItemFile is one primary or alternate video under a Movies tracked
+ * title (GET /api/modes/movies/tracked). Series/Adult leave Files empty.
+ */
+export interface TrackedItemFile {
+  id: number /* int64 */;
+  filePath: string;
+  isPrimary: boolean;
+  qualityTier?: string;
+  size?: number /* int64 */;
+  width?: number /* int */;
+  height?: number /* int */;
+  videoCodec?: string;
+  bitrate?: number /* int64 */;
+  durationSec?: number /* float64 */;
 }
 /**
  * CollectionSummary is one entry from GET /api/modes/movies/collections —
@@ -1480,16 +1497,15 @@ export interface PHashThresholdRequest {
 }
 /**
  * MatchConfigResponse / MatchConfigRequest back
- * GET/PUT /api/modes/{mode}/match-confidence-threshold — the Rename
- * match-confidence cut (a 0–100 percentage). The frontend mirrors that bound
- * before submitting (backend re-validates).
+ * GET/PUT /api/modes/{mode}/rename-match-config — Rename drilldown candidate
+ * walk size and duration tolerance percentage.
  */
 export interface MatchConfigResponse {
-  candidateN: number;
+  candidateN: number /* int */;
   durationTolerancePct: number /* int */;
 }
 export interface MatchConfigRequest {
-  candidateN: number;
+  candidateN: number /* int */;
   durationTolerancePct: number /* int */;
 }
 /**

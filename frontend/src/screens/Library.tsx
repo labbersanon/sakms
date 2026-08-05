@@ -392,6 +392,42 @@ const DetailPanel: Component<{
         </div>
       </Show>
 
+      {/* Files — Movies primary + alternates (bitrate/codec/resolution) */}
+      <Show when={props.mode === "movies" && (props.item.files ?? []).length > 0}>
+        <div class="mb-3">
+          <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Files</p>
+          <ul class="space-y-2">
+            <For each={props.item.files}>
+              {(f) => {
+                const res =
+                  f.height > 0
+                    ? `${f.width || "?"}×${f.height}`
+                    : "";
+                const bits =
+                  f.bitrate > 0
+                    ? `${(f.bitrate / 1_000_000).toFixed(f.bitrate >= 10_000_000 ? 0 : 1)} Mbps`
+                    : "";
+                const meta = [res, f.videoCodec, bits, f.qualityTier]
+                  .filter(Boolean)
+                  .join(" · ");
+                const name = f.filePath.split("/").pop() || f.filePath;
+                return (
+                  <li class="rounded bg-surface-2 px-2 py-1.5 text-xs text-fg">
+                    <p class="truncate font-medium">
+                      {f.isPrimary ? "Primary" : "Alternate"}
+                      {meta ? ` — ${meta}` : ""}
+                    </p>
+                    <p class="truncate text-muted" title={f.filePath}>
+                      {name}
+                    </p>
+                  </li>
+                );
+              }}
+            </For>
+          </ul>
+        </div>
+      </Show>
+
       {/* Per-season monitoring — SERIES ONLY. Movies has no seasons, and the
           routes behind this panel carry a literal `series` path segment, so
           rendering it for Movies would 404 as well as make no sense. Library

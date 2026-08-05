@@ -128,6 +128,13 @@ func (s *Store) Upsert(ctx context.Context, item Item) (Item, error) {
 	if err := row.Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return Item{}, fmt.Errorf("upserting library item %q: %w", item.Title, err)
 	}
+	// Claude 2026-08-05: keep library_item_files primary row in sync with denormalized file_path
+	// Reason: deep-interview-rename-alts-ai-fallback — multi-file titles; readers still use library_items.file_path
+	// Troubleshooting: Apply/Upsert updated path but DetailPanel files list stayed stale
+	// Review if: primary path moves exclusively onto library_item_files
+	if err := s.SyncPrimaryFile(ctx, item); err != nil {
+		return Item{}, fmt.Errorf("syncing primary file for %q: %w", item.Title, err)
+	}
 	return item, nil
 }
 

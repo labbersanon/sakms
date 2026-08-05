@@ -81,6 +81,12 @@ func Classify(rawPath string) Set {
 		// prefix rule keyed on /api/proposals/{id}/ would miss it. Keying
 		// on segs[1] alone covers both shapes.
 		out.Add(SectionOrganize)
+	case "organize":
+		// Claude 2026-08-05: GET /api/organize/events (organize audit log)
+		// Reason: sibling of proposals queues; must be gated with Organize section
+		// Troubleshooting: SL-9 failed — route unclassified after organize_events mux
+		// Review if: organize subtree moves under /api/proposals/
+		out.Add(SectionOrganize)
 	case "autograb-batch":
 		// Discover's select-mode bulk grab. Adult items inside the body
 		// are Layer 2's job (mode.Build reads the per-item mode); the path

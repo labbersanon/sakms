@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/dbtest"
@@ -103,7 +104,7 @@ func TestScanLibrary_RequiresRootFolderPath(t *testing.T) {
 	}
 }
 
-func TestScanLibrary_MarksUnmatchedForAlreadyInLibrary(t *testing.T) {
+func TestScanLibrary_MarksPendingAlternateForAlreadyInLibrary(t *testing.T) {
 	root := t.TempDir()
 	seedMovieRelease(t, root, "A.Beautiful.Mind.2001.1080p.BluRay.x264-GROUP")
 
@@ -121,8 +122,14 @@ func TestScanLibrary_MarksUnmatchedForAlreadyInLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].Status != proposals.Unmatched {
-		t.Fatalf("expected the duplicate to surface as unmatched rather than re-adding it, got %+v", got)
+	if len(got) != 1 || got[0].Status != proposals.Pending {
+		t.Fatalf("expected the duplicate to surface as pending alternate fold-in, got %+v", got)
+	}
+	if !strings.HasPrefix(got[0].Reason, "alternate:") {
+		t.Errorf("expected alternate reason prefix, got %q", got[0].Reason)
+	}
+	if got[0].TMDBID != 453 {
+		t.Errorf("expected TMDBID 453, got %d", got[0].TMDBID)
 	}
 }
 
@@ -311,10 +318,64 @@ func TestScanLibrary_SilentlyOmitsNonVideo(t *testing.T) {
 	}
 }
 
+func TestScanLibrary_GuessTitleFallbackRecoversMatch(t *testing.T) {
+	root := t.TempDir()
+	seedMovieRelease(t, root, "xyz.opaque.release.2001.GROUP")
+
+	// Filename queries return nothing; guessed title search hits.
+	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
+		"xyz opaque release 2001": `{"results":[]}`,
+		"xyz opaque release":      `{"results":[]}`,
+		"A Beautiful Mind 2001":   `{"results":[{"id":453,"title":"A Beautiful Mind","release_date":"2001-12-21"}]}`,
+		"A Beautiful Mind":        `{"results":[{"id":453,"title":"A Beautiful Mind","release_date":"2001-12-21"}]}`,
+	})}
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": `{"title":"A Beautiful Mind 2001"}`}})
+	}))
+	defer aiSrv.Close()
+	sess.MainstreamAI = ollama.New(aiSrv.URL, "test-model", aiSrv.Client())
+
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 453 {
+		t.Fatalf("expected GuessTitle→Pending for Beautiful Mind, got %+v", got)
+	}
+}
+
+func TestScanLibrary_GuessTitleDeclineStaysUnmatched(t *testing.T) {
+	root := t.TempDir()
+	seedMovieRelease(t, root, "xyz.opaque.release.2001.GROUP")
+
+	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
+		"xyz opaque release 2001": `{"results":[]}`,
+		"xyz opaque release":      `{"results":[]}`,
+	})}
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": `{"title":null}`}})
+	}))
+	defer aiSrv.Close()
+	sess.MainstreamAI = ollama.New(aiSrv.URL, "test-model", aiSrv.Client())
+
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched after GuessTitle decline, got %+v", got)
+	}
+	if !strings.Contains(got[0].Reason, "AI") {
+		t.Errorf("expected AI-related reason, got %q", got[0].Reason)
+	}
+}
+
 func TestScanLibrary_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
 	generalRoot := t.TempDir()
 	kidsRoot := t.TempDir()
-	seedMovieRelease(t, generalRoot, "Kids.Movie.2020")
+	seedMovieRelease(t, generalRoot, "Kids.Movie.2020.BluRay")
 
 	sess := &mode.Session{Mode: mode.Movies, KidsRootPath: kidsRoot, TMDB: fakeTMDBSearch(t, map[string]string{
 		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie.","release_date":"2020-01-01"}]}`,
@@ -338,7 +399,7 @@ func TestScanLibrary_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
 func TestScanLibrary_NoRerouteWithoutMainstreamAI(t *testing.T) {
 	generalRoot := t.TempDir()
 	kidsRoot := t.TempDir()
-	seedMovieRelease(t, generalRoot, "Kids.Movie.2020")
+	seedMovieRelease(t, generalRoot, "Kids.Movie.2020.BluRay")
 
 	sess := &mode.Session{Mode: mode.Movies, KidsRootPath: kidsRoot, TMDB: fakeTMDBSearch(t, map[string]string{
 		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie.","release_date":"2020-01-01"}]}`,
@@ -373,7 +434,7 @@ func TestApplyLibrary_RelocatesFileAndRecordsInLibrary(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Some Movie", TMDBID: 453, Year: 2020,
 		SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin, "lossless")
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin, "lossless", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -421,7 +482,7 @@ func TestApplyLibrary_RelocatesFileAndRecordsInLibrary(t *testing.T) {
 func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, _, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin, ""); err == nil {
+		if _, _, err := ApplyLibrary(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin, "", nil); err == nil {
 			t.Errorf("expected ApplyLibrary to refuse a %q proposal", status)
 		}
 	}
@@ -450,7 +511,7 @@ func TestApplyLibrary_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Movie", TMDBID: 1,
 		SourcePath: sourcePath, RootFolderPath: base,
 	}
-	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin, "")
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, naming.Jellyfin, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -536,7 +597,7 @@ func TestScanLibrary_NFOSidecarSkipsFuzzySearch(t *testing.T) {
 	}
 }
 
-func TestScanLibrary_NFODuplicateMarkedUnmatched(t *testing.T) {
+func TestScanLibrary_NFODuplicateMarkedPendingAlternate(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "The.Matrix.1999.BluRay")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -546,7 +607,6 @@ func TestScanLibrary_NFODuplicateMarkedUnmatched(t *testing.T) {
 	if err := os.WriteFile(videoPath, []byte{}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// .nfo inside the directory — same placement as the skip-fuzzy-search test.
 	nfoPath := filepath.Join(dir, "The.Matrix.1999.BluRay.nfo")
 	if err := os.WriteFile(nfoPath, []byte(`<movie><tmdbid>603</tmdbid></movie>`), 0o644); err != nil {
 		t.Fatal(err)
@@ -559,11 +619,10 @@ func TestScanLibrary_NFODuplicateMarkedUnmatched(t *testing.T) {
 		t.Fatalf("seeding library: %v", err)
 	}
 
-	// The TMDB server is never reached — the duplicate check fires before
-	// the MovieDetails call. An unreachable base URL proves this.
 	sess := &mode.Session{
 		Mode: mode.Movies,
-		TMDB: tmdb.New(tmdb.Config{BaseURL: "http://127.0.0.1:0", APIKey: "test"}, nil),
+		TMDB: fakeTMDBMovieDetails(t, 603,
+			`{"id":603,"title":"The Matrix","release_date":"1999-03-31","overview":"x","genres":[]}`),
 	}
 
 	got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
@@ -573,7 +632,10 @@ func TestScanLibrary_NFODuplicateMarkedUnmatched(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 proposal, got %d", len(got))
 	}
-	if got[0].Status != proposals.Unmatched {
-		t.Errorf("expected Unmatched for duplicate TMDB id from .nfo, got %v", got[0].Status)
+	if got[0].Status != proposals.Pending {
+		t.Errorf("expected Pending alternate for duplicate TMDB id from .nfo, got %v", got[0].Status)
+	}
+	if !strings.HasPrefix(got[0].Reason, "alternate:") {
+		t.Errorf("expected alternate reason, got %q", got[0].Reason)
 	}
 }

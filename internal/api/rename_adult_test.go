@@ -129,8 +129,11 @@ func TestAdultRenameWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		t.Fatalf("list GET failed: %v", err)
 	}
 	defer listResp.Body.Close()
-	var listed []proposals.Proposal
-	json.NewDecoder(listResp.Body).Decode(&listed)
+	var listedPage struct {
+		Items []proposals.Proposal `json:"items"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&listedPage)
+	listed := listedPage.Items
 	if len(listed) != 1 || listed[0].ID != p.ID || listed[0].ForeignID != sceneUUID {
 		t.Fatalf("expected the queue to reflect the staged proposal, got %+v", listed)
 	}

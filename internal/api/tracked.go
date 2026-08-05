@@ -45,16 +45,31 @@ import (
 // cell, so omitting it would make that cell drill down to an empty list. The
 // fold is display-only — the stored "" is untouched.
 type libraryTrackedItem struct {
-	ID             int64    `json:"id"`
-	Title          string   `json:"title"`
-	Tags           []string `json:"tags"`
-	TMDBID         int      `json:"tmdbId,omitempty"`
-	Year           int      `json:"year,omitempty"`
-	CollectionName string   `json:"collectionName,omitempty"`
-	Genres         []string `json:"genres,omitempty"`
-	Cast           []string `json:"cast,omitempty"`
-	CreatedAt      string   `json:"createdAt,omitempty"`
-	QualityTiers   []string `json:"qualityTiers,omitempty"`
+	ID             int64                 `json:"id"`
+	Title          string                `json:"title"`
+	Tags           []string              `json:"tags"`
+	TMDBID         int                   `json:"tmdbId,omitempty"`
+	Year           int                   `json:"year,omitempty"`
+	CollectionName string                `json:"collectionName,omitempty"`
+	Genres         []string              `json:"genres,omitempty"`
+	Cast           []string              `json:"cast,omitempty"`
+	CreatedAt      string                `json:"createdAt,omitempty"`
+	QualityTiers   []string              `json:"qualityTiers,omitempty"`
+	Files          []libraryTrackedFile  `json:"files,omitempty"`
+}
+
+// libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
+type libraryTrackedFile struct {
+	ID          int64   `json:"id"`
+	FilePath    string  `json:"filePath"`
+	IsPrimary   bool    `json:"isPrimary"`
+	QualityTier string  `json:"qualityTier,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	Width       int     `json:"width,omitempty"`
+	Height      int     `json:"height,omitempty"`
+	VideoCodec  string  `json:"videoCodec,omitempty"`
+	BitRate     int64   `json:"bitrate,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
 }
 
 // listTrackedHandler returns every item {mode} currently tracks — straight
@@ -91,7 +106,37 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 				if tier == "" {
 					tier = "unknown"
 				}
-				out[i] = libraryTrackedItem{ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year, CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast, CreatedAt: item.CreatedAt, QualityTiers: []string{tier}}
+				files, err := libStore.ListFiles(ctx, item.ID)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				trackedFiles := make([]libraryTrackedFile, len(files))
+				tiers := []string{}
+				seenTier := map[string]bool{}
+				for j, f := range files {
+					ft := f.QualityTier
+					if ft == "" {
+						ft = "unknown"
+					}
+					trackedFiles[j] = libraryTrackedFile{
+						ID: f.ID, FilePath: f.FilePath, IsPrimary: f.IsPrimary,
+						QualityTier: ft, Size: f.Size, Width: f.Width, Height: f.Height,
+						VideoCodec: f.VideoCodec, BitRate: f.BitRate, DurationSec: f.DurationSec,
+					}
+					if !seenTier[ft] {
+						seenTier[ft] = true
+						tiers = append(tiers, ft)
+					}
+				}
+				if len(tiers) == 0 {
+					tiers = []string{tier}
+				}
+				out[i] = libraryTrackedItem{
+					ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year,
+					CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast,
+					CreatedAt: item.CreatedAt, QualityTiers: tiers, Files: trackedFiles,
+				}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)

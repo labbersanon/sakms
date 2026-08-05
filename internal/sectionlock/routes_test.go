@@ -180,3 +180,10 @@ func TestClassifyUnknownPathIsEmpty(t *testing.T) {
 		t.Fatalf("expected an unknown API path to classify as nothing, got %v", got.Sorted())
 	}
 }
+
+func TestClassifyOrganizeEvents(t *testing.T) {
+	got := Classify("/api/organize/events").Sorted()
+	if len(got) != 1 || got[0] != SectionOrganize {
+		t.Fatalf("got %v", got)
+	}
+}

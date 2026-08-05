@@ -22,8 +22,10 @@ func fakeTMDBSeriesRenameHandler(t *testing.T, tmdbID int, title string) http.Ha
 		switch {
 		case r.URL.Path == "/search/tv":
 			json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{
-				{"id": tmdbID, "name": title},
+				{"id": tmdbID, "name": title, "first_air_date": "2020-01-01"},
 			}})
+		case r.URL.Path == "/tv/"+strconv.Itoa(tmdbID):
+			json.NewEncoder(w).Encode(map[string]any{"id": tmdbID, "name": title, "first_air_date": "2020-01-01"})
 		case r.URL.Path == "/tv/"+strconv.Itoa(tmdbID)+"/season/1":
 			w.Write([]byte(`{"episodes":[{"episode_number":1,"name":"Pilot","air_date":"2020-01-01"}]}`))
 		default:
@@ -42,7 +44,7 @@ func fakeTMDBSeriesRenameHandler(t *testing.T, tmdbID int, title string) http.Ha
 // TestAdultRenameWorkflow_ScanThenApply_EndToEnd.
 func TestRenameWorkflow_Series_ScanThenApply_EndToEnd(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Some.Show.S01E01.1080p.WEB-DL.x264-GROUP.mkv"), []byte("fake video data"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Some.Show.2020.S01E01.1080p.WEB-DL.x264-GROUP.mkv"), []byte("fake video data"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	fakeTMDB := httptest.NewServer(fakeTMDBSeriesRenameHandler(t, 555, "Some Show"))
@@ -83,8 +85,11 @@ func TestRenameWorkflow_Series_ScanThenApply_EndToEnd(t *testing.T) {
 		t.Fatalf("list GET failed: %v", err)
 	}
 	defer listResp.Body.Close()
-	var listed []proposals.Proposal
-	json.NewDecoder(listResp.Body).Decode(&listed)
+	var listedPage struct {
+		Items []proposals.Proposal `json:"items"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&listedPage)
+	listed := listedPage.Items
 	if len(listed) != 1 || listed[0].ID != scanned[0].ID {
 		t.Fatalf("expected the queue to reflect what scan just staged, got %+v", listed)
 	}
@@ -124,12 +129,16 @@ func fakeTMDBSearchHandler(t *testing.T, tmdbID int, title string) http.HandlerF
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/search/movie":
+			// Claude 2026-08-05: include release_date so Rename drilldown can corroborate year
+			// Reason: candYear==0 no longer counts as year match; empty date left e2e Unmatched
+			// Troubleshooting: ScanThenApply_EndToEnd "top N passed corroboration" with year on file
+			// Review if: MovieDetails is always fetched and becomes the sole year source
 			json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{
-				{"id": tmdbID, "title": title},
+				{"id": tmdbID, "title": title, "release_date": "2001-12-21"},
 			}})
 		case r.URL.Path == "/movie/"+strconv.Itoa(tmdbID):
 			// No belongs_to_collection — most movies don't have one.
-			json.NewEncoder(w).Encode(map[string]any{"id": tmdbID, "title": title})
+			json.NewEncoder(w).Encode(map[string]any{"id": tmdbID, "title": title, "release_date": "2001-12-21"})
 		default:
 			// enrichment calls (/movie/{id}/credits, etc.) — soft-fail
 			http.NotFound(w, r)
@@ -205,7 +214,7 @@ func TestRenameWorkflow_Movies_ScanThenApply_EndToEnd(t *testing.T) {
 	if item.TMDBID != 453 || item.Title != "A Beautiful Mind" {
 		t.Errorf("unexpected library item: %+v", item)
 	}
-	wantDest := filepath.Join(root, "A Beautiful Mind [tmdbid-453]", "A Beautiful Mind [tmdbid-453].mkv")
+	wantDest := filepath.Join(root, "A Beautiful Mind (2001) [tmdbid-453]", "A Beautiful Mind (2001) [tmdbid-453].mkv")
 	if item.FilePath != wantDest {
 		t.Errorf("expected the Jellyfin/Emby-standard naming preset applied by default, wanted %q, got %q", wantDest, item.FilePath)
 	}
@@ -279,7 +288,7 @@ func TestRenameWorkflow_Movies_LegacyPreset_ScanThenApply_EndToEnd(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	wantDest := filepath.Join(root, "A Beautiful Mind", "A Beautiful Mind.mkv")
+	wantDest := filepath.Join(root, "A Beautiful Mind (2001)", "A Beautiful Mind (2001).mkv")
 	if item.FilePath != wantDest {
 		t.Errorf("expected the legacy naming preset (no tmdbid tag), wanted %q, got %q", wantDest, item.FilePath)
 	}

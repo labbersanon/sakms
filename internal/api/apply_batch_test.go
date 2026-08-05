@@ -282,7 +282,7 @@ func TestApplyBatch_CommittedItemErrors_ChangesStillInCombinedNotify(t *testing.
 	// its file has already moved.
 	failStore := markAppliedFailStore{Store: propStore, failID: saved[1].ID}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(testHTTPClient(), connStore, scStore, settingsStore, failStore, libStore, nil))
+	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(testHTTPClient(), connStore, scStore, settingsStore, failStore, libStore, nil, testProber(t)))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

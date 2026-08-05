@@ -1377,16 +1377,32 @@ type TagEntry struct {
 // Adult scenes — Adult has no Library grid to sort, and omitting it keeps
 // Adult's wire response byte-identical to before this field existed.
 type TrackedItem struct {
-	ID             int64    `json:"id"`
-	Title          string   `json:"title"`
-	Tags           []string `json:"tags"`
-	TmdbId         int      `json:"tmdbId,omitempty"`
-	Year           int      `json:"year,omitempty"`
-	CollectionName string   `json:"collectionName,omitempty"`
-	Genres         []string `json:"genres,omitempty"`
-	Cast           []string `json:"cast,omitempty"`
-	CreatedAt      string   `json:"createdAt,omitempty"`
-	QualityTiers   []string `json:"qualityTiers,omitempty"`
+	ID             int64              `json:"id"`
+	Title          string             `json:"title"`
+	Tags           []string           `json:"tags"`
+	TmdbId         int                `json:"tmdbId,omitempty"`
+	Year           int                `json:"year,omitempty"`
+	CollectionName string             `json:"collectionName,omitempty"`
+	Genres         []string           `json:"genres,omitempty"`
+	Cast           []string           `json:"cast,omitempty"`
+	CreatedAt      string             `json:"createdAt,omitempty"`
+	QualityTiers   []string           `json:"qualityTiers,omitempty"`
+	Files          []TrackedItemFile  `json:"files,omitempty"`
+}
+
+// TrackedItemFile is one primary or alternate video under a Movies tracked
+// title (GET /api/modes/movies/tracked). Series/Adult leave Files empty.
+type TrackedItemFile struct {
+	ID          int64   `json:"id"`
+	FilePath    string  `json:"filePath"`
+	IsPrimary   bool    `json:"isPrimary"`
+	QualityTier string  `json:"qualityTier,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	Width       int     `json:"width,omitempty"`
+	Height      int     `json:"height,omitempty"`
+	VideoCodec  string  `json:"videoCodec,omitempty"`
+	BitRate     int64   `json:"bitrate,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
 }
 
 // CollectionSummary is one entry from GET /api/modes/movies/collections —

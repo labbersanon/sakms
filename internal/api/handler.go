@@ -642,8 +642,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("DELETE /api/webhooks/{id}", deleteWebhookHandler(whStore))
 	mux.HandleFunc("POST /api/webhooks/{id}/test", testWebhookHandler(whStore))
 
-	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore))
-	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore))
+	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore, prober))
+	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore, prober))
 	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, scStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/repick", repickProposalHandler(propStore))

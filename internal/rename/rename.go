@@ -164,15 +164,23 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 	if err != nil {
 		return nil, fmt.Errorf("loading library items: %w", err)
 	}
-	known := make(map[string]bool, len(existing))
 	byTMDB := make(map[int]bool, len(existing))
 	for _, item := range existing {
-		// Marking just the file path is enough — ScanRootFolder's recursive
-		// walk decides atomicity dynamically from known at whatever depth it
-		// encounters a directory, so it doesn't need the wrapping folder
-		// pre-marked too.
-		known[item.FilePath] = true
 		byTMDB[item.TMDBID] = true
+	}
+	// Claude 2026-08-05: mark primary + alternate paths known so alts aren't re-proposed
+	// Reason: deep-interview-rename-alts-ai-fallback — library_item_files holds non-primary paths
+	// Troubleshooting: alternate files reappeared as Rename orphans after Apply
+	// Review if: AllFilePaths stops covering library_item_files
+	known := map[string]bool{}
+	if paths, err := libStore.AllFilePaths(ctx, mode.Movies); err == nil {
+		for _, p := range paths {
+			known[p] = true
+		}
+	} else {
+		for _, item := range existing {
+			known[item.FilePath] = true
+		}
 	}
 
 	roots := []string{rootFolderPath}
@@ -235,11 +243,6 @@ func proposeOneLibrary(
 	// gate. The ID in the .nfo is authoritative; still run the duplicate and
 	// kids-root checks that follow.
 	if hint := nfo.ReadSidecar(entry.Path); hint.TMDBID != 0 {
-		if byTMDB[hint.TMDBID] {
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf(".nfo TMDB id %d appears to already be in the library — leaving in place for manual review", hint.TMDBID)
-			return p
-		}
 		details, err := sess.TMDB.MovieDetails(ctx, hint.TMDBID)
 		if err != nil {
 			p.Status = proposals.Unmatched
@@ -255,10 +258,23 @@ func proposeOneLibrary(
 				targetRoot = sess.KidsRootPath
 			}
 		}
+		year := yearFromReleaseDate(details.ReleaseDate)
+		if byTMDB[hint.TMDBID] {
+			// Claude 2026-08-05: NFO duplicate → Pending alternate, not Unmatched
+			// Reason: deep-interview-rename-alts-ai-fallback
+			// Troubleshooting: .nfo TMDB already tracked used to leave orphan forever
+			// Review if: NFO duplicates should skip Apply entirely
+			acceptDuplicatePending(&p, details.Title, details.ID, year, targetRoot)
+			p.Genres = details.Genres
+			if cast, err := sess.TMDB.MovieCredits(ctx, details.ID); err == nil {
+				p.Cast = cast
+			}
+			return p
+		}
 		p.Status = proposals.Pending
 		p.Title = details.Title
 		p.TMDBID = details.ID
-		p.Year = yearFromReleaseDate(details.ReleaseDate)
+		p.Year = year
 		p.RootFolderPath = targetRoot
 		p.Genres = details.Genres
 		if cast, err := sess.TMDB.MovieCredits(ctx, details.ID); err == nil {
@@ -287,11 +303,6 @@ func proposeOneLibrary(
 	}
 	var weak *weakMovie
 	acceptMovie := func(match tmdb.Item, candYear int) proposals.Proposal {
-		if byTMDB[match.ID] {
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("appears to already be in the library as %q — leaving in place for manual review", match.Title)
-			return p
-		}
 		targetRoot := generalRoot
 		switch {
 		case foundRoot == sess.KidsRootPath:
@@ -301,11 +312,16 @@ func proposeOneLibrary(
 				targetRoot = sess.KidsRootPath
 			}
 		}
-		p.Status = proposals.Pending
-		p.Title = match.Title
-		p.TMDBID = match.ID
-		p.Year = candYear
-		p.RootFolderPath = targetRoot
+		if byTMDB[match.ID] {
+			// Claude 2026-08-05: duplicate TMDB → Pending alternate fold-in
+			acceptDuplicatePending(&p, match.Title, match.ID, candYear, targetRoot)
+		} else {
+			p.Status = proposals.Pending
+			p.Title = match.Title
+			p.TMDBID = match.ID
+			p.Year = candYear
+			p.RootFolderPath = targetRoot
+		}
 		if det, err := sess.TMDB.MovieDetails(ctx, match.ID); err == nil {
 			p.Genres = det.Genres
 			if p.Year == 0 {
@@ -352,6 +368,48 @@ func proposeOneLibrary(
 	if fb := tvdbFallbackMovie(ctx, sess, lastTerm, byTMDB, generalRoot, foundRoot, sig, cfg, p); fb != nil {
 		return *fb
 	}
+
+	// Claude 2026-08-05: GuessTitle after TMDB+TVDB fail (AI unmatched fallback v1)
+	// Reason: deep-interview-rename-alts-ai-fallback — wire existing identify.GuessTitle
+	// Troubleshooting: opaque filenames stayed Unmatched despite MainstreamAI configured
+	// Review if: Brave web grounding (phase 2) replaces or precedes this
+	if sess.MainstreamAI != nil {
+		if guessed, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && guessed != "" {
+			for _, term := range searchterm.SearchQueries(guessed) {
+				items, err := sess.TMDB.SearchMovies(ctx, term)
+				if err != nil || len(items) == 0 {
+					continue
+				}
+				limit := pickLimit(cfg.CandidateN, len(items))
+				var weakAI *weakMovie
+				for i := 0; i < limit; i++ {
+					match := items[i]
+					candYear, runtimeMin, cast := movieCandidateMeta(ctx, sess.TMDB, match.ID, match.ReleaseDate, sig)
+					rank := SignalsCorroborate(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct)
+					if rank == CorroborationNone {
+						continue
+					}
+					if rank == CorroborationStrong {
+						return acceptMovie(match, candYear)
+					}
+					if weakAI == nil {
+						weakAI = &weakMovie{match: match, candYear: candYear}
+					}
+				}
+				if weakAI != nil {
+					return acceptMovie(weakAI.match, weakAI.candYear)
+				}
+			}
+			p.Status = proposals.Unmatched
+			p.Reason = fmt.Sprintf("AI guessed %q but no TMDB candidate passed corroboration", guessed)
+			return p
+		} else if gerr != nil {
+			p.Status = proposals.Unmatched
+			p.Reason = fmt.Sprintf("AI title guess failed: %v", gerr)
+			return p
+		}
+	}
+
 	if lastLimit == 0 {
 		p.Status = proposals.Unmatched
 		p.Reason = fmt.Sprintf("no TMDB match for queries derived from %q", entry.Name)
@@ -412,7 +470,7 @@ func RelocateMovie(sourcePath, destRoot, title string, year, tmdbID int, preset 
 // lookup because this package deliberately does not import internal/settings
 // or internal/quality — the internal/api caller, which already holds the
 // settings store, resolves it (see autoGrabTier).
-func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset, tier string) (itemID int64, changes []mode.PathChange, err error) {
+func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset, tier string, prober Prober) (itemID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -421,6 +479,15 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	if err != nil {
 		return 0, nil, fmt.Errorf("resolving the video file under %q: %w", p.SourcePath, err)
 	}
+
+	existing, getErr := libStore.GetByTMDBID(ctx, mode.Movies, p.TMDBID)
+	if getErr == nil && existing != nil {
+		return applyLibraryAlternate(ctx, libStore, existing, p, videoPath, preset, tier, prober)
+	}
+	if getErr != nil && !errors.Is(getErr, library.ErrNotFound) {
+		return 0, nil, fmt.Errorf("looking up existing library title: %w", getErr)
+	}
+
 	destPath, err := RelocateMovie(videoPath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, preset)
 	if err != nil {
 		return 0, nil, fmt.Errorf("relocating %q into %q: %w", videoPath, p.RootFolderPath, err)
@@ -433,14 +500,28 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 		changes = []mode.PathChange{{Path: videoPath, Kind: mode.Deleted}, {Path: destPath, Kind: mode.Created}}
 	}
 
+	probedTier := tier
+	meta := probeFileMeta(ctx, prober, destPath, tier)
+	if meta.Tier != "" {
+		probedTier = meta.Tier
+	}
+
 	item, err := libStore.Upsert(ctx, library.Item{
 		Mode: mode.Movies, TMDBID: p.TMDBID, Title: p.Title, Year: p.Year,
 		FilePath: destPath, RootFolderPath: p.RootFolderPath,
-		Size: library.FileSize(destPath), QualityTier: tier,
+		Size: library.FileSize(destPath), QualityTier: probedTier,
 		Genres: p.Genres, Cast: p.Cast,
 	})
 	if err != nil {
 		return 0, changes, fmt.Errorf("recording %q in the library: %w", p.Title, err)
+	}
+	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
+		ItemID: item.ID, FilePath: destPath, IsPrimary: true,
+		QualityTier: probedTier, Size: library.FileSize(destPath),
+		Width: meta.Width, Height: meta.Height, VideoCodec: meta.Codec,
+		BitRate: meta.BitRate, DurationSec: meta.Duration,
+	}); err != nil {
+		return item.ID, changes, fmt.Errorf("recording primary file for %q: %w", p.Title, err)
 	}
 	return item.ID, changes, nil
 }
@@ -712,12 +793,6 @@ func tvdbFallbackMovie(
 	}
 	var weak *weakTVDBMovie
 	accept := func(details tmdb.MovieDetails, candYear int, bestName string) *proposals.Proposal {
-		if byTMDB[details.ID] {
-			p := base
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library — leaving in place for manual review", bestName)
-			return &p
-		}
 		targetRoot := generalRoot
 		switch {
 		case foundRoot == sess.KidsRootPath:
@@ -728,11 +803,18 @@ func tvdbFallbackMovie(
 			}
 		}
 		p := base
-		p.Status = proposals.Pending
-		p.Title = details.Title
-		p.TMDBID = details.ID
-		p.Year = candYear
-		p.RootFolderPath = targetRoot
+		if byTMDB[details.ID] {
+			acceptDuplicatePending(&p, details.Title, details.ID, candYear, targetRoot)
+			if p.Reason == "" || !strings.HasPrefix(p.Reason, "alternate:") {
+				p.Reason = fmt.Sprintf("alternate: TVDB match %q already in library", bestName)
+			}
+		} else {
+			p.Status = proposals.Pending
+			p.Title = details.Title
+			p.TMDBID = details.ID
+			p.Year = candYear
+			p.RootFolderPath = targetRoot
+		}
 		p.Genres = details.Genres
 		if names, err := sess.TMDB.MovieCredits(ctx, details.ID); err == nil {
 			p.Cast = names

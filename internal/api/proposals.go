@@ -180,7 +180,7 @@ type proposalApplyStore interface {
 // runs — the URL doesn't need to say which, since a proposal ID alone is
 // already unambiguous. No mode touches a *arr app anymore; every Apply is
 // library-backed (see applyByWorkflow).
-func applyProposalHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
+func applyProposalHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, whStore *webhooks.Store, prober dedup.Prober) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
 		if !ok {
@@ -235,7 +235,7 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 		// partial-success rule the old internal defer had: a committed file move
 		// still reaches the players even if a later step (e.g. MarkApplied)
 		// failed. NotifyPlayers no-ops on empty changes.
-		changes, err := applyByWorkflow(ctx, settingsStore, propStore, libStore, sess, *p, req, true)
+		changes, err := applyByWorkflow(ctx, settingsStore, propStore, libStore, sess, *p, req, true, prober)
 		sess.NotifyPlayers(ctx, changes)
 		if err != nil {
 			if errors.Is(err, errUnknownWorkflow) {
@@ -295,7 +295,7 @@ var errUnknownWorkflow = errors.New("unknown proposal workflow")
 // and fires one combined call after its whole loop. changes is nil on an
 // early error (nothing committed), which makes NotifyPlayers correctly no-op
 // (len(changes) == 0 short-circuit).
-func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store, sess *mode.Session, p proposals.Proposal, req applyProposalRequest, singleItem bool) ([]mode.PathChange, error) {
+func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store, sess *mode.Session, p proposals.Proposal, req applyProposalRequest, singleItem bool, prober dedup.Prober) ([]mode.PathChange, error) {
 	switch p.Workflow {
 	case proposals.Rename:
 		switch p.Mode {
@@ -317,7 +317,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			// internal/settings, and neither should start.
 			tier := string(autoGrabTier(ctx, settingsStore, p.Mode))
 			if p.Mode == mode.Movies {
-				itemID, changes, err := rename.ApplyLibrary(ctx, libStore, p, preset, tier)
+				itemID, changes, err := rename.ApplyLibrary(ctx, libStore, p, preset, tier, prober)
 				if err != nil {
 					return changes, err
 				}
@@ -464,7 +464,7 @@ type applyBatchResponse struct {
 // it matches today's one-at-a-time mental model and avoids reasoning about
 // concurrent filesystem mutations across items that may touch overlapping
 // paths (e.g. the same series folder). See .omc/plans/bulk-apply.md.
-func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store, whStore *webhooks.Store) http.HandlerFunc {
+func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore proposalApplyStore, libStore *library.Store, whStore *webhooks.Store, prober dedup.Prober) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -576,7 +576,7 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
 				continue
 			}
-			changes, err := applyByWorkflow(ctx, settingsStore, propStore, libStore, sess, *p, batchReq, false)
+			changes, err := applyByWorkflow(ctx, settingsStore, propStore, libStore, sess, *p, batchReq, false, prober)
 			// Accumulate committed changes unconditionally — independent of the
 			// item's ok/error result. applyByWorkflow returns non-nil changes
 			// alongside a non-nil err when the physical move/delete committed

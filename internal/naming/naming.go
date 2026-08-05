@@ -81,6 +81,30 @@ func MovieFileName(preset Preset, title string, year, tmdbID int, ext string) st
 	return MovieFolderName(preset, title, year, tmdbID) + ext
 }
 
+// MovieAlternateFileName formats a non-primary copy living in the same movie
+// folder. Tokens (res/codec/bitrate) are caller-supplied quality labels —
+// empty tokens are omitted rather than rendering placeholders.
+//
+// Claude 2026-08-05: alternate filename with quality tokens (option A)
+// Reason: deep-interview-rename-alts-ai-fallback — same folder as primary, not extras/
+// Troubleshooting: duplicate TMDB Apply needs a stable unique name beside MovieFileName
+// Review if: Jellyfin edition tags ([Edition …]) become the preferred alternate shape
+func MovieAlternateFileName(preset Preset, title string, year, tmdbID int, res, codec, bitrate, ext string) string {
+	base := MovieFolderName(preset, title, year, tmdbID)
+	var parts []string
+	for _, tok := range []string{res, codec, bitrate} {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		parts = append(parts, SafePathComponent(tok))
+	}
+	if len(parts) == 0 {
+		return base + " - alternate" + ext
+	}
+	return base + " - " + strings.Join(parts, " ") + ext
+}
+
 // SeriesFolderName formats a series' wrapping folder name. Legacy keeps
 // today's exact shape (a bare title, no year or tag); Jellyfin uses the
 // same "Title (Year) [tmdbid-NNNN]" shape as a movie folder.

@@ -65,7 +65,9 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"applyBatchItem/ApplyBatchItem", applyBatchItem{}, apidto.ApplyBatchItem{}},
 		{"repickProposalRequest/RepickRequest", repickProposalRequest{}, apidto.RepickRequest{}},
 		{"libraryTagEntry/TagEntry", libraryTagEntry{}, apidto.TagEntry{}},
-		{"libraryTrackedItem/TrackedItem", libraryTrackedItem{}, apidto.TrackedItem{}},
+		// libraryTrackedItem is excluded: Files is []libraryTrackedFile vs
+		// []apidto.TrackedItemFile — nested named types differ by package.
+		{"libraryTrackedFile/TrackedItemFile", libraryTrackedFile{}, apidto.TrackedItemFile{}},
 		// storage_allocation.go
 		{"storageAllocationCell/StorageAllocationCell", storageAllocationCell{}, apidto.StorageAllocationCell{}},
 		// storageAllocationRow/storageAllocationResponse are excluded for the

@@ -399,13 +399,13 @@ const DetailPanel: Component<{
           <ul class="space-y-2">
             <For each={props.item.files}>
               {(f) => {
-                const res =
-                  f.height > 0
-                    ? `${f.width || "?"}×${f.height}`
-                    : "";
+                const height = f.height ?? 0;
+                const width = f.width ?? 0;
+                const bitrate = f.bitrate ?? 0;
+                const res = height > 0 ? `${width || "?"}×${height}` : "";
                 const bits =
-                  f.bitrate > 0
-                    ? `${(f.bitrate / 1_000_000).toFixed(f.bitrate >= 10_000_000 ? 0 : 1)} Mbps`
+                  bitrate > 0
+                    ? `${(bitrate / 1_000_000).toFixed(bitrate >= 10_000_000 ? 0 : 1)} Mbps`
                     : "";
                 const meta = [res, f.videoCodec, bits, f.qualityTier]
                   .filter(Boolean)

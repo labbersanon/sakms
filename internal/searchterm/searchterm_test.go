@@ -1,6 +1,9 @@
 package searchterm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFromName_RealExamples(t *testing.T) {
 	// All inputs below are real orphaned-item names from Radarr/Sonarr's own
@@ -65,5 +68,39 @@ func TestFromName_UnderscoresToSpaces(t *testing.T) {
 	got := FromName("Some_Movie_Name_2020")
 	if got != "Some Movie Name 2020" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestFromName_StripsVideoExtension(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{
+			name: "Which Way Is Up - Richard Pryor (1977).mp4",
+			want: "Which Way Is Up - Richard Pryor (1977)",
+		},
+		{
+			name: "Which.Way.Is.Up.1977.mkv",
+			want: "Which Way Is Up 1977",
+		},
+		{
+			name: "Some Movie (2020).MK3D",
+			want: "Some Movie (2020)",
+		},
+		{
+			// Folder / non-video names stay unchanged by this step.
+			name: "Which Way Is Up - Richard Pryor (1977)",
+			want: "Which Way Is Up - Richard Pryor (1977)",
+		},
+	}
+	for _, tc := range cases {
+		got := FromName(tc.name)
+		if got != tc.want {
+			t.Errorf("FromName(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+		if strings.Contains(strings.ToLower(got), "mp4") || strings.Contains(strings.ToLower(got), "mkv") {
+			t.Errorf("FromName(%q) still contains a video-ext token: %q", tc.name, got)
+		}
 	}
 }

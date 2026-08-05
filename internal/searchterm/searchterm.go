@@ -10,8 +10,11 @@
 package searchterm
 
 import (
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/labbersanon/sakms/internal/config"
 )
 
 // noiseTokens are common release-scene tags that don't belong in a title
@@ -34,9 +37,17 @@ var (
 	bracketedRe    = regexp.MustCompile(`[\[\(][^\[\]\(\)]*[\]\)]`)
 )
 
-// FromName derives a search term from a raw orphaned file/folder name (no
-// extension — strip that first if present).
+// FromName derives a search term from a raw orphaned file/folder name.
+//
+// Claude 2026-08-05: strip config.VideoExts before dot→space cleaning
+// Reason: Rename passed filenames with .mp4; dots became spaces → TMDB query ended in "mp4" and returned zero hits (Which Way Is Up)
+// Troubleshooting: unmatched "no TMDB match for … mp4" — ensure IsVideoExt covers the file's extension
+// Review if: callers strip extensions themselves and FromName should stop
 func FromName(name string) string {
+	if ext := filepath.Ext(name); config.IsVideoExt(ext) {
+		name = strings.TrimSuffix(name, ext)
+	}
+
 	s := strings.ReplaceAll(name, ".", " ")
 	s = strings.ReplaceAll(s, "_", " ")
 

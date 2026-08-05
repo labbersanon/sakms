@@ -667,6 +667,22 @@ export function putAIFallbackEnabled(enabled: boolean): Promise<void> {
   });
 }
 
+// Claude 2026-08-05: web search primary (searxng|brave)
+export type WebSearchPrimary = "searxng" | "brave";
+
+export function fetchWebSearchPrimary(): Promise<WebSearchPrimary> {
+  return api<{ primary: string } | null>("/api/settings/web-search-primary").then(
+    (r) => (r?.primary === "brave" ? "brave" : "searxng"),
+  );
+}
+
+export function putWebSearchPrimary(primary: WebSearchPrimary): Promise<void> {
+  return api<void>("/api/settings/web-search-primary", {
+    method: "PUT",
+    body: JSON.stringify({ primary }),
+  });
+}
+
 // Entity cache admin (Phase 6).
 export type EntitySyncSource = "stash" | "tpdb" | "stashdb" | "fansdb";
 

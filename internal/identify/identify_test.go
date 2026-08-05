@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/websearch"
 	"github.com/labbersanon/sakms/internal/ollama"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/throttle"
@@ -112,7 +113,7 @@ func (e *testEnv) identifier(withFansdb, withBrave bool) *Identifier {
 	return &Identifier{
 		Boxes:    NewBoxSearcher(boxes, tpdb),
 		AI:       ollamaClient,
-		Brave:    braveClient,
+		Search:   websearch.Brave{Inner: braveClient},
 		Throttle: throttle.New(0), // no artificial delay in tests
 	}
 }
@@ -180,7 +181,7 @@ func TestIdentify_UUIDDirectLookupSkipsEverythingElse(t *testing.T) {
 			}),
 		}, nil),
 		AI:       e.identifier(false, false).AI, // present but must never be called
-		Brave:    nil,
+		Search:   nil,
 		Throttle: throttle.New(0),
 	}
 
@@ -496,7 +497,7 @@ func TestIdentifyDetailed_UUIDPathHasSceneButNoDerivedIdentities(t *testing.T) {
 			}),
 		}, nil),
 		AI:       e.identifier(false, false).AI,
-		Brave:    nil,
+		Search:   nil,
 		Throttle: throttle.New(0),
 	}
 

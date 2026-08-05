@@ -545,6 +545,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// until the operator explicitly enables it here.
 	mux.HandleFunc("GET /api/settings/ai-fallback-enabled", getAIFallbackEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/ai-fallback-enabled", putAIFallbackEnabledHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/web-search-primary", getWebSearchPrimaryHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/web-search-primary", putWebSearchPrimaryHandler(settingsStore))
 	// Browser (desktop) notifications opt-in toggle — off by default; the
 	// browser's own Notification permission is tracked separately client-side.
 	mux.HandleFunc("GET /api/settings/browser-notifications-enabled", getBrowserNotificationsEnabledHandler(settingsStore))

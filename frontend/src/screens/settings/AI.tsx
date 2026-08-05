@@ -30,11 +30,13 @@ import {
   fetchConnections,
   fetchNetscanKnown,
   fetchOllamaModels,
+  fetchWebSearchPrimary,
   putAIFallbackEnabled,
   putAIModel,
   putAIProvider,
+  putWebSearchPrimary,
 } from "../../api/settings";
-import type { ConnectionSummary, NetscanFinding } from "../../api/settings";
+import type { ConnectionSummary, NetscanFinding, WebSearchPrimary } from "../../api/settings";
 import { Button, Muted, inputClass, labelClass } from "../../components/ui";
 import { ConnectionMiniTable, ConnectionRow } from "./ConnectionRow";
 import {
@@ -65,6 +67,15 @@ const AIProviderModelCard: Component = () => {
   );
   const [provider] = createResource(fetchAIProvider);
   const [model] = createResource(fetchAIModel);
+  const [webPrimary, { refetch: refetchWebPrimary }] = createResource(
+    fetchWebSearchPrimary,
+  );
+  const [webPrimaryLocal, setWebPrimary] = createSignal<WebSearchPrimary>("searxng");
+
+  createEffect(() => {
+    const p = webPrimary();
+    if (p) setWebPrimary(p);
+  });
 
   const [enabled, setEnabled] = createSignal(false);
   const [prov, setProv] = createSignal("ollama");
@@ -364,11 +375,54 @@ const AIProviderModelCard: Component = () => {
           </Show>
         </Card>
 
-        <Card title="Web search grounding (Brave)">
+        <Card title="Web search primary">
           <Muted class="mb-3">
-            Used for Adult identification and Movies/Series Rename web
-            grounding (after GuessTitle), regardless of which AI provider above
-            is active.
+            Used for Adult identification and Movies/Series Rename grounding
+            (after GuessTitle). Primary is tried first; the other provider is
+            optional fallback when configured.
+          </Muted>
+          <Show when={webPrimary() !== undefined}>
+            <label class={labelClass}>
+              Primary provider
+              <select
+                class={inputClass}
+                value={webPrimaryLocal()}
+                onChange={(e) => {
+                  const v = e.currentTarget.value as WebSearchPrimary;
+                  setWebPrimary(v);
+                  void putWebSearchPrimary(v)
+                    .then(() => void refetchWebPrimary())
+                    .catch(() => {});
+                }}
+              >
+                <option value="searxng">SearXNG</option>
+                <option value="brave">Brave</option>
+              </select>
+            </label>
+          </Show>
+        </Card>
+
+        <Card title="SearXNG (web search)">
+          <Muted class="mb-3">
+            Self-hosted meta-search (e.g. http://searxng:8080 on the Docker
+            network, or https://searx.zaena.us). JSON format must be enabled.
+          </Muted>
+          <Show when={conns() !== undefined}>
+            <ConnectionMiniTable>
+              <ConnectionRow
+                service="searxng"
+                existing={byService()["searxng"]}
+                finding={findingByService()["searxng"]}
+                onChanged={() => void refetch()}
+              />
+            </ConnectionMiniTable>
+          </Show>
+        </Card>
+
+        <Card title="Brave (web search fallback)">
+          <Muted class="mb-3">
+            Optional paid API. Used when selected as primary, or as fallback if
+            SearXNG fails/empty.
           </Muted>
           <Show when={conns() !== undefined}>
             <ConnectionMiniTable>

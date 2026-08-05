@@ -701,12 +701,12 @@ func TestBuild_Brave_IgnoresStoredConnectionURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sess.Identify == nil || sess.Identify.Brave == nil {
-		t.Fatal("expected a non-nil Identify.Brave with a brave connection configured")
+	if sess.Identify == nil || sess.Identify.Search == nil {
+		t.Fatal("expected a non-nil Identify.Search with a brave connection configured")
 	}
 
-	if _, err := sess.Identify.Brave.Search(ctx, "test", 1); err != nil {
-		t.Fatalf("expected Brave to reach the fixed URL (bogus stored URL ignored), got: %v", err)
+	if _, err := sess.Identify.Search.Search(ctx, "test", 1); err != nil {
+		t.Fatalf("expected Search to reach the fixed URL (bogus stored URL ignored), got: %v", err)
 	}
 	if !hit {
 		t.Error("expected the fixed-URL fake to be hit, not the stored Connection.URL")

@@ -441,14 +441,14 @@ func bravePhase2Movie(
 	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
 	acceptMovie func(tmdb.Item, int) proposals.Proposal, guessed, entryName string,
 ) *proposals.Proposal {
-	if sess.Brave == nil || sess.MainstreamAI == nil {
+	if sess.WebSearch == nil || sess.MainstreamAI == nil {
 		return nil
 	}
 	query := strings.TrimSpace(guessed)
 	if query == "" {
 		query = entryName
 	}
-	grounded, err := identify.GroundTitleViaBrave(ctx, sess.Brave, sess.MainstreamAI, query)
+	grounded, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
 	if err != nil || grounded.Title == "" {
 		return nil
 	}
@@ -886,14 +886,14 @@ func bravePhase2Series(
 	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
 	acceptSeries func(tmdb.Item, int) proposals.Proposal, season, episode int, guessed, entryName string,
 ) *proposals.Proposal {
-	if sess.Brave == nil || sess.MainstreamAI == nil {
+	if sess.WebSearch == nil || sess.MainstreamAI == nil {
 		return nil
 	}
 	query := strings.TrimSpace(guessed)
 	if query == "" {
 		query = entryName
 	}
-	grounded, err := identify.GroundTitleViaBrave(ctx, sess.Brave, sess.MainstreamAI, query)
+	grounded, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
 	if err != nil || grounded.Title == "" {
 		return nil
 	}

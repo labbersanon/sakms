@@ -12,11 +12,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/anthropic"
 	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/searxng"
+	"github.com/labbersanon/sakms/internal/websearch"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/emby"
@@ -96,6 +99,16 @@ const AIModelKey = "ai_model"
 // toggle. When unset or not "true", buildAIClient returns nil immediately —
 // the DB-first parser runs alone and ParseFilename is never called.
 const AIFallbackEnabledKey = "ai_fallback_enabled"
+
+// Claude 2026-08-05: web search primary (SearXNG vs Brave)
+// Reason: deep-interview-searxng-websearch — operator-selectable primary + optional fallback
+// Troubleshooting: Brave 402 → set primary=searxng and connections.searxng URL
+// Review if: more than two providers are added
+const (
+	WebSearchPrimaryKey     = "web_search_primary"
+	WebSearchPrimarySearXNG = "searxng"
+	WebSearchPrimaryBrave   = "brave"
+)
 
 // adultThrottleInterval is the per-host minimum call spacing for the Adult
 // identification pipeline's external services — technical call-spacing
@@ -180,16 +193,16 @@ type Session struct {
 	// before use.
 	MainstreamAI identify.AIClient
 
-	// Brave is the optional web-search client for Movies/Series Rename Phase 2
-	// grounding (after GuessTitle). Populated from the same connections.brave
-	// row Adult Identify uses; nil when unset. Adult Rename uses Identify.Brave
-	// instead — this field is for MainstreamAI sessions.
+	// WebSearch is Movies/Series Rename Phase 2 grounding (after GuessTitle).
+	// Ordered primary+optional fallback (SearXNG and/or Brave) per
+	// web_search_primary. Nil when neither connection is configured.
+	// Adult uses Identify.Search instead.
 	//
-	// Claude 2026-08-05: Movies/Series Brave for Rename Phase 2
-	// Reason: deep-interview-rename-brave-phase2
-	// Troubleshooting: GuessTitle near-misses that a Brave hit would correct
-	// Review if: Brave moves onto a shared helper and this field is removed
-	Brave *bravesearch.Client
+	// Claude 2026-08-05: WebSearch replaces sess.Brave (SearXNG primary/fallback)
+	// Reason: deep-interview-searxng-websearch
+	// Troubleshooting: nil → Phase 2 skipped soft; Brave-only still works via adapter
+	// Review if: more providers added beyond searxng/brave
+	WebSearch websearch.Client
 
 	// KidsRootPath is m's paired Kids root folder path (see
 	// KidsRootPathKey), or "" if unset/not applicable to m (Adult, or a
@@ -407,16 +420,16 @@ func Build(ctx context.Context, store *connections.Store, scStore *serviceconn.S
 		return nil, fmt.Errorf("mode %q: building AI client: %w", m, err)
 	}
 	sess.MainstreamAI = aiClient
-	// Claude 2026-08-05: attach Brave for Movies/Series Rename Phase 2 grounding
-	// Reason: deep-interview-rename-brave-phase2 — same connections.brave as Adult
-	// Troubleshooting: sess.Brave nil → Phase 2 skipped soft
-	// Review if: Adult Identify.Brave and Session.Brave share a single builder helper
+	// Claude 2026-08-05: SearXNG primary + Brave fallback for Movies/Series Phase 2
+	// Reason: deep-interview-searxng-websearch
+	// Troubleshooting: sess.WebSearch nil → Phase 2 skipped soft
+	// Review if: Adult Identify.Search and Session.WebSearch diverge in ordering
 	if m == Movies || m == Series {
-		if conn, err := optionalConn(ctx, store, "brave"); err != nil {
-			return nil, fmt.Errorf("mode %q: loading brave connection: %w", m, err)
-		} else if conn != nil {
-			sess.Brave = bravesearch.New(bravesearch.DefaultBaseURL, conn.APIKey, httpClient)
+		ws, err := buildWebSearch(ctx, store, settingsStore, httpClient)
+		if err != nil {
+			return nil, fmt.Errorf("mode %q: building web search: %w", m, err)
 		}
+		sess.WebSearch = ws
 	}
 	if key, ok := m.KidsRootPathKey(); ok {
 		path, err := settingsStore.Get(ctx, key)
@@ -686,12 +699,13 @@ func buildIdentifier(ctx context.Context, store *connections.Store, settingsStor
 		}, httpClient)
 	}
 
-	var brave *bravesearch.Client
-	if conn, err := optionalConn(ctx, store, "brave"); err != nil {
+	// Claude 2026-08-05: Adult Identify uses same SearXNG/Brave failover as Movies
+	// Reason: deep-interview-searxng-websearch
+	// Troubleshooting: Identify.Search nil → web ground step skipped
+	// Review if: Adult needs different primary than Movies
+	ws, err := buildWebSearch(ctx, store, settingsStore, httpClient)
+	if err != nil {
 		return nil, err
-	} else if conn != nil {
-		// Brave's search endpoint is fixed and public — hardcoded, never conn.URL.
-		brave = bravesearch.New(bravesearch.DefaultBaseURL, conn.APIKey, httpClient)
 	}
 
 	giveBack := identify.NewGiveBack(giveBackBoxes)
@@ -700,7 +714,7 @@ func buildIdentifier(ctx context.Context, store *connections.Store, settingsStor
 	return &identify.Identifier{
 		Boxes:      identify.NewBoxSearcher(boxes, tpdb),
 		AI:         aiClient,
-		Brave:      brave,
+		Search:     ws,
 		Throttle:   throttle.New(adultThrottleInterval),
 		GiveBack:   giveBack,
 		StashBoxes: refs,
@@ -814,6 +828,56 @@ func pathsWhere(changes []PathChange, kinds ...ChangeKind) []string {
 		}
 	}
 	return paths
+}
+
+// buildWebSearch assembles an ordered Failover of SearXNG + Brave clients per
+// web_search_primary. Returns (nil, nil) when neither connection is configured.
+func buildWebSearch(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client) (websearch.Client, error) {
+	primary, err := settingsStore.Get(ctx, WebSearchPrimaryKey)
+	if err != nil && !errors.Is(err, settings.ErrNotFound) {
+		return nil, err
+	}
+	if primary != WebSearchPrimaryBrave && primary != WebSearchPrimarySearXNG {
+		primary = WebSearchPrimarySearXNG
+	}
+
+	var searxClient websearch.Client
+	if conn, err := optionalConn(ctx, store, "searxng"); err != nil {
+		return nil, err
+	} else if conn != nil && strings.TrimSpace(conn.URL) != "" {
+		searxClient = searxng.New(conn.URL, httpClient)
+	}
+
+	var braveClient websearch.Client
+	if conn, err := optionalConn(ctx, store, "brave"); err != nil {
+		return nil, err
+	} else if conn != nil && strings.TrimSpace(conn.APIKey) != "" {
+		braveClient = websearch.Brave{Inner: bravesearch.New(bravesearch.DefaultBaseURL, conn.APIKey, httpClient)}
+	}
+
+	var ordered []websearch.Client
+	if primary == WebSearchPrimaryBrave {
+		if braveClient != nil {
+			ordered = append(ordered, braveClient)
+		}
+		if searxClient != nil {
+			ordered = append(ordered, searxClient)
+		}
+	} else {
+		if searxClient != nil {
+			ordered = append(ordered, searxClient)
+		}
+		if braveClient != nil {
+			ordered = append(ordered, braveClient)
+		}
+	}
+	if len(ordered) == 0 {
+		return nil, nil
+	}
+	if len(ordered) == 1 {
+		return ordered[0], nil
+	}
+	return &websearch.Failover{Clients: ordered}, nil
 }
 
 // optionalConn returns the connection for service, or (nil, nil) if it simply

@@ -95,6 +95,8 @@ function defaultGet(url: string): Response | undefined {
     });
   if (url.includes("/api/settings/ai-fallback-enabled"))
     return jsonResponse({ enabled: true });
+  if (url.includes("/api/settings/web-search-primary"))
+    return jsonResponse({ primary: "searxng" });
   if (url.includes("/api/settings/ai-provider"))
     return jsonResponse({ provider: "ollama" });
   if (url.includes("/api/settings/ai-model")) return jsonResponse({ model: "" });

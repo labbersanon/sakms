@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/searxng"
 	"github.com/labbersanon/sakms/internal/emby"
 	"github.com/labbersanon/sakms/internal/jellyfin"
 	"github.com/labbersanon/sakms/internal/nzbget"
@@ -93,6 +95,8 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 		return testTPDB(ctx, httpClient, req)
 	case "brave":
 		return testBrave(ctx, httpClient, req)
+	case "searxng":
+		return testSearXNG(ctx, httpClient, req)
 	case "prowlarr":
 		return testProwlarr(ctx, httpClient, req)
 	// No "qbittorrent"/"nzbget" cases: the unified aria2c downloader replaced
@@ -218,6 +222,21 @@ func testTPDB(ctx context.Context, httpClient *http.Client, req ConnectionTestRe
 func testBrave(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	// Fixed public search endpoint — hardcoded, never req.URL (no URL collected).
 	c := bravesearch.New(bravesearch.DefaultBaseURL, req.APIKey, httpClient)
+	if err := c.Ping(ctx); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+// Claude 2026-08-05: SearXNG Test Connection (JSON search ping)
+// Reason: deep-interview-searxng-websearch
+// Troubleshooting: format=json must be enabled in SearXNG settings.yml
+// Review if: SearXNG moves behind auth that needs a key
+func testSearXNG(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	if strings.TrimSpace(req.URL) == "" {
+		return ConnectionTestResult{Error: "url is required"}
+	}
+	c := searxng.New(req.URL, httpClient)
 	if err := c.Ping(ctx); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}

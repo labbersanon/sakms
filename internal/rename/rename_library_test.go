@@ -20,6 +20,7 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/searchterm"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/websearch"
 )
 
 func newTestLibraryStore(t *testing.T) *library.Store {
@@ -380,7 +381,7 @@ func TestScanLibrary_BravePhase2_JoJoDancerYearTrust(t *testing.T) {
 		Mode:         mode.Movies,
 		TMDB:         tmdb.New(tmdb.Config{BaseURL: tmdbSrv.URL, APIKey: "k"}, tmdbSrv.Client()),
 		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
-		Brave:        bravesearch.New(braveSrv.URL, "k", braveSrv.Client()),
+		WebSearch:    websearch.Brave{Inner: bravesearch.New(braveSrv.URL, "k", braveSrv.Client())},
 	}
 
 	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)

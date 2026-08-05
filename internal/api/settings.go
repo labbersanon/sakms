@@ -135,6 +135,50 @@ func putAIFallbackEnabledHandler(settingsStore *settings.Store) http.HandlerFunc
 	}
 }
 
+type webSearchPrimaryResponse struct {
+	Primary string `json:"primary"`
+}
+
+type webSearchPrimaryRequest struct {
+	Primary string `json:"primary"`
+}
+
+// Claude 2026-08-05: web_search_primary setting (searxng|brave)
+// Reason: deep-interview-searxng-websearch
+func getWebSearchPrimaryHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		v, err := settingsStore.Get(r.Context(), mode.WebSearchPrimaryKey)
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if v != mode.WebSearchPrimaryBrave && v != mode.WebSearchPrimarySearXNG {
+			v = mode.WebSearchPrimarySearXNG
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(webSearchPrimaryResponse{Primary: v})
+	}
+}
+
+func putWebSearchPrimaryHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req webSearchPrimaryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Primary != mode.WebSearchPrimaryBrave && req.Primary != mode.WebSearchPrimarySearXNG {
+			http.Error(w, "primary must be searxng or brave", http.StatusBadRequest)
+			return
+		}
+		if err := settingsStore.Set(r.Context(), mode.WebSearchPrimaryKey, req.Primary); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // BrowserNotificationsEnabledKey is the settings key for the opt-in browser
 // (desktop) notifications preference. Off by default.
 const BrowserNotificationsEnabledKey = "browser_notifications_enabled"

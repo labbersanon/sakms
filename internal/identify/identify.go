@@ -8,9 +8,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/throttle"
+	"github.com/labbersanon/sakms/internal/websearch"
 )
 
 type Identifier struct {
@@ -27,8 +27,16 @@ type Identifier struct {
 	// path runs unconditionally (legacy behaviour). At least one of AI or
 	// EntityStore must be non-nil for IdentifyDetailed to do useful work.
 	EntityStore parseentity.EntityStore
-	Brave       *bravesearch.Client // nil if no Brave key is available — web search step is skipped
-	Throttle    *throttle.Throttle
+	// Search is the optional web-search client (SearXNG and/or Brave failover).
+	// Nil when neither is configured — web search step is skipped.
+	//
+	// Claude 2026-08-05: Brave field replaced by Search (websearch.Client)
+	// Reason: deep-interview-searxng-websearch
+	// Troubleshooting: nil Search → skip web ground (same soft path as nil Brave)
+	// Review if: Adult needs a separate search order from Movies
+	Search websearch.Client
+	// Brave *bravesearch.Client — removed 2026-08-05; use Search (websearch) instead.
+	Throttle *throttle.Throttle
 	// GiveBack submits identification results back to the community databases
 	// (fingerprints, or scene drafts for web-identified-only matches). Nil if
 	// neither TPDB nor StashDB/FansDB is configured — callers must nil-check.
@@ -153,8 +161,8 @@ func (id *Identifier) IdentifyDetailed(ctx context.Context, stem, parentName str
 		return detail, nil
 	}
 
-	if id.Brave == nil || id.AI == nil {
-		// webSearchAndGround's whole job is handing Brave results to the AI
+	if id.Search == nil || id.AI == nil {
+		// webSearchAndGround's whole job is handing search results to the AI
 		// client for interpretation — with no AI client configured, it has
 		// nothing to do (and ExtractFromSearch would call a nil AIClient and
 		// panic the whole process, which happened in production on 2026-07-25
@@ -257,9 +265,9 @@ func (id *Identifier) webSearchAndGround(ctx context.Context, stem, parentName s
 	if err := id.Throttle.Wait(ctx, "brave"); err != nil {
 		return GroundedExtraction{}, err
 	}
-	searchResults, err := id.Brave.Search(ctx, query, 5)
+	searchResults, err := id.Search.Search(ctx, query, 5)
 	if err != nil {
-		searchResults = nil // best-effort — Brave failures degrade to "no results", not a hard error
+		searchResults = nil // best-effort — search failures degrade to "no results", not a hard error
 	}
 
 	if len(searchResults) == 0 {
@@ -268,7 +276,7 @@ func (id *Identifier) webSearchAndGround(ctx context.Context, stem, parentName s
 			if err := id.Throttle.Wait(ctx, "brave"); err != nil {
 				return GroundedExtraction{}, err
 			}
-			searchResults, _ = id.Brave.Search(ctx, fallbackQuery, 5)
+			searchResults, _ = id.Search.Search(ctx, fallbackQuery, 5)
 		}
 	}
 

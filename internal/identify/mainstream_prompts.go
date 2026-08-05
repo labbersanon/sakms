@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/websearch"
 )
 
 // GuessTitle asks Ollama to guess the real title of a movie or TV series from
@@ -94,13 +94,18 @@ Respond with ONLY a JSON object: {"title": "...", "year": 1986} (year may be nul
 	return TitleGrounding{Title: title, Year: year}, nil
 }
 
-// GroundTitleViaBrave searches Brave then runs ExtractTitleFromSearch. Soft-fails
-// (empty grounding, nil error) when Brave/AI missing or search returns nothing.
-func GroundTitleViaBrave(ctx context.Context, brave *bravesearch.Client, ai AIClient, query string) (TitleGrounding, error) {
-	if brave == nil || ai == nil || strings.TrimSpace(query) == "" {
+// GroundTitleViaSearch searches via websearch.Client then runs ExtractTitleFromSearch.
+// Soft-fails (empty grounding, nil error) when search/AI missing or search returns nothing.
+//
+// Claude 2026-08-05: renamed from GroundTitleViaBrave — accepts any websearch.Client
+// Reason: deep-interview-searxng-websearch (SearXNG primary / Brave fallback)
+// Troubleshooting: empty results → Phase 2 soft Unmatched
+// Review if: callers need per-provider error surfacing in proposal Reason
+func GroundTitleViaSearch(ctx context.Context, search websearch.Client, ai AIClient, query string) (TitleGrounding, error) {
+	if search == nil || ai == nil || strings.TrimSpace(query) == "" {
 		return TitleGrounding{}, nil
 	}
-	results, err := brave.Search(ctx, query, 5)
+	results, err := search.Search(ctx, query, 5)
 	if err != nil || len(results) == 0 {
 		return TitleGrounding{}, nil
 	}

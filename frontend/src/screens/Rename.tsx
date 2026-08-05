@@ -262,10 +262,19 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     selection.selectAll(pendingIds());
   };
   const selectAllMatching = (): void => {
-    void act(async () => {
-      const ids = await fetchPendingIDs(props.mode);
-      selection.selectAll(ids);
-    });
+    // Claude 2026-08-05: do not route through act() — selection is not a mutation
+    // Reason: act() always refetches the proposal page after success, which flashed Loading and felt broken
+    // Troubleshooting: Select all matching → pending-ids 200 but UI looked like it failed
+    // Review if: select-all needs to refresh the page for a new reason
+    void (async () => {
+      setActionError("");
+      try {
+        const ids = await fetchPendingIDs(props.mode);
+        selection.selectAll(ids);
+      } catch (e) {
+        setActionError((e as Error).message);
+      }
+    })();
   };
   const titleOf = (id: number): string => {
     const p = proposals().find((x) => x.id === id);

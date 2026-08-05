@@ -23,11 +23,19 @@ func TestMovieFolderName(t *testing.T) {
 		{Jellyfin, "Some Movie", 0, 42, "Some Movie [tmdbid-42]"},
 		{Jellyfin, "Some Movie", 2020, 0, "Some Movie (2020)"},
 		{Jellyfin, "Some Movie", 0, 0, "Some Movie"},
+		{Jellyfin, "9/11: Truth, Lies and Conspiracies", 2016, 496063,
+			"9-11: Truth, Lies and Conspiracies (2016) [tmdbid-496063]"},
 	}
 	for _, c := range cases {
 		if got := MovieFolderName(c.preset, c.title, c.year, c.tmdbID); got != c.want {
 			t.Errorf("MovieFolderName(%v, %q, %d, %d) = %q, want %q", c.preset, c.title, c.year, c.tmdbID, got, c.want)
 		}
+	}
+}
+
+func TestSafePathComponent(t *testing.T) {
+	if got := SafePathComponent(`a/b\c` + "\x00" + "d"); got != "a-b-c_d" {
+		t.Errorf("got %q", got)
 	}
 }
 

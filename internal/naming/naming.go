@@ -11,7 +11,10 @@
 // does today.
 package naming
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Preset selects which on-disk naming convention MovieFolderName/
 // MovieFileName/SeriesFolderName/EpisodeFileName produce.
@@ -46,12 +49,23 @@ func Valid(p Preset) bool {
 	return false
 }
 
+// SafePathComponent rewrites a single path segment so it cannot introduce
+// extra directory levels or null bytes when joined under a library root.
+//
+// Claude 2026-08-05: replace / \ and NUL in titles used for on-disk names
+// Reason: TMDB titles like "9/11: …" made MovieFolderName/MovieFileName nest under Movies/9/… and Apply failed
+// Troubleshooting: apply-batch 0/1 with leftover Movies/9/<title> folders — sanitize before Join
+// Review if: Jellyfin's own path sanitization rules are adopted as a stricter shared helper
+func SafePathComponent(s string) string {
+	return strings.NewReplacer("/", "-", "\\", "-", "\x00", "_").Replace(s)
+}
+
 // MovieFolderName formats a movie's wrapping folder name. year/tmdbID of 0
 // are omitted gracefully (e.g. TMDB reporting no release date, or a
 // pre-registration call site that doesn't have the id yet) rather than
 // rendering a placeholder like "(0)".
 func MovieFolderName(preset Preset, title string, year, tmdbID int) string {
-	name := title
+	name := SafePathComponent(title)
 	if year != 0 {
 		name = fmt.Sprintf("%s (%d)", name, year)
 	}
@@ -72,7 +86,7 @@ func MovieFileName(preset Preset, title string, year, tmdbID int, ext string) st
 // same "Title (Year) [tmdbid-NNNN]" shape as a movie folder.
 func SeriesFolderName(preset Preset, title string, year, tmdbID int) string {
 	if preset == Legacy {
-		return title
+		return SafePathComponent(title)
 	}
 	return MovieFolderName(preset, title, year, tmdbID)
 }
@@ -97,9 +111,9 @@ func SeasonDirName(seasonNumber int) string {
 // without the tag, and is simply re-proposed on the next scan). ext is
 // threaded and appended exactly as MovieFileName does.
 func AdultFileName(studio, title, date, phash, ext string) string {
-	name := title
+	name := SafePathComponent(title)
 	if studio != "" {
-		name = fmt.Sprintf("%s - %s", studio, name)
+		name = fmt.Sprintf("%s - %s", SafePathComponent(studio), name)
 	}
 	if date != "" {
 		name = fmt.Sprintf("%s (%s)", name, date)
@@ -113,8 +127,10 @@ func AdultFileName(studio, title, date, phash, ext string) string {
 // EpisodeFileName formats one episode's target file name: Jellyfin's
 // documented convention is space-separated ("Series Title S03E05 Episode
 // Title.ext"); Legacy keeps this project's original dash-separated shape
-// ("Series Title - S03E05 - Episode Title.ext").
+// ("Series Title - SxxExx - Episode Title.ext").
 func EpisodeFileName(preset Preset, seriesTitle string, seasonNumber, episodeNumber int, episodeTitle, ext string) string {
+	seriesTitle = SafePathComponent(seriesTitle)
+	episodeTitle = SafePathComponent(episodeTitle)
 	var base string
 	if preset == Legacy {
 		base = fmt.Sprintf("%s - S%02dE%02d", seriesTitle, seasonNumber, episodeNumber)
@@ -151,6 +167,8 @@ func EpisodeRangeFileName(preset Preset, seriesTitle string, seasonNumber int, e
 		return EpisodeFileName(preset, seriesTitle, seasonNumber, episodeNumber, episodeTitle, ext)
 	}
 	first, last := episodeNumbers[0], episodeNumbers[len(episodeNumbers)-1]
+	seriesTitle = SafePathComponent(seriesTitle)
+	episodeTitle = SafePathComponent(episodeTitle)
 	var base string
 	if preset == Legacy {
 		base = fmt.Sprintf("%s - S%02dE%02d-E%02d", seriesTitle, seasonNumber, first, last)

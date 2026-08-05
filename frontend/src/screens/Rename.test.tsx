@@ -68,7 +68,13 @@ const stubFetch = (handler: Handler) => {
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
     if (url.includes("/api/organize/events")) return jsonResponse([]);
-    if (url.includes("/pending-ids")) return jsonResponse({ ids: [] });
+    if (url.includes("/pending-ids")) {
+      try {
+        return await handler(url, init);
+      } catch {
+        return jsonResponse({ ids: [] });
+      }
+    }
     const res = await handler(url, init);
     // Wrap bare proposal arrays into ProposalPage for paginated list endpoints.
     if (
@@ -200,6 +206,32 @@ describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {
     expect(screen.queryByText(/Apply Selected/)).toBeNull();
     fireEvent.click(screen.getByLabelText("Select A"));
     expect(await screen.findByText("Apply Selected (1)")).toBeInTheDocument();
+  });
+
+  it("Select all matching loads pending-ids without refetching the proposals page", async () => {
+    let proposalFetches = 0;
+    const calls = stubFetch((url) => {
+      if (url.includes("/pending-ids")) return jsonResponse({ ids: [1, 3] });
+      if (url.includes("/api/modes/movies/rename/proposals")) {
+        proposalFetches++;
+        return jsonResponse([
+          proposal({ id: 1, sourceName: "A" }),
+          proposal({ id: 2, sourceName: "B", status: "unmatched", title: "" }),
+          proposal({ id: 3, sourceName: "C" }),
+        ]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("A");
+    const afterLoad = proposalFetches;
+
+    fireEvent.click(screen.getByRole("button", { name: "Select all matching" }));
+    expect(await screen.findByText("Apply Selected (2)")).toBeInTheDocument();
+    expect(calls.filter((c) => c.url.includes("/pending-ids"))).toHaveLength(1);
+    // act()-style refetch would bump this; selection-only must not.
+    expect(proposalFetches).toBe(afterLoad);
   });
 
   it("applies several selected rows in ONE apply-batch (not N single applies) and clears the selection", async () => {

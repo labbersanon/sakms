@@ -120,19 +120,36 @@ func extractFileYear(s string) int {
 	return 0
 }
 
+// Corroboration ranks how file signals support a TMDB/TVDB candidate.
+type Corroboration int
+
+const (
+	CorroborationNone Corroboration = iota
+	// CorroborationWeak: filename year disagreed; duration within tolerance overrode.
+	CorroborationWeak
+	// CorroborationStrong: year matched, or no year conflict (actor/duration only).
+	CorroborationStrong
+)
+
 // SignalsPass reports whether file signals agree with the candidate.
+func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPct int) bool {
+	return SignalsCorroborate(sig, candYear, runtimeMin, cast, tolPct) != CorroborationNone
+}
+
+// SignalsCorroborate ranks candidate agreement. Prefer Strong over Weak when
+// walking top-N hits so a same-title remake with matching runtime cannot beat
+// the correct year (Copacabana 1985 vs 1947).
+//
 // Missing candidate metadata for a signal is ignored (not a hard fail), but
 // at least one signal must positively corroborate.
 //
-// Year mismatch normally fails the candidate. Exception: when file duration
-// is within tolerance of TMDB runtime, duration may override a wrong filename
-// year (actor match alone cannot).
+// Year mismatch normally fails. Exception: duration within tolerance may
+// override a wrong filename year (actor alone cannot) — that path is Weak.
 //
-// When year already matches exactly, a duration disagreement does not veto —
-// TMDB runtimes are often short vs the file on disk (e.g. Austin Powers 89 vs ~95).
-func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPct int) bool {
+// When year already matches exactly, a duration disagreement does not veto.
+func SignalsCorroborate(sig FileSignals, candYear, runtimeMin int, cast []string, tolPct int) Corroboration {
 	if !sig.HasAny() {
-		return false
+		return CorroborationNone
 	}
 	corroborated := false
 	yearMatched := false
@@ -155,7 +172,7 @@ func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPc
 		// Empty cast = credits unavailable — ignore actor signal (same as candYear==0).
 		if len(cast) > 0 {
 			if !actorInCast(sig.Actor, cast) {
-				return false
+				return CorroborationNone
 			}
 			corroborated = true
 		}
@@ -171,7 +188,7 @@ func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPc
 				// Reason: Austin Powers file ~95min vs TMDB 89 failed ±5% despite exact year
 				// Troubleshooting: Pending missing with correct year — check whether duration vetoed
 				// Review if: wrong same-year remakes get accepted when duration should have blocked
-				return false
+				return CorroborationNone
 			}
 		}
 	}
@@ -180,9 +197,19 @@ func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPc
 	// Troubleshooting: wrong-year file matches with actor but no ffprobe — should stay Unmatched
 	// Review if: duration override accepts wrong titles with similar runtimes too often
 	if yearMismatch && !durationOK {
-		return false
+		return CorroborationNone
 	}
-	return corroborated
+	if !corroborated {
+		return CorroborationNone
+	}
+	// Claude 2026-08-05: Weak = duration overrode year; Strong preferred in top-N walk
+	// Reason: Copacabana 1985 (similar runtime) beat Marx Bros 1947 when Weak accepted first
+	// Troubleshooting: Pending year ≠ filename year while another top-N hit matches year
+	// Review if: no Strong ever exists and Weak false-positives remain too common
+	if yearMismatch && durationOK {
+		return CorroborationWeak
+	}
+	return CorroborationStrong
 }
 
 func actorInCast(credit string, cast []string) bool {

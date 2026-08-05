@@ -66,6 +66,44 @@ func TestSignalsPass_YearMatchNotVetoedByDuration(t *testing.T) {
 	}
 }
 
+func TestSignalsCorroborate_PreferYearOverDurationOverride(t *testing.T) {
+	sig := FileSignals{Year: 1947, DurationSec: 92 * 60}
+	// Wrong-year remake with matching runtime → Weak
+	if got := SignalsCorroborate(sig, 1985, 92, nil, 5); got != CorroborationWeak {
+		t.Fatalf("wrong year+duration override: got %v want Weak", got)
+	}
+	// Correct year → Strong (even if duration disagrees)
+	if got := SignalsCorroborate(sig, 1947, 80, nil, 5); got != CorroborationStrong {
+		t.Fatalf("exact year: got %v want Strong", got)
+	}
+}
+
+func pickPreferredCorroboration(ranks []Corroboration) Corroboration {
+	var weak Corroboration
+	for _, r := range ranks {
+		if r == CorroborationStrong {
+			return CorroborationStrong
+		}
+		if r == CorroborationWeak && weak == CorroborationNone {
+			weak = CorroborationWeak
+		}
+	}
+	return weak
+}
+
+func TestPickPreferredCorroboration_StrongBeatsEarlierWeak(t *testing.T) {
+	// Copacabana ordering: 1985 Weak before 1947 Strong
+	got := pickPreferredCorroboration([]Corroboration{
+		CorroborationNone,
+		CorroborationWeak,
+		CorroborationNone,
+		CorroborationStrong,
+	})
+	if got != CorroborationStrong {
+		t.Fatalf("got %v", got)
+	}
+}
+
 func TestSignalsPass_ActorCast(t *testing.T) {
 	sig := FileSignals{Actor: "Richard Pryor"}
 	if !SignalsPass(sig, 0, 0, []string{"Someone", "Richard Pryor"}, 5) {

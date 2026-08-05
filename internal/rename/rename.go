@@ -30,6 +30,7 @@ import (
 	"github.com/labbersanon/sakms/internal/place"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/searchterm"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // yearFromReleaseDate parses the release year out of TMDB's normalized
@@ -276,6 +277,46 @@ func proposeOneLibrary(
 	queries := searchterm.SearchQueries(entry.Name)
 	var lastTerm string
 	var lastLimit int
+	// Claude 2026-08-05: defer Weak (duration-overrode-year) until all queries scanned
+	// Reason: Copacabana bare search ranked 1985 before 1947; Weak accepted first
+	// Troubleshooting: Pending year ≠ file year while a later top-N hit matches year
+	// Review if: Strong never appears and Weak false-positives need a harder gate
+	type weakMovie struct {
+		match    tmdb.Item
+		candYear int
+	}
+	var weak *weakMovie
+	acceptMovie := func(match tmdb.Item, candYear int) proposals.Proposal {
+		if byTMDB[match.ID] {
+			p.Status = proposals.Unmatched
+			p.Reason = fmt.Sprintf("appears to already be in the library as %q — leaving in place for manual review", match.Title)
+			return p
+		}
+		targetRoot := generalRoot
+		switch {
+		case foundRoot == sess.KidsRootPath:
+			targetRoot = sess.KidsRootPath
+		case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
+			if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
+				targetRoot = sess.KidsRootPath
+			}
+		}
+		p.Status = proposals.Pending
+		p.Title = match.Title
+		p.TMDBID = match.ID
+		p.Year = candYear
+		p.RootFolderPath = targetRoot
+		if det, err := sess.TMDB.MovieDetails(ctx, match.ID); err == nil {
+			p.Genres = det.Genres
+			if p.Year == 0 {
+				p.Year = yearFromReleaseDate(det.ReleaseDate)
+			}
+		}
+		if names, err := sess.TMDB.MovieCredits(ctx, match.ID); err == nil {
+			p.Cast = names
+		}
+		return p
+	}
 	for _, term := range queries {
 		lastTerm = term
 		items, err := sess.TMDB.SearchMovies(ctx, term)
@@ -292,41 +333,20 @@ func proposeOneLibrary(
 		for i := 0; i < limit; i++ {
 			match := items[i]
 			candYear, runtimeMin, cast := movieCandidateMeta(ctx, sess.TMDB, match.ID, match.ReleaseDate, sig)
-			if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
+			rank := SignalsCorroborate(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct)
+			if rank == CorroborationNone {
 				continue
 			}
-			if byTMDB[match.ID] {
-				p.Status = proposals.Unmatched
-				p.Reason = fmt.Sprintf("appears to already be in the library as %q — leaving in place for manual review", match.Title)
-				return p
+			if rank == CorroborationStrong {
+				return acceptMovie(match, candYear)
 			}
-
-			targetRoot := generalRoot
-			switch {
-			case foundRoot == sess.KidsRootPath:
-				targetRoot = sess.KidsRootPath
-			case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
-				if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
-					targetRoot = sess.KidsRootPath
-				}
+			if weak == nil {
+				weak = &weakMovie{match: match, candYear: candYear}
 			}
-
-			p.Status = proposals.Pending
-			p.Title = match.Title
-			p.TMDBID = match.ID
-			p.Year = candYear
-			p.RootFolderPath = targetRoot
-			if det, err := sess.TMDB.MovieDetails(ctx, match.ID); err == nil {
-				p.Genres = det.Genres
-				if p.Year == 0 {
-					p.Year = yearFromReleaseDate(det.ReleaseDate)
-				}
-			}
-			if names, err := sess.TMDB.MovieCredits(ctx, match.ID); err == nil {
-				p.Cast = names
-			}
-			return p
 		}
+	}
+	if weak != nil {
+		return acceptMovie(weak.match, weak.candYear)
 	}
 
 	if fb := tvdbFallbackMovie(ctx, sess, lastTerm, byTMDB, generalRoot, foundRoot, sig, cfg, p); fb != nil {
@@ -581,6 +601,44 @@ func proposeOneEpisodeLibrary(
 	queries := searchterm.SearchQueries(library.StripEpisodeMarker(name))
 	var lastTerm string
 	var lastLimit int
+	type weakSeries struct {
+		match    tmdb.Item
+		candYear int
+	}
+	var weak *weakSeries
+	acceptSeries := func(match tmdb.Item, candYear int) proposals.Proposal {
+		if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
+			p.Status = proposals.Unmatched
+			p.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", match.Title, season, episode)
+			return p
+		}
+		targetRoot := generalRoot
+		switch {
+		case foundRoot == sess.KidsRootPath:
+			targetRoot = sess.KidsRootPath
+		case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
+			if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
+				targetRoot = sess.KidsRootPath
+			}
+		}
+		p.Status = proposals.Pending
+		p.Title = match.Title
+		p.TMDBID = match.ID
+		p.Year = candYear
+		p.SeasonNumber = season
+		p.EpisodeNumber = episode
+		if len(extraEpisodes) > 0 {
+			p.ExtraEpisodeNumbers = extraEpisodes
+		}
+		p.RootFolderPath = targetRoot
+		if det, err := sess.TMDB.TVDetails(ctx, match.ID); err == nil {
+			p.Genres = det.Genres
+		}
+		if names, err := sess.TMDB.TVAggregateCredits(ctx, match.ID); err == nil {
+			p.Cast = names
+		}
+		return p
+	}
 	for _, term := range queries {
 		lastTerm = term
 		items, err := sess.TMDB.SearchTV(ctx, term)
@@ -597,46 +655,24 @@ func proposeOneEpisodeLibrary(
 		for i := 0; i < limit; i++ {
 			match := items[i]
 			candYear, runtimeMin, cast := seriesCandidateMeta(ctx, sess.TMDB, match.ID, season, episode, match.ReleaseDate, sig)
-			if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
+			rank := SignalsCorroborate(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct)
+			if rank == CorroborationNone {
 				continue
 			}
-			if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
-				p.Status = proposals.Unmatched
-				p.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", match.Title, season, episode)
-				return p
-			}
+			// Season must exist before we treat this as a real pick.
 			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
 				continue
 			}
-
-			targetRoot := generalRoot
-			switch {
-			case foundRoot == sess.KidsRootPath:
-				targetRoot = sess.KidsRootPath
-			case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
-				if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
-					targetRoot = sess.KidsRootPath
-				}
+			if rank == CorroborationStrong {
+				return acceptSeries(match, candYear)
 			}
-
-			p.Status = proposals.Pending
-			p.Title = match.Title
-			p.TMDBID = match.ID
-			p.Year = candYear
-			p.SeasonNumber = season
-			p.EpisodeNumber = episode
-			if len(extraEpisodes) > 0 {
-				p.ExtraEpisodeNumbers = extraEpisodes
+			if weak == nil {
+				weak = &weakSeries{match: match, candYear: candYear}
 			}
-			p.RootFolderPath = targetRoot
-			if det, err := sess.TMDB.TVDetails(ctx, match.ID); err == nil {
-				p.Genres = det.Genres
-			}
-			if names, err := sess.TMDB.TVAggregateCredits(ctx, match.ID); err == nil {
-				p.Cast = names
-			}
-			return p
 		}
+	}
+	if weak != nil {
+		return acceptSeries(weak.match, weak.candYear)
 	}
 
 	if fb := tvdbFallbackSeries(ctx, sess, lastTerm, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
@@ -669,31 +705,17 @@ func tvdbFallbackMovie(
 		return nil
 	}
 	limit := pickLimit(cfg.CandidateN, len(results))
-	for i := 0; i < limit; i++ {
-		best := results[i]
-		tmdbID, err := sess.TMDB.FindMovieByTVDBID(ctx, best.TVDBID)
-		if err != nil || tmdbID == 0 {
-			continue
-		}
-		details, err := sess.TMDB.MovieDetails(ctx, tmdbID)
-		if err != nil {
-			continue
-		}
-		candYear := yearFromReleaseDate(details.ReleaseDate)
-		if candYear == 0 && best.Year > 0 {
-			candYear = best.Year
-		}
-		cast := []string(nil)
-		if sig.Actor != "" {
-			cast, _ = sess.TMDB.MovieCredits(ctx, details.ID)
-		}
-		if !SignalsPass(sig, candYear, details.Runtime, cast, cfg.DurationTolerancePct) {
-			continue
-		}
-		if byTMDB[tmdbID] {
+	type weakTVDBMovie struct {
+		details  tmdb.MovieDetails
+		candYear int
+		bestName string
+	}
+	var weak *weakTVDBMovie
+	accept := func(details tmdb.MovieDetails, candYear int, bestName string) *proposals.Proposal {
+		if byTMDB[details.ID] {
 			p := base
 			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library — leaving in place for manual review", best.Name)
+			p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library — leaving in place for manual review", bestName)
 			return &p
 		}
 		targetRoot := generalRoot
@@ -717,6 +739,38 @@ func tvdbFallbackMovie(
 		}
 		return &p
 	}
+	for i := 0; i < limit; i++ {
+		best := results[i]
+		tmdbID, err := sess.TMDB.FindMovieByTVDBID(ctx, best.TVDBID)
+		if err != nil || tmdbID == 0 {
+			continue
+		}
+		details, err := sess.TMDB.MovieDetails(ctx, tmdbID)
+		if err != nil {
+			continue
+		}
+		candYear := yearFromReleaseDate(details.ReleaseDate)
+		if candYear == 0 && best.Year > 0 {
+			candYear = best.Year
+		}
+		cast := []string(nil)
+		if sig.Actor != "" {
+			cast, _ = sess.TMDB.MovieCredits(ctx, details.ID)
+		}
+		rank := SignalsCorroborate(sig, candYear, details.Runtime, cast, cfg.DurationTolerancePct)
+		if rank == CorroborationNone {
+			continue
+		}
+		if rank == CorroborationStrong {
+			return accept(details, candYear, best.Name)
+		}
+		if weak == nil {
+			weak = &weakTVDBMovie{details: details, candYear: candYear, bestName: best.Name}
+		}
+	}
+	if weak != nil {
+		return accept(weak.details, weak.candYear, weak.bestName)
+	}
 	return nil
 }
 
@@ -738,6 +792,13 @@ func tvdbFallbackSeries(
 		return nil
 	}
 	limit := pickLimit(cfg.CandidateN, len(results))
+	type weakTVDBSeries struct {
+		tmdbID   int
+		candYear int
+		bestName string
+		det      tmdb.TVDetails
+	}
+	var weak *weakTVDBSeries
 	for i := 0; i < limit; i++ {
 		best := results[i]
 		tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, best.TVDBID)
@@ -755,41 +816,83 @@ func tvdbFallbackSeries(
 		if candYear == 0 && best.Year > 0 {
 			candYear = best.Year
 		}
-		if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
+		rank := SignalsCorroborate(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct)
+		if rank == CorroborationNone {
 			continue
-		}
-		if tracked[episodeKey{tmdbID: tmdbID, season: season, episode: episode}] {
-			p := base
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library as S%02dE%02d — leaving in place for manual review", best.Name, season, episode)
-			return &p
 		}
 		det, err := sess.TMDB.TVDetails(ctx, tmdbID)
 		if err != nil {
 			continue
+		}
+		accept := func(tmdbID, candYear int, bestName string, det tmdb.TVDetails) *proposals.Proposal {
+			if tracked[episodeKey{tmdbID: tmdbID, season: season, episode: episode}] {
+				p := base
+				p.Status = proposals.Unmatched
+				p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library as S%02dE%02d — leaving in place for manual review", bestName, season, episode)
+				return &p
+			}
+			targetRoot := generalRoot
+			switch {
+			case foundRoot == sess.KidsRootPath:
+				targetRoot = sess.KidsRootPath
+			case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
+				if result, err := classify.WithAI(ctx, sess.MainstreamAI, det.Title, ""); err == nil && result.IsKids {
+					targetRoot = sess.KidsRootPath
+				}
+			}
+			p := base
+			p.Status = proposals.Pending
+			p.Title = det.Title
+			p.TMDBID = tmdbID
+			p.Year = candYear
+			p.SeasonNumber = season
+			p.EpisodeNumber = episode
+			if len(extraEpisodes) > 0 {
+				p.ExtraEpisodeNumbers = extraEpisodes
+			}
+			p.RootFolderPath = targetRoot
+			p.Genres = det.Genres
+			if names, err := sess.TMDB.TVAggregateCredits(ctx, tmdbID); err == nil {
+				p.Cast = names
+			}
+			return &p
+		}
+		if rank == CorroborationStrong {
+			return accept(tmdbID, candYear, best.Name, det)
+		}
+		if weak == nil {
+			weak = &weakTVDBSeries{tmdbID: tmdbID, candYear: candYear, bestName: best.Name, det: det}
+		}
+	}
+	if weak != nil {
+		if tracked[episodeKey{tmdbID: weak.tmdbID, season: season, episode: episode}] {
+			p := base
+			p.Status = proposals.Unmatched
+			p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library as S%02dE%02d — leaving in place for manual review", weak.bestName, season, episode)
+			return &p
 		}
 		targetRoot := generalRoot
 		switch {
 		case foundRoot == sess.KidsRootPath:
 			targetRoot = sess.KidsRootPath
 		case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
-			if result, err := classify.WithAI(ctx, sess.MainstreamAI, det.Title, ""); err == nil && result.IsKids {
+			if result, err := classify.WithAI(ctx, sess.MainstreamAI, weak.det.Title, ""); err == nil && result.IsKids {
 				targetRoot = sess.KidsRootPath
 			}
 		}
 		p := base
 		p.Status = proposals.Pending
-		p.Title = det.Title
-		p.TMDBID = tmdbID
-		p.Year = candYear
+		p.Title = weak.det.Title
+		p.TMDBID = weak.tmdbID
+		p.Year = weak.candYear
 		p.SeasonNumber = season
 		p.EpisodeNumber = episode
 		if len(extraEpisodes) > 0 {
 			p.ExtraEpisodeNumbers = extraEpisodes
 		}
 		p.RootFolderPath = targetRoot
-		p.Genres = det.Genres
-		if names, err := sess.TMDB.TVAggregateCredits(ctx, tmdbID); err == nil {
+		p.Genres = weak.det.Genres
+		if names, err := sess.TMDB.TVAggregateCredits(ctx, weak.tmdbID); err == nil {
 			p.Cast = names
 		}
 		return &p

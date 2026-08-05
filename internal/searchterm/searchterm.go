@@ -106,3 +106,70 @@ func IsSampleVideo(name string) bool {
 	}
 	return strings.HasSuffix(stem, "-sample") || strings.HasSuffix(stem, ".sample") || stem == "sample"
 }
+
+var (
+	yearParenStripRe = regexp.MustCompile(`\s*\((19\d{2}|20\d{2})\)`)
+	yearBareEndRe    = regexp.MustCompile(`(?i)\s+\b(19\d{2}|20\d{2})\b\s*$`)
+	commaPersonRe    = regexp.MustCompile(`(?i)^(.+?)\s+([^,]+),\s*([^,]+)$`)
+)
+
+// StripYear removes parenthesized and trailing bare years from a cleaned term
+// so TMDB search is title-only; year stays available via rename.FileSignals.
+func StripYear(term string) string {
+	s := yearParenStripRe.ReplaceAllString(term, " ")
+	s = yearBareEndRe.ReplaceAllString(s, "")
+	s = multiSpaceRe.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+// SearchQueries returns distinct TMDB/TVDB query strings derived from a raw
+// orphan name, ordered best-first. Year is stripped from queries (corroborated
+// separately). Later variants try comma-inverted person names and shorter titles.
+//
+// Claude 2026-08-05: iterate filename-derived queries — year-in-query returned 0 TMDB hits
+// Reason: "Minority Report (2002)" / "Which Way Is Up (1977)" often match nothing; bare title works
+// Troubleshooting: unmatched "no TMDB match for Title (year)" — use SearchQueries not FromName alone
+// Review if: TMDB starts preferring year-in-query and bare title becomes worse
+func SearchQueries(name string) []string {
+	base := FromName(name)
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		for _, e := range out {
+			if strings.EqualFold(e, s) {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+
+	stripped := StripYear(base)
+	add(stripped)
+	add(base) // last-resort with year still in string
+
+	// "Copacabana Marx, Groucho" → "Copacabana Groucho Marx"
+	if m := commaPersonRe.FindStringSubmatch(stripped); m != nil {
+		add(strings.TrimSpace(m[1] + " " + m[3] + " " + m[2]))
+		add(strings.TrimSpace(m[3] + " " + m[2]))
+	}
+
+	// Drop trailing " - leftover" fragments after codec strip left a dash.
+	if i := strings.LastIndex(stripped, " - "); i > 0 {
+		add(strings.TrimSpace(stripped[:i]))
+	}
+
+	// Progressively drop trailing words (helps "… interview with Garrison") —
+	// capped so we do not spray TMDB with every prefix of a long title.
+	words := strings.Fields(stripped)
+	if len(words) > 4 {
+		add(strings.Join(words[:len(words)-2], " "))
+	}
+	if len(words) > 3 {
+		add(strings.Join(words[:3], " "))
+	}
+	return out
+}
+

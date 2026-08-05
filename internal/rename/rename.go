@@ -273,68 +273,72 @@ func proposeOneLibrary(
 		return p
 	}
 
-	term := searchterm.FromName(entry.Name)
-	items, err := sess.TMDB.SearchMovies(ctx, term)
-	if err != nil {
-		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("TMDB search failed for %q: %v", term, err)
-		return p
-	}
-	if len(items) == 0 {
-		if fb := tvdbFallbackMovie(ctx, sess, term, byTMDB, generalRoot, foundRoot, sig, cfg, p); fb != nil {
-			return *fb
-		}
-		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("no TMDB match for %q", term)
-		return p
-	}
-
-	limit := pickLimit(cfg.CandidateN, len(items))
-	for i := 0; i < limit; i++ {
-		match := items[i]
-		candYear := yearFromReleaseDate(match.ReleaseDate)
-		runtimeMin, cast := movieCandidateMeta(ctx, sess.TMDB, match.ID, sig)
-		if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
-			continue
-		}
-		if byTMDB[match.ID] {
+	queries := searchterm.SearchQueries(entry.Name)
+	var lastTerm string
+	var lastLimit int
+	for _, term := range queries {
+		lastTerm = term
+		items, err := sess.TMDB.SearchMovies(ctx, term)
+		if err != nil {
 			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("appears to already be in the library as %q — leaving in place for manual review", match.Title)
+			p.Reason = fmt.Sprintf("TMDB search failed for %q: %v", term, err)
 			return p
 		}
+		if len(items) == 0 {
+			continue
+		}
+		limit := pickLimit(cfg.CandidateN, len(items))
+		lastLimit = limit
+		for i := 0; i < limit; i++ {
+			match := items[i]
+			candYear, runtimeMin, cast := movieCandidateMeta(ctx, sess.TMDB, match.ID, match.ReleaseDate, sig)
+			if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
+				continue
+			}
+			if byTMDB[match.ID] {
+				p.Status = proposals.Unmatched
+				p.Reason = fmt.Sprintf("appears to already be in the library as %q — leaving in place for manual review", match.Title)
+				return p
+			}
 
-		targetRoot := generalRoot
-		switch {
-		case foundRoot == sess.KidsRootPath:
-			targetRoot = sess.KidsRootPath
-		case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
-			if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
+			targetRoot := generalRoot
+			switch {
+			case foundRoot == sess.KidsRootPath:
 				targetRoot = sess.KidsRootPath
+			case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
+				if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
+					targetRoot = sess.KidsRootPath
+				}
 			}
-		}
 
-		p.Status = proposals.Pending
-		p.Title = match.Title
-		p.TMDBID = match.ID
-		p.Year = candYear
-		p.RootFolderPath = targetRoot
-		if det, err := sess.TMDB.MovieDetails(ctx, match.ID); err == nil {
-			p.Genres = det.Genres
-			if p.Year == 0 {
-				p.Year = yearFromReleaseDate(det.ReleaseDate)
+			p.Status = proposals.Pending
+			p.Title = match.Title
+			p.TMDBID = match.ID
+			p.Year = candYear
+			p.RootFolderPath = targetRoot
+			if det, err := sess.TMDB.MovieDetails(ctx, match.ID); err == nil {
+				p.Genres = det.Genres
+				if p.Year == 0 {
+					p.Year = yearFromReleaseDate(det.ReleaseDate)
+				}
 			}
+			if names, err := sess.TMDB.MovieCredits(ctx, match.ID); err == nil {
+				p.Cast = names
+			}
+			return p
 		}
-		if cast, err := sess.TMDB.MovieCredits(ctx, match.ID); err == nil {
-			p.Cast = cast
-		}
-		return p
 	}
 
-	if fb := tvdbFallbackMovie(ctx, sess, term, byTMDB, generalRoot, foundRoot, sig, cfg, p); fb != nil {
+	if fb := tvdbFallbackMovie(ctx, sess, lastTerm, byTMDB, generalRoot, foundRoot, sig, cfg, p); fb != nil {
 		return *fb
 	}
+	if lastLimit == 0 {
+		p.Status = proposals.Unmatched
+		p.Reason = fmt.Sprintf("no TMDB match for queries derived from %q", entry.Name)
+		return p
+	}
 	p.Status = proposals.Unmatched
-	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration for %q", limit, term)
+	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration (last query %q)", lastLimit, lastTerm)
 	return p
 }
 
@@ -574,73 +578,77 @@ func proposeOneEpisodeLibrary(
 		return p
 	}
 
-	term := searchterm.FromName(library.StripEpisodeMarker(name))
-	items, err := sess.TMDB.SearchTV(ctx, term)
-	if err != nil {
-		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("TMDB search failed for %q: %v", term, err)
-		return p
-	}
-	if len(items) == 0 {
-		if fb := tvdbFallbackSeries(ctx, sess, term, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
-			return *fb
-		}
-		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("no TMDB match for %q", term)
-		return p
-	}
-
-	limit := pickLimit(cfg.CandidateN, len(items))
-	for i := 0; i < limit; i++ {
-		match := items[i]
-		candYear := yearFromReleaseDate(match.ReleaseDate)
-		runtimeMin, cast := seriesCandidateMeta(ctx, sess.TMDB, match.ID, season, episode, sig)
-		if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
-			continue
-		}
-		if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
+	queries := searchterm.SearchQueries(library.StripEpisodeMarker(name))
+	var lastTerm string
+	var lastLimit int
+	for _, term := range queries {
+		lastTerm = term
+		items, err := sess.TMDB.SearchTV(ctx, term)
+		if err != nil {
 			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", match.Title, season, episode)
+			p.Reason = fmt.Sprintf("TMDB search failed for %q: %v", term, err)
 			return p
 		}
-		if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+		if len(items) == 0 {
 			continue
 		}
-
-		targetRoot := generalRoot
-		switch {
-		case foundRoot == sess.KidsRootPath:
-			targetRoot = sess.KidsRootPath
-		case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
-			if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
-				targetRoot = sess.KidsRootPath
+		limit := pickLimit(cfg.CandidateN, len(items))
+		lastLimit = limit
+		for i := 0; i < limit; i++ {
+			match := items[i]
+			candYear, runtimeMin, cast := seriesCandidateMeta(ctx, sess.TMDB, match.ID, season, episode, match.ReleaseDate, sig)
+			if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
+				continue
 			}
-		}
+			if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
+				p.Status = proposals.Unmatched
+				p.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", match.Title, season, episode)
+				return p
+			}
+			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+				continue
+			}
 
-		p.Status = proposals.Pending
-		p.Title = match.Title
-		p.TMDBID = match.ID
-		p.Year = candYear
-		p.SeasonNumber = season
-		p.EpisodeNumber = episode
-		if len(extraEpisodes) > 0 {
-			p.ExtraEpisodeNumbers = extraEpisodes
+			targetRoot := generalRoot
+			switch {
+			case foundRoot == sess.KidsRootPath:
+				targetRoot = sess.KidsRootPath
+			case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
+				if result, err := classify.WithAI(ctx, sess.MainstreamAI, match.Title, match.Overview); err == nil && result.IsKids {
+					targetRoot = sess.KidsRootPath
+				}
+			}
+
+			p.Status = proposals.Pending
+			p.Title = match.Title
+			p.TMDBID = match.ID
+			p.Year = candYear
+			p.SeasonNumber = season
+			p.EpisodeNumber = episode
+			if len(extraEpisodes) > 0 {
+				p.ExtraEpisodeNumbers = extraEpisodes
+			}
+			p.RootFolderPath = targetRoot
+			if det, err := sess.TMDB.TVDetails(ctx, match.ID); err == nil {
+				p.Genres = det.Genres
+			}
+			if names, err := sess.TMDB.TVAggregateCredits(ctx, match.ID); err == nil {
+				p.Cast = names
+			}
+			return p
 		}
-		p.RootFolderPath = targetRoot
-		if det, err := sess.TMDB.TVDetails(ctx, match.ID); err == nil {
-			p.Genres = det.Genres
-		}
-		if names, err := sess.TMDB.TVAggregateCredits(ctx, match.ID); err == nil {
-			p.Cast = names
-		}
-		return p
 	}
 
-	if fb := tvdbFallbackSeries(ctx, sess, term, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
+	if fb := tvdbFallbackSeries(ctx, sess, lastTerm, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
 		return *fb
 	}
+	if lastLimit == 0 {
+		p.Status = proposals.Unmatched
+		p.Reason = fmt.Sprintf("no TMDB match for queries derived from %q", name)
+		return p
+	}
 	p.Status = proposals.Unmatched
-	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration for %q", limit, term)
+	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration (last query %q)", lastLimit, lastTerm)
 	return p
 }
 
@@ -739,8 +747,14 @@ func tvdbFallbackSeries(
 		if _, err := sess.TMDB.SeasonDetails(ctx, tmdbID, season); err != nil {
 			continue
 		}
-		candYear := best.Year
-		runtimeMin, cast := seriesCandidateMeta(ctx, sess.TMDB, tmdbID, season, episode, sig)
+		dateStr := ""
+		if best.Year > 0 {
+			dateStr = fmt.Sprintf("%d-01-01", best.Year)
+		}
+		candYear, runtimeMin, cast := seriesCandidateMeta(ctx, sess.TMDB, tmdbID, season, episode, dateStr, sig)
+		if candYear == 0 && best.Year > 0 {
+			candYear = best.Year
+		}
 		if !SignalsPass(sig, candYear, runtimeMin, cast, cfg.DurationTolerancePct) {
 			continue
 		}

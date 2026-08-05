@@ -39,11 +39,13 @@ func fakeTMDBSearch(t *testing.T, results map[string]string) *tmdb.Client {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		body, ok := results[term]
 		if !ok {
-			t.Fatalf("unexpected search term %q", term)
+			// SearchQueries iterates filename variants; unknown → empty, not fatal.
+			w.Write([]byte(`{"results":[]}`))
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)

@@ -129,3 +129,28 @@ func TestIsSampleVideo(t *testing.T) {
 		t.Error("main feature must not count as sample")
 	}
 }
+
+func TestSearchQueries_StripsYearFirst(t *testing.T) {
+	q := SearchQueries("Which Way Is Up - Richard Pryor (1977).mp4")
+	if len(q) == 0 || q[0] != "Which Way Is Up" {
+		t.Fatalf("want first query bare title, got %#v", q)
+	}
+	for _, s := range q {
+		if strings.Contains(s, "1977") && s == q[0] {
+			t.Fatalf("first query must not include year: %#v", q)
+		}
+	}
+}
+
+func TestSearchQueries_MinorityReport(t *testing.T) {
+	q := SearchQueries("Minority Report HD (2002) cq23.mp4")
+	if len(q) == 0 || q[0] != "Minority Report" {
+		t.Fatalf("got %#v", q)
+	}
+}
+
+func TestStripYear(t *testing.T) {
+	if got := StripYear("Minority Report (2002)"); got != "Minority Report" {
+		t.Fatalf("%q", got)
+	}
+}

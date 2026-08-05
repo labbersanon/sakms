@@ -30,7 +30,8 @@ func fakeTMDBSeriesServer(t *testing.T, searchResults map[string]string, failSea
 			term := r.URL.Query().Get("query")
 			body, ok := searchResults[term]
 			if !ok {
-				t.Fatalf("unexpected search term %q", term)
+				w.Write([]byte(`{"results":[]}`))
+				return
 			}
 			w.Write([]byte(body))
 		case strings.HasPrefix(r.URL.Path, "/tv/"):
@@ -60,7 +61,7 @@ func TestScanLibrarySeries_ProducesPendingProposalForNewEpisode(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","overview":"...","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","overview":"...","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
@@ -90,7 +91,7 @@ func TestScanLibrarySeries_SeasonPackProducesOneProposalPerEpisode(t *testing.T)
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
@@ -126,7 +127,7 @@ func TestScanLibrarySeries_LogicalSplitProducesOneProposalWithExtraEpisodes(t *t
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
@@ -162,7 +163,7 @@ func TestScanLibrarySeries_DiscoversNewEpisodeAlongsideAlreadyTrackedOne(t *test
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
@@ -204,7 +205,7 @@ func TestScanLibrarySeries_SkipsAlreadyConformantEpisodeInMixedSeasonPack(t *tes
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 
@@ -224,7 +225,7 @@ func TestScanLibrarySeries_SkipsAlreadyTrackedWithFile(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
@@ -254,7 +255,7 @@ func TestScanLibrarySeries_DoesNotSkipEpisodeKnownAsMissing(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, nil)}
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
@@ -301,7 +302,7 @@ func TestScanLibrarySeries_UnmatchedWhenSeasonDetailsFail(t *testing.T) {
 	}
 
 	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
-		"Show Name 2020": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 	}, map[int]bool{1: true})}
 
 	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)

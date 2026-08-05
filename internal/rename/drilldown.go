@@ -169,12 +169,19 @@ func durationWithinTolerance(fileSec float64, runtimeMin, tolPct int) bool {
 	return diff <= want*float64(tolPct)/100
 }
 
-func movieCandidateMeta(ctx context.Context, client *tmdb.Client, id int, sig FileSignals) (runtimeMin int, cast []string) {
+// movieCandidateMeta loads year/runtime/cast for corroboration. When the file
+// has a year or duration signal, MovieDetails is fetched so an empty search
+// result release_date does not falsely fail the year gate.
+func movieCandidateMeta(ctx context.Context, client *tmdb.Client, id int, searchReleaseDate string, sig FileSignals) (candYear, runtimeMin int, cast []string) {
+	candYear = yearFromReleaseDate(searchReleaseDate)
 	if client == nil {
-		return 0, nil
+		return candYear, 0, nil
 	}
-	if sig.DurationSec > 0 {
+	if sig.Year != 0 || sig.DurationSec > 0 {
 		if det, err := client.MovieDetails(ctx, id); err == nil {
+			if y := yearFromReleaseDate(det.ReleaseDate); y != 0 {
+				candYear = y
+			}
 			runtimeMin = det.Runtime
 		}
 	}
@@ -183,15 +190,16 @@ func movieCandidateMeta(ctx context.Context, client *tmdb.Client, id int, sig Fi
 			cast = names
 		}
 	}
-	return runtimeMin, cast
+	return candYear, runtimeMin, cast
 }
 
 func seriesCandidateMeta(
 	ctx context.Context, client *tmdb.Client,
-	id, season, episode int, sig FileSignals,
-) (runtimeMin int, cast []string) {
+	id, season, episode int, searchReleaseDate string, sig FileSignals,
+) (candYear, runtimeMin int, cast []string) {
+	candYear = yearFromReleaseDate(searchReleaseDate)
 	if client == nil {
-		return 0, nil
+		return candYear, 0, nil
 	}
 	if sig.DurationSec > 0 {
 		eps, err := client.SeasonDetails(ctx, id, season)
@@ -204,12 +212,15 @@ func seriesCandidateMeta(
 			}
 		}
 	}
+	// TVDetails has no first-air field today; when year is needed and search
+	// omitted it, leave candYear as 0 so SignalsPass fails that candidate
+	// rather than inventing a year — search first_air_date usually present.
 	if sig.Actor != "" {
 		if names, err := client.TVAggregateCredits(ctx, id); err == nil {
 			cast = names
 		}
 	}
-	return runtimeMin, cast
+	return candYear, runtimeMin, cast
 }
 
 func pickLimit(n, total int) int {

@@ -78,7 +78,7 @@ func TestFromName_StripsVideoExtension(t *testing.T) {
 	}{
 		{
 			name: "Which Way Is Up - Richard Pryor (1977).mp4",
-			want: "Which Way Is Up - Richard Pryor (1977)",
+			want: "Which Way Is Up (1977)",
 		},
 		{
 			name: "Which.Way.Is.Up.1977.mkv",
@@ -91,7 +91,23 @@ func TestFromName_StripsVideoExtension(t *testing.T) {
 		{
 			// Folder / non-video names stay unchanged by this step.
 			name: "Which Way Is Up - Richard Pryor (1977)",
-			want: "Which Way Is Up - Richard Pryor (1977)",
+			want: "Which Way Is Up (1977)",
+		},
+		{
+			name: "01 Austin Powers International Man of Mystery (1997) 720p .mp4",
+			want: "Austin Powers International Man of Mystery (1997)",
+		},
+		{
+			name: "Minority Report HD (2002) cq23.mp4",
+			want: "Minority Report (2002)",
+		},
+		{
+			name: "Image Of The Beast - H.265.mp4",
+			want: "Image Of The Beast",
+		},
+		{
+			name: "Copacabana Marx, Groucho [1947].mp4",
+			want: "Copacabana Marx, Groucho (1947)",
 		},
 	}
 	for _, tc := range cases {
@@ -102,5 +118,14 @@ func TestFromName_StripsVideoExtension(t *testing.T) {
 		if strings.Contains(strings.ToLower(got), "mp4") || strings.Contains(strings.ToLower(got), "mkv") {
 			t.Errorf("FromName(%q) still contains a video-ext token: %q", tc.name, got)
 		}
+	}
+}
+
+func TestIsSampleVideo(t *testing.T) {
+	if !IsSampleVideo("foo.sample.mp4") {
+		t.Error("expected .sample. to count as sample")
+	}
+	if IsSampleVideo("foo.mp4") {
+		t.Error("main feature must not count as sample")
 	}
 }

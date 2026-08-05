@@ -21,35 +21,59 @@ import (
 // search — resolution/source/codec/audio/edition markers. Matched as whole
 // words, case-insensitively.
 var noiseTokens = []string{
-	"1080p", "720p", "2160p", "480p", "4k", "uhd",
+	"1080p", "720p", "2160p", "480p", "4k", "uhd", "hd",
 	"web-dl", "webdl", "webrip", "web", "bluray", "blu-ray", "brrip", "bdrip",
 	"hdtv", "dvdrip", "remux",
 	"x264", "x265", "h264", "h265", "hevc", "avc", "av1",
 	"aac", "dts", "dts-hd", "ddp5", "atmos", "truehd",
 	"proper", "repack", "extended", "unrated", "theatrical", "limited",
-	"multi", "hdr", "hdr10", "10bit", "internal", "uncut",
+	"multi", "hdr", "hdr10", "10bit", "internal", "uncut", "sample",
 }
 
 var (
-	noiseTokenRe   = regexp.MustCompile(`(?i)\b(` + strings.Join(noiseTokens, "|") + `)\b`)
+	noiseTokenRe = regexp.MustCompile(`(?i)\b(` + strings.Join(noiseTokens, "|") + `)\b`)
+	// releaseGroupRe only matches compact -GROUP tags (no spaces), e.g. -spamTV.
 	releaseGroupRe = regexp.MustCompile(`-[A-Za-z0-9]+$`)
 	multiSpaceRe   = regexp.MustCompile(`\s{2,}`)
 	bracketedRe    = regexp.MustCompile(`[\[\(][^\[\]\(\)]*[\]\)]`)
+	// dottedCodecRe collapses H.265 / x.264 before dots become spaces.
+	dottedCodecRe = regexp.MustCompile(`(?i)\b([xh])\.(26[45])\b`)
+	// yearBracketRe turns a year-only [1968] into (1968) so it survives as a year.
+	yearBracketRe = regexp.MustCompile(`\[(\d{4})\]`)
+	// leadingIndexRe drops zero-padded playlist prefixes like "01 " / "02 " —
+	// not bare numbers (would mangle "9 11 …" / "12 Angry Men").
+	leadingIndexRe = regexp.MustCompile(`(?i)^0\d\s+`)
+	// creditBeforeYearRe drops " - credit/actor …" between title and (year).
+	// Claude 2026-08-05: "Which Way Is Up - Richard Pryor (1977)" → title+(year)
+	// Reason: TMDB returns zero hits for actor-padded terms after ext strip alone
+	// Troubleshooting: unmatched no TMDB match for "… - Richard Pryor (1977)"
+	// Review if: a real title containing " - " before a year is over-stripped
+	creditBeforeYearRe = regexp.MustCompile(`(?i)^(.+?)\s*-\s+.+\((\d{4})\)\s*$`)
+	cqNoiseRe          = regexp.MustCompile(`(?i)\bcq\d+\b`)
+	trailingJunkRe     = regexp.MustCompile(`[\s\-]+$`)
 )
 
 // FromName derives a search term from a raw orphaned file/folder name.
 //
 // Claude 2026-08-05: strip config.VideoExts before dot→space cleaning
-// Reason: Rename passed filenames with .mp4; dots became spaces → TMDB query ended in "mp4" and returned zero hits (Which Way Is Up)
-// Troubleshooting: unmatched "no TMDB match for … mp4" — ensure IsVideoExt covers the file's extension
+// Reason: Rename passed filenames with .mp4; dots became spaces → TMDB query ended in "mp4"
+// Troubleshooting: unmatched "no TMDB match for … mp4" — ensure IsVideoExt covers the extension
 // Review if: callers strip extensions themselves and FromName should stop
 func FromName(name string) string {
 	if ext := filepath.Ext(name); config.IsVideoExt(ext) {
 		name = strings.TrimSuffix(name, ext)
 	}
 
+	// Normalize dotted codecs before "." → " " so "H.265" stays one noise token.
+	name = dottedCodecRe.ReplaceAllString(name, "${1}${2}")
+	name = yearBracketRe.ReplaceAllString(name, "($1)")
+
 	s := strings.ReplaceAll(name, ".", " ")
 	s = strings.ReplaceAll(s, "_", " ")
+	s = leadingIndexRe.ReplaceAllString(s, "")
+	if m := creditBeforeYearRe.FindStringSubmatch(s); m != nil {
+		s = m[1] + " (" + m[2] + ")"
+	}
 
 	// Strip a trailing "-RELEASEGROUP" tag before removing bracketed/paren
 	// content, since a release group can itself look bracket-free.
@@ -66,6 +90,19 @@ func FromName(name string) string {
 	})
 
 	s = noiseTokenRe.ReplaceAllString(s, " ")
+	s = cqNoiseRe.ReplaceAllString(s, " ")
 	s = multiSpaceRe.ReplaceAllString(s, " ")
+	s = trailingJunkRe.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
+}
+
+// IsSampleVideo reports filenames that are release "sample" clips, not the
+// main feature — Rename/Dedup should not propose them as library orphans.
+func IsSampleVideo(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if strings.Contains(base, ".sample.") || strings.Contains(base, "-sample.") {
+		return true
+	}
+	return strings.HasSuffix(stem, "-sample") || strings.HasSuffix(stem, ".sample") || stem == "sample"
 }

@@ -196,6 +196,13 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 			if err != nil {
 				continue
 			}
+			if searchterm.IsSampleVideo(videoPath) {
+				// Claude 2026-08-05: skip release .sample. clips — not library features
+				// Reason: sample.mp4 orphans pollute Movies Rename unmatched/pending
+				// Troubleshooting: unmatched rows for *.sample.mp4 — IsSampleVideo gate
+				// Review if: sample detection moves into ResolveVideoFile
+				continue
+			}
 			// Schema check needs the atomic folder (or file) entry, not the resolved video path —
 			// MatchesMovieSchema only recognizes organized movie directories.
 			if naming.MatchesMovieSchema(entry.Path, preset) {

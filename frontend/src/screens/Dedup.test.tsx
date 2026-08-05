@@ -68,6 +68,13 @@ const jsonResponse = (obj: unknown): Response =>
     headers: { "Content-Type": "application/json" },
   });
 
+const asPage = (items: unknown[]) => ({
+  items,
+  total: items.length,
+  limit: 50,
+  offset: 0,
+});
+
 const noContent = (): Response => new Response(null, { status: 204 });
 
 // accepted mirrors the scan POST's new 202 (no body) contract.
@@ -119,7 +126,13 @@ const stubFetch = (handler: Handler) => {
       method: (init?.method ?? "GET").toUpperCase(),
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
-    return handler(url, init);
+    if (url.includes("/api/organize/events")) return jsonResponse([]);
+    const res = await handler(url, init);
+    if (url.includes("/dedup/proposals") && res.headers.get("Content-Type")?.includes("json")) {
+      const body = await res.clone().json();
+      if (Array.isArray(body)) return jsonResponse(asPage(body));
+    }
+    return res;
   });
   vi.stubGlobal("fetch", fn);
   return calls;

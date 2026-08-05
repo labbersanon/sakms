@@ -39,7 +39,6 @@ import {
   type Proposal,
   type ProposalStatus,
   addAllowlistTag,
-  applyBatch,
   applyProposal,
   dismissProposal,
   fetchAllowlist,
@@ -47,6 +46,11 @@ import {
   removeAllowlistTag,
   scanPurge,
 } from "../api/purge";
+import {
+  applyBatchStreaming,
+  loadPageSize,
+  savePageSize,
+} from "../api/organize";
 import {
   BatchResultSummary,
   Button,
@@ -56,14 +60,24 @@ import {
   StatusPill,
 } from "../components/ui";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
+import {
+  ActivityLogPanel,
+  PageSizeSelect,
+  PaginationBar,
+} from "./OrganizeChrome";
 
 // PurgeView is one mode's allowlist editor + delete-review queue. Keyed on
 // props.mode so both resources refetch when the shell switches tabs.
 const PurgeView: Component<{ mode: Mode }> = (props) => {
-  const [proposals, { refetch: refetchProposals }] = createResource(
-    () => props.mode,
-    (m) => fetchPurgeProposals(m),
+  const [pageSize, setPageSize] = createSignal(loadPageSize("purge"));
+  const [offset, setOffset] = createSignal(0);
+  const [logKey, setLogKey] = createSignal(0);
+  const [applyProgress, setApplyProgress] = createSignal("");
+  const [page, { refetch: refetchProposals }] = createResource(
+    () => ({ mode: props.mode, limit: pageSize(), offset: offset() }),
+    ({ mode, limit, offset }) => fetchPurgeProposals(mode, limit, offset),
   );
+  const proposals = () => page()?.items ?? [];
   const [allowlist, { refetch: refetchAllowlist }] = createResource(
     () => props.mode,
     (m) => fetchAllowlist(m),
@@ -97,11 +111,15 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
         setNewTag("");
         selection.clear();
         setBatchResult(null);
+        setOffset(0);
+        setApplyProgress("");
       },
       scanFn: scanPurge,
       resetAfterScan: () => {
         selection.clear();
         setBatchResult(null);
+        setOffset(0);
+        setLogKey((k) => k + 1);
       },
       resetAfterAct: () => selection.clear(),
       refetch: refetchProposals,
@@ -131,7 +149,7 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
 
   // pendingIds are the rows selectable/batchable — only Pending rows can Apply.
   const pendingIds = (): number[] =>
-    (proposals() ?? []).filter((p) => p.status === "pending").map((p) => p.id);
+    proposals().filter((p) => p.status === "pending").map((p) => p.id);
   const allPendingSelected = (): boolean => {
     const ids = pendingIds();
     return ids.length > 0 && ids.every((id) => selection.has(id));
@@ -141,19 +159,12 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
     else selection.selectAll(pendingIds());
   };
   const titleOf = (id: number): string => {
-    const p = (proposals() ?? []).find((x) => x.id === id);
+    const p = proposals().find((x) => x.id === id);
     return p ? p.title || p.sourceName || "" : "";
   };
-  // Claude 2026-08-03: MAX_BATCH_PURGE_ITEMS mirrors internal/api's
-  // MaxBatchPurgeItems (plan .omc/plans/autopilot-impl-pruning-rules.md §13.2).
-  // Reason: the backend refuses an over-cap purge batch with a 400 before
-  // applying anything. Disabling the button (rather than silently slicing to
-  // the first 20) lets the operator choose WHICH 20 — a slice would delete an
-  // arbitrary subset of what they checked.
-  // Troubleshooting: if the backend cap changes, this number must change with
-  // it; the mismatch surfaces as a 400 the operator cannot act on.
-  const MAX_BATCH_PURGE_ITEMS = 20;
-  const overBatchCap = (): boolean => selection.size() > MAX_BATCH_PURGE_ITEMS;
+  // Claude 2026-08-05: Purge 20-item UI cap removed — page size is the bound.
+  // Reason: deep-interview-organize-pagination-log
+  // Review if: Purge regains a hard apply-batch ceiling.
 
   // applySelected deletes the selected Pending rows in one apply-batch. Guarded
   // by the same confirm the single delete has, worded for the count — bulk must
@@ -161,12 +172,17 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
   const applySelected = (): void => {
     const ids = [...selection.selected()];
     if (ids.length === 0) return;
-    if (ids.length > MAX_BATCH_PURGE_ITEMS) return;
     if (!window.confirm(`Delete ${ids.length} items from ${props.mode}?`)) return;
     const items: ApplyBatchItem[] = ids.map((id) => ({ id }));
     setBatchResult(null);
+    setApplyProgress("");
     void act(async () => {
-      setBatchResult(await applyBatch(items));
+      const out = await applyBatchStreaming(items, (done, total) => {
+        setApplyProgress(`Applied ${done}/${total}…`);
+      });
+      setBatchResult(out as ApplyBatchResponse);
+      setApplyProgress("");
+      setLogKey((k) => k + 1);
     });
   };
 
@@ -196,7 +212,7 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
 
   return (
     <div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <Button variant="primary" onClick={() => void scan(props.mode)} disabled={scanning()}>
           {scanning() ? "Scanning…" : "Scan"}
         </Button>
@@ -204,18 +220,23 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
           <Button
             class="!bg-danger !text-accent-fg"
             onClick={applySelected}
-            disabled={overBatchCap()}
           >
             Apply Selected ({selection.size()})
           </Button>
-          <Show when={overBatchCap()}>
-            <Muted>
-              Purge applies at most {MAX_BATCH_PURGE_ITEMS} items per batch —
-              deselect {selection.size() - MAX_BATCH_PURGE_ITEMS} to continue.
-            </Muted>
-          </Show>
         </Show>
+        <PageSizeSelect
+          value={pageSize()}
+          onChange={(n) => {
+            savePageSize("purge", n);
+            setPageSize(n);
+            setOffset(0);
+          }}
+        />
       </div>
+
+      <Show when={applyProgress()}>
+        <Muted class="mt-2">{applyProgress()}</Muted>
+      </Show>
 
       <Show when={actionError()}>
         <ErrorText>{actionError()}</ErrorText>
@@ -265,15 +286,15 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
 
       {/* Proposals — delete-review queue. */}
       <h3 class="mt-6 text-sm font-semibold text-fg">Proposals</h3>
-      <Show when={proposals.error}>
-        <ErrorText>{(proposals.error as Error)?.message}</ErrorText>
+      <Show when={page.error}>
+        <ErrorText>{(page.error as Error)?.message}</ErrorText>
       </Show>
       <Show
-        when={!proposals.loading}
+        when={!page.loading}
         fallback={<Muted class="mt-2">Loading…</Muted>}
       >
         <Show
-          when={proposals() && proposals()!.length > 0}
+          when={proposals().length > 0}
           fallback={<Muted class="mt-2">No proposals yet — click Scan.</Muted>}
         >
           <div class="mt-2 overflow-x-auto">
@@ -351,8 +372,17 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
               </tbody>
             </table>
           </div>
+          <PaginationBar
+            total={page()?.total ?? 0}
+            limit={pageSize()}
+            offset={offset()}
+            onPrev={() => setOffset((o) => Math.max(0, o - pageSize()))}
+            onNext={() => setOffset((o) => o + pageSize())}
+          />
         </Show>
       </Show>
+
+      <ActivityLogPanel workflow="purge" refreshKey={logKey()} />
     </div>
   );
 };

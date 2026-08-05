@@ -8,11 +8,13 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/organizeevents"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/purge"
 	"github.com/labbersanon/sakms/internal/rename"
@@ -22,22 +24,56 @@ import (
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
 
-// listProposalsHandler returns {mode}'s review queue for wf, most recently
-// scanned first — includes Applied/Dismissed history alongside the live
-// Pending/Unmatched rows, since the queue is also today's simplest stand-in
-// for an audit trail. Shared by every workflow (Rename, Purge, and whatever
-// comes next) — listing a queue never needs workflow-specific logic, only
-// Scan and Apply do.
+// listProposalsHandler returns one page of {mode}'s review queue for wf, most
+// recently scanned first — includes Applied/Dismissed history alongside the live
+// Pending/Unmatched rows. Query: ?limit=&offset= (defaults/clamps via ListPage).
+//
+// Claude 2026-08-05: paginated response shape (ProposalPage).
+// Reason: deep-interview-organize-pagination-log
+// Troubleshooting: old clients expecting a bare array will break — frontend
+//   fetchers must decode {items,total,limit,offset}.
+// Review if: infinite-scroll replaces offset pages.
 func listProposalsHandler(propStore *proposals.Store, wf proposals.Workflow) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
-		list, err := propStore.List(r.Context(), m, wf)
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		list, total, err := propStore.ListPage(r.Context(), m, wf, limit, offset)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if limit <= 0 {
+			limit = proposals.DefaultProposalPageSize
+		}
+		if limit > proposals.MaxProposalPageSize {
+			limit = proposals.MaxProposalPageSize
+		}
+		if offset < 0 {
+			offset = 0
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"items":  list,
+			"total":  total,
+			"limit":  limit,
+			"offset": offset,
+		})
+	}
+}
+
+// listPendingIDsHandler returns all Pending proposal ids for Rename (cross-page
+// "Select all matching"). Dedup/Purge do not register this route.
+func listPendingIDsHandler(propStore *proposals.Store, wf proposals.Workflow) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		ids, err := propStore.ListPendingIDs(r.Context(), m, wf)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(list)
+		json.NewEncoder(w).Encode(map[string]any{"ids": ids})
 	}
 }
 
@@ -368,30 +404,17 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 	}
 }
 
-// maxBatchItems bounds one apply-batch request. The proposals List endpoint
-// has no pagination cap of its own to reuse, so this is the plan's fallback
-// bound (200): a screen's worth of already-reviewed Pending rows applied in
-// one click, not an unbounded firehose.
-const maxBatchItems = 200
+// Claude 2026-08-05: Rename apply-batch is truly unbounded; Dedup/Purge are
+//   page-scoped (MaxProposalPageSize). Removed MaxBatchPurgeItems=20.
+// Reason: deep-interview-organize-pagination-log
+// Troubleshooting: Purge batches > page size return 400 with page-size wording.
+// Review if: Dedup gains cross-page selection.
+// maxBatchItems retained as alias of MaxProposalPageSize for Dedup/Purge only.
+const maxBatchItems = proposals.MaxProposalPageSize
 
-// Claude 2026-08-03: added MaxBatchPurgeItems (plan
-// .omc/plans/autopilot-impl-pruning-rules.md §13.2, the Critic safety
-// amendment that unblocked propose-only pruning rules).
-// Reason: Purge is the only workflow whose Apply DELETES files, and pruning
-// rules can flood its queue with hundreds of proposals in one Scan. A 20-item
-// cap — parity with MaxBatchGrabItems — means a flooded queue cannot wipe the
-// library in one click. Rename and Dedup keep the shared 200: bulk rename and
-// multi-keep dedup legitimately need larger same-screen batches, and neither
-// deletes an operator's only copy of anything.
-// Troubleshooting: the cap is enforced BEFORE any Apply runs, so an
-// over-cap request applies exactly zero items rather than the first 20.
-// Review if: Purge ever gains an undo, or the queue gains server-side
-// pagination that bounds a selection some other way.
-
-// MaxBatchPurgeItems bounds one apply-batch request whose proposals are
-// Purge-workflow. Exported for the frontend contract test / parity with
-// MaxBatchGrabItems.
-const MaxBatchPurgeItems = 20
+// MaxBatchPurgeItems is deprecated: Purge is page-bound only. Kept as an alias
+// so older tests compiling against the name still build; do not use for new caps.
+const MaxBatchPurgeItems = proposals.MaxProposalPageSize
 
 // applyBatchItem is one entry in an apply-batch request. It carries the same
 // per-item Dedup override fields as applyProposalRequest
@@ -454,21 +477,37 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			http.Error(w, "items must not be empty", http.StatusBadRequest)
 			return
 		}
-		if len(req.Items) > maxBatchItems {
-			http.Error(w, fmt.Sprintf("too many items: %d exceeds the %d-item batch cap", len(req.Items), maxBatchItems), http.StatusBadRequest)
-			return
+		// Claude 2026-08-05: Rename unbound; Dedup/Purge capped at MaxProposalPageSize.
+		// Reason: deep-interview — page is Dedup/Purge's only bound; Purge 20 removed.
+		wantStream := strings.Contains(r.Header.Get("Accept"), "application/x-ndjson")
+		if first, err := propStore.Get(ctx, req.Items[0].ID); err == nil {
+			switch first.Workflow {
+			case proposals.Rename:
+				// no item-count cap
+			case proposals.Purge, proposals.Dedup:
+				if len(req.Items) > proposals.MaxProposalPageSize {
+					http.Error(w, fmt.Sprintf("too many items: %d exceeds the %d-item page cap for %s batches", len(req.Items), proposals.MaxProposalPageSize, first.Workflow), http.StatusBadRequest)
+					return
+				}
+			default:
+				if len(req.Items) > maxBatchItems {
+					http.Error(w, fmt.Sprintf("too many items: %d exceeds the %d-item batch cap", len(req.Items), maxBatchItems), http.StatusBadRequest)
+					return
+				}
+			}
 		}
-		// The Purge-only lower cap (§13.2). A batch is scoped to one screen and
-		// therefore one workflow, so the first item's proposal is what decides
-		// which cap applies — no need to load all of them just to classify the
-		// request. A first item that can't be loaded falls through: the loop
-		// below reports it as that item's own ok:false result, which is a
-		// better answer than a whole-batch 400 about a cap that may not apply.
-		if len(req.Items) > MaxBatchPurgeItems {
-			if first, err := propStore.Get(ctx, req.Items[0].ID); err == nil && first.Workflow == proposals.Purge {
-				http.Error(w, fmt.Sprintf("too many items: %d exceeds the %d-item cap for purge batches — purge deletes files, so a batch this large must be split", len(req.Items), MaxBatchPurgeItems), http.StatusBadRequest)
+
+		var flusher http.Flusher
+		if wantStream {
+			var ok bool
+			flusher, ok = w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming not supported", http.StatusInternalServerError)
 				return
 			}
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
 		}
 
 		// A batch is scoped to one screen (single workflow+mode), so every
@@ -491,10 +530,26 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		// notify still fires for any items that did commit — partial success
 		// is preserved. Single-operator, single-tab usage (the normal case)
 		// is not affected.
-		for _, item := range req.Items {
+		total := len(req.Items)
+		writeND := func(v any) {
+			if !wantStream || flusher == nil {
+				return
+			}
+			b, err := json.Marshal(v)
+			if err != nil {
+				return
+			}
+			_, _ = w.Write(b)
+			_, _ = w.Write([]byte("\n"))
+			flusher.Flush()
+		}
+		for i, item := range req.Items {
+			writeND(map[string]any{"type": "progress", "done": i, "total": total, "id": item.ID})
 			p, err := propStore.Get(ctx, item.ID)
 			if err != nil {
-				results = append(results, applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()})
+				ri := applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()}
+				results = append(results, ri)
+				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
 				continue
 			}
 
@@ -502,7 +557,9 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			if !ok {
 				sess, err = mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 				if err != nil {
-					results = append(results, applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()})
+					ri := applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()}
+					results = append(results, ri)
+					writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
 					continue
 				}
 				sessions[p.Mode] = sess
@@ -514,7 +571,9 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			// bulk-apply path (.omc/plans/dedup-ux-refine.md AC13).
 			batchReq := applyProposalRequest{KeepIndex: item.KeepIndex, KeepAll: item.KeepAll, AdditionalKeepIndices: item.AdditionalKeepIndices}
 			if err := validateApplyRequest(&batchReq, p); err != nil {
-				results = append(results, applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()})
+				ri := applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()}
+				results = append(results, ri)
+				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
 				continue
 			}
 			changes, err := applyByWorkflow(ctx, settingsStore, propStore, libStore, sess, *p, batchReq, false)
@@ -528,21 +587,28 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			// Results entry below depends on err.
 			changesByMode[p.Mode] = append(changesByMode[p.Mode], changes...)
 			if err != nil {
-				results = append(results, applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()})
+				ri := applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()}
+				results = append(results, ri)
+				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
 				continue
 			}
 
 			updated, err := propStore.Get(ctx, item.ID)
 			if err != nil {
-				results = append(results, applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()})
+				ri := applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()}
+				results = append(results, ri)
+				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
 				continue
 			}
-			results = append(results, applyBatchResultItem{ID: item.ID, OK: true, Proposal: updated})
+			ri := applyBatchResultItem{ID: item.ID, OK: true, Proposal: updated}
+			results = append(results, ri)
+			writeND(map[string]any{"type": "item", "id": ri.ID, "ok": true})
 			whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
 				"mode": string(p.Mode), "workflow": string(p.Workflow),
 				"title": p.Title, "tmdbId": p.TMDBID,
 			})
 		}
+		writeND(map[string]any{"type": "progress", "done": total, "total": total})
 
 		// Fire one NotifyPlayers call per mode so each mode's changes reach
 		// the correct mode-scoped players (Jellyfin for Movies/Series, Stash
@@ -555,8 +621,37 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			}
 		}
 
+		resp := applyBatchResponse{Results: results}
+		if len(results) > 0 {
+			okCount := 0
+			for _, r := range results {
+				if r.OK {
+					okCount++
+				}
+			}
+			ok := okCount == len(results)
+			wf := ""
+			modeStr := ""
+			if first, err := propStore.Get(ctx, req.Items[0].ID); err == nil {
+				wf = string(first.Workflow)
+				modeStr = string(first.Mode)
+			} else if len(results) > 0 {
+				// first id may have failed Get earlier; still log batch
+			}
+			organizeevents.Log(ctx, organizeevents.Event{
+				Workflow: wf,
+				Mode:     modeStr,
+				Kind:     organizeevents.KindApplyBatch,
+				OK:       &ok,
+				Message:  fmt.Sprintf("apply-batch %d/%d ok", okCount, len(results)),
+			})
+		}
+		if wantStream {
+			writeND(map[string]any{"type": "done", "results": results})
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(applyBatchResponse{Results: results})
+		json.NewEncoder(w).Encode(resp)
 	}
 }
 

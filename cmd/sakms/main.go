@@ -37,6 +37,7 @@ import (
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/phash"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/organizeevents"
 	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/recheck"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
@@ -111,6 +112,8 @@ func run() error {
 	}
 	connStore := connections.New(sqlDB, secretStore)
 	propStore := proposals.New(sqlDB)
+	organizeEventsStore := organizeevents.New(sqlDB)
+	organizeevents.SetDefault(organizeEventsStore)
 	allowStore := allowlist.New(sqlDB)
 	prober := mediainfo.New()
 	hasher := phash.New()
@@ -439,6 +442,10 @@ func run() error {
 		}
 		w.Write([]byte("ok"))
 	})
+	organizeEventsMux := api.NewOrganizeEventsMux(organizeEventsStore)
+	protectedOrganizeEvents := auth.Middleware(secretStore, authStore, organizeEventsMux, sectionGate...)
+
+	top.Handle("/api/organize/events", protectedOrganizeEvents)
 	top.Handle("/api/auth/mode", protectedAuthMode)
 	top.Handle("/api/auth/oidc", protectedOIDC) // exact match: GET status, PUT config (session-protected)
 	// Everything else under /api/auth/ — including the PUBLIC OIDC redirect

@@ -29,9 +29,11 @@ import type {
   ApplyBatchItem,
   ApplyBatchResponse,
   Proposal,
+  ProposalPage,
   AllowlistAddRequest,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
+import { fetchProposalPage } from "./organize";
 
 export type { Proposal };
 // ProposalStatus is the single shared narrowing (see discover.ts); re-exported
@@ -48,8 +50,16 @@ export function scanPurge(mode: Mode): Promise<void> {
 
 // fetchPurgeProposals lists the Purge review queue for one mode (every status;
 // only pending rows expose actions).
-export function fetchPurgeProposals(mode: Mode): Promise<Proposal[]> {
-  return api<Proposal[]>(`/api/modes/${mode}/purge/proposals`);
+export function fetchPurgeProposals(
+  mode: Mode,
+  limit = 50,
+  offset = 0,
+): Promise<ProposalPage> {
+  return fetchProposalPage(
+    `/api/modes/${mode}/purge/proposals`,
+    limit,
+    offset,
+  );
 }
 
 // applyProposal commits exactly one pending proposal — for Purge this deletes

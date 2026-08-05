@@ -43,11 +43,11 @@ import {
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
-import type { ApplyBatchItem, ApplyBatchResponse } from "@dto";
+import type { ApplyBatchResponse } from "@dto";
 import {
   type Proposal,
   type ProposalStatus,
-  applyBatch,
+  applyBatchStreaming,
   applyProposal,
   dismissProposal,
   fetchProposals,
@@ -56,6 +56,11 @@ import {
   submitDraft,
   tmdbSearch,
 } from "../api/rename";
+import {
+  fetchPendingIDs,
+  loadPageSize,
+  savePageSize,
+} from "../api/organize";
 import {
   BatchResultSummary,
   Button,
@@ -66,6 +71,11 @@ import {
   yearOf,
 } from "../components/ui";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
+import {
+  ActivityLogPanel,
+  PageSizeSelect,
+  PaginationBar,
+} from "./OrganizeChrome";
 
 // shortHash renders the PHash column value — the full scheme-tagged hash is
 // too long to usefully show inline, so the cell shows a short prefix and the
@@ -198,26 +208,21 @@ const RepickPanel: Component<{
 // RenameQueue is one mode's review table + actions. Keyed on props.mode so the
 // resource refetches when the shell switches tabs.
 const RenameQueue: Component<{ mode: Mode }> = (props) => {
-  const [proposals, { refetch }] = createResource(
-    () => props.mode,
-    (m) => fetchProposals(m),
+  const [pageSize, setPageSize] = createSignal(loadPageSize("rename"));
+  const [offset, setOffset] = createSignal(0);
+  const [logKey, setLogKey] = createSignal(0);
+  const [applyProgress, setApplyProgress] = createSignal<string>("");
+  const [page, { refetch }] = createResource(
+    () => ({ mode: props.mode, limit: pageSize(), offset: offset() }),
+    ({ mode, limit, offset }) => fetchProposals(mode, limit, offset),
   );
+  const proposals = () => page()?.items ?? [];
   const [repickFor, setRepickFor] = createSignal<Proposal | null>(null);
-  // Bulk selection of Pending rows + the last "Apply Selected" outcome. The
-  // selection clears on mode-change/scan/act (stale ids must not survive a
-  // re-fetched queue); batchResult persists past act (so the summary survives
-  // its own apply) but is cleared on the next scan, mode-change, or new batch.
   const selection = useBulkSelection();
   const [batchResult, setBatchResult] = createSignal<ApplyBatchResponse | null>(
     null,
   );
 
-  // Switching modes clears any open re-pick panel, stale action error, the
-  // selection, and the previous batch summary — the old frontend rebuilt the
-  // whole view on a mode change, which had this effect. scan does NOT close
-  // repickFor (scan and act have independent post-success resets); only act
-  // closes it. act clears the selection but NOT batchResult, so a batch's own
-  // summary survives the act that produced it.
   const { actionError, setActionError, scanning, scan, act } = useWorkflowActions(
     () => props.mode,
     {
@@ -225,15 +230,19 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         setRepickFor(null);
         selection.clear();
         setBatchResult(null);
+        setOffset(0);
+        setApplyProgress("");
       },
       scanFn: scanRename,
       resetAfterScan: () => {
         selection.clear();
         setBatchResult(null);
+        setOffset(0);
+        setLogKey((k) => k + 1);
       },
       resetAfterAct: () => {
         setRepickFor(null);
-        selection.clear();
+        // Keep cross-page selection until apply clears it explicitly.
       },
       refetch,
     },
@@ -241,37 +250,46 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
 
   const isTitleMode = () => props.mode === "movies" || props.mode === "series";
 
-  // pendingIds are the ids selectable/batchable — only Pending rows can Apply.
   const pendingIds = (): number[] =>
-    (proposals() ?? []).filter((p) => p.status === "pending").map((p) => p.id);
-  const allPendingSelected = (): boolean => {
+    proposals()
+      .filter((p) => p.status === "pending")
+      .map((p) => p.id);
+  const pagePendingSelected = (): boolean => {
     const ids = pendingIds();
     return ids.length > 0 && ids.every((id) => selection.has(id));
   };
-  const toggleSelectAll = (): void => {
-    if (allPendingSelected()) selection.clear();
-    else selection.selectAll(pendingIds());
+  const selectPage = (): void => {
+    selection.selectAll(pendingIds());
+  };
+  const selectAllMatching = (): void => {
+    void act(async () => {
+      const ids = await fetchPendingIDs(props.mode);
+      selection.selectAll(ids);
+    });
   };
   const titleOf = (id: number): string => {
-    const p = (proposals() ?? []).find((x) => x.id === id);
+    const p = proposals().find((x) => x.id === id);
     return p ? p.title || p.sourceName || "" : "";
   };
-  // applySelected posts ONE apply-batch for the current selection (already-
-  // reviewed Pending rows). Rename items carry only an id.
   const applySelected = (): void => {
-    const items: ApplyBatchItem[] = [...selection.selected()].map((id) => ({
-      id,
-    }));
+    const items = [...selection.selected()].map((id) => ({ id }));
     if (items.length === 0) return;
     setBatchResult(null);
+    setApplyProgress("");
     void act(async () => {
-      setBatchResult(await applyBatch(items));
+      const out = await applyBatchStreaming(items, (done, total) => {
+        setApplyProgress(`Applied ${done}/${total}…`);
+      });
+      setBatchResult(out as ApplyBatchResponse);
+      setApplyProgress("");
+      selection.clear();
+      setLogKey((k) => k + 1);
     });
   };
 
   return (
     <div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <Button variant="primary" onClick={() => void scan(props.mode)} disabled={scanning()}>
           {scanning() ? "Scanning…" : "Scan"}
         </Button>
@@ -280,21 +298,38 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
             Apply Selected ({selection.size()})
           </Button>
         </Show>
+        <Button variant="secondary" onClick={selectPage} disabled={pendingIds().length === 0}>
+          Select page
+        </Button>
+        <Button variant="secondary" onClick={selectAllMatching}>
+          Select all matching
+        </Button>
+        <PageSizeSelect
+          value={pageSize()}
+          onChange={(n) => {
+            savePageSize("rename", n);
+            setPageSize(n);
+            setOffset(0);
+          }}
+        />
       </div>
 
+      <Show when={applyProgress()}>
+        <Muted class="mt-2">{applyProgress()}</Muted>
+      </Show>
       <Show when={actionError()}>
         <ErrorText>{actionError()}</ErrorText>
       </Show>
       <Show when={batchResult()}>
         {(res) => <BatchResultSummary result={res()} titleOf={titleOf} />}
       </Show>
-      <Show when={proposals.error}>
-        <ErrorText>{(proposals.error as Error)?.message}</ErrorText>
+      <Show when={page.error}>
+        <ErrorText>{(page.error as Error)?.message}</ErrorText>
       </Show>
 
-      <Show when={!proposals.loading} fallback={<Muted class="mt-4">Loading…</Muted>}>
+      <Show when={!page.loading} fallback={<Muted class="mt-4">Loading…</Muted>}>
         <Show
-          when={proposals() && proposals()!.length > 0}
+          when={proposals().length > 0}
           fallback={<Muted class="mt-4">No proposals yet — click Scan.</Muted>}
         >
           <div class="mt-4 overflow-x-auto">
@@ -305,9 +340,13 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                     <input
                       type="checkbox"
                       aria-label="Select all pending"
-                      checked={allPendingSelected()}
+                      checked={pagePendingSelected()}
                       disabled={pendingIds().length === 0}
-                      onChange={toggleSelectAll}
+                      onChange={() => {
+                        if (pagePendingSelected()) {
+                          for (const id of pendingIds()) selection.toggle(id);
+                        } else selectPage();
+                      }}
                     />
                   </th>
                   <th class="px-2 py-2 font-medium">Source</th>
@@ -332,104 +371,108 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
               </thead>
               <tbody>
                 <For each={proposals()}>
-                  {(p) => {
-                    const status = p.status as ProposalStatus;
-                    const actionable =
-                      status === "pending" || status === "unmatched";
-                    return (
-                      <tr class="border-b border-border/60 align-top">
+                  {(p) => (
+                    <tr class="border-b border-border/60 align-top">
+                      <td class="px-2 py-2">
+                        <Show when={p.status === "pending"}>
+                          <input
+                            type="checkbox"
+                            checked={selection.has(p.id)}
+                            onChange={() => selection.toggle(p.id)}
+                            aria-label={`Select ${p.sourceName}`}
+                          />
+                        </Show>
+                      </td>
+                      <td class="px-2 py-2 font-mono text-xs">{p.sourceName}</td>
+                      <td class="px-2 py-2">{p.title}</td>
+                      <Show when={props.mode === "movies" || props.mode === "series"}>
+                        <td class="px-2 py-2">{p.year || ""}</td>
+                      </Show>
+                      <Show when={props.mode === "series"}>
+                        <td class="px-2 py-2">{p.seasonNumber ?? ""}</td>
                         <td class="px-2 py-2">
-                          <Show when={status === "pending"}>
-                            <input
-                              type="checkbox"
-                              aria-label={`Select ${p.sourceName}`}
-                              checked={selection.has(p.id)}
-                              onChange={() => selection.toggle(p.id)}
-                            />
+                          {episodeDisplay(p.episodeNumber, p.extraEpisodeNumbers)}
+                        </td>
+                      </Show>
+                      <Show when={props.mode === "adult"}>
+                        <td class="px-2 py-2">{p.studio}</td>
+                        <td class="px-2 py-2">{p.date}</td>
+                        <td class="px-2 py-2" title={p.phash}>
+                          {shortHash(p.phash || "")}
+                        </td>
+                      </Show>
+                      <td class="px-2 py-2">
+                        <StatusPill status={p.status as ProposalStatus} />
+                      </td>
+                      <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
+                      <td class="px-2 py-2 text-muted">{p.reason}</td>
+                      <td class="px-2 py-2">
+                        <div class="flex flex-wrap gap-1">
+                          <Show when={p.status === "pending"}>
+                            <Button
+                              variant="primary"
+                              onClick={() =>
+                                void act(() => applyProposal(p.id)).then(() =>
+                                  setLogKey((k) => k + 1),
+                                )
+                              }
+                            >
+                              Apply
+                            </Button>
                           </Show>
-                        </td>
-                        <td class="px-2 py-2 text-fg">{p.sourceName}</td>
-                        <td class="px-2 py-2 text-fg">
-                          {p.title || ""}
-                          <Show when={(p.genres ?? []).length > 0}>
-                            <div class="mt-0.5 flex flex-wrap gap-1">
-                              <For each={p.genres}>
-                                {(g) => (
-                                  <span class="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">
-                                    {g}
-                                  </span>
-                                )}
-                              </For>
-                            </div>
+                          <Show when={p.status === "unmatched"}>
+                            <Button
+                              variant="secondary"
+                              onClick={() =>
+                                void act(() => submitDraft(p.id)).then(() =>
+                                  setLogKey((k) => k + 1),
+                                )
+                              }
+                            >
+                              Give back
+                            </Button>
                           </Show>
-                        </td>
-                        <Show when={props.mode === "movies" || props.mode === "series"}>
-                          <td class="px-2 py-2 text-muted">{p.year || ""}</td>
-                        </Show>
-                        <Show when={props.mode === "series"}>
-                          <td class="px-2 py-2 text-muted">
-                            {p.seasonNumber ?? ""}
-                          </td>
-                          <td class="px-2 py-2 text-muted">
-                            {episodeDisplay(p.episodeNumber, p.extraEpisodeNumbers)}
-                          </td>
-                        </Show>
-                        <Show when={props.mode === "adult"}>
-                          <td class="px-2 py-2 text-muted">{p.studio || ""}</td>
-                          <td class="px-2 py-2 text-muted">{p.date || ""}</td>
-                          <td class="px-2 py-2 text-muted">
-                            <Show when={p.phash}>
-                              <span title={p.phash}>{shortHash(p.phash!)}</span>
-                            </Show>
-                          </td>
-                        </Show>
-                        <td class="px-2 py-2">
-                          <StatusPill status={p.status} />
-                        </td>
-                        <td class="px-2 py-2 text-muted">
-                          {p.rootFolderPath || ""}
-                        </td>
-                        <td class="px-2 py-2 text-muted">{p.reason || ""}</td>
-                        <td class="px-2 py-2">
-                          <div class="flex flex-wrap gap-1">
-                            <Show when={status === "pending"}>
-                              <Button
-                                variant="primary"
-                                onClick={() => act(() => applyProposal(p.id))}
-                              >
-                                Apply
-                              </Button>
-                            </Show>
-                            <Show when={status === "unmatched"}>
-                              <Button
-                                disabled={!!p.draftId}
-                                onClick={() => act(() => submitDraft(p.id))}
-                              >
-                                {p.draftId ? "Given back" : "Give back"}
-                              </Button>
-                            </Show>
-                            <Show when={actionable && isTitleMode()}>
-                              <Button onClick={() => setRepickFor(p)}>
-                                Re-pick
-                              </Button>
-                            </Show>
-                            <Show when={actionable}>
-                              <Button
-                                class="!bg-danger !text-accent-fg"
-                                onClick={() => act(() => dismissProposal(p.id))}
-                              >
-                                Dismiss
-                              </Button>
-                            </Show>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  }}
+                          <Show
+                            when={
+                              isTitleMode() &&
+                              (p.status === "pending" || p.status === "unmatched")
+                            }
+                          >
+                            <Button variant="secondary" onClick={() => setRepickFor(p)}>
+                              Re-pick
+                            </Button>
+                          </Show>
+                          <Show
+                            when={
+                              p.status === "pending" || p.status === "unmatched"
+                            }
+                          >
+                            <Button
+                              variant="secondary"
+                              onClick={() =>
+                                void act(() => dismissProposal(p.id)).then(() =>
+                                  setLogKey((k) => k + 1),
+                                )
+                              }
+                            >
+                              Dismiss
+                            </Button>
+                          </Show>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </For>
               </tbody>
             </table>
           </div>
+          <PaginationBar
+            total={page()?.total ?? 0}
+            limit={pageSize()}
+            offset={offset()}
+            onPrev={() => setOffset((o) => Math.max(0, o - pageSize()))}
+            onNext={() => setOffset((o) => o + pageSize())}
+          />
         </Show>
       </Show>
 
@@ -439,8 +482,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
             mode={props.mode as "movies" | "series"}
             proposal={p()}
             onDone={() => {
-              // Re-pick already committed inside RepickPanel; just close the
-              // panel, clear any stale error, and refresh the queue.
               setActionError("");
               setRepickFor(null);
               void refetch();
@@ -449,6 +490,8 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
           />
         )}
       </Show>
+
+      <ActivityLogPanel workflow="rename" refreshKey={logKey()} />
     </div>
   );
 };

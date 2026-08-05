@@ -1278,10 +1278,37 @@ type ApplyBatchItem struct {
 	AdditionalKeepIndices []int `json:"additionalKeepIndices,omitempty"`
 }
 
-// ApplyBatchRequest is POST /api/proposals/apply-batch's body. Items is capped
-// server-side (200); an empty Items is rejected.
+// ApplyBatchRequest is POST /api/proposals/apply-batch's body. Rename batches
+// are unbounded; Dedup/Purge are capped at the Organize page-size max (200).
+// An empty Items is rejected. Send Accept: application/x-ndjson for live progress.
 type ApplyBatchRequest struct {
 	Items []ApplyBatchItem `json:"items"`
+}
+
+// ProposalPage is a paginated Organize proposals list response.
+type ProposalPage struct {
+	Items  []Proposal `json:"items"`
+	Total  int        `json:"total"`
+	Limit  int        `json:"limit"`
+	Offset int        `json:"offset"`
+}
+
+// PendingIDsResponse is Rename "Select all matching" — all Pending ids for a mode.
+type PendingIDsResponse struct {
+	IDs []int64 `json:"ids"`
+}
+
+// OrganizeEvent is one activity-log row for Rename/Dedup/Purge screens.
+type OrganizeEvent struct {
+	ID         int64  `json:"id"`
+	Workflow   string `json:"workflow"`
+	Mode       string `json:"mode"`
+	Kind       string `json:"kind"`
+	ProposalID int64  `json:"proposalId,omitempty"`
+	OK         *bool  `json:"ok,omitempty"`
+	Message    string `json:"message"`
+	DetailJSON string `json:"detailJson,omitempty"`
+	CreatedAt  string `json:"createdAt"`
 }
 
 // ApplyBatchResultItem is one item's outcome — every requested id gets exactly

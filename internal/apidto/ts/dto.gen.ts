@@ -1218,11 +1218,41 @@ export interface ApplyBatchItem {
   additionalKeepIndices?: number /* int */[];
 }
 /**
- * ApplyBatchRequest is POST /api/proposals/apply-batch's body. Items is capped
- * server-side (200); an empty Items is rejected.
+ * ApplyBatchRequest is POST /api/proposals/apply-batch's body. Rename batches
+ * are unbounded; Dedup/Purge are capped at the Organize page-size max (200).
+ * An empty Items is rejected. Send Accept: application/x-ndjson for live progress.
  */
 export interface ApplyBatchRequest {
   items: ApplyBatchItem[];
+}
+/**
+ * ProposalPage is a paginated Organize proposals list response.
+ */
+export interface ProposalPage {
+  items: Proposal[];
+  total: number /* int */;
+  limit: number /* int */;
+  offset: number /* int */;
+}
+/**
+ * PendingIDsResponse is Rename "Select all matching" — all Pending ids for a mode.
+ */
+export interface PendingIDsResponse {
+  ids: number /* int64 */[];
+}
+/**
+ * OrganizeEvent is one activity-log row for Rename/Dedup/Purge screens.
+ */
+export interface OrganizeEvent {
+  id: number /* int64 */;
+  workflow: string;
+  mode: string;
+  kind: string;
+  proposalId?: number /* int64 */;
+  ok?: boolean;
+  message: string;
+  detailJson?: string;
+  createdAt: string;
 }
 /**
  * ApplyBatchResultItem is one item's outcome — every requested id gets exactly

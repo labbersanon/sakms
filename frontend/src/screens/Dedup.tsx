@@ -65,7 +65,6 @@ import {
   type Candidate,
   type Proposal,
   type ProposalStatus,
-  applyBatch,
   applyKeep,
   applyKeepAll,
   dedupVideoUrl,
@@ -73,6 +72,11 @@ import {
   fetchDedupProposals,
   fetchDedupVmaf,
 } from "../api/dedup";
+import {
+  applyBatchStreaming,
+  loadPageSize,
+  savePageSize,
+} from "../api/organize";
 import {
   BatchResultSummary,
   Button,
@@ -83,6 +87,11 @@ import {
 } from "../components/ui";
 import { type LogLine, useDedupScanStream } from "./dedupScanStream";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
+import {
+  ActivityLogPanel,
+  PageSizeSelect,
+  PaginationBar,
+} from "./OrganizeChrome";
 
 // winnerIndex returns the index of the group's flagged keeper, defaulting to 0
 // when none is flagged (mirrors the backend's own winnerIndex fallback).
@@ -308,10 +317,15 @@ const CandidateMeta: Component<{ c: Candidate }> = (props) => (
 // DedupView is one mode's duplicate-group review queue. Keyed on props.mode so
 // the resource refetches when the shell switches tabs.
 const DedupView: Component<{ mode: Mode }> = (props) => {
-  const [proposals, { refetch }] = createResource(
-    () => props.mode,
-    (m) => fetchDedupProposals(m),
+  const [pageSize, setPageSize] = createSignal(loadPageSize("dedup"));
+  const [offset, setOffset] = createSignal(0);
+  const [logKey, setLogKey] = createSignal(0);
+  const [applyProgress, setApplyProgress] = createSignal("");
+  const [page, { refetch }] = createResource(
+    () => ({ mode: props.mode, limit: pageSize(), offset: offset() }),
+    ({ mode, limit, offset }) => fetchDedupProposals(mode, limit, offset),
   );
+  const proposals = () => page()?.items ?? [];
   // keepSel maps a proposal id → the operator's chosen PRIMARY index. Absent
   // means "use the group's flagged winner" (the pre-selected radio). Its
   // presence also flags a batch override (AC13). Cleared on refetch/mode switch.
@@ -348,11 +362,14 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
       resetQueueState();
       setViewMode(readViewMode(props.mode));
       setSkippedIds(readSkipped(props.mode));
+      setOffset(0);
+      setApplyProgress("");
     },
     resetAfterAct: () => {
       setKeepSel({});
       setAdditionalKeep({});
       selection.clear();
+      setLogKey((k) => k + 1);
     },
     refetch,
   });
@@ -360,6 +377,8 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   const scanStream = useDedupScanStream(() => props.mode, {
     refetch: async () => {
       resetQueueState();
+      setOffset(0);
+      setLogKey((k) => k + 1);
       await refetch();
     },
   });
@@ -367,9 +386,12 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   // Prune the skipped-id set against the live Pending ids on every load (AC7):
   // once a scan rotates proposal ids (ReplacePending delete+reinsert), the stale
   // skipped ids no longer match anything and are dropped — self-healing.
+  // Claude 2026-08-05: wait until a page has loaded — proposals() is [] while
+  //   loading, which would wipe localStorage skips before items arrive.
   createEffect(() => {
-    const list = proposals();
-    if (!list) return;
+    const loaded = page();
+    if (!loaded) return;
+    const list = loaded.items ?? [];
     const pending = new Set(
       list.filter((p) => p.status === "pending").map((p) => p.id),
     );
@@ -438,7 +460,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   // pendingIds are the groups selectable/batchable — only Pending cards resolve,
   // and only those not currently skipped.
   const pendingIds = (): number[] =>
-    (proposals() ?? [])
+    proposals()
       .filter((p) => p.status === "pending" && !skippedIds().has(p.id))
       .map((p) => p.id);
   const allPendingSelected = (): boolean => {
@@ -450,7 +472,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
     else selection.selectAll(pendingIds());
   };
   const titleOf = (id: number): string => {
-    const p = (proposals() ?? []).find((x) => x.id === id);
+    const p = proposals().find((x) => x.id === id);
     return p ? p.title || p.sourceName || "" : "";
   };
 
@@ -458,7 +480,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   // skipped group that later becomes non-pending (applied/dismissed) is not
   // hidden — skip only suppresses the Pending review row.
   const visibleProposals = (): Proposal[] =>
-    (proposals() ?? []).filter(
+    proposals().filter(
       (p) => !(p.status === "pending" && skippedIds().has(p.id)),
     );
 
@@ -492,7 +514,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   const applySelected = (): void => {
     const overrides = keepSel();
     const items: ApplyBatchItem[] = [...selection.selected()].map((id) => {
-      const p = (proposals() ?? []).find((x) => x.id === id);
+      const p = proposals().find((x) => x.id === id);
       const add = p ? [...additionalOf(p)] : [];
       const overridden = overrides[id] !== undefined;
       const item: ApplyBatchItem = { id };
@@ -504,14 +526,20 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
     });
     if (items.length === 0) return;
     setBatchResult(null);
+    setApplyProgress("");
     void act(async () => {
-      setBatchResult(await applyBatch(items));
+      const out = await applyBatchStreaming(items, (done, total) => {
+        setApplyProgress(`Applied ${done}/${total}…`);
+      });
+      setBatchResult(out as ApplyBatchResponse);
+      setApplyProgress("");
+      setLogKey((k) => k + 1);
     });
   };
 
   return (
     <div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <Button
           variant="primary"
           onClick={() => scanStream.initiate(props.mode)}
@@ -560,7 +588,19 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
             Apply Selected ({selection.size()})
           </Button>
         </Show>
+        <PageSizeSelect
+          value={pageSize()}
+          onChange={(n) => {
+            savePageSize("dedup", n);
+            setPageSize(n);
+            setOffset(0);
+          }}
+        />
       </div>
+
+      <Show when={applyProgress()}>
+        <Muted class="mt-2">{applyProgress()}</Muted>
+      </Show>
 
       <Show when={actionError()}>
         <ErrorText>{actionError()}</ErrorText>
@@ -586,11 +626,11 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
         {(res) => <BatchResultSummary result={res()} titleOf={titleOf} />}
       </Show>
 
-      <Show when={proposals.error}>
-        <ErrorText>{(proposals.error as Error)?.message}</ErrorText>
+      <Show when={page.error}>
+        <ErrorText>{(page.error as Error)?.message}</ErrorText>
       </Show>
       <Show
-        when={!proposals.loading}
+        when={!page.loading}
         fallback={<Muted class="mt-4">Loading…</Muted>}
       >
         <Show
@@ -815,6 +855,15 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
           </div>
         </Show>
       </Show>
+
+      <PaginationBar
+        total={page()?.total ?? 0}
+        limit={pageSize()}
+        offset={offset()}
+        onPrev={() => setOffset((o) => Math.max(0, o - pageSize()))}
+        onNext={() => setOffset((o) => o + pageSize())}
+      />
+      <ActivityLogPanel workflow="dedup" refreshKey={logKey()} />
     </div>
   );
 };

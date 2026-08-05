@@ -241,6 +241,8 @@ func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fr
 }
 
 // List returns every proposal for (m, wf), most recently created first.
+// Unbounded — used by internal scan/replace paths. HTTP list handlers use
+// ListPage instead.
 func (s *Store) List(ctx context.Context, m mode.Mode, wf Workflow) ([]Proposal, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, workflow, status, source_name, source_path, root_folder_path,
@@ -268,6 +270,86 @@ func (s *Store) List(ctx context.Context, m mode.Mode, wf Workflow) ([]Proposal,
 			return nil, err
 		}
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// Claude 2026-08-05: page-size bounds for Organize queue pagination.
+// Reason: deep-interview-organize-pagination-log — Dedup/Purge apply is
+//   page-scoped; max page size is also their apply-batch bound.
+// Troubleshooting: clients sending limit>Max get clamped, not 400.
+// Review if: page-size options in the UI change.
+const (
+	MaxProposalPageSize     = 200
+	DefaultProposalPageSize = 50
+)
+
+// ListPage returns one page of proposals for (m, wf) plus the total matching
+// count. limit<=0 uses DefaultProposalPageSize; limit is clamped to MaxProposalPageSize.
+// offset<0 is treated as 0. Empty pages still return items=[] (not null).
+func (s *Store) ListPage(ctx context.Context, m mode.Mode, wf Workflow, limit, offset int) ([]Proposal, int, error) {
+	if limit <= 0 {
+		limit = DefaultProposalPageSize
+	}
+	if limit > MaxProposalPageSize {
+		limit = MaxProposalPageSize
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM proposals WHERE mode = ? AND workflow = ?
+	`, string(m), string(wf)).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("counting proposals: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, mode, workflow, status, source_name, source_path, root_folder_path,
+		       title, tvdb_id, tmdb_id, season_number, episode_number, year, quality_profile_id, reason, tracked_id,
+		       foreign_id, item_type, candidates_json, studio, scene_date,
+		       draft_id, COALESCE(draft_submitted_at, ''),
+		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
+		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
+		FROM proposals WHERE mode = ? AND workflow = ? ORDER BY id DESC
+		LIMIT ? OFFSET ?
+	`, string(m), string(wf), limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing proposals page: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Proposal{}
+	for rows.Next() {
+		p, err := scanProposal(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, p)
+	}
+	return out, total, rows.Err()
+}
+
+// ListPendingIDs returns every Pending proposal id for (m, wf), newest first.
+// Used by Rename "Select all matching" (cross-page selection).
+func (s *Store) ListPendingIDs(ctx context.Context, m mode.Mode, wf Workflow) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id FROM proposals WHERE mode = ? AND workflow = ? AND status = ?
+		ORDER BY id DESC
+	`, string(m), string(wf), string(Pending))
+	if err != nil {
+		return nil, fmt.Errorf("listing pending proposal ids: %w", err)
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }

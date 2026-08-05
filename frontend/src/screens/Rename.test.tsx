@@ -51,6 +51,13 @@ const tmdbItem = (over: Partial<DiscoverItem>): DiscoverItem => ({
 type Call = { url: string; method: string; body: unknown };
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 
+const pageOf = (items: Proposal[]) => ({
+  items,
+  total: items.length,
+  limit: 50,
+  offset: 0,
+});
+
 const stubFetch = (handler: Handler) => {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -60,7 +67,22 @@ const stubFetch = (handler: Handler) => {
       method: (init?.method ?? "GET").toUpperCase(),
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
-    return handler(url, init);
+    if (url.includes("/api/organize/events")) return jsonResponse([]);
+    if (url.includes("/pending-ids")) return jsonResponse({ ids: [] });
+    const res = await handler(url, init);
+    // Wrap bare proposal arrays into ProposalPage for paginated list endpoints.
+    if (
+      url.includes("/rename/proposals") &&
+      !url.includes("pending-ids") &&
+      res.headers.get("Content-Type")?.includes("json")
+    ) {
+      const cloned = res.clone();
+      const body = await cloned.json();
+      if (Array.isArray(body)) {
+        return jsonResponse(pageOf(body as Proposal[]));
+      }
+    }
+    return res;
   });
   vi.stubGlobal("fetch", fn);
   return calls;

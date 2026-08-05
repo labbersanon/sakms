@@ -34,8 +34,7 @@ import (
 
 // yearFromReleaseDate parses the release year out of TMDB's normalized
 // "YYYY-MM-DD" ReleaseDate string, returning 0 if it's empty or malformed —
-// kept local to this package rather than shared with internal/dedup, same
-// precedent as internal/library's own private videoExts duplication.
+// kept local to this package rather than shared with internal/dedup.
 func yearFromReleaseDate(releaseDate string) int {
 	if len(releaseDate) < 4 {
 		return 0
@@ -189,10 +188,24 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 			if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
 				continue
 			}
+			// Claude 2026-08-05: resolve to allowlisted video before propose; silent omit non-video
+			// Reason: Movies scan previously proposed folders/.plexmatch/trickplay tiles without ResolveVideoFile
+			// Troubleshooting: Non-video Rename rows — next Organize scan rebuilds the list without them
+			// Review if: ScanLibrary stops using ResolveVideoFile or silent-omit policy changes
+			videoPath, err := library.ResolveVideoFile(entry.Path)
+			if err != nil {
+				continue
+			}
+			// Schema check needs the atomic folder (or file) entry, not the resolved video path —
+			// MatchesMovieSchema only recognizes organized movie directories.
 			if naming.MatchesMovieSchema(entry.Path, preset) {
 				continue // already organized under the active preset — nothing to propose
 			}
-			out = append(out, proposeOneLibrary(ctx, sess, byTMDB, rootFolderPath, root, entry, confidenceThreshold))
+			// Keep entry.Name for TMDB search (folder release names); Path is the video file.
+			out = append(out, proposeOneLibrary(ctx, sess, byTMDB, rootFolderPath, root, library.UnmappedEntry{
+				Name: entry.Name,
+				Path: videoPath,
+			}, confidenceThreshold))
 		}
 	}
 	return out, nil
@@ -460,12 +473,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 			}
 			videoFiles, err := library.ResolveEpisodeVideoFiles(entry.Path)
 			if err != nil {
-				out = append(out, proposals.Proposal{
-					Mode: mode.Series, Workflow: proposals.Rename, Status: proposals.Unmatched,
-					SourceName: entry.Name, SourcePath: entry.Path, RootFolderPath: root,
-					Reason: fmt.Sprintf("no video file found under %q: %v", entry.Path, err),
-				})
-				continue
+				continue // silent omit — non-video / empty of video (Jellyfin VideoExts gate)
 			}
 			for _, videoPath := range videoFiles {
 				if naming.MatchesSeriesSchema(videoPath, preset) {

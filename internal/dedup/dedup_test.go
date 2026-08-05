@@ -146,6 +146,18 @@ func TestFindVideoFile_MissingPathErrors(t *testing.T) {
 	}
 }
 
+func TestFindVideoFile_NonVideoLooseFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	plex := writeVideoFile(t, dir, ".plexmatch", 10)
+	if _, err := findVideoFile(plex); err == nil {
+		t.Error("expected error for .plexmatch")
+	}
+	tile := writeVideoFile(t, dir, "320 - 10x10", 10)
+	if _, err := findVideoFile(tile); err == nil {
+		t.Error("expected error for extensionless trickplay tile")
+	}
+}
+
 // fakeStashboxByID serves StashDB's findScene-by-id GraphQL query, returning a
 // scene for each UUID present in titles and null for anything else.
 func fakeStashboxByID(t *testing.T, titles map[string]string) http.HandlerFunc {

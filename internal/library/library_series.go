@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/labbersanon/sakms/internal/config"
 )
 
 // Series is one tracked show — the parent row episodes hang off of. Unlike
@@ -861,16 +863,19 @@ func trimSeparators(s string) string {
 }
 
 // ResolveEpisodeVideoFiles is ResolveVideoFile's season-pack-aware sibling:
-// if path is a file, returns just that file; if it's a directory, returns
-// EVERY video-extensioned file inside (not just the largest — a season
-// pack legitimately contains many different-sized episodes), skipping
-// sidecars the same way ScanRootFolder does.
+// if path is an allowlisted video file, returns just that file; if it's a
+// directory, returns EVERY allowlisted video file inside (not just the
+// largest — a season pack legitimately contains many different-sized
+// episodes). Non-video loose files return an error.
 func ResolveEpisodeVideoFiles(path string) ([]string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.IsDir() {
+		if !config.IsVideoFile(path) {
+			return nil, fmt.Errorf("not a video file: %s", path)
+		}
 		return []string{path}, nil
 	}
 
@@ -880,7 +885,7 @@ func ResolveEpisodeVideoFiles(path string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() || !videoExts[strings.ToLower(filepath.Ext(e.Name()))] {
+		if e.IsDir() || !config.IsVideoExt(filepath.Ext(e.Name())) {
 			continue
 		}
 		out = append(out, filepath.Join(path, e.Name()))

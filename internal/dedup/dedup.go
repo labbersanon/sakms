@@ -37,9 +37,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -118,46 +116,10 @@ func refineByPHash(candidates []proposals.Candidate, frames, perFrameThreshold i
 	return out
 }
 
-var videoExts = map[string]bool{
-	".mkv": true, ".mp4": true, ".avi": true, ".m4v": true,
-	".ts": true, ".wmv": true, ".mov": true, ".webm": true,
-}
-
-// findVideoFile resolves an unmapped-folder or tracked-item path to an
-// actual video file: itself, if it already is one, or the largest
-// video-extensioned file directly inside it, if it's a directory.
+// findVideoFile resolves an orphan/tracked path to an allowlisted video file
+// via library.ResolveVideoFile (Jellyfin-parity VideoExts).
 func findVideoFile(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("stat %s: %w", path, err)
-	}
-	if !info.IsDir() {
-		return path, nil
-	}
-
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", path, err)
-	}
-	var best string
-	var bestSize int64
-	for _, e := range entries {
-		if e.IsDir() || !videoExts[strings.ToLower(filepath.Ext(e.Name()))] {
-			continue
-		}
-		fi, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if fi.Size() > bestSize {
-			bestSize = fi.Size()
-			best = filepath.Join(path, e.Name())
-		}
-	}
-	if best == "" {
-		return "", fmt.Errorf("no video file found under %s", path)
-	}
-	return best, nil
+	return library.ResolveVideoFile(path)
 }
 
 // probeCandidate resolves path to a real video file and ffprobes it,

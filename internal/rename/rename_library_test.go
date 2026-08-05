@@ -50,11 +50,21 @@ func fakeTMDBSearch(t *testing.T, results map[string]string) *tmdb.Client {
 	return tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
 }
 
+
+func seedMovieRelease(t *testing.T, root, folderName string) {
+	t.Helper()
+	dir := filepath.Join(root, folderName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "movie.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("writing movie.mkv: %v", err)
+	}
+}
+
 func TestScanLibrary_ProducesPendingProposalForNewItem(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "A.Beautiful.Mind.2001.1080p.BluRay.x264-GROUP"), 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedMovieRelease(t, root, "A.Beautiful.Mind.2001.1080p.BluRay.x264-GROUP")
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
 		"A Beautiful Mind 2001": `{"results":[{"id":453,"title":"A Beautiful Mind","overview":"...","release_date":"2001-12-21"}]}`,
@@ -93,9 +103,7 @@ func TestScanLibrary_RequiresRootFolderPath(t *testing.T) {
 
 func TestScanLibrary_MarksUnmatchedForAlreadyInLibrary(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "A.Beautiful.Mind.2001.1080p.BluRay.x264-GROUP"), 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedMovieRelease(t, root, "A.Beautiful.Mind.2001.1080p.BluRay.x264-GROUP")
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
 		"A Beautiful Mind 2001": `{"results":[{"id":453,"title":"A Beautiful Mind"}]}`,
@@ -118,9 +126,7 @@ func TestScanLibrary_MarksUnmatchedForAlreadyInLibrary(t *testing.T) {
 
 func TestScanLibrary_MarksUnmatchedWhenNoTMDBMatch(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "xyz123"), 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedMovieRelease(t, root, "xyz123")
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
 		"xyz123": `{"results":[]}`,
@@ -142,9 +148,7 @@ func TestScanLibrary_MarksUnmatchedWhenNoTMDBMatch(t *testing.T) {
 // accepting a confidently-wrong top hit.
 func TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "FathersLLDVD"), 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedMovieRelease(t, root, "FathersLLDVD")
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
 		"FathersLLDVD": `{"results":[{"id":999,"title":"Father's Day","overview":"...","release_date":"1997-05-09"}]}`,
@@ -168,9 +172,7 @@ func TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch(t *testing.T) {
 // pre-feature unconditional-items[0] behavior.
 func TestScanLibrary_ThresholdZeroAcceptsAnyTMDBResult(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "FathersLLDVD"), 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedMovieRelease(t, root, "FathersLLDVD")
 
 	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
 		"FathersLLDVD": `{"results":[{"id":999,"title":"Father's Day","overview":"...","release_date":"1997-05-09"}]}`,
@@ -255,7 +257,7 @@ func TestScanLibrary_SkipsAlreadyConformantEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].SourcePath != nonConformantDir {
+	if len(got) != 1 || got[0].SourcePath != filepath.Join(nonConformantDir, "movie.mkv") {
 		t.Fatalf("expected only the non-conformant entry proposed, got %+v", got)
 	}
 }
@@ -276,12 +278,42 @@ func TestScanLibrary_SkipsSidecarFiles(t *testing.T) {
 	}
 }
 
+func TestScanLibrary_SilentlyOmitsNonVideo(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".plexmatch"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("plexmatch: %v", err)
+	}
+	trick := filepath.Join(root, "Something.1080p.trickplay")
+	if err := os.Mkdir(trick, 0o755); err != nil {
+		t.Fatalf("mkdir trickplay: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(trick, "320 - 10x10"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("tile: %v", err)
+	}
+	seedMovieRelease(t, root, "Real.Movie.2020")
+
+	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
+		"Real Movie 2020": `{"results":[{"id":99,"title":"Real Movie","overview":"...","release_date":"2020-01-01"}]}`,
+	})}
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultConfidenceThreshold)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected only the real video, got %d: %+v", len(got), got)
+	}
+	if got[0].TMDBID != 99 {
+		t.Errorf("unexpected proposal: %+v", got[0])
+	}
+	if filepath.Ext(got[0].SourcePath) != ".mkv" {
+		t.Errorf("SourcePath should be video file, got %q", got[0].SourcePath)
+	}
+}
+
 func TestScanLibrary_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
 	generalRoot := t.TempDir()
 	kidsRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(generalRoot, "Kids.Movie.2020"), 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedMovieRelease(t, generalRoot, "Kids.Movie.2020")
 
 	sess := &mode.Session{Mode: mode.Movies, KidsRootPath: kidsRoot, TMDB: fakeTMDBSearch(t, map[string]string{
 		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie."}]}`,
@@ -305,9 +337,7 @@ func TestScanLibrary_RoutesKidsClassifiedContentToKidsRoot(t *testing.T) {
 func TestScanLibrary_NoRerouteWithoutMainstreamAI(t *testing.T) {
 	generalRoot := t.TempDir()
 	kidsRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(generalRoot, "Kids.Movie.2020"), 0o755); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	seedMovieRelease(t, generalRoot, "Kids.Movie.2020")
 
 	sess := &mode.Session{Mode: mode.Movies, KidsRootPath: kidsRoot, TMDB: fakeTMDBSearch(t, map[string]string{
 		"Kids Movie 2020": `{"results":[{"id":111,"title":"Kids Movie","overview":"A fun kids movie."}]}`,

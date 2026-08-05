@@ -406,6 +406,14 @@ func TestResolveEpisodeVideoFiles_SingleFileAndSeasonPack(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected both episode files (not the sidecar), got %v", got)
 	}
+
+	nonVideo := filepath.Join(dir, ".plexmatch")
+	if err := os.WriteFile(nonVideo, []byte("x"), 0o644); err != nil {
+		t.Fatalf("writing plexmatch: %v", err)
+	}
+	if _, err := ResolveEpisodeVideoFiles(nonVideo); err == nil {
+		t.Fatal("expected error for non-video loose file")
+	}
 }
 
 func TestUpsertEpisode_RoundTripsPHashIdentity(t *testing.T) {

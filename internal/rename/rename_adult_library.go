@@ -58,10 +58,9 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
 	}
 
-	// First pass: resolve each entry to its video file, dropping sidecars,
-	// surfacing an unresolvable entry as Unmatched (never silently), and
-	// skipping anything already named to SAK's Adult scheme. Only the survivors
-	// go through the (batched) identification cascade.
+	// First pass: resolve each entry to an allowlisted video file, dropping
+	// sidecars and silently omitting non-video / empty-of-video paths. Only
+	// survivors go through the (batched) identification cascade.
 	type candidate struct {
 		entry     library.UnmappedEntry
 		videoPath string
@@ -74,12 +73,7 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 		}
 		videoPath, err := library.ResolveVideoFile(entry.Path)
 		if err != nil {
-			out = append(out, proposals.Proposal{
-				Mode: mode.Adult, Workflow: proposals.Rename, Status: proposals.Unmatched,
-				SourceName: entry.Name, SourcePath: entry.Path, RootFolderPath: rootFolderPath,
-				Reason: fmt.Sprintf("no video file found under %q: %v", entry.Path, err),
-			})
-			continue
+			continue // silent omit — non-video / empty of video
 		}
 		if naming.MatchesAdultSchema(videoPath) {
 			continue // already organized to SAK's Adult scheme — nothing to propose

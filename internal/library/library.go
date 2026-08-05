@@ -526,14 +526,6 @@ func dirIsLeafEntry(path string, known map[string]bool) (bool, error) {
 	return true, nil
 }
 
-// videoExts are the file extensions ResolveVideoFile treats as playable
-// video content — matches internal/dedup's own (private, independently
-// tested) videoExts list.
-var videoExts = map[string]bool{
-	".mkv": true, ".mp4": true, ".avi": true, ".m4v": true,
-	".ts": true, ".wmv": true, ".mov": true, ".webm": true,
-}
-
 // FileSize returns the byte size of the video file at path, or 0 if it
 // can't be stat'd. Never an error: no caller should fail an
 // otherwise-successful file move over it.
@@ -556,18 +548,18 @@ func FileSize(path string) int64 {
 }
 
 // ResolveVideoFile resolves path to an actual video file: itself, if it's
-// already one, or the largest video-extensioned file directly inside it, if
-// it's a directory. Needed anywhere a relocated path might be a wrapping
-// folder (root/Title (Year)/movie.mkv) rather than the file itself — e.g.
-// after rename.Relocate or a completed grab's contentPath, both of which
-// preserve whatever shape the source had (a single file, or a directory
-// containing one).
+// already an allowlisted video (config.VideoExts / Jellyfin parity), or the
+// largest allowlisted video file directly inside it, if it's a directory.
+// Non-video loose files return an error (silent-omit callers must skip).
 func ResolveVideoFile(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.IsDir() {
+		if !config.IsVideoFile(path) {
+			return "", fmt.Errorf("not a video file: %s", path)
+		}
 		return path, nil
 	}
 
@@ -578,14 +570,14 @@ func ResolveVideoFile(path string) (string, error) {
 	var best string
 	var bestSize int64
 	for _, e := range entries {
-		if e.IsDir() || !videoExts[strings.ToLower(filepath.Ext(e.Name()))] {
+		if e.IsDir() || !config.IsVideoExt(filepath.Ext(e.Name())) {
 			continue
 		}
 		fi, err := e.Info()
 		if err != nil {
 			continue
 		}
-		if fi.Size() > bestSize {
+		if best == "" || fi.Size() > bestSize {
 			bestSize = fi.Size()
 			best = filepath.Join(path, e.Name())
 		}

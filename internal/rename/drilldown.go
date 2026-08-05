@@ -127,11 +127,15 @@ func extractFileYear(s string) int {
 // Year mismatch normally fails the candidate. Exception: when file duration
 // is within tolerance of TMDB runtime, duration may override a wrong filename
 // year (actor match alone cannot).
+//
+// When year already matches exactly, a duration disagreement does not veto —
+// TMDB runtimes are often short vs the file on disk (e.g. Austin Powers 89 vs ~95).
 func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPct int) bool {
 	if !sig.HasAny() {
 		return false
 	}
 	corroborated := false
+	yearMatched := false
 	yearMismatch := false
 	// Claude 2026-08-05: missing candidate metadata ≠ mismatch (ignore that signal)
 	// Reason: empty search release_date + failed MovieDetails made year fail with candYear=0
@@ -140,6 +144,7 @@ func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPc
 	if sig.Year != 0 {
 		if candYear != 0 {
 			if sig.Year == candYear {
+				yearMatched = true
 				corroborated = true
 			} else {
 				yearMismatch = true
@@ -158,11 +163,16 @@ func SignalsPass(sig FileSignals, candYear, runtimeMin int, cast []string, tolPc
 	durationOK := false
 	if sig.DurationSec > 0 {
 		if runtimeMin > 0 {
-			if !durationWithinTolerance(sig.DurationSec, runtimeMin, tolPct) {
+			if durationWithinTolerance(sig.DurationSec, runtimeMin, tolPct) {
+				durationOK = true
+				corroborated = true
+			} else if !yearMatched {
+				// Claude 2026-08-05: year match wins over duration disagreement
+				// Reason: Austin Powers file ~95min vs TMDB 89 failed ±5% despite exact year
+				// Troubleshooting: Pending missing with correct year — check whether duration vetoed
+				// Review if: wrong same-year remakes get accepted when duration should have blocked
 				return false
 			}
-			durationOK = true
-			corroborated = true
 		}
 	}
 	// Claude 2026-08-05: duration-only soft override for wrong filename year

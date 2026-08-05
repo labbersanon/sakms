@@ -58,6 +58,14 @@ func TestSignalsPass_YearMismatchDurationOverride(t *testing.T) {
 	}
 }
 
+func TestSignalsPass_YearMatchNotVetoedByDuration(t *testing.T) {
+	// Exact year + duration outside ±5% (Austin Powers-style TMDB runtime short)
+	sig := FileSignals{Year: 1997, DurationSec: 95 * 60}
+	if !SignalsPass(sig, 1997, 89, nil, 5) {
+		t.Fatal("exact year must pass even when duration disagrees")
+	}
+}
+
 func TestSignalsPass_ActorCast(t *testing.T) {
 	sig := FileSignals{Actor: "Richard Pryor"}
 	if !SignalsPass(sig, 0, 0, []string{"Someone", "Richard Pryor"}, 5) {

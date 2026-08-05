@@ -150,9 +150,10 @@ func SearchQueries(name string) []string {
 	add(stripped)
 	add(base) // last-resort with year still in string
 
-	// "Copacabana Marx, Groucho" → "Copacabana Groucho Marx" (not bare "Groucho Marx",
-	// which matches the person and wrong titles).
+	// "Copacabana Marx, Groucho" → bare "Copacabana" (TMDB finds the 1947 film)
+	// and "Copacabana Groucho Marx" (not bare "Groucho Marx", which matches the person).
 	if m := commaPersonRe.FindStringSubmatch(stripped); m != nil {
+		add(strings.TrimSpace(m[1]))
 		add(strings.TrimSpace(m[1] + " " + m[3] + " " + m[2]))
 	}
 

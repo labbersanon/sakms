@@ -163,17 +163,23 @@ func TestSearchQueries_AustinPowersNoTruncation(t *testing.T) {
 
 func TestSearchQueries_GrouchoCommaInvert(t *testing.T) {
 	q := SearchQueries("Copacabana Marx, Groucho (1947).mp4")
-	found := false
+	foundInvert, foundBare := false, false
 	for _, s := range q {
 		if s == "Copacabana Groucho Marx" {
-			found = true
+			foundInvert = true
+		}
+		if s == "Copacabana" {
+			foundBare = true
 		}
 		if s == "Groucho Marx" {
 			t.Fatalf("bare person name must not be a query: %#v", q)
 		}
 	}
-	if !found {
+	if !foundInvert {
 		t.Fatalf("want comma-inverted title, got %#v", q)
+	}
+	if !foundBare {
+		t.Fatalf("want bare title before person credit, got %#v", q)
 	}
 }
 

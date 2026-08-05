@@ -20,8 +20,11 @@ const NAV_LABELS = [
   "Queue",
   "Organize",
   "Tag",
+  "Collections",
   "Settings",
 ];
+
+const ORGANIZE_CHILDREN = ["Rename", "Purge", "Dedup"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router
 // context) with its collapsed state owned by the persisted-bool helper — the
@@ -48,13 +51,16 @@ beforeEach(() => localStorage.clear());
 afterEach(() => localStorage.clear());
 
 describe("Sidebar", () => {
-  it("renders all 8 nav items with icons and labels when expanded", () => {
+  it("renders all nav items with icons and labels when expanded", () => {
     const { container } = renderSidebar();
     for (const label of NAV_LABELS) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    // 8 nav icons + 1 collapse-toggle chevron.
-    expect(container.querySelectorAll("svg").length).toBe(9);
+    for (const label of ORGANIZE_CHILDREN) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    // 8 nav icons + 1 sidebar-collapse chevron + 1 Organize-group chevron.
+    expect(container.querySelectorAll("svg").length).toBe(10);
   });
 
   it("collapse toggle hides labels but keeps icons", () => {
@@ -62,12 +68,19 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByLabelText("Collapse sidebar"));
 
     for (const label of NAV_LABELS) {
+      if (label === "Organize") {
+        expect(screen.getByLabelText("Organize")).toBeInTheDocument();
+        expect(screen.queryByText("Organize")).not.toBeInTheDocument();
+        continue;
+      }
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
-    // Icons (and the chevron) all remain when collapsed.
+    for (const label of ORGANIZE_CHILDREN) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
     expect(container.querySelectorAll("svg").length).toBe(9);
-    // The labels survive as native tooltips for hover discoverability.
     for (const label of NAV_LABELS) {
+      if (label === "Organize") continue;
       expect(container.querySelector(`a[title="${label}"]`)).toBeTruthy();
     }
   });
@@ -79,6 +92,9 @@ describe("Sidebar", () => {
 
     fireEvent.click(screen.getByLabelText("Expand sidebar"));
     for (const label of NAV_LABELS) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    for (const label of ORGANIZE_CHILDREN) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
   });
@@ -98,11 +114,21 @@ describe("Sidebar", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     const { container } = renderSidebar();
 
-    // Labels hidden on this fresh mount because the persisted flag was read.
     expect(screen.queryByText("Discover")).not.toBeInTheDocument();
     expect(container.querySelectorAll("svg").length).toBe(9);
-    // Toggle shows the expand affordance, confirming it mounted collapsed.
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
+  });
+
+  it("icon-collapsed Organize opens a flyout with workflow links", () => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
+    renderSidebar();
+    fireEvent.click(screen.getByLabelText("Organize"));
+    expect(
+      screen.getByRole("menu", { name: "Organize workflows" }),
+    ).toBeInTheDocument();
+    for (const label of ORGANIZE_CHILDREN) {
+      expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
+    }
   });
 });
 

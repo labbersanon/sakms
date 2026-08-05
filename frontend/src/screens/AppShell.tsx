@@ -25,7 +25,15 @@ import {
   createSignal,
   onCleanup,
 } from "solid-js";
-import { A, Route, Router, useLocation } from "@solidjs/router";
+import { A, Route, Router, useLocation, useNavigate } from "@solidjs/router";
+import {
+  ORGANIZE_NAV_EXPANDED_KEY,
+  ORGANIZE_WORKFLOWS,
+  organizeHref,
+  readStoredOrganizeTab,
+  type OrganizeTabId,
+  isOrganizeTabId,
+} from "./organizeTabs";
 import {
   AdultModeContext,
   Button,
@@ -281,30 +289,222 @@ export const Sidebar: Component<{
       </button>
       <For each={NAV_ITEMS}>
         {(item) => (
-          <A
-            href={item.href}
-            title={item.label}
-            onClick={closeMobile}
-            class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
-            activeClass="!bg-white/10 !text-chrome-fg"
-          >
-            <span class="flex shrink-0 items-center">{item.icon({})}</span>
-            <Show when={!props.collapsed()}>
-              <span>{item.label}</span>
-            </Show>
-            <Show when={lock.isLocked(item.href.slice(1))}>
-              <span
-                class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
-                title={`${item.label} is locked`}
-                aria-label={`${item.label} is locked`}
+          <Show
+            when={item.href === "/organize"}
+            fallback={
+              <A
+                href={item.href}
+                title={item.label}
+                onClick={closeMobile}
+                class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
+                activeClass="!bg-white/10 !text-chrome-fg"
               >
-                <LockGlyph />
-              </span>
-            </Show>
-          </A>
+                <span class="flex shrink-0 items-center">{item.icon({})}</span>
+                <Show when={!props.collapsed()}>
+                  <span>{item.label}</span>
+                </Show>
+                <Show when={lock.isLocked(item.href.slice(1))}>
+                  <span
+                    class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+                    title={`${item.label} is locked`}
+                    aria-label={`${item.label} is locked`}
+                  >
+                    <LockGlyph />
+                  </span>
+                </Show>
+              </A>
+            }
+          >
+            <OrganizeNavGroup
+              collapsed={props.collapsed}
+              locked={lock.isLocked("organize")}
+              onCloseMobile={closeMobile}
+            />
+          </Show>
         )}
       </For>
     </nav>
+  );
+};
+
+// Claude 2026-08-05: Organize collapsible group + icon-collapsed flyout.
+// Reason: deep-interview-organize-nav-collapse — nested Rename/Purge/Dedup.
+// Troubleshooting: parent click navigates to last ?tab= and expands children.
+// Review if: nested path routes replace query params.
+const OrganizeNavGroup: Component<{
+  collapsed: () => boolean;
+  locked: boolean;
+  onCloseMobile: () => void;
+}> = (props) => {
+  const loc = useLocation();
+  const navigate = useNavigate();
+  const [groupOpen, setGroupOpen] = createPersistedBool(
+    ORGANIZE_NAV_EXPANDED_KEY,
+    true,
+  );
+  const [flyoutOpen, setFlyoutOpen] = createSignal(false);
+  let flyoutTimer: ReturnType<typeof setTimeout> | undefined;
+  let rootEl: HTMLDivElement | undefined;
+
+  const onOrganize = () =>
+    loc.pathname === "/organize" || loc.pathname === "/organize/";
+  const activeTab = (): OrganizeTabId => {
+    const q = new URLSearchParams(loc.search).get("tab");
+    return isOrganizeTabId(q) ? q : readStoredOrganizeTab();
+  };
+
+  const openFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(true);
+  };
+  const scheduleCloseFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    flyoutTimer = setTimeout(() => setFlyoutOpen(false), 150);
+  };
+  const closeFlyoutNow = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(false);
+  };
+
+  const goOrganize = (tab?: OrganizeTabId) => {
+    const t = tab ?? readStoredOrganizeTab();
+    setGroupOpen(true);
+    navigate(organizeHref(t));
+    closeFlyoutNow();
+    props.onCloseMobile();
+  };
+
+  createEffect(() => {
+    if (!flyoutOpen()) return;
+    const onDoc = (e: MouseEvent) => {
+      if (rootEl && !rootEl.contains(e.target as Node)) closeFlyoutNow();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeFlyoutNow();
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+  onCleanup(() => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+  });
+
+  const linkClass =
+    "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg";
+  const activeLink = "!bg-white/10 !text-chrome-fg";
+
+  return (
+    <div
+      ref={rootEl}
+      class="relative"
+      onMouseEnter={() => {
+        if (props.collapsed()) openFlyout();
+      }}
+      onMouseLeave={() => {
+        if (props.collapsed()) scheduleCloseFlyout();
+      }}
+    >
+      <button
+        type="button"
+        title="Organize"
+        aria-label="Organize"
+        aria-expanded={props.collapsed() ? flyoutOpen() : groupOpen()}
+        aria-haspopup={props.collapsed() ? "menu" : undefined}
+        onClick={() => {
+          if (props.collapsed()) {
+            if (flyoutOpen()) goOrganize();
+            else openFlyout();
+            return;
+          }
+          goOrganize();
+        }}
+        class={linkClass}
+        classList={{ [activeLink]: onOrganize() }}
+      >
+        <span class="flex shrink-0 items-center">
+          <IconRename />
+        </span>
+        <Show when={!props.collapsed()}>
+          <span class="flex-1 text-left">Organize</span>
+          <span
+            class="flex shrink-0 items-center text-chrome-fg/60"
+            onClick={(e) => {
+              e.stopPropagation();
+              setGroupOpen(!groupOpen());
+            }}
+            role="presentation"
+          >
+            <IconChevron collapsed={!groupOpen()} />
+          </span>
+        </Show>
+        <Show when={props.locked}>
+          <span
+            class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+            title="Organize is locked"
+            aria-label="Organize is locked"
+          >
+            <LockGlyph />
+          </span>
+        </Show>
+      </button>
+
+      <Show when={!props.collapsed() && groupOpen()}>
+        <div class="ml-3 flex flex-col gap-0.5 border-l border-chrome-fg/15 pl-2">
+          <For each={[...ORGANIZE_WORKFLOWS]}>
+            {(wf) => (
+              <A
+                href={organizeHref(wf.id)}
+                title={wf.label}
+                onClick={() => {
+                  setGroupOpen(true);
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onOrganize() && activeTab() === wf.id,
+                }}
+              >
+                {wf.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+
+      <Show when={props.collapsed() && flyoutOpen()}>
+        <div
+          role="menu"
+          aria-label="Organize workflows"
+          class="absolute left-full top-0 z-50 ml-1 min-w-[9rem] rounded-md border border-border bg-chrome p-1 shadow-lg"
+          onMouseEnter={openFlyout}
+          onMouseLeave={scheduleCloseFlyout}
+        >
+          <For each={[...ORGANIZE_WORKFLOWS]}>
+            {(wf) => (
+              <A
+                href={organizeHref(wf.id)}
+                role="menuitem"
+                title={wf.label}
+                onClick={() => {
+                  closeFlyoutNow();
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onOrganize() && activeTab() === wf.id,
+                }}
+              >
+                {wf.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
   );
 };
 

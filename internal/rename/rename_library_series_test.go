@@ -465,7 +465,9 @@ func TestApplyLibrarySeries_RelocatesIntoSeasonFolderAndPreservesMetadata(t *tes
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin, "")
+	// nil TMDB: title still comes from the existing library episode row
+	// ("Pilot") so the Jellyfin destination includes the episode name.
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, p, naming.Jellyfin, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -473,7 +475,7 @@ func TestApplyLibrarySeries_RelocatesIntoSeasonFolderAndPreservesMetadata(t *tes
 		t.Error("expected a nonzero episode id")
 	}
 
-	wantDest := filepath.Join(destRoot, "Show Name [tmdbid-555]", "Season 01", "Show Name S01E01.mkv")
+	wantDest := filepath.Join(destRoot, "Show Name [tmdbid-555]", "Season 01", "Show Name S01E01 Pilot.mkv")
 	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
 		t.Errorf("expected the source file to be gone, stat returned: %v", err)
 	}
@@ -540,7 +542,7 @@ func TestApplyLibrarySeries_LogicalSplitCreatesOneEpisodeRowPerNumber(t *testing
 		SeasonNumber: 1, EpisodeNumber: 1, ExtraEpisodeNumbers: []int{2},
 		SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin, "medium")
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, p, naming.Jellyfin, "medium")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -548,6 +550,7 @@ func TestApplyLibrarySeries_LogicalSplitCreatesOneEpisodeRowPerNumber(t *testing
 		t.Error("expected a nonzero episode id for the primary episode")
 	}
 
+	// Primary has no library title → bare range name; ep2 metadata still preserved.
 	wantDest := filepath.Join(destRoot, "Show Name [tmdbid-555]", "Season 01", "Show Name S01E01-E02.mkv")
 	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
 		t.Errorf("expected the source file to be gone, stat returned: %v", err)
@@ -617,7 +620,7 @@ func TestApplyLibrarySeries_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: base,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, p, naming.Jellyfin, "")
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, p, naming.Jellyfin, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -664,7 +667,7 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	if _, _, err := ApplyLibrarySeries(ctx, libStore, p, naming.Legacy, ""); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, p, naming.Legacy, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -674,10 +677,58 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 	}
 }
 
+// TestApplyLibrarySeries_FetchesTMDBEpisodeTitleForJellyfinName proves Apply
+// pulls SeasonDetails when the library has no episode title yet, so the
+// destination is the full Jellyfin shape ("Show S01E01 Pilot.mkv") rather
+// than a bare SxxExx name.
+func TestApplyLibrarySeries_FetchesTMDBEpisodeTitleForJellyfinName(t *testing.T) {
+	base := t.TempDir()
+	destRoot := filepath.Join(base, "TV")
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(base, "Show.Name.2020.S01E01.mkv")
+	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
+		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
+	}
+	tmdbClient := fakeTMDBSeriesServer(t, nil, nil)
+	epID, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, p, naming.Jellyfin, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if epID == 0 {
+		t.Error("expected a nonzero episode id")
+	}
+
+	wantDest := filepath.Join(destRoot, "Show Name [tmdbid-555]", "Season 01", "Show Name S01E01 Pilot.mkv")
+	if data, err := os.ReadFile(wantDest); err != nil || string(data) != "fake video data" {
+		t.Errorf("expected the file at %q, err=%v data=%q", wantDest, err, data)
+	}
+
+	series, err := libStore.GetSeriesByTMDBID(ctx, 555)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ep, err := libStore.GetEpisode(ctx, series.ID, 1, 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Title != "Pilot" || ep.AirDate != "2020-01-01" {
+		t.Errorf("expected TMDB episode metadata recorded on the library row, got %+v", ep)
+	}
+}
+
 func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, proposals.Proposal{Status: status}, naming.Jellyfin, ""); err == nil {
+		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, nil, proposals.Proposal{Status: status}, naming.Jellyfin, ""); err == nil {
 			t.Errorf("expected ApplyLibrarySeries to refuse a %q proposal", status)
 		}
 	}

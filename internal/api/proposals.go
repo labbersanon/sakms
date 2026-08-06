@@ -333,7 +333,11 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 				}
 				return changes, propStore.MarkApplied(ctx, p.ID, int(itemID))
 			}
-			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, p, preset, tier)
+			// Claude 2026-08-06: pass sess.TMDB so Apply can name files with episode titles
+			// Reason: Jellyfin EpisodeFileName needs the title; without TMDB it stays bare SxxExx.
+			// Troubleshooting: Series Apply produced "Show S01E01.ext" only.
+			// Review if: proposals carry episode_title from Scan and Apply prefers that.
+			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, sess.TMDB, p, preset, tier)
 			if err != nil {
 				return changes, err
 			}

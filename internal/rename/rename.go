@@ -1181,8 +1181,8 @@ func tvdbFallbackSeries(
 	return nil
 }
 
-func RelocateEpisode(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbID, seasonNumber, episodeNumber int, preset naming.Preset) (string, error) {
-	return RelocateEpisodeRange(sourcePath, destRoot, seriesTitle, seriesYear, tmdbID, seasonNumber, []int{episodeNumber}, preset)
+func RelocateEpisode(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbID, seasonNumber, episodeNumber int, episodeTitle string, preset naming.Preset) (string, error) {
+	return RelocateEpisodeRange(sourcePath, destRoot, seriesTitle, seriesYear, tmdbID, seasonNumber, []int{episodeNumber}, episodeTitle, preset)
 }
 
 // RelocateEpisodeRange is RelocateEpisode's logical-episode-split sibling:
@@ -1193,10 +1193,16 @@ func RelocateEpisode(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbI
 // single-episode path's behavior (including its exact destination name) is
 // unchanged — EpisodeRangeFileName falls straight through to
 // EpisodeFileName's own rendering for fewer than 2 numbers.
-func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbID, seasonNumber int, episodeNumbers []int, preset naming.Preset) (string, error) {
+//
+// Claude 2026-08-06: episodeTitle threaded through for Jellyfin/Legacy names
+// Reason: Apply was dropping titles → "Show S01E01.ext" only; operators need
+//   identifiable Jellyfin names ("Show S01E01 Pilot.ext").
+// Troubleshooting: applied filenames unreadable → episodeTitle was always "".
+// Review if: proposals gain a persisted episode_title from Scan.
+func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbID, seasonNumber int, episodeNumbers []int, episodeTitle string, preset naming.Preset) (string, error) {
 	seriesFolder := naming.SeriesFolderName(preset, seriesTitle, seriesYear, tmdbID)
 	seasonDir := filepath.Join(destRoot, seriesFolder, naming.SeasonDirName(seasonNumber))
-	dest := filepath.Join(seasonDir, naming.EpisodeRangeFileName(preset, seriesTitle, seasonNumber, episodeNumbers, "", filepath.Ext(sourcePath)))
+	dest := filepath.Join(seasonDir, naming.EpisodeRangeFileName(preset, seriesTitle, seasonNumber, episodeNumbers, episodeTitle, filepath.Ext(sourcePath)))
 	if dest == sourcePath {
 		return dest, nil
 	}
@@ -1238,13 +1244,67 @@ func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, 
 //
 // tier is the operator's configured quality tier for this mode — see
 // ApplyLibrary for why it's a plain string parameter rather than a lookup.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposals.Proposal, preset naming.Preset, tier string) (episodeID int64, changes []mode.PathChange, err error) {
+//
+// tmdbClient is optional: when non-nil, Apply fetches SeasonDetails so the
+// destination Jellyfin/Legacy file name can include the episode title (and
+// so empty library episode metadata can be filled). A TMDB failure is soft —
+// Apply still relocates with whatever title library already has (often "").
+//
+// Claude 2026-08-06: resolve episode title before RelocateEpisodeRange
+// Reason: Jellyfin names need "Show S01E01 Pilot.ext"; title was never passed.
+// Troubleshooting: Apply batch left bare SxxExx names (unidentifiable).
+// Review if: Scan persists episode_title on proposals and Apply prefers that.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient *tmdb.Client, p proposals.Proposal, preset naming.Preset, tier string) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
 
 	allEpisodeNumbers := append([]int{p.EpisodeNumber}, p.ExtraEpisodeNumbers...)
-	moved, err := RelocateEpisodeRange(p.SourcePath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, p.SeasonNumber, allEpisodeNumbers, preset)
+
+	// Series row first so GetEpisode can resolve titles for the destination
+	// name before any os.Rename — UpsertSeries is idempotent.
+	series, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: p.TMDBID, Title: p.Title, Year: p.Year, RootFolderPath: p.RootFolderPath,
+		Genres: p.Genres, Cast: p.Cast,
+	})
+	if err != nil {
+		return 0, nil, fmt.Errorf("recording series %q: %w", p.Title, err)
+	}
+
+	tmdbByEp := map[int]tmdb.SeasonEpisode{}
+	if tmdbClient != nil && p.TMDBID > 0 {
+		if eps, serr := tmdbClient.SeasonDetails(ctx, p.TMDBID, p.SeasonNumber); serr == nil {
+			for _, ep := range eps {
+				tmdbByEp[ep.EpisodeNumber] = ep
+			}
+		}
+	}
+
+	resolveEpisodeMeta := func(episodeNumber int) (title, airDate string, err error) {
+		if existing, gerr := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, episodeNumber); gerr == nil {
+			title, airDate = existing.Title, existing.AirDate
+		} else if !errors.Is(gerr, library.ErrNotFound) {
+			return "", "", fmt.Errorf("checking existing metadata for episode %d: %w", episodeNumber, gerr)
+		}
+		if se, ok := tmdbByEp[episodeNumber]; ok {
+			if title == "" {
+				title = se.Name
+			}
+			if airDate == "" {
+				airDate = se.AirDate
+			}
+		}
+		return title, airDate, nil
+	}
+
+	// Destination file name uses the primary episode's title (range names
+	// share one title slot in naming.EpisodeRangeFileName).
+	fileTitle, _, err := resolveEpisodeMeta(p.EpisodeNumber)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	moved, err := RelocateEpisodeRange(p.SourcePath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, p.SeasonNumber, allEpisodeNumbers, fileTitle, preset)
 	if err != nil {
 		return 0, nil, fmt.Errorf("relocating %q: %w", p.SourcePath, err)
 	}
@@ -1257,27 +1317,20 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		changes = []mode.PathChange{{Path: p.SourcePath, Kind: mode.Deleted}, {Path: moved, Kind: mode.Created}}
 	}
 
-	series, err := libStore.UpsertSeries(ctx, library.Series{
-		TMDBID: p.TMDBID, Title: p.Title, Year: p.Year, RootFolderPath: p.RootFolderPath,
-		Genres: p.Genres, Cast: p.Cast,
-	})
-	if err != nil {
-		return 0, changes, fmt.Errorf("recording series %q: %w", p.Title, err)
-	}
-
 	// Logical episode-splitting: the file was relocated exactly ONCE above
 	// (allEpisodeNumbers), so every bundled number (primary plus every
 	// extra) gets its own Episode row pointing at that SAME moved path —
 	// never a second relocate. Each row's existing title/air-date is looked
 	// up and preserved BEFORE the write (a prior TMDB-seeded value must
 	// never be silently blanked just because this Apply call only supplied
-	// a file path). The writes themselves go through UpsertEpisodes in ONE
-	// transaction: without that, a failure partway through (e.g. episode 2's
-	// write failing after episode 1's already committed) would leave the
-	// relocated file "known" — masked from ever being reported as an orphan
-	// again by a later Scan — with episode 2's row still missing and
-	// unrecoverable. Atomic writes mean a partial failure commits nothing,
-	// so a re-Scan can still discover and correctly resolve the file.
+	// a file path); missing fields fill from TMDB when available. The writes
+	// themselves go through UpsertEpisodes in ONE transaction: without that,
+	// a failure partway through (e.g. episode 2's write failing after
+	// episode 1's already committed) would leave the relocated file "known"
+	// — masked from ever being reported as an orphan again by a later Scan —
+	// with episode 2's row still missing and unrecoverable. Atomic writes
+	// mean a partial failure commits nothing, so a re-Scan can still discover
+	// and correctly resolve the file.
 	// One physical file, so one stat: every Episode row a bundled multi-episode
 	// file produces carries that file's FULL size, not a share of it. The
 	// storage aggregation de-duplicates by file_path rather than dividing, so
@@ -1285,11 +1338,9 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 	movedSize := library.FileSize(moved)
 	toUpsert := make([]library.Episode, 0, 1+len(p.ExtraEpisodeNumbers))
 	for _, episodeNumber := range allEpisodeNumbers {
-		epTitle, epAirDate := "", ""
-		if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, episodeNumber); err == nil {
-			epTitle, epAirDate = existing.Title, existing.AirDate
-		} else if !errors.Is(err, library.ErrNotFound) {
-			return 0, changes, fmt.Errorf("checking existing metadata for episode %d: %w", episodeNumber, err)
+		epTitle, epAirDate, merr := resolveEpisodeMeta(episodeNumber)
+		if merr != nil {
+			return 0, changes, merr
 		}
 		toUpsert = append(toUpsert, library.Episode{
 			SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: episodeNumber,

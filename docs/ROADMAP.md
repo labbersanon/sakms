@@ -1920,6 +1920,19 @@ surface) shipped 2026-07-19 — see "Recently shipped" below.
 - **TVDB as fallback metadata source** — shipped 2026-07-17, see "Recently
   shipped" below. IMDB deferred: no official public API (would need a paid
   third-party mirror or scraping), judged not worth the complexity.
+  **Ops note (2026-08-06):** live sakms now has `connections.tvdb` populated
+  (encrypted at rest); BW SM backup UUID `sakms/tvdb-api-key`. Existing
+  `tvdbFallbackSeries`/`tvdbFallbackMovie` paths are therefore active.
+- **Sonarr-like TVDB proxy (Skyhook-style)** — queued 2026-08-06.
+  Sonarr does **not** embed a TVDB key in the client; it calls
+  `https://skyhook.sonarr.tv/…`, and the TVDB credential lives only on that
+  private proxy. For multi-user / open-source distribution of sakms, mirror
+  that pattern: a small metadata proxy (self-hosted or operated) that holds
+  the TVDB key and serves sanitized search/show payloads, so installs need
+  no TheTVDB account. Homelab single-operator interim remains encrypted
+  `connections.tvdb` (already working). Scope when built: auth to the proxy,
+  cache, rate limits, and whether Movies/Series rename should prefer proxy
+  over direct TVDB. Do **not** hardcode the key in the sakms git tree.
 - **Local `.nfo` preference** — shipped 2026-07-17, see "Recently shipped"
   below. Artwork reuse (local poster/fanart) remains open if it comes up.
 - **Collections** — shipped (date unclear; already complete when audited

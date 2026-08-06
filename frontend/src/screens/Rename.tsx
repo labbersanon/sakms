@@ -319,7 +319,8 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const [logKey, setLogKey] = createSignal(0);
   const [applyProgress, setApplyProgress] = createSignal<string>("");
   const [showHistory, setShowHistory] = createSignal(loadShowHistory("rename"));
-  const listView = () => (showHistory() ? "history" : "live") as const;
+  const listView = (): "live" | "history" =>
+    showHistory() ? "history" : "live";
   const [page, { refetch }] = createResource(
     () => ({
       mode: props.mode,

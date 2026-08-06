@@ -77,7 +77,8 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
   const [logKey, setLogKey] = createSignal(0);
   const [applyProgress, setApplyProgress] = createSignal("");
   const [showHistory, setShowHistory] = createSignal(loadShowHistory("purge"));
-  const listView = () => (showHistory() ? "history" : "live") as const;
+  const listView = (): "live" | "history" =>
+    showHistory() ? "history" : "live";
   const [page, { refetch: refetchProposals }] = createResource(
     () => ({
       mode: props.mode,

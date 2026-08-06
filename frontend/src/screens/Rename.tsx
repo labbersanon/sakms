@@ -3,11 +3,11 @@
 // mode-specific columns (Wade-approved follow-up, see
 // .omc/handoffs/stage-3-rename.md).
 //
-// Claude 2026-08-06: Apply all; dedicated row Apply; dropdown Re-pick/Dismiss only
-//   (deep-interview-rename-apply-all-giveback-settings).
-// Reason: Apply in the select looked like a mysterious pre-selection.
-// Troubleshooting: Apply still in dropdown → OTHER_ACTIONS was reverted.
-// Review if: Purge/Dedup adopt Apply all summary confirm.
+// Claude 2026-08-06: Apply all runs each row's selected action; Pending → Apply
+//   auto-selected (deep-interview-rename-apply-all-giveback-settings).
+// Reason: Apply all is not rename-only; match found should preselect Apply.
+// Troubleshooting: Apply all only renames → plan ignored dismiss / wrong default.
+// Review if: Re-pick becomes batchable (needs a chosen alternate).
 
 import {
   type Component,
@@ -18,7 +18,7 @@ import {
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
-import type { ApplyBatchResponse } from "@dto";
+import type { ApplyBatchResponse, ApplyBatchResultItem } from "@dto";
 import {
   type Proposal,
   type ProposalStatus,
@@ -53,25 +53,22 @@ import {
   ShowHistoryToggle,
 } from "./OrganizeChrome";
 
-// Claude 2026-08-06: Apply is a dedicated button — not a dropdown option
-// Reason: "Apply" in the select looked like a mysterious pre-selection; Apply
-//   belongs on its own control. Dropdown is only Re-pick / Dismiss; run button
-//   is also labeled Apply (not Go).
-// Troubleshooting: Apply still listed in dropdown → this block was reverted.
-// Review if: operators want Apply back inside the select.
-type OtherActionId = "repick" | "dismiss";
+type RowActionId = "apply" | "repick" | "dismiss";
 
-const OTHER_ACTIONS: { id: OtherActionId; label: string }[] = [
+const ROW_ACTIONS: { id: RowActionId; label: string }[] = [
+  { id: "apply", label: "Apply" },
   { id: "repick", label: "Re-pick" },
   { id: "dismiss", label: "Dismiss" },
 ];
 
-function otherActionEnabled(
-  id: OtherActionId,
+function rowActionEnabled(
+  id: RowActionId,
   status: string,
   titleMode: boolean,
 ): boolean {
   switch (id) {
+    case "apply":
+      return status === "pending";
     case "repick":
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
@@ -79,10 +76,15 @@ function otherActionEnabled(
   }
 }
 
-function anyOtherActionEnabled(status: string, titleMode: boolean): boolean {
-  return OTHER_ACTIONS.some((a) =>
-    otherActionEnabled(a.id, status, titleMode),
-  );
+function defaultRowAction(
+  status: string,
+  titleMode: boolean,
+): RowActionId | "" {
+  // Match found (Pending) → Apply is auto-selected.
+  if (status === "pending" && rowActionEnabled("apply", status, titleMode)) {
+    return "apply";
+  }
+  return "";
 }
 
 function newNameOf(p: Proposal): string {
@@ -92,70 +94,63 @@ function newNameOf(p: Proposal): string {
   return "(unknown)";
 }
 
-async function fetchAllLivePending(mode: Mode): Promise<Proposal[]> {
+async function fetchAllLiveProposals(mode: Mode): Promise<Proposal[]> {
   const out: Proposal[] = [];
   let offset = 0;
   const limit = 100;
   for (;;) {
     const page = await fetchProposals(mode, limit, offset, "live");
-    for (const p of page.items) {
-      if (p.status === "pending") out.push(p);
-    }
+    out.push(...page.items);
     offset += page.items.length;
     if (page.items.length === 0 || offset >= page.total) break;
   }
   return out;
 }
 
+type ApplyAllPlanItem = {
+  proposal: Proposal;
+  action: "apply" | "dismiss";
+};
+
 const RowActions: Component<{
   proposal: Proposal;
   titleMode: boolean;
-  onApply: () => void;
-  onRepick: () => void;
-  onDismiss: () => void;
+  selected: RowActionId | "";
+  onSelect: (id: RowActionId | "") => void;
+  onRun: (id: RowActionId) => void;
 }> = (props) => {
-  const [selected, setSelected] = createSignal<OtherActionId | "">("");
-
-  const enabled = (id: OtherActionId) =>
-    otherActionEnabled(id, props.proposal.status, props.titleMode);
-  const hasOther = () =>
-    anyOtherActionEnabled(props.proposal.status, props.titleMode);
-  const canApply = () => props.proposal.status === "pending";
+  const enabled = (id: RowActionId) =>
+    rowActionEnabled(id, props.proposal.status, props.titleMode);
+  const hasAny = () => ROW_ACTIONS.some((a) => enabled(a.id));
 
   createEffect(() => {
-    const cur = selected();
-    if (cur && !enabled(cur)) setSelected("");
+    const cur = props.selected;
+    if (cur && !enabled(cur)) {
+      props.onSelect(
+        defaultRowAction(props.proposal.status, props.titleMode),
+      );
+    }
   });
 
-  const runOther = () => {
-    const id = selected();
+  const run = () => {
+    const id = props.selected;
     if (!id || !enabled(id)) return;
-    if (id === "repick") props.onRepick();
-    else props.onDismiss();
+    props.onRun(id);
   };
 
   return (
     <div class="flex flex-wrap items-center gap-1">
-      <Show when={canApply()}>
-        <Button
-          variant="primary"
-          aria-label={`Apply proposal ${props.proposal.sourceName}`}
-          onClick={() => props.onApply()}
-        >
-          Apply
-        </Button>
-      </Show>
       <select
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
-        value={selected()}
-        disabled={!hasOther()}
+        value={props.selected}
+        disabled={!hasAny()}
         onChange={(e) =>
-          setSelected(e.currentTarget.value as OtherActionId | "")
+          props.onSelect(e.currentTarget.value as RowActionId | "")
         }
       >
         <option value="">select action</option>
-        <For each={OTHER_ACTIONS}>
+        <For each={ROW_ACTIONS}>
           {(a) => (
             <option value={a.id} disabled={!enabled(a.id)}>
               {a.label}
@@ -164,10 +159,10 @@ const RowActions: Component<{
         </For>
       </select>
       <Button
-        variant="secondary"
+        variant="primary"
         aria-label={`Apply selected action for ${props.proposal.sourceName}`}
-        disabled={!selected() || !enabled(selected() as OtherActionId)}
-        onClick={runOther}
+        disabled={!props.selected || !enabled(props.selected as RowActionId)}
+        onClick={run}
       >
         Apply
       </Button>
@@ -290,7 +285,7 @@ const RepickPanel: Component<{
 };
 
 const ApplyAllConfirm: Component<{
-  rows: Proposal[];
+  plan: ApplyAllPlanItem[];
   onCancel: () => void;
   onConfirm: () => void;
 }> = (props) => (
@@ -303,25 +298,36 @@ const ApplyAllConfirm: Component<{
     <div class="max-h-[80vh] w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
       <div class="border-b border-border px-4 py-3">
         <h3 class="text-base font-semibold text-fg">
-          Apply {props.rows.length} pending rename
-          {props.rows.length === 1 ? "" : "s"}?
+          Apply {props.plan.length} selected action
+          {props.plan.length === 1 ? "" : "s"}?
         </h3>
-        <Muted class="mt-1">Review original → new name, then confirm.</Muted>
+        <Muted class="mt-1">
+          Runs each row’s dropdown choice (Re-pick is skipped — needs a manual
+          pick).
+        </Muted>
       </div>
       <div class="max-h-[50vh] overflow-y-auto px-4 py-2">
         <table class="w-full text-left text-sm">
           <thead>
             <tr class="text-xs uppercase tracking-wide text-muted">
               <th class="py-2 pr-2 font-medium">Original name</th>
-              <th class="py-2 font-medium">New name</th>
+              <th class="py-2 pr-2 font-medium">Action</th>
+              <th class="py-2 font-medium">Detail</th>
             </tr>
           </thead>
           <tbody>
-            <For each={props.rows}>
-              {(p) => (
+            <For each={props.plan}>
+              {(item) => (
                 <tr class="border-t border-border/60 align-top">
-                  <td class="py-2 pr-2 font-mono text-xs">{p.sourceName}</td>
-                  <td class="py-2 text-sm">{newNameOf(p)}</td>
+                  <td class="py-2 pr-2 font-mono text-xs">
+                    {item.proposal.sourceName}
+                  </td>
+                  <td class="py-2 pr-2 text-sm capitalize">{item.action}</td>
+                  <td class="py-2 text-sm">
+                    {item.action === "apply"
+                      ? newNameOf(item.proposal)
+                      : "Dismiss proposal"}
+                  </td>
                 </tr>
               )}
             </For>
@@ -362,8 +368,49 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const [batchResult, setBatchResult] = createSignal<ApplyBatchResponse | null>(
     null,
   );
-  const [applyAllRows, setApplyAllRows] = createSignal<Proposal[] | null>(null);
+  const [applyAllPlan, setApplyAllPlan] = createSignal<ApplyAllPlanItem[] | null>(
+    null,
+  );
   const [applyAllLoading, setApplyAllLoading] = createSignal(false);
+  // Per-proposal dropdown choice; Pending defaults to Apply when first seen.
+  const [selections, setSelections] = createSignal<
+    Record<number, RowActionId | "">
+  >({});
+
+  const isTitleMode = () => props.mode === "movies" || props.mode === "series";
+
+  const selectionOf = (p: Proposal): RowActionId | "" => {
+    const cur = selections()[p.id];
+    if (cur !== undefined) return cur;
+    return defaultRowAction(p.status, isTitleMode());
+  };
+
+  const setSelection = (id: number, action: RowActionId | "") => {
+    setSelections((prev) => ({ ...prev, [id]: action }));
+  };
+
+  // Seed defaults for newly visible rows (Pending → Apply).
+  createEffect(() => {
+    const titleMode = isTitleMode();
+    const items = proposals();
+    setSelections((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const p of items) {
+        if (next[p.id] === undefined) {
+          next[p.id] = defaultRowAction(p.status, titleMode);
+          changed = true;
+        } else {
+          const cur = next[p.id];
+          if (cur && !rowActionEnabled(cur, p.status, titleMode)) {
+            next[p.id] = defaultRowAction(p.status, titleMode);
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  });
 
   const { actionError, setActionError, scanning, scan, act } = useWorkflowActions(
     () => props.mode,
@@ -371,14 +418,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       resetOnModeChange: () => {
         setRepickFor(null);
         setBatchResult(null);
-        setApplyAllRows(null);
+        setApplyAllPlan(null);
+        setSelections({});
         setOffset(0);
         setApplyProgress("");
       },
       scanFn: scanRename,
       resetAfterScan: () => {
         setBatchResult(null);
-        setApplyAllRows(null);
+        setApplyAllPlan(null);
+        setSelections({});
         setOffset(0);
         setLogKey((k) => k + 1);
       },
@@ -389,11 +438,19 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     },
   );
 
-  const isTitleMode = () => props.mode === "movies" || props.mode === "series";
-
   const titleOf = (id: number): string => {
     const p = proposals().find((x) => x.id === id);
     return p ? p.title || p.sourceName || "" : "";
+  };
+
+  const runRowAction = (p: Proposal, id: RowActionId) => {
+    if (id === "apply") {
+      void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
+    } else if (id === "repick") {
+      setRepickFor(p);
+    } else {
+      void act(() => dismissProposal(p.id)).then(() => setLogKey((k) => k + 1));
+    }
   };
 
   const openApplyAll = (): void => {
@@ -401,12 +458,32 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     setApplyAllLoading(true);
     void (async () => {
       try {
-        const rows = await fetchAllLivePending(props.mode);
-        if (rows.length === 0) {
-          setActionError("No pending renames to apply.");
+        const rows = await fetchAllLiveProposals(props.mode);
+        const titleMode = isTitleMode();
+        const sel = selections();
+        const plan: ApplyAllPlanItem[] = [];
+        for (const p of rows) {
+          let action = sel[p.id];
+          if (action === undefined) {
+            action = defaultRowAction(p.status, titleMode);
+          }
+          if (action === "apply" && rowActionEnabled("apply", p.status, titleMode)) {
+            plan.push({ proposal: p, action: "apply" });
+          } else if (
+            action === "dismiss" &&
+            rowActionEnabled("dismiss", p.status, titleMode)
+          ) {
+            plan.push({ proposal: p, action: "dismiss" });
+          }
+          // Re-pick and empty selection are skipped in bulk.
+        }
+        if (plan.length === 0) {
+          setActionError(
+            "Nothing to apply — set each row’s action (Pending defaults to Apply).",
+          );
           return;
         }
-        setApplyAllRows(rows);
+        setApplyAllPlan(plan);
       } catch (e) {
         setActionError((e as Error).message);
       } finally {
@@ -416,17 +493,42 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   };
 
   const confirmApplyAll = (): void => {
-    const rows = applyAllRows();
-    if (!rows || rows.length === 0) return;
-    setApplyAllRows(null);
+    const plan = applyAllPlan();
+    if (!plan || plan.length === 0) return;
+    setApplyAllPlan(null);
     setBatchResult(null);
     setApplyProgress("");
-    const items = rows.map((p) => ({ id: p.id }));
+    const toApply = plan
+      .filter((x) => x.action === "apply")
+      .map((x) => x.proposal.id);
+    const toDismiss = plan
+      .filter((x) => x.action === "dismiss")
+      .map((x) => x.proposal.id);
     void act(async () => {
-      const out = await applyBatchStreaming(items, (done, total) => {
-        setApplyProgress(`Applied ${done}/${total}…`);
-      });
-      setBatchResult(out as ApplyBatchResponse);
+      const results: ApplyBatchResultItem[] = [];
+      const total = toApply.length + toDismiss.length;
+      let done = 0;
+      if (toApply.length > 0) {
+        const out = (await applyBatchStreaming(
+          toApply.map((id) => ({ id })),
+          (d, t) => {
+            setApplyProgress(`Applied ${d}/${t} renames…`);
+          },
+        )) as ApplyBatchResponse;
+        results.push(...out.results);
+        done += toApply.length;
+      }
+      for (const id of toDismiss) {
+        try {
+          await dismissProposal(id);
+          results.push({ id, ok: true });
+        } catch (e) {
+          results.push({ id, ok: false, error: (e as Error).message });
+        }
+        done++;
+        setApplyProgress(`Processed ${done}/${total}…`);
+      }
+      setBatchResult({ results });
       setApplyProgress("");
       setLogKey((k) => k + 1);
     });
@@ -564,17 +666,9 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                         <RowActions
                           proposal={p}
                           titleMode={isTitleMode()}
-                          onApply={() =>
-                            void act(() => applyProposal(p.id)).then(() =>
-                              setLogKey((k) => k + 1),
-                            )
-                          }
-                          onRepick={() => setRepickFor(p)}
-                          onDismiss={() =>
-                            void act(() => dismissProposal(p.id)).then(() =>
-                              setLogKey((k) => k + 1),
-                            )
-                          }
+                          selected={selectionOf(p)}
+                          onSelect={(id) => setSelection(p.id, id)}
+                          onRun={(id) => runRowAction(p, id)}
                         />
                       </td>
                     </tr>
@@ -608,11 +702,11 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         )}
       </Show>
 
-      <Show when={applyAllRows()}>
-        {(rows) => (
+      <Show when={applyAllPlan()}>
+        {(plan) => (
           <ApplyAllConfirm
-            rows={rows()}
-            onCancel={() => setApplyAllRows(null)}
+            plan={plan()}
+            onCancel={() => setApplyAllPlan(null)}
             onConfirm={confirmApplyAll}
           />
         )}

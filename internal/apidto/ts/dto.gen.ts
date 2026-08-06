@@ -1120,6 +1120,7 @@ export interface Proposal {
   id: number /* int64 */;
   status: string;
   sourceName: string;
+  sourcePath?: string;
   rootFolderPath: string;
   title?: string;
   year?: number /* int */;
@@ -1213,6 +1214,7 @@ export interface DedupApplyRequest {
  */
 export interface ApplyBatchItem {
   id: number /* int64 */;
+  sourcePath?: string;
   keepIndex?: number /* int */;
   keepAll?: boolean;
   additionalKeepIndices?: number /* int */[];

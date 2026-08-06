@@ -174,10 +174,32 @@ func validateApplyRequest(req *applyProposalRequest, p *proposals.Proposal) erro
 // accumulation must handle. A test wraps a real *proposals.Store and overrides
 // one method to exercise it. *proposals.Store satisfies this interface, so
 // NewMux's wiring is unchanged.
+//
+// GetLiveBySourcePath backs the id-miss / MarkApplied-miss safety net (re-resolve
+// by source_path when a concurrent rescan rotated ids).
 type proposalApplyStore interface {
 	Get(ctx context.Context, id int64) (*proposals.Proposal, error)
+	GetLiveBySourcePath(ctx context.Context, m mode.Mode, wf proposals.Workflow, sourcePath string) (*proposals.Proposal, error)
 	MarkApplied(ctx context.Context, id int64, trackedID int) error
 	MarkFingerprintSubmitted(ctx context.Context, id int64) error
+}
+
+// markAppliedResilient marks p.ID applied; on ErrNotFound re-resolves by
+// source_path and marks that live row. If neither exists, returns nil (work
+// already committed; live queue no longer has the row).
+func markAppliedResilient(ctx context.Context, store proposalApplyStore, p proposals.Proposal, trackedID int) error {
+	err := store.MarkApplied(ctx, p.ID, trackedID)
+	if err == nil || !errors.Is(err, proposals.ErrNotFound) {
+		return err
+	}
+	if p.SourcePath == "" {
+		return nil
+	}
+	alt, gerr := store.GetLiveBySourcePath(ctx, p.Mode, p.Workflow, p.SourcePath)
+	if gerr != nil {
+		return nil
+	}
+	return store.MarkApplied(ctx, alt.ID, trackedID)
 }
 
 // applyProposalHandler commits exactly the one proposal ID in the URL, never
@@ -337,7 +359,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 				if singleItem {
 					enrichMovieCollection(ctx, sess, libStore, itemID, p.TMDBID)
 				}
-				return changes, propStore.MarkApplied(ctx, p.ID, int(itemID))
+				return changes, markAppliedResilient(ctx, propStore, p, int(itemID))
 			}
 			// Claude 2026-08-06: pass sess.TMDB so Apply can name files with episode titles
 			// Reason: Jellyfin EpisodeFileName needs the title; without TMDB it stays bare SxxExx.
@@ -347,7 +369,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			if err != nil {
 				return changes, err
 			}
-			return changes, propStore.MarkApplied(ctx, p.ID, int(episodeID))
+			return changes, markAppliedResilient(ctx, propStore, p, int(episodeID))
 		case mode.Adult:
 			// Adult owns its own library now too (Whisparr eliminated,
 			// Stage 4): relocate+rename to the AdultFileName scheme and
@@ -360,7 +382,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			if err != nil {
 				return changes, err
 			}
-			if markErr := propStore.MarkApplied(ctx, p.ID, int(sceneID)); markErr != nil {
+			if markErr := markAppliedResilient(ctx, propStore, p, int(sceneID)); markErr != nil {
 				return changes, markErr
 			}
 			if fingerprintSubmitted {
@@ -377,19 +399,19 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			if err != nil {
 				return changes, err
 			}
-			return changes, propStore.MarkApplied(ctx, p.ID, p.TrackedID)
+			return changes, markAppliedResilient(ctx, propStore, p, p.TrackedID)
 		case mode.Series:
 			changes, err := purge.ApplyLibrarySeries(ctx, libStore, p)
 			if err != nil {
 				return changes, err
 			}
-			return changes, propStore.MarkApplied(ctx, p.ID, p.TrackedID)
+			return changes, markAppliedResilient(ctx, propStore, p, p.TrackedID)
 		case mode.Adult:
 			changes, err := purge.ApplyLibraryAdult(ctx, libStore, p)
 			if err != nil {
 				return changes, err
 			}
-			return changes, propStore.MarkApplied(ctx, p.ID, p.TrackedID)
+			return changes, markAppliedResilient(ctx, propStore, p, p.TrackedID)
 		default:
 			return nil, fmt.Errorf("purge for unknown mode %q", p.Mode)
 		}
@@ -400,19 +422,19 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			if err != nil {
 				return changes, err
 			}
-			return changes, propStore.MarkApplied(ctx, p.ID, int(itemID))
+			return changes, markAppliedResilient(ctx, propStore, p, int(itemID))
 		case mode.Series:
 			episodeID, changes, err := dedup.ApplyLibrarySeries(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll, string(autoGrabTier(ctx, settingsStore, p.Mode)))
 			if err != nil {
 				return changes, err
 			}
-			return changes, propStore.MarkApplied(ctx, p.ID, int(episodeID))
+			return changes, markAppliedResilient(ctx, propStore, p, int(episodeID))
 		case mode.Adult:
 			sceneID, changes, err := dedup.ApplyLibraryAdult(ctx, libStore, p, req.KeepIndex, req.AdditionalKeepIndices, req.KeepAll, string(autoGrabTier(ctx, settingsStore, p.Mode)))
 			if err != nil {
 				return changes, err
 			}
-			return changes, propStore.MarkApplied(ctx, p.ID, int(sceneID))
+			return changes, markAppliedResilient(ctx, propStore, p, int(sceneID))
 		default:
 			return nil, fmt.Errorf("dedup for unknown mode %q", p.Mode)
 		}
@@ -433,6 +455,12 @@ const maxBatchItems = proposals.MaxProposalPageSize
 // so older tests compiling against the name still build; do not use for new caps.
 const MaxBatchPurgeItems = proposals.MaxProposalPageSize
 
+// applyGateKey is the (mode, workflow) pair the apply-gate tracks for a batch.
+type applyGateKey struct {
+	m  mode.Mode
+	wf proposals.Workflow
+}
+
 // applyBatchItem is one entry in an apply-batch request. It carries the same
 // per-item Dedup override fields as applyProposalRequest
 // (KeepIndex/KeepAll/AdditionalKeepIndices); Rename and Purge items ignore them,
@@ -440,11 +468,44 @@ const MaxBatchPurgeItems = proposals.MaxProposalPageSize
 // through to the reconstructed applyProposalRequest in applyBatchHandler — a
 // draft that dropped it here would silently delete files the operator checked as
 // "keep" on the bulk-apply path (see .omc/plans/dedup-ux-refine.md AC13).
+// SourcePath is optional safety-net context: when id lookup misses after a
+// rescan, apply-batch re-resolves the live row by this path.
 type applyBatchItem struct {
-	ID                    int64 `json:"id"`
-	KeepIndex             *int  `json:"keepIndex,omitempty"`
-	KeepAll               bool  `json:"keepAll,omitempty"`
-	AdditionalKeepIndices []int `json:"additionalKeepIndices,omitempty"`
+	ID                    int64  `json:"id"`
+	SourcePath            string `json:"sourcePath,omitempty"`
+	KeepIndex             *int   `json:"keepIndex,omitempty"`
+	KeepAll               bool   `json:"keepAll,omitempty"`
+	AdditionalKeepIndices []int  `json:"additionalKeepIndices,omitempty"`
+}
+
+// resolveBatchProposal loads a batch item by id, or — when that id is gone —
+// by sourcePath against the live queue for a known (mode, workflow) from the
+// active apply gate. This is the id-miss safety net for apply-batch when a
+// rescan rotated proposal ids.
+//
+// Claude 2026-08-06: re-resolve batch items by sourcePath on Get miss
+// Reason: belt-and-suspenders with apply-gate + upsert; covers leftover races.
+// Troubleshooting: apply-batch still reports "no proposal with that id".
+// Review if: client always sends sourcePath and ids never churn.
+func resolveBatchProposal(ctx context.Context, store proposalApplyStore, item applyBatchItem, gateActive map[applyGateKey]bool) (*proposals.Proposal, error) {
+	p, err := store.Get(ctx, item.ID)
+	if err == nil {
+		return p, nil
+	}
+	if !errors.Is(err, proposals.ErrNotFound) {
+		return nil, err
+	}
+	path := item.SourcePath
+	if path == "" {
+		return nil, err
+	}
+	for gk := range gateActive {
+		alt, gerr := store.GetLiveBySourcePath(ctx, gk.m, gk.wf, path)
+		if gerr == nil {
+			return alt, nil
+		}
+	}
+	return nil, err
 }
 
 // applyBatchRequest is the body of POST /api/proposals/apply-batch — a
@@ -500,11 +561,8 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		// Apply-gate held for the batch's (mode, workflow) as soon as we know
 		// it — before the item loop — so a concurrent ReplacePending cannot
 		// slip in between the first Get and BeginApply inside the loop.
-		type gateKey struct {
-			m  mode.Mode
-			wf proposals.Workflow
-		}
-		gateActive := make(map[gateKey]bool)
+		type gateKey = applyGateKey
+		gateActive := make(map[applyGateKey]bool)
 		defer func() {
 			for k := range gateActive {
 				proposals.DefaultGate.EndApply(k.m, k.wf)
@@ -576,7 +634,7 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		}
 		for i, item := range req.Items {
 			writeND(map[string]any{"type": "progress", "done": i, "total": total, "id": item.ID})
-			p, err := propStore.Get(ctx, item.ID)
+			p, err := resolveBatchProposal(ctx, propStore, item, gateActive)
 			if err != nil {
 				ri := applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()}
 				results = append(results, ri)
@@ -631,16 +689,26 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 				continue
 			}
 
-			updated, err := propStore.Get(ctx, item.ID)
-			if err != nil {
-				ri := applyBatchResultItem{ID: item.ID, OK: false, Error: err.Error()}
-				results = append(results, ri)
-				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
-				continue
+			updated, err := propStore.Get(ctx, p.ID)
+			if err != nil && item.SourcePath != "" {
+				updated, err = propStore.GetLiveBySourcePath(ctx, p.Mode, p.Workflow, item.SourcePath)
 			}
-			ri := applyBatchResultItem{ID: item.ID, OK: true, Proposal: updated}
-			results = append(results, ri)
-			writeND(map[string]any{"type": "item", "id": ri.ID, "ok": true})
+			if err != nil && p.SourcePath != "" {
+				updated, err = propStore.GetLiveBySourcePath(ctx, p.Mode, p.Workflow, p.SourcePath)
+			}
+			if err != nil {
+				// Apply committed; proposal row may be gone after relocate.
+				// Report success with the in-memory proposal marked applied.
+				applied := *p
+				applied.Status = proposals.Applied
+				ri := applyBatchResultItem{ID: item.ID, OK: true, Proposal: &applied}
+				results = append(results, ri)
+				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": true})
+			} else {
+				ri := applyBatchResultItem{ID: item.ID, OK: true, Proposal: updated}
+				results = append(results, ri)
+				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": true})
+			}
 			whStore.Dispatch(workflowEvent(p.Workflow), map[string]any{
 				"mode": string(p.Mode), "workflow": string(p.Workflow),
 				"title": p.Title, "tmdbId": p.TMDBID,

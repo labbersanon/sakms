@@ -185,7 +185,10 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
     const ids = [...selection.selected()];
     if (ids.length === 0) return;
     if (!window.confirm(`Delete ${ids.length} items from ${props.mode}?`)) return;
-    const items: ApplyBatchItem[] = ids.map((id) => ({ id }));
+    const items: ApplyBatchItem[] = ids.map((id) => {
+      const p = proposals().find((x) => x.id === id);
+      return { id, sourcePath: p?.sourcePath };
+    });
     setBatchResult(null);
     setApplyProgress("");
     void act(async () => {

@@ -1161,6 +1161,7 @@ type Proposal struct {
 	ID                  int64       `json:"id"`
 	Status              string      `json:"status"`
 	SourceName          string      `json:"sourceName"`
+	SourcePath          string      `json:"sourcePath,omitempty"`
 	RootFolderPath      string      `json:"rootFolderPath"`
 	Title               string      `json:"title,omitempty"`
 	Year                int         `json:"year,omitempty"`
@@ -1272,10 +1273,11 @@ type DedupApplyRequest struct {
 // (omitted, never [], when empty) — dropping it on the bulk path would delete
 // files the operator checked as "keep".
 type ApplyBatchItem struct {
-	ID                    int64 `json:"id"`
-	KeepIndex             *int  `json:"keepIndex,omitempty"`
-	KeepAll               bool  `json:"keepAll,omitempty"`
-	AdditionalKeepIndices []int `json:"additionalKeepIndices,omitempty"`
+	ID                    int64  `json:"id"`
+	SourcePath            string `json:"sourcePath,omitempty"`
+	KeepIndex             *int   `json:"keepIndex,omitempty"`
+	KeepAll               bool   `json:"keepAll,omitempty"`
+	AdditionalKeepIndices []int  `json:"additionalKeepIndices,omitempty"`
 }
 
 // ApplyBatchRequest is POST /api/proposals/apply-batch's body. Rename batches

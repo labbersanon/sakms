@@ -517,9 +517,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     setApplyAllPlan(null);
     setBatchResult(null);
     setApplyProgress("");
-    const toApply = plan
-      .filter((x) => x.action === "apply")
-      .map((x) => x.proposal.id);
+    const toApply = plan.filter((x) => x.action === "apply");
     const toDismiss = plan
       .filter((x) => x.action === "dismiss")
       .map((x) => x.proposal.id);
@@ -529,7 +527,14 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       let done = 0;
       if (toApply.length > 0) {
         const out = (await applyBatchStreaming(
-          toApply.map((id) => ({ id })),
+          toApply.map((x) => ({
+            id: x.proposal.id,
+            // Claude 2026-08-06: send sourcePath for id-miss re-resolve safety net
+            // Reason: apply-batch can re-find the live row if id churned.
+            // Troubleshooting: Apply all failures with "no proposal with that id".
+            // Review if: proposal ids are guaranteed stable and path is redundant.
+            sourcePath: x.proposal.sourcePath,
+          })),
           (d, t) => {
             setApplyProgress(`Applied ${d}/${t} renames…`);
           },

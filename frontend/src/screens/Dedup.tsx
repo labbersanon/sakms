@@ -529,7 +529,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
       const p = proposals().find((x) => x.id === id);
       const add = p ? [...additionalOf(p)] : [];
       const overridden = overrides[id] !== undefined;
-      const item: ApplyBatchItem = { id };
+      const item: ApplyBatchItem = { id, sourcePath: p?.sourcePath };
       if (overridden || add.length > 0) {
         item.keepIndex = p ? primaryOf(p) : (overrides[id] ?? 0);
       }

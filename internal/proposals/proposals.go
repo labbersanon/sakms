@@ -525,6 +525,41 @@ func (s *Store) Get(ctx context.Context, id int64) (*Proposal, error) {
 	return &p, nil
 }
 
+// GetLiveBySourcePath returns the live (Pending/Unmatched) proposal for
+// (m, wf, sourcePath), if any. Used by apply-batch's id-miss safety net to
+// re-resolve after ReplacePending rotates ids.
+//
+// Claude 2026-08-06: path-based live lookup for apply safety net
+// Reason: when Get(id) misses after a rescan, the same file still has a live
+//   row under a new id keyed by source_path.
+// Troubleshooting: apply-batch "no proposal with that id" despite file still pending.
+// Review if: ApplyBatchItem always carries sourcePath and ids are fully stable.
+func (s *Store) GetLiveBySourcePath(ctx context.Context, m mode.Mode, wf Workflow, sourcePath string) (*Proposal, error) {
+	if sourcePath == "" {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, mode, workflow, status, source_name, source_path, root_folder_path,
+		       title, tvdb_id, tmdb_id, season_number, episode_number, year, quality_profile_id, reason, tracked_id,
+		       foreign_id, item_type, candidates_json, studio, scene_date,
+		       draft_id, COALESCE(draft_submitted_at, ''),
+		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
+		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
+		FROM proposals
+		WHERE mode = ? AND workflow = ? AND source_path = ? AND status IN (?, ?)
+		LIMIT 1
+	`, string(m), string(wf), sourcePath, string(Pending), string(Unmatched))
+	p, err := scanProposal(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("loading live proposal for path %q: %w", sourcePath, err)
+	}
+	return &p, nil
+}
+
 // MarkApplied records that proposal id was successfully acted on, producing
 // trackedID in the target *arr app.
 func (s *Store) MarkApplied(ctx context.Context, id int64, trackedID int) error {

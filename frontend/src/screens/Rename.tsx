@@ -3,11 +3,11 @@
 // mode-specific columns (Wade-approved follow-up, see
 // .omc/handoffs/stage-3-rename.md).
 //
-// Claude 2026-08-06: Apply is NOT in the dropdown — dedicated pending Apply
-//   button; Apply all uses Pending→rename by default, or dropdown Dismiss.
-// Reason: Apply in the select looked like a mystery selection; operators want
-//   it off the menu. "Auto-selected when match found" = Apply all default.
-// Troubleshooting: Apply reappeared in dropdown → this block was reverted.
+// Claude 2026-08-06: Apply is NOT in the dropdown — one Apply button per row;
+//   Apply all uses matched→rename by default, or dropdown Dismiss.
+// Reason: Apply in the select looked like a mystery selection; two Apply
+//   buttons (dedicated + run) was confusing on matched rows.
+// Troubleshooting: two Apply buttons on a match → merge into one control.
 // Review if: Re-pick becomes batchable (needs a chosen alternate).
 
 import {
@@ -128,7 +128,17 @@ const RowActions: Component<{
   const enabled = (id: OtherActionId) =>
     otherActionEnabled(id, props.proposal.status, props.titleMode);
   const hasAnyOther = () => OTHER_ACTIONS.some((a) => enabled(a.id));
-  const canApply = () => props.proposal.status === "pending";
+  const canRename = () => props.proposal.status === "pending";
+  const selectedOther = () => {
+    const id = props.selected;
+    return id && enabled(id) ? id : "";
+  };
+  // One Apply button: runs dropdown choice if set, else renames a matched row.
+  const canRun = () => Boolean(selectedOther()) || canRename();
+  const applyLabel = () =>
+    selectedOther()
+      ? `Apply selected action for ${props.proposal.sourceName}`
+      : `Apply proposal ${props.proposal.sourceName}`;
 
   createEffect(() => {
     const cur = props.selected;
@@ -137,23 +147,17 @@ const RowActions: Component<{
     }
   });
 
-  const runOther = () => {
-    const id = props.selected;
-    if (!id || !enabled(id)) return;
-    props.onRunOther(id);
+  const run = () => {
+    const other = selectedOther();
+    if (other) {
+      props.onRunOther(other);
+      return;
+    }
+    if (canRename()) props.onApply();
   };
 
   return (
     <div class="flex flex-wrap items-center gap-1">
-      <Show when={canApply()}>
-        <Button
-          variant="primary"
-          aria-label={`Apply proposal ${props.proposal.sourceName}`}
-          onClick={() => props.onApply()}
-        >
-          Apply
-        </Button>
-      </Show>
       <select
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
@@ -173,14 +177,11 @@ const RowActions: Component<{
           )}
         </For>
       </select>
-      <Button
-        variant="primary"
-        aria-label={`Apply selected action for ${props.proposal.sourceName}`}
-        disabled={!props.selected || !enabled(props.selected as OtherActionId)}
-        onClick={runOther}
-      >
-        Apply
-      </Button>
+      <Show when={canRun()}>
+        <Button variant="primary" aria-label={applyLabel()} onClick={run}>
+          Apply
+        </Button>
+      </Show>
     </div>
   );
 };

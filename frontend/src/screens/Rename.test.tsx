@@ -124,7 +124,7 @@ afterEach(() => {
 });
 
 describe("Rename — Movies (scan → propose → apply one)", () => {
-  it("lists proposals and applies exactly one via dedicated Apply", async () => {
+  it("lists proposals and applies exactly one via the single Apply button", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([proposal({ id: 7, sourceName: "Movie.A" })]);
@@ -144,6 +144,10 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("");
     expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
+    // Exactly one Apply control on a matched row.
+    expect(
+      within(row).getAllByRole("button", { name: /Apply/ }),
+    ).toHaveLength(1);
     await clickRowApply("Movie.A");
 
     await waitFor(() => expect(singleApplyCalls(calls)).toHaveLength(1));
@@ -357,7 +361,7 @@ describe("Rename — Apply all (summary confirm)", () => {
     expect(batchCalls(calls)).toHaveLength(0);
   });
 
-  it("still applies a single row through its dedicated Apply button", async () => {
+  it("still applies a single row through its Apply button", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([

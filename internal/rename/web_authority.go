@@ -22,6 +22,12 @@ import (
 // Troubleshooting: TitleN still Pending → junk gate failed; Funny Faces unmatched
 //   → token overlap or missing year from grounding.
 // Review if: library schema allows nullable tmdb_id without synthetic negatives.
+//
+// Claude 2026-08-05: webAuthorityQueries drops trailing sequel markers (III, 2, …)
+// Reason: Bing/SearXNG for "Red Skelton Funny Faces III" returns Red (2010), not
+//   Skelton; query without III surfaces IMDb/YouTube Funny Faces III (1984).
+// Troubleshooting: unmatched despite IMDb listing → poisoned sequel query.
+// Review if: search engines stop mangling roman-numeral sequel queries.
 
 const webMatchReasonPrefix = "web match:"
 
@@ -100,20 +106,68 @@ func isMostlyRoman(s string) bool {
 	return true
 }
 
-// HasTitleTokenOverlap requires at least one non-trivial token shared between
-// the filename stem and the grounded web title (blocks inventing titles for TitleN).
+// HasTitleTokenOverlap requires a meaningful token match between the filename
+// stem and the grounded web title (blocks inventing titles for TitleN, and
+// blocks weak single-token hits like filename "Red …" vs grounded "Red").
 func HasTitleTokenOverlap(filename, groundedTitle string) bool {
 	fileToks := titleTokens(searchterm.FromName(filename))
 	groundToks := titleTokens(groundedTitle)
 	if len(fileToks) == 0 || len(groundToks) == 0 {
 		return false
 	}
+	shared := 0
+	strong := false
 	for t := range fileToks {
-		if _, ok := groundToks[t]; ok {
-			return true
+		if _, ok := groundToks[t]; !ok {
+			continue
+		}
+		shared++
+		if len(t) >= 4 {
+			strong = true
 		}
 	}
-	return false
+	return strong || shared >= 2
+}
+
+// trailingSequelRe matches end-of-query sequel markers that poison Bing/etc.
+// (e.g. "… Funny Faces III" → Red (2010) instead of Skelton).
+var trailingSequelRe = regexp.MustCompile(`(?i)\s+\b(II|III|IV|V|VI|VII|VIII|IX|X|[2-9])\b\s*$`)
+
+func dropTrailingSequelMarker(q string) string {
+	s := strings.TrimSpace(trailingSequelRe.ReplaceAllString(strings.TrimSpace(q), ""))
+	return s
+}
+
+// webAuthorityQueries returns distinct web-search strings: guessed + filename
+// SearchQueries, each also without a trailing sequel marker.
+func webAuthorityQueries(entryName, guessed string) []string {
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		for _, e := range out {
+			if strings.EqualFold(e, s) {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	if g := strings.TrimSpace(guessed); g != "" {
+		// Sequel-stripped first: engines often poison "… III" (Bing → Red 2010).
+		if d := dropTrailingSequelMarker(g); !strings.EqualFold(d, g) {
+			add(d)
+		}
+		add(g)
+	}
+	for _, q := range searchterm.SearchQueries(entryName) {
+		if d := dropTrailingSequelMarker(q); !strings.EqualFold(d, q) {
+			add(d)
+		}
+		add(q)
+	}
+	return out
 }
 
 // WebAuthorityTMDBID returns a stable negative id for library uniqueness when
@@ -141,15 +195,19 @@ func tryWebAuthorityMovie(
 	if IsJunkRenameFilename(entryName) {
 		return nil
 	}
-	query := strings.TrimSpace(guessed)
-	if query == "" {
-		query = entryName
+	var grounded identify.TitleGrounding
+	for _, query := range webAuthorityQueries(entryName, guessed) {
+		g, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
+		if err != nil || g.Title == "" || g.Year <= 0 {
+			continue
+		}
+		if !HasTitleTokenOverlap(entryName, g.Title) {
+			continue
+		}
+		grounded = g
+		break
 	}
-	grounded, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
-	if err != nil || grounded.Title == "" || grounded.Year <= 0 {
-		return nil
-	}
-	if !HasTitleTokenOverlap(entryName, grounded.Title) {
+	if grounded.Title == "" || grounded.Year <= 0 {
 		return nil
 	}
 	synth := WebAuthorityTMDBID(grounded.Title, grounded.Year)
@@ -184,15 +242,19 @@ func tryWebAuthoritySeries(
 	if IsJunkRenameFilename(entryName) {
 		return nil
 	}
-	query := strings.TrimSpace(guessed)
-	if query == "" {
-		query = entryName
+	var grounded identify.TitleGrounding
+	for _, query := range webAuthorityQueries(entryName, guessed) {
+		g, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
+		if err != nil || g.Title == "" || g.Year <= 0 {
+			continue
+		}
+		if !HasTitleTokenOverlap(entryName, g.Title) {
+			continue
+		}
+		grounded = g
+		break
 	}
-	grounded, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
-	if err != nil || grounded.Title == "" || grounded.Year <= 0 {
-		return nil
-	}
-	if !HasTitleTokenOverlap(entryName, grounded.Title) {
+	if grounded.Title == "" || grounded.Year <= 0 {
 		return nil
 	}
 	synth := WebAuthorityTMDBID(grounded.Title, grounded.Year)
@@ -226,9 +288,9 @@ func unmatchedAfterWebAuthority(p *proposals.Proposal, entryName string, lastLim
 	}
 	if lastLimit == 0 {
 		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("no TMDB match for queries derived from %q", entryName)
+		p.Reason = fmt.Sprintf("no catalog or web title+year for queries derived from %q", entryName)
 		return
 	}
 	p.Status = proposals.Unmatched
-	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration (last query %q)", lastLimit, lastTerm)
+	p.Reason = fmt.Sprintf("no catalog/web title+year after top %d candidates (last query %q)", lastLimit, lastTerm)
 }

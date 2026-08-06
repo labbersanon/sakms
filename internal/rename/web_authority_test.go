@@ -39,6 +39,29 @@ func TestHasTitleTokenOverlap(t *testing.T) {
 	if !HasTitleTokenOverlap("JoJo Dancer 2007.mkv", "Jo Jo Dancer, Your Life Is Calling") {
 		t.Fatal("expected JoJo / Dancer overlap")
 	}
+	// Weak single short token must not accept Bing's Red (2010) for Skelton files.
+	if HasTitleTokenOverlap("Red Skelton Funny Faces III - AV1.mp4", "Red") {
+		t.Fatal("single short token Red must not count as overlap")
+	}
+}
+
+func TestWebAuthorityQueries_DropsTrailingSequel(t *testing.T) {
+	qs := webAuthorityQueries("Red Skelton Funny Faces III - AV1.mp4", "Red Skelton Funny Faces III")
+	if len(qs) < 2 {
+		t.Fatalf("expected multiple queries, got %#v", qs)
+	}
+	if qs[0] != "Red Skelton Funny Faces" {
+		t.Fatalf("expected sequel-stripped first, got %q (all %#v)", qs[0], qs)
+	}
+	foundFull := false
+	for _, q := range qs {
+		if q == "Red Skelton Funny Faces III" {
+			foundFull = true
+		}
+	}
+	if !foundFull {
+		t.Fatalf("expected full sequel query present, got %#v", qs)
+	}
 }
 
 func TestWebAuthorityTMDBID_StableNegative(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/dbutil"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -284,10 +285,37 @@ const (
 	DefaultProposalPageSize = 50
 )
 
+// Claude 2026-08-05: ListView filters Organize queues (deep-interview-organize-hide-applied).
+// Reason: live queue excludes applied/dismissed; history is swap-only of those.
+// Troubleshooting: unknown view falls back to live — never return a mixed page by accident.
+// Review if: a third "all" view is added for admin/debug.
+type ListView string
+
+const (
+	ListViewLive    ListView = "live"
+	ListViewHistory ListView = "history"
+)
+
+// ParseListView maps ?view= query values. Empty/unknown → live.
+func ParseListView(raw string) ListView {
+	if strings.EqualFold(strings.TrimSpace(raw), string(ListViewHistory)) {
+		return ListViewHistory
+	}
+	return ListViewLive
+}
+
+func listViewStatuses(view ListView) (a, b Status) {
+	if view == ListViewHistory {
+		return Applied, Dismissed
+	}
+	return Pending, Unmatched
+}
+
 // ListPage returns one page of proposals for (m, wf) plus the total matching
-// count. limit<=0 uses DefaultProposalPageSize; limit is clamped to MaxProposalPageSize.
+// count, filtered by view (live = pending+unmatched; history = applied+dismissed).
+// limit<=0 uses DefaultProposalPageSize; limit is clamped to MaxProposalPageSize.
 // offset<0 is treated as 0. Empty pages still return items=[] (not null).
-func (s *Store) ListPage(ctx context.Context, m mode.Mode, wf Workflow, limit, offset int) ([]Proposal, int, error) {
+func (s *Store) ListPage(ctx context.Context, m mode.Mode, wf Workflow, limit, offset int, view ListView) ([]Proposal, int, error) {
 	if limit <= 0 {
 		limit = DefaultProposalPageSize
 	}
@@ -297,11 +325,13 @@ func (s *Store) ListPage(ctx context.Context, m mode.Mode, wf Workflow, limit, o
 	if offset < 0 {
 		offset = 0
 	}
+	stA, stB := listViewStatuses(view)
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM proposals WHERE mode = ? AND workflow = ?
-	`, string(m), string(wf)).Scan(&total); err != nil {
+		SELECT COUNT(*) FROM proposals
+		WHERE mode = ? AND workflow = ? AND status IN (?, ?)
+	`, string(m), string(wf), string(stA), string(stB)).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("counting proposals: %w", err)
 	}
 
@@ -313,9 +343,11 @@ func (s *Store) ListPage(ctx context.Context, m mode.Mode, wf Workflow, limit, o
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
 		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
-		FROM proposals WHERE mode = ? AND workflow = ? ORDER BY id DESC
+		FROM proposals
+		WHERE mode = ? AND workflow = ? AND status IN (?, ?)
+		ORDER BY id DESC
 		LIMIT ? OFFSET ?
-	`, string(m), string(wf), limit, offset)
+	`, string(m), string(wf), string(stA), string(stB), limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing proposals page: %w", err)
 	}

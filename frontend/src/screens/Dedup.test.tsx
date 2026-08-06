@@ -393,7 +393,6 @@ describe("Dedup — bulk apply (opt-in multi-select of Pending groups)", () => {
         return jsonResponse([
           dedupProposal({ id: 1, title: "Pending One", status: "pending" }),
           dedupProposal({ id: 2, title: "Pending Two", status: "pending" }),
-          dedupProposal({ id: 3, title: "Done Group", status: "applied" }),
         ]);
       throw new Error("unexpected fetch: " + url);
     });
@@ -403,15 +402,8 @@ describe("Dedup — bulk apply (opt-in multi-select of Pending groups)", () => {
 
     expect(screen.getByLabelText("Select Pending One")).toBeInTheDocument();
     expect(screen.getByLabelText("Select Pending Two")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Select Done Group")).toBeNull();
-    // The applied "Done Group" exposes NO keeper controls at all (select and
-    // also-keep checkboxes are both pending-gated).
-    expect(screen.getByLabelText("Select all pending")).toBeInTheDocument();
-    // Total checkboxes = 2 pending-select + 1 select-all + 2 "Also keep" (one
-    // per pending group's single non-primary candidate). The PRIMARY keeper is
-    // a radio, and the applied group contributes nothing. Keeper primaries are
-    // radios, so they don't count here.
-    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(5);
+    // Total checkboxes = 2 pending-select + 1 select-all + 2 "Also keep" + Show history.
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(6);
   });
 
   it("shows 'Apply Selected' only once a group is selected", async () => {

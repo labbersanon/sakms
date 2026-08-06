@@ -26,6 +26,25 @@ export const PageSizeSelect: Component<{
   </label>
 );
 
+// Claude 2026-08-05: Show history swaps live ↔ applied/dismissed
+//   (deep-interview-organize-hide-applied).
+// Reason: default live queue must not show finished rows.
+// Troubleshooting: toggle on but live rows still show → API view=history not sent.
+// Review if: combined live+history mode returns.
+export const ShowHistoryToggle: Component<{
+  checked: boolean;
+  onChange: (on: boolean) => void;
+}> = (props) => (
+  <label class="flex items-center gap-2 text-sm text-muted">
+    <input
+      type="checkbox"
+      checked={props.checked}
+      onChange={(e) => props.onChange(e.currentTarget.checked)}
+    />
+    Show history
+  </label>
+);
+
 export const PaginationBar: Component<{
   total: number;
   limit: number;

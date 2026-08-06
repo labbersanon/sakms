@@ -49,7 +49,9 @@ import {
 import {
   applyBatchStreaming,
   loadPageSize,
+  loadShowHistory,
   savePageSize,
+  saveShowHistory,
 } from "../api/organize";
 import {
   BatchResultSummary,
@@ -64,6 +66,7 @@ import {
   ActivityLogPanel,
   PageSizeSelect,
   PaginationBar,
+  ShowHistoryToggle,
 } from "./OrganizeChrome";
 
 // PurgeView is one mode's allowlist editor + delete-review queue. Keyed on
@@ -73,9 +76,17 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
   const [offset, setOffset] = createSignal(0);
   const [logKey, setLogKey] = createSignal(0);
   const [applyProgress, setApplyProgress] = createSignal("");
+  const [showHistory, setShowHistory] = createSignal(loadShowHistory("purge"));
+  const listView = () => (showHistory() ? "history" : "live") as const;
   const [page, { refetch: refetchProposals }] = createResource(
-    () => ({ mode: props.mode, limit: pageSize(), offset: offset() }),
-    ({ mode, limit, offset }) => fetchPurgeProposals(mode, limit, offset),
+    () => ({
+      mode: props.mode,
+      limit: pageSize(),
+      offset: offset(),
+      view: listView(),
+    }),
+    ({ mode, limit, offset, view }) =>
+      fetchPurgeProposals(mode, limit, offset, view),
   );
   const proposals = () => page()?.items ?? [];
   const [allowlist, { refetch: refetchAllowlist }] = createResource(
@@ -232,6 +243,15 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
             setOffset(0);
           }}
         />
+        <ShowHistoryToggle
+          checked={showHistory()}
+          onChange={(on) => {
+            saveShowHistory("purge", on);
+            setShowHistory(on);
+            setOffset(0);
+            selection.clear();
+          }}
+        />
       </div>
 
       <Show when={applyProgress()}>
@@ -295,7 +315,13 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
       >
         <Show
           when={proposals().length > 0}
-          fallback={<Muted class="mt-2">No proposals yet — click Scan.</Muted>}
+          fallback={
+            <Muted class="mt-2">
+              {showHistory()
+                ? "No history yet."
+                : "No proposals yet — click Scan."}
+            </Muted>
+          }
         >
           <div class="mt-2 overflow-x-auto">
             <table class="w-full text-left text-sm">

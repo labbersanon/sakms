@@ -25,20 +25,27 @@ import (
 )
 
 // listProposalsHandler returns one page of {mode}'s review queue for wf, most
-// recently scanned first — includes Applied/Dismissed history alongside the live
-// Pending/Unmatched rows. Query: ?limit=&offset= (defaults/clamps via ListPage).
+// recently scanned first. Default view=live (pending+unmatched only). Pass
+// ?view=history for applied+dismissed only. Query: ?limit=&offset=&view=.
 //
 // Claude 2026-08-05: paginated response shape (ProposalPage).
 // Reason: deep-interview-organize-pagination-log
 // Troubleshooting: old clients expecting a bare array will break — frontend
 //   fetchers must decode {items,total,limit,offset}.
 // Review if: infinite-scroll replaces offset pages.
+//
+// Claude 2026-08-05: default live-only list (deep-interview-organize-hide-applied).
+// Reason: applied/dismissed are history; Show history toggle uses view=history.
+// Troubleshooting: applied rows still visible → client missing view=live (or
+//   sending view=history); check query string on GET …/proposals.
+// Review if: admin needs view=all.
 func listProposalsHandler(propStore *proposals.Store, wf proposals.Workflow) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		list, total, err := propStore.ListPage(r.Context(), m, wf, limit, offset)
+		view := proposals.ParseListView(r.URL.Query().Get("view"))
+		list, total, err := propStore.ListPage(r.Context(), m, wf, limit, offset, view)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

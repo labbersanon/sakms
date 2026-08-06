@@ -480,6 +480,68 @@ func TestReplacePending_LeavesAppliedAndDismissedAlone(t *testing.T) {
 	}
 }
 
+func TestListPage_LiveExcludesHistory(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	first, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Keep Me", SourcePath: "/k", RootFolderPath: "/m", Title: "Keep"},
+		{Status: Unmatched, SourceName: "Need Match", SourcePath: "/u", RootFolderPath: "/m", Title: ""},
+		{Status: Pending, SourceName: "Will Apply", SourcePath: "/a", RootFolderPath: "/m", Title: "Apply"},
+		{Status: Pending, SourceName: "Will Dismiss", SourcePath: "/d", RootFolderPath: "/m", Title: "Dismiss"},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := s.MarkApplied(ctx, first[2].ID, 1); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if err := s.Dismiss(ctx, first[3].ID); err != nil {
+		t.Fatalf("dismiss: %v", err)
+	}
+
+	live, total, err := s.ListPage(ctx, mode.Movies, Rename, 50, 0, ListViewLive)
+	if err != nil {
+		t.Fatalf("live: %v", err)
+	}
+	if total != 2 || len(live) != 2 {
+		t.Fatalf("live want 2 rows, got total=%d len=%d %+v", total, len(live), live)
+	}
+	for _, p := range live {
+		if p.Status != Pending && p.Status != Unmatched {
+			t.Errorf("live leaked status %q", p.Status)
+		}
+	}
+
+	hist, hTotal, err := s.ListPage(ctx, mode.Movies, Rename, 50, 0, ListViewHistory)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if hTotal != 2 || len(hist) != 2 {
+		t.Fatalf("history want 2 rows, got total=%d len=%d %+v", hTotal, len(hist), hist)
+	}
+	for _, p := range hist {
+		if p.Status != Applied && p.Status != Dismissed {
+			t.Errorf("history leaked status %q", p.Status)
+		}
+	}
+}
+
+func TestParseListView(t *testing.T) {
+	if ParseListView("") != ListViewLive {
+		t.Errorf("empty → live")
+	}
+	if ParseListView("history") != ListViewHistory {
+		t.Errorf("history")
+	}
+	if ParseListView("HISTORY") != ListViewHistory {
+		t.Errorf("HISTORY")
+	}
+	if ParseListView("all") != ListViewLive {
+		t.Errorf("unknown → live")
+	}
+}
+
 func TestReplacePending_ScopedByModeAndWorkflow(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -249,7 +249,7 @@ describe("Purge — bulk apply on PROPOSALS (opt-in multi-select, confirm-guarde
         return jsonResponse([
           proposal({ id: 1, title: "A", status: "pending" }),
           proposal({ id: 2, title: "B", status: "pending" }),
-          proposal({ id: 3, title: "C", status: "dismissed" }),
+          proposal({ id: 3, title: "C", status: "unmatched" }),
         ]);
       throw new Error("unexpected fetch: " + url);
     });
@@ -260,9 +260,8 @@ describe("Purge — bulk apply on PROPOSALS (opt-in multi-select, confirm-guarde
     expect(screen.getByLabelText("Select A")).toBeInTheDocument();
     expect(screen.getByLabelText("Select B")).toBeInTheDocument();
     expect(screen.queryByLabelText("Select C")).toBeNull();
-    // Two pending row checkboxes + one select-all header checkbox = 3. The
-    // allowlist (empty here) contributes none.
-    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(3);
+    // Two pending + select-all + Show history = 4.
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(4);
   });
 
   it("deletes several selected rows in ONE apply-batch behind a count-worded confirm, then clears the selection", async () => {
@@ -357,8 +356,9 @@ describe("Purge — no bulk actions on the ALLOWLIST (Acceptance Criterion 6)", 
     expect(removeButtons).toHaveLength(3);
     expect(screen.queryByText(/clear all/i)).toBeNull();
     expect(screen.queryByText(/remove all/i)).toBeNull();
-    // No selection checkboxes in the allowlist either.
-    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    // No selection checkboxes in the allowlist — only the Show history toggle.
+    expect(screen.getByText("Show history")).toBeInTheDocument();
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
 
     // Removing one chip issues exactly one DELETE, for exactly that tag.
     fireEvent.click(removeButtons[1]!);

@@ -38,7 +38,7 @@ import type {
   ProposalPage,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
-import { fetchProposalPage } from "./organize";
+import { fetchProposalPage, type ProposalListView } from "./organize";
 
 export type { Candidate, Proposal };
 // ProposalStatus is the single shared narrowing (see discover.ts); re-exported
@@ -78,18 +78,18 @@ export function fetchDedupScanStatus(mode: Mode): Promise<DedupScanStatus> {
   return api<DedupScanStatus>(`/api/modes/${mode}/dedup/scan/status`);
 }
 
-// fetchDedupProposals lists the Dedup review queue for one mode (every status;
-// only pending groups expose actions). Each proposal carries a `candidates`
-// group with one `winner` flagged.
+// fetchDedupProposals lists one Dedup queue page (view=live|history).
 export function fetchDedupProposals(
   mode: Mode,
   limit = 50,
   offset = 0,
+  view: ProposalListView = "live",
 ): Promise<ProposalPage> {
   return fetchProposalPage(
     `/api/modes/${mode}/dedup/proposals`,
     limit,
     offset,
+    view,
   );
 }
 

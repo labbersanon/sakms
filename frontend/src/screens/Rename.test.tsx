@@ -188,6 +188,34 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     expect(panel).toBeTruthy();
     expect((panel as HTMLElement).className).toContain("bg-surface/95");
   });
+
+  it("requests view=live by default and view=history when Show history is on", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals")) {
+        if (url.includes("view=history")) {
+          return jsonResponse([
+            proposal({
+              id: 9,
+              sourceName: "Done.Movie",
+              status: "applied",
+            }),
+          ]);
+        }
+        return jsonResponse([proposal({ id: 1, sourceName: "Live.Movie" })]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    expect(await screen.findByText("Live.Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Done.Movie")).toBeNull();
+    expect(calls.some((c) => c.url.includes("view=live"))).toBe(true);
+
+    fireEvent.click(screen.getByText("Show history"));
+    expect(await screen.findByText("Done.Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Live.Movie")).toBeNull();
+    expect(calls.some((c) => c.url.includes("view=history"))).toBe(true);
+  });
 });
 
 describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {
@@ -214,8 +242,8 @@ describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {
     expect(screen.getByLabelText("Select A")).toBeInTheDocument();
     expect(screen.getByLabelText("Select B")).toBeInTheDocument();
     expect(screen.queryByLabelText("Select C")).toBeNull();
-    // Two pending row checkboxes + one select-all header checkbox = 3 total.
-    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(3);
+    // Two pending row checkboxes + one select-all + Show history = 4.
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(4);
   });
 
   it("shows 'Apply Selected' only once a row is selected", async () => {

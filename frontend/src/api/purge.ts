@@ -33,7 +33,7 @@ import type {
   AllowlistAddRequest,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
-import { fetchProposalPage } from "./organize";
+import { fetchProposalPage, type ProposalListView } from "./organize";
 
 export type { Proposal };
 // ProposalStatus is the single shared narrowing (see discover.ts); re-exported
@@ -48,17 +48,18 @@ export function scanPurge(mode: Mode): Promise<void> {
   return api<void>(`/api/modes/${mode}/purge/scan`, { method: "POST" });
 }
 
-// fetchPurgeProposals lists the Purge review queue for one mode (every status;
-// only pending rows expose actions).
+// fetchPurgeProposals lists one Purge queue page (view=live|history).
 export function fetchPurgeProposals(
   mode: Mode,
   limit = 50,
   offset = 0,
+  view: ProposalListView = "live",
 ): Promise<ProposalPage> {
   return fetchProposalPage(
     `/api/modes/${mode}/purge/proposals`,
     limit,
     offset,
+    view,
   );
 }
 

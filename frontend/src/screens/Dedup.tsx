@@ -75,7 +75,9 @@ import {
 import {
   applyBatchStreaming,
   loadPageSize,
+  loadShowHistory,
   savePageSize,
+  saveShowHistory,
 } from "../api/organize";
 import {
   BatchResultSummary,
@@ -91,6 +93,7 @@ import {
   ActivityLogPanel,
   PageSizeSelect,
   PaginationBar,
+  ShowHistoryToggle,
 } from "./OrganizeChrome";
 
 // winnerIndex returns the index of the group's flagged keeper, defaulting to 0
@@ -321,9 +324,17 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   const [offset, setOffset] = createSignal(0);
   const [logKey, setLogKey] = createSignal(0);
   const [applyProgress, setApplyProgress] = createSignal("");
+  const [showHistory, setShowHistory] = createSignal(loadShowHistory("dedup"));
+  const listView = () => (showHistory() ? "history" : "live") as const;
   const [page, { refetch }] = createResource(
-    () => ({ mode: props.mode, limit: pageSize(), offset: offset() }),
-    ({ mode, limit, offset }) => fetchDedupProposals(mode, limit, offset),
+    () => ({
+      mode: props.mode,
+      limit: pageSize(),
+      offset: offset(),
+      view: listView(),
+    }),
+    ({ mode, limit, offset, view }) =>
+      fetchDedupProposals(mode, limit, offset, view),
   );
   const proposals = () => page()?.items ?? [];
   // keepSel maps a proposal id → the operator's chosen PRIMARY index. Absent
@@ -596,6 +607,15 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
             setOffset(0);
           }}
         />
+        <ShowHistoryToggle
+          checked={showHistory()}
+          onChange={(on) => {
+            saveShowHistory("dedup", on);
+            setShowHistory(on);
+            setOffset(0);
+            selection.clear();
+          }}
+        />
       </div>
 
       <Show when={applyProgress()}>
@@ -638,7 +658,9 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
           fallback={
             <Show when={!scanStream.scanning()}>
               <Muted class="mt-4">
-                No duplicate groups yet — click Scan.
+                {showHistory()
+                  ? "No history yet."
+                  : "No duplicate groups yet — click Scan."}
               </Muted>
             </Show>
           }

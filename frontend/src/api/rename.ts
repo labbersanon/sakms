@@ -25,7 +25,11 @@ import type {
   RepickRequest,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
-import { applyBatchStreaming, fetchProposalPage } from "./organize";
+import {
+  applyBatchStreaming,
+  fetchProposalPage,
+  type ProposalListView,
+} from "./organize";
 
 export type { Proposal, RepickRequest };
 export type { ProposalStatus };
@@ -38,11 +42,13 @@ export function fetchProposals(
   mode: Mode,
   limit = 50,
   offset = 0,
+  view: ProposalListView = "live",
 ): Promise<ProposalPage> {
   return fetchProposalPage(
     `/api/modes/${mode}/rename/proposals`,
     limit,
     offset,
+    view,
   );
 }
 

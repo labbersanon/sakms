@@ -60,7 +60,9 @@ import {
 import {
   fetchPendingIDs,
   loadPageSize,
+  loadShowHistory,
   savePageSize,
+  saveShowHistory,
 } from "../api/organize";
 import {
   BatchResultSummary,
@@ -76,6 +78,7 @@ import {
   ActivityLogPanel,
   PageSizeSelect,
   PaginationBar,
+  ShowHistoryToggle,
 } from "./OrganizeChrome";
 
 // Claude 2026-08-05: row action dropdown + Go (deep-interview-rename-row-action-dropdown).
@@ -315,9 +318,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const [offset, setOffset] = createSignal(0);
   const [logKey, setLogKey] = createSignal(0);
   const [applyProgress, setApplyProgress] = createSignal<string>("");
+  const [showHistory, setShowHistory] = createSignal(loadShowHistory("rename"));
+  const listView = () => (showHistory() ? "history" : "live") as const;
   const [page, { refetch }] = createResource(
-    () => ({ mode: props.mode, limit: pageSize(), offset: offset() }),
-    ({ mode, limit, offset }) => fetchProposals(mode, limit, offset),
+    () => ({
+      mode: props.mode,
+      limit: pageSize(),
+      offset: offset(),
+      view: listView(),
+    }),
+    ({ mode, limit, offset, view }) => fetchProposals(mode, limit, offset, view),
   );
   const proposals = () => page()?.items ?? [];
   const [repickFor, setRepickFor] = createSignal<Proposal | null>(null);
@@ -424,6 +434,15 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
             setOffset(0);
           }}
         />
+        <ShowHistoryToggle
+          checked={showHistory()}
+          onChange={(on) => {
+            saveShowHistory("rename", on);
+            setShowHistory(on);
+            setOffset(0);
+            selection.clear();
+          }}
+        />
       </div>
 
       <Show when={applyProgress()}>
@@ -451,7 +470,11 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
           when={proposals().length > 0}
           fallback={
             <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
-              <Muted>No proposals yet — click Scan.</Muted>
+              <Muted>
+                {showHistory()
+                  ? "No history yet."
+                  : "No proposals yet — click Scan."}
+              </Muted>
             </div>
           }
         >

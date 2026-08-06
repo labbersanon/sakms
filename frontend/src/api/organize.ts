@@ -6,9 +6,14 @@ import type { OrganizeEvent, Proposal, ProposalPage } from "@dto";
 
 export type OrganizeWorkflow = "rename" | "dedup" | "purge";
 
+// Claude 2026-08-05: live vs history list views (deep-interview-organize-hide-applied).
+export type ProposalListView = "live" | "history";
+
 export const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
 
 const pageSizeKey = (wf: OrganizeWorkflow) => `sakms.organize.${wf}.pageSize`;
+const showHistoryKey = (wf: OrganizeWorkflow) =>
+  `sakms.organize.${wf}.showHistory`;
 
 export function loadPageSize(wf: OrganizeWorkflow): number {
   try {
@@ -29,14 +34,32 @@ export function savePageSize(wf: OrganizeWorkflow, size: number): void {
   }
 }
 
+export function loadShowHistory(wf: OrganizeWorkflow): boolean {
+  try {
+    return localStorage.getItem(showHistoryKey(wf)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveShowHistory(wf: OrganizeWorkflow, on: boolean): void {
+  try {
+    localStorage.setItem(showHistoryKey(wf), on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
 export function fetchProposalPage(
   path: string,
   limit: number,
   offset: number,
+  view: ProposalListView = "live",
 ): Promise<ProposalPage> {
   const q = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
+    view,
   });
   return api<ProposalPage>(`${path}?${q}`);
 }

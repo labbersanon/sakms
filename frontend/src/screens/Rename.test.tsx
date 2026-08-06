@@ -289,6 +289,42 @@ describe("Rename — Apply all (summary confirm)", () => {
     expect(await screen.findByText("2 applied, 0 failed")).toBeInTheDocument();
   });
 
+  it("disables Apply all while apply-batch is in flight", async () => {
+    let release!: (r: Response) => void;
+    const held = new Promise<Response>((r) => {
+      release = r;
+    });
+    stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 1, sourceName: "A.mkv", title: "Alpha", year: 2020 }),
+        ]);
+      if (
+        url.includes("/api/proposals/apply-batch") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return held;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("A.mkv");
+    fireEvent.click(screen.getByRole("button", { name: "Apply all" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Applying…" })).toBeDisabled();
+    });
+    expect(screen.getByRole("button", { name: "Scan" })).toBeDisabled();
+
+    release(
+      jsonResponse({ results: [{ id: 1, ok: true }] }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Apply all" })).not.toBeDisabled();
+    });
+  });
+
   it("Apply all follows per-row dismiss selection (not rename-only)", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))

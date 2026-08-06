@@ -58,6 +58,8 @@ export interface WorkflowActions {
   /** Whether a scan is currently in flight. Always false for screens with no
    * scanFn (Tag). */
   scanning: Accessor<boolean>;
+  /** Whether an act (apply/dismiss/batch) is currently in flight. */
+  acting: Accessor<boolean>;
   /** Runs the scan: clears error, sets busy, calls scanFn(mode), calls
    * resetAfterScan if provided, then awaits refetch. No-op if scanFn was not
    * provided. */
@@ -73,6 +75,12 @@ export function useWorkflowActions(
 ): WorkflowActions {
   const [actionError, setActionErrorSignal] = createSignal("");
   const [scanning, setScanning] = createSignal(false);
+  // Claude 2026-08-06: expose acting so Apply all can disable during the job
+  // Reason: Apply all stayed clickable while act()/apply-batch ran (only
+  //   scanning/applyAllLoading gated it).
+  // Troubleshooting: double Apply all / overlapping batches during long jobs.
+  // Review if: every workflow screen wires acting into its bulk Apply control.
+  const [acting, setActing] = createSignal(false);
 
   // Pattern A — mode-change cleanup. Clears shared error first, then calls the
   // screen's own extra reset. { defer: true } prevents firing on initial mount
@@ -108,12 +116,15 @@ export function useWorkflowActions(
   // Pattern B (act half) — error capture + post-success callbacks + refetch.
   const act = async (fn: () => Promise<unknown>): Promise<void> => {
     setActionErrorSignal("");
+    setActing(true);
     try {
       await fn();
       opts.resetAfterAct?.();
       await opts.refetch();
     } catch (e) {
       setActionErrorSignal((e as Error).message);
+    } finally {
+      setActing(false);
     }
   };
 
@@ -121,6 +132,7 @@ export function useWorkflowActions(
     actionError,
     setActionError: setActionErrorSignal,
     scanning,
+    acting,
     scan,
     act,
   };

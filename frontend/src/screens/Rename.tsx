@@ -133,6 +133,7 @@ const RowActions: Component<{
   selected: RowActionId | "";
   onSelect: (id: RowActionId | "") => void;
   onRun: (id: RowActionId) => void;
+  disabled?: boolean;
 }> = (props) => {
   const enabled = (id: RowActionId) =>
     rowActionEnabled(id, props.proposal.status, props.titleMode);
@@ -141,6 +142,7 @@ const RowActions: Component<{
     const id = props.selected;
     return id && enabled(id) ? id : "";
   };
+  const locked = () => !!props.disabled;
 
   createEffect(() => {
     const cur = props.selected;
@@ -152,6 +154,7 @@ const RowActions: Component<{
   });
 
   const run = () => {
+    if (locked()) return;
     const id = selectedOk();
     if (!id) return;
     props.onRun(id);
@@ -163,7 +166,7 @@ const RowActions: Component<{
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
         value={props.selected}
-        disabled={!hasAny()}
+        disabled={!hasAny() || locked()}
         onChange={(e) =>
           props.onSelect(e.currentTarget.value as RowActionId | "")
         }
@@ -182,6 +185,7 @@ const RowActions: Component<{
         <Button
           variant="primary"
           aria-label={`Apply selected action for ${props.proposal.sourceName}`}
+          disabled={locked()}
           onClick={run}
         >
           Apply
@@ -435,9 +439,8 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     });
   });
 
-  const { actionError, setActionError, scanning, scan, act } = useWorkflowActions(
-    () => props.mode,
-    {
+  const { actionError, setActionError, scanning, acting, scan, act } =
+    useWorkflowActions(() => props.mode, {
       resetOnModeChange: () => {
         setRepickFor(null);
         setBatchResult(null);
@@ -553,16 +556,24 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   return (
     <div>
       <div class="flex flex-wrap items-center gap-3">
-        <Button variant="primary" onClick={() => void scan(props.mode)} disabled={scanning()}>
+        <Button
+          variant="primary"
+          onClick={() => void scan(props.mode)}
+          disabled={scanning() || acting()}
+        >
           {scanning() ? "Scanning…" : "Scan"}
         </Button>
         <Show when={!showHistory()}>
           <Button
             variant="primary"
             onClick={openApplyAll}
-            disabled={applyAllLoading() || scanning()}
+            disabled={applyAllLoading() || scanning() || acting()}
           >
-            {applyAllLoading() ? "Loading…" : "Apply all"}
+            {applyAllLoading()
+              ? "Loading…"
+              : acting()
+                ? "Applying…"
+                : "Apply all"}
           </Button>
         </Show>
         <PageSizeSelect
@@ -683,6 +694,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                           selected={selectionOf(p)}
                           onSelect={(id) => setSelection(p.id, id)}
                           onRun={(id) => runRowAction(p, id)}
+                          disabled={acting() || scanning()}
                         />
                       </td>
                     </tr>

@@ -55,7 +55,8 @@ import {
 
 // Claude 2026-08-06: Apply is a dedicated button — not a dropdown option
 // Reason: "Apply" in the select looked like a mysterious pre-selection; Apply
-//   belongs on its own control. Dropdown is only Re-pick / Dismiss + Go.
+//   belongs on its own control. Dropdown is only Re-pick / Dismiss; run button
+//   is also labeled Apply (not Go).
 // Troubleshooting: Apply still listed in dropdown → this block was reverted.
 // Review if: operators want Apply back inside the select.
 type OtherActionId = "repick" | "dismiss";
@@ -136,7 +137,11 @@ const RowActions: Component<{
   return (
     <div class="flex flex-wrap items-center gap-1">
       <Show when={canApply()}>
-        <Button variant="primary" onClick={() => props.onApply()}>
+        <Button
+          variant="primary"
+          aria-label={`Apply proposal ${props.proposal.sourceName}`}
+          onClick={() => props.onApply()}
+        >
           Apply
         </Button>
       </Show>
@@ -160,10 +165,11 @@ const RowActions: Component<{
       </select>
       <Button
         variant="secondary"
+        aria-label={`Apply selected action for ${props.proposal.sourceName}`}
         disabled={!selected() || !enabled(selected() as OtherActionId)}
         onClick={runOther}
       >
-        Go
+        Apply
       </Button>
     </div>
   );

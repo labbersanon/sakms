@@ -18,13 +18,21 @@ const runOtherAction = async (
   expect(row).toBeTruthy();
   const select = within(row as HTMLElement).getByRole("combobox");
   fireEvent.change(select, { target: { value: action } });
-  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Go" }));
+  fireEvent.click(
+    within(row as HTMLElement).getByRole("button", {
+      name: `Apply selected action for ${sourceName}`,
+    }),
+  );
 };
 
 const clickRowApply = async (sourceName: string) => {
   const row = (await screen.findByText(sourceName)).closest("tr");
   expect(row).toBeTruthy();
-  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Apply" }));
+  fireEvent.click(
+    within(row as HTMLElement).getByRole("button", {
+      name: `Apply proposal ${sourceName}`,
+    }),
+  );
 };
 
 const jsonResponse = (obj: unknown): Response =>
@@ -516,6 +524,6 @@ describe("Rename — Adult (Give back removed from dropdown)", () => {
     expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
     expect(within(select).getByRole("option", { name: "Re-pick" })).toBeDisabled();
     expect(within(select).getByRole("option", { name: "Dismiss" })).not.toBeDisabled();
-    expect(within(row).queryByRole("button", { name: "Apply" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: `Apply proposal ${"Studio - Unidentified Scene"}` })).toBeNull();
   });
 });

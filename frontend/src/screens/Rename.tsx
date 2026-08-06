@@ -3,11 +3,11 @@
 // mode-specific columns (Wade-approved follow-up, see
 // .omc/handoffs/stage-3-rename.md).
 //
-// Claude 2026-08-06: Apply is NOT in the dropdown — one Apply button per row;
-//   Apply all uses matched→rename by default, or dropdown Dismiss.
-// Reason: Apply in the select looked like a mystery selection; two Apply
-//   buttons (dedicated + run) was confusing on matched rows.
-// Troubleshooting: two Apply buttons on a match → merge into one control.
+// Claude 2026-08-06: Status column removed; dropdown is Rename/Re-pick/Dismiss
+//   with Rename auto-selected when a match is found; one Apply button.
+// Reason: Status "pending"/"rename" pill duplicated the action; operators want
+//   Rename in the select (not Apply) and no Status column.
+// Troubleshooting: two Apply buttons / Apply in dropdown → use Rename option.
 // Review if: Re-pick becomes batchable (needs a chosen alternate).
 
 import {
@@ -22,7 +22,6 @@ import type { Mode } from "../api/discover";
 import type { ApplyBatchResponse, ApplyBatchResultItem } from "@dto";
 import {
   type Proposal,
-  type ProposalStatus,
   applyBatchStreaming,
   applyProposal,
   dismissProposal,
@@ -43,7 +42,6 @@ import {
   ErrorText,
   ModeTabs,
   Muted,
-  StatusPill,
   yearOf,
 } from "../components/ui";
 import { useWorkflowActions } from "./workflowHooks";
@@ -54,20 +52,22 @@ import {
   ShowHistoryToggle,
 } from "./OrganizeChrome";
 
-// Dropdown options only — Apply lives on its own button for pending rows.
-type OtherActionId = "repick" | "dismiss";
+type RowActionId = "rename" | "repick" | "dismiss";
 
-const OTHER_ACTIONS: { id: OtherActionId; label: string }[] = [
+const ROW_ACTIONS: { id: RowActionId; label: string }[] = [
+  { id: "rename", label: "Rename" },
   { id: "repick", label: "Re-pick" },
   { id: "dismiss", label: "Dismiss" },
 ];
 
-function otherActionEnabled(
-  id: OtherActionId,
+function rowActionEnabled(
+  id: RowActionId,
   status: string,
   titleMode: boolean,
 ): boolean {
   switch (id) {
+    case "rename":
+      return status === "pending";
     case "repick":
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
@@ -75,20 +75,30 @@ function otherActionEnabled(
   }
 }
 
-/** Effective bulk action: Dismiss if chosen; else Pending → Apply (implicit). */
+/** Match found → Rename is auto-selected. */
+function defaultRowAction(
+  status: string,
+  titleMode: boolean,
+): RowActionId | "" {
+  if (status === "pending" && rowActionEnabled("rename", status, titleMode)) {
+    return "rename";
+  }
+  return "";
+}
+
 function planActionForRow(
   p: Proposal,
-  dropdown: OtherActionId | "",
+  dropdown: RowActionId | "",
   titleMode: boolean,
 ): "apply" | "dismiss" | null {
-  if (
-    dropdown === "dismiss" &&
-    otherActionEnabled("dismiss", p.status, titleMode)
-  ) {
+  const action =
+    dropdown || defaultRowAction(p.status, titleMode);
+  if (action === "rename" && rowActionEnabled("rename", p.status, titleMode)) {
+    return "apply";
+  }
+  if (action === "dismiss" && rowActionEnabled("dismiss", p.status, titleMode)) {
     return "dismiss";
   }
-  if (dropdown === "repick") return null;
-  if (p.status === "pending") return "apply";
   return null;
 }
 
@@ -120,40 +130,31 @@ type ApplyAllPlanItem = {
 const RowActions: Component<{
   proposal: Proposal;
   titleMode: boolean;
-  selected: OtherActionId | "";
-  onSelect: (id: OtherActionId | "") => void;
-  onApply: () => void;
-  onRunOther: (id: OtherActionId) => void;
+  selected: RowActionId | "";
+  onSelect: (id: RowActionId | "") => void;
+  onRun: (id: RowActionId) => void;
 }> = (props) => {
-  const enabled = (id: OtherActionId) =>
-    otherActionEnabled(id, props.proposal.status, props.titleMode);
-  const hasAnyOther = () => OTHER_ACTIONS.some((a) => enabled(a.id));
-  const canRename = () => props.proposal.status === "pending";
-  const selectedOther = () => {
+  const enabled = (id: RowActionId) =>
+    rowActionEnabled(id, props.proposal.status, props.titleMode);
+  const hasAny = () => ROW_ACTIONS.some((a) => enabled(a.id));
+  const selectedOk = () => {
     const id = props.selected;
     return id && enabled(id) ? id : "";
   };
-  // One Apply button: runs dropdown choice if set, else renames a matched row.
-  const canRun = () => Boolean(selectedOther()) || canRename();
-  const applyLabel = () =>
-    selectedOther()
-      ? `Apply selected action for ${props.proposal.sourceName}`
-      : `Apply proposal ${props.proposal.sourceName}`;
 
   createEffect(() => {
     const cur = props.selected;
     if (cur && !enabled(cur)) {
-      props.onSelect("");
+      props.onSelect(
+        defaultRowAction(props.proposal.status, props.titleMode),
+      );
     }
   });
 
   const run = () => {
-    const other = selectedOther();
-    if (other) {
-      props.onRunOther(other);
-      return;
-    }
-    if (canRename()) props.onApply();
+    const id = selectedOk();
+    if (!id) return;
+    props.onRun(id);
   };
 
   return (
@@ -162,14 +163,14 @@ const RowActions: Component<{
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
         value={props.selected}
-        disabled={!hasAnyOther()}
+        disabled={!hasAny()}
         onChange={(e) =>
-          props.onSelect(e.currentTarget.value as OtherActionId | "")
+          props.onSelect(e.currentTarget.value as RowActionId | "")
         }
       >
         {/* Placeholder must stay enabled — Chromium skips disabled empty options. */}
         <option value="">select action</option>
-        <For each={OTHER_ACTIONS}>
+        <For each={ROW_ACTIONS}>
           {(a) => (
             <option value={a.id} disabled={!enabled(a.id)}>
               {a.label}
@@ -177,8 +178,12 @@ const RowActions: Component<{
           )}
         </For>
       </select>
-      <Show when={canRun()}>
-        <Button variant="primary" aria-label={applyLabel()} onClick={run}>
+      <Show when={selectedOk()}>
+        <Button
+          variant="primary"
+          aria-label={`Apply selected action for ${props.proposal.sourceName}`}
+          onClick={run}
+        >
           Apply
         </Button>
       </Show>
@@ -318,8 +323,8 @@ const ApplyAllConfirm: Component<{
           {props.plan.length === 1 ? "" : "s"}?
         </h3>
         <Muted class="mt-1">
-          Matched rows rename by default. Rows set to Dismiss are dismissed.
-          Re-pick is skipped — needs a manual pick.
+          Runs each row’s dropdown choice (Rename is selected when a match is
+          found; Re-pick is skipped — needs a manual pick).
         </Muted>
       </div>
       <div class="max-h-[50vh] overflow-y-auto px-4 py-2">
@@ -390,22 +395,24 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     null,
   );
   const [applyAllLoading, setApplyAllLoading] = createSignal(false);
-  // Per-row dropdown choice (Re-pick / Dismiss only). Empty on Pending means
-  // Apply all will rename — Apply is the implicit default, not a menu option.
+  // Per-row dropdown; match found (pending) seeds Rename.
   const [selections, setSelections] = createSignal<
-    Record<number, OtherActionId | "">
+    Record<number, RowActionId | "">
   >({});
 
   const isTitleMode = () => props.mode === "movies" || props.mode === "series";
 
-  const selectionOf = (p: Proposal): OtherActionId | "" =>
-    selections()[p.id] ?? "";
+  const selectionOf = (p: Proposal): RowActionId | "" => {
+    const cur = selections()[p.id];
+    if (cur !== undefined) return cur;
+    return defaultRowAction(p.status, isTitleMode());
+  };
 
-  const setSelection = (id: number, action: OtherActionId | "") => {
+  const setSelection = (id: number, action: RowActionId | "") => {
     setSelections((prev) => ({ ...prev, [id]: action }));
   };
 
-  // Clear invalid dropdown choices when status/mode changes.
+  // Seed Rename for newly visible matches; clear invalid choices.
   createEffect(() => {
     const titleMode = isTitleMode();
     const items = proposals();
@@ -413,10 +420,15 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       let changed = false;
       const next = { ...prev };
       for (const p of items) {
-        const cur = next[p.id];
-        if (cur && !otherActionEnabled(cur, p.status, titleMode)) {
-          next[p.id] = "";
+        if (next[p.id] === undefined) {
+          next[p.id] = defaultRowAction(p.status, titleMode);
           changed = true;
+        } else {
+          const cur = next[p.id];
+          if (cur && !rowActionEnabled(cur, p.status, titleMode)) {
+            next[p.id] = defaultRowAction(p.status, titleMode);
+            changed = true;
+          }
         }
       }
       return changed ? next : prev;
@@ -454,6 +466,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     return p ? p.title || p.sourceName || "" : "";
   };
 
+  const runRowAction = (p: Proposal, id: RowActionId) => {
+    if (id === "rename") {
+      void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
+    } else if (id === "repick") {
+      setRepickFor(p);
+    } else {
+      void act(() => dismissProposal(p.id)).then(() => setLogKey((k) => k + 1));
+    }
+  };
+
   const openApplyAll = (): void => {
     setActionError("");
     setApplyAllLoading(true);
@@ -464,12 +486,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         const sel = selections();
         const plan: ApplyAllPlanItem[] = [];
         for (const p of rows) {
-          const action = planActionForRow(p, sel[p.id] ?? "", titleMode);
+          const action = planActionForRow(
+            p,
+            sel[p.id] ?? defaultRowAction(p.status, titleMode),
+            titleMode,
+          );
           if (action) plan.push({ proposal: p, action });
         }
         if (plan.length === 0) {
           setActionError(
-            "Nothing to apply — matched rows rename by default; set Dismiss on a row to dismiss instead.",
+            "Nothing to apply — set each row’s action (matches default to Rename).",
           );
           return;
         }
@@ -608,7 +634,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                     <th class="px-2 py-2 font-medium">Date</th>
                     <th class="px-2 py-2 font-medium">PHash</th>
                   </Show>
-                  <th class="px-2 py-2 font-medium">Status</th>
                   <th class="px-2 py-2 font-medium">Root Folder</th>
                   <th class="px-2 py-2 font-medium">Reason</th>
                   <th class="px-2 py-2 font-medium">Actions</th>
@@ -619,7 +644,20 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                   {(p) => (
                     <tr class="border-b border-border/60 align-top">
                       <td class="px-2 py-2 font-mono text-xs">{p.sourceName}</td>
-                      <td class="px-2 py-2">{p.title}</td>
+                      <td class="px-2 py-2">
+                        <div class="flex flex-wrap items-center gap-1">
+                          <span>{p.title}</span>
+                          <Show
+                            when={(p.reason || "")
+                              .toLowerCase()
+                              .startsWith("web match:")}
+                          >
+                            <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                              web match
+                            </span>
+                          </Show>
+                        </div>
+                      </td>
                       <Show when={props.mode === "movies" || props.mode === "series"}>
                         <td class="px-2 py-2">{p.year || ""}</td>
                       </Show>
@@ -636,25 +674,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                           {shortHash(p.phash || "")}
                         </td>
                       </Show>
-                      <td class="px-2 py-2">
-                        <div class="flex flex-wrap items-center gap-1">
-                          <StatusPill
-                            status={p.status as ProposalStatus}
-                            label={
-                              p.status === "pending" ? "rename" : undefined
-                            }
-                          />
-                          <Show
-                            when={(p.reason || "")
-                              .toLowerCase()
-                              .startsWith("web match:")}
-                          >
-                            <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
-                              web match
-                            </span>
-                          </Show>
-                        </div>
-                      </td>
                       <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
                       <td class="px-2 py-2 text-muted">{p.reason}</td>
                       <td class="px-2 py-2">
@@ -663,20 +682,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                           titleMode={isTitleMode()}
                           selected={selectionOf(p)}
                           onSelect={(id) => setSelection(p.id, id)}
-                          onApply={() =>
-                            void act(() => applyProposal(p.id)).then(() =>
-                              setLogKey((k) => k + 1),
-                            )
-                          }
-                          onRunOther={(id) => {
-                            if (id === "repick") {
-                              setRepickFor(p);
-                              return;
-                            }
-                            void act(() => dismissProposal(p.id)).then(() =>
-                              setLogKey((k) => k + 1),
-                            );
-                          }}
+                          onRun={(id) => runRowAction(p, id)}
                         />
                       </td>
                     </tr>

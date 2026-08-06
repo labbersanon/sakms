@@ -54,6 +54,39 @@ func TestApplyLibrary_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T) {
 	}
 }
 
+// Untracked orphans whose video was already moved/deleted (e.g. by Rename)
+// must not fail Dedup Apply — same IsNotExist tolerance as tracked losers.
+func TestApplyLibrary_UntrackedLoserAlreadyGone(t *testing.T) {
+	dir := t.TempDir()
+	missingLoser := filepath.Join(dir, "already-gone.mkv")
+
+	libStore := newTestLibraryStore(t)
+	tracked, err := libStore.Upsert(context.Background(), library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "X", FilePath: "/winner.mkv", RootFolderPath: dir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "X", TMDBID: 1,
+		Candidates: []proposals.Candidate{
+			{Label: "winner", Path: "/winner.mkv", TrackedID: int(tracked.ID), Winner: true},
+			{Label: "loser", Path: missingLoser},
+		},
+	}
+	id, changes, err := ApplyLibrary(context.Background(), libStore, p, nil, nil, false, "")
+	if err != nil {
+		t.Fatalf("expected already-gone untracked loser to succeed, got: %v", err)
+	}
+	if id != tracked.ID {
+		t.Errorf("expected winner id %d, got %d", tracked.ID, id)
+	}
+	if len(changes) != 1 || changes[0].Path != missingLoser || changes[0].Kind != mode.Deleted {
+		t.Errorf("expected Deleted PathChange for missing path, got %+v", changes)
+	}
+}
+
 func TestApplyLibrary_WinnerIsOrphan_DeletesTrackedLoserAndRegistersWinner(t *testing.T) {
 	dir := t.TempDir()
 	trackedFile := writeVideoFile(t, dir, "tracked.mkv", 10)

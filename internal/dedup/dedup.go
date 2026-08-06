@@ -271,7 +271,12 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 // PathChange (see ApplyLibrary).
 func removeLibraryCandidate(ctx context.Context, libStore *library.Store, c proposals.Candidate) (string, error) {
 	if c.TrackedID == 0 {
-		if err := os.Remove(c.Path); err != nil {
+		// Claude 2026-08-06: treat ENOENT as success for untracked losers
+		// Reason: tracked + Series already ignore IsNotExist; orphans whose
+		//   .mp4 was already moved by Rename still fail Apply with "no such file".
+		// Troubleshooting: Dedup "2 applied, 3 failed" on M3GAN MULTi / Mark IV paths.
+		// Review if: Apply should distinguish "already gone" in the UI reason string.
+		if err := os.Remove(c.Path); err != nil && !os.IsNotExist(err) {
 			return "", err
 		}
 		return c.Path, nil

@@ -337,7 +337,11 @@ func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals
 // DeleteScene fails so the caller can still report the committed deletion.
 func removeSceneCandidate(ctx context.Context, libStore *library.Store, c proposals.Candidate) (string, error) {
 	if c.TrackedID == 0 {
-		if err := os.Remove(c.Path); err != nil {
+		// Claude 2026-08-06: treat ENOENT as success for untracked losers
+		// Reason: parity with Movies removeLibraryCandidate + tracked scene path.
+		// Troubleshooting: Dedup Apply fails when Rename already removed the orphan.
+		// Review if: Apply should distinguish "already gone" in the UI reason string.
+		if err := os.Remove(c.Path); err != nil && !os.IsNotExist(err) {
 			return "", err
 		}
 		return c.Path, nil

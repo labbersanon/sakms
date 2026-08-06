@@ -1,9 +1,10 @@
 // Stage 3 Rename UI tests — scan→propose→apply per mode.
 //
-// Claude 2026-08-06: Apply all + row Apply + no Give back dropdown
+// Claude 2026-08-06: Apply all + row Go + no Give back dropdown
 //   (deep-interview-rename-apply-all-giveback-settings).
 // Reason: bulk checkbox flow removed; Apply all uses summary confirm; Give back
-//   is settings-gated auto, not a row action.
+//   is settings-gated auto, not a row action. Row button stays "Go" so it is not
+//   confused with the Apply option (disabled placeholder made Chromium show Apply).
 // Review if: Purge/Dedup gain Apply all summary confirm.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +20,7 @@ const runRowAction = async (
   expect(row).toBeTruthy();
   const select = within(row as HTMLElement).getByRole("combobox");
   fireEvent.change(select, { target: { value: action } });
-  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Apply" }));
+  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Go" }));
 };
 
 const jsonResponse = (obj: unknown): Response =>

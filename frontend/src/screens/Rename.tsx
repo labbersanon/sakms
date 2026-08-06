@@ -3,11 +3,13 @@
 // mode-specific columns (Wade-approved follow-up, see
 // .omc/handoffs/stage-3-rename.md).
 //
-// Claude 2026-08-06: Apply all + row Apply + no Give back in dropdown
+// Claude 2026-08-06: Apply all + row Go + no Give back in dropdown
 //   (deep-interview-rename-apply-all-giveback-settings).
 // Reason: one-click apply all pending after summary confirm; Give back moved
 //   to Settings toggles; dropdown defaults to placeholder "select action".
-// Troubleshooting: Apply all empty → no pending; Apply disabled until action picked.
+// Troubleshooting: Apply all empty → no pending; Go disabled until action picked.
+//   Mysterious "Apply" shown selected → disabled empty <option> Chromium quirk
+//   (placeholder must stay enabled; run button is Go not Apply).
 // Review if: Purge/Dedup adopt Apply all summary confirm.
 
 import {
@@ -133,6 +135,11 @@ const RowActions: Component<{
 
   return (
     <div class="flex flex-wrap items-center gap-1">
+      {/* Claude 2026-08-06: placeholder must not be disabled
+          Reason: disabled empty <option> makes Chromium show the next enabled
+            option ("Apply") as the visible selection while value stays "".
+          Troubleshooting: mysterious "Apply" pre-selected on every Rename row.
+          Review if: switch to a custom listbox that supports real placeholders. */}
       <select
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
@@ -142,9 +149,7 @@ const RowActions: Component<{
           setSelected(e.currentTarget.value as RowActionId | "")
         }
       >
-        <option value="" disabled>
-          select action
-        </option>
+        <option value="">select action</option>
         <For each={ROW_ACTIONS}>
           {(a) => (
             <option value={a.id} disabled={!enabled(a.id)}>
@@ -158,7 +163,7 @@ const RowActions: Component<{
         disabled={!selected() || !enabled(selected() as RowActionId)}
         onClick={run}
       >
-        Apply
+        Go
       </Button>
     </div>
   );

@@ -1,10 +1,8 @@
 // Stage 3 Rename UI tests — scan→propose→apply per mode.
 //
-// Claude 2026-08-06: Apply all + row Go + no Give back dropdown
+// Claude 2026-08-06: Apply all + dedicated row Apply; dropdown is Re-pick/Dismiss only
 //   (deep-interview-rename-apply-all-giveback-settings).
-// Reason: bulk checkbox flow removed; Apply all uses summary confirm; Give back
-//   is settings-gated auto, not a row action. Row button stays "Go" so it is not
-//   confused with the Apply option (disabled placeholder made Chromium show Apply).
+// Reason: Apply must not appear in the select (looked like a mystery selection).
 // Review if: Purge/Dedup gain Apply all summary confirm.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,15 +10,21 @@ import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-lib
 import type { DiscoverItem, Proposal } from "@dto";
 import { Rename } from "./Rename";
 
-const runRowAction = async (
+const runOtherAction = async (
   sourceName: string,
-  action: "apply" | "repick" | "dismiss",
+  action: "repick" | "dismiss",
 ) => {
   const row = (await screen.findByText(sourceName)).closest("tr");
   expect(row).toBeTruthy();
   const select = within(row as HTMLElement).getByRole("combobox");
   fireEvent.change(select, { target: { value: action } });
   fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Go" }));
+};
+
+const clickRowApply = async (sourceName: string) => {
+  const row = (await screen.findByText(sourceName)).closest("tr");
+  expect(row).toBeTruthy();
+  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Apply" }));
 };
 
 const jsonResponse = (obj: unknown): Response =>
@@ -129,7 +133,8 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     const row = screen.getByText("Movie.A").closest("tr")!;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("");
-    await runRowAction("Movie.A", "apply");
+    expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
+    await clickRowApply("Movie.A");
 
     await waitFor(() => expect(singleApplyCalls(calls)).toHaveLength(1));
     expect(singleApplyCalls(calls)[0]!.url).toContain("/api/proposals/7/apply");
@@ -296,7 +301,7 @@ describe("Rename — Apply all (summary confirm)", () => {
 
     render(() => <Rename />);
     await screen.findByText("A");
-    await runRowAction("B", "apply");
+    await clickRowApply("B");
 
     await waitFor(() => expect(singleApplyCalls(calls)).toHaveLength(1));
     expect(singleApplyCalls(calls)[0]!.url).toContain("/api/proposals/2/apply");
@@ -332,7 +337,7 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
 
     render(() => <Rename />);
     fireEvent.click(await screen.findByText("Series"));
-    await runRowAction("Wrong.Match.Show", "repick");
+    await runOtherAction("Wrong.Match.Show", "repick");
     expect(await screen.findByText(/The Right Show/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Use this"));
 
@@ -363,7 +368,7 @@ describe("Rename — Dismiss (single row)", () => {
 
     render(() => <Rename />);
     await screen.findByText("Dismiss.Me");
-    await runRowAction("Dismiss.Me", "dismiss");
+    await runOtherAction("Dismiss.Me", "dismiss");
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/api/proposals/4/dismiss"))).toBe(
         true,
@@ -508,7 +513,9 @@ describe("Rename — Adult (Give back removed from dropdown)", () => {
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("");
     expect(within(select).queryByRole("option", { name: "Give back" })).toBeNull();
+    expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
     expect(within(select).getByRole("option", { name: "Re-pick" })).toBeDisabled();
     expect(within(select).getByRole("option", { name: "Dismiss" })).not.toBeDisabled();
+    expect(within(row).queryByRole("button", { name: "Apply" })).toBeNull();
   });
 });

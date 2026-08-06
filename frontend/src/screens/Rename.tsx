@@ -3,13 +3,10 @@
 // mode-specific columns (Wade-approved follow-up, see
 // .omc/handoffs/stage-3-rename.md).
 //
-// Claude 2026-08-06: Apply all + row Go + no Give back in dropdown
+// Claude 2026-08-06: Apply all; dedicated row Apply; dropdown Re-pick/Dismiss only
 //   (deep-interview-rename-apply-all-giveback-settings).
-// Reason: one-click apply all pending after summary confirm; Give back moved
-//   to Settings toggles; dropdown defaults to placeholder "select action".
-// Troubleshooting: Apply all empty → no pending; Go disabled until action picked.
-//   Mysterious "Apply" shown selected → disabled empty <option> Chromium quirk
-//   (placeholder must stay enabled; run button is Go not Apply).
+// Reason: Apply in the select looked like a mysterious pre-selection.
+// Troubleshooting: Apply still in dropdown → OTHER_ACTIONS was reverted.
 // Review if: Purge/Dedup adopt Apply all summary confirm.
 
 import {
@@ -56,23 +53,24 @@ import {
   ShowHistoryToggle,
 } from "./OrganizeChrome";
 
-// Claude 2026-08-06: Give back removed from row actions (settings-gated auto).
-type RowActionId = "apply" | "repick" | "dismiss";
+// Claude 2026-08-06: Apply is a dedicated button — not a dropdown option
+// Reason: "Apply" in the select looked like a mysterious pre-selection; Apply
+//   belongs on its own control. Dropdown is only Re-pick / Dismiss + Go.
+// Troubleshooting: Apply still listed in dropdown → this block was reverted.
+// Review if: operators want Apply back inside the select.
+type OtherActionId = "repick" | "dismiss";
 
-const ROW_ACTIONS: { id: RowActionId; label: string }[] = [
-  { id: "apply", label: "Apply" },
+const OTHER_ACTIONS: { id: OtherActionId; label: string }[] = [
   { id: "repick", label: "Re-pick" },
   { id: "dismiss", label: "Dismiss" },
 ];
 
-function rowActionEnabled(
-  id: RowActionId,
+function otherActionEnabled(
+  id: OtherActionId,
   status: string,
   titleMode: boolean,
 ): boolean {
   switch (id) {
-    case "apply":
-      return status === "pending";
     case "repick":
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
@@ -80,8 +78,10 @@ function rowActionEnabled(
   }
 }
 
-function anyActionEnabled(status: string, titleMode: boolean): boolean {
-  return ROW_ACTIONS.some((a) => rowActionEnabled(a.id, status, titleMode));
+function anyOtherActionEnabled(status: string, titleMode: boolean): boolean {
+  return OTHER_ACTIONS.some((a) =>
+    otherActionEnabled(a.id, status, titleMode),
+  );
 }
 
 function newNameOf(p: Proposal): string {
@@ -113,44 +113,44 @@ const RowActions: Component<{
   onRepick: () => void;
   onDismiss: () => void;
 }> = (props) => {
-  const [selected, setSelected] = createSignal<RowActionId | "">("");
+  const [selected, setSelected] = createSignal<OtherActionId | "">("");
 
-  const enabled = (id: RowActionId) =>
-    rowActionEnabled(id, props.proposal.status, props.titleMode);
-  const hasAny = () =>
-    anyActionEnabled(props.proposal.status, props.titleMode);
+  const enabled = (id: OtherActionId) =>
+    otherActionEnabled(id, props.proposal.status, props.titleMode);
+  const hasOther = () =>
+    anyOtherActionEnabled(props.proposal.status, props.titleMode);
+  const canApply = () => props.proposal.status === "pending";
 
   createEffect(() => {
     const cur = selected();
     if (cur && !enabled(cur)) setSelected("");
   });
 
-  const run = () => {
+  const runOther = () => {
     const id = selected();
     if (!id || !enabled(id)) return;
-    if (id === "apply") props.onApply();
-    else if (id === "repick") props.onRepick();
+    if (id === "repick") props.onRepick();
     else props.onDismiss();
   };
 
   return (
     <div class="flex flex-wrap items-center gap-1">
-      {/* Claude 2026-08-06: placeholder must not be disabled
-          Reason: disabled empty <option> makes Chromium show the next enabled
-            option ("Apply") as the visible selection while value stays "".
-          Troubleshooting: mysterious "Apply" pre-selected on every Rename row.
-          Review if: switch to a custom listbox that supports real placeholders. */}
+      <Show when={canApply()}>
+        <Button variant="primary" onClick={() => props.onApply()}>
+          Apply
+        </Button>
+      </Show>
       <select
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
         value={selected()}
-        disabled={!hasAny()}
+        disabled={!hasOther()}
         onChange={(e) =>
-          setSelected(e.currentTarget.value as RowActionId | "")
+          setSelected(e.currentTarget.value as OtherActionId | "")
         }
       >
         <option value="">select action</option>
-        <For each={ROW_ACTIONS}>
+        <For each={OTHER_ACTIONS}>
           {(a) => (
             <option value={a.id} disabled={!enabled(a.id)}>
               {a.label}
@@ -159,9 +159,9 @@ const RowActions: Component<{
         </For>
       </select>
       <Button
-        variant="primary"
-        disabled={!selected() || !enabled(selected() as RowActionId)}
-        onClick={run}
+        variant="secondary"
+        disabled={!selected() || !enabled(selected() as OtherActionId)}
+        onClick={runOther}
       >
         Go
       </Button>

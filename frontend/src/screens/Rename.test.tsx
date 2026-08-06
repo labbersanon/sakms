@@ -1,8 +1,8 @@
 // Stage 3 Rename UI tests — scan→propose→apply per mode.
 //
-// Claude 2026-08-06: Apply all runs per-row selections; Pending auto-selects Apply
-//   (deep-interview-rename-apply-all-giveback-settings).
-// Reason: Apply all is not rename-only; match found → Apply preselected.
+// Claude 2026-08-06: Apply all honors Dismiss selections; Pending→rename default;
+//   Apply is a dedicated button, not a dropdown option.
+// Reason: Apply in the select looked like a mystery selection.
 // Review if: Purge/Dedup gain Apply all summary confirm.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,9 +10,9 @@ import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-lib
 import type { DiscoverItem, Proposal } from "@dto";
 import { Rename } from "./Rename";
 
-const runRowAction = async (
+const runOtherAction = async (
   sourceName: string,
-  action: "apply" | "repick" | "dismiss",
+  action: "repick" | "dismiss",
 ) => {
   const row = (await screen.findByText(sourceName)).closest("tr");
   expect(row).toBeTruthy();
@@ -21,6 +21,16 @@ const runRowAction = async (
   fireEvent.click(
     within(row as HTMLElement).getByRole("button", {
       name: `Apply selected action for ${sourceName}`,
+    }),
+  );
+};
+
+const clickRowApply = async (sourceName: string) => {
+  const row = (await screen.findByText(sourceName)).closest("tr");
+  expect(row).toBeTruthy();
+  fireEvent.click(
+    within(row as HTMLElement).getByRole("button", {
+      name: `Apply proposal ${sourceName}`,
     }),
   );
 };
@@ -114,7 +124,7 @@ afterEach(() => {
 });
 
 describe("Rename — Movies (scan → propose → apply one)", () => {
-  it("lists proposals and applies exactly one via select + Apply", async () => {
+  it("lists proposals and applies exactly one via dedicated Apply", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([proposal({ id: 7, sourceName: "Movie.A" })]);
@@ -130,14 +140,9 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     expect(await screen.findByText("Movie.A")).toBeInTheDocument();
     const row = screen.getByText("Movie.A").closest("tr")!;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
-    // Pending (match found) auto-selects Apply.
-    expect(select.value).toBe("apply");
-    expect(within(select).getByRole("option", { name: "Apply" })).not.toBeDisabled();
-    fireEvent.click(
-      within(row).getByRole("button", {
-        name: "Apply selected action for Movie.A",
-      }),
-    );
+    expect(select.value).toBe("");
+    expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
+    await clickRowApply("Movie.A");
 
     await waitFor(() => expect(singleApplyCalls(calls)).toHaveLength(1));
     expect(singleApplyCalls(calls)[0]!.url).toContain("/api/proposals/7/apply");
@@ -253,11 +258,16 @@ describe("Rename — Apply all (summary confirm)", () => {
 
     render(() => <Rename />);
     await screen.findByText("A.mkv");
-    // Pending rows auto-select Apply in the dropdown.
+    // Apply is not in the dropdown; Pending still renames via Apply all.
     const rowA = screen.getByText("A.mkv").closest("tr")!;
     expect((within(rowA).getByRole("combobox") as HTMLSelectElement).value).toBe(
-      "apply",
+      "",
     );
+    expect(
+      within(within(rowA).getByRole("combobox")).queryByRole("option", {
+        name: "Apply",
+      }),
+    ).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Apply all" }));
 
@@ -345,7 +355,7 @@ describe("Rename — Apply all (summary confirm)", () => {
     expect(batchCalls(calls)).toHaveLength(0);
   });
 
-  it("still applies a single row through its dropdown Apply action", async () => {
+  it("still applies a single row through its dedicated Apply button", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([
@@ -362,13 +372,7 @@ describe("Rename — Apply all (summary confirm)", () => {
 
     render(() => <Rename />);
     await screen.findByText("A");
-    // Pending already has Apply selected — just run it.
-    const row = screen.getByText("B").closest("tr")!;
-    fireEvent.click(
-      within(row).getByRole("button", {
-        name: "Apply selected action for B",
-      }),
-    );
+    await clickRowApply("B");
 
     await waitFor(() => expect(singleApplyCalls(calls)).toHaveLength(1));
     expect(singleApplyCalls(calls)[0]!.url).toContain("/api/proposals/2/apply");
@@ -404,7 +408,7 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
 
     render(() => <Rename />);
     fireEvent.click(await screen.findByText("Series"));
-    await runRowAction("Wrong.Match.Show", "repick");
+    await runOtherAction("Wrong.Match.Show", "repick");
     expect(await screen.findByText(/The Right Show/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Use this"));
 
@@ -435,7 +439,7 @@ describe("Rename — Dismiss (single row)", () => {
 
     render(() => <Rename />);
     await screen.findByText("Dismiss.Me");
-    await runRowAction("Dismiss.Me", "dismiss");
+    await runOtherAction("Dismiss.Me", "dismiss");
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/api/proposals/4/dismiss"))).toBe(
         true,
@@ -555,7 +559,7 @@ describe("Rename — mode-specific columns", () => {
 });
 
 describe("Rename — Adult (Give back removed from dropdown)", () => {
-  it("has no Give back; unmatched leaves placeholder (Apply disabled)", async () => {
+  it("has no Give back or Apply option; unmatched leaves placeholder", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([]);
@@ -580,8 +584,13 @@ describe("Rename — Adult (Give back removed from dropdown)", () => {
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("");
     expect(within(select).queryByRole("option", { name: "Give back" })).toBeNull();
-    expect(within(select).getByRole("option", { name: "Apply" })).toBeDisabled();
+    expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
     expect(within(select).getByRole("option", { name: "Re-pick" })).toBeDisabled();
     expect(within(select).getByRole("option", { name: "Dismiss" })).not.toBeDisabled();
+    expect(
+      within(row).queryByRole("button", {
+        name: "Apply proposal Studio - Unidentified Scene",
+      }),
+    ).toBeNull();
   });
 });

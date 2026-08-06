@@ -3,10 +3,11 @@
 // mode-specific columns (Wade-approved follow-up, see
 // .omc/handoffs/stage-3-rename.md).
 //
-// Claude 2026-08-06: Apply all runs each row's selected action; Pending → Apply
-//   auto-selected (deep-interview-rename-apply-all-giveback-settings).
-// Reason: Apply all is not rename-only; match found should preselect Apply.
-// Troubleshooting: Apply all only renames → plan ignored dismiss / wrong default.
+// Claude 2026-08-06: Apply is NOT in the dropdown — dedicated pending Apply
+//   button; Apply all uses Pending→rename by default, or dropdown Dismiss.
+// Reason: Apply in the select looked like a mystery selection; operators want
+//   it off the menu. "Auto-selected when match found" = Apply all default.
+// Troubleshooting: Apply reappeared in dropdown → this block was reverted.
 // Review if: Re-pick becomes batchable (needs a chosen alternate).
 
 import {
@@ -53,22 +54,20 @@ import {
   ShowHistoryToggle,
 } from "./OrganizeChrome";
 
-type RowActionId = "apply" | "repick" | "dismiss";
+// Dropdown options only — Apply lives on its own button for pending rows.
+type OtherActionId = "repick" | "dismiss";
 
-const ROW_ACTIONS: { id: RowActionId; label: string }[] = [
-  { id: "apply", label: "Apply" },
+const OTHER_ACTIONS: { id: OtherActionId; label: string }[] = [
   { id: "repick", label: "Re-pick" },
   { id: "dismiss", label: "Dismiss" },
 ];
 
-function rowActionEnabled(
-  id: RowActionId,
+function otherActionEnabled(
+  id: OtherActionId,
   status: string,
   titleMode: boolean,
 ): boolean {
   switch (id) {
-    case "apply":
-      return status === "pending";
     case "repick":
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
@@ -76,15 +75,21 @@ function rowActionEnabled(
   }
 }
 
-function defaultRowAction(
-  status: string,
+/** Effective bulk action: Dismiss if chosen; else Pending → Apply (implicit). */
+function planActionForRow(
+  p: Proposal,
+  dropdown: OtherActionId | "",
   titleMode: boolean,
-): RowActionId | "" {
-  // Match found (Pending) → Apply is auto-selected.
-  if (status === "pending" && rowActionEnabled("apply", status, titleMode)) {
-    return "apply";
+): "apply" | "dismiss" | null {
+  if (
+    dropdown === "dismiss" &&
+    otherActionEnabled("dismiss", p.status, titleMode)
+  ) {
+    return "dismiss";
   }
-  return "";
+  if (dropdown === "repick") return null;
+  if (p.status === "pending") return "apply";
+  return null;
 }
 
 function newNameOf(p: Proposal): string {
@@ -115,42 +120,52 @@ type ApplyAllPlanItem = {
 const RowActions: Component<{
   proposal: Proposal;
   titleMode: boolean;
-  selected: RowActionId | "";
-  onSelect: (id: RowActionId | "") => void;
-  onRun: (id: RowActionId) => void;
+  selected: OtherActionId | "";
+  onSelect: (id: OtherActionId | "") => void;
+  onApply: () => void;
+  onRunOther: (id: OtherActionId) => void;
 }> = (props) => {
-  const enabled = (id: RowActionId) =>
-    rowActionEnabled(id, props.proposal.status, props.titleMode);
-  const hasAny = () => ROW_ACTIONS.some((a) => enabled(a.id));
+  const enabled = (id: OtherActionId) =>
+    otherActionEnabled(id, props.proposal.status, props.titleMode);
+  const hasAnyOther = () => OTHER_ACTIONS.some((a) => enabled(a.id));
+  const canApply = () => props.proposal.status === "pending";
 
   createEffect(() => {
     const cur = props.selected;
     if (cur && !enabled(cur)) {
-      props.onSelect(
-        defaultRowAction(props.proposal.status, props.titleMode),
-      );
+      props.onSelect("");
     }
   });
 
-  const run = () => {
+  const runOther = () => {
     const id = props.selected;
     if (!id || !enabled(id)) return;
-    props.onRun(id);
+    props.onRunOther(id);
   };
 
   return (
     <div class="flex flex-wrap items-center gap-1">
+      <Show when={canApply()}>
+        <Button
+          variant="primary"
+          aria-label={`Apply proposal ${props.proposal.sourceName}`}
+          onClick={() => props.onApply()}
+        >
+          Apply
+        </Button>
+      </Show>
       <select
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
         value={props.selected}
-        disabled={!hasAny()}
+        disabled={!hasAnyOther()}
         onChange={(e) =>
-          props.onSelect(e.currentTarget.value as RowActionId | "")
+          props.onSelect(e.currentTarget.value as OtherActionId | "")
         }
       >
+        {/* Placeholder must stay enabled — Chromium skips disabled empty options. */}
         <option value="">select action</option>
-        <For each={ROW_ACTIONS}>
+        <For each={OTHER_ACTIONS}>
           {(a) => (
             <option value={a.id} disabled={!enabled(a.id)}>
               {a.label}
@@ -161,8 +176,8 @@ const RowActions: Component<{
       <Button
         variant="primary"
         aria-label={`Apply selected action for ${props.proposal.sourceName}`}
-        disabled={!props.selected || !enabled(props.selected as RowActionId)}
-        onClick={run}
+        disabled={!props.selected || !enabled(props.selected as OtherActionId)}
+        onClick={runOther}
       >
         Apply
       </Button>
@@ -302,8 +317,8 @@ const ApplyAllConfirm: Component<{
           {props.plan.length === 1 ? "" : "s"}?
         </h3>
         <Muted class="mt-1">
-          Runs each row’s dropdown choice (Re-pick is skipped — needs a manual
-          pick).
+          Pending rows rename by default. Rows set to Dismiss are dismissed.
+          Re-pick is skipped — needs a manual pick.
         </Muted>
       </div>
       <div class="max-h-[50vh] overflow-y-auto px-4 py-2">
@@ -372,24 +387,22 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     null,
   );
   const [applyAllLoading, setApplyAllLoading] = createSignal(false);
-  // Per-proposal dropdown choice; Pending defaults to Apply when first seen.
+  // Per-row dropdown choice (Re-pick / Dismiss only). Empty on Pending means
+  // Apply all will rename — Apply is the implicit default, not a menu option.
   const [selections, setSelections] = createSignal<
-    Record<number, RowActionId | "">
+    Record<number, OtherActionId | "">
   >({});
 
   const isTitleMode = () => props.mode === "movies" || props.mode === "series";
 
-  const selectionOf = (p: Proposal): RowActionId | "" => {
-    const cur = selections()[p.id];
-    if (cur !== undefined) return cur;
-    return defaultRowAction(p.status, isTitleMode());
-  };
+  const selectionOf = (p: Proposal): OtherActionId | "" =>
+    selections()[p.id] ?? "";
 
-  const setSelection = (id: number, action: RowActionId | "") => {
+  const setSelection = (id: number, action: OtherActionId | "") => {
     setSelections((prev) => ({ ...prev, [id]: action }));
   };
 
-  // Seed defaults for newly visible rows (Pending → Apply).
+  // Clear invalid dropdown choices when status/mode changes.
   createEffect(() => {
     const titleMode = isTitleMode();
     const items = proposals();
@@ -397,15 +410,10 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       let changed = false;
       const next = { ...prev };
       for (const p of items) {
-        if (next[p.id] === undefined) {
-          next[p.id] = defaultRowAction(p.status, titleMode);
+        const cur = next[p.id];
+        if (cur && !otherActionEnabled(cur, p.status, titleMode)) {
+          next[p.id] = "";
           changed = true;
-        } else {
-          const cur = next[p.id];
-          if (cur && !rowActionEnabled(cur, p.status, titleMode)) {
-            next[p.id] = defaultRowAction(p.status, titleMode);
-            changed = true;
-          }
         }
       }
       return changed ? next : prev;
@@ -443,16 +451,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     return p ? p.title || p.sourceName || "" : "";
   };
 
-  const runRowAction = (p: Proposal, id: RowActionId) => {
-    if (id === "apply") {
-      void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
-    } else if (id === "repick") {
-      setRepickFor(p);
-    } else {
-      void act(() => dismissProposal(p.id)).then(() => setLogKey((k) => k + 1));
-    }
-  };
-
   const openApplyAll = (): void => {
     setActionError("");
     setApplyAllLoading(true);
@@ -463,23 +461,12 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         const sel = selections();
         const plan: ApplyAllPlanItem[] = [];
         for (const p of rows) {
-          let action = sel[p.id];
-          if (action === undefined) {
-            action = defaultRowAction(p.status, titleMode);
-          }
-          if (action === "apply" && rowActionEnabled("apply", p.status, titleMode)) {
-            plan.push({ proposal: p, action: "apply" });
-          } else if (
-            action === "dismiss" &&
-            rowActionEnabled("dismiss", p.status, titleMode)
-          ) {
-            plan.push({ proposal: p, action: "dismiss" });
-          }
-          // Re-pick and empty selection are skipped in bulk.
+          const action = planActionForRow(p, sel[p.id] ?? "", titleMode);
+          if (action) plan.push({ proposal: p, action });
         }
         if (plan.length === 0) {
           setActionError(
-            "Nothing to apply — set each row’s action (Pending defaults to Apply).",
+            "Nothing to apply — Pending rows rename by default; set Dismiss on a row to dismiss instead.",
           );
           return;
         }
@@ -668,7 +655,20 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                           titleMode={isTitleMode()}
                           selected={selectionOf(p)}
                           onSelect={(id) => setSelection(p.id, id)}
-                          onRun={(id) => runRowAction(p, id)}
+                          onApply={() =>
+                            void act(() => applyProposal(p.id)).then(() =>
+                              setLogKey((k) => k + 1),
+                            )
+                          }
+                          onRunOther={(id) => {
+                            if (id === "repick") {
+                              setRepickFor(p);
+                              return;
+                            }
+                            void act(() => dismissProposal(p.id)).then(() =>
+                              setLogKey((k) => k + 1),
+                            );
+                          }}
                         />
                       </td>
                     </tr>

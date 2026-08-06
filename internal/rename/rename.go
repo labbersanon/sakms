@@ -284,24 +284,6 @@ func proposeOneLibrary(
 	}
 
 	sig := ExtractFileSignals(ctx, entry.Name, entry.Path, prober)
-	if !sig.HasAny() {
-		p.Status = proposals.Unmatched
-		p.Reason = "no year, actor, or duration available to corroborate a match — needs manual review"
-		return p
-	}
-
-	queries := searchterm.SearchQueries(entry.Name)
-	var lastTerm string
-	var lastLimit int
-	// Claude 2026-08-05: defer Weak (duration-overrode-year) until all queries scanned
-	// Reason: Copacabana bare search ranked 1985 before 1947; Weak accepted first
-	// Troubleshooting: Pending year ≠ file year while a later top-N hit matches year
-	// Review if: Strong never appears and Weak false-positives need a harder gate
-	type weakMovie struct {
-		match    tmdb.Item
-		candYear int
-	}
-	var weak *weakMovie
 	acceptMovie := func(match tmdb.Item, candYear int) proposals.Proposal {
 		targetRoot := generalRoot
 		switch {
@@ -333,6 +315,47 @@ func proposeOneLibrary(
 		}
 		return p
 	}
+	if !sig.HasAny() {
+		// Claude 2026-08-05: no-signal orphans may still use GuessTitle / Brave / web-authority
+		// Reason: deep-interview-rename-web-authority — HBO specials often lack year in the filename
+		// Troubleshooting: "no year, actor, or duration" before web ran → Skelton Funny Faces unmatched
+		// Review if: no-signal web Pending false-positives need a stricter gate
+		guessed := ""
+		if sess.MainstreamAI != nil {
+			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && g != "" {
+				guessed = g
+				if got := tryMovieQueries(ctx, sess, sig, cfg, acceptMovie, searchterm.SearchQueries(guessed)); got != nil {
+					return *got
+				}
+			}
+		}
+		if got := bravePhase2Movie(ctx, sess, sig, cfg, acceptMovie, guessed, entry.Name); got != nil {
+			return *got
+		}
+		if got := tryWebAuthorityMovie(ctx, sess, byTMDB, generalRoot, foundRoot, entry.Name, guessed, p); got != nil {
+			return *got
+		}
+		p.Status = proposals.Unmatched
+		if IsJunkRenameFilename(entry.Name) {
+			p.Reason = fmt.Sprintf("filename too generic for web naming authority (%q) — needs manual review", entry.Name)
+		} else {
+			p.Reason = "no year, actor, or duration available to corroborate a match — needs manual review"
+		}
+		return p
+	}
+
+	queries := searchterm.SearchQueries(entry.Name)
+	var lastTerm string
+	var lastLimit int
+	// Claude 2026-08-05: defer Weak (duration-overrode-year) until all queries scanned
+	// Reason: Copacabana bare search ranked 1985 before 1947; Weak accepted first
+	// Troubleshooting: Pending year ≠ file year while a later top-N hit matches year
+	// Review if: Strong never appears and Weak false-positives need a harder gate
+	type weakMovie struct {
+		match    tmdb.Item
+		candYear int
+	}
+	var weak *weakMovie
 	for _, term := range queries {
 		lastTerm = term
 		items, err := sess.TMDB.SearchMovies(ctx, term)
@@ -385,14 +408,11 @@ func proposeOneLibrary(
 	if got := bravePhase2Movie(ctx, sess, sig, cfg, acceptMovie, guessed, entry.Name); got != nil {
 		return *got
 	}
-
-	if lastLimit == 0 {
-		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("no TMDB match for queries derived from %q", entry.Name)
-		return p
+	if got := tryWebAuthorityMovie(ctx, sess, byTMDB, generalRoot, foundRoot, entry.Name, guessed, p); got != nil {
+		return *got
 	}
-	p.Status = proposals.Unmatched
-	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration (last query %q)", lastLimit, lastTerm)
+
+	unmatchedAfterWebAuthority(&p, entry.Name, lastLimit, lastTerm)
 	return p
 }
 
@@ -533,12 +553,19 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 		return 0, nil, fmt.Errorf("resolving the video file under %q: %w", p.SourcePath, err)
 	}
 
-	existing, getErr := libStore.GetByTMDBID(ctx, mode.Movies, p.TMDBID)
-	if getErr == nil && existing != nil {
-		return applyLibraryAlternate(ctx, libStore, existing, p, videoPath, preset, tier, prober)
-	}
-	if getErr != nil && !errors.Is(getErr, library.ErrNotFound) {
-		return 0, nil, fmt.Errorf("looking up existing library title: %w", getErr)
+	// Claude 2026-08-05: skip GetByTMDBID when TMDBID==0 (would collide all zero-id rows).
+	// Negative synthetic web-authority ids still use GetByTMDBID for same-title alternates.
+	// Reason: deep-interview-rename-web-authority
+	// Troubleshooting: second web Apply overwrote first library row → was using id 0
+	// Review if: nullable tmdb_id unique constraint replaces synthetic negatives
+	if p.TMDBID != 0 {
+		existing, getErr := libStore.GetByTMDBID(ctx, mode.Movies, p.TMDBID)
+		if getErr == nil && existing != nil {
+			return applyLibraryAlternate(ctx, libStore, existing, p, videoPath, preset, tier, prober)
+		}
+		if getErr != nil && !errors.Is(getErr, library.ErrNotFound) {
+			return 0, nil, fmt.Errorf("looking up existing library title: %w", getErr)
+		}
 	}
 
 	destPath, err := RelocateMovie(videoPath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, preset)
@@ -726,20 +753,6 @@ func proposeOneEpisodeLibrary(
 	}
 
 	sig := ExtractFileSignals(ctx, name, videoPath, prober)
-	if !sig.HasAny() {
-		p.Status = proposals.Unmatched
-		p.Reason = "no year, actor, or duration available to corroborate a match — needs manual review"
-		return p
-	}
-
-	queries := searchterm.SearchQueries(library.StripEpisodeMarker(name))
-	var lastTerm string
-	var lastLimit int
-	type weakSeries struct {
-		match    tmdb.Item
-		candYear int
-	}
-	var weak *weakSeries
 	acceptSeries := func(match tmdb.Item, candYear int) proposals.Proposal {
 		if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
 			p.Status = proposals.Unmatched
@@ -773,6 +786,39 @@ func proposeOneEpisodeLibrary(
 		}
 		return p
 	}
+	if !sig.HasAny() {
+		guessed := ""
+		if sess.MainstreamAI != nil {
+			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, name); gerr == nil && g != "" {
+				guessed = g
+				if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, season, episode, searchterm.SearchQueries(guessed)); got != nil {
+					return *got
+				}
+			}
+		}
+		if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, name); got != nil {
+			return *got
+		}
+		if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
+			return *got
+		}
+		p.Status = proposals.Unmatched
+		if IsJunkRenameFilename(name) {
+			p.Reason = fmt.Sprintf("filename too generic for web naming authority (%q) — needs manual review", name)
+		} else {
+			p.Reason = "no year, actor, or duration available to corroborate a match — needs manual review"
+		}
+		return p
+	}
+
+	queries := searchterm.SearchQueries(library.StripEpisodeMarker(name))
+	var lastTerm string
+	var lastLimit int
+	type weakSeries struct {
+		match    tmdb.Item
+		candYear int
+	}
+	var weak *weakSeries
 	for _, term := range queries {
 		lastTerm = term
 		items, err := sess.TMDB.SearchTV(ctx, term)
@@ -829,14 +875,11 @@ func proposeOneEpisodeLibrary(
 	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, name); got != nil {
 		return *got
 	}
-
-	if lastLimit == 0 {
-		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("no TMDB match for queries derived from %q", name)
-		return p
+	if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
+		return *got
 	}
-	p.Status = proposals.Unmatched
-	p.Reason = fmt.Sprintf("no TMDB candidate in top %d passed corroboration (last query %q)", lastLimit, lastTerm)
+
+	unmatchedAfterWebAuthority(&p, name, lastLimit, lastTerm)
 	return p
 }
 

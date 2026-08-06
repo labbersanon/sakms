@@ -554,7 +554,18 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                         </td>
                       </Show>
                       <td class="px-2 py-2">
-                        <StatusPill status={p.status as ProposalStatus} />
+                        <div class="flex flex-wrap items-center gap-1">
+                          <StatusPill status={p.status as ProposalStatus} />
+                          <Show
+                            when={(p.reason || "")
+                              .toLowerCase()
+                              .startsWith("web match:")}
+                          >
+                            <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                              web match
+                            </span>
+                          </Show>
+                        </div>
                       </td>
                       <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
                       <td class="px-2 py-2 text-muted">{p.reason}</td>

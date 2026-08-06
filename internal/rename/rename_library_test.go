@@ -718,3 +718,125 @@ func TestScanLibrary_NFODuplicateMarkedPendingAlternate(t *testing.T) {
 		t.Errorf("expected alternate reason, got %q", got[0].Reason)
 	}
 }
+
+func TestScanLibrary_WebAuthority_FunnyFacesNoTMDB(t *testing.T) {
+	root := t.TempDir()
+	seedMovieRelease(t, root, "Red Skelton More Funny Faces")
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/search/movie" {
+			w.Write([]byte(`{"results":[]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(tmdbSrv.Close)
+
+	braveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"web": map[string]any{
+				"results": []map[string]any{{
+					"title":       "More Funny Faces - Red Skelton HBO special",
+					"description": "1982 HBO special starring Red Skelton with Marcel Marceau.",
+					"url":         "https://example.com/more-funny-faces",
+				}},
+			},
+		})
+	}))
+	t.Cleanup(braveSrv.Close)
+
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		prompt := ""
+		if len(body.Messages) > 0 {
+			prompt = body.Messages[len(body.Messages)-1].Content
+		}
+		content := `{"title":null}`
+		if strings.Contains(prompt, "Web search results") {
+			content = `{"title":"More Funny Faces","year":1982}`
+		}
+		json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": content}})
+	}))
+	t.Cleanup(aiSrv.Close)
+
+	sess := &mode.Session{
+		Mode:         mode.Movies,
+		TMDB:         tmdb.New(tmdb.Config{BaseURL: tmdbSrv.URL, APIKey: "k"}, tmdbSrv.Client()),
+		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
+		WebSearch:    websearch.Brave{Inner: bravesearch.New(braveSrv.URL, "k", braveSrv.Client())},
+	}
+
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending {
+		t.Fatalf("expected web-authority Pending, got %+v", got)
+	}
+	if got[0].TMDBID >= 0 {
+		t.Errorf("expected negative synthetic TMDB id, got %d", got[0].TMDBID)
+	}
+	if got[0].Year != 1982 || !strings.Contains(got[0].Title, "Funny Faces") {
+		t.Errorf("got title=%q year=%d", got[0].Title, got[0].Year)
+	}
+	if !strings.HasPrefix(got[0].Reason, "web match:") {
+		t.Errorf("expected web match reason, got %q", got[0].Reason)
+	}
+}
+
+func TestScanLibrary_WebAuthority_RejectsTitleN(t *testing.T) {
+	root := t.TempDir()
+	seedMovieRelease(t, root, "RED_SKELTON_Title1")
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[]}`))
+	}))
+	t.Cleanup(tmdbSrv.Close)
+
+	braveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"web": map[string]any{
+				"results": []map[string]any{{
+					"title": "Red Skelton", "description": "comedian", "url": "https://example.com",
+				}},
+			},
+		})
+	}))
+	t.Cleanup(braveSrv.Close)
+
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": map[string]any{"content": `{"title":"Invented Movie","year":1980}`},
+		})
+	}))
+	t.Cleanup(aiSrv.Close)
+
+	sess := &mode.Session{
+		Mode:         mode.Movies,
+		TMDB:         tmdb.New(tmdb.Config{BaseURL: tmdbSrv.URL, APIKey: "k"}, tmdbSrv.Client()),
+		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
+		WebSearch:    websearch.Brave{Inner: bravesearch.New(braveSrv.URL, "k", braveSrv.Client())},
+	}
+
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Unmatched {
+		t.Fatalf("expected TitleN unmatched, got %+v", got)
+	}
+	if !strings.Contains(got[0].Reason, "too generic") {
+		t.Errorf("expected junk reason, got %q", got[0].Reason)
+	}
+}

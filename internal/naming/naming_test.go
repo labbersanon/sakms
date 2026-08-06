@@ -23,6 +23,7 @@ func TestMovieFolderName(t *testing.T) {
 		{Jellyfin, "Some Movie", 0, 42, "Some Movie [tmdbid-42]"},
 		{Jellyfin, "Some Movie", 2020, 0, "Some Movie (2020)"},
 		{Jellyfin, "Some Movie", 0, 0, "Some Movie"},
+		{Jellyfin, "Web Special", 1982, -42, "Web Special (1982)"},
 		{Jellyfin, "9/11: Truth, Lies and Conspiracies", 2016, 496063,
 			"9-11: Truth, Lies and Conspiracies (2016) [tmdbid-496063]"},
 	}

@@ -69,7 +69,7 @@ func MovieFolderName(preset Preset, title string, year, tmdbID int) string {
 	if year != 0 {
 		name = fmt.Sprintf("%s (%d)", name, year)
 	}
-	if preset == Jellyfin && tmdbID != 0 {
+	if preset == Jellyfin && tmdbID > 0 {
 		name = fmt.Sprintf("%s [tmdbid-%d]", name, tmdbID)
 	}
 	return name

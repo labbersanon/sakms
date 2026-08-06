@@ -19,9 +19,22 @@ import (
 
 // fakeTMDBSeriesServer stands in for TMDB's /search/tv and
 // /tv/{id}/season/{n} endpoints — season lookups always succeed unless the
-// season number is in failSeasons, letting tests exercise the "TMDB
-// couldn't confirm this season" path.
+// season number is in failSeasons (all show ids), letting tests exercise the
+// "TMDB couldn't confirm this season" path.
 func fakeTMDBSeriesServer(t *testing.T, searchResults map[string]string, failSeasons map[int]bool) *tmdb.Client {
+	t.Helper()
+	return fakeTMDBSeriesServerEx(t, searchResults, failSeasons, nil)
+}
+
+// fakeTMDBSeriesServerEx is fakeTMDBSeriesServer plus optional per-show season
+// failures (failSeasonByID[tmdbID][season]). Used when an .nfo points at one
+// id that lacks a season while filename search should hit a different id.
+func fakeTMDBSeriesServerEx(
+	t *testing.T,
+	searchResults map[string]string,
+	failSeasons map[int]bool,
+	failSeasonByID map[int]map[int]bool,
+) *tmdb.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -38,10 +51,19 @@ func fakeTMDBSeriesServer(t *testing.T, searchResults map[string]string, failSea
 			var tmdbID, season int
 			if _, err := fmt.Sscanf(r.URL.Path, "/tv/%d/season/%d", &tmdbID, &season); err != nil {
 				// enrichment calls (/tv/{id}, /tv/{id}/aggregate_credits) — soft-fail
+				// Return empty details so Pending can still form with search title.
+				if n, err2 := fmt.Sscanf(r.URL.Path, "/tv/%d", &tmdbID); err2 == nil && n == 1 && !strings.Contains(r.URL.Path, "/season/") {
+					w.Write([]byte(fmt.Sprintf(`{"id":%d,"name":"Show Name","first_air_date":"2020-01-01","genres":[]}`, tmdbID)))
+					return
+				}
 				http.NotFound(w, r)
 				return
 			}
 			if failSeasons[season] {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			if byID := failSeasonByID[tmdbID]; byID != nil && byID[season] {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
@@ -311,6 +333,54 @@ func TestScanLibrarySeries_UnmatchedWhenSeasonDetailsFail(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Status != proposals.Unmatched {
 		t.Fatalf("expected unmatched when TMDB can't confirm the season, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeries_NFOSeasonMissFallsThroughToSearch proves a tvshow.nfo
+// whose TMDB id lacks the filename's season no longer hard-unmatches — search
+// (and downstream TVDB/web) can still recover a Pending proposal.
+func TestScanLibrarySeries_NFOSeasonMissFallsThroughToSearch(t *testing.T) {
+	root := t.TempDir()
+	video := filepath.Join(root, "Monster.2022.S02E01.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// NFO points at a show id that 404s on season 2; filename search hits a
+	// different id that has season 2.
+	if err := os.WriteFile(filepath.Join(root, "tvshow.nfo"), []byte(`<tvshow><tmdbid>128826</tmdbid></tvshow>`), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{
+		Mode: mode.Series,
+		TMDB: fakeTMDBSeriesServerEx(t,
+			map[string]string{
+				"Monster": `{"results":[{"id":999,"name":"Monster","first_air_date":"2022-01-01","overview":"..."}]}`,
+			},
+			nil,
+			map[int]map[int]bool{128826: {2: true}},
+		),
+	}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected Pending after NFO season miss fallthrough, got %v reason=%q", p.Status, p.Reason)
+	}
+	if p.TMDBID != 999 {
+		t.Errorf("expected recovered TMDB id 999, got %d", p.TMDBID)
+	}
+	if p.SeasonNumber != 2 || p.EpisodeNumber != 1 {
+		t.Errorf("expected S02E01, got S%02dE%02d", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if strings.Contains(p.Reason, "could not confirm season") {
+		t.Errorf("fallthrough must not keep the hard NFO season-404 reason, got %q", p.Reason)
 	}
 }
 

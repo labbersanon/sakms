@@ -1935,6 +1935,9 @@ surface) shipped 2026-07-19 — see "Recently shipped" below.
   over direct TVDB. Do **not** hardcode the key in the sakms git tree.
 - **Local `.nfo` preference** — shipped 2026-07-17, see "Recently shipped"
   below. Artwork reuse (local poster/fanart) remains open if it comes up.
+  **UPDATED 2026-08-06:** Series NFO fast-path no longer hard-unmatches when
+  `SeasonDetails` 404s for the sidecar TMDB id — it falls through to filename
+  TMDB search → TVDB → web-authority (same pipeline as no-NFO orphans).
 - **Collections** — shipped (date unclear; already complete when audited
   2026-07-17). See "Recently shipped" below.
 - **Structured Genre/Actor tagging** — shipped 2026-07-17, see "Recently shipped" below.

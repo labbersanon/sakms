@@ -100,6 +100,17 @@ const AIModelKey = "ai_model"
 // the DB-first parser runs alone and ParseFilename is never called.
 const AIFallbackEnabledKey = "ai_fallback_enabled"
 
+// Claude 2026-08-06: Rename give-back opt-in toggles (default off)
+// Reason: deep-interview-rename-apply-all-giveback-settings — auto give-back on
+//   web-search identify, gated per mainstream vs adult.
+// Troubleshooting: drafts/contribute not firing → check these keys are "true".
+// Review if: give-back moves off web-identify-only trigger.
+const (
+	RenameGiveBackMainstreamKey = "rename_giveback_mainstream_enabled"
+	RenameGiveBackAdultKey      = "rename_giveback_adult_enabled"
+	TMDBSessionIDKey            = "tmdb_session_id"
+)
+
 // Claude 2026-08-05: web search primary (SearXNG vs Brave)
 // Reason: deep-interview-searxng-websearch — operator-selectable primary + optional fallback
 // Troubleshooting: Brave 402 → set primary=searxng and connections.searxng URL

@@ -545,6 +545,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// until the operator explicitly enables it here.
 	mux.HandleFunc("GET /api/settings/ai-fallback-enabled", getAIFallbackEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/ai-fallback-enabled", putAIFallbackEnabledHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/rename-giveback-mainstream-enabled", getRenameGiveBackMainstreamHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/rename-giveback-mainstream-enabled", putRenameGiveBackMainstreamHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/rename-giveback-adult-enabled", getRenameGiveBackAdultHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/rename-giveback-adult-enabled", putRenameGiveBackAdultHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/tmdb-session", getTMDBSessionHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/tmdb-session", putTMDBSessionHandler(httpClient, connStore, settingsStore))
+	mux.HandleFunc("DELETE /api/settings/tmdb-session", deleteTMDBSessionHandler(settingsStore))
 	mux.HandleFunc("GET /api/settings/web-search-primary", getWebSearchPrimaryHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/web-search-primary", putWebSearchPrimaryHandler(settingsStore))
 	// Browser (desktop) notifications opt-in toggle — off by default; the

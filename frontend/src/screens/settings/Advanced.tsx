@@ -16,12 +16,19 @@ import {
 } from "solid-js";
 import type { Mode } from "../../api/discover";
 import {
+  clearTMDBSession,
   fetchIdentifyEnabled,
   fetchMatchConfig,
   fetchPHashThreshold,
+  fetchRenameGiveBackAdult,
+  fetchRenameGiveBackMainstream,
+  fetchTMDBSessionConfigured,
   putMatchConfig,
   putIdentifyEnabled,
   putPHashThreshold,
+  putRenameGiveBackAdult,
+  putRenameGiveBackMainstream,
+  putTMDBSessionLogin,
 } from "../../api/settings";
 import {
   Button,
@@ -523,7 +530,198 @@ export const AdvancedSection: Component<{ mode: () => Mode }> = (props) => {
           <IdentifyEnabledSetting mode={props.mode} />
         </Show>
         </SectionSave>
+        <Show when={props.mode() !== "adult"}>
+          <RenameGiveBackMainstreamSetting />
+          <TMDBSessionSetting />
+        </Show>
+        <Show when={props.mode() === "adult" && adultEnabled()}>
+          <RenameGiveBackAdultSetting />
+        </Show>
       </Card>
     </>
+  );
+};
+
+// Claude 2026-08-06: Rename give-back toggles + TMDB session UI
+const RenameGiveBackMainstreamSetting: Component = () => {
+  const [current] = createResource(fetchRenameGiveBackMainstream);
+  const [enabled, setEnabled] = createSignal(false);
+  const [dirty, setDirty] = createSignal(false);
+  createEffect(
+    on(current, (v) => {
+      if (v !== undefined) {
+        setEnabled(v);
+        setDirty(false);
+      }
+    }),
+  );
+  const status = useSaveStatus();
+  const save = async () => {
+    try {
+      await putRenameGiveBackMainstream(enabled());
+      setDirty(false);
+      status.saved();
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+  return (
+    <div class="mb-3">
+      <label class="flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="Rename give back mainstream"
+          checked={enabled()}
+          onChange={(e) => {
+            setEnabled(e.currentTarget.checked);
+            setDirty(true);
+          }}
+        />
+        <span class="text-sm text-fg">
+          Auto give-back when web search identifies (Movies/Series)
+        </span>
+      </label>
+      <div class="mt-2 flex items-center gap-2">
+        <Button
+          variant="primary"
+          disabled={!dirty()}
+          onClick={() => void save().catch(() => {})}
+        >
+          Update give-back
+        </Button>
+        <SaveStatus text={status.status().text} error={status.status().error} />
+      </div>
+      <Muted class="mt-1">
+        Off by default. When on, Rename soft-attempts a TMDB contribution after
+        web-authority identify (requires TMDB session below). Scan never fails
+        if contribute fails.
+      </Muted>
+    </div>
+  );
+};
+
+const RenameGiveBackAdultSetting: Component = () => {
+  const [current] = createResource(fetchRenameGiveBackAdult);
+  const [enabled, setEnabled] = createSignal(false);
+  const [dirty, setDirty] = createSignal(false);
+  createEffect(
+    on(current, (v) => {
+      if (v !== undefined) {
+        setEnabled(v);
+        setDirty(false);
+      }
+    }),
+  );
+  const status = useSaveStatus();
+  const save = async () => {
+    try {
+      await putRenameGiveBackAdult(enabled());
+      setDirty(false);
+      status.saved();
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+  return (
+    <div class="mb-3">
+      <label class="flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="Rename give back adult"
+          checked={enabled()}
+          onChange={(e) => {
+            setEnabled(e.currentTarget.checked);
+            setDirty(true);
+          }}
+        />
+        <span class="text-sm text-fg">
+          Auto give-back when web search identifies (Adult)
+        </span>
+      </label>
+      <div class="mt-2 flex items-center gap-2">
+        <Button
+          variant="primary"
+          disabled={!dirty()}
+          onClick={() => void save().catch(() => {})}
+        >
+          Update give-back
+        </Button>
+        <SaveStatus text={status.status().text} error={status.status().error} />
+      </div>
+      <Muted class="mt-1">
+        Off by default. When on, unmatched web-identified Adult proposals auto
+        SubmitDraft to TPDB/StashDB (soft-fail).
+      </Muted>
+    </div>
+  );
+};
+
+const TMDBSessionSetting: Component = () => {
+  const [configured, { refetch }] = createResource(fetchTMDBSessionConfigured);
+  const [username, setUsername] = createSignal("");
+  const [password, setPassword] = createSignal("");
+  const status = useSaveStatus();
+  const login = async () => {
+    try {
+      await putTMDBSessionLogin(username(), password());
+      setPassword("");
+      status.saved();
+      void refetch();
+    } catch (e) {
+      status.failed(e);
+    }
+  };
+  const clear = async () => {
+    try {
+      await clearTMDBSession();
+      status.saved();
+      void refetch();
+    } catch (e) {
+      status.failed(e);
+    }
+  };
+  return (
+    <div class="mb-3">
+      <div class={`${labelClass} mb-1`}>TMDB session (mainstream give-back)</div>
+      <Muted class="mb-2">
+        {configured()
+          ? "Session configured."
+          : "Not signed in — required when mainstream give-back is on."}{" "}
+        Password is used once to create a session and is not stored. TMDB has no
+        public create-title API yet; contribute soft-fails until it does.
+      </Muted>
+      <div class="flex flex-wrap items-end gap-2">
+        <label class="text-sm text-fg">
+          Username
+          <input
+            class={`${inputClass} mt-1 block`}
+            value={username()}
+            onInput={(e) => setUsername(e.currentTarget.value)}
+            autocomplete="username"
+          />
+        </label>
+        <label class="text-sm text-fg">
+          Password
+          <input
+            type="password"
+            class={`${inputClass} mt-1 block`}
+            value={password()}
+            onInput={(e) => setPassword(e.currentTarget.value)}
+            autocomplete="current-password"
+          />
+        </label>
+        <Button variant="primary" onClick={() => void login()}>
+          Sign in
+        </Button>
+        <Show when={configured()}>
+          <Button variant="secondary" onClick={() => void clear()}>
+            Clear session
+          </Button>
+        </Show>
+        <SaveStatus text={status.status().text} error={status.status().error} />
+      </div>
+    </div>
   );
 };

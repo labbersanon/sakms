@@ -147,6 +147,7 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, sc
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		maybeAutoGiveBack(ctx, m, sess, settingsStore, propStore, saved)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(saved)

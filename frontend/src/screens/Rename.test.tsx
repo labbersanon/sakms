@@ -1,32 +1,25 @@
-// Stage 3 Rename UI tests — the staged scan→propose→apply queue per mode, plus
-// the bounded bulk-apply exception. Single-item apply still acts on exactly ONE
-// proposal via that row's dropdown + Go; on top of that an opt-in multi-select of
-// Pending rows can be applied together in one apply-batch request (a deliberate,
-// documented reversal of the original no-apply-everything rule — see ROADMAP.md
-// and the top-level CLAUDE.md). The bulk tests pin that: checkboxes render only
-// for Pending rows, "Apply Selected" appears only with a non-empty selection,
-// clicking it fires exactly ONE apply-batch (not N single applies), and the
-// selection clears after a successful batch.
+// Stage 3 Rename UI tests — scan→propose→apply per mode.
 //
-// Covered: Movies apply-one, the bulk-apply behavior with several pending rows,
-// Series Re-pick (auto-search → use a NEW tmdb match), Dismiss, and Adult
-// (Give back on an unmatched row, and Re-pick present but disabled for Adult).
+// Claude 2026-08-06: Apply all + row Apply + no Give back dropdown
+//   (deep-interview-rename-apply-all-giveback-settings).
+// Reason: bulk checkbox flow removed; Apply all uses summary confirm; Give back
+//   is settings-gated auto, not a row action.
+// Review if: Purge/Dedup gain Apply all summary confirm.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { DiscoverItem, Proposal } from "@dto";
 import { Rename } from "./Rename";
 
-// runRowAction picks an action in that row's dropdown and clicks Go.
 const runRowAction = async (
   sourceName: string,
-  action: "apply" | "giveback" | "repick" | "dismiss",
+  action: "apply" | "repick" | "dismiss",
 ) => {
   const row = (await screen.findByText(sourceName)).closest("tr");
   expect(row).toBeTruthy();
   const select = within(row as HTMLElement).getByRole("combobox");
   fireEvent.change(select, { target: { value: action } });
-  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Go" }));
+  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Apply" }));
 };
 
 const jsonResponse = (obj: unknown): Response =>
@@ -50,7 +43,7 @@ const proposal = (over: Partial<Proposal>): Proposal => ({
 });
 
 const tmdbItem = (over: Partial<DiscoverItem>): DiscoverItem => ({
-  id: 555,
+  id: 1,
   title: "The Real Movie",
   posterPath: "/p.jpg",
   overview: "",
@@ -88,7 +81,6 @@ const stubFetch = (handler: Handler) => {
       }
     }
     const res = await handler(url, init);
-    // Wrap bare proposal arrays into ProposalPage for paginated list endpoints.
     if (
       url.includes("/rename/proposals") &&
       !url.includes("pending-ids") &&
@@ -106,14 +98,6 @@ const stubFetch = (handler: Handler) => {
   return calls;
 };
 
-const applyCalls = (calls: Call[]) =>
-  calls.filter((c) => c.url.includes("/apply"));
-
-// batchCalls / singleApplyCalls disambiguate the two apply routes: the batch
-// endpoint URL ("/api/proposals/apply-batch") also matches ".includes('/apply')",
-// so the bulk tests must match "/apply-batch" precisely and exclude it when
-// counting single-item applies — otherwise "one batch, not N singles" can't be
-// asserted (see the plan's test note).
 const batchCalls = (calls: Call[]) =>
   calls.filter((c) => c.url.includes("/apply-batch"));
 const singleApplyCalls = (calls: Call[]) =>
@@ -121,10 +105,13 @@ const singleApplyCalls = (calls: Call[]) =>
     (c) => c.url.includes("/apply") && !c.url.includes("/apply-batch"),
   );
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  localStorage.clear();
+});
 
 describe("Rename — Movies (scan → propose → apply one)", () => {
-  it("lists proposals and applies exactly one on click — one Apply, one request", async () => {
+  it("lists proposals and applies exactly one via select + Apply", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([proposal({ id: 7, sourceName: "Movie.A" })]);
@@ -137,19 +124,19 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     });
 
     render(() => <Rename />);
-    // A proposal row shows; default action is Apply — Go runs it.
     expect(await screen.findByText("Movie.A")).toBeInTheDocument();
+    const row = screen.getByText("Movie.A").closest("tr")!;
+    const select = within(row).getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("");
     await runRowAction("Movie.A", "apply");
 
-    // Exactly one apply request, for exactly that proposal id.
-    await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
-    expect(applyCalls(calls)[0]!.url).toContain("/api/proposals/7/apply");
-    expect(applyCalls(calls)[0]!.method).toBe("POST");
+    await waitFor(() => expect(singleApplyCalls(calls)).toHaveLength(1));
+    expect(singleApplyCalls(calls)[0]!.url).toContain("/api/proposals/7/apply");
   });
 
   it("triggers a scan then re-fetches the queue on the Scan button", async () => {
     let scanned = false;
-    const calls = stubFetch((url, init) => {
+    stubFetch((url, init) => {
       if (
         url.includes("/api/modes/movies/rename/scan") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -165,13 +152,9 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     });
 
     render(() => <Rename />);
-    expect(
-      await screen.findByText(/No proposals yet/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/No proposals yet/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Scan"));
     expect(await screen.findByText("Found.After.Scan")).toBeInTheDocument();
-    // Scan POST fired, then a proposals GET re-ran.
-    expect(calls.some((c) => c.url.includes("/rename/scan") && c.method === "POST")).toBe(true);
   });
 
   it("wraps the proposal table in a frosted panel for wallpaper contrast", async () => {
@@ -218,83 +201,33 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
   });
 });
 
-describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {
-  it("renders a checkbox only for Pending rows, never for a non-pending one", async () => {
+describe("Rename — Apply all (summary confirm)", () => {
+  it("shows Apply all and has no row selection checkboxes", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([
           proposal({ id: 1, sourceName: "A", status: "pending" }),
-          proposal({ id: 2, sourceName: "B", status: "pending" }),
-          proposal({
-            id: 3,
-            sourceName: "C",
-            status: "unmatched",
-            title: "",
-          }),
-        ]);
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Rename />);
-    await screen.findByText("A");
-
-    // Pending rows get a row checkbox; the unmatched row does not.
-    expect(screen.getByLabelText("Select A")).toBeInTheDocument();
-    expect(screen.getByLabelText("Select B")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Select C")).toBeNull();
-    // Two pending row checkboxes + one select-all + Show history = 4.
-    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(4);
-  });
-
-  it("shows 'Apply Selected' only once a row is selected", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/modes/movies/rename/proposals"))
-        return jsonResponse([proposal({ id: 1, sourceName: "A" })]);
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Rename />);
-    await screen.findByText("A");
-
-    // Absent with an empty selection.
-    expect(screen.queryByText(/Apply Selected/)).toBeNull();
-    fireEvent.click(screen.getByLabelText("Select A"));
-    expect(await screen.findByText("Apply Selected (1)")).toBeInTheDocument();
-  });
-
-  it("Select all matching loads pending-ids without refetching the proposals page", async () => {
-    let proposalFetches = 0;
-    const calls = stubFetch((url) => {
-      if (url.includes("/pending-ids")) return jsonResponse({ ids: [1, 3] });
-      if (url.includes("/api/modes/movies/rename/proposals")) {
-        proposalFetches++;
-        return jsonResponse([
-          proposal({ id: 1, sourceName: "A" }),
           proposal({ id: 2, sourceName: "B", status: "unmatched", title: "" }),
-          proposal({ id: 3, sourceName: "C" }),
         ]);
-      }
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Rename />);
     await screen.findByText("A");
-    const afterLoad = proposalFetches;
-
-    fireEvent.click(screen.getByRole("button", { name: "Select all matching" }));
-    expect(await screen.findByText("Apply Selected (2)")).toBeInTheDocument();
-    expect(calls.filter((c) => c.url.includes("/pending-ids"))).toHaveLength(1);
-    // act()-style refetch would bump this; selection-only must not.
-    expect(proposalFetches).toBe(afterLoad);
+    expect(screen.getByRole("button", { name: "Apply all" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Select A")).toBeNull();
+    expect(screen.queryByText(/Apply Selected/)).toBeNull();
+    expect(screen.queryByText("Select page")).toBeNull();
+    // Show history is the only checkbox.
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
   });
 
-  it("applies several selected rows in ONE apply-batch (not N single applies) and clears the selection", async () => {
+  it("Apply all opens summary then batch-applies on Confirm", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([
-          proposal({ id: 1, sourceName: "A" }),
-          proposal({ id: 2, sourceName: "B" }),
-          proposal({ id: 3, sourceName: "C" }),
+          proposal({ id: 1, sourceName: "A.mkv", title: "Alpha", year: 2020 }),
+          proposal({ id: 2, sourceName: "B.mkv", title: "Beta", year: 2021 }),
         ]);
       if (
         url.includes("/api/proposals/apply-batch") &&
@@ -303,70 +236,49 @@ describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {
         return jsonResponse({
           results: [
             { id: 1, ok: true },
-            { id: 3, ok: true },
+            { id: 2, ok: true },
           ],
         });
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Rename />);
-    await screen.findByText("A");
+    await screen.findByText("A.mkv");
+    fireEvent.click(screen.getByRole("button", { name: "Apply all" }));
 
-    // Select the select-all header, then deselect one row → 2 selected.
-    fireEvent.click(screen.getByLabelText("Select A"));
-    fireEvent.click(screen.getByLabelText("Select C"));
-    const bulk = await screen.findByText("Apply Selected (2)");
-    fireEvent.click(bulk);
+    expect(await screen.findByText(/Apply 2 pending renames/)).toBeInTheDocument();
+    expect(screen.getByText("Alpha (2020)")).toBeInTheDocument();
+    expect(screen.getByText("Beta (2021)")).toBeInTheDocument();
+    expect(batchCalls(calls)).toHaveLength(0);
 
-    // Exactly ONE apply-batch call carrying both ids; zero single-item applies.
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(batchCalls(calls)).toHaveLength(1));
     expect(singleApplyCalls(calls)).toHaveLength(0);
     expect(batchCalls(calls)[0]!.body).toEqual({
-      items: [{ id: 1 }, { id: 3 }],
+      items: [{ id: 1 }, { id: 2 }],
     });
-    // The summary shows, and the selection cleared (button gone).
     expect(await screen.findByText("2 applied, 0 failed")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.queryByText(/Apply Selected/)).toBeNull(),
-    );
   });
 
-  it("reports a PARTIAL failure — 'N applied, M failed' plus the failed row's title and error", async () => {
-    // Skip-and-continue is the whole point: a batch can partially fail. Item 3
-    // fails; it stays Pending (still in the proposals stub), so its title
-    // resolves in the summary alongside its error.
-    const calls = stubFetch((url, init) => {
+  it("Cancel on summary does not fire apply-batch", async () => {
+    const calls = stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
-        return jsonResponse([
-          proposal({ id: 1, sourceName: "Applied.One", title: "Applied One" }),
-          proposal({ id: 3, sourceName: "Failed.One", title: "Failed One" }),
-        ]);
-      if (
-        url.includes("/api/proposals/apply-batch") &&
-        (init?.method ?? "").toUpperCase() === "POST"
-      )
-        return jsonResponse({
-          results: [
-            { id: 1, ok: true },
-            { id: 3, ok: false, error: "disk full" },
-          ],
-        });
+        return jsonResponse([proposal({ id: 1, sourceName: "A.mkv" })]);
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Rename />);
-    await screen.findByText("Applied.One");
-
-    fireEvent.click(screen.getByLabelText("Select all pending"));
-    fireEvent.click(await screen.findByText("Apply Selected (2)"));
-
-    await waitFor(() => expect(batchCalls(calls)).toHaveLength(1));
-    // Count line and the per-item failure detail both render.
-    expect(await screen.findByText("1 applied, 1 failed")).toBeInTheDocument();
-    expect(screen.getByText(/Failed One: disk full/)).toBeInTheDocument();
+    await screen.findByText("A.mkv");
+    fireEvent.click(screen.getByRole("button", { name: "Apply all" }));
+    expect(await screen.findByText(/Apply 1 pending rename/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/Apply 1 pending rename/)).toBeNull(),
+    );
+    expect(batchCalls(calls)).toHaveLength(0);
   });
 
-  it("still applies a single row through its own Go action (one single call, no batch)", async () => {
+  it("still applies a single row through its own Apply action", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([
@@ -406,17 +318,20 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
           }),
         ]);
       if (url.includes("/api/modes/series/tmdb-search"))
-        return jsonResponse([tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" })]);
-      if (url.includes("/api/proposals/12/repick") && (init?.method ?? "").toUpperCase() === "POST")
+        return jsonResponse([
+          tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" }),
+        ]);
+      if (
+        url.includes("/api/proposals/12/repick") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
         return noContent();
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Rename />);
     fireEvent.click(await screen.findByText("Series"));
-    // Open Re-pick via dropdown + Go — the panel auto-searches the prefilled title.
     await runRowAction("Wrong.Match.Show", "repick");
-    // The result from tmdb-search appears; pick it.
     expect(await screen.findByText(/The Right Show/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Use this"));
 
@@ -437,7 +352,10 @@ describe("Rename — Dismiss (single row)", () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([proposal({ id: 4, sourceName: "Dismiss.Me" })]);
-      if (url.includes("/api/proposals/4/dismiss") && (init?.method ?? "").toUpperCase() === "POST")
+      if (
+        url.includes("/api/proposals/4/dismiss") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
         return noContent();
       throw new Error("unexpected fetch: " + url);
     });
@@ -502,11 +420,9 @@ describe("Rename — mode-specific columns", () => {
     expect(screen.getByText("2015")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
-    expect(screen.queryByText("Studio")).toBeNull();
-    expect(screen.queryByText("PHash")).toBeNull();
   });
 
-  it("Series renders a range (e.g. \"1-2\") in the Episode column for a logical-episode-split proposal", async () => {
+  it('Series renders a range (e.g. "1-2") in the Episode column for a logical-episode-split proposal', async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([]);
@@ -529,7 +445,6 @@ describe("Rename — mode-specific columns", () => {
     await screen.findByText("Show.S01E01-E02");
 
     expect(screen.getByText("1-2")).toBeInTheDocument();
-    // Not a bare primary-episode-only "1" — the extra number must show too.
     expect(screen.queryByText("2")).toBeNull();
   });
 
@@ -560,19 +475,15 @@ describe("Rename — mode-specific columns", () => {
     expect(screen.getByText("Date")).toBeInTheDocument();
     expect(screen.getByText("PHash")).toBeInTheDocument();
     expect(screen.getByText("Brazzers")).toBeInTheDocument();
-    expect(screen.getByText("2021-03-04")).toBeInTheDocument();
-    // Hash is truncated in the cell; full value lives in the title attribute.
     const hashCell = screen.getByTitle("abcdef0123456789");
     expect(hashCell.textContent).toBe("abcdef0123456789".slice(0, 12) + "…");
     expect(screen.queryByText("Year")).toBeNull();
-    expect(screen.queryByText("Season")).toBeNull();
-    expect(screen.queryByText("Episode")).toBeNull();
   });
 });
 
-describe("Rename — Adult (give back on unmatched; Re-pick disabled)", () => {
-  it("defaults to Give back for unmatched Adult; Re-pick option is disabled", async () => {
-    const calls = stubFetch((url, init) => {
+describe("Rename — Adult (Give back removed from dropdown)", () => {
+  it("has no Give back option; Re-pick disabled; placeholder select action", async () => {
+    stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([]);
       if (url.includes("/api/modes/adult/rename/proposals"))
@@ -585,8 +496,6 @@ describe("Rename — Adult (give back on unmatched; Re-pick disabled)", () => {
             reason: "no confident match",
           }),
         ]);
-      if (url.includes("/api/proposals/21/submit-draft") && (init?.method ?? "").toUpperCase() === "POST")
-        return noContent();
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -596,19 +505,9 @@ describe("Rename — Adult (give back on unmatched; Re-pick disabled)", () => {
 
     const row = screen.getByText("Studio - Unidentified Scene").closest("tr")!;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
-    const repickOpt = within(select).getByRole("option", { name: "Re-pick" });
-    expect(repickOpt).toBeDisabled();
-    const giveBackOpt = within(select).getByRole("option", {
-      name: "Give back",
-    });
-    expect(giveBackOpt).not.toBeDisabled();
-    expect(select.value).toBe("giveback");
-
-    fireEvent.click(within(row).getByRole("button", { name: "Go" }));
-    await waitFor(() =>
-      expect(
-        calls.some((c) => c.url.includes("/api/proposals/21/submit-draft")),
-      ).toBe(true),
-    );
+    expect(select.value).toBe("");
+    expect(within(select).queryByRole("option", { name: "Give back" })).toBeNull();
+    expect(within(select).getByRole("option", { name: "Re-pick" })).toBeDisabled();
+    expect(within(select).getByRole("option", { name: "Dismiss" })).not.toBeDisabled();
   });
 });

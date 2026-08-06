@@ -95,6 +95,12 @@ function defaultGet(url: string): Response | undefined {
     });
   if (url.includes("/api/settings/ai-fallback-enabled"))
     return jsonResponse({ enabled: true });
+  if (url.includes("/api/settings/rename-giveback-mainstream-enabled"))
+    return jsonResponse({ enabled: false });
+  if (url.includes("/api/settings/rename-giveback-adult-enabled"))
+    return jsonResponse({ enabled: false });
+  if (url.includes("/api/settings/tmdb-session"))
+    return jsonResponse({ configured: false });
   if (url.includes("/api/settings/web-search-primary"))
     return jsonResponse({ primary: "searxng" });
   if (url.includes("/api/settings/ai-provider"))

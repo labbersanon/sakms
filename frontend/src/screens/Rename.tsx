@@ -1,39 +1,14 @@
 // Rename — the staged scan→propose→apply review queue, ported from the
-// vanilla-JS frontend (internal/web/static/index.html's renderRename), with one
-// deliberate enhancement on top of the port: mode-specific columns (Wade-approved
-// follow-up, see .omc/handoffs/stage-3-rename.md — the old frontend's single
-// generic table never surfaced these, and an earlier wave correctly declined to
-// add them without an explicit decision). Scan enqueues proposals; the operator
-// reviews a table of them and acts on each row via dropdown + Go.
+// vanilla-JS frontend (internal/web/static/index.html's renderRename), with
+// mode-specific columns (Wade-approved follow-up, see
+// .omc/handoffs/stage-3-rename.md).
 //
-// Bulk apply — the one bounded exception to the project's original "one item at
-// a time, no apply-everything" rule (a deliberate, documented reversal; see
-// ROADMAP.md's Bulk apply entry and the top-level CLAUDE.md's amended
-// engineering-conventions note). Pending rows carry a selection checkbox plus a
-// select-all-pending header toggle; with a non-empty selection an "Apply
-// Selected (N)" button posts one apply-batch request covering exactly those
-// already-reviewed rows, which the backend applies sequentially with
-// skip-and-continue and reports per item. This is NOT a queue-wide apply-all,
-// and it does not change how any single row still applies one at a time via its
-// own dropdown + Go.
-//
-// Table shape:
-//   - Shared columns, every mode: Source / Title / Status / Root Folder /
-//     Reason / Actions.
-//   - Movies additionally show Year.
-//   - Series additionally show Year / Season / Episode.
-//   - Adult additionally show Studio / Date / PHash (truncated with a title
-//     attribute for the full value — proposals.Proposal's PHash is a long
-//     scheme-tagged hex string, not something to render in full inline).
-//   Extra columns are only ever ADDED for a mode, never removed from the
-//   shared set — Source/Title/Status/Root Folder/Reason/Actions stay present
-//   and in the same relative order across all three modes.
-//   - Per-row actions are a dropdown (Apply / Give back / Re-pick / Dismiss) with
-//     inapplicable options disabled, plus a Go button that runs the selection
-//     immediately. Default selection is the first enabled action for that row.
-//   - Re-pick opens a single shared search panel below the table, auto-searches
-//     the prefilled title on open, and sends the NEWLY chosen tmdbId (never the
-//     proposal's current one).
+// Claude 2026-08-06: Apply all + row Apply + no Give back in dropdown
+//   (deep-interview-rename-apply-all-giveback-settings).
+// Reason: one-click apply all pending after summary confirm; Give back moved
+//   to Settings toggles; dropdown defaults to placeholder "select action".
+// Troubleshooting: Apply all empty → no pending; Apply disabled until action picked.
+// Review if: Purge/Dedup adopt Apply all summary confirm.
 
 import {
   type Component,
@@ -54,11 +29,9 @@ import {
   fetchProposals,
   repickProposal,
   scanRename,
-  submitDraft,
   tmdbSearch,
 } from "../api/rename";
 import {
-  fetchPendingIDs,
   loadPageSize,
   loadShowHistory,
   savePageSize,
@@ -73,7 +46,7 @@ import {
   StatusPill,
   yearOf,
 } from "../components/ui";
-import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
+import { useWorkflowActions } from "./workflowHooks";
 import {
   ActivityLogPanel,
   PageSizeSelect,
@@ -81,15 +54,11 @@ import {
   ShowHistoryToggle,
 } from "./OrganizeChrome";
 
-// Claude 2026-08-05: row action dropdown + Go (deep-interview-rename-row-action-dropdown).
-// Reason: replace button cluster with select of all four actions (N/A disabled).
-// Troubleshooting: Go disabled when no action is enabled for the row status.
-// Review if: Purge/Dedup adopt the same control.
-type RowActionId = "apply" | "giveback" | "repick" | "dismiss";
+// Claude 2026-08-06: Give back removed from row actions (settings-gated auto).
+type RowActionId = "apply" | "repick" | "dismiss";
 
 const ROW_ACTIONS: { id: RowActionId; label: string }[] = [
   { id: "apply", label: "Apply" },
-  { id: "giveback", label: "Give back" },
   { id: "repick", label: "Re-pick" },
   { id: "dismiss", label: "Dismiss" },
 ];
@@ -102,8 +71,6 @@ function rowActionEnabled(
   switch (id) {
     case "apply":
       return status === "pending";
-    case "giveback":
-      return status === "unmatched";
     case "repick":
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
@@ -111,44 +78,55 @@ function rowActionEnabled(
   }
 }
 
-function firstEnabledAction(
-  status: string,
-  titleMode: boolean,
-): RowActionId | "" {
-  for (const a of ROW_ACTIONS) {
-    if (rowActionEnabled(a.id, status, titleMode)) return a.id;
-  }
-  return "";
+function anyActionEnabled(status: string, titleMode: boolean): boolean {
+  return ROW_ACTIONS.some((a) => rowActionEnabled(a.id, status, titleMode));
 }
 
-// One proposal row's action dropdown + Go. Own signal so each row keeps its pick.
+function newNameOf(p: Proposal): string {
+  if (p.title) {
+    return p.year ? `${p.title} (${p.year})` : p.title;
+  }
+  return "(unknown)";
+}
+
+async function fetchAllLivePending(mode: Mode): Promise<Proposal[]> {
+  const out: Proposal[] = [];
+  let offset = 0;
+  const limit = 100;
+  for (;;) {
+    const page = await fetchProposals(mode, limit, offset, "live");
+    for (const p of page.items) {
+      if (p.status === "pending") out.push(p);
+    }
+    offset += page.items.length;
+    if (page.items.length === 0 || offset >= page.total) break;
+  }
+  return out;
+}
+
 const RowActions: Component<{
   proposal: Proposal;
   titleMode: boolean;
   onApply: () => void;
-  onGiveBack: () => void;
   onRepick: () => void;
   onDismiss: () => void;
 }> = (props) => {
-  const initial = () =>
-    firstEnabledAction(props.proposal.status, props.titleMode);
-  const [selected, setSelected] = createSignal<RowActionId | "">(initial());
+  const [selected, setSelected] = createSignal<RowActionId | "">("");
 
   const enabled = (id: RowActionId) =>
     rowActionEnabled(id, props.proposal.status, props.titleMode);
+  const hasAny = () =>
+    anyActionEnabled(props.proposal.status, props.titleMode);
 
-  // If status changes after refetch, snap back to first enabled when current is invalid.
   createEffect(() => {
     const cur = selected();
-    if (cur && enabled(cur)) return;
-    setSelected(initial());
+    if (cur && !enabled(cur)) setSelected("");
   });
 
   const run = () => {
     const id = selected();
     if (!id || !enabled(id)) return;
     if (id === "apply") props.onApply();
-    else if (id === "giveback") props.onGiveBack();
     else if (id === "repick") props.onRepick();
     else props.onDismiss();
   };
@@ -159,11 +137,14 @@ const RowActions: Component<{
         class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
         aria-label={`Action for ${props.proposal.sourceName}`}
         value={selected()}
-        disabled={!initial()}
+        disabled={!hasAny()}
         onChange={(e) =>
           setSelected(e.currentTarget.value as RowActionId | "")
         }
       >
+        <option value="" disabled>
+          select action
+        </option>
         <For each={ROW_ACTIONS}>
           {(a) => (
             <option value={a.id} disabled={!enabled(a.id)}>
@@ -177,25 +158,16 @@ const RowActions: Component<{
         disabled={!selected() || !enabled(selected() as RowActionId)}
         onClick={run}
       >
-        Go
+        Apply
       </Button>
     </div>
   );
 };
 
-// shortHash renders the PHash column value — the full scheme-tagged hash is
-// too long to usefully show inline, so the cell shows a short prefix and the
-// full value lives in the title attribute (hover) for anyone who needs it.
 function shortHash(hash: string): string {
   return hash.length > 12 ? `${hash.slice(0, 12)}…` : hash;
 }
 
-// episodeDisplay renders the Episode column: a plain number for the
-// ordinary single-episode case, or "N-M" (e.g. "1-2") for a logical-
-// episode-split proposal (extraEpisodeNumbers non-empty) — so an operator
-// sees BOTH episodes Apply will actually create before approving it,
-// rather than only the primary number with the bundled one silently
-// implied.
 function episodeDisplay(
   episodeNumber?: number,
   extraEpisodeNumbers?: number[],
@@ -208,11 +180,6 @@ function episodeDisplay(
   return `${episodeNumber}-${last}`;
 }
 
-// RepickPanel is the shared Movies/Series re-pick search area — one instance
-// below the table, opened against whichever proposal's Re-pick was clicked. It
-// auto-searches the prefilled query on mount (matching the old openRepick's
-// immediate runSearch()), and each result offers a single "Use this" that
-// re-points the proposal at that NEW match, then closes and refreshes.
 const RepickPanel: Component<{
   mode: "movies" | "series";
   proposal: Proposal;
@@ -311,8 +278,57 @@ const RepickPanel: Component<{
   );
 };
 
-// RenameQueue is one mode's review table + actions. Keyed on props.mode so the
-// resource refetches when the shell switches tabs.
+const ApplyAllConfirm: Component<{
+  rows: Proposal[];
+  onCancel: () => void;
+  onConfirm: () => void;
+}> = (props) => (
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Confirm apply all"
+  >
+    <div class="max-h-[80vh] w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
+      <div class="border-b border-border px-4 py-3">
+        <h3 class="text-base font-semibold text-fg">
+          Apply {props.rows.length} pending rename
+          {props.rows.length === 1 ? "" : "s"}?
+        </h3>
+        <Muted class="mt-1">Review original → new name, then confirm.</Muted>
+      </div>
+      <div class="max-h-[50vh] overflow-y-auto px-4 py-2">
+        <table class="w-full text-left text-sm">
+          <thead>
+            <tr class="text-xs uppercase tracking-wide text-muted">
+              <th class="py-2 pr-2 font-medium">Original name</th>
+              <th class="py-2 font-medium">New name</th>
+            </tr>
+          </thead>
+          <tbody>
+            <For each={props.rows}>
+              {(p) => (
+                <tr class="border-t border-border/60 align-top">
+                  <td class="py-2 pr-2 font-mono text-xs">{p.sourceName}</td>
+                  <td class="py-2 text-sm">{newNameOf(p)}</td>
+                </tr>
+              )}
+            </For>
+          </tbody>
+        </table>
+      </div>
+      <div class="flex justify-end gap-2 border-t border-border px-4 py-3">
+        <Button variant="secondary" onClick={props.onCancel}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={props.onConfirm}>
+          Confirm
+        </Button>
+      </div>
+    </div>
+  </div>
+);
+
 const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const [pageSize, setPageSize] = createSignal(loadPageSize("rename"));
   const [offset, setOffset] = createSignal(0);
@@ -332,31 +348,31 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   );
   const proposals = () => page()?.items ?? [];
   const [repickFor, setRepickFor] = createSignal<Proposal | null>(null);
-  const selection = useBulkSelection();
   const [batchResult, setBatchResult] = createSignal<ApplyBatchResponse | null>(
     null,
   );
+  const [applyAllRows, setApplyAllRows] = createSignal<Proposal[] | null>(null);
+  const [applyAllLoading, setApplyAllLoading] = createSignal(false);
 
   const { actionError, setActionError, scanning, scan, act } = useWorkflowActions(
     () => props.mode,
     {
       resetOnModeChange: () => {
         setRepickFor(null);
-        selection.clear();
         setBatchResult(null);
+        setApplyAllRows(null);
         setOffset(0);
         setApplyProgress("");
       },
       scanFn: scanRename,
       resetAfterScan: () => {
-        selection.clear();
         setBatchResult(null);
+        setApplyAllRows(null);
         setOffset(0);
         setLogKey((k) => k + 1);
       },
       resetAfterAct: () => {
         setRepickFor(null);
-        // Keep cross-page selection until apply clears it explicitly.
       },
       refetch,
     },
@@ -364,48 +380,43 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
 
   const isTitleMode = () => props.mode === "movies" || props.mode === "series";
 
-  const pendingIds = (): number[] =>
-    proposals()
-      .filter((p) => p.status === "pending")
-      .map((p) => p.id);
-  const pagePendingSelected = (): boolean => {
-    const ids = pendingIds();
-    return ids.length > 0 && ids.every((id) => selection.has(id));
-  };
-  const selectPage = (): void => {
-    selection.selectAll(pendingIds());
-  };
-  const selectAllMatching = (): void => {
-    // Claude 2026-08-05: do not route through act() — selection is not a mutation
-    // Reason: act() always refetches the proposal page after success, which flashed Loading and felt broken
-    // Troubleshooting: Select all matching → pending-ids 200 but UI looked like it failed
-    // Review if: select-all needs to refresh the page for a new reason
-    void (async () => {
-      setActionError("");
-      try {
-        const ids = await fetchPendingIDs(props.mode);
-        selection.selectAll(ids);
-      } catch (e) {
-        setActionError((e as Error).message);
-      }
-    })();
-  };
   const titleOf = (id: number): string => {
     const p = proposals().find((x) => x.id === id);
     return p ? p.title || p.sourceName || "" : "";
   };
-  const applySelected = (): void => {
-    const items = [...selection.selected()].map((id) => ({ id }));
-    if (items.length === 0) return;
+
+  const openApplyAll = (): void => {
+    setActionError("");
+    setApplyAllLoading(true);
+    void (async () => {
+      try {
+        const rows = await fetchAllLivePending(props.mode);
+        if (rows.length === 0) {
+          setActionError("No pending renames to apply.");
+          return;
+        }
+        setApplyAllRows(rows);
+      } catch (e) {
+        setActionError((e as Error).message);
+      } finally {
+        setApplyAllLoading(false);
+      }
+    })();
+  };
+
+  const confirmApplyAll = (): void => {
+    const rows = applyAllRows();
+    if (!rows || rows.length === 0) return;
+    setApplyAllRows(null);
     setBatchResult(null);
     setApplyProgress("");
+    const items = rows.map((p) => ({ id: p.id }));
     void act(async () => {
       const out = await applyBatchStreaming(items, (done, total) => {
         setApplyProgress(`Applied ${done}/${total}…`);
       });
       setBatchResult(out as ApplyBatchResponse);
       setApplyProgress("");
-      selection.clear();
       setLogKey((k) => k + 1);
     });
   };
@@ -416,17 +427,15 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         <Button variant="primary" onClick={() => void scan(props.mode)} disabled={scanning()}>
           {scanning() ? "Scanning…" : "Scan"}
         </Button>
-        <Show when={selection.size() > 0}>
-          <Button variant="primary" onClick={applySelected}>
-            Apply Selected ({selection.size()})
+        <Show when={!showHistory()}>
+          <Button
+            variant="primary"
+            onClick={openApplyAll}
+            disabled={applyAllLoading() || scanning()}
+          >
+            {applyAllLoading() ? "Loading…" : "Apply all"}
           </Button>
         </Show>
-        <Button variant="secondary" onClick={selectPage} disabled={pendingIds().length === 0}>
-          Select page
-        </Button>
-        <Button variant="secondary" onClick={selectAllMatching}>
-          Select all matching
-        </Button>
         <PageSizeSelect
           value={pageSize()}
           onChange={(n) => {
@@ -441,7 +450,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
             saveShowHistory("rename", on);
             setShowHistory(on);
             setOffset(0);
-            selection.clear();
           }}
         />
       </div>
@@ -479,28 +487,10 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
             </div>
           }
         >
-          {/* Claude 2026-08-05: frosted panel under Rename table
-              Reason: deep-interview-rename-frosted-panel — navy/muted text was
-                unreadable on ticket wallpaper (main bg-image)
-              Troubleshooting: if text still washes out, raise opacity or solid bg-surface
-              Review if: Purge/Dedup get the same treatment */}
           <div class="mt-4 overflow-x-auto rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
             <table class="w-full text-left text-sm">
               <thead>
                 <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
-                  <th class="px-2 py-2 font-medium">
-                    <input
-                      type="checkbox"
-                      aria-label="Select all pending"
-                      checked={pagePendingSelected()}
-                      disabled={pendingIds().length === 0}
-                      onChange={() => {
-                        if (pagePendingSelected()) {
-                          for (const id of pendingIds()) selection.toggle(id);
-                        } else selectPage();
-                      }}
-                    />
-                  </th>
                   <th class="px-2 py-2 font-medium">Source</th>
                   <th class="px-2 py-2 font-medium">Title</th>
                   <Show when={props.mode === "movies" || props.mode === "series"}>
@@ -525,16 +515,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                 <For each={proposals()}>
                   {(p) => (
                     <tr class="border-b border-border/60 align-top">
-                      <td class="px-2 py-2">
-                        <Show when={p.status === "pending"}>
-                          <input
-                            type="checkbox"
-                            checked={selection.has(p.id)}
-                            onChange={() => selection.toggle(p.id)}
-                            aria-label={`Select ${p.sourceName}`}
-                          />
-                        </Show>
-                      </td>
                       <td class="px-2 py-2 font-mono text-xs">{p.sourceName}</td>
                       <td class="px-2 py-2">{p.title}</td>
                       <Show when={props.mode === "movies" || props.mode === "series"}>
@@ -578,11 +558,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                               setLogKey((k) => k + 1),
                             )
                           }
-                          onGiveBack={() =>
-                            void act(() => submitDraft(p.id)).then(() =>
-                              setLogKey((k) => k + 1),
-                            )
-                          }
                           onRepick={() => setRepickFor(p)}
                           onDismiss={() =>
                             void act(() => dismissProposal(p.id)).then(() =>
@@ -622,13 +597,21 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         )}
       </Show>
 
+      <Show when={applyAllRows()}>
+        {(rows) => (
+          <ApplyAllConfirm
+            rows={rows()}
+            onCancel={() => setApplyAllRows(null)}
+            onConfirm={confirmApplyAll}
+          />
+        )}
+      </Show>
+
       <ActivityLogPanel workflow="rename" refreshKey={logKey()} />
     </div>
   );
 };
 
-// Rename is the mode-switching shell: tab bar (Movies/Series/Adult) over the
-// matching review queue.
 export const Rename: Component = () => {
   const [mode, setMode] = createSignal<Mode>("movies");
   return (

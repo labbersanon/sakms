@@ -667,6 +667,53 @@ export function putAIFallbackEnabled(enabled: boolean): Promise<void> {
   });
 }
 
+// Claude 2026-08-06: Rename give-back toggles + TMDB session
+export function fetchRenameGiveBackMainstream(): Promise<boolean> {
+  return api<{ enabled: boolean }>(
+    "/api/settings/rename-giveback-mainstream-enabled",
+  ).then((r) => r.enabled);
+}
+
+export function putRenameGiveBackMainstream(enabled: boolean): Promise<void> {
+  return api<void>("/api/settings/rename-giveback-mainstream-enabled", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function fetchRenameGiveBackAdult(): Promise<boolean> {
+  return api<{ enabled: boolean }>(
+    "/api/settings/rename-giveback-adult-enabled",
+  ).then((r) => r.enabled);
+}
+
+export function putRenameGiveBackAdult(enabled: boolean): Promise<void> {
+  return api<void>("/api/settings/rename-giveback-adult-enabled", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function fetchTMDBSessionConfigured(): Promise<boolean> {
+  return api<{ configured: boolean }>("/api/settings/tmdb-session").then(
+    (r) => r.configured,
+  );
+}
+
+export function putTMDBSessionLogin(
+  username: string,
+  password: string,
+): Promise<void> {
+  return api<void>("/api/settings/tmdb-session", {
+    method: "PUT",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function clearTMDBSession(): Promise<void> {
+  return api<void>("/api/settings/tmdb-session", { method: "DELETE" });
+}
+
 // Claude 2026-08-05: web search primary (searxng|brave)
 export type WebSearchPrimary = "searxng" | "brave";
 

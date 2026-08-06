@@ -135,6 +135,63 @@ func putAIFallbackEnabledHandler(settingsStore *settings.Store) http.HandlerFunc
 	}
 }
 
+// Claude 2026-08-06: Rename give-back toggles (mainstream + adult)
+// Reason: deep-interview-rename-apply-all-giveback-settings
+func getRenameGiveBackMainstreamHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return boolSettingGetHandler(settingsStore, mode.RenameGiveBackMainstreamKey)
+}
+
+func putRenameGiveBackMainstreamHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return boolSettingPutHandler(settingsStore, mode.RenameGiveBackMainstreamKey)
+}
+
+func getRenameGiveBackAdultHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return boolSettingGetHandler(settingsStore, mode.RenameGiveBackAdultKey)
+}
+
+func putRenameGiveBackAdultHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return boolSettingPutHandler(settingsStore, mode.RenameGiveBackAdultKey)
+}
+
+type enabledSettingResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+type enabledSettingRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func boolSettingGetHandler(settingsStore *settings.Store, key string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		v, err := settingsStore.Get(r.Context(), key)
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(enabledSettingResponse{Enabled: v == "true"})
+	}
+}
+
+func boolSettingPutHandler(settingsStore *settings.Store, key string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req enabledSettingRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		v := "false"
+		if req.Enabled {
+			v = "true"
+		}
+		if err := settingsStore.Set(r.Context(), key, v); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 type webSearchPrimaryResponse struct {
 	Primary string `json:"primary"`
 }

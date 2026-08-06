@@ -129,7 +129,11 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, scS
 
 			saved, saveErr := propStore.ReplacePending(bg, m, proposals.Dedup, found)
 			if saveErr != nil {
-				hub.PublishTerminal(dedupscan.Event{Type: "error", Mode: string(m), Error: saveErr.Error()})
+				if errors.Is(saveErr, proposals.ErrReplaceDeferred) {
+					hub.PublishTerminal(dedupscan.Event{Type: "error", Mode: string(m), Error: "scan deferred: apply in flight — retry after the apply completes"})
+				} else {
+					hub.PublishTerminal(dedupscan.Event{Type: "error", Mode: string(m), Error: saveErr.Error()})
+				}
 				return
 			}
 

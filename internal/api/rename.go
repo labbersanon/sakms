@@ -144,7 +144,11 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, sc
 
 		saved, err := propStore.ReplacePending(ctx, m, proposals.Rename, found)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if errors.Is(err, proposals.ErrReplaceDeferred) {
+				http.Error(w, "scan deferred: an apply is currently in flight — retry after the apply completes", http.StatusServiceUnavailable)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		maybeAutoGiveBack(ctx, m, sess, settingsStore, propStore, saved)

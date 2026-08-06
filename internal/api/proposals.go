@@ -207,6 +207,12 @@ func applyProposalHandler(httpClient *http.Client, connStore *connections.Store,
 			return
 		}
 
+		// Apply-gate: hold the (mode, workflow) gate for the lifetime of this
+		// request so any concurrent ReplacePending (watchfolder scan or manual
+		// rescan) defers instead of deleting the row we just looked up.
+		proposals.DefaultGate.BeginApply(p.Mode, p.Workflow)
+		defer proposals.DefaultGate.EndApply(p.Mode, p.Workflow)
+
 		// Structural validation of the (Dedup-only) keep set before anything is
 		// deleted — in range, deduped, disjoint from KeepIndex, KeepIndex present,
 		// never combined with KeepAll. A no-op for Rename/Purge (empty body).
@@ -491,7 +497,23 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		// Claude 2026-08-05: Rename unbound; Dedup/Purge capped at MaxProposalPageSize.
 		// Reason: deep-interview — page is Dedup/Purge's only bound; Purge 20 removed.
 		wantStream := strings.Contains(r.Header.Get("Accept"), "application/x-ndjson")
+		// Apply-gate held for the batch's (mode, workflow) as soon as we know
+		// it — before the item loop — so a concurrent ReplacePending cannot
+		// slip in between the first Get and BeginApply inside the loop.
+		type gateKey struct {
+			m  mode.Mode
+			wf proposals.Workflow
+		}
+		gateActive := make(map[gateKey]bool)
+		defer func() {
+			for k := range gateActive {
+				proposals.DefaultGate.EndApply(k.m, k.wf)
+			}
+		}()
 		if first, err := propStore.Get(ctx, req.Items[0].ID); err == nil {
+			gk := gateKey{first.Mode, first.Workflow}
+			proposals.DefaultGate.BeginApply(first.Mode, first.Workflow)
+			gateActive[gk] = true
 			switch first.Workflow {
 			case proposals.Rename:
 				// no item-count cap
@@ -533,14 +555,12 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		changesByMode := make(map[mode.Mode][]mode.PathChange)
 		results := make([]applyBatchResultItem, 0, len(req.Items))
 
-		// Concurrency note: no lock prevents a concurrent Scan (from a second
-		// browser tab or background recheck) from calling ReplacePending while
-		// this batch is in flight. If that race lands, a mid-batch item's
-		// MarkApplied call returns ErrNotFound even though the file already
-		// moved. The item is reported ok:false in the response, and the player
-		// notify still fires for any items that did commit — partial success
-		// is preserved. Single-operator, single-tab usage (the normal case)
-		// is not affected.
+		// Apply-gate: held from the first successful Get (above) for the
+		// batch's (mode, workflow) so concurrent ReplacePending calls
+		// (watchfolder scan or manual rescan) defer instead of deleting rows
+		// we are still looking up. Additional (mode, workflow) pairs — rare
+		// cross-mode batches — acquire on first encounter below. Deferred
+		// rescans fire via RegisterApplyIdle when EndApply hits zero.
 		total := len(req.Items)
 		writeND := func(v any) {
 			if !wantStream || flusher == nil {
@@ -562,6 +582,13 @@ func applyBatchHandler(httpClient *http.Client, connStore *connections.Store, sc
 				results = append(results, ri)
 				writeND(map[string]any{"type": "item", "id": ri.ID, "ok": ri.OK, "error": ri.Error})
 				continue
+			}
+
+			// Acquire the gate for this (mode, workflow) on first encounter.
+			gk := gateKey{p.Mode, p.Workflow}
+			if !gateActive[gk] {
+				proposals.DefaultGate.BeginApply(p.Mode, p.Workflow)
+				gateActive[gk] = true
 			}
 
 			sess, ok := sessions[p.Mode]

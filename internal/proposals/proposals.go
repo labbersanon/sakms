@@ -172,25 +172,77 @@ func New(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-// ReplacePending atomically replaces every Pending/Unmatched proposal for
-// (m, wf) with fresh — the effect of running Scan again. Applied and
-// Dismissed rows are untouched: they're history, not part of the live queue,
-// so a new Scan never erases a decision already made. Returns fresh with IDs
-// and CreatedAt populated from what was actually inserted.
+// ReplacePending replaces the live (Pending/Unmatched) proposal queue for
+// (m, wf) with fresh. Applied and Dismissed rows are untouched — they are
+// history, not part of the live queue, so a rescan never erases a decision
+// already made.
+//
+// Apply-gate: if an apply is currently in flight for (m, wf), the replace is
+// deferred — it returns nil, ErrReplaceDeferred without mutating the queue.
+// The existing IDs remain valid for the apply loop. A catch-up rescan fires
+// automatically via RegisterApplyIdle hooks when the apply completes.
+//
+// Upsert semantics: proposals with a non-empty source_path are matched to
+// existing live rows by that path. Matching rows are updated in place —
+// preserving their ID and created_at — so apply-batch IDs remain stable
+// across a concurrent rescan. Proposals with an empty source_path (rare) are
+// always inserted as new rows. Live rows whose source_path is not in the
+// fresh set are deleted. Returns fresh with IDs and CreatedAt populated.
+//
+// Claude 2026-08-06: replaced delete-all+insert with apply-gate check + upsert.
+// Reason: watchfolder scan during apply-batch caused "no proposal with that id"
+//   (ErrNotFound) because ReplacePending's DELETE removed rows apply-batch was
+//   still looking up. Upsert preserves IDs; gate defers replace while apply runs.
+// Troubleshooting: if ids appear stale, confirm BeginApply/EndApply are paired
+//   in every apply handler and that ErrReplaceDeferred is not silently swallowed.
+// Review if: applies become fully idempotent or the gate is superseded.
 func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fresh []Proposal) ([]Proposal, error) {
+	// Apply-gate: defer if an apply is running for this (mode, workflow).
+	if DefaultGate.ApplyInFlight(m, wf) {
+		DefaultGate.markDeferred(m, wf)
+		return nil, ErrReplaceDeferred
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM proposals WHERE mode = ? AND workflow = ? AND status IN (?, ?)`,
-		string(m), string(wf), string(Pending), string(Unmatched)); err != nil {
-		return nil, fmt.Errorf("clearing previous queue: %w", err)
+	// Load existing live rows for upsert matching keyed by source_path.
+	// Empty-path rows are excluded from the map — they always re-insert.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, source_path, created_at FROM proposals WHERE mode = ? AND workflow = ? AND status IN (?, ?)`,
+		string(m), string(wf), string(Pending), string(Unmatched))
+	if err != nil {
+		return nil, fmt.Errorf("loading existing live rows: %w", err)
+	}
+	type existingRow struct {
+		id        int64
+		createdAt string
+	}
+	existing := make(map[string]existingRow)
+	for rows.Next() {
+		var id int64
+		var sourcePath, createdAt string
+		if err := rows.Scan(&id, &sourcePath, &createdAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scanning existing live row: %w", err)
+		}
+		if sourcePath != "" {
+			existing[sourcePath] = existingRow{id: id, createdAt: createdAt}
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading existing live rows: %w", err)
 	}
 
 	out := make([]Proposal, len(fresh))
+	// updatedIDs collects every ID that survives this replace (updated or
+	// freshly inserted). Used to delete orphaned live rows at the end.
+	updatedIDs := make([]int64, 0, len(fresh))
+
 	for i, p := range fresh {
 		p.Mode, p.Workflow = m, wf
 		candidatesJSON, err := json.Marshal(p.Candidates)
@@ -209,6 +261,39 @@ func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fr
 		if err != nil {
 			return nil, fmt.Errorf("encoding cast for %q: %w", p.SourceName, err)
 		}
+
+		if p.SourcePath != "" {
+			if ex, ok := existing[p.SourcePath]; ok {
+				// UPDATE existing row in place — preserve id and created_at so
+				// any in-flight apply-batch lookup by that ID continues to work.
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE proposals SET
+						status=?, source_name=?, root_folder_path=?,
+						title=?, tvdb_id=?, tmdb_id=?, season_number=?, episode_number=?,
+						year=?, quality_profile_id=?, reason=?, tracked_id=?,
+						foreign_id=?, item_type=?, candidates_json=?, studio=?,
+						scene_date=?, phash=?, duration_seconds=?, give_back_box=?,
+						give_back_scene_id=?, extra_episode_numbers=?, genres=?,
+						"cast"=?, phash_similarity=?
+					WHERE id=?
+				`, string(p.Status), p.SourceName, p.RootFolderPath,
+					p.Title, p.TVDBID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber,
+					p.Year, p.QualityProfileID, p.Reason, p.TrackedID,
+					p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio,
+					p.Date, p.PHash, p.DurationSeconds, p.GiveBackBox,
+					p.GiveBackSceneID, extraEpisodesJSON, genresJSON,
+					castJSON, p.PHashSimilarity, ex.id); err != nil {
+					return nil, fmt.Errorf("updating proposal for %q: %w", p.SourceName, err)
+				}
+				p.ID = ex.id
+				p.CreatedAt = ex.createdAt
+				updatedIDs = append(updatedIDs, ex.id)
+				out[i] = p
+				continue
+			}
+		}
+
+		// INSERT: new source_path, empty source_path, or no live match.
 		// Claude 2026-08-04: added phash_similarity (migration 0060). Reason: it
 		// was computed by ScanLibraryPHash/ScanLibrarySeriesPHash but had no
 		// column to land in, silently dying here before it ever reached List/Get
@@ -232,7 +317,39 @@ func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fr
 		if err := row.Scan(&p.ID, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("inserting proposal for %q: %w", p.SourceName, err)
 		}
+		updatedIDs = append(updatedIDs, p.ID)
 		out[i] = p
+	}
+
+	// Delete live rows not covered by this scan (orphans whose source
+	// disappeared, and empty-path rows being replaced by fresh inserts above).
+	if len(updatedIDs) > 0 {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(updatedIDs)), ",")
+		args := make([]any, 0, 4+len(updatedIDs))
+		args = append(args, string(m), string(wf), string(Pending), string(Unmatched))
+		for _, id := range updatedIDs {
+			args = append(args, id)
+		}
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM proposals WHERE mode = ? AND workflow = ? AND status IN (?, ?) AND id NOT IN (%s)`, placeholders),
+			args...); err != nil {
+			return nil, fmt.Errorf("deleting orphaned proposals: %w", err)
+		}
+	} else {
+		// No survivors — clear the entire live queue for (m, wf).
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM proposals WHERE mode = ? AND workflow = ? AND status IN (?, ?)`,
+			string(m), string(wf), string(Pending), string(Unmatched)); err != nil {
+			return nil, fmt.Errorf("clearing previous queue: %w", err)
+		}
+	}
+
+	// Re-check the apply-gate before commit: an apply may have begun after our
+	// initial check (TOCTOU). Abort so we don't delete rows an in-flight apply
+	// still needs for MarkApplied after a mid-batch file move.
+	if DefaultGate.ApplyInFlight(m, wf) {
+		DefaultGate.markDeferred(m, wf)
+		return nil, ErrReplaceDeferred // tx rolls back via defer
 	}
 
 	if err := tx.Commit(); err != nil {

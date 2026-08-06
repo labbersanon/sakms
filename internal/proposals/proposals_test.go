@@ -635,6 +635,130 @@ func TestRepick_OverwritesFieldsAndPromotesToPending(t *testing.T) {
 
 // A proposal that was already Pending (a wrong-but-not-zero match) stays
 // Pending after a re-pick — same end state, not demoted or re-promoted.
+// TestReplacePending_PreservesIDOnRescanSamePath proves that a second
+// ReplacePending call for a proposal whose source_path already exists in the
+// live queue reuses the same row ID and created_at — the upsert-in-place
+// guarantee that keeps apply-batch IDs stable across concurrent rescans.
+func TestReplacePending_PreservesIDOnRescanSamePath(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	first, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Movie A (wrong title)", SourcePath: "/media/Movies/Movie A", RootFolderPath: "/media/Movies", Title: "Wrong Title", TMDBID: 1},
+	})
+	if err != nil {
+		t.Fatalf("first replace: %v", err)
+	}
+	originalID := first[0].ID
+	originalCreatedAt := first[0].CreatedAt
+
+	// Second scan finds the same path, now with the corrected title.
+	second, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Movie A", SourcePath: "/media/Movies/Movie A", RootFolderPath: "/media/Movies", Title: "Movie A", TMDBID: 1},
+	})
+	if err != nil {
+		t.Fatalf("second replace: %v", err)
+	}
+	if second[0].ID != originalID {
+		t.Errorf("expected same ID after rescan of same path: got %d, want %d", second[0].ID, originalID)
+	}
+	if second[0].CreatedAt != originalCreatedAt {
+		t.Errorf("expected created_at preserved: got %q, want %q", second[0].CreatedAt, originalCreatedAt)
+	}
+	if second[0].Title != "Movie A" {
+		t.Errorf("expected updated title to be persisted, got %q", second[0].Title)
+	}
+	// Verify Get also returns the updated title.
+	got, err := s.Get(ctx, originalID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Title != "Movie A" {
+		t.Errorf("Get: expected updated title, got %q", got.Title)
+	}
+}
+
+// TestReplacePending_DeletesMissingPaths proves that a live row whose
+// source_path no longer appears in the fresh scan is deleted — it left the
+// library (moved, renamed, or deleted by the user) so the proposal is stale.
+func TestReplacePending_DeletesMissingPaths(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	first, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Movie A", SourcePath: "/media/Movies/Movie A", RootFolderPath: "/media/Movies", Title: "Movie A", TMDBID: 1},
+		{Status: Pending, SourceName: "Movie B", SourcePath: "/media/Movies/Movie B", RootFolderPath: "/media/Movies", Title: "Movie B", TMDBID: 2},
+	})
+	if err != nil {
+		t.Fatalf("first replace: %v", err)
+	}
+	goneID := first[1].ID // Movie B will vanish from the next scan.
+
+	// Second scan: only Movie A remains.
+	if _, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Movie A", SourcePath: "/media/Movies/Movie A", RootFolderPath: "/media/Movies", Title: "Movie A", TMDBID: 1},
+	}); err != nil {
+		t.Fatalf("second replace: %v", err)
+	}
+
+	// Movie B's row must be gone.
+	if _, err := s.Get(ctx, goneID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for deleted-path proposal %d, got %v", goneID, err)
+	}
+
+	live, err := s.List(ctx, mode.Movies, Rename)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(live) != 1 || live[0].SourcePath != "/media/Movies/Movie A" {
+		t.Errorf("expected only Movie A to remain, got %+v", live)
+	}
+}
+
+// TestReplacePending_DeferredDuringApply proves that ReplacePending returns
+// ErrReplaceDeferred without mutating the queue when an apply is in flight for
+// the same (mode, workflow). The existing live rows are unchanged so any
+// concurrent apply-batch lookup can still find them.
+func TestReplacePending_DeferredDuringApply(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Seed the live queue.
+	first, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Movie A", SourcePath: "/media/Movies/Movie A", RootFolderPath: "/media/Movies", Title: "Movie A", TMDBID: 1},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	originalID := first[0].ID
+
+	// Use a fresh gate so this test doesn't interfere with DefaultGate state.
+	saved := DefaultGate
+	DefaultGate = newGate()
+	t.Cleanup(func() { DefaultGate = saved })
+
+	// Simulate an apply starting.
+	DefaultGate.BeginApply(mode.Movies, Rename)
+	defer DefaultGate.EndApply(mode.Movies, Rename)
+
+	// ReplacePending must defer.
+	_, err = s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Movie A (updated)", SourcePath: "/media/Movies/Movie A", RootFolderPath: "/media/Movies", Title: "Updated Title", TMDBID: 1},
+	})
+	if !errors.Is(err, ErrReplaceDeferred) {
+		t.Fatalf("expected ErrReplaceDeferred, got %v", err)
+	}
+
+	// The original live row must be unchanged.
+	got, err := s.Get(ctx, originalID)
+	if err != nil {
+		t.Fatalf("Get after deferred replace: %v", err)
+	}
+	if got.Title != "Movie A" {
+		t.Errorf("expected original title to be preserved, got %q", got.Title)
+	}
+}
+
 func TestRepick_AlreadyPendingStaysPending(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

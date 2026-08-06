@@ -60,6 +60,17 @@ func pollInterval(ctx context.Context, s *settings.Store) time.Duration {
 // auto-Apply. Must be launched as a goroutine from main.go and cancelled via
 // ctx when the server shuts down.
 func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore) {
+	// Register catch-up rescan hooks once per server lifetime. When an apply
+	// is in flight and a watchfolder scan is deferred (ErrReplaceDeferred),
+	// the hook fires automatically when the apply completes so the queue is
+	// never left stale after a brief race window.
+	for _, m := range []mode.Mode{mode.Movies, mode.Series, mode.Adult} {
+		mc := m // capture for closure
+		proposals.DefaultGate.RegisterApplyIdle(mc, proposals.Rename, func() {
+			scanFromWatcher(context.Background(), mc, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
+		})
+	}
+
 	for {
 		d := pollInterval(ctx, settingsStore)
 
@@ -261,7 +272,11 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 	}
 
 	if _, err := propStore.ReplacePending(ctx, m, proposals.Rename, found); err != nil {
-		log.Printf("watchfolders: saving proposals for %s: %v", m, err)
+		if errors.Is(err, proposals.ErrReplaceDeferred) {
+			log.Printf("watchfolders: %s scan deferred (apply in flight) — will retry on apply idle", m)
+		} else {
+			log.Printf("watchfolders: saving proposals for %s: %v", m, err)
+		}
 	} else {
 		log.Printf("watchfolders: %s scan complete, %d proposals", m, len(found))
 	}

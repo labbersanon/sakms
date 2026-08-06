@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -75,7 +76,11 @@ func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, set
 
 		saved, err := propStore.ReplacePending(ctx, m, proposals.Purge, found)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if errors.Is(err, proposals.ErrReplaceDeferred) {
+				http.Error(w, "scan deferred: an apply is currently in flight — retry after the apply completes", http.StatusServiceUnavailable)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 

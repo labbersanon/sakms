@@ -1,7 +1,7 @@
 // Stage 3 Rename UI tests — the staged scan→propose→apply queue per mode, plus
 // the bounded bulk-apply exception. Single-item apply still acts on exactly ONE
-// proposal via its own button; on top of that an opt-in multi-select of Pending
-// rows can be applied together in one apply-batch request (a deliberate,
+// proposal via that row's dropdown + Go; on top of that an opt-in multi-select of
+// Pending rows can be applied together in one apply-batch request (a deliberate,
 // documented reversal of the original no-apply-everything rule — see ROADMAP.md
 // and the top-level CLAUDE.md). The bulk tests pin that: checkboxes render only
 // for Pending rows, "Apply Selected" appears only with a non-empty selection,
@@ -10,12 +10,24 @@
 //
 // Covered: Movies apply-one, the bulk-apply behavior with several pending rows,
 // Series Re-pick (auto-search → use a NEW tmdb match), Dismiss, and Adult
-// (Give back on an unmatched row, and Re-pick correctly absent for Adult).
+// (Give back on an unmatched row, and Re-pick present but disabled for Adult).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { DiscoverItem, Proposal } from "@dto";
 import { Rename } from "./Rename";
+
+// runRowAction picks an action in that row's dropdown and clicks Go.
+const runRowAction = async (
+  sourceName: string,
+  action: "apply" | "giveback" | "repick" | "dismiss",
+) => {
+  const row = (await screen.findByText(sourceName)).closest("tr");
+  expect(row).toBeTruthy();
+  const select = within(row as HTMLElement).getByRole("combobox");
+  fireEvent.change(select, { target: { value: action } });
+  fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "Go" }));
+};
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -125,10 +137,9 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     });
 
     render(() => <Rename />);
-    // A proposal row shows, with a single Apply action.
+    // A proposal row shows; default action is Apply — Go runs it.
     expect(await screen.findByText("Movie.A")).toBeInTheDocument();
-    const applyBtn = await screen.findByText("Apply");
-    fireEvent.click(applyBtn);
+    await runRowAction("Movie.A", "apply");
 
     // Exactly one apply request, for exactly that proposal id.
     await waitFor(() => expect(applyCalls(calls)).toHaveLength(1));
@@ -327,7 +338,7 @@ describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {
     expect(screen.getByText(/Failed One: disk full/)).toBeInTheDocument();
   });
 
-  it("still applies a single row through its own Apply button (one single call, no batch)", async () => {
+  it("still applies a single row through its own Go action (one single call, no batch)", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([
@@ -344,7 +355,7 @@ describe("Rename — bulk apply (opt-in multi-select of Pending rows)", () => {
 
     render(() => <Rename />);
     await screen.findByText("A");
-    fireEvent.click(screen.getAllByText("Apply")[1]!);
+    await runRowAction("B", "apply");
 
     await waitFor(() => expect(singleApplyCalls(calls)).toHaveLength(1));
     expect(singleApplyCalls(calls)[0]!.url).toContain("/api/proposals/2/apply");
@@ -375,8 +386,8 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
 
     render(() => <Rename />);
     fireEvent.click(await screen.findByText("Series"));
-    // Open Re-pick — the panel auto-searches the prefilled title.
-    fireEvent.click(await screen.findByText("Re-pick"));
+    // Open Re-pick via dropdown + Go — the panel auto-searches the prefilled title.
+    await runRowAction("Wrong.Match.Show", "repick");
     // The result from tmdb-search appears; pick it.
     expect(await screen.findByText(/The Right Show/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("Use this"));
@@ -405,7 +416,7 @@ describe("Rename — Dismiss (single row)", () => {
 
     render(() => <Rename />);
     await screen.findByText("Dismiss.Me");
-    fireEvent.click(screen.getByText("Dismiss"));
+    await runRowAction("Dismiss.Me", "dismiss");
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/api/proposals/4/dismiss"))).toBe(
         true,
@@ -531,8 +542,8 @@ describe("Rename — mode-specific columns", () => {
   });
 });
 
-describe("Rename — Adult (give back on unmatched; no Re-pick)", () => {
-  it("shows Give back for an unmatched row and hides Re-pick for Adult", async () => {
+describe("Rename — Adult (give back on unmatched; Re-pick disabled)", () => {
+  it("defaults to Give back for unmatched Adult; Re-pick option is disabled", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse([]);
@@ -555,10 +566,17 @@ describe("Rename — Adult (give back on unmatched; no Re-pick)", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio - Unidentified Scene");
 
-    // Adult never offers Re-pick (TMDB-only); it offers Give back on unmatched.
-    expect(screen.queryByText("Re-pick")).toBeNull();
-    const giveBack = screen.getByText("Give back");
-    fireEvent.click(giveBack);
+    const row = screen.getByText("Studio - Unidentified Scene").closest("tr")!;
+    const select = within(row).getByRole("combobox") as HTMLSelectElement;
+    const repickOpt = within(select).getByRole("option", { name: "Re-pick" });
+    expect(repickOpt).toBeDisabled();
+    const giveBackOpt = within(select).getByRole("option", {
+      name: "Give back",
+    });
+    expect(giveBackOpt).not.toBeDisabled();
+    expect(select.value).toBe("giveback");
+
+    fireEvent.click(within(row).getByRole("button", { name: "Go" }));
     await waitFor(() =>
       expect(
         calls.some((c) => c.url.includes("/api/proposals/21/submit-draft")),

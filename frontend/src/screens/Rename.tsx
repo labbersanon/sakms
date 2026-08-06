@@ -4,7 +4,7 @@
 // follow-up, see .omc/handoffs/stage-3-rename.md — the old frontend's single
 // generic table never surfaced these, and an earlier wave correctly declined to
 // add them without an explicit decision). Scan enqueues proposals; the operator
-// reviews a table of them and acts on each row via its own single-item button.
+// reviews a table of them and acts on each row via dropdown + Go.
 //
 // Bulk apply — the one bounded exception to the project's original "one item at
 // a time, no apply-everything" rule (a deliberate, documented reversal; see
@@ -15,7 +15,7 @@
 // already-reviewed rows, which the backend applies sequentially with
 // skip-and-continue and reports per item. This is NOT a queue-wide apply-all,
 // and it does not change how any single row still applies one at a time via its
-// own Apply button.
+// own dropdown + Go.
 //
 // Table shape:
 //   - Shared columns, every mode: Source / Title / Status / Root Folder /
@@ -28,15 +28,16 @@
 //   Extra columns are only ever ADDED for a mode, never removed from the
 //   shared set — Source/Title/Status/Root Folder/Reason/Actions stay present
 //   and in the same relative order across all three modes.
-//   - Apply shows on a `pending` row; Give back on an `unmatched` row (any mode,
-//     even though it is Adult-give-back-semantic); Re-pick on pending/unmatched
-//     for Movies/Series only; Dismiss on pending/unmatched.
+//   - Per-row actions are a dropdown (Apply / Give back / Re-pick / Dismiss) with
+//     inapplicable options disabled, plus a Go button that runs the selection
+//     immediately. Default selection is the first enabled action for that row.
 //   - Re-pick opens a single shared search panel below the table, auto-searches
 //     the prefilled title on open, and sends the NEWLY chosen tmdbId (never the
 //     proposal's current one).
 
 import {
   type Component,
+  createEffect,
   createResource,
   createSignal,
   For,
@@ -76,6 +77,108 @@ import {
   PageSizeSelect,
   PaginationBar,
 } from "./OrganizeChrome";
+
+// Claude 2026-08-05: row action dropdown + Go (deep-interview-rename-row-action-dropdown).
+// Reason: replace button cluster with select of all four actions (N/A disabled).
+// Troubleshooting: Go disabled when no action is enabled for the row status.
+// Review if: Purge/Dedup adopt the same control.
+type RowActionId = "apply" | "giveback" | "repick" | "dismiss";
+
+const ROW_ACTIONS: { id: RowActionId; label: string }[] = [
+  { id: "apply", label: "Apply" },
+  { id: "giveback", label: "Give back" },
+  { id: "repick", label: "Re-pick" },
+  { id: "dismiss", label: "Dismiss" },
+];
+
+function rowActionEnabled(
+  id: RowActionId,
+  status: string,
+  titleMode: boolean,
+): boolean {
+  switch (id) {
+    case "apply":
+      return status === "pending";
+    case "giveback":
+      return status === "unmatched";
+    case "repick":
+      return titleMode && (status === "pending" || status === "unmatched");
+    case "dismiss":
+      return status === "pending" || status === "unmatched";
+  }
+}
+
+function firstEnabledAction(
+  status: string,
+  titleMode: boolean,
+): RowActionId | "" {
+  for (const a of ROW_ACTIONS) {
+    if (rowActionEnabled(a.id, status, titleMode)) return a.id;
+  }
+  return "";
+}
+
+// One proposal row's action dropdown + Go. Own signal so each row keeps its pick.
+const RowActions: Component<{
+  proposal: Proposal;
+  titleMode: boolean;
+  onApply: () => void;
+  onGiveBack: () => void;
+  onRepick: () => void;
+  onDismiss: () => void;
+}> = (props) => {
+  const initial = () =>
+    firstEnabledAction(props.proposal.status, props.titleMode);
+  const [selected, setSelected] = createSignal<RowActionId | "">(initial());
+
+  const enabled = (id: RowActionId) =>
+    rowActionEnabled(id, props.proposal.status, props.titleMode);
+
+  // If status changes after refetch, snap back to first enabled when current is invalid.
+  createEffect(() => {
+    const cur = selected();
+    if (cur && enabled(cur)) return;
+    setSelected(initial());
+  });
+
+  const run = () => {
+    const id = selected();
+    if (!id || !enabled(id)) return;
+    if (id === "apply") props.onApply();
+    else if (id === "giveback") props.onGiveBack();
+    else if (id === "repick") props.onRepick();
+    else props.onDismiss();
+  };
+
+  return (
+    <div class="flex flex-wrap items-center gap-1">
+      <select
+        class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
+        aria-label={`Action for ${props.proposal.sourceName}`}
+        value={selected()}
+        disabled={!initial()}
+        onChange={(e) =>
+          setSelected(e.currentTarget.value as RowActionId | "")
+        }
+      >
+        <For each={ROW_ACTIONS}>
+          {(a) => (
+            <option value={a.id} disabled={!enabled(a.id)}>
+              {a.label}
+            </option>
+          )}
+        </For>
+      </select>
+      <Button
+        variant="primary"
+        disabled={!selected() || !enabled(selected() as RowActionId)}
+        onClick={run}
+      >
+        Go
+      </Button>
+    </div>
+  );
+};
 
 // shortHash renders the PHash column value — the full scheme-tagged hash is
 // too long to usefully show inline, so the cell shows a short prefix and the
@@ -432,58 +535,26 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                       <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
                       <td class="px-2 py-2 text-muted">{p.reason}</td>
                       <td class="px-2 py-2">
-                        <div class="flex flex-wrap gap-1">
-                          <Show when={p.status === "pending"}>
-                            <Button
-                              variant="primary"
-                              onClick={() =>
-                                void act(() => applyProposal(p.id)).then(() =>
-                                  setLogKey((k) => k + 1),
-                                )
-                              }
-                            >
-                              Apply
-                            </Button>
-                          </Show>
-                          <Show when={p.status === "unmatched"}>
-                            <Button
-                              variant="secondary"
-                              onClick={() =>
-                                void act(() => submitDraft(p.id)).then(() =>
-                                  setLogKey((k) => k + 1),
-                                )
-                              }
-                            >
-                              Give back
-                            </Button>
-                          </Show>
-                          <Show
-                            when={
-                              isTitleMode() &&
-                              (p.status === "pending" || p.status === "unmatched")
-                            }
-                          >
-                            <Button variant="secondary" onClick={() => setRepickFor(p)}>
-                              Re-pick
-                            </Button>
-                          </Show>
-                          <Show
-                            when={
-                              p.status === "pending" || p.status === "unmatched"
-                            }
-                          >
-                            <Button
-                              variant="secondary"
-                              onClick={() =>
-                                void act(() => dismissProposal(p.id)).then(() =>
-                                  setLogKey((k) => k + 1),
-                                )
-                              }
-                            >
-                              Dismiss
-                            </Button>
-                          </Show>
-                        </div>
+                        <RowActions
+                          proposal={p}
+                          titleMode={isTitleMode()}
+                          onApply={() =>
+                            void act(() => applyProposal(p.id)).then(() =>
+                              setLogKey((k) => k + 1),
+                            )
+                          }
+                          onGiveBack={() =>
+                            void act(() => submitDraft(p.id)).then(() =>
+                              setLogKey((k) => k + 1),
+                            )
+                          }
+                          onRepick={() => setRepickFor(p)}
+                          onDismiss={() =>
+                            void act(() => dismissProposal(p.id)).then(() =>
+                              setLogKey((k) => k + 1),
+                            )
+                          }
+                        />
                       </td>
                     </tr>
                   )}

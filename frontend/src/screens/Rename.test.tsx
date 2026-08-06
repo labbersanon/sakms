@@ -138,6 +138,8 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
 
     render(() => <Rename />);
     expect(await screen.findByText("Movie.A")).toBeInTheDocument();
+    expect(screen.getByText("rename")).toBeInTheDocument();
+    expect(screen.queryByText("pending")).toBeNull();
     const row = screen.getByText("Movie.A").closest("tr")!;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("");

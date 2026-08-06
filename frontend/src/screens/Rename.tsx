@@ -317,7 +317,7 @@ const ApplyAllConfirm: Component<{
           {props.plan.length === 1 ? "" : "s"}?
         </h3>
         <Muted class="mt-1">
-          Pending rows rename by default. Rows set to Dismiss are dismissed.
+          Matched rows rename by default. Rows set to Dismiss are dismissed.
           Re-pick is skipped — needs a manual pick.
         </Muted>
       </div>
@@ -337,7 +337,9 @@ const ApplyAllConfirm: Component<{
                   <td class="py-2 pr-2 font-mono text-xs">
                     {item.proposal.sourceName}
                   </td>
-                  <td class="py-2 pr-2 text-sm capitalize">{item.action}</td>
+                  <td class="py-2 pr-2 text-sm capitalize">
+                    {item.action === "apply" ? "rename" : item.action}
+                  </td>
                   <td class="py-2 text-sm">
                     {item.action === "apply"
                       ? newNameOf(item.proposal)
@@ -466,7 +468,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         }
         if (plan.length === 0) {
           setActionError(
-            "Nothing to apply — Pending rows rename by default; set Dismiss on a row to dismiss instead.",
+            "Nothing to apply — matched rows rename by default; set Dismiss on a row to dismiss instead.",
           );
           return;
         }
@@ -635,7 +637,12 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                       </Show>
                       <td class="px-2 py-2">
                         <div class="flex flex-wrap items-center gap-1">
-                          <StatusPill status={p.status as ProposalStatus} />
+                          <StatusPill
+                            status={p.status as ProposalStatus}
+                            label={
+                              p.status === "pending" ? "rename" : undefined
+                            }
+                          />
                           <Show
                             when={(p.reason || "")
                               .toLowerCase()

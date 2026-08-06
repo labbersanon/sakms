@@ -566,15 +566,21 @@ export const STATUS_STYLE: Record<string, string> = {
   dismissed: "bg-surface-2 text-muted",
 };
 
+// Claude 2026-08-06: optional label — Rename shows "rename" instead of "pending"
+// Reason: operators don't want "pending" terminology on the Rename queue.
+// Troubleshooting: pill still says pending on Rename → pass label="rename".
+// Review if: Purge/Dedup also want custom status wording.
 // StatusPill renders one proposal's lifecycle state as a small colored pill.
-export const StatusPill: Component<{ status: string }> = (props) => (
+export const StatusPill: Component<{ status: string; label?: string }> = (
+  props,
+) => (
   <span
     class="inline-block rounded-full px-2 py-0.5 text-[11px] font-medium"
     classList={{
       [STATUS_STYLE[props.status] ?? "bg-surface-2 text-muted"]: true,
     }}
   >
-    {props.status}
+    {props.label ?? props.status}
   </span>
 );
 

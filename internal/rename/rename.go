@@ -686,36 +686,6 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 			}
 		}
 	}
-
-	// Claude 2026-08-06: within-batch episodeKey collision guard
-	// Reason: code-reviewer MEDIUM finding — ParseEpisodeNumbersLoose lets
-	//   every video file in a marker-named parent directory (main file plus
-	//   a sample/featurette, say) resolve to the SAME season/episode via the
-	//   same parent-dir fallback. The `tracked` guard above only catches a
-	//   collision against the ALREADY-COMMITTED library — it's built once
-	//   before the scan loop and never mutated during it — so two files
-	//   newly proposed within this one Scan can both reach Pending with an
-	//   identical (tmdbID, season, episode), and Applying the later one
-	//   silently overwrites the earlier one's library.Episode row.
-	// Troubleshooting: two Pending rows for the same show/season/episode in
-	//   one Scan result; Applying the later one clobbers the earlier one.
-	// Review if: proposals ever need to keep MULTIPLE files per episode slot
-	//   (e.g. deliberate alternates) — this guard would need to become
-	//   alternate-aware instead of blanket-Unmatching the second claimant.
-	seen := map[episodeKey]bool{}
-	for i := range out {
-		if out[i].Status != proposals.Pending || out[i].TMDBID == 0 {
-			continue
-		}
-		key := episodeKey{tmdbID: out[i].TMDBID, season: out[i].SeasonNumber, episode: out[i].EpisodeNumber}
-		if seen[key] {
-			out[i].Status = proposals.Unmatched
-			out[i].Reason = fmt.Sprintf("another file in this scan already claims %q S%02dE%02d — leaving in place for manual review", out[i].Title, out[i].SeasonNumber, out[i].EpisodeNumber)
-			continue
-		}
-		seen[key] = true
-	}
-
 	return out, nil
 }
 
@@ -730,18 +700,7 @@ func proposeOneEpisodeLibrary(
 		SourceName: name, SourcePath: videoPath, RootFolderPath: foundRoot,
 	}
 
-	// Claude 2026-08-06: loose parent-dir fallback for opaque hash basenames
-	// Reason: 34 real "The Path" library rows (diagnosis
-	//   .omc/artifacts/series-parse-failures-20260806.psv) have a hash
-	//   basename with zero recognizable content, while the immediate parent
-	//   directory is a complete scene-release name the existing strict
-	//   pattern already parses correctly — see
-	//   library.ParseEpisodeNumbersLoose's own doc comment.
-	// Troubleshooting: "could not determine season/episode from %q" for a
-	//   hash-named file whose parent folder is a normal release name.
-	// Review if: ParseEpisodeNumbers itself changes — this must keep
-	//   delegating to it unmodified.
-	season, episodes, ok := library.ParseEpisodeNumbersLoose(name, filepath.Dir(videoPath))
+	season, episodes, ok := library.ParseEpisodeNumbers(name)
 	if !ok {
 		p.Status = proposals.Unmatched
 		p.Reason = fmt.Sprintf("could not determine season/episode from %q", name)
@@ -798,23 +757,6 @@ func proposeOneEpisodeLibrary(
 	}
 
 	sig := ExtractFileSignals(ctx, name, videoPath, prober)
-	// Claude 2026-08-06: loose title seed for GuessTitle/bravePhase2Series, computed once
-	// Reason: code-reviewer HIGH finding — once ParseEpisodeNumbersLoose lets
-	//   an opaque hash basename past the parse gate, GuessTitle/bravePhase2Series
-	//   (unlike tryWebAuthoritySeries, which gates on IsJunkRenameFilename/
-	//   HasTitleTokenOverlap) had no title-overlap guard: GuessTitle could
-	//   hallucinate a title from 32 hex chars, and bravePhase2Series accepts
-	//   the first TMDB candidate whose season exists — combined with the
-	//   parent-dir-derived season/episode, that's a confidently WRONG match
-	//   landing on Pending instead of correctly staying Unmatched. Seeding
-	//   both with the same parent-dir-recovered title StripEpisodeMarkerLoose
-	//   already computes for the search-term path below closes the hole
-	//   (a hash string search-guesses to nothing) and improves recall for the
-	//   real "The Path" case (Brave/GuessTitle get "The Path", not a hash).
-	// Troubleshooting: a hash-basename file lands on a confident Pending with
-	//   a plausible-looking but wrong TMDB match instead of staying Unmatched.
-	// Review if: StripEpisodeMarkerLoose's fallback shape changes.
-	looseTitle := library.StripEpisodeMarkerLoose(name, filepath.Dir(videoPath))
 	acceptSeries := func(match tmdb.Item, candYear int) proposals.Proposal {
 		if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
 			p.Status = proposals.Unmatched
@@ -851,14 +793,14 @@ func proposeOneEpisodeLibrary(
 	if !sig.HasAny() {
 		guessed := ""
 		if sess.MainstreamAI != nil {
-			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g != "" {
+			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, name); gerr == nil && g != "" {
 				guessed = g
 				if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, season, episode, searchterm.SearchQueries(guessed)); got != nil {
 					return *got
 				}
 			}
 		}
-		if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, looseTitle); got != nil {
+		if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, name); got != nil {
 			return *got
 		}
 		if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
@@ -873,20 +815,7 @@ func proposeOneEpisodeLibrary(
 		return p
 	}
 
-	// Claude 2026-08-06: StripEpisodeMarkerLoose lockstep with ParseEpisodeNumbersLoose above
-	// Reason: for the hash-basename shape, StripEpisodeMarker(name) is a
-	//   no-op (nothing to strip), so the search term would be the opaque
-	//   hash itself and TMDB search would fail — converting a parse
-	//   failure into a lookup failure instead of a real fix. Falling back
-	//   to the parent directory's own stripped title recovers a usable
-	//   search term the same way season/episode was recovered above.
-	//   Reuses looseTitle (computed once above, alongside sig) rather than
-	//   recomputing it — same value, same reasoning.
-	// Troubleshooting: season/episode now parses via the parent dir but the
-	//   file still ends up Unmatched with a search-failure reason.
-	// Review if: StripEpisodeMarker itself changes — this must keep
-	//   delegating to it unmodified.
-	queries := searchterm.SearchQueries(looseTitle)
+	queries := searchterm.SearchQueries(library.StripEpisodeMarker(name))
 	var lastTerm string
 	var lastLimit int
 	type weakSeries struct {
@@ -938,20 +867,16 @@ func proposeOneEpisodeLibrary(
 	// Reason: deep-interview-rename-brave-phase2
 	// Troubleshooting: wrong show title with valid SxxExx stayed Unmatched
 	// Review if: Series Brave should re-parse SxxExx from grounded title
-	//
-	// Claude 2026-08-06: seeded with looseTitle, not name — see looseTitle's
-	// own doc comment above (code-reviewer HIGH finding: an opaque hash
-	// basename must not reach GuessTitle/bravePhase2Series raw).
 	guessed := ""
 	if sess.MainstreamAI != nil {
-		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g != "" {
+		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, name); gerr == nil && g != "" {
 			guessed = g
 			if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, season, episode, searchterm.SearchQueries(guessed)); got != nil {
 				return *got
 			}
 		}
 	}
-	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, looseTitle); got != nil {
+	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, name); got != nil {
 		return *got
 	}
 	if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {

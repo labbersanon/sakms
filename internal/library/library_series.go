@@ -840,36 +840,6 @@ func ParseEpisodeFilename(name string) (season, episode int, ok bool) {
 	return season, episodes[0], true
 }
 
-// Claude 2026-08-06: rename-path-only loose fallback to the parent directory
-// Reason: 34 real "The Path" library rows (diagnosis
-//   .omc/artifacts/series-parse-failures-20260806.psv) have an opaque hash
-//   basename with zero recognizable content, while the immediate parent
-//   directory is a complete scene-release name
-//   ("The.Path.S01E02.2160p.WEB.h265-NiXON") the EXISTING strict pattern
-//   already parses correctly on its own — no new regex needed.
-// Troubleshooting: "could not determine season/episode from %q" unmatched
-//   reason for a hash-named file whose parent folder is a normal release name.
-// Review if: ParseEpisodeNumbers' regex block (episodePattern/altEpisodePattern
-//   and friends) changes shape — this must keep calling it unmodified, never
-//   duplicate its logic, so the other three non-rename call sites
-//   (import.go, releasematch.go, dedup_phash_primary.go) stay provably
-//   unaffected (see .omc/plans/autopilot-impl.md §2.1's containment proof).
-
-// ParseEpisodeNumbersLoose is ParseEpisodeNumbers' rename-path-only sibling:
-// it tries basename with the unmodified strict parser first, and only when
-// that fails, tries parentDir's own basename (i.e. the immediate containing
-// directory's name, NOT the full path) with the SAME strict parser. Callers
-// pass filepath.Dir(sourcePath) as parentDir. This is pure delegation — zero
-// duplicated regex logic, and ParseEpisodeNumbers itself is untouched, so
-// every other caller of ParseEpisodeNumbers is provably unaffected by this
-// function's existence.
-func ParseEpisodeNumbersLoose(basename, parentDir string) (season int, episodes []int, ok bool) {
-	if season, episodes, ok = ParseEpisodeNumbers(basename); ok {
-		return season, episodes, ok
-	}
-	return ParseEpisodeNumbers(filepath.Base(parentDir))
-}
-
 // StripEpisodeMarker removes the first SxxExx/NxNN token (and everything
 // after it) from name, so what's left is just the show title — the
 // preprocessing searchterm.FromName needs before it runs, since that
@@ -890,39 +860,6 @@ func StripEpisodeMarker(name string) string {
 // an episode marker (and everything after it) is removed.
 func trimSeparators(s string) string {
 	return strings.TrimRight(strings.TrimSpace(s), ".-_ ")
-}
-
-// Claude 2026-08-06: StripEpisodeMarker lockstep for the ParseEpisodeNumbersLoose fallback
-// Reason: proposeOneEpisodeLibrary (internal/rename/rename.go) builds its
-//   TMDB search term, and its GuessTitle/bravePhase2Series identity seed,
-//   from StripEpisodeMarker(basename) — for the "The Path" hash-basename
-//   shape that string carries zero title information, and no marker to
-//   strip, so the plain strict call is a silent no-op that would carry the
-//   opaque hash straight into searchterm.SearchQueries/GuessTitle, either
-//   failing the TMDB search outright or (worse) letting an AI hallucinate a
-//   title from the hash and land a confidently wrong match.
-// Troubleshooting: season/episode now parses via the parent dir but the file
-//   still ends up Unmatched with a search-failure reason, not Pending.
-// Review if: StripEpisodeMarker's own regex block changes shape — this must
-//   keep calling it unmodified, never duplicate its logic.
-
-// StripEpisodeMarkerLoose is StripEpisodeMarker's rename-path-only sibling:
-// it strips basename with the unmodified strict function first; only when
-// that is a no-op (no marker found in basename, so the result is unchanged)
-// does it fall back to stripping parentDir's own basename instead — the
-// parent directory's own title, once its own episode marker is removed.
-// Callers pass filepath.Dir(sourcePath) as parentDir, same as
-// ParseEpisodeNumbersLoose. Pure delegation — StripEpisodeMarker itself is
-// untouched, so every other caller is provably unaffected.
-func StripEpisodeMarkerLoose(basename, parentDir string) string {
-	if stripped := StripEpisodeMarker(basename); stripped != basename {
-		return stripped
-	}
-	parentBase := filepath.Base(parentDir)
-	if stripped := StripEpisodeMarker(parentBase); stripped != parentBase {
-		return stripped
-	}
-	return basename
 }
 
 // ResolveEpisodeVideoFiles is ResolveVideoFile's season-pack-aware sibling:

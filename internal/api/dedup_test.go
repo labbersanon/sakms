@@ -128,8 +128,11 @@ func TestDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		t.Fatalf("list proposals failed: %v", err)
 	}
 	defer listResp.Body.Close()
-	var listed []proposals.Proposal
-	json.NewDecoder(listResp.Body).Decode(&listed)
+	var listedPage struct {
+		Items []proposals.Proposal `json:"items"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&listedPage)
+	listed := listedPage.Items
 	if len(listed) != 1 || len(listed[0].Candidates) != 2 {
 		t.Fatalf("unexpected staged dedup result: %+v", listed)
 	}

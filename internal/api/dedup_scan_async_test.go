@@ -228,8 +228,11 @@ func TestDedupScan_DoneEventArrivesOnStream(t *testing.T) {
 		t.Fatalf("list proposals failed: %v", err)
 	}
 	defer listResp.Body.Close()
-	var listed []proposals.Proposal
-	json.NewDecoder(listResp.Body).Decode(&listed)
+	var listedPage struct {
+		Items []proposals.Proposal `json:"items"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&listedPage)
+	listed := listedPage.Items
 	if len(listed) != 1 {
 		t.Fatalf("expected 1 staged proposal after done, got %+v", listed)
 	}

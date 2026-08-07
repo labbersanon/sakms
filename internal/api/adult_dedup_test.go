@@ -84,8 +84,11 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		t.Fatalf("list proposals failed: %v", err)
 	}
 	defer listResp.Body.Close()
-	var scanned []proposals.Proposal
-	json.NewDecoder(listResp.Body).Decode(&scanned)
+	var scannedPage struct {
+		Items []proposals.Proposal `json:"items"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&scannedPage)
+	scanned := scannedPage.Items
 	if len(scanned) != 1 {
 		t.Fatalf("expected exactly one dedup proposal, got %+v", scanned)
 	}

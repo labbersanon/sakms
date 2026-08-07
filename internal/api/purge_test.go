@@ -94,8 +94,11 @@ func TestPurgeWorkflow_AllowlistThenScanThenApply_EndToEnd(t *testing.T) {
 		t.Fatalf("list proposals failed: %v", err)
 	}
 	defer listResp.Body.Close()
-	var listed []proposals.Proposal
-	json.NewDecoder(listResp.Body).Decode(&listed)
+	var listedPage struct {
+		Items []proposals.Proposal `json:"items"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&listedPage)
+	listed := listedPage.Items
 	if len(listed) != 1 || listed[0].ID != scanned[0].ID {
 		t.Fatalf("expected the purge queue to reflect what scan staged, got %+v", listed)
 	}

@@ -663,11 +663,26 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	//   it should be pinned.
 	// Review if: library_series gains a real per-show folder-path column.
 	folderIDs := map[string]int{} // normalized show-folder key -> TMDB id; 0 = ambiguous
+	// Claude 2026-08-06: seriesByID — TMDB id -> tracked row, for episode-title matching
+	// Reason: autopilot-impl-episode-title-matching §0.3/§4.2a — a proposal
+	//   built from TMDB's own TVDetails instead of the tracked row corrupts
+	//   the show's folder (TVDetails carries no year) and its library.Series
+	//   row (UpsertSeries overwrites unconditionally on Apply). This map lets
+	//   proposeOneEpisodeLibrary carry the pinned show's own Title/Year/
+	//   RootFolderPath through as a pinnedShow instead. library_series has
+	//   ON CONFLICT(tmdb_id), so tmdb_id is unique and this map cannot lose a
+	//   row.
+	// Troubleshooting: an episode-title match proposal has the wrong Title/
+	//   Year, or lands under the wrong Kids/general root — confirm
+	//   seriesByID[id] actually resolves before blaming pinnedShow itself.
+	// Review if: library_series gains a real per-show folder-path column.
+	seriesByID := make(map[int]library.Series, len(allSeries))
 	for _, series := range allSeries {
 		episodes, err := libStore.ListEpisodes(ctx, series.ID)
 		if err != nil {
 			return nil, fmt.Errorf("loading episodes for %q: %w", series.Title, err)
 		}
+		seriesByID[series.TMDBID] = series
 		// Title feed: a tracked show's own title claims its normalized key,
 		// even with zero tracked episode files on disk (§3.1).
 		pinFolderID(folderIDs, showFolderTitleKey(series.Title), series.TMDBID)
@@ -706,11 +721,16 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				if naming.MatchesSeriesSchema(videoPath, preset) {
 					continue // already organized under the active preset — nothing to propose
 				}
-				pinned := 0
+				pin := pinnedShow{}
 				if key := showFolderKey(videoPath, roots); key != "" {
-					pinned = folderIDs[key]
+					if id := folderIDs[key]; id > 0 {
+						pin.tmdbID = id
+						if s, ok := seriesByID[id]; ok {
+							pin.title, pin.year, pin.root = s.Title, s.Year, s.RootFolderPath
+						}
+					}
 				}
-				out = append(out, proposeOneEpisodeLibrary(ctx, sess, tracked, pinned, rootFolderPath, root, videoPath, cfg, prober))
+				out = append(out, proposeOneEpisodeLibrary(ctx, sess, tracked, pin, rootFolderPath, root, videoPath, cfg, prober))
 			}
 		}
 	}
@@ -748,7 +768,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 }
 
 func proposeOneEpisodeLibrary(
-	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool, pinnedTMDBID int,
+	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool, pin pinnedShow,
 	generalRoot, foundRoot, videoPath string, cfg MatchConfig, prober Prober,
 ) proposals.Proposal {
 	cfg = cfg.Normalize()
@@ -771,6 +791,18 @@ func proposeOneEpisodeLibrary(
 	//   delegating to it unmodified.
 	season, episodes, ok := library.ParseEpisodeNumbersLoose(name, filepath.Dir(videoPath))
 	if !ok {
+		// Claude 2026-08-06: episode-title matching for files with no season/episode marker
+		// Reason: autopilot-impl-episode-title-matching §2 — a file whose show is
+		//   ALREADY pinned by the folder guard can still be placed by matching its
+		//   recovered title against that show's own TMDB episode names. Runs ONLY
+		//   here, ONLY when pinned, and never as part of a show+episode guess.
+		// Troubleshooting: an episode-title match landed on the wrong slot —
+		//   check §1.4's residual/containment rule, not the parse gate.
+		// Review if: ParseEpisodeNumbersLoose learns the digit-code shape (e1524),
+		//   which would move the Red Skelton population out of this branch.
+		if got := tryEpisodeTitleMatchSeries(ctx, sess, tracked, pin, generalRoot, foundRoot, name, p); got != nil {
+			return *got
+		}
 		p.Status = proposals.Unmatched
 		p.Reason = fmt.Sprintf("could not determine season/episode from %q", name)
 		return p
@@ -858,7 +890,7 @@ func proposeOneEpisodeLibrary(
 	// Review if: library_series gains a real per-show folder-path column.
 	gate := &seriesGate{
 		titleSeed:    looseTitle,
-		pinnedTMDBID: pinnedTMDBID,
+		pinnedTMDBID: pin.tmdbID, // <- the ONLY change in this literal
 		rejected:     new(int),
 	}
 	// Claude 2026-08-06: gateRejectedReason — shared §4.3 distinct-reason helper

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1261,5 +1262,530 @@ func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, nil, proposals.Proposal{Status: status}, naming.Jellyfin, ""); err == nil {
 			t.Errorf("expected ApplyLibrarySeries to refuse a %q proposal", status)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Episode-title matching (autopilot-impl-episode-title-matching.md)
+// ---------------------------------------------------------------------------
+
+const (
+	redSkeltonShowID    = 10534
+	redSkeltonShowTitle = "The Red Skelton Show"
+)
+
+// redSkeltonEpisodeFixture returns this suite's per-season episode fixture
+// for TMDB id 10534 ("The Red Skelton Show").
+//
+// VERIFICATION STATUS, stated plainly per this project's honesty-about-
+// unverified-assumptions convention (mirroring internal/tmdb/client.go's own
+// SeasonDetails comment): no SAKMS_TEST_TMDB_API_KEY was available in this
+// environment (verified: unset) and this repo carries no testdata/ fixture
+// directory for TMDB 10534, so NONE of the episode titles below were
+// transcribed from a live TMDB response — they are CONSTRUCTED placeholders
+// for this test suite's shape only, chosen to plausibly resemble real
+// 1950s-Red-Skelton-episode titling, and must not be cited as evidence about
+// 10534's real catalogue. "More Funny Faces" is the one exception: it is not
+// claimed as real TMDB data either, but it IS the same string
+// web_authority_test.go already uses as its HasTitleTokenOverlap fixture
+// (the spec's own "motivating shape" example), reused here for continuity
+// rather than independently invented. Wade accepted this substitution (see
+// the plan's §5.3) in lieu of a live capture.
+// TestScanLibrarySeries_LiveTMDBEpisodeTitleMatch below is the one test in
+// this file that verifies against TMDB's real data, when a key is available.
+func redSkeltonEpisodeFixture() map[int][]tmdb.SeasonEpisode {
+	return map[int][]tmdb.SeasonEpisode{
+		1: {
+			{EpisodeNumber: 1, Name: "Cousin Fanny's Visit", AirDate: "1951-09-30"},
+			{EpisodeNumber: 2, Name: "The Bank Robbery", AirDate: "1951-10-07"},
+		},
+		2: {
+			{EpisodeNumber: 1, Name: "San Fernando Red", AirDate: "1952-09-28"},
+			{EpisodeNumber: 2, Name: "More Funny Faces", AirDate: "1952-10-05"},
+		},
+	}
+}
+
+// fakeTMDBEpisodeTitleServer serves /tv/{id} (with a real seasons[] array),
+// /tv/{id}/season/{n} (with per-season episode lists) and
+// /tv/{id}/aggregate_credits (the accept path's enrichment call) for the
+// episode-title matching tests. Sibling of fakeTMDBSeriesServer/
+// fakeTMDBSeriesServerEx above, deliberately not an extension of either —
+// this feature's tests hit identical /tv/10534/season/N paths with
+// deliberately DIFFERENT bodies across tests (unique-match vs. ambiguous vs.
+// no-match), which those two helpers' fixed one-episode-"Pilot"-for-every-
+// season body cannot express; see the plan's §5.1(b).
+//
+// failSeason, when >= 0, makes that ONE season 404, exercising the
+// fail-closed rule (§1.2). -1 means "no season fails."
+//
+// reqs, when non-nil, is a caller-owned counter incremented on EVERY request
+// this server receives — TestScanLibrarySeries_EpisodeTitleMatch_UnpinnedFolderInert
+// asserts it stays 0, which is the only real proof that the pinnedShow
+// precondition short-circuits before any network call; without it that
+// assertion would be aspirational.
+func fakeTMDBEpisodeTitleServer(
+	t *testing.T,
+	showID int, showName string,
+	seasons map[int][]tmdb.SeasonEpisode,
+	failSeason int,
+	reqs *int,
+) *tmdb.Client {
+	t.Helper()
+	tvPath := fmt.Sprintf("/tv/%d", showID)
+	seasonPathPrefix := tvPath + "/season/"
+	creditsPath := tvPath + "/aggregate_credits"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reqs != nil {
+			*reqs++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == tvPath:
+			seasonNums := make([]int, 0, len(seasons))
+			for n := range seasons {
+				seasonNums = append(seasonNums, n)
+			}
+			sort.Ints(seasonNums)
+			type seasonJSON struct {
+				SeasonNumber int `json:"season_number"`
+			}
+			body := struct {
+				ID      int          `json:"id"`
+				Name    string       `json:"name"`
+				Seasons []seasonJSON `json:"seasons"`
+			}{ID: showID, Name: showName}
+			for _, n := range seasonNums {
+				body.Seasons = append(body.Seasons, seasonJSON{SeasonNumber: n})
+			}
+			_ = json.NewEncoder(w).Encode(body)
+		case r.URL.Path == creditsPath:
+			w.Write([]byte(`{"cast":[]}`))
+		case strings.HasPrefix(r.URL.Path, seasonPathPrefix):
+			var season int
+			if _, err := fmt.Sscanf(r.URL.Path, seasonPathPrefix+"%d", &season); err != nil {
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+			}
+			if season == failSeason {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			type episodeJSON struct {
+				EpisodeNumber int    `json:"episode_number"`
+				Name          string `json:"name"`
+				AirDate       string `json:"air_date"`
+			}
+			body := struct {
+				Episodes []episodeJSON `json:"episodes"`
+			}{}
+			for _, ep := range seasons[season] {
+				body.Episodes = append(body.Episodes, episodeJSON{EpisodeNumber: ep.EpisodeNumber, Name: ep.Name, AirDate: ep.AirDate})
+			}
+			_ = json.NewEncoder(w).Encode(body)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_UniqueMatchAccepted is plan §5.2
+// case A: a file with no SxxExx anywhere in its basename or parent directory,
+// under a folder already pinned to a tracked show, whose recovered title
+// matches exactly one episode across every season — must land Pending on
+// that exact slot.
+func TestScanLibrarySeries_EpisodeTitleMatch_UniqueMatchAccepted(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(showDir, "Red Skelton More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, redSkeltonShowTitle, redSkeltonEpisodeFixture(), -1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected Pending, got status=%v reason=%q", p.Status, p.Reason)
+	}
+	if p.TMDBID != redSkeltonShowID || p.SeasonNumber != 2 || p.EpisodeNumber != 2 {
+		t.Errorf("expected TMDB %d S02E02, got tmdbID=%d S%02dE%02d", redSkeltonShowID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber)
+	}
+	if !strings.HasPrefix(p.Reason, episodeTitleMatchReasonPrefix) {
+		t.Errorf("expected reason to carry %q prefix, got %q", episodeTitleMatchReasonPrefix, p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_AmbiguousRejected is case B: the
+// same episode title occupying a slot in TWO different seasons must
+// Unmatch, naming both slots, with no TMDB id assigned. The duplicate is
+// CONSTRUCTED for this test (see redSkeltonEpisodeFixture's VERIFICATION
+// STATUS) — a claim about the matcher, not a claim that TMDB's real 10534
+// catalogue contains this duplicate.
+func TestScanLibrarySeries_EpisodeTitleMatch_AmbiguousRejected(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(showDir, "Red Skelton More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	seasons := map[int][]tmdb.SeasonEpisode{
+		1: {{EpisodeNumber: 3, Name: "More Funny Faces", AirDate: "1951-10-14"}},
+		2: {{EpisodeNumber: 2, Name: "More Funny Faces", AirDate: "1952-10-05"}},
+	}
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, redSkeltonShowTitle, seasons, -1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched on an ambiguous title match, got %+v", p)
+	}
+	if p.TMDBID != 0 {
+		t.Errorf("expected no TMDB id on an ambiguous match, got %d", p.TMDBID)
+	}
+	if !strings.Contains(p.Reason, "S01E03") || !strings.Contains(p.Reason, "S02E02") {
+		t.Errorf("expected the ambiguous reason to name both slots, got %q", p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_NoMatchFallsThroughUnchanged is
+// case C: a recovered title that appears in no season must leave the file on
+// the SAME parse-failure Unmatched reason the existing "could not determine
+// season/episode" path already produces — continuity for anything already
+// grepping that reason string.
+func TestScanLibrarySeries_EpisodeTitleMatch_NoMatchFallsThroughUnchanged(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	name := "Red Skelton Totally Unrelated Story.mp4"
+	if err := os.WriteFile(filepath.Join(showDir, name), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, redSkeltonShowTitle, redSkeltonEpisodeFixture(), -1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched, got %+v", p)
+	}
+	wantReason := fmt.Sprintf("could not determine season/episode from %q", name)
+	if p.Reason != wantReason {
+		t.Errorf("expected the unchanged parse-failure reason %q, got %q", wantReason, p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_UnpinnedFolderInert is case D: a
+// folder with no tracked library.Series row at all must never invoke this
+// feature — proven, not just asserted by outcome, via the reqs counter
+// staying at 0 (zero TMDB calls of ANY kind for this file).
+func TestScanLibrarySeries_EpisodeTitleMatch_UnpinnedFolderInert(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(showDir, "Red Skelton More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reqs := 0
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, redSkeltonShowTitle, redSkeltonEpisodeFixture(), -1, &reqs)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t) // no tracked library.Series row — folder is unpinned
+
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched on an unpinned folder, got %+v", got)
+	}
+	if reqs != 0 {
+		t.Errorf("expected the pinnedShow precondition to short-circuit before any TMDB call, got %d request(s)", reqs)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_GateCompositionAcceptsZeroTokenOverlap
+// is case E, pinning §3.2/§3.3: the recovered file title shares NO token
+// with the show title, which would make gate.allowsTitle (Check A) reject if
+// it were ever consulted directly on this path instead of composed via
+// gate.allows' pinned-ID short-circuit. A regression that swaps in
+// allowsTitle here would fail this test loudly.
+func TestScanLibrarySeries_EpisodeTitleMatch_GateCompositionAcceptsZeroTokenOverlap(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Deliberately no "Red Skelton" prefix: titleTokens("More Funny Faces")
+	// shares zero tokens with titleTokens("The Red Skelton Show").
+	if err := os.WriteFile(filepath.Join(showDir, "More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, redSkeltonShowTitle, redSkeltonEpisodeFixture(), -1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != redSkeltonShowID {
+		t.Fatalf("expected Pending despite zero title/show token overlap, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_AlreadyTrackedSlotStaysUnmatched is
+// case F (plan §2.5): a title match that would land on a slot ALREADY
+// tracked with a file must Unmatch, never Pending — otherwise Apply would
+// silently orphan the existing tracked file via UpsertEpisodes' unique
+// constraint.
+func TestScanLibrarySeries_EpisodeTitleMatch_AlreadyTrackedSlotStaysUnmatched(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(showDir, "Red Skelton More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, redSkeltonShowTitle, redSkeltonEpisodeFixture(), -1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// A DIFFERENT file (outside root, so the scan itself never touches it)
+	// already occupies the S02E02 slot this file's title would resolve to.
+	existingPath := filepath.Join(t.TempDir(), "already-tracked.mkv")
+	if err := os.WriteFile(existingPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 2, EpisodeNumber: 2, FilePath: existingPath,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched — never Pending — onto an already-tracked slot, got %+v", p)
+	}
+	wantPrefix := fmt.Sprintf("appears to already be in the library as %q S02E02", redSkeltonShowTitle)
+	if !strings.HasPrefix(p.Reason, wantPrefix) {
+		t.Errorf("expected the already-tracked reason (prefix %q), got %q", wantPrefix, p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_FailClosedOnSeasonError is case G
+// (plan §1.2): a SeasonDetails failure on a season OTHER than the one
+// holding the real match still aborts the ENTIRE search — proving the
+// fail-closed rule protects against exactly the case where the unreadable
+// season might have held a second, ambiguity-proving match, not just the
+// case where the failed season happens to hold the answer.
+func TestScanLibrarySeries_EpisodeTitleMatch_FailClosedOnSeasonError(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(showDir, "Red Skelton More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Season 1 404s — NOT the season the real match (S02E02) lives in.
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, redSkeltonShowTitle, redSkeltonEpisodeFixture(), 1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched (fail-closed) when any season fails to load, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_TrackedRowWinsOverTMDBName is case
+// H (plan §0.3): the REGRESSION TEST for the folder-split defect this whole
+// feature was gated on. /tv/10534 reports a DIFFERENT name than the tracked
+// row; the accepted proposal's Title/Year must come from the tracked row,
+// never from TVDetails — a TVDetails-sourced Year would be 0 (TVDetails
+// carries no year at all), which builds a second, differently-named folder
+// at Apply and blanks the tracked row's year on the next Apply too.
+func TestScanLibrarySeries_EpisodeTitleMatch_TrackedRowWinsOverTMDBName(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(showDir, "Red Skelton More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client := fakeTMDBEpisodeTitleServer(t, redSkeltonShowID, "Some Other Show Entirely", redSkeltonEpisodeFixture(), -1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending {
+		t.Fatalf("expected Pending, got %+v", got)
+	}
+	p := got[0]
+	if p.Title != redSkeltonShowTitle {
+		t.Errorf("expected the tracked row's Title %q to win over TMDB's, got %q", redSkeltonShowTitle, p.Title)
+	}
+	if p.Year != 1951 {
+		t.Errorf("expected the tracked row's Year 1951 to win over TMDB's (which has none), got %d", p.Year)
+	}
+}
+
+// TestScanLibrarySeries_LiveTMDBEpisodeTitleMatch is this feature's opt-in
+// live-verification test, mirroring
+// TestScanLibrarySeries_LiveTMDBTitleCollisionGuard above — gated behind
+// testing.Short() and SAKMS_TEST_TMDB_API_KEY, and the one test in this file
+// that proves the feature against genuinely real TMDB data with no
+// transcription step in between (plan §5.3).
+func TestScanLibrarySeries_LiveTMDBEpisodeTitleMatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live TMDB network test in short mode")
+	}
+	apiKey := os.Getenv("SAKMS_TEST_TMDB_API_KEY")
+	if apiKey == "" {
+		t.Skip("SAKMS_TEST_TMDB_API_KEY not set; skipping live TMDB verification (see autopilot-impl-episode-title-matching.md §5.3)")
+	}
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, redSkeltonShowTitle)
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Reused from the constructed fixture above (see redSkeltonEpisodeFixture's
+	// VERIFICATION STATUS) — NOT confirmed against TMDB 10534's real catalog;
+	// substitute a verified title before relying on this test's result. No
+	// SxxExx anywhere in the basename or parent directory either way.
+	if err := os.WriteFile(filepath.Join(showDir, "Red Skelton More Funny Faces.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdb.New(tmdb.Config{APIKey: apiKey}, http.DefaultClient)}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: redSkeltonShowID, Title: redSkeltonShowTitle, Year: 1951, RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected Pending against live TMDB, got status=%v reason=%q", p.Status, p.Reason)
+	}
+	if p.TMDBID != redSkeltonShowID {
+		t.Errorf("expected TMDB id %d against live TMDB search results, got tmdbID=%d", redSkeltonShowID, p.TMDBID)
 	}
 }

@@ -2,6 +2,7 @@ package rename
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,11 +11,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/naming"
+	"github.com/labbersanon/sakms/internal/ollama"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/websearch"
 )
 
 // fakeTMDBSeriesServer stands in for TMDB's /search/tv and
@@ -429,6 +433,283 @@ func TestScanLibrarySeries_NoSignalsUnmatchedEvenIfTMDBReturnsHit(t *testing.T) 
 	}
 	if len(got) != 1 || got[0].Status != proposals.Unmatched {
 		t.Fatalf("expected Unmatched without corroborating signals, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeries_LooseParentDirParseRecoversOpaqueHashBasename is the
+// §3.3 integration case for .omc/plans/autopilot-impl.md's "The Path" fix:
+// an opaque hash basename with zero recognizable content, nested one level
+// under a folder that IS a normal scene-release name
+// ("The.Path.S01E02.2160p.WEB.h265-NiXON") — the real shape from
+// .omc/artifacts/series-parse-failures-20260806.psv. Before the fix this
+// produced Unmatched "could not determine season/episode from %q"
+// immediately, without ever reaching TMDB. With ParseEpisodeNumbersLoose +
+// StripEpisodeMarkerLoose it recovers season/episode AND a usable TMDB
+// search term from the parent directory, landing on Pending.
+func TestScanLibrarySeries_LooseParentDirParseRecoversOpaqueHashBasename(t *testing.T) {
+	root := t.TempDir()
+	epDir := filepath.Join(root, "The Path", "Season 1", "The.Path.S01E02.2160p.WEB.h265-NiXON")
+	if err := os.MkdirAll(epDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	videoPath := filepath.Join(epDir, "2ea4ad06efe20501d944b90f3a291e6f.mp4")
+	if err := os.WriteFile(videoPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/search/tv":
+			if r.URL.Query().Get("query") != "The Path" {
+				w.Write([]byte(`{"results":[]}`))
+				return
+			}
+			w.Write([]byte(`{"results":[{"id":777,"name":"The Path","first_air_date":"2016-03-30"}]}`))
+		case r.URL.Path == "/tv/777/season/1":
+			// runtime (minutes) matches the fake prober's 1800s duration
+			// exactly, so signal corroboration accepts this candidate.
+			w.Write([]byte(`{"episodes":[{"episode_number":2,"name":"Homecoming","air_date":"2016-04-06","runtime":30}]}`))
+		case r.URL.Path == "/tv/777":
+			w.Write([]byte(`{"id":777,"name":"The Path","first_air_date":"2016-03-30","genres":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())}
+	prober := mapProber{videoPath: {Duration: 1800}}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected Pending (hash basename resolved via the parent directory), got %v reason=%q", p.Status, p.Reason)
+	}
+	if p.SeasonNumber != 1 || p.EpisodeNumber != 2 {
+		t.Errorf("expected S01E02 recovered from the parent directory, got S%02dE%02d", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if p.TMDBID != 777 {
+		t.Errorf("expected TMDB id 777 found by searching the parent dir's stripped title, got %d", p.TMDBID)
+	}
+}
+
+// TestScanLibrarySeries_LooseParentDirParseCollisionMarksSecondClaimantUnmatched
+// is the code-reviewer MEDIUM-finding regression test: ResolveEpisodeVideoFiles
+// returns every video file in a directory with no filter, and
+// ParseEpisodeNumbersLoose resolves EVERY file in a marker-named parent
+// directory to the SAME season/episode (there is only one parent dir to fall
+// back to). Two video files sharing a parent dir (a main file plus a
+// sample/featurette, say) would both resolve to an identical
+// (tmdbID, season, episode) and both land on Pending — the second Apply
+// would silently overwrite the first's library.Episode row. The within-batch
+// collision guard in ScanLibrarySeries must catch this: exactly one file
+// (in scan order) reaches Pending, and the other is marked Unmatched with a
+// clear reason instead.
+func TestScanLibrarySeries_LooseParentDirParseCollisionMarksSecondClaimantUnmatched(t *testing.T) {
+	root := t.TempDir()
+	epDir := filepath.Join(root, "The Path", "Season 1", "The.Path.S01E02.2160p.WEB.h265-NiXON")
+	if err := os.MkdirAll(epDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// os.ReadDir (which ResolveEpisodeVideoFiles uses) returns entries in
+	// lexical order, so "aaa..." resolves first and "bbb..." second —
+	// deterministic scan order for this test's assertions.
+	firstPath := filepath.Join(epDir, "aaa2ea4ad06efe20501d944b90f3a291e6f.mp4")
+	secondPath := filepath.Join(epDir, "bbb6c9038580261273f37fee109d678acbf.mp4")
+	if err := os.WriteFile(firstPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(secondPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/search/tv":
+			if r.URL.Query().Get("query") != "The Path" {
+				w.Write([]byte(`{"results":[]}`))
+				return
+			}
+			w.Write([]byte(`{"results":[{"id":777,"name":"The Path","first_air_date":"2016-03-30"}]}`))
+		case r.URL.Path == "/tv/777/season/1":
+			w.Write([]byte(`{"episodes":[{"episode_number":2,"name":"Homecoming","air_date":"2016-04-06","runtime":30}]}`))
+		case r.URL.Path == "/tv/777":
+			w.Write([]byte(`{"id":777,"name":"The Path","first_air_date":"2016-03-30","genres":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())}
+	// Both files probe to the same duration, so both independently pass
+	// corroboration and both resolve to the identical S01E02/tmdb 777 —
+	// exactly the collision this guard exists to catch.
+	prober := mapProber{firstPath: {Duration: 1800}, secondPath: {Duration: 1800}}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 proposals (one per file), got %d: %+v", len(got), got)
+	}
+
+	var pendingCount, unmatchedCount int
+	for _, p := range got {
+		switch p.Status {
+		case proposals.Pending:
+			pendingCount++
+			if p.SeasonNumber != 1 || p.EpisodeNumber != 2 || p.TMDBID != 777 {
+				t.Errorf("unexpected Pending proposal: %+v", p)
+			}
+		case proposals.Unmatched:
+			unmatchedCount++
+			if !strings.Contains(p.Reason, "already claims") {
+				t.Errorf("expected a within-batch collision reason, got %q", p.Reason)
+			}
+		default:
+			t.Errorf("unexpected status %v on proposal: %+v", p.Status, p)
+		}
+	}
+	if pendingCount != 1 || unmatchedCount != 1 {
+		t.Fatalf("expected exactly 1 Pending + 1 Unmatched (collision), got %d Pending, %d Unmatched: %+v", pendingCount, unmatchedCount, got)
+	}
+	// The first-resolved file (scan order) must be the one that wins Pending.
+	if got[0].SourcePath != firstPath || got[0].Status != proposals.Pending {
+		t.Errorf("expected the first-scanned file (%q) to win Pending, got %+v", firstPath, got[0])
+	}
+	if got[1].SourcePath != secondPath || got[1].Status != proposals.Unmatched {
+		t.Errorf("expected the second-scanned file (%q) to be marked Unmatched, got %+v", secondPath, got[1])
+	}
+}
+
+// TestScanLibrarySeries_LooseParentDirParseStaysUnmatchedWhenCorroborationFails
+// is the code-reviewer HIGH-finding regression test: once
+// ParseEpisodeNumbersLoose lets an opaque hash basename past the parse gate,
+// execution can reach identify.GuessTitle and bravePhase2Series. Unlike
+// tryWebAuthoritySeries (gated on IsJunkRenameFilename/HasTitleTokenOverlap),
+// bravePhase2Series has NO title-overlap guard — it accepts the first TMDB
+// candidate whose season exists. Before this fix, the raw hash `name` was
+// what got passed as the identity seed to both, which risked "AI hallucinates
+// a title from 32 hex chars → bravePhase2Series accepts a plausible-looking
+// but wrong match" landing on a confident Pending instead of correctly
+// staying Unmatched — a direct hit on precision-over-recall.
+//
+// This proves two things: (1) containment — GuessTitle's AI prompt and
+// bravePhase2Series' web-grounding query both carry the parent-dir-recovered
+// title ("The Path"/"The.Path"), never the raw hash; (2) the end state is
+// Unmatched when nothing genuinely corroborates, not a false-confidence
+// Pending built from a hash-seeded guess.
+func TestScanLibrarySeries_LooseParentDirParseStaysUnmatchedWhenCorroborationFails(t *testing.T) {
+	root := t.TempDir()
+	epDir := filepath.Join(root, "The Path", "Season 1", "The.Path.S01E02.2160p.WEB.h265-NiXON")
+	if err := os.MkdirAll(epDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hexHash := "2ea4ad06efe20501d944b90f3a291e6f"
+	videoPath := filepath.Join(epDir, hexHash+".mp4")
+	if err := os.WriteFile(videoPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var aiPrompts []string
+	var braveQueries []string
+
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		prompt := ""
+		if len(body.Messages) > 0 {
+			prompt = body.Messages[len(body.Messages)-1].Content
+		}
+		aiPrompts = append(aiPrompts, prompt)
+		// Always decline — isolates the test from any specific "confidently
+		// guessed" outcome and forces bravePhase2Series's entryName fallback
+		// (the second, more subtle half of the fix) to actually fire.
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": `{"title":null}`}})
+	}))
+	t.Cleanup(aiSrv.Close)
+
+	braveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		braveQueries = append(braveQueries, r.URL.Query().Get("q"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"web": map[string]any{"results": []map[string]any{}}})
+	}))
+	t.Cleanup(braveSrv.Close)
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// No TMDB match for anything — whatever gets queried, nothing
+		// corroborates, so the file must end up Unmatched.
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	t.Cleanup(tmdbSrv.Close)
+
+	sess := &mode.Session{
+		Mode:         mode.Series,
+		TMDB:         tmdb.New(tmdb.Config{BaseURL: tmdbSrv.URL, APIKey: "test-key"}, tmdbSrv.Client()),
+		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
+		WebSearch:    websearch.Brave{Inner: bravesearch.New(braveSrv.URL, "k", braveSrv.Client())},
+	}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched (nothing genuinely corroborates), got %v title=%q tmdb=%d reason=%q", p.Status, p.Title, p.TMDBID, p.Reason)
+	}
+
+	if len(aiPrompts) == 0 {
+		t.Fatal("expected at least one GuessTitle call")
+	}
+	for _, prompt := range aiPrompts {
+		if strings.Contains(prompt, hexHash) {
+			t.Errorf("GuessTitle's AI prompt leaked the raw hash basename instead of the loose parent-dir title: %q", prompt)
+		}
+	}
+	sawLooseTitle := false
+	for _, prompt := range aiPrompts {
+		if strings.Contains(prompt, "The Path") || strings.Contains(prompt, "The.Path") {
+			sawLooseTitle = true
+		}
+	}
+	if !sawLooseTitle {
+		t.Errorf("expected at least one GuessTitle prompt to carry the parent-dir-recovered title, got prompts: %v", aiPrompts)
+	}
+
+	// bravePhase2Series runs before tryWebAuthoritySeries and issues exactly
+	// one query, so braveQueries[0] is its query — the one this fix touches.
+	// tryWebAuthoritySeries (braveQueries[1:], if any) deliberately still
+	// seeds from the raw name — that call site was NOT part of this fix
+	// (it has its own IsJunkRenameFilename/HasTitleTokenOverlap guard) and
+	// is out of scope here.
+	if len(braveQueries) == 0 {
+		t.Fatal("expected at least one bravePhase2Series web-grounding query")
+	}
+	if strings.Contains(braveQueries[0], hexHash) {
+		t.Errorf("bravePhase2Series's web-grounding query leaked the raw hash basename: %q", braveQueries[0])
+	}
+	if !strings.Contains(braveQueries[0], "The") {
+		t.Errorf("expected bravePhase2Series's query to carry the parent-dir-recovered title, got %q", braveQueries[0])
 	}
 }
 

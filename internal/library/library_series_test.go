@@ -270,6 +270,10 @@ func TestParseEpisodeFilename(t *testing.T) {
 		{"Show Name - 3x05 - Episode Title.mkv", 3, 5, true},
 		{"s1e2.mkv", 1, 2, true},
 		{"Show Name Complete Season.mkv", 0, 0, false},
+		// Real diagnosis data: single-episode projection of "The Path"'s
+		// parent-directory shape (the strict single-episode parser already
+		// handles this fine on its own — the hash basename inside it does not).
+		{"The.Path.S01E02.2160p.WEB.h265-NiXON", 1, 2, true},
 	}
 	for _, c := range cases {
 		season, episode, ok := ParseEpisodeFilename(c.name)
@@ -301,6 +305,18 @@ func TestParseEpisodeNumbers(t *testing.T) {
 		{"Show Name - 01x01-02.mkv", 1, []int{1, 2}, true},
 		// Pathological range span is rejected (falls back to single episode).
 		{"Show.Name.S01E01-E99.mkv", 1, []int{1}, true},
+		// Real diagnosis data (.omc/artifacts/series-parse-failures-20260806.psv):
+		// "The Path"'s parent-directory name is a complete scene-release name
+		// the strict parser already handles fine on its own — only the
+		// opaque hash basename inside it fails (see negative cases below and
+		// TestParseEpisodeNumbersLoose).
+		{"The.Path.S01E02.2160p.WEB.h265-NiXON", 1, []int{2}, true},
+		{"the.path.s03e10.2160p.web.h265-nixon-3b6539", 3, []int{10}, true},
+		// Negative — real filenames that must NOT parse (precision over recall).
+		{"2ea4ad06efe20501d944b90f3a291e6f.mp4", 0, nil, false},                          // "The Path" opaque hash basename
+		{"Laurel & Hardy - Below Zero(Colour)-DVDRip.XviD-DIE-DVD11.mp4", 0, nil, false}, // bare title, no marker at all
+		{"RED SKELTON e1524.mp4", 0, nil, false},                                         // ambiguous digit-code, deliberately not parsed
+		{"Movie Name (2020).mkv", 0, nil, false},                                         // movie name, bare year only
 	}
 	for _, c := range cases {
 		season, episodes, ok := ParseEpisodeNumbers(c.name)
@@ -308,6 +324,72 @@ func TestParseEpisodeNumbers(t *testing.T) {
 			t.Errorf("ParseEpisodeNumbers(%q) = (%d, %v, %v), want (%d, %v, %v)",
 				c.name, season, episodes, ok, c.wantSeason, c.wantEps, c.wantOK)
 		}
+	}
+}
+
+// TestParseEpisodeNumbersLoose covers the rename-path-only fallback (§2.2 of
+// .omc/plans/autopilot-impl.md): "The Path"'s real shape is an opaque hash
+// basename inside a parent directory that is itself a complete scene-release
+// name.
+func TestParseEpisodeNumbersLoose(t *testing.T) {
+	cases := []struct {
+		name       string
+		basename   string
+		parentDir  string
+		wantSeason int
+		wantEps    []int
+		wantOK     bool
+	}{
+		{
+			name:       "basename parses on its own — parent dir never consulted",
+			basename:   "Show.Name.S03E05.1080p.mkv",
+			parentDir:  "/media/Series/Show Name/Season 3",
+			wantSeason: 3, wantEps: []int{5}, wantOK: true,
+		},
+		{
+			name:       "real The Path shape — hash basename, parent dir carries the marker",
+			basename:   "2ea4ad06efe20501d944b90f3a291e6f.mp4",
+			parentDir:  "/media/Media Library/Series/The Path/Season 1/The.Path.S01E02.2160p.WEB.h265-NiXON",
+			wantSeason: 1, wantEps: []int{2}, wantOK: true,
+		},
+		{
+			name:       "real The Path shape, lowercase + trailing hash suffix",
+			basename:   "6f98fdf03dee126d9fbb2bd08a660104.mp4",
+			parentDir:  "/media/Media Library/Series/The Path/Season 3/the.path.s03e10.2160p.web.h265-nixon-3b6539",
+			wantSeason: 3, wantEps: []int{10}, wantOK: true,
+		},
+		{
+			name:       "neither basename nor parent dir has a marker — stays unparsed",
+			basename:   "Laurel & Hardy - Below Zero(Colour)-DVDRip.XviD-DIE-DVD11.mp4",
+			parentDir:  "/media/Media Library/Series/Laurel and Hardy",
+			wantSeason: 0, wantEps: nil, wantOK: false,
+		},
+		{
+			// Only the IMMEDIATE parent directory is consulted, never the
+			// grandparent or any ancestor beyond it — the grandparent here
+			// carries the marker but the immediate parent ("subs") does not,
+			// so this must stay unparsed. Distinguishes "checks one level"
+			// from "walks to root", which the case above alone does not.
+			name:       "grandparent carries the marker, immediate parent does not — must NOT walk up",
+			basename:   "2ea4ad06efe20501d944b90f3a291e6f.mp4",
+			parentDir:  "/media/Media Library/Series/The Path/Season 1/The.Path.S01E02.2160p.WEB.h265-NiXON/subs",
+			wantSeason: 0, wantEps: nil, wantOK: false,
+		},
+	}
+	for _, c := range cases {
+		season, episodes, ok := ParseEpisodeNumbersLoose(c.basename, c.parentDir)
+		if ok != c.wantOK || season != c.wantSeason || !intSlicesEqual(episodes, c.wantEps) {
+			t.Errorf("%s: ParseEpisodeNumbersLoose(%q, %q) = (%d, %v, %v), want (%d, %v, %v)",
+				c.name, c.basename, c.parentDir, season, episodes, ok, c.wantSeason, c.wantEps, c.wantOK)
+		}
+	}
+
+	// Containment proof: ParseEpisodeNumbers itself must still return ok=false
+	// for the hash basename that only the loose wrapper can resolve — proving
+	// the strict parser (and therefore its other three non-rename call sites)
+	// is completely untouched by this fallback's existence.
+	if _, _, ok := ParseEpisodeNumbers("2ea4ad06efe20501d944b90f3a291e6f.mp4"); ok {
+		t.Error("ParseEpisodeNumbers must still return ok=false for the opaque hash basename — the loose fallback must not have widened the strict parser")
 	}
 }
 
@@ -373,6 +455,72 @@ func TestStripEpisodeMarker(t *testing.T) {
 	got = StripEpisodeMarker("No Marker Here")
 	if got != "No Marker Here" {
 		t.Errorf("expected the name unchanged when no marker is present, got %q", got)
+	}
+	// Real diagnosis data: "The Path"'s parent-directory shape strips down to
+	// the show title just like any other scene-release name — this is what
+	// §2.3's lockstep requirement guards (StripEpisodeMarkerLoose falling
+	// back to this same strict function on the parent dir).
+	got = StripEpisodeMarker("The.Path.S01E02.2160p.WEB.h265-NiXON")
+	if got != "The.Path" {
+		t.Errorf("expected %q, got %q", "The.Path", got)
+	}
+}
+
+// TestStripEpisodeMarkerLoose covers the §2.3 lockstep requirement: the
+// search-term extraction at internal/rename/rename.go:818 must fall back to
+// the parent directory the same way ParseEpisodeNumbersLoose does, or a
+// hash-basename file that now parses season/episode correctly still can't
+// find its TMDB series — StripEpisodeMarker(hash) is a no-op, so the search
+// term would be the opaque hash itself.
+func TestStripEpisodeMarkerLoose(t *testing.T) {
+	cases := []struct {
+		name      string
+		basename  string
+		parentDir string
+		want      string
+	}{
+		{
+			name:      "basename has the marker — parent dir never consulted",
+			basename:  "Show.Name.S03E05.1080p.mkv",
+			parentDir: "/media/Series/Show Name/Season 3",
+			want:      "Show.Name",
+		},
+		{
+			name:      "real The Path shape — hash basename has nothing to strip, falls back to parent dir",
+			basename:  "2ea4ad06efe20501d944b90f3a291e6f.mp4",
+			parentDir: "/media/Media Library/Series/The Path/Season 1/The.Path.S01E02.2160p.WEB.h265-NiXON",
+			want:      "The.Path",
+		},
+		{
+			name:      "neither has a marker — basename returned unchanged",
+			basename:  "No Marker Here",
+			parentDir: "/media/Series/Also No Marker",
+			want:      "No Marker Here",
+		},
+		{
+			// Same "checks one level only" property as
+			// TestParseEpisodeNumbersLoose's grandparent case: the immediate
+			// parent ("subs") has nothing to strip even though its own
+			// parent carries the marker, so the basename (also unstrippable)
+			// is returned unchanged.
+			name:      "grandparent carries the marker, immediate parent does not — must NOT walk up",
+			basename:  "2ea4ad06efe20501d944b90f3a291e6f.mp4",
+			parentDir: "/media/Media Library/Series/The Path/Season 1/The.Path.S01E02.2160p.WEB.h265-NiXON/subs",
+			want:      "2ea4ad06efe20501d944b90f3a291e6f.mp4",
+		},
+	}
+	for _, c := range cases {
+		got := StripEpisodeMarkerLoose(c.basename, c.parentDir)
+		if got != c.want {
+			t.Errorf("%s: StripEpisodeMarkerLoose(%q, %q) = %q, want %q", c.name, c.basename, c.parentDir, got, c.want)
+		}
+	}
+
+	// Containment proof: StripEpisodeMarker itself must still be a no-op on
+	// the opaque hash basename — proving the strict function is untouched.
+	hash := "2ea4ad06efe20501d944b90f3a291e6f.mp4"
+	if got := StripEpisodeMarker(hash); got != hash {
+		t.Errorf("StripEpisodeMarker must still no-op on the opaque hash basename, got %q", got)
 	}
 }
 

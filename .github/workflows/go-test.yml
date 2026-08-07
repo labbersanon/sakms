@@ -33,6 +33,26 @@ jobs:
       CI: "true"
     steps:
       - uses: actions/checkout@v4
+      # Claude 2026-08-07: install glfw's Linux build deps (cmd/sakms-node-config)
+      # Reason: go-gl/glfw (indirect dep, packaging/rpm/sakms-node.spec's
+      #   BuildRequires list is the authoritative source) needs X11/Wayland
+      #   dev headers to compile via CGO — go test ./... builds every
+      #   package including this GUI tool, so without these the whole run
+      #   fails at compile time regardless of any Go change, headless
+      #   runner or not (this is a build-time need, not a display need).
+      # Troubleshooting: "wayland-client-core.h: No such file or directory"
+      #   or similar X11/GL header errors mean this step didn't run or a
+      #   package name drifted from Ubuntu's current apt repos.
+      # Review if: packaging/rpm/sakms-node.spec's BuildRequires list
+      #   changes — keep this apt-get list in lockstep (Fedora pkg name ->
+      #   Debian/Ubuntu equivalent).
+      - name: Install glfw build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libx11-dev libxcursor-dev libxrandr-dev \
+            libxinerama-dev libxi-dev libxxf86vm-dev libgl1-mesa-dev \
+            libxkbcommon-dev libwayland-dev wayland-protocols
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

@@ -37,5 +37,26 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Claude 2026-08-07: build the frontend before go test
+      # Reason: internal/web/web.go's //go:embed static fails cleanly on a
+      #   clean checkout (static/ is gitignored, only pnpm build populates
+      #   it — see that file's own doc comment) — this workflow never had
+      #   the build step the Dockerfile's frontend stage does, so cmd/sakms
+      #   and internal/web always failed here regardless of any Go change.
+      # Troubleshooting: "pattern static: no matching files found" in the
+      #   go test log means this step didn't run or its output path drifted.
+      # Review if: Dockerfile's frontend stage (Node/pnpm version, build
+      #   command, or output path) changes — keep this step in lockstep.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@9.15.9 --activate
+      - name: Install frontend deps
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Build frontend (populates internal/web/static)
+        working-directory: frontend
+        run: pnpm build
       - name: go test
         run: go test -count=1 -timeout 45m -p 4 ./...

@@ -31,6 +31,7 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/searchterm"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tvdb"
 )
 
 // yearFromReleaseDate parses the release year out of TMDB's normalized
@@ -677,12 +678,28 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	//   seriesByID[id] actually resolves before blaming pinnedShow itself.
 	// Review if: library_series gains a real per-show folder-path column.
 	seriesByID := make(map[int]library.Series, len(allSeries))
+	// Claude 2026-08-07: seriesByTVDBID — TVDB id -> tracked row, for the
+	//   anthology pass's established-pin shortcut (autopilot-impl.md §3.5)
+	// Reason: after the first Apply an anthology show's files live under a
+	//   folder named from TheTVDB ("Laurel & Hardy" -> key "laurelhardy")
+	//   while un-applied stragglers are still under the original on-disk
+	//   folder ("Laurel and Hardy" -> key "laurelandhardy"). Those keys
+	//   DIFFER, so a folder-keyed lookup misses exactly when it is needed
+	//   most; the TVDB series id is stable across both.
+	// Troubleshooting: a rescan of an already-applied anthology show needs 3
+	//   fresh corroborating files again instead of 1 — confirm this map is
+	//   non-empty, i.e. that ApplyLibrarySeries actually persisted TVDBID.
+	// Review if: library_series gains a real per-show folder-path column.
+	seriesByTVDBID := make(map[int]library.Series, len(allSeries))
 	for _, series := range allSeries {
 		episodes, err := libStore.ListEpisodes(ctx, series.ID)
 		if err != nil {
 			return nil, fmt.Errorf("loading episodes for %q: %w", series.Title, err)
 		}
 		seriesByID[series.TMDBID] = series
+		if series.TVDBID > 0 {
+			seriesByTVDBID[series.TVDBID] = series
+		}
 		// Title feed: a tracked show's own title claims its normalized key,
 		// even with zero tracked episode files on disk (§3.1).
 		pinFolderID(folderIDs, showFolderTitleKey(series.Title), series.TMDBID)
@@ -704,6 +721,11 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	}
 
 	var out []proposals.Proposal
+	// anthologyIdx holds indices into out for rows that came from
+	// proposeOneEpisodeLibrary's season/episode PARSE-FAILURE branch, supplied
+	// structurally by that function's second return value — never re-derived
+	// by matching on Reason (autopilot-impl.md §3.3).
+	var anthologyIdx []int
 	for _, root := range roots {
 		entries, err := library.ScanRootFolder(root, known)
 		if err != nil {
@@ -730,10 +752,39 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 						}
 					}
 				}
-				out = append(out, proposeOneEpisodeLibrary(ctx, sess, tracked, pin, rootFolderPath, root, videoPath, cfg, prober))
+				p, parseFailed := proposeOneEpisodeLibrary(ctx, sess, tracked, pin, rootFolderPath, root, videoPath, cfg, prober)
+				out = append(out, p)
+				if parseFailed {
+					anthologyIdx = append(anthologyIdx, len(out)-1)
+				}
 			}
 		}
 	}
+
+	// Claude 2026-08-07: TVDB anthology pass (autopilot-impl.md §3)
+	// Reason: a folder of theatrical shorts that TheTVDB catalogs as a
+	//   chronological TV series (verified: "Laurel & Hardy") has NO tracked
+	//   library_series row, so folderIDs pins nothing and the TMDB-sourced
+	//   tryEpisodeTitleMatchSeries declines every file by precondition. This
+	//   pass resolves the SHOW from multi-file self-corroboration — 3+ distinct
+	//   files each matching a distinct episode of one candidate's TVDB catalog
+	//   — and only then places the individual files.
+	// Troubleshooting: files stay unmatched — check, in order: sess.TVDB
+	//   non-nil; showFolderKey(...) non-empty; showFolderName(...) returning
+	//   the SHOW folder's name and not a nested subdirectory's (§2.4 — they
+	//   share one traversal, so a mismatch means the refactor was undone); the
+	//   key ABSENT from folderIDs; the candidate clearing its own threshold in
+	//   step 4 (3 for a new pin, 1 for an established one — NOT a group-size
+	//   check in step 3, see §3.4); SeriesEpisodes returning a non-empty
+	//   catalog.
+	// ORDERING IS LOAD-BEARING: this MUST run before the `seen` guard below, so
+	//   the Pending rows it creates are covered by the within-batch
+	//   episodeKey-collision check for free (§3.2). Backwards, two files that
+	//   resolved to the same slot would both stay Pending and the later Apply
+	//   would silently overwrite the earlier one's library_episodes row.
+	// Review if: library_series gains a real per-show folder-path column, which
+	//   would replace showFolderKey's normalized-name heuristic outright.
+	tvdbAnthologyPass(ctx, sess, tracked, seriesByTVDBID, folderIDs, roots, rootFolderPath, anthologyIdx, out)
 
 	// Claude 2026-08-06: within-batch episodeKey collision guard
 	// Reason: code-reviewer MEDIUM finding — ParseEpisodeNumbersLoose lets
@@ -767,10 +818,28 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	return out, nil
 }
 
+// Claude 2026-08-07: second return value — "the season/episode PARSE failed"
+// Reason: autopilot-impl.md §3.3 — structural eligibility for the TVDB
+//
+//	anthology post-pass. The caller must NEVER re-derive this by matching on
+//	p.Reason: CLAUDE.md records a HIGH-severity bug in
+//	series-monitoring-autograb where origin was inferred from row shape plus a
+//	reason string, the inference misfired, and it destroyed an operator's own
+//	grab — and Wade's 2026-08-02 decision to spend a real schema column
+//	(grabs.hold_until) rather than repeat it. Here the information is already
+//	available structurally at the call site, so it costs nothing.
+//
+// Troubleshooting: the anthology pass never sees a file it obviously should —
+//
+//	confirm this returns true for it (only the ParseEpisodeNumbersLoose !ok
+//	branch's own Unmatched does; every other exit, including the TMDB
+//	episode-title sibling's, returns false).
+//
+// Review if: a second parse-failure exit is ever added to this function.
 func proposeOneEpisodeLibrary(
 	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool, pin pinnedShow,
 	generalRoot, foundRoot, videoPath string, cfg MatchConfig, prober Prober,
-) proposals.Proposal {
+) (proposals.Proposal, bool) {
 	cfg = cfg.Normalize()
 	name := filepath.Base(videoPath)
 	p := proposals.Proposal{
@@ -801,11 +870,11 @@ func proposeOneEpisodeLibrary(
 		// Review if: ParseEpisodeNumbersLoose learns the digit-code shape (e1524),
 		//   which would move the Red Skelton population out of this branch.
 		if got := tryEpisodeTitleMatchSeries(ctx, sess, tracked, pin, generalRoot, foundRoot, name, p); got != nil {
-			return *got
+			return *got, false
 		}
 		p.Status = proposals.Unmatched
 		p.Reason = fmt.Sprintf("could not determine season/episode from %q", name)
-		return p
+		return p, true
 	}
 	episode := episodes[0]
 	extraEpisodes := episodes[1:]
@@ -814,7 +883,7 @@ func proposeOneEpisodeLibrary(
 		if tracked[episodeKey{tmdbID: hint.TMDBID, season: season, episode: episode}] {
 			p.Status = proposals.Unmatched
 			p.Reason = fmt.Sprintf(".nfo TMDB id %d appears to already be in the library as S%02dE%02d — leaving in place for manual review", hint.TMDBID, season, episode)
-			return p
+			return p, false
 		}
 		// Claude 2026-08-06: NFO season-confirm miss falls through to TMDB/TVDB/web
 		// Reason: wrong or incomplete TMDB seasons in sidecars (e.g. Monster S02)
@@ -826,7 +895,7 @@ func proposeOneEpisodeLibrary(
 			if err != nil {
 				p.Status = proposals.Unmatched
 				p.Reason = fmt.Sprintf(".nfo TMDB id %d: lookup failed: %v", hint.TMDBID, err)
-				return p
+				return p, false
 			}
 			targetRoot := generalRoot
 			switch {
@@ -851,7 +920,7 @@ func proposeOneEpisodeLibrary(
 			if cast, err := sess.TMDB.TVAggregateCredits(ctx, hint.TMDBID); err == nil {
 				p.Cast = cast
 			}
-			return p
+			return p, false
 		}
 		// Season missing on the NFO's TMDB id — continue into filename search /
 		// TVDB / web-authority instead of hard-unmatching.
@@ -951,18 +1020,18 @@ func proposeOneEpisodeLibrary(
 			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g != "" {
 				guessed = g
 				if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, searchterm.SearchQueries(guessed)); got != nil {
-					return *got
+					return *got, false
 				}
 			}
 		}
 		if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, gate, season, episode, guessed, looseTitle); got != nil {
-			return *got
+			return *got, false
 		}
 		if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
-			return *got
+			return *got, false
 		}
 		if gateRejectedReason() {
-			return p
+			return p, false
 		}
 		p.Status = proposals.Unmatched
 		if IsJunkRenameFilename(name) {
@@ -970,7 +1039,7 @@ func proposeOneEpisodeLibrary(
 		} else {
 			p.Reason = "no year, actor, or duration available to corroborate a match — needs manual review"
 		}
-		return p
+		return p, false
 	}
 
 	// Claude 2026-08-06: StripEpisodeMarkerLoose lockstep with ParseEpisodeNumbersLoose above
@@ -1000,7 +1069,7 @@ func proposeOneEpisodeLibrary(
 		if err != nil {
 			p.Status = proposals.Unmatched
 			p.Reason = fmt.Sprintf("TMDB search failed for %q: %v", term, err)
-			return p
+			return p, false
 		}
 		if len(items) == 0 {
 			continue
@@ -1030,7 +1099,7 @@ func proposeOneEpisodeLibrary(
 				continue
 			}
 			if rank == CorroborationStrong {
-				return acceptSeries(match, candYear)
+				return acceptSeries(match, candYear), false
 			}
 			if weak == nil {
 				weak = &weakSeries{match: match, candYear: candYear}
@@ -1038,11 +1107,11 @@ func proposeOneEpisodeLibrary(
 		}
 	}
 	if weak != nil {
-		return acceptSeries(weak.match, weak.candYear)
+		return acceptSeries(weak.match, weak.candYear), false
 	}
 
 	if fb := tvdbFallbackSeries(ctx, sess, lastTerm, tracked, gate, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
-		return *fb
+		return *fb, false
 	}
 
 	// Claude 2026-08-05: Series GuessTitle + Brave Phase 2 (parity with Movies)
@@ -1058,15 +1127,15 @@ func proposeOneEpisodeLibrary(
 		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g != "" {
 			guessed = g
 			if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, searchterm.SearchQueries(guessed)); got != nil {
-				return *got
+				return *got, false
 			}
 		}
 	}
 	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, gate, season, episode, guessed, looseTitle); got != nil {
-		return *got
+		return *got, false
 	}
 	if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
-		return *got
+		return *got, false
 	}
 
 	// Claude 2026-08-06: distinct Unmatched reason when the gate rejected candidates
@@ -1077,11 +1146,11 @@ func proposeOneEpisodeLibrary(
 	//   clue why — check p.Reason for this prefix before assuming a catalog gap.
 	// Review if: library_series gains a real per-show folder-path column.
 	if gateRejectedReason() {
-		return p
+		return p, false
 	}
 
 	unmatchedAfterWebAuthority(&p, name, lastLimit, lastTerm)
-	return p
+	return p, false
 }
 
 func trySeriesQueries(
@@ -1443,7 +1512,9 @@ func RelocateEpisode(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbI
 //
 // Claude 2026-08-06: episodeTitle threaded through for Jellyfin/Legacy names
 // Reason: Apply was dropping titles → "Show S01E01.ext" only; operators need
-//   identifiable Jellyfin names ("Show S01E01 Pilot.ext").
+//
+//	identifiable Jellyfin names ("Show S01E01 Pilot.ext").
+//
 // Troubleshooting: applied filenames unreadable → episodeTitle was always "".
 // Review if: proposals gain a persisted episode_title from Scan.
 func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbID, seasonNumber int, episodeNumbers []int, episodeTitle string, preset naming.Preset) (string, error) {
@@ -1497,11 +1568,17 @@ func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, 
 // so empty library episode metadata can be filled). A TMDB failure is soft —
 // Apply still relocates with whatever title library already has (often "").
 //
+// tvdbClient is the same deal for the anthology path: when non-nil, and the
+// proposal carries a real TheTVDB series id with a synthetic (non-positive)
+// TMDB id, Apply fetches the show's episode catalog so the same two
+// consumers — the destination file name and library_episodes.title — can be
+// filled from TheTVDB instead. Also soft; see the branch below.
+//
 // Claude 2026-08-06: resolve episode title before RelocateEpisodeRange
 // Reason: Jellyfin names need "Show S01E01 Pilot.ext"; title was never passed.
 // Troubleshooting: Apply batch left bare SxxExx names (unidentifiable).
-// Review if: Scan persists episode_title on proposals and Apply prefers that.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient *tmdb.Client, p proposals.Proposal, preset naming.Preset, tier string) (episodeID int64, changes []mode.PathChange, err error) {
+// Review if: Proposal gains a real EpisodeTitle column, which would make both the TMDB and TheTVDB fetches below redundant.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient *tmdb.Client, tvdbClient *tvdb.Client, p proposals.Proposal, preset naming.Preset, tier string) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -1510,8 +1587,26 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 
 	// Series row first so GetEpisode can resolve titles for the destination
 	// name before any os.Rename — UpsertSeries is idempotent.
+	// Claude 2026-08-07: thread TVDBID into the series row
+	// Reason: the anthology pass' established-pin shortcut keys on
+	//   library_series.tvdb_id, so a newly-added short only stops being
+	//   Unmatched forever if THIS write persists it. UpsertSeries does
+	//   `tvdb_id = excluded.tvdb_id` unconditionally, which is safe here:
+	//   every ordinary rename proposal carries TVDBID = 0 (matching every
+	//   existing row), and all of one show's anthology proposals carry the
+	//   same id, so repeated Applies are idempotent.
+	// Troubleshooting: a pinned anthology show stops matching new files after
+	//   a Series Dedup Apply — internal/dedup/dedup.go:412 builds its own
+	//   library.Series literal WITHOUT TVDBID and blanks this column back to
+	//   0 with no error and no log line (internal/api/import.go:239 has the
+	//   same shape but is effectively unreachable). That is a KNOWN,
+	//   ACCEPTED limitation, deliberately left out of this feature's scope:
+	//   it is a recall regression only — no misplacement, no corruption — and
+	//   needs an untracked Dedup winner on an anthology show specifically.
+	//   See .omc/plans/autopilot-impl.md §6.3a and §9.
+	// Review if: internal/dedup grows TVDBID threading, retiring the hazard.
 	series, err := libStore.UpsertSeries(ctx, library.Series{
-		TMDBID: p.TMDBID, Title: p.Title, Year: p.Year, RootFolderPath: p.RootFolderPath,
+		TMDBID: p.TMDBID, TVDBID: p.TVDBID, Title: p.Title, Year: p.Year, RootFolderPath: p.RootFolderPath,
 		Genres: p.Genres, Cast: p.Cast,
 	})
 	if err != nil {
@@ -1523,6 +1618,45 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 		if eps, serr := tmdbClient.SeasonDetails(ctx, p.TMDBID, p.SeasonNumber); serr == nil {
 			for _, ep := range eps {
 				tmdbByEp[ep.EpisodeNumber] = ep
+			}
+		}
+	}
+
+	// TheTVDB counterpart to tmdbByEp above, for anthology matches. Gated on
+	// the exact complement of the TMDB branch's precondition: p.TMDBID <= 0
+	// means a synthetic negative id from the anthology pass, and p.TVDBID > 0
+	// means that pass recorded a real TheTVDB series id. Both together are
+	// the only shape this fires for — an ordinary Series proposal (TMDBID > 0,
+	// TVDBID == 0) never reaches it, so no existing behaviour changes.
+	//
+	// FAIL-SOFT, deliberately — and this is the OPPOSITE of SeriesEpisodes'
+	// own fail-closed contract, which is why it is spelled out rather than
+	// left to judgement. Fail-closed is right at SCAN time, where a partial
+	// catalog would produce a confidently wrong (season, episode). Here the
+	// season and episode are ALREADY DECIDED and persisted on the proposal;
+	// the catalog is consulted only for a display title. So the error is
+	// swallowed exactly as the TMDB branch swallows serr, and the title falls
+	// through to "" — which naming.EpisodeFileName already handles by
+	// omitting the title segment entirely, i.e. today's behaviour.
+	//
+	// The fetch sits HERE, outside resolveEpisodeMeta, on purpose: the
+	// closure runs once per episode number, and its second call site is
+	// AFTER RelocateEpisodeRange. Fetching inside it would issue one request
+	// per number and move part of the network work past the file relocation
+	// the fail-soft argument above depends on happening last.
+	//
+	// The season filter is load-bearing: SeriesEpisodes returns the WHOLE
+	// show's catalog across every season in one call, so indexing by Number
+	// alone would collide episodes of the same number in different seasons.
+	// tmdbByEp needs no equivalent because SeasonDetails is already
+	// per-season.
+	tvdbByEp := map[int]tvdb.Episode{}
+	if tvdbClient != nil && p.TVDBID > 0 && p.TMDBID <= 0 {
+		if catalog, terr := tvdbClient.SeriesEpisodes(ctx, p.TVDBID, tvdb.SeasonTypeOfficial); terr == nil {
+			for _, ep := range catalog {
+				if ep.SeasonNumber == p.SeasonNumber {
+					tvdbByEp[ep.Number] = ep
+				}
 			}
 		}
 	}
@@ -1539,6 +1673,19 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 			}
 			if airDate == "" {
 				airDate = se.AirDate
+			}
+		}
+		// Same "only if still empty" shape as the TMDB fill above, and for
+		// the same reason: a library title always wins over a freshly-fetched
+		// one (see the never-blank note on the toUpsert loop below). tvdbByEp
+		// is empty unless the anthology gate fired, so this is inert on every
+		// ordinary Series Apply.
+		if ep, ok := tvdbByEp[episodeNumber]; ok {
+			if title == "" {
+				title = ep.Name
+			}
+			if airDate == "" {
+				airDate = ep.Aired
 			}
 		}
 		return title, airDate, nil

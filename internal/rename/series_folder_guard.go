@@ -18,10 +18,7 @@
 package rename
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -153,32 +150,13 @@ func showFolderTitleKey(title string) string {
 // with no show-folder segment at all (the path feed — fires when a tracked
 // episode's file physically lives under a folder with this name, §3.1).
 //
-// Roots are matched longest-first so a nested root can never be shadowed by
-// a shorter one, and a bare strings.HasPrefix is deliberately avoided: root
-// "/media/Series" must not match the unrelated sibling path
-// "/media/Series2/Show/ep.mkv". filepath.Rel plus rejecting any ".."-prefixed
-// result is what enforces the separator boundary correctly.
+// The traversal itself lives in showFolderSegment
+// (series_tvdb_episode_match.go), which documents the longest-first root
+// sort and the filepath.Rel boundary check. Sharing one implementation is
+// the whole point: the anthology pass needs that same segment RAW as a
+// query seed, and a second copy would drift.
 func showFolderKey(path string, roots []string) string {
-	clean := filepath.Clean(path)
-	sortedRoots := append([]string(nil), roots...)
-	sort.Slice(sortedRoots, func(i, j int) bool {
-		return len(sortedRoots[i]) > len(sortedRoots[j])
-	})
-	for _, root := range sortedRoots {
-		if root == "" {
-			continue
-		}
-		rel, err := filepath.Rel(filepath.Clean(root), clean)
-		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			continue
-		}
-		segs := strings.SplitN(rel, string(os.PathSeparator), 2)
-		if len(segs) < 2 {
-			return "" // sits directly in this root — no show-folder segment
-		}
-		return normalizeShowKey(segs[0])
-	}
-	return ""
+	return normalizeShowKey(showFolderSegment(path, roots))
 }
 
 // pinFolderID sets folderIDs[key] on first sight of id, and sets it to the

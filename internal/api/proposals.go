@@ -365,7 +365,16 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			// Reason: Jellyfin EpisodeFileName needs the title; without TMDB it stays bare SxxExx.
 			// Troubleshooting: Series Apply produced "Show S01E01.ext" only.
 			// Review if: proposals carry episode_title from Scan and Apply prefers that.
-			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, sess.TMDB, p, preset, tier)
+			//
+			// Claude 2026-08-07: pass sess.TVDB alongside it
+			// Reason: an anthology proposal carries a synthetic negative TMDB id,
+			//   so the TMDB fetch above is gated off for it — TheTVDB is the only
+			//   source for its episode title and air date.
+			// Troubleshooting: anthology Applies produced "Show S03E01.mkv" and an
+			//   empty library_episodes.title. Both are nil-safe (no TVDB connection
+			//   configured leaves sess.TVDB nil, degrading to that same behaviour).
+			// Review if: Proposal gains a real EpisodeTitle column, retiring both fetches.
+			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, sess.TMDB, sess.TVDB, p, preset, tier)
 			if err != nil {
 				return changes, err
 			}

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/config"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
@@ -82,8 +83,8 @@ var (
 func ExtractFileSignals(ctx context.Context, name, videoPath string, prober Prober) FileSignals {
 	var sig FileSignals
 	base := name
-	if filepath.Ext(name) != "" {
-		base = strings.TrimSuffix(filepath.Base(name), filepath.Ext(filepath.Base(name)))
+	if ext := filepath.Ext(name); ext != "" && config.IsVideoExt(ext) {
+		base = strings.TrimSuffix(filepath.Base(name), ext)
 	} else {
 		base = filepath.Base(name)
 	}

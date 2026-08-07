@@ -638,13 +638,39 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 		return nil, fmt.Errorf("loading series: %w", err)
 	}
 
+	// Claude 2026-08-06: roots moved above the series/episode loop
+	// Reason: autopilot-impl-title-collision-fix §3.3 — folderIDs' path feed
+	//   (below) needs roots while walking allSeries, so roots must exist
+	//   before that loop now, not only before the filesystem walk.
+	// Troubleshooting: folder-pinned TMDB id guard never pins anything —
+	//   confirm roots is populated before the allSeries loop runs.
+	// Review if: library_series gains a real per-show folder-path column.
+	roots := []string{rootFolderPath}
+	if sess.KidsRootPath != "" && sess.KidsRootPath != rootFolderPath {
+		roots = append(roots, sess.KidsRootPath)
+	}
+
 	known := map[string]bool{}
 	tracked := map[episodeKey]bool{}
+	// Claude 2026-08-06: folderIDs — show-folder-pinned TMDB id map (Check B)
+	// Reason: autopilot-impl-title-collision-fix — "The Path" vs "The Oath"/
+	//   "The Secret Path"/a duplicate "The Path" catalog entry all passed the
+	//   old TMDB-search-only acceptance path; this pins a candidate to the
+	//   TMDB id whose folder name this file's show folder resolves to. See
+	//   series_folder_guard.go's package doc for the full mechanism.
+	// Troubleshooting: a file lands Pending under the wrong show — check
+	//   whether folderIDs[showFolderKey(...)] is 0 (unpinned/ambiguous) when
+	//   it should be pinned.
+	// Review if: library_series gains a real per-show folder-path column.
+	folderIDs := map[string]int{} // normalized show-folder key -> TMDB id; 0 = ambiguous
 	for _, series := range allSeries {
 		episodes, err := libStore.ListEpisodes(ctx, series.ID)
 		if err != nil {
 			return nil, fmt.Errorf("loading episodes for %q: %w", series.Title, err)
 		}
+		// Title feed: a tracked show's own title claims its normalized key,
+		// even with zero tracked episode files on disk (§3.1).
+		pinFolderID(folderIDs, showFolderTitleKey(series.Title), series.TMDBID)
 		for _, ep := range episodes {
 			if ep.FilePath == "" {
 				continue // known from TMDB but not on disk yet — not a duplicate
@@ -656,12 +682,10 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 			// discovered rather than masked by pre-marking ancestor dirs.
 			known[ep.FilePath] = true
 			tracked[episodeKey{tmdbID: series.TMDBID, season: ep.SeasonNumber, episode: ep.EpisodeNumber}] = true
+			// Path feed: the folder actually holding a tracked episode's
+			// file claims the same key.
+			pinFolderID(folderIDs, showFolderKey(ep.FilePath, roots), series.TMDBID)
 		}
-	}
-
-	roots := []string{rootFolderPath}
-	if sess.KidsRootPath != "" && sess.KidsRootPath != rootFolderPath {
-		roots = append(roots, sess.KidsRootPath)
 	}
 
 	var out []proposals.Proposal
@@ -682,7 +706,11 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				if naming.MatchesSeriesSchema(videoPath, preset) {
 					continue // already organized under the active preset — nothing to propose
 				}
-				out = append(out, proposeOneEpisodeLibrary(ctx, sess, tracked, rootFolderPath, root, videoPath, cfg, prober))
+				pinned := 0
+				if key := showFolderKey(videoPath, roots); key != "" {
+					pinned = folderIDs[key]
+				}
+				out = append(out, proposeOneEpisodeLibrary(ctx, sess, tracked, pinned, rootFolderPath, root, videoPath, cfg, prober))
 			}
 		}
 	}
@@ -690,7 +718,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 }
 
 func proposeOneEpisodeLibrary(
-	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool,
+	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool, pinnedTMDBID int,
 	generalRoot, foundRoot, videoPath string, cfg MatchConfig, prober Prober,
 ) proposals.Proposal {
 	cfg = cfg.Normalize()
@@ -757,6 +785,37 @@ func proposeOneEpisodeLibrary(
 	}
 
 	sig := ExtractFileSignals(ctx, name, videoPath, prober)
+	// Claude 2026-08-06: seriesGate — title-collision precision gate (Check A + B)
+	// Reason: autopilot-impl-title-collision-fix — see series_folder_guard.go's
+	//   package doc for the full mechanism this gate implements.
+	// Troubleshooting: a wrong-show Pending appears despite this gate existing —
+	//   confirm every acceptSeries-adjacent candidate loop calls gate.allows
+	//   (or gate.withSeed(...).allows) before accepting, not just this one.
+	// Review if: library_series gains a real per-show folder-path column.
+	gate := &seriesGate{
+		titleSeed:    library.StripEpisodeMarker(name),
+		pinnedTMDBID: pinnedTMDBID,
+		rejected:     new(int),
+	}
+	// Claude 2026-08-06: gateRejectedReason — shared §4.3 distinct-reason helper
+	// Reason: code review — this function has more than one Unmatched exit
+	//   point (the !sig.HasAny() branch's own early return, and the primary-
+	//   search-exhausted path below), and the gate-rejection reason was only
+	//   wired into the latter — a file rejected only inside the
+	//   !sig.HasAny() branch (via trySeriesQueries/bravePhase2Series there)
+	//   silently fell through to that branch's own generic reason instead.
+	// Troubleshooting: an operator reports "The Path" files unmatched with no
+	//   clue why and p.Reason doesn't carry this message — confirm every
+	//   Unmatched return in this function calls gateRejectedReason first.
+	// Review if: library_series gains a real per-show folder-path column.
+	gateRejectedReason := func() bool {
+		if gate.rejected == nil || *gate.rejected == 0 {
+			return false
+		}
+		p.Status = proposals.Unmatched
+		p.Reason = fmt.Sprintf("rejected %d candidate(s) that did not match this folder's tracked show or share a title token with %q", *gate.rejected, gate.titleSeed)
+		return true
+	}
 	acceptSeries := func(match tmdb.Item, candYear int) proposals.Proposal {
 		if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
 			p.Status = proposals.Unmatched
@@ -795,16 +854,19 @@ func proposeOneEpisodeLibrary(
 		if sess.MainstreamAI != nil {
 			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, name); gerr == nil && g != "" {
 				guessed = g
-				if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, season, episode, searchterm.SearchQueries(guessed)); got != nil {
+				if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, searchterm.SearchQueries(guessed)); got != nil {
 					return *got
 				}
 			}
 		}
-		if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, name); got != nil {
+		if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, gate, season, episode, guessed, name); got != nil {
 			return *got
 		}
 		if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
 			return *got
+		}
+		if gateRejectedReason() {
+			return p
 		}
 		p.Status = proposals.Unmatched
 		if IsJunkRenameFilename(name) {
@@ -847,6 +909,17 @@ func proposeOneEpisodeLibrary(
 			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
 				continue
 			}
+			// Claude 2026-08-06: title-collision gate before strong-accept/weak-stash
+			// Reason: autopilot-impl-title-collision-fix §2.1 — placed after the
+			//   season check (keeps cheap-signal ordering) and before the
+			//   strong/weak block so a gate-rejected candidate can never reach
+			//   the weak fallback either.
+			// Troubleshooting: a wrong-show Pending appears — confirm this call
+			//   actually rejects the collision (gate.pinnedTMDBID/titleSeed).
+			// Review if: library_series gains a real per-show folder-path column.
+			if !gate.allows(match.Title, match.ID) {
+				continue
+			}
 			if rank == CorroborationStrong {
 				return acceptSeries(match, candYear)
 			}
@@ -859,7 +932,7 @@ func proposeOneEpisodeLibrary(
 		return acceptSeries(weak.match, weak.candYear)
 	}
 
-	if fb := tvdbFallbackSeries(ctx, sess, lastTerm, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
+	if fb := tvdbFallbackSeries(ctx, sess, lastTerm, tracked, gate, generalRoot, foundRoot, season, episode, extraEpisodes, sig, cfg, p); fb != nil {
 		return *fb
 	}
 
@@ -871,16 +944,27 @@ func proposeOneEpisodeLibrary(
 	if sess.MainstreamAI != nil {
 		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, name); gerr == nil && g != "" {
 			guessed = g
-			if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, season, episode, searchterm.SearchQueries(guessed)); got != nil {
+			if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, searchterm.SearchQueries(guessed)); got != nil {
 				return *got
 			}
 		}
 	}
-	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, season, episode, guessed, name); got != nil {
+	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, gate, season, episode, guessed, name); got != nil {
 		return *got
 	}
 	if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
 		return *got
+	}
+
+	// Claude 2026-08-06: distinct Unmatched reason when the gate rejected candidates
+	// Reason: autopilot-impl-title-collision-fix §4.3 — without this, a
+	//   gate-rejected file reports the generic "no catalog/web title+year"
+	//   reason, which reads like a catalog miss instead of a folder collision.
+	// Troubleshooting: an operator reports "The Path" files unmatched with no
+	//   clue why — check p.Reason for this prefix before assuming a catalog gap.
+	// Review if: library_series gains a real per-show folder-path column.
+	if gateRejectedReason() {
+		return p
 	}
 
 	unmatchedAfterWebAuthority(&p, name, lastLimit, lastTerm)
@@ -889,7 +973,7 @@ func proposeOneEpisodeLibrary(
 
 func trySeriesQueries(
 	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
-	acceptSeries func(tmdb.Item, int) proposals.Proposal, season, episode int, queries []string,
+	acceptSeries func(tmdb.Item, int) proposals.Proposal, gate *seriesGate, season, episode int, queries []string,
 ) *proposals.Proposal {
 	cfg = cfg.Normalize()
 	type weakHit struct {
@@ -913,6 +997,15 @@ func trySeriesQueries(
 			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
 				continue
 			}
+			// Claude 2026-08-06: title-collision gate before strong-accept/weak-stash
+			// Reason: autopilot-impl-title-collision-fix §2.3 — same placement
+			//   rule as the inline loop: after the season check, before the
+			//   strong/weak block, so a gate-rejected candidate never reaches
+			//   the weak fallback either.
+			// Review if: library_series gains a real per-show folder-path column.
+			if !gate.allows(match.Title, match.ID) {
+				continue
+			}
 			if rank == CorroborationStrong {
 				out := acceptSeries(match, candYear)
 				return &out
@@ -931,7 +1024,7 @@ func trySeriesQueries(
 
 func bravePhase2Series(
 	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,
-	acceptSeries func(tmdb.Item, int) proposals.Proposal, season, episode int, guessed, entryName string,
+	acceptSeries func(tmdb.Item, int) proposals.Proposal, gate *seriesGate, season, episode int, guessed, entryName string,
 ) *proposals.Proposal {
 	if sess.WebSearch == nil || sess.MainstreamAI == nil {
 		return nil
@@ -945,6 +1038,13 @@ func bravePhase2Series(
 		return nil
 	}
 	cfg = cfg.Normalize()
+	// Claude 2026-08-06: seed on the GROUNDED title, not the file-derived one
+	// Reason: autopilot-impl-title-collision-fix §2.4 — this function's whole
+	//   value is recovering when the filename is unusable; gating on the
+	//   filename-derived seed would neuter it. Check B still applies at full
+	//   strength regardless of seed.
+	// Review if: library_series gains a real per-show folder-path column.
+	seeded := gate.withSeed(grounded.Title)
 	for _, term := range searchterm.SearchQueries(grounded.Title) {
 		items, err := sess.TMDB.SearchTV(ctx, term)
 		if err != nil || len(items) == 0 {
@@ -954,6 +1054,9 @@ func bravePhase2Series(
 		for i := 0; i < limit; i++ {
 			match := items[i]
 			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+				continue
+			}
+			if !seeded.allows(match.Title, match.ID) {
 				continue
 			}
 			candYear, _, _ := seriesCandidateMeta(ctx, sess.TMDB, match.ID, season, episode, match.ReleaseDate, sig)
@@ -1058,7 +1161,7 @@ func tvdbFallbackMovie(
 // tvdbFallbackSeries mirrors tvdbFallbackMovie for TV shows.
 func tvdbFallbackSeries(
 	ctx context.Context, sess *mode.Session,
-	term string, tracked map[episodeKey]bool,
+	term string, tracked map[episodeKey]bool, gate *seriesGate,
 	generalRoot, foundRoot string,
 	season, episode int, extraEpisodes []int,
 	sig FileSignals, cfg MatchConfig,
@@ -1082,9 +1185,40 @@ func tvdbFallbackSeries(
 	var weak *weakTVDBSeries
 	for i := 0; i < limit; i++ {
 		best := results[i]
+		// Claude 2026-08-06: conditional gate placement — §2.5/§3.4b
+		// Reason: autopilot-impl-title-collision-fix — the TMDB id isn't
+		//   known until FindTVByTVDBID below, so an unconditional loop-top
+		//   title gate would let the weakest evidence (this site's `term`
+		//   seed, the LAST query variant tried) veto a folder-confirmed id
+		//   before it's even known — exactly the paradox §3.4b exists to
+		//   prevent. Unpinned folders gate here (and save two TMDB round
+		//   trips per rejection); pinned folders defer to the unified
+		//   allows() call right after the id is resolved, so a
+		//   folder-confirmed id always short-circuits Check A.
+		// Troubleshooting: a folder-pinned show's TVDB-fallback match gets
+		//   rejected by an odd seed — confirm this branch, not the one below,
+		//   is what ran.
+		// Review if: library_series gains a real per-show folder-path column.
+		if gate.pinnedTMDBID <= 0 {
+			if !gate.allowsTitle(best.Name) {
+				// Claude 2026-08-06: explicit reject() — allowsTitle alone doesn't count
+				// Reason: code review — only gate.allows() increments the shared
+				//   counter; this direct allowsTitle() call bypassed it, so a file
+				//   rejected only via this branch reported the generic
+				//   unmatchedAfterWebAuthority reason instead of §4.3's distinct one.
+				// Review if: allowsTitle/allowsID gain their own counting.
+				gate.reject()
+				continue
+			}
+		}
 		tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, best.TVDBID)
 		if err != nil || tmdbID == 0 {
 			continue
+		}
+		if gate.pinnedTMDBID > 0 {
+			if !gate.allows(best.Name, tmdbID) {
+				continue
+			}
 		}
 		if _, err := sess.TMDB.SeasonDetails(ctx, tmdbID, season); err != nil {
 			continue

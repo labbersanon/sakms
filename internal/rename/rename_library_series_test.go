@@ -725,6 +725,255 @@ func TestApplyLibrarySeries_FetchesTMDBEpisodeTitleForJellyfinName(t *testing.T)
 	}
 }
 
+// TestScanLibrarySeries_RejectsTitleCollisionAndPicksCorrectShow is the
+// headline test for autopilot-impl-title-collision-fix.md — proves the walk
+// continues past a gate-rejected candidate instead of halting (§1.2): if the
+// gate were placed inside acceptSeries, this would return Unmatched instead
+// of finding TMDB 65227 at candidate position 2. Both candidates share the
+// same first_air_date on purpose so the year signal can't be what
+// discriminates them — only the folder-pinned TMDB id guard can.
+func TestScanLibrarySeries_RejectsTitleCollisionAndPicksCorrectShow(t *testing.T) {
+	root := t.TempDir()
+	trackedDir := filepath.Join(root, "The Path (2016) [tmdbid-65227]", "Season 01")
+	if err := os.MkdirAll(trackedDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	trackedPath := filepath.Join(trackedDir, "The Path S01E01.mkv")
+	if err := os.WriteFile(trackedPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	newDir := filepath.Join(root, "The Path", "Season 1")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	newFile := filepath.Join(newDir, "The.Path.2016.S01E02.mkv")
+	if err := os.WriteFile(newFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+		"The Path": `{"results":[{"id":900,"name":"The Oath","first_air_date":"2016-01-01"},{"id":65227,"name":"The Path","first_air_date":"2016-01-01"}]}`,
+	}, nil)}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 65227, Title: "The Path", RootFolderPath: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: trackedPath,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 proposal (the already-tracked file must stay masked), got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending || p.TMDBID != 65227 {
+		t.Fatalf("expected Pending under the folder-pinned show TMDB 65227, got status=%v tmdbID=%d reason=%q", p.Status, p.TMDBID, p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_UnmatchedWhenOnlyCandidateIsWrongShowInPinnedFolder
+// is the RejectsTitleCollision fixture's sibling: when the ONLY TMDB
+// candidate is the wrong show, the file must go Unmatched with no TMDB id
+// recorded — never fall back to accepting the wrong show (mirrors the
+// existing MarksUnmatchedWhenTMDBResultIsWeakMatch assertion shape).
+func TestScanLibrarySeries_UnmatchedWhenOnlyCandidateIsWrongShowInPinnedFolder(t *testing.T) {
+	root := t.TempDir()
+	trackedDir := filepath.Join(root, "The Path (2016) [tmdbid-65227]", "Season 01")
+	if err := os.MkdirAll(trackedDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	trackedPath := filepath.Join(trackedDir, "The Path S01E01.mkv")
+	if err := os.WriteFile(trackedPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	newDir := filepath.Join(root, "The Path", "Season 1")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	newFile := filepath.Join(newDir, "The.Path.2016.S01E02.mkv")
+	if err := os.WriteFile(newFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+		"The Path": `{"results":[{"id":900,"name":"The Secret Path","first_air_date":"2016-01-01"}]}`,
+	}, nil)}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 65227, Title: "The Path", RootFolderPath: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: trackedPath,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched when the only candidate is the wrong show, got %+v", p)
+	}
+	if p.TMDBID != 0 {
+		t.Errorf("expected no TMDB id to be assigned on a gate-rejected candidate, got %d", p.TMDBID)
+	}
+	// §4.3: a gate rejection must report the DISTINCT diagnostic reason, not
+	// unmatchedAfterWebAuthority's generic "no catalog/web title+year" —
+	// without this assertion, a regression that silently drops the gate's
+	// rejected-candidate count (or bypasses gateRejectedReason() at any of
+	// this function's Unmatched exit points) would go undetected even
+	// though Status/TMDBID still look correct.
+	wantReasonPrefix := "rejected 1 candidate(s) that did not match this folder's tracked show"
+	if !strings.HasPrefix(p.Reason, wantReasonPrefix) {
+		t.Errorf("expected the distinct gate-rejection reason (prefix %q), got %q", wantReasonPrefix, p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_UnpinnedFolderStillMatches is a regression guard: a
+// brand-new show folder with no tracked series at all (so folderIDs has no
+// entry for it — pinnedTMDBID resolves to 0) must still produce its normal
+// Pending proposal. Without this, a future over-tightening of the §3.4 rule
+// 1 fail-open condition would go unnoticed.
+func TestScanLibrarySeries_UnpinnedFolderStillMatches(t *testing.T) {
+	root := t.TempDir()
+	newDir := filepath.Join(root, "Show Name", "Season 1")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	newFile := filepath.Join(newDir, "Show.Name.2020.S01E01.mkv")
+	if err := os.WriteFile(newFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+	}, nil)}
+	libStore := newTestLibraryStore(t)
+
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 555 {
+		t.Fatalf("expected an unpinned folder to match normally, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeries_AmbiguousFolderKeyImposesNoConstraint proves two
+// tracked series normalizing to the same key (via the title feed alone —
+// neither has a tracked episode file) leave that key's guard inert (§3.4
+// rule 2): a brand-new third show at that same folder name must still match
+// normally, not be rejected by the ambiguous pin.
+func TestScanLibrarySeries_AmbiguousFolderKeyImposesNoConstraint(t *testing.T) {
+	root := t.TempDir()
+	newDir := filepath.Join(root, "Monster", "Season 1")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	newFile := filepath.Join(newDir, "Monster.2020.S01E01.mkv")
+	if err := os.WriteFile(newFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+		"Monster": `{"results":[{"id":555,"name":"Monster","first_air_date":"2020-01-01"}]}`,
+	}, nil)}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	// Two DIFFERENT tracked shows both titled "Monster" — same normalized
+	// key, different TMDB ids — makes folderIDs["monster"] sticky-ambiguous
+	// (0) via the title feed alone, with zero tracked episode files.
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 111, Title: "Monster", RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 222, Title: "Monster", RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != proposals.Pending || got[0].TMDBID != 555 {
+		t.Fatalf("expected the ambiguous key to impose no constraint on an unrelated third show, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeries_LiveTMDBTitleCollisionGuard is
+// autopilot-impl-title-collision-fix.md §7.1 Option C: the only test in this
+// suite that exercises the fix against TMDB's REAL /search/tv response for
+// "The Path", rather than a fake server whose fixture ASSUMES the
+// wrong-show-ahead-of-right-show ordering that caused the original bug —
+// nothing else here confirms live TMDB search for "The Path" actually
+// returns a collision candidate ahead of or alongside TMDB 65227.
+//
+// Gated behind SAKMS_TEST_TMDB_API_KEY and testing.Short(), the same shape
+// this package's SAKMS_TEST_DATABASE_URL-gated tests already use to skip
+// when their dependency is absent, so `go test ./...` never depends on
+// network access or a real TMDB key in an environment without one. No
+// parser fix (this is base commit 57c5515, not e40bbab — see the plan's
+// §7.1 Option B, deliberately not implemented here), no deploy, no live
+// production DB write: libStore is the same ephemeral Postgres
+// newTestLibraryStore(t) every other test in this file uses.
+func TestScanLibrarySeries_LiveTMDBTitleCollisionGuard(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live TMDB network test in short mode")
+	}
+	apiKey := os.Getenv("SAKMS_TEST_TMDB_API_KEY")
+	if apiKey == "" {
+		t.Skip("SAKMS_TEST_TMDB_API_KEY not set; skipping live TMDB verification (see autopilot-impl-title-collision-fix.md §7.1 Option C)")
+	}
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "The Path", "Season 1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "The.Path.2016.S01E02.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdb.New(tmdb.Config{APIKey: apiKey}, http.DefaultClient)}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	// Title feed alone pins the folder — no tracked episode file needed,
+	// exactly the plan's §7.1 Option C fixture ("a seeded
+	// library.Series{TMDBID: 65227, Title: "The Path"}").
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 65227, Title: "The Path", RootFolderPath: root}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected Pending against live TMDB, got status=%v reason=%q", p.Status, p.Reason)
+	}
+	if p.TMDBID != 65227 {
+		t.Errorf("expected the folder-pinned show TMDB 65227 against live TMDB search results, got tmdbID=%d title=%q", p.TMDBID, p.Title)
+	}
+}
+
 func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {

@@ -652,6 +652,20 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	}
 
 	known := map[string]bool{}
+	// Claude 2026-08-07: mark primary + alternate episode paths known so alts aren't re-proposed
+	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements — library_episode_files
+	//   holds non-primary paths; without this every applied alternate reappears as an orphan on
+	//   the next Scan. Mirrors ScanLibrary's AllFilePaths feed (rename.go:172-186).
+	// Troubleshooting: alternate files reappear as Rename orphans after Apply.
+	// Review if: AllEpisodeFilePaths stops covering library_episode_files.
+	if paths, err := libStore.AllEpisodeFilePaths(ctx); err == nil {
+		for _, p := range paths {
+			known[p] = true
+		}
+	}
+	// The per-series loop below still sets known[ep.FilePath] unconditionally — that is the
+	// graceful fallback if the query above errors, exactly as Movies falls back to
+	// existing[i].FilePath. Keep BOTH; they are not redundant.
 	tracked := map[episodeKey]bool{}
 	// Claude 2026-08-06: folderIDs — show-folder-pinned TMDB id map (Check B)
 	// Reason: autopilot-impl-title-collision-fix — "The Path" vs "The Oath"/
@@ -814,21 +828,21 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	aiEpisodeRecoveryPass(ctx, sess, tracked, seriesByID, folderIDs, resolved, handled,
 		roots, rootFolderPath, anthologyIdx, out)
 
-	// Claude 2026-08-06: within-batch episodeKey collision guard
-	// Reason: code-reviewer MEDIUM finding — ParseEpisodeNumbersLoose lets
-	//   every video file in a marker-named parent directory (main file plus
-	//   a sample/featurette, say) resolve to the SAME season/episode via the
-	//   same parent-dir fallback. The `tracked` guard above only catches a
-	//   collision against the ALREADY-COMMITTED library — it's built once
-	//   before the scan loop and never mutated during it — so two files
-	//   newly proposed within this one Scan can both reach Pending with an
-	//   identical (tmdbID, season, episode), and Applying the later one
-	//   silently overwrites the earlier one's library.Episode row.
-	// Troubleshooting: two Pending rows for the same show/season/episode in
-	//   one Scan result; Applying the later one clobbers the earlier one.
-	// Review if: proposals ever need to keep MULTIPLE files per episode slot
-	//   (e.g. deliberate alternates) — this guard would need to become
-	//   alternate-aware instead of blanket-Unmatching the second claimant.
+	// Claude 2026-08-07: within-batch episodeKey collision is now alternate-aware
+	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements — Series gained
+	//   Movies-parity alternate-version support, so a second file claiming an
+	//   already-claimed slot is a legitimate alternate, not a conflict. This replaces
+	//   the previous blanket-Unmatch, per that guard's own retired `Review if:`.
+	//   ApplyLibrarySeries resolves the collision against LIVE DB state (the same
+	//   mechanism ApplyLibrary/GetByTMDBID uses for Movies), so both rows may stay
+	//   Pending: whichever applies first becomes the tracked primary, and the second
+	//   folds in via applyLibrarySeriesAlternate — promoted or demoted by probed tier,
+	//   order-independently.
+	// Troubleshooting: two same-slot Pending rows and the SECOND Apply overwrote the
+	//   first's library_episodes row instead of folding — that means the Apply-side
+	//   fold-in gate (existing.FilePath != "") did not fire; check §0.3.
+	// Review if: Series Dedup gains alternate awareness, at which point the
+	//   annotation below could be dropped entirely (see §11.2).
 	seen := map[episodeKey]bool{}
 	for i := range out {
 		if out[i].Status != proposals.Pending || out[i].TMDBID == 0 {
@@ -836,12 +850,35 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 		}
 		key := episodeKey{tmdbID: out[i].TMDBID, season: out[i].SeasonNumber, episode: out[i].EpisodeNumber}
 		if seen[key] {
-			out[i].Status = proposals.Unmatched
-			out[i].Reason = fmt.Sprintf("another file in this scan already claims %q S%02dE%02d — leaving in place for manual review", out[i].Title, out[i].SeasonNumber, out[i].EpisodeNumber)
+			// Stays Pending. The reason is PREFIXED, never replaced, so the operator can
+			// see at review time that this row will land as an alternate rather than as
+			// the slot's primary — a signal Movies does not even offer.
+			//
+			// PREFIX, DO NOT CLOBBER. This codebase already has an explicit precedent
+			// against overwriting a precise reason with a vaguer one: aiEpisodeRecoveryPass
+			// skips handled[i] rows specifically so "its precise ambiguity /
+			// already-in-the-library reason is not overwritten with a vaguer one"
+			// (rename.go:801-803). A row that reached Pending via the TVDB anthology pass
+			// carries a corroboration reason worth keeping.
+			if !strings.HasPrefix(out[i].Reason, "alternate:") {
+				out[i].Reason = fmt.Sprintf(
+					"alternate: another file in this scan also claims %q S%02dE%02d — apply will fold as primary or alternate by quality. %s",
+					out[i].Title, out[i].SeasonNumber, out[i].EpisodeNumber, out[i].Reason)
+			}
 			continue
 		}
 		seen[key] = true
 	}
+	// Chosen option, per plan §9.7.1(C)'s requirement to record it here explicitly:
+	// option 2 (leave HasPrefix, accept double-annotation on Mode-1 rows). A
+	// Mode-1-produced alternate row (Site 5 via aiEpisodeMode1) contains but does
+	// not start with "alternate:", so the HasPrefix check above does not recognise
+	// it and will prepend a second "alternate:" clause to such a row if it also
+	// collides within the same scan. Accepted: the reason is verbose but not wrong,
+	// both clauses are true, and this is a narrow, already-rare intersection (a
+	// Mode-1 recovery that also collides with another file in the same scan). Do
+	// not change this check to Contains without re-reading the alternative
+	// tradeoff recorded in plan §9.7.1.
 
 	return out, nil
 }
@@ -941,11 +978,23 @@ func proposeOneEpisodeLibrary(
 	extraEpisodes := episodes[1:]
 
 	if hint := nfo.ReadSeriesSidecar(videoPath); hint.TMDBID != 0 {
-		if tracked[episodeKey{tmdbID: hint.TMDBID, season: season, episode: episode}] {
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf(".nfo TMDB id %d appears to already be in the library as S%02dE%02d — leaving in place for manual review", hint.TMDBID, season, episode)
-			return p, false
-		}
+		// Claude 2026-08-07: SITE 1 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.2)
+		// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
+		//   this branch used to set Unmatched (".nfo TMDB id %d appears to already
+		//   be in the library ...") and return early. Series now has Movies-parity
+		//   alternate-version support, so a second file on an already-filled slot
+		//   is a legitimate alternate. This is the ONE site the spec's acceptance
+		//   criteria name explicitly (the Beverly Hillbillies .nfo case).
+		//   Structurally the odd one out of the seven: det is not in scope here,
+		//   so we record the duplicate and FALL THROUGH to the TMDB-confirm block
+		//   below, which populates Title/Year/RootFolderPath exactly as a
+		//   non-duplicate's would — the only difference is the Reason.
+		// Troubleshooting: a .nfo duplicate Applied and OVERWROTE the slot's
+		//   library_episodes row instead of folding in — the Apply-side fold-in
+		//   gate (existing.FilePath != "") did not fire; check §0.3.
+		// Review if: operators report unwanted alternates accumulating and want
+		//   same-slot duplicates declined again.
+		isDuplicateSlot := tracked[episodeKey{tmdbID: hint.TMDBID, season: season, episode: episode}]
 		// Claude 2026-08-06: NFO season-confirm miss falls through to TMDB/TVDB/web
 		// Reason: wrong or incomplete TMDB seasons in sidecars (e.g. Monster S02)
 		//   used to hard-unmatch before TVDB/search could recover.
@@ -980,6 +1029,10 @@ func proposeOneEpisodeLibrary(
 			p.Genres = det.Genres
 			if cast, err := sess.TMDB.TVAggregateCredits(ctx, hint.TMDBID); err == nil {
 				p.Cast = cast
+			}
+			// Site 1's softened outcome — Status+Reason only, never Title/Year/Root.
+			if isDuplicateSlot {
+				acceptDuplicatePendingEpisode(&p, det.Title, season, episode)
 			}
 			return p, false
 		}
@@ -1068,11 +1121,23 @@ func proposeOneEpisodeLibrary(
 		return true
 	}
 	acceptSeries := func(match tmdb.Item, candYear int) proposals.Proposal {
-		if tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}] {
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", match.Title, season, episode)
-			return p
-		}
+		// Claude 2026-08-07: SITE 2 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.3)
+		// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
+		//   this closure used to set Unmatched ("appears to already be in the
+		//   library as %q S%02dE%02d ...") and return before populating anything.
+		//   Series now has Movies-parity alternate-version support (Movies'
+		//   analogue is rename.go:300's acceptDuplicatePending call), so the
+		//   proposal is built exactly as a non-duplicate's is and only
+		//   Status+Reason are overwritten at the end. Callers
+		//   (trySeriesQueries/bravePhase2Series) already returned on this
+		//   closure's result whatever its status, so candidate-search
+		//   continuation is unchanged.
+		// Troubleshooting: a duplicate Applied and OVERWROTE the slot's
+		//   library_episodes row instead of folding in — the Apply-side fold-in
+		//   gate (existing.FilePath != "") did not fire; check §0.3.
+		// Review if: operators report unwanted alternates accumulating and want
+		//   same-slot duplicates declined again.
+		duplicateSlot := tracked[episodeKey{tmdbID: match.ID, season: season, episode: episode}]
 		targetRoot := generalRoot
 		switch {
 		case foundRoot == sess.KidsRootPath:
@@ -1097,6 +1162,10 @@ func proposeOneEpisodeLibrary(
 		}
 		if names, err := sess.TMDB.TVAggregateCredits(ctx, match.ID); err == nil {
 			p.Cast = names
+		}
+		// Site 2's softened outcome — Status+Reason only, never Title/Year/Root.
+		if duplicateSlot {
+			acceptDuplicatePendingEpisode(&p, match.Title, season, episode)
 		}
 		return p
 	}
@@ -1583,12 +1652,24 @@ func tvdbFallbackSeries(
 			continue
 		}
 		accept := func(tmdbID, candYear int, bestName string, det tmdb.TVDetails) *proposals.Proposal {
-			if tracked[episodeKey{tmdbID: tmdbID, season: season, episode: episode}] {
-				p := base
-				p.Status = proposals.Unmatched
-				p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library as S%02dE%02d — leaving in place for manual review", bestName, season, episode)
-				return &p
-			}
+			// Claude 2026-08-07: SITE 3 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.3)
+			// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
+			//   this closure used to set Unmatched ("TVDB match %q appears to
+			//   already ...") and return before populating anything. Movies' analogue (tvdbFallbackMovie, rename.go:1452)
+			//   already calls acceptDuplicatePending here, so this is parity, not
+			//   invention. The reason deliberately names det.Title, NOT bestName:
+			//   bestName is TheTVDB's series name while the row this path emits
+			//   carries p.Title = det.Title (TMDB's), and naming bestName would
+			//   show the operator two different show names on one row. bestName
+			//   consequently goes unused in the duplicate case; it is kept as a
+			//   parameter because the caller at the strong-corroboration branch
+			//   still passes it.
+			// Troubleshooting: a TVDB-fallback duplicate Applied and OVERWROTE the
+			//   slot's library_episodes row instead of folding in — the Apply-side
+			//   fold-in gate (existing.FilePath != "") did not fire; check §0.3.
+			// Review if: operators report unwanted alternates accumulating and
+			//   want same-slot duplicates declined again.
+			duplicateSlot := tracked[episodeKey{tmdbID: tmdbID, season: season, episode: episode}]
 			targetRoot := generalRoot
 			switch {
 			case foundRoot == sess.KidsRootPath:
@@ -1613,6 +1694,10 @@ func tvdbFallbackSeries(
 			if names, err := sess.TMDB.TVAggregateCredits(ctx, tmdbID); err == nil {
 				p.Cast = names
 			}
+			// Site 3's softened outcome — Status+Reason only, never Title/Year/Root.
+			if duplicateSlot {
+				acceptDuplicatePendingEpisode(&p, det.Title, season, episode)
+			}
 			return &p
 		}
 		if rank == CorroborationStrong {
@@ -1623,12 +1708,20 @@ func tvdbFallbackSeries(
 		}
 	}
 	if weak != nil {
-		if tracked[episodeKey{tmdbID: weak.tmdbID, season: season, episode: episode}] {
-			p := base
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("TVDB match %q appears to already be in the library as S%02dE%02d — leaving in place for manual review", weak.bestName, season, episode)
-			return &p
-		}
+		// Claude 2026-08-07: SITE 4 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.3)
+		// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
+		//   the weak/uncorroborated twin of Site 3 above, carrying an identical
+		//   retired reason string. It is a SEPARATE site, not a diff artifact:
+		//   it fires when no candidate reached CorroborationStrong, which on a
+		//   low-signal library is the MORE common path of the two and is exactly
+		//   the target population. Same det.Title-not-bestName reasoning as
+		//   Site 3 (the emitted row carries weak.det.Title).
+		// Troubleshooting: a weak-branch duplicate Applied and OVERWROTE the
+		//   slot's library_episodes row instead of folding in — the Apply-side
+		//   fold-in gate (existing.FilePath != "") did not fire; check §0.3.
+		// Review if: operators report unwanted alternates accumulating and want
+		//   same-slot duplicates declined again.
+		duplicateSlot := tracked[episodeKey{tmdbID: weak.tmdbID, season: season, episode: episode}]
 		targetRoot := generalRoot
 		switch {
 		case foundRoot == sess.KidsRootPath:
@@ -1652,6 +1745,10 @@ func tvdbFallbackSeries(
 		p.Genres = weak.det.Genres
 		if names, err := sess.TMDB.TVAggregateCredits(ctx, weak.tmdbID); err == nil {
 			p.Cast = names
+		}
+		// Site 4's softened outcome — Status+Reason only, never Title/Year/Root.
+		if duplicateSlot {
+			acceptDuplicatePendingEpisode(&p, weak.det.Title, season, episode)
 		}
 		return &p
 	}
@@ -1739,7 +1836,11 @@ func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, 
 // Reason: Jellyfin names need "Show S01E01 Pilot.ext"; title was never passed.
 // Troubleshooting: Apply batch left bare SxxExx names (unidentifiable).
 // Review if: Proposal gains a real EpisodeTitle column, which would make both the TMDB and TheTVDB fetches below redundant.
-func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient *tmdb.Client, tvdbClient *tvdb.Client, p proposals.Proposal, preset naming.Preset, tier string) (episodeID int64, changes []mode.PathChange, err error) {
+// prober is appended last, matching ApplyLibrary's trailing-prober convention.
+// It is nil-safe (probeFileMeta returns the fallback-tier meta for a nil
+// prober), and is used only by the alternate fold-in path and the primary
+// library_episode_files write below.
+func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient *tmdb.Client, tvdbClient *tvdb.Client, p proposals.Proposal, preset naming.Preset, tier string, prober Prober) (episodeID int64, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -1859,6 +1960,78 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 		return 0, nil, err
 	}
 
+	// Claude 2026-08-07: alternate fold-in for an already-occupied episode slot
+	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements — the Series
+	//   counterpart to ApplyLibrary's GetByTMDBID/applyLibraryAlternate branch. This is
+	//   what makes the softened Scan-time guards safe: the collision is resolved against
+	//   LIVE DB state at Apply time, so two same-slot Pending rows converge
+	//   order-independently on the higher-tier file as primary.
+	//
+	// EVERY NUMBER IN THE RANGE IS CHECKED, NOT JUST p.EpisodeNumber. A range proposal
+	//   whose PRIMARY slot is free but whose SECOND slot is occupied would otherwise fall
+	//   through to UpsertEpisodes, whose ON CONFLICT(series_id, season_number,
+	//   episode_number) silently overwrites the occupied row and strands its file on disk
+	//   untracked.
+	//
+	// THE FilePath == "" CHECK BELOW AND THE SEPARATE !fileExists(...) CHECK BELOW ARE
+	//   JOINTLY LOAD-BEARING — do not simplify either to "a row exists". library_episodes
+	//   carries FILELESS catalog rows by design (UpsertEpisodeCatalog) so that
+	//   MissingEpisodes is a plain query; the FilePath == "" check skips those. Dropping
+	//   THAT check (gating on row existence alone) would route EVERY ordinary Series
+	//   Apply for any catalog-synced show through the alternate path. Separately, a row
+	//   can carry a non-empty FilePath that points at a file no longer on disk — the
+	//   !fileExists(...) check skips those. Dropping THAT check would misroute only an
+	//   Apply landing on a stale row. ScanLibrarySeries' own `tracked` map applies the
+	//   identical skip for the identical reason.
+	//
+	// THE LOOP MUST NOT BREAK EARLY. It has TWO jobs, and an early break serves only the
+	//   first: (a) find the first occupied slot, which decides WHETHER to fold in and
+	//   supplies the single row the tier comparison is made against; (b) build a COMPLETE
+	//   map of every number in the range to its library_episodes row (or nil), which
+	//   applyLibrarySeriesAlternate's write loop needs to decide which alternate file rows
+	//   to write. Breaking on the first occupied slot leaves every LATER number unqueried
+	//   and therefore indistinguishable from "no row at all", so a slot that genuinely has
+	//   one would silently get no alternate row. Dropping the break costs at most
+	//   len(allEpisodeNumbers)-1 extra GetEpisode calls on a path that is already about to
+	//   move files on disk.
+	//
+	// Troubleshooting: an ordinary Apply produced an "- alternate" filename → this gate
+	//   fired on a fileless catalog row; confirm the occupied row's FilePath is genuinely
+	//   non-empty and the file is genuinely on disk.
+	// Review if: library_episodes stops carrying fileless catalog rows.
+	resolved := map[int]*library.Episode{}
+	var occupied *library.Episode
+	for _, n := range allEpisodeNumbers {
+		existing, gerr := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, n)
+		if gerr != nil {
+			if errors.Is(gerr, library.ErrNotFound) {
+				resolved[n] = nil // no row at all — the write loop skips this number
+				continue
+			}
+			return 0, nil, fmt.Errorf("looking up existing episode file: %w", gerr)
+		}
+		// Assigned BEFORE the guards below on purpose: a self-collision or a
+		// stale row still HAS an episode_id, so the alternate write loop must
+		// still write a row for it.
+		resolved[n] = existing
+		if existing.FilePath == "" {
+			continue
+		}
+		// A re-Apply of the SAME file must not fold itself in as its own
+		// alternate, and a stale row pointing at a deleted file is not an
+		// occupied slot — fall through so the new file simply becomes primary.
+		if existing.FilePath == p.SourcePath || !fileExists(existing.FilePath) {
+			continue
+		}
+		if occupied == nil {
+			occupied = existing // FIRST occupied slot only — do NOT break; the map needs the rest
+		}
+	}
+	if occupied != nil {
+		return applyLibrarySeriesAlternate(ctx, libStore, series, occupied, resolved, p, p.SourcePath,
+			allEpisodeNumbers, fileTitle, preset, tier, prober)
+	}
+
 	moved, err := RelocateEpisodeRange(p.SourcePath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, p.SeasonNumber, allEpisodeNumbers, fileTitle, preset)
 	if err != nil {
 		return 0, nil, fmt.Errorf("relocating %q: %w", p.SourcePath, err)
@@ -1906,6 +2079,39 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 	upserted, err := libStore.UpsertEpisodes(ctx, toUpsert)
 	if err != nil {
 		return 0, changes, fmt.Errorf("recording episode(s): %w", err)
+	}
+
+	// Primary library_episode_files row for each upserted episode — the Series
+	// counterpart to ApplyLibrary's UpsertFile write. WITHOUT THIS, a second
+	// Apply for the same slot has no primary file row to demote and
+	// ListEpisodeFiles returns empty for freshly-applied episodes, so alternate
+	// support would work only for pre-existing (backfilled) episodes and
+	// silently half-fail for new ones.
+	//
+	// Loops over `upserted`, so a range file writes one primary row per bundled
+	// episode — consistent with migration 0005's backfill and with the alternate
+	// path's per-slot fan-out. THE INVARIANT THAT MAKES THAT SAFE: this code is
+	// reachable only when EVERY number in allEpisodeNumbers is free — the gate
+	// above returns into the alternate path the moment any one of them holds a
+	// file on disk. So no write here can collide with an existing primary. If
+	// that gate is ever narrowed back toward a single-episode check, this loop
+	// becomes unsafe; the two are a pair.
+	//
+	// The PROBED tier is used for the file row only. ApplyLibrarySeries still
+	// records the raw settings `tier` on the episode row above — deliberately
+	// unchanged, so this matches how Movies populates its file rows without
+	// altering existing episode-row behaviour.
+	probed := probeFileMeta(ctx, prober, moved, tier)
+	for _, ep := range upserted {
+		if _, ferr := libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
+			EpisodeID: ep.ID, FilePath: moved, IsPrimary: true,
+			QualityTier: probed.Tier, Size: movedSize,
+			Width: probed.Width, Height: probed.Height, VideoCodec: probed.Codec,
+			BitRate: probed.BitRate, DurationSec: probed.Duration,
+		}); ferr != nil {
+			return upserted[0].ID, changes, fmt.Errorf("recording primary file for %q S%02dE%02d: %w",
+				p.Title, ep.SeasonNumber, ep.EpisodeNumber, ferr)
+		}
 	}
 	return upserted[0].ID, changes, nil
 }

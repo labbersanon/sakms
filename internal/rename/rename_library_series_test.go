@@ -248,7 +248,23 @@ func TestScanLibrarySeries_SkipsAlreadyConformantEpisodeInMixedSeasonPack(t *tes
 	}
 }
 
-func TestScanLibrarySeries_SkipsAlreadyTrackedWithFile(t *testing.T) {
+// TestScanLibrarySeries_AlreadyTrackedWithFileIsPendingAlternate covers SITE 2
+// (the acceptSeries path): an orphan resolving onto an episode slot already
+// tracked WITH a file.
+//
+// REWRITE IN PLACE of the retired ..._SkipsAlreadyTrackedWithFile, which
+// asserted Unmatched. Plan §9.7.1's enumeration ("9 line citations, 8 distinct
+// test functions") MISSED this one, because §9.7.1(D)'s greps only find tests
+// asserting on the reason STRING and this test asserted on Status alone with a
+// prose failure message. A grep-clean audit is therefore not proof the
+// reconciliation is complete.
+//
+// Deliberately kept as the narrow status+reason check, and deliberately NOT
+// named ..._TrackedSlotDuplicateIsPendingAlternate: plan §9.5 reserves that
+// name for the new Site 2 test that additionally asserts
+// Title/TMDBID/Year/RootFolderPath are populated (the §5.1 helper-asymmetry
+// check). The two are complements, not duplicates.
+func TestScanLibrarySeries_AlreadyTrackedWithFileIsPendingAlternate(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "Show.Name.2020.S01E01.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -273,8 +289,91 @@ func TestScanLibrarySeries_SkipsAlreadyTrackedWithFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].Status != proposals.Unmatched {
-		t.Fatalf("expected the duplicate to surface as unmatched, got %+v", got)
+	if len(got) != 1 || got[0].Status != proposals.Pending {
+		t.Fatalf("expected the duplicate to surface as a Pending alternate, got %+v", got)
+	}
+	if !strings.HasPrefix(got[0].Reason, `alternate: "Show Name" S01E01 already has a file in the library`) {
+		t.Errorf("expected the softened alternate reason, got %q", got[0].Reason)
+	}
+}
+
+// TestScanLibrarySeries_TrackedSlotDuplicateIsPendingAlternate is plan §9.5's
+// SITE 2 test and the deliberate COMPLEMENT of
+// ..._AlreadyTrackedWithFileIsPendingAlternate directly above — not a duplicate
+// of it. That test pins Status + the reason prefix; this one pins the FIELD
+// POPULATION the softened row must carry, which §9.5 reserves for this test by
+// name.
+//
+// What it catches, stated precisely because a weaker assertion would not:
+// acceptDuplicatePendingEpisode is deliberately ASYMMETRIC with Movies'
+// acceptDuplicatePending — it writes Status and Reason ONLY, and must never
+// touch Title/TMDBID/Year/RootFolderPath, because Series' seven call sites each
+// populate those from a different source (§5.1). "Unifying" the two helpers
+// would run the Movies version's clobbering writes here and silently zero this
+// row's placement data.
+//
+// The assertions are on EXACT values, not on non-emptiness: the failure mode is
+// a field being blanked or overwritten with the helper's own idea of the show,
+// and a Year != 0 check would not catch a wrong-but-non-zero year.
+func TestScanLibrarySeries_TrackedSlotDuplicateIsPendingAlternate(t *testing.T) {
+	root := t.TempDir()
+	orphan := filepath.Join(root, "Show.Name.2020.S01E01.mkv")
+	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The tracked slot's own file lives OUTSIDE the scan root, so the walk never
+	// sees it and the only proposal produced is the duplicate.
+	trackedPath := filepath.Join(t.TempDir(), "already-tracked.mkv")
+	if err := os.WriteFile(trackedPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+	}, nil)}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: trackedPath,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("status = %v (%s), want Pending-as-alternate", p.Status, p.Reason)
+	}
+	if !strings.HasPrefix(p.Reason, "alternate:") {
+		t.Errorf("reason = %q, want the softened alternate reason", p.Reason)
+	}
+	if p.Title != "Show Name" {
+		t.Errorf("Title = %q, want %q — the helper must not overwrite the site's own title", p.Title, "Show Name")
+	}
+	if p.TMDBID != 555 {
+		t.Errorf("TMDBID = %d, want 555 — a softened duplicate still carries its placement data", p.TMDBID)
+	}
+	if p.Year != 2020 {
+		t.Errorf("Year = %d, want 2020 (TMDB's first_air_date) — a blanked year is the folder-splitting corruption §5.1 guards against", p.Year)
+	}
+	if p.RootFolderPath != root {
+		t.Errorf("RootFolderPath = %q, want %q", p.RootFolderPath, root)
+	}
+	if p.SeasonNumber != 1 || p.EpisodeNumber != 1 {
+		t.Errorf("placement = S%02dE%02d, want S01E01", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if p.SourcePath != orphan {
+		t.Errorf("SourcePath = %q, want the orphan %q", p.SourcePath, orphan)
 	}
 }
 
@@ -392,6 +491,111 @@ func TestScanLibrarySeries_NFOSeasonMissFallsThroughToSearch(t *testing.T) {
 	}
 }
 
+// TestScanLibrarySeries_NFODuplicateIsPendingAlternate is plan §9.5's SITE 1
+// test — the .nfo duplicate-slot branch (rename.go:1034-1036), the site the
+// spec's acceptance criteria name explicitly (the Beverly Hillbillies .nfo
+// case) and the only one of the seven softened sites no other test reaches.
+//
+// Site 1 is the STRUCTURALLY ODD one of the seven: isDuplicateSlot is captured
+// ~38 lines above its use, and the guard firing does NOT return early — control
+// falls through the whole TMDB-confirm block, which populates Title/TMDBID/Year/
+// RootFolderPath, before acceptDuplicatePendingEpisode runs and rewrites Status
+// and Reason ONLY. So the field assertions below are not incidental: they pin
+// that the helper's deliberate asymmetry with Movies' acceptDuplicatePending
+// (which DOES clobber those fields) still holds here. Unifying the two would
+// blank this row's placement data, which is the folder-splitting corruption
+// class §5.2.4 exists to prevent.
+//
+// Two properties of the setup are load-bearing and easy to undo by accident:
+//
+//   - The fake TMDB server must SUCCEED on SeasonDetails(nfo id, 1). The
+//     sibling ..._NFOSeasonMissFallsThroughToSearch drives the MISS path and
+//     therefore never reaches line 1034 at all.
+//   - searchResults is deliberately nil, so the filename search returns nothing.
+//     Any silent fall-through out of the .nfo branch lands Unmatched and fails
+//     loudly here, instead of quietly reaching the search path's own duplicate
+//     site (rename.go:1140) and passing for the wrong reason. The TMDBID
+//     assertion is the positive half of the same discrimination: Site 1 sets it
+//     from hint.TMDBID, the search site from match.ID.
+func TestScanLibrarySeries_NFODuplicateIsPendingAlternate(t *testing.T) {
+	root := t.TempDir()
+	orphan := filepath.Join(root, "The.Beverly.Hillbillies.S01E01.mkv")
+	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// <year> is required: line 1022 populates p.Year from the SIDECAR hint, not
+	// from TVDetails, so a year-less .nfo would leave Year 0 and the assertion
+	// below would have no teeth.
+	if err := os.WriteFile(filepath.Join(root, "tvshow.nfo"),
+		[]byte(`<tvshow><tmdbid>1899</tmdbid><year>1962</year></tvshow>`), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The tracked slot's own file lives OUTSIDE the scan root, so the walk never
+	// sees it: the collision is a genuine duplicate, not a self-collision.
+	trackedPath := filepath.Join(t.TempDir(), "already-tracked.mkv")
+	if err := os.WriteFile(trackedPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, nil, nil)}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1899, Title: "The Beverly Hillbillies", RootFolderPath: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// A non-empty FilePath is what makes this an OCCUPIED slot — rename.go:721
+	// skips fileless catalog rows, so a pathless row would never enter tracked
+	// and Site 1's guard would not fire at all.
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: trackedPath,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("status = %v (%s), want Pending-as-alternate", p.Status, p.Reason)
+	}
+	if !strings.HasPrefix(p.Reason, "alternate:") {
+		t.Errorf("reason = %q, want the softened alternate reason", p.Reason)
+	}
+	// Distinguishes acceptDuplicatePendingEpisode's reason from the within-batch
+	// `seen` guard's ("another file in this scan also claims"), which also
+	// prefixes "alternate:" — it cannot fire on a one-proposal scan, but the
+	// substring makes the test self-documenting about which writer it pins.
+	if !strings.Contains(p.Reason, "already has a file in the library") {
+		t.Errorf("reason = %q, want acceptDuplicatePendingEpisode's own wording", p.Reason)
+	}
+	if p.TMDBID != 1899 {
+		t.Errorf("TMDBID = %d, want 1899 (the .nfo's id) — a different id means the filename-search site answered, not Site 1", p.TMDBID)
+	}
+	if p.Title != "Show Name" {
+		// The shared fake's /tv/{id} stub returns this fixed name for EVERY id,
+		// so the value proves the field survived the helper, not the lookup.
+		t.Errorf("Title = %q, want %q — the helper must not overwrite the site's own title", p.Title, "Show Name")
+	}
+	if p.Year != 1962 {
+		t.Errorf("Year = %d, want 1962 (the .nfo's year) — a blanked year is the folder-splitting corruption §5.2.4 guards against", p.Year)
+	}
+	if p.RootFolderPath != root {
+		t.Errorf("RootFolderPath = %q, want %q", p.RootFolderPath, root)
+	}
+	if p.SeasonNumber != 1 || p.EpisodeNumber != 1 {
+		t.Errorf("placement = S%02dE%02d, want S01E01", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if p.SourcePath != orphan {
+		t.Errorf("SourcePath = %q, want the orphan %q", p.SourcePath, orphan)
+	}
+}
+
 // TestScanLibrarySeries_MarksUnmatchedWhenTMDBResultIsWeakMatch is Series'
 // counterpart to Movies' TestScanLibrary_MarksUnmatchedWhenTMDBResultIsWeakMatch
 // — the confidence gate in proposeOneEpisodeLibrary is a separate call site
@@ -504,19 +708,29 @@ func TestScanLibrarySeries_LooseParentDirParseRecoversOpaqueHashBasename(t *test
 	}
 }
 
-// TestScanLibrarySeries_LooseParentDirParseCollisionMarksSecondClaimantUnmatched
-// is the code-reviewer MEDIUM-finding regression test: ResolveEpisodeVideoFiles
-// returns every video file in a directory with no filter, and
-// ParseEpisodeNumbersLoose resolves EVERY file in a marker-named parent
-// directory to the SAME season/episode (there is only one parent dir to fall
-// back to). Two video files sharing a parent dir (a main file plus a
-// sample/featurette, say) would both resolve to an identical
-// (tmdbID, season, episode) and both land on Pending — the second Apply
-// would silently overwrite the first's library.Episode row. The within-batch
-// collision guard in ScanLibrarySeries must catch this: exactly one file
-// (in scan order) reaches Pending, and the other is marked Unmatched with a
-// clear reason instead.
-func TestScanLibrarySeries_LooseParentDirParseCollisionMarksSecondClaimantUnmatched(t *testing.T) {
+// TestScanLibrarySeries_SameSlotWithinOneScanBothStayPending covers the `seen`
+// guard (plan §5.3), reached via the loose parent-dir parse:
+// ResolveEpisodeVideoFiles returns every video file in a directory with no
+// filter, and ParseEpisodeNumbersLoose resolves EVERY file in a marker-named
+// parent directory to the SAME season/episode (there is only one parent dir to
+// fall back to). Two video files sharing a parent dir both resolve to an
+// identical (tmdbID, season, episode).
+//
+// This is the REWRITE IN PLACE of the retired
+// ..._LooseParentDirParseCollisionMarksSecondClaimantUnmatched (plan
+// §9.7.1(A), A3): same fixture, opposite outcome. Both files now stay Pending
+// (was: exactly 1 Pending + 1 Unmatched) — the second is a legitimate
+// alternate, annotated rather than declined, and ApplyLibrarySeries resolves
+// the collision against live DB state: whichever applies first becomes the
+// tracked primary and the second folds in via applyLibrarySeriesAlternate,
+// order-independently.
+//
+// Placement note for anyone diffing against plan §9.7.1(A): the plan says the
+// retired collision-reason check "moves into the Pending branch". Taken
+// literally that would assert the alternate prefix on BOTH rows and fail — the
+// `seen` guard annotates only the SECOND claimant. So the check lives on
+// got[1], alongside the scan-order assertions it belongs with.
+func TestScanLibrarySeries_SameSlotWithinOneScanBothStayPending(t *testing.T) {
 	root := t.TempDir()
 	epDir := filepath.Join(root, "The Path", "Season 1", "The.Path.S01E02.2160p.WEB.h265-NiXON")
 	if err := os.MkdirAll(epDir, 0o755); err != nil {
@@ -577,23 +791,237 @@ func TestScanLibrarySeries_LooseParentDirParseCollisionMarksSecondClaimantUnmatc
 			}
 		case proposals.Unmatched:
 			unmatchedCount++
-			if !strings.Contains(p.Reason, "already claims") {
-				t.Errorf("expected a within-batch collision reason, got %q", p.Reason)
-			}
 		default:
 			t.Errorf("unexpected status %v on proposal: %+v", p.Status, p)
 		}
 	}
-	if pendingCount != 1 || unmatchedCount != 1 {
-		t.Fatalf("expected exactly 1 Pending + 1 Unmatched (collision), got %d Pending, %d Unmatched: %+v", pendingCount, unmatchedCount, got)
+	if pendingCount != 2 || unmatchedCount != 0 {
+		t.Fatalf("expected both files Pending (the second as an alternate), got %d Pending, %d Unmatched: %+v", pendingCount, unmatchedCount, got)
 	}
-	// The first-resolved file (scan order) must be the one that wins Pending.
+	// Scan-order determinism is still the property being pinned: the
+	// first-resolved file (scan order) is the slot's primary claimant.
 	if got[0].SourcePath != firstPath || got[0].Status != proposals.Pending {
-		t.Errorf("expected the first-scanned file (%q) to win Pending, got %+v", firstPath, got[0])
+		t.Errorf("expected the first-scanned file (%q) to be the Pending primary claimant, got %+v", firstPath, got[0])
 	}
-	if got[1].SourcePath != secondPath || got[1].Status != proposals.Unmatched {
-		t.Errorf("expected the second-scanned file (%q) to be marked Unmatched, got %+v", secondPath, got[1])
+	if got[1].SourcePath != secondPath || got[1].Status != proposals.Pending {
+		t.Errorf("expected the second-scanned file (%q) to stay Pending as an alternate, got %+v", secondPath, got[1])
 	}
+	if !strings.HasPrefix(got[1].Reason, "alternate:") {
+		t.Errorf("expected the second claimant to carry the `seen` guard's alternate annotation, got %q", got[1].Reason)
+	}
+}
+
+// TestScanLibrarySeries_AppliedThenRescannedDuplicateIsPendingAlternate is plan
+// §9.5's CROSS-SCAN test — the one that would have caught the CRITICAL finding,
+// and the only test in the suite that distinguishes "the tracked guards were
+// audited" from "the tracked guards were assumed to be three".
+//
+// WHY NO SINGLE-SCAN TEST CAN COVER THIS. Within one scan both copies are
+// caught by the `seen` guard (§5.3), which is softened — so every single-scan
+// duplicate test passes EVEN IF the tracked-slot sites were left hard-declining.
+// The `seen` guard masks the whole defect. Only after one copy is APPLIED does
+// the slot appear in `tracked`, routing the second copy to a tracked site
+// (Site 2 here) instead.
+//
+// The three scans pin three different mechanisms — say which, because they look
+// alike from the outside:
+//
+//	scan 1: the `seen` guard   — two same-slot copies in one scan, both Pending.
+//	scan 2: SITE 2 (tracked)   — the surviving copy still Pending + "alternate:",
+//	                             now because the slot is tracked, not because a
+//	                             sibling was seen. THIS is the regression guard.
+//	scan 3: §5.4's known feed  — neither applied path is re-proposed.
+//
+// HONEST LIMIT ON SCAN 3, so nobody reads more into it than it proves: an
+// Apply-produced alternate lands in the season folder under a
+// preset-conformant name, so naming.MatchesSeriesSchema ALSO suppresses it
+// independently of the `known` feed. Scan 3 therefore pins the end-to-end
+// outcome an operator sees, not the feed itself. The feed is pinned two ways
+// that cannot be masked: directly, on AllEpisodeFilePaths (its data source),
+// and by the non-conformant-path subtest at the end, which has its own control.
+//
+// DEVIATION from §9.5, recorded rather than left silent: the plan asks for this
+// to be table-driven over the NFO / acceptSeries / episode-title-match /
+// anthology fixtures. This covers the acceptSeries path only, which is US-008's
+// acceptance criterion; the other three resolution paths remain uncovered
+// cross-scan.
+func TestScanLibrarySeries_AppliedThenRescannedDuplicateIsPendingAlternate(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	// Two copies of one episode, each in its own folder so ResolveEpisodeVideoFiles
+	// hands back one file per entry. Identical basenames mean both derive the
+	// same search term and resolve to the same (555, S01, E01).
+	firstPath := filepath.Join(root, "copy-a", "Show.Name.2020.S01E01.mkv")
+	secondPath := filepath.Join(root, "copy-b", "Show.Name.2020.S01E01.mkv")
+	for _, p := range []string{firstPath, secondPath} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("seeding %q: %v", p, err)
+		}
+	}
+
+	tmdbClient := fakeTMDBSeriesServer(t, map[string]string{
+		"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+	}, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdbClient}
+	libStore := newTestLibraryStore(t)
+	prober := mapProber{}
+
+	// --- Scan 1: the `seen` guard. Both copies stay Pending. ---
+	first, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+	if len(first) != 2 {
+		t.Fatalf("scan 1: expected 2 proposals, got %d: %+v", len(first), first)
+	}
+	for _, p := range first {
+		if p.Status != proposals.Pending {
+			t.Fatalf("scan 1: %q is %v (%s), want Pending", p.SourcePath, p.Status, p.Reason)
+		}
+	}
+
+	// Selected by SourcePath, never by index — scan order is a walk detail.
+	apply := func(t *testing.T, got []proposals.Proposal, sourcePath string) int64 {
+		t.Helper()
+		for _, p := range got {
+			if p.SourcePath != sourcePath {
+				continue
+			}
+			id, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, nil, p, naming.Jellyfin, "medium", prober)
+			if err != nil {
+				t.Fatalf("ApplyLibrarySeries(%q): %v", sourcePath, err)
+			}
+			return id
+		}
+		t.Fatalf("no proposal for %q in %+v", sourcePath, got)
+		return 0
+	}
+	episodeID := apply(t, first, firstPath)
+
+	// --- Scan 2: SITE 2. The surviving copy must NOT regress to Unmatched. ---
+	second, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+	if len(second) != 1 {
+		t.Fatalf("scan 2: expected only the un-applied copy to surface, got %d: %+v", len(second), second)
+	}
+	p := second[0]
+	if p.SourcePath != secondPath {
+		t.Fatalf("scan 2: proposal is for %q, want the un-applied copy %q", p.SourcePath, secondPath)
+	}
+	if p.Status != proposals.Pending {
+		t.Fatalf("scan 2: status = %v (%s) — an applied duplicate's twin regressed to a hard decline on the next scan",
+			p.Status, p.Reason)
+	}
+	if !strings.HasPrefix(p.Reason, "alternate:") {
+		t.Errorf("scan 2: reason = %q, want the softened tracked-slot alternate reason", p.Reason)
+	}
+	if p.TMDBID != 555 || p.SeasonNumber != 1 || p.EpisodeNumber != 1 {
+		t.Errorf("scan 2: placement = tmdb %d S%02dE%02d, want tmdb 555 S01E01", p.TMDBID, p.SeasonNumber, p.EpisodeNumber)
+	}
+
+	// --- Apply the alternate, then scan 3: nothing is re-proposed. ---
+	if gotID := apply(t, second, secondPath); gotID != episodeID {
+		t.Errorf("the alternate folded into episode %d, want the existing slot %d", gotID, episodeID)
+	}
+	files, err := libStore.ListEpisodeFiles(ctx, episodeID)
+	if err != nil {
+		t.Fatalf("ListEpisodeFiles: %v", err)
+	}
+	var altPath string
+	for _, f := range files {
+		if !f.IsPrimary {
+			altPath = f.FilePath
+		}
+	}
+	if altPath == "" {
+		t.Fatalf("no non-primary row after applying the alternate: %+v", files)
+	}
+	// §5.4's feed, asserted on its data source — this cannot be masked by
+	// naming.MatchesSeriesSchema the way scan 3's outcome can.
+	paths, err := libStore.AllEpisodeFilePaths(ctx)
+	if err != nil {
+		t.Fatalf("AllEpisodeFilePaths: %v", err)
+	}
+	found := false
+	for _, path := range paths {
+		if path == altPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("AllEpisodeFilePaths (the `known` feed) is missing the applied alternate %q, so a later Scan would re-propose it as an orphan", altPath)
+	}
+
+	third, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("scan 3: %v", err)
+	}
+	if len(third) != 0 {
+		t.Fatalf("scan 3: expected no proposals once both copies are applied, got %+v", third)
+	}
+
+	t.Run("known feed suppresses a NON-CONFORMANT applied alternate", func(t *testing.T) {
+		// The scan-3 assertion above cannot fail while MatchesSeriesSchema
+		// covers for the feed. This subtest removes that cover: the alternate
+		// path is a loose, non-conformant file, so `known` is the ONLY thing
+		// that can suppress it — and the control below proves it is otherwise
+		// discovered.
+		seed := func(t *testing.T, withAlternateRow bool) []proposals.Proposal {
+			t.Helper()
+			subRoot := t.TempDir()
+			seasonDir := filepath.Join(subRoot, "Show Name (2020) [tmdbid-555]", "Season 01")
+			if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			primary := filepath.Join(seasonDir, "Show Name S01E01 Pilot.mkv")
+			if err := os.WriteFile(primary, []byte("x"), 0o644); err != nil {
+				t.Fatalf("seeding primary: %v", err)
+			}
+			loose := filepath.Join(subRoot, "loose-alt", "Show.Name.2020.S01E01.mkv")
+			if err := os.MkdirAll(filepath.Dir(loose), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(loose, []byte("x"), 0o644); err != nil {
+				t.Fatalf("seeding loose alternate: %v", err)
+			}
+			store := newTestLibraryStore(t)
+			series, err := store.UpsertSeries(ctx, library.Series{
+				TMDBID: 555, Title: "Show Name", Year: 2020, RootFolderPath: subRoot,
+			})
+			if err != nil {
+				t.Fatalf("UpsertSeries: %v", err)
+			}
+			ep, err := store.UpsertEpisode(ctx, library.Episode{
+				SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: primary,
+			})
+			if err != nil {
+				t.Fatalf("UpsertEpisode: %v", err)
+			}
+			if withAlternateRow {
+				if _, err := store.UpsertEpisodeFile(ctx, library.EpisodeFile{
+					EpisodeID: ep.ID, FilePath: loose, IsPrimary: false,
+				}); err != nil {
+					t.Fatalf("UpsertEpisodeFile: %v", err)
+				}
+			}
+			got, err := ScanLibrarySeries(ctx, sess, store, subRoot, naming.Jellyfin, DefaultMatchConfig(), prober)
+			if err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			return got
+		}
+		if got := seed(t, false); len(got) != 1 {
+			t.Fatalf("control: expected the un-recorded loose file to be proposed, got %d: %+v", len(got), got)
+		}
+		if got := seed(t, true); len(got) != 0 {
+			t.Fatalf("expected the recorded alternate to be `known` and skipped, got %+v", got)
+		}
+	})
 }
 
 // TestScanLibrarySeries_LooseParentDirParseStaysUnmatchedWhenCorroborationFails
@@ -752,7 +1180,7 @@ func TestApplyLibrarySeries_RelocatesIntoSeasonFolderAndPreservesMetadata(t *tes
 	}
 	// nil TMDB: title still comes from the existing library episode row
 	// ("Pilot") so the Jellyfin destination includes the episode name.
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "")
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -827,7 +1255,7 @@ func TestApplyLibrarySeries_LogicalSplitCreatesOneEpisodeRowPerNumber(t *testing
 		SeasonNumber: 1, EpisodeNumber: 1, ExtraEpisodeNumbers: []int{2},
 		SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "medium")
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "medium", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -905,7 +1333,7 @@ func TestApplyLibrarySeries_NoMoveWhenAlreadyCorrectlyPlaced(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: base,
 	}
-	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "")
+	epID, changes, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -952,7 +1380,7 @@ func TestApplyLibrarySeries_LegacyPresetPreservesTodaysShape(t *testing.T) {
 		ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555,
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Legacy, ""); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Legacy, "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -984,7 +1412,7 @@ func TestApplyLibrarySeries_FetchesTMDBEpisodeTitleForJellyfinName(t *testing.T)
 		SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
 	tmdbClient := fakeTMDBSeriesServer(t, nil, nil)
-	epID, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, nil, p, naming.Jellyfin, "")
+	epID, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, nil, p, naming.Jellyfin, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1161,7 +1589,7 @@ func TestApplyLibrarySeries_FetchesTVDBEpisodeTitleForAnthologyMatch(t *testing.
 	tmdbClient, tmdbHits := countingTMDBServer(t)
 	tvdbClient := fakeTVDBEpisodesServer(t, anthologyTVDBCatalog())
 
-	epID, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, tvdbClient, p, naming.Jellyfin, "")
+	epID, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, tvdbClient, p, naming.Jellyfin, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1222,7 +1650,7 @@ func TestApplyLibrarySeries_NilTVDBClientDegradesToBareEpisodeName(t *testing.T)
 		TMDBID: syntheticID, TVDBID: 73910,
 		SeasonNumber: 3, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, ""); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "", nil); err != nil {
 		t.Fatalf("expected a nil tvdbClient to be inert, got error: %v", err)
 	}
 
@@ -1270,7 +1698,7 @@ func TestApplyLibrarySeries_TVDBFetchFailureStillApplies(t *testing.T) {
 		TMDBID: syntheticID, TVDBID: 73910,
 		SeasonNumber: 3, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
-	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, failingTVDBEpisodesServer(t), p, naming.Jellyfin, ""); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, failingTVDBEpisodesServer(t), p, naming.Jellyfin, "", nil); err != nil {
 		t.Fatalf("expected a TVDB 500 to be swallowed, got error: %v", err)
 	}
 
@@ -1329,7 +1757,7 @@ func TestApplyLibrarySeries_OrdinaryProposalMakesNoTVDBRequest(t *testing.T) {
 				SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 			}
 			tvdbClient, tvdbHits := countingTVDBServer(t)
-			if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, tvdbClient, p, naming.Jellyfin, ""); err != nil {
+			if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, tvdbClient, p, naming.Jellyfin, "", nil); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got := tvdbHits.Load(); got != 0 {
@@ -1386,7 +1814,7 @@ func TestApplyLibrarySeries_LibraryEpisodeTitleWinsOverTVDB(t *testing.T) {
 		SeasonNumber: 3, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 	}
 	tvdbClient := fakeTVDBEpisodesServer(t, anthologyTVDBCatalog())
-	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, tvdbClient, p, naming.Jellyfin, ""); err != nil {
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, tvdbClient, p, naming.Jellyfin, "", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1662,7 +2090,7 @@ func TestScanLibrarySeries_LiveTMDBTitleCollisionGuard(t *testing.T) {
 func TestApplyLibrarySeries_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, nil, nil, proposals.Proposal{Status: status}, naming.Jellyfin, ""); err == nil {
+		if _, _, err := ApplyLibrarySeries(context.Background(), libStore, nil, nil, proposals.Proposal{Status: status}, naming.Jellyfin, "", nil); err == nil {
 			t.Errorf("expected ApplyLibrarySeries to refuse a %q proposal", status)
 		}
 	}
@@ -2004,12 +2432,24 @@ func TestScanLibrarySeries_EpisodeTitleMatch_GateCompositionAcceptsZeroTokenOver
 	}
 }
 
-// TestScanLibrarySeries_EpisodeTitleMatch_AlreadyTrackedSlotStaysUnmatched is
-// case F (plan §2.5): a title match that would land on a slot ALREADY
-// tracked with a file must Unmatch, never Pending — otherwise Apply would
-// silently orphan the existing tracked file via UpsertEpisodes' unique
-// constraint.
-func TestScanLibrarySeries_EpisodeTitleMatch_AlreadyTrackedSlotStaysUnmatched(t *testing.T) {
+// TestScanLibrarySeries_EpisodeTitleMatchDuplicateIsPendingAlternate covers
+// SITE 5 (tryEpisodeTitleMatchSeries) reached DIRECTLY from the Scan — not
+// through aiEpisodeMode1, which wraps the reason (see
+// TestAIRecovery_Mode1TrackedSlotDeclines for that shape).
+//
+// This is the REWRITE IN PLACE of the retired
+// ..._EpisodeTitleMatch_AlreadyTrackedSlotStaysUnmatched (plan §9.7.1(A), A1):
+// same fixture, opposite outcome. A title match landing on a slot that is
+// already tracked with a file is now a legitimate ALTERNATE, not a conflict —
+// it stays Pending carrying an "alternate:" reason, and Apply folds it in as
+// primary or alternate by probed quality against live DB state
+// (applyLibrarySeriesAlternate) instead of overwriting the tracked row.
+//
+// Title/Year are asserted to still come from the PINNED TRACKED ROW: a
+// Year == 0 here is the folder-splitting corruption
+// autopilot-impl-episode-title-matching.md §0.3 exists to prevent, and
+// softening this guard is exactly the edit that could reintroduce it.
+func TestScanLibrarySeries_EpisodeTitleMatchDuplicateIsPendingAlternate(t *testing.T) {
 	tmdb.ResetDefaultCache()
 	t.Cleanup(tmdb.ResetDefaultCache)
 
@@ -2050,12 +2490,20 @@ func TestScanLibrarySeries_EpisodeTitleMatch_AlreadyTrackedSlotStaysUnmatched(t 
 		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
 	}
 	p := got[0]
-	if p.Status != proposals.Unmatched {
-		t.Fatalf("expected Unmatched — never Pending — onto an already-tracked slot, got %+v", p)
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected Pending-as-alternate onto an already-tracked slot, got %+v", p)
 	}
-	wantPrefix := fmt.Sprintf("appears to already be in the library as %q S02E02", redSkeltonShowTitle)
+	wantPrefix := fmt.Sprintf("alternate: %q S02E02 already has a file in the library", redSkeltonShowTitle)
 	if !strings.HasPrefix(p.Reason, wantPrefix) {
-		t.Errorf("expected the already-tracked reason (prefix %q), got %q", wantPrefix, p.Reason)
+		t.Errorf("expected the softened alternate reason (prefix %q), got %q", wantPrefix, p.Reason)
+	}
+	// Title/Year must still come from the pinned tracked row, NOT from
+	// TVDetails (which carries no year at all).
+	if p.Title != redSkeltonShowTitle {
+		t.Errorf("Title = %q, want the pinned tracked row's %q", p.Title, redSkeltonShowTitle)
+	}
+	if p.Year != 1951 {
+		t.Errorf("Year = %d, want the pinned tracked row's 1951 — a zero year here splits the show folder at Apply", p.Year)
 	}
 }
 
@@ -2807,12 +3255,16 @@ func TestScanLibrarySeries_TVDBAnthology_EpisodeLevelAmbiguityUnmatchesOneFile(t
 	}
 }
 
-// TestScanLibrarySeries_TVDBAnthology_AlreadyTrackedSlotStaysUnmatched is §8.3
-// case I: a corroborated folder in which one matched slot is ALREADY tracked
-// with a file under the synthetic id. That file must Unmatch, never Pending —
-// otherwise Apply would overwrite that slot's library_episodes row (UNIQUE
-// (series_id, season_number, episode_number)) and silently orphan the existing
-// file.
+// TestScanLibrarySeries_AnthologyDuplicateIsPendingAlternate covers SITE 6
+// (tvdbAnthologyPass) — a corroborated folder in which one matched slot is
+// ALREADY tracked with a file under the synthetic id.
+//
+// This is the REWRITE IN PLACE of the retired
+// ..._TVDBAnthology_AlreadyTrackedSlotStaysUnmatched (plan §9.7.1(A), A2):
+// same fixture, opposite outcome. The claimed file now stays Pending with an
+// "alternate:" reason; Apply resolves the collision against live DB state and
+// folds the file in as primary or alternate by probed quality instead of
+// overwriting the slot's library_episodes row.
 //
 // The tracked row deliberately carries TVDBID 0, so seriesByTVDBID stays empty
 // and the established-pin shortcut does NOT fire: this case is about the
@@ -2820,7 +3272,17 @@ func TestScanLibrarySeries_TVDBAnthology_EpisodeLevelAmbiguityUnmatchesOneFile(t
 // ("Laurel & Hardy") normalizes to a DIFFERENT folder key than the on-disk
 // folder ("Laurel and Hardy"), and its synthetic TMDBID is negative — which
 // pinFolderID ignores outright — so the folder stays unpinned either way.
-func TestScanLibrarySeries_TVDBAnthology_AlreadyTrackedSlotStaysUnmatched(t *testing.T) {
+//
+// The session wires a MainstreamAI so aiEpisodeRecoveryPass genuinely RUNS,
+// and the final reason is asserted to still be the softened one, uncarrying
+// aiEpisodeMatchReasonPrefix. Read that assertion for exactly what it is: a
+// REASON-NOT-CLOBBERED OUTCOME CHECK. It does NOT prove handled[i] is set and
+// must not be cited as if it did (plan §5.2.5) — the softened row is Pending
+// with a non-zero synthetic TMDBID, so series_ai_episode_match.go:160's gate
+// excludes it on Status and TMDBID alone; delete the handled[i] write and this
+// still passes. The genuine handled[i] coverage is the unit-level
+// TestAIRecovery_HandledRowIsSkipped "branch 2" case.
+func TestScanLibrarySeries_AnthologyDuplicateIsPendingAlternate(t *testing.T) {
 	root := t.TempDir()
 	seedAnthologyFiles(t, root, anthologyShowFolder,
 		anthologyDuckSoupFile, anthologyMusicBoxFile, anthologyBerthMarksFile, anthologyBigBusinessFile)
@@ -2828,7 +3290,9 @@ func TestScanLibrarySeries_TVDBAnthology_AlreadyTrackedSlotStaysUnmatched(t *tes
 	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
 		ID: anthologyTVDBSeriesID, Name: "Laurel & Hardy", Year: "1921", Catalog: anthologyScanCatalog(),
 	}})
-	sess := &mode.Session{Mode: mode.Series, TMDB: fatalTMDBSeriesServer(t), TVDB: tvdbClient}
+	ai := &countingAI{resp: aiGuess("Laurel & Hardy", aiChickensEpisode, 0, 0)}
+	sess := &mode.Session{Mode: mode.Series, MainstreamAI: ai,
+		TMDB: fatalTMDBSeriesServer(t), TVDB: tvdbClient}
 
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
@@ -2858,12 +3322,21 @@ func TestScanLibrarySeries_TVDBAnthology_AlreadyTrackedSlotStaysUnmatched(t *tes
 		t.Fatalf("expected 4 proposals, got %d: %+v", len(got), got)
 	}
 	claimed := proposalByName(t, got, anthologyDuckSoupFile)
-	if claimed.Status != proposals.Unmatched {
-		t.Fatalf("tracked slot: status = %v (%s), want Unmatched — never Pending", claimed.Status, claimed.Reason)
+	if claimed.Status != proposals.Pending {
+		t.Fatalf("tracked slot: status = %v (%s), want Pending-as-alternate", claimed.Status, claimed.Reason)
 	}
-	wantPrefix := fmt.Sprintf("appears to already be in the library as %q S03E01", "Laurel & Hardy")
+	wantPrefix := fmt.Sprintf("alternate: %q S03E01 already has a file in the library", "Laurel & Hardy")
 	if !strings.HasPrefix(claimed.Reason, wantPrefix) {
-		t.Errorf("expected the already-tracked reason (prefix %q), got %q", wantPrefix, claimed.Reason)
+		t.Errorf("expected the softened alternate reason (prefix %q), got %q", wantPrefix, claimed.Reason)
+	}
+	// Outcome check only — see this test's doc comment. aiEpisodeRecoveryPass
+	// really did run (the AI is wired), and it left the reason alone.
+	if n := seriesPromptCount(ai); n != 0 {
+		t.Errorf("seriesPromptCount = %d, want 0 — every row in this folder is anthology-resolved", n)
+	}
+	if strings.Contains(claimed.Reason, aiEpisodeMatchReasonPrefix) {
+		t.Errorf("reason carries %q — the AI pass clobbered the anthology alternate reason: %q",
+			aiEpisodeMatchReasonPrefix, claimed.Reason)
 	}
 	for _, name := range []string{anthologyMusicBoxFile, anthologyBerthMarksFile, anthologyBigBusinessFile} {
 		if p := proposalByName(t, got, name); p.Status != proposals.Pending {
@@ -2944,16 +3417,17 @@ func TestScanLibrarySeries_TVDBAnthology_EstablishedPinShortcutPlacesOneFile(t *
 
 // TestScanLibrarySeries_TVDBAnthology_RunsBeforeTheSeenGuard is §8.3 case L,
 // the ORDERING test (§3.2). Two files in a corroborated folder resolve to the
-// SAME slot; the within-batch `seen` guard turns the second claimant
-// Unmatched.
+// SAME slot; the within-batch `seen` guard annotates the second claimant.
 //
 // That only happens if the anthology pass runs BEFORE the guard. Backwards,
-// both rows would stay Pending and the later Apply would silently overwrite
-// the earlier one's library_episodes row.
+// neither row would carry the guard's annotation at all. The ORDERING is the
+// property here and it is unchanged — only the guard's own outcome softened
+// (plan §9.7.1(B), B1): the second claimant stays Pending carrying the
+// "alternate:" annotation instead of being turned Unmatched.
 //
-// Which of the two loses is a filesystem-walk-ordering detail, so the
-// assertion is "exactly one Pending, exactly one Unmatched carrying the seen
-// guard's reason" rather than a fixed index.
+// Which of the two is annotated is a filesystem-walk-ordering detail, so the
+// assertion is "both Pending, exactly one carrying the seen guard's alternate
+// annotation" rather than a fixed index.
 func TestScanLibrarySeries_TVDBAnthology_RunsBeforeTheSeenGuard(t *testing.T) {
 	const secondBigBusiness = "Laurel & Hardy - Big Business(Colour)-DVDRip.XviD-DIE-DVD06.mkv"
 
@@ -2976,23 +3450,28 @@ func TestScanLibrarySeries_TVDBAnthology_RunsBeforeTheSeenGuard(t *testing.T) {
 		t.Fatalf("expected 5 proposals, got %d: %+v", len(got), got)
 	}
 
-	wantSeenReason := fmt.Sprintf(
-		"another file in this scan already claims %q S02E12 — leaving in place for manual review", "Laurel & Hardy")
+	wantSeenPrefix := fmt.Sprintf(
+		"alternate: another file in this scan also claims %q S02E12 — apply will fold as primary or alternate by quality.",
+		"Laurel & Hardy")
 	var pending, collided int
 	for _, name := range []string{anthologyBigBusinessFile, secondBigBusiness} {
 		p := proposalByName(t, got, name)
+		// The annotated case MUST be tested first: an annotated row is also a
+		// plain Pending S02E12 row, so a status-only case listed first would
+		// swallow it and report 2 Pending / 0 annotated.
 		switch {
+		case p.Status == proposals.Pending && p.SeasonNumber == 2 && p.EpisodeNumber == 12 &&
+			strings.HasPrefix(p.Reason, wantSeenPrefix):
+			collided++
 		case p.Status == proposals.Pending && p.SeasonNumber == 2 && p.EpisodeNumber == 12:
 			pending++
-		case p.Status == proposals.Unmatched && p.Reason == wantSeenReason:
-			collided++
 		default:
 			t.Errorf("%q: unexpected outcome status=%v S%02dE%02d reason=%q",
 				name, p.Status, p.SeasonNumber, p.EpisodeNumber, p.Reason)
 		}
 	}
 	if pending != 1 || collided != 1 {
-		t.Errorf("same-slot pair = %d Pending / %d seen-guard Unmatched, want exactly 1 and 1 — "+
+		t.Errorf("same-slot pair = %d plain Pending / %d seen-guard-annotated Pending, want exactly 1 and 1 — "+
 			"the anthology pass must run BEFORE the seen guard", pending, collided)
 	}
 	// The three unambiguous neighbours are unaffected by the collision.
@@ -3496,5 +3975,281 @@ func TestScanLibrarySeries_CompactCodeSeedFallsBackToShowFolder(t *testing.T) {
 		if strings.Contains(prompt, "720x480") {
 			t.Errorf("the resolution noise reached an AI prompt instead of the show-folder seed: %q", prompt)
 		}
+	}
+}
+
+// --- Plan §9.5's two TVDB-fallback tests: Sites 3 and 4 -----------------------
+//
+// Both sites had ZERO coverage before this. Site 4 is the more important of the
+// two: §5.2.3 records it as a MORE common path than Site 3 on a low-signal
+// library, which is precisely the target population.
+//
+// TEST-INFRASTRUCTURE DEVIATION, recorded because §9.5 names two helpers by
+// name and neither is usable as written:
+//   - fakeTVDBEpisodesServer answers no GET /v4/search route at all, and
+//     tvdbFallbackSeries resolves the show through SearchSeries. The TVDB side
+//     therefore reuses fakeTVDBAnthologyServer, which does serve that route —
+//     genuine reuse, and its own doc comment already explains why it is a
+//     sibling of fakeTVDBEpisodesServer rather than an extension.
+//   - fakeTMDBSeriesServerEx serves no /find/{tvdb_id} route (the very call
+//     that turns a TheTVDB hit into a TMDB id), serves no per-candidate title
+//     or episode runtime, and t.Fatalf's on any unrecognised path — which would
+//     explode on the TVAggregateCredits call both sites make. Hence the sibling
+//     below, following the same convention.
+
+// tvdbFallbackCandidate is one TheTVDB search hit as TMDB answers for it.
+// TMDBName is deliberately DIFFERENT from the TheTVDB name in every fixture:
+// that difference is what makes deviation D3 (§5.2.1) falsifiable — the emitted
+// row and its reason must name TMDB's title, never TheTVDB's bestName.
+type tvdbFallbackCandidate struct {
+	TVDBID            int
+	TMDBID            int
+	TMDBName          string
+	EpisodeRuntimeMin int // season 1 / episode 1 runtime, the duration-corroboration knob
+}
+
+// fakeTMDBTVDBFallbackServer serves the four TMDB endpoints tvdbFallbackSeries
+// touches, plus /search/tv answering EMPTY so the caller falls through to the
+// TVDB fallback in the first place.
+//
+// The returned counter map is keyed by TVDBID and counts /find/{tvdb_id}
+// requests — the observable that proves how far the candidate loop walked. It
+// is what Site 4's test uses to prove it reached the weak branch rather than
+// the strong one.
+//
+// Unknown paths answer 404 (the mux default), never t.Fatalf: TVAggregateCredits
+// is called on both sites and is expected to soft-fail here, and FailNow from a
+// handler goroutine is not permitted anyway.
+func fakeTMDBTVDBFallbackServer(t *testing.T, cands []tvdbFallbackCandidate) (*tmdb.Client, map[int]*atomic.Int64) {
+	t.Helper()
+	finds := map[int]*atomic.Int64{}
+	byTMDBID := map[int]tvdbFallbackCandidate{}
+	byTVDBID := map[int]tvdbFallbackCandidate{}
+	for _, c := range cands {
+		finds[c.TVDBID] = &atomic.Int64{}
+		byTMDBID[c.TMDBID] = c
+		byTVDBID[c.TVDBID] = c
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /search/tv", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"results":[]}`)
+	})
+	mux.HandleFunc("GET /find/{tvdbid}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.Atoi(r.PathValue("tvdbid"))
+		c, ok := byTVDBID[id]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		finds[id].Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"tv_results":[{"id":%d}]}`, c.TMDBID)
+	})
+	mux.HandleFunc("GET /tv/{id}/season/{season}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.Atoi(r.PathValue("id"))
+		c, ok := byTMDBID[id]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"episodes":[{"episode_number":1,"name":"Pilot","air_date":"2020-01-01","runtime":%d}]}`,
+			c.EpisodeRuntimeMin)
+	})
+	mux.HandleFunc("GET /tv/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.Atoi(r.PathValue("id"))
+		c, ok := byTMDBID[id]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":%d,"name":%q,"genres":[]}`, c.TMDBID, c.TMDBName)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client()), finds
+}
+
+// seedTVDBFallbackTrackedSlot seeds a series carrying tmdbID plus an OCCUPIED
+// S01E01 slot whose file lives outside the scan root, so the walk never sees it
+// and the only proposal produced is the incoming duplicate.
+func seedTVDBFallbackTrackedSlot(t *testing.T, libStore *library.Store, root, title string, tmdbID int) {
+	t.Helper()
+	ctx := context.Background()
+	trackedPath := filepath.Join(t.TempDir(), "already-tracked.mkv")
+	if err := os.WriteFile(trackedPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seeding tracked file: %v", err)
+	}
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: tmdbID, Title: title, RootFolderPath: root})
+	if err != nil {
+		t.Fatalf("UpsertSeries: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: trackedPath,
+	}); err != nil {
+		t.Fatalf("UpsertEpisode: %v", err)
+	}
+}
+
+// TestScanLibrarySeries_TVDBFallbackStrongDuplicateIsPendingAlternate is plan
+// §9.5's SITE 3 test (rename.go's tvdbFallbackSeries `accept` closure, reached
+// on CorroborationStrong).
+//
+// Corroboration is forced STRONG the cheapest honest way: the filename's year
+// (2020) equals the candidate year TheTVDB supplies, so SignalsCorroborate's
+// yearMatched branch fires with no duration signal in play at all (the prober
+// is nil, so sig.DurationSec is 0 — which also makes the weak branch, whose
+// only route is yearMismatch + duration override, structurally unreachable
+// here). That is this test's own proof that it is at Site 3 and not Site 4.
+//
+// The D3 assertion (§5.2.1) is the point of the title checks: the RETIRED
+// Unmatched string named TheTVDB's bestName, while the emitted row carries
+// TMDB's det.Title. A row showing two different show names is the specific
+// regression these assertions exist to catch — so the fixture gives TheTVDB and
+// TMDB deliberately different names and the reason is checked for both the
+// presence of one and the absence of the other.
+func TestScanLibrarySeries_TVDBFallbackStrongDuplicateIsPendingAlternate(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	orphan := filepath.Join(root, "Cosmic Drift 2020 S01E01.mkv")
+	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seeding orphan: %v", err)
+	}
+
+	const (
+		tvdbName = "Cosmic Drift: The TVDB Listing"
+		tmdbName = "Cosmic Drift Chronicles"
+	)
+	tmdbClient, _ := fakeTMDBTVDBFallbackServer(t, []tvdbFallbackCandidate{
+		{TVDBID: 900, TMDBID: 4200, TMDBName: tmdbName, EpisodeRuntimeMin: 30},
+	})
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{
+		{ID: 900, Name: tvdbName, Year: "2020"},
+	})
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdbClient, TVDB: tvdbClient}
+	libStore := newTestLibraryStore(t)
+	seedTVDBFallbackTrackedSlot(t, libStore, root, tmdbName, 4200)
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("status = %v (%s), want Pending-as-alternate — Site 3 must not hard-decline a tracked slot",
+			p.Status, p.Reason)
+	}
+	if p.TMDBID != 4200 {
+		t.Errorf("TMDBID = %d, want 4200 (resolved from TheTVDB id 900)", p.TMDBID)
+	}
+	if p.Title != tmdbName {
+		t.Errorf("Title = %q, want TMDB's %q (deviation D3 — never TheTVDB's bestName)", p.Title, tmdbName)
+	}
+	wantPrefix := fmt.Sprintf("alternate: %q S01E01 already has a file in the library", tmdbName)
+	if !strings.HasPrefix(p.Reason, wantPrefix) {
+		t.Errorf("reason = %q, want prefix %q", p.Reason, wantPrefix)
+	}
+	if strings.Contains(p.Reason, "TVDB Listing") {
+		t.Errorf("reason names TheTVDB's series name as well as TMDB's — that is the two-show-names-on-one-row regression D3 forbids: %q", p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_TVDBFallbackWeakDuplicateIsPendingAlternate is plan
+// §9.5's SITE 4 test — tvdbFallbackSeries' POST-LOOP `weak != nil` branch,
+// which fires only when NO candidate reached CorroborationStrong.
+//
+// HOW THE WEAK RANK IS FORCED: SignalsCorroborate returns Weak on exactly one
+// combination — the filename year DISAGREES with the candidate year and the
+// probed duration overrides it by matching the candidate's episode runtime. So
+// candidate #1 is published with year 1999 against a 2020 filename, and the
+// prober reports 1800s against a 30-minute episode.
+//
+// HOW THIS TEST PROVES IT REACHED SITE 4 AND NOT SITE 3 — the two-step argument
+// §9.5 demands, stated in full because it is exactly what a future reader will
+// "simplify" away:
+//
+//	(a) /find/{911} was requested, so the candidate loop walked PAST candidate
+//	    #1. The strong branch returns from inside the loop, so had #1 corroborated
+//	    strongly, #2 would never have been looked up at all.
+//	(b) the emitted row carries candidate #1's TMDB title. The strong branch can
+//	    only ever emit the title of the candidate it returned on — and by (a)
+//	    that could only have been #2, whose title is different.
+//
+// Together those leave the post-loop weak branch as the only path that can
+// produce this row. Candidate #2 is arranged to corroborate NONE (its runtime
+// disagrees with the probe as well as its year), so under the Site-3
+// counterfactual the scan would emit no TVDB-fallback row at all rather than a
+// merely-different one — a strictly louder failure.
+func TestScanLibrarySeries_TVDBFallbackWeakDuplicateIsPendingAlternate(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	orphan := filepath.Join(root, "Cosmic Drift 2020 S01E01.mkv")
+	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seeding orphan: %v", err)
+	}
+
+	const (
+		firstTVDBName  = "Cosmic Drift: The TVDB Listing"
+		firstTMDBName  = "Cosmic Drift Origins"
+		secondTVDBName = "Cosmic Drift: A Second TVDB Listing"
+		secondTMDBName = "Cosmic Drift Reborn"
+	)
+	tmdbClient, finds := fakeTMDBTVDBFallbackServer(t, []tvdbFallbackCandidate{
+		// #1 — year disagrees (1999 vs the filename's 2020), runtime matches the
+		// probe: CorroborationWeak, stashed as the fallback.
+		{TVDBID: 910, TMDBID: 4201, TMDBName: firstTMDBName, EpisodeRuntimeMin: 30},
+		// #2 — year disagrees AND runtime disagrees: CorroborationNone, skipped.
+		{TVDBID: 911, TMDBID: 4202, TMDBName: secondTMDBName, EpisodeRuntimeMin: 45},
+	})
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{
+		{ID: 910, Name: firstTVDBName, Year: "1999"},
+		{ID: 911, Name: secondTVDBName, Year: "1998"},
+	})
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdbClient, TVDB: tvdbClient}
+	libStore := newTestLibraryStore(t)
+	seedTVDBFallbackTrackedSlot(t, libStore, root, firstTMDBName, 4201)
+
+	// 1800s against candidate #1's 30-minute episode is an exact match, so the
+	// tolerance percentage plays no part in whether this test passes.
+	prober := mapProber{orphan: {Duration: 1800, Height: 720, CodecName: "h264", BitRate: 2_000_000}}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+
+	// (a) the loop walked past candidate #1 — so #1 did not return via the
+	// strong branch.
+	if n := finds[911].Load(); n != 1 {
+		t.Fatalf("/find/911 was requested %d times, want 1 — the candidate loop returned early, so this row came from the STRONG branch (Site 3), not the weak one (Site 4)", n)
+	}
+	// (b) the row carries candidate #1's title, which the strong branch could
+	// not have produced given (a).
+	if p.Title != firstTMDBName {
+		t.Fatalf("Title = %q, want candidate #1's %q — combined with (a) this row can only have come from the post-loop weak branch", p.Title, firstTMDBName)
+	}
+	if p.TMDBID != 4201 {
+		t.Errorf("TMDBID = %d, want 4201 (the weak candidate)", p.TMDBID)
+	}
+
+	if p.Status != proposals.Pending {
+		t.Fatalf("status = %v (%s), want Pending-as-alternate — Site 4 must not hard-decline a tracked slot",
+			p.Status, p.Reason)
+	}
+	wantPrefix := fmt.Sprintf("alternate: %q S01E01 already has a file in the library", firstTMDBName)
+	if !strings.HasPrefix(p.Reason, wantPrefix) {
+		t.Errorf("reason = %q, want prefix %q (deviation D3 — weak.det.Title, never bestName)", p.Reason, wantPrefix)
+	}
+	if strings.Contains(p.Reason, "TVDB Listing") {
+		t.Errorf("reason names TheTVDB's series name as well as TMDB's — the two-show-names-on-one-row regression D3 forbids: %q", p.Reason)
 	}
 }

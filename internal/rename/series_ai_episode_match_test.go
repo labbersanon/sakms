@@ -36,7 +36,7 @@ import (
 // RETURN VALUES that ScanLibrarySeries consumes internally, so a full-Scan
 // test cannot set (or observe) either. The cases that CAN be driven end-to-end
 // are, and they are the ones where the wiring itself is the claim:
-// TestAIRecovery_WithinBatchCollisionDemotesTheSecondRow (§0.8's ordering) and
+// TestAIRecovery_WithinBatchCollisionAnnotatesTheSecondRow (§0.8's ordering) and
 // TestAIRecovery_UsesShowFolderNameNotParentDir (§2.5.4's fail-open bug).
 // ---------------------------------------------------------------------------
 
@@ -446,9 +446,15 @@ func TestAIRecovery_HandledRowIsSkipped(t *testing.T) {
 			},
 		},
 		{
-			name: "branch 2 — tracked-slot decline", branch: "tracked[episodeKey{pin.synthID,...}]",
+			// LOAD-BEARING: this mutate sets p.Reason ALONE. Status/TMDBID stay
+			// at newAIMode2Fixture's base values (Unmatched / 0), which is what
+			// keeps the row eligible past the :160 gate and makes the
+			// byte-identity assertion below non-vacuous — this case is the only
+			// genuine handled[i] coverage in the suite (plan §5.2.5/§9.7.1). Do
+			// NOT "correct" them to a real post-softening row's Pending/synthID.
+			name: "branch 2 — tracked-slot alternate", branch: "tracked[episodeKey{pin.synthID,...}]",
 			mutate: func(p *proposals.Proposal) {
-				p.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review",
+				p.Reason = fmt.Sprintf("alternate: %q S%02dE%02d already has a file in the library — apply will fold as primary or alternate by quality",
 					pin.title, 3, 2)
 			},
 		},
@@ -690,14 +696,22 @@ func TestAIRecovery_Mode1PassesFoundRootNotGeneralRoot(t *testing.T) {
 }
 
 // TestAIRecovery_Mode1TrackedSlotDeclines proves MODE 1 genuinely INHERITS
-// tryEpisodeTitleMatchSeries' tracked-slot collision guard rather than merely
-// being claimed to (§2.5.5). Of the seven guarantees that reuse buys, this is
-// the one whose failure is destructive: a Pending onto an already-tracked slot
-// would, at Apply, overwrite that slot's library_episodes row and silently
-// orphan the existing file.
+// tryEpisodeTitleMatchSeries' tracked-slot handling rather than merely being
+// claimed to (§2.5.5). It reaches SITE 5 through aiEpisodeMode1's verbatim
+// reuse — it never enters aiEpisodeMode2, so it is NOT Site 7 coverage
+// (TestAIRecovery_Mode2TrackedSlotDeclines is; plan §9.5).
 //
 // Unlike MODE 2's key, this one is the REAL POSITIVE TMDB id — MODE 1 resolves
 // against a tracked TMDB show, not an anthology synthetic.
+//
+// Softened outcome (plan §9.7.1(B), B3): a match onto an already-tracked slot
+// is now a legitimate ALTERNATE, so the row is Pending and legitimately CARRIES
+// its placement data — Apply folds it in against live DB state rather than
+// overwriting the tracked row. The reason assertion is Contains, NOT HasPrefix:
+// aiEpisodeMode1 wraps EVERY non-nil return from tryEpisodeTitleMatchSeries in
+// aiEpisodeMatchReasonPrefix, so the row reads "<aiPrefix> …; alternate: …".
+// The aiEpisodeMatchReasonPrefix assertion below stays — it pins that wrapping,
+// which this work does not change (contrast Site 7, which loses the prefix).
 func TestAIRecovery_Mode1TrackedSlotDeclines(t *testing.T) {
 	f := newAIMode1Fixture(t, aiGuess(redSkeltonShowTitle, "More Funny Faces", 0, 0), "/library/Series")
 	f.tracked[episodeKey{tmdbID: redSkeltonShowID, season: 2, episode: 2}] = true
@@ -705,15 +719,16 @@ func TestAIRecovery_Mode1TrackedSlotDeclines(t *testing.T) {
 	f.run(t)
 
 	p := f.out[0]
-	if p.Status != proposals.Unmatched {
-		t.Fatalf("status = %v (%s), want Unmatched — a Pending here would clobber the tracked row at Apply",
+	if p.Status != proposals.Pending {
+		t.Fatalf("status = %v (%s), want Pending-as-alternate onto the tracked slot",
 			p.Status, p.Reason)
 	}
-	if p.TMDBID != 0 || p.SeasonNumber != 0 || p.EpisodeNumber != 0 {
-		t.Errorf("row carries placement data it must not: tmdb=%d S%02dE%02d", p.TMDBID, p.SeasonNumber, p.EpisodeNumber)
+	if p.TMDBID != redSkeltonShowID || p.SeasonNumber != 2 || p.EpisodeNumber != 2 {
+		t.Errorf("row is missing the placement data a softened alternate must carry: tmdb=%d S%02dE%02d, want tmdb=%d S02E02",
+			p.TMDBID, p.SeasonNumber, p.EpisodeNumber, redSkeltonShowID)
 	}
-	if !strings.Contains(p.Reason, "already be in the library") {
-		t.Errorf("reason = %q, want an already-in-the-library reason", p.Reason)
+	if !strings.Contains(p.Reason, "alternate:") {
+		t.Errorf("reason = %q, want it to contain the softened %q clause", p.Reason, "alternate:")
 	}
 	if !strings.HasPrefix(p.Reason, aiEpisodeMatchReasonPrefix) {
 		t.Errorf("reason = %q, want the %q prefix", p.Reason, aiEpisodeMatchReasonPrefix)
@@ -899,14 +914,22 @@ func TestAIRecovery_Mode2AmbiguousEpisodeTitleDeclines(t *testing.T) {
 	assertRowUnchanged(t, f.out[0], before)
 }
 
-// TestAIRecovery_Mode2TrackedSlotDeclines: the guard whose omission is the
-// single most likely defect in this work. A Pending onto an already-tracked
-// slot would, at Apply, overwrite that slot's library_episodes row
-// (UNIQUE(series_id, season_number, episode_number)) and silently orphan the
-// existing file.
+// TestAIRecovery_Mode2TrackedSlotDeclines reaches SITE 7 (aiEpisodeMode2) and
+// is Site 7's ONLY test — the sibling Mode-1 test above reaches Site 5 through
+// tryEpisodeTitleMatchSeries and must never be recorded as Site 7 coverage
+// (plan §9.5).
 //
 // The tracked key uses the SYNTHETIC NEGATIVE id, not a real positive one —
 // that is what the emit path keys on.
+//
+// Softened outcome (plan §9.7.1(B), B4): the row is Pending-as-alternate and
+// legitimately carries its placement data. Note what is DELETED rather than
+// relaxed here: Site 7 built its reason inline INCLUDING
+// aiEpisodeMatchReasonPrefix, and acceptDuplicatePendingEpisode writes Reason
+// WHOLESALE — so the AI prefix is lost on this path, deliberately. Asserting it
+// would be asserting something false. Site 5 via Mode 1 keeps its prefix
+// because that caller wraps rather than replaces; the two AI modes genuinely
+// end up with different reason shapes.
 func TestAIRecovery_Mode2TrackedSlotDeclines(t *testing.T) {
 	f := newAIMode2Fixture(t, aiGuess("Laurel & Hardy", aiChickensEpisode, 0, 0))
 	pin := aiAnthologyPin()
@@ -915,18 +938,18 @@ func TestAIRecovery_Mode2TrackedSlotDeclines(t *testing.T) {
 	f.run(t)
 
 	p := f.out[0]
-	if p.Status != proposals.Unmatched {
-		t.Fatalf("status = %v (%s), want Unmatched — a Pending here would clobber the tracked row at Apply",
+	if p.Status != proposals.Pending {
+		t.Fatalf("status = %v (%s), want Pending-as-alternate onto the tracked slot",
 			p.Status, p.Reason)
 	}
-	if p.TMDBID != 0 || p.SeasonNumber != 0 || p.EpisodeNumber != 0 {
-		t.Errorf("row carries placement data it must not: tmdb=%d S%02dE%02d", p.TMDBID, p.SeasonNumber, p.EpisodeNumber)
+	// TMDBID is the negative synthetic id, so the check is != 0, never <= 0.
+	if p.TMDBID != pin.synthID || p.SeasonNumber != 3 || p.EpisodeNumber != 2 {
+		t.Errorf("row is missing the placement data a softened alternate must carry: tmdb=%d S%02dE%02d, want tmdb=%d S03E02",
+			p.TMDBID, p.SeasonNumber, p.EpisodeNumber, pin.synthID)
 	}
-	if !strings.Contains(p.Reason, "already be in the library") {
-		t.Errorf("reason = %q, want an already-in-the-library reason", p.Reason)
-	}
-	if !strings.HasPrefix(p.Reason, aiEpisodeMatchReasonPrefix) {
-		t.Errorf("reason = %q, want the %q prefix", p.Reason, aiEpisodeMatchReasonPrefix)
+	wantPrefix := fmt.Sprintf("alternate: %q S03E02 already has a file in the library", pin.title)
+	if !strings.HasPrefix(p.Reason, wantPrefix) {
+		t.Errorf("reason = %q, want the softened alternate reason (prefix %q)", p.Reason, wantPrefix)
 	}
 }
 
@@ -1154,15 +1177,19 @@ func aiScanFixture(t *testing.T, sub string, ai *countingAI, files ...string) []
 	return got
 }
 
-// TestAIRecovery_WithinBatchCollisionDemotesTheSecondRow pins §0.8's ordering
-// constraint FROM THE OUTSIDE, where a future reorder would actually be
-// caught: the pass must run BEFORE the `seen` collision loop, so the Pending
+// TestAIRecovery_WithinBatchCollisionAnnotatesTheSecondRow pins §0.8's
+// ordering constraint FROM THE OUTSIDE, where a future reorder would actually
+// be caught: the pass must run BEFORE the `seen` collision loop, so the Pending
 // rows it creates inherit the within-batch episodeKey guard for free.
 //
 // Two foreign-titled files, one canned AI response, therefore one slot. If the
-// pass ran AFTER the `seen` loop, BOTH would stay Pending on S03E02 and the
-// later Apply would silently overwrite the earlier one's library_episodes row.
-func TestAIRecovery_WithinBatchCollisionDemotesTheSecondRow(t *testing.T) {
+// pass ran AFTER the `seen` loop, NEITHER row would carry the guard's
+// annotation. The ordering is unchanged; only the guard's outcome softened
+// (plan §9.7.1(B), B5) — nothing is "demoted" any more, hence the rename from
+// ..._DemotesTheSecondRow. Both rows stay Pending and the second carries the
+// "alternate:" annotation, so which row is which is discriminated on the
+// ANNOTATION, not on status (status no longer distinguishes them at all).
+func TestAIRecovery_WithinBatchCollisionAnnotatesTheSecondRow(t *testing.T) {
 	ai := &countingAI{resp: aiGuess("Laurel & Hardy", aiChickensEpisode, 0, 0)}
 	got := aiScanFixture(t, anthologyShowFolder, ai,
 		anthologyDuckSoupFile, anthologyMusicBoxFile, anthologyBerthMarksFile, anthologyBigBusinessFile,
@@ -1175,25 +1202,32 @@ func TestAIRecovery_WithinBatchCollisionDemotesTheSecondRow(t *testing.T) {
 
 	first := proposalByName(t, got, aiPolitiqueriasFile)
 	second := proposalByName(t, got, aiLadronesFile)
-	pending, demoted := first, second
-	if second.Status == proposals.Pending && first.Status != proposals.Pending {
-		pending, demoted = second, first
+	// Which of the two the walk reaches first is a filesystem-ordering detail,
+	// so discriminate on the `seen` guard's own annotation. Both rows are
+	// Pending now, so a status-based pick would silently always choose `second`.
+	wantAnnotation := fmt.Sprintf(
+		"alternate: another file in this scan also claims %q S%02dE%02d — apply will fold as primary or alternate by quality.",
+		aiAnthologyPin().title, 3, 2)
+	pending, annotated := first, second
+	if strings.HasPrefix(first.Reason, wantAnnotation) {
+		pending, annotated = second, first
+	}
+	if !strings.HasPrefix(annotated.Reason, wantAnnotation) {
+		t.Fatalf("neither AI-resolved row carries the `seen` guard's annotation (%q): %q=%q, %q=%q",
+			wantAnnotation, first.SourceName, first.Reason, second.SourceName, second.Reason)
+	}
+	if strings.HasPrefix(pending.Reason, wantAnnotation) {
+		t.Fatalf("BOTH rows carry the `seen` guard's annotation — only the second claimant may")
 	}
 	if pending.Status != proposals.Pending {
-		t.Fatalf("neither AI-resolved row is Pending: %q=%v (%s), %q=%v (%s)",
-			first.SourceName, first.Status, first.Reason, second.SourceName, second.Status, second.Reason)
+		t.Fatalf("the primary claimant has status %v (%s), want Pending", pending.Status, pending.Reason)
 	}
 	if pending.SeasonNumber != 3 || pending.EpisodeNumber != 2 {
 		t.Errorf("Pending row is S%02dE%02d, want S03E02", pending.SeasonNumber, pending.EpisodeNumber)
 	}
-	if demoted.Status != proposals.Unmatched {
-		t.Fatalf("second row on the same slot has status %v (%s), want Unmatched via the `seen` guard",
-			demoted.Status, demoted.Reason)
-	}
-	wantReason := fmt.Sprintf("another file in this scan already claims %q S%02dE%02d — leaving in place for manual review",
-		aiAnthologyPin().title, 3, 2)
-	if demoted.Reason != wantReason {
-		t.Errorf("demoted reason = %q, want the `seen` guard's own %q", demoted.Reason, wantReason)
+	if annotated.Status != proposals.Pending {
+		t.Fatalf("second row on the same slot has status %v (%s), want Pending-as-alternate via the `seen` guard",
+			annotated.Status, annotated.Reason)
 	}
 }
 

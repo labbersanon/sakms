@@ -226,6 +226,16 @@ func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) 
 	if err := row.Scan(&ep.ID, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 		return Episode{}, fmt.Errorf("upserting episode s%de%d for series %d: %w", ep.SeasonNumber, ep.EpisodeNumber, ep.SeriesID, err)
 	}
+	// Claude 2026-08-08: keep the library_episode_files primary row in sync with the denormalized file_path
+	// Reason: Series parity with Upsert's SyncPrimaryFile call (library.go:135) — every writer of this
+	//   row (Rename Apply, Series Dedup Apply, the importer) goes through here, so hooking it once here
+	//   covers all of them without a second call site in any of them.
+	// Troubleshooting: a Series Dedup Apply rewrote file_path to the surviving winner while
+	//   library_episode_files still flagged the DELETED loser as primary — silently, no error, no log.
+	// Review if: the primary path moves exclusively onto library_episode_files
+	if err := s.SyncPrimaryEpisodeFile(ctx, ep); err != nil {
+		return Episode{}, fmt.Errorf("syncing primary file for episode s%de%d: %w", ep.SeasonNumber, ep.EpisodeNumber, err)
+	}
 	return ep, nil
 }
 
@@ -243,6 +253,12 @@ func (s *Store) UpsertEpisode(ctx context.Context, ep Episode) (Episode, error) 
 // re-Scan can still discover and correctly resolve the file. eps[0] is
 // expected to be the primary episode's row when this is used for that
 // purpose, but the function itself is order-agnostic.
+//
+// AMENDED 2026-08-08: the transaction covers THE UPSERTS ONLY. The
+// SyncPrimaryEpisodeFile loop added below runs after tx.Commit(), so a non-nil
+// error from this function no longer guarantees that nothing was committed —
+// every episode row is already durable by the time that loop can fail. See the
+// comment block at that loop for why post-commit is deliberate.
 func (s *Store) UpsertEpisodes(ctx context.Context, eps []Episode) ([]Episode, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -274,6 +290,20 @@ func (s *Store) UpsertEpisodes(ctx context.Context, eps []Episode) ([]Episode, e
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("committing episode upserts: %w", err)
+	}
+	// Claude 2026-08-08: sync each row's library_episode_files primary entry, POST-COMMIT
+	// Reason: post-commit rather than inside the tx above is deliberate and is exact Movies parity —
+	//   Upsert uses no transaction at all, so SyncPrimaryFile is likewise unatomic there, and running
+	//   an s.db statement against rows still held in an open tx would read stale state or block.
+	// Troubleshooting: a logical-episode-split Apply upserts N rows here; without this loop only the
+	//   single-row UpsertEpisode path kept library_episode_files correct.
+	// Review if: this batch gains its own tx-scoped Store handle, at which point the sync can move inside.
+	// NON-ATOMIC BY DESIGN: a crash between the commit and these syncs leaves a stale primary file
+	// row behind, self-healed by the next Apply for that slot.
+	for _, ep := range out {
+		if err := s.SyncPrimaryEpisodeFile(ctx, ep); err != nil {
+			return nil, fmt.Errorf("syncing primary file for episode s%de%d: %w", ep.SeasonNumber, ep.EpisodeNumber, err)
+		}
 	}
 	return out, nil
 }

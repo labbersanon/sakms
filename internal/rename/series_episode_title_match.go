@@ -353,23 +353,30 @@ func tryEpisodeTitleMatchSeries(
 		return nil
 	}
 
-	// Claude 2026-08-06: reimplement the tracked[episodeKey] guard (plan §2.5)
-	// Reason: acceptSeries (rename.go) closes over season/episode, which do
-	//   not exist at the ParseEpisodeNumbersLoose !ok call site, so it can't
-	//   be reused here — omitting this guard is the single most likely
-	//   defect in this feature: a title match onto an already-tracked slot
-	//   would produce a Pending whose Apply overwrites that slot's
-	//   library.Episode row (UpsertEpisodes' UNIQUE(series_id,
-	//   season_number, episode_number)), silently orphaning the existing
-	//   file.
-	// Troubleshooting: an Apply from this path clobbered an existing
-	//   tracked episode — confirm this check ran before Pending was built.
-	if tracked[episodeKey{tmdbID: pin.tmdbID, season: match.season, episode: match.episode}] {
-		q := base
-		q.Status = proposals.Unmatched
-		q.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", pin.title, match.season, match.episode)
-		return &q
-	}
+	// Claude 2026-08-07: SITE 5 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.4)
+	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
+	//   REPLACES (per the stale-comment rule, not edits) the 2026-08-06 block
+	//   that stood here, whose premise was that a Pending on an already-tracked
+	//   slot "overwrites that slot's library.Episode row ... silently orphaning
+	//   the existing file." That premise is now FALSE: ApplyLibrarySeries folds
+	//   a second file into library_episode_files as an alternate, resolving the
+	//   collision against LIVE DB state (existing.FilePath != "") rather than a
+	//   Scan-time snapshot, promoting or demoting by probed tier. So the guard
+	//   still fires — it just records "this is an alternate" instead of
+	//   declining. This is the Red Skelton population's path (the compact-code
+	//   parser now delivers those files here rather than to the parse-failure
+	//   branch), so hard-declining here would leave that whole population
+	//   Unmatched.
+	//   The duplicate flag is recorded HERE and applied at the END so the
+	//   pin-sourced Title/Year population below runs untouched —
+	//   acceptDuplicatePendingEpisode writes only Status+Reason, which is
+	//   precisely what keeps §0.3's blocking Title/Year-from-pin rule safe.
+	// Troubleshooting: an Apply from this path clobbered an existing tracked
+	//   episode instead of folding in as an alternate — the Apply-side fold-in
+	//   gate (existing.FilePath != "") did not fire; check §0.3.
+	// Review if: operators report unwanted alternates accumulating and want
+	//   same-slot duplicates declined again.
+	duplicateSlot := tracked[episodeKey{tmdbID: pin.tmdbID, season: match.season, episode: match.episode}]
 
 	// Claude 2026-08-06: Kids routing without a second classify.WithAI call (plan §2.4)
 	// Reason: the show is already tracked, which means it was already
@@ -439,6 +446,15 @@ func tryEpisodeTitleMatchSeries(
 	}
 	if names, err := sess.TMDB.TVAggregateCredits(ctx, pin.tmdbID); err == nil {
 		p.Cast = names
+	}
+	// Site 5's softened outcome — Status+Reason only, so the pin-sourced
+	// Title/Year above survive verbatim. Note this REPLACES the
+	// episodeTitleMatchReasonPrefix reason set a few lines up; when this
+	// function is reached via aiEpisodeMode1 that caller then wraps the result,
+	// so those rows read "<aiPrefix> ...; alternate: ..." rather than starting
+	// with "alternate:".
+	if duplicateSlot {
+		acceptDuplicatePendingEpisode(&p, pin.title, match.season, match.episode)
 	}
 	return &p
 }

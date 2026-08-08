@@ -615,29 +615,44 @@ func tvdbAnthologyPass(
 			}
 			m := res.Match
 
-			// The tracked guard, reimplemented rather than reused: acceptSeries
-			// closes over a season/episode that do not exist at this call site.
-			// Omitting it is the single most likely defect in this work — a
-			// match onto an already-tracked slot produces a Pending whose Apply
-			// overwrites that slot's library_episodes row (UNIQUE(series_id,
-			// season_number, episode_number)) and silently orphans the existing
-			// file. `tracked` is keyed on series.TMDBID with no sign filter, so
-			// negative synthetic ids populate it correctly on rescan.
-			if tracked[episodeKey{tmdbID: pin.synthID, season: m.season, episode: m.episode}] {
-				q := out[i]
-				q.Status = proposals.Unmatched
-				q.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", pin.title, m.season, m.episode)
-				out[i] = q
-				// WRITE BRANCH 2 of 3 — tracked-slot-already-claimed decline.
-				// The subtlest of the three and the one an earlier draft
-				// MISSED: this row is Unmatched with TMDBID == 0, so it looks
-				// untouched to any status/id-shaped eligibility test. Only
-				// this bit stops a downstream pass re-deriving the same
-				// refusal by a longer route and overwriting this precise
-				// reason with a vaguer one.
-				handled[i] = true
-				continue
-			}
+			// Claude 2026-08-07: SITE 6 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.5)
+			// Reason: deep-interview-sakms-series-parsing-accuracy-improvements
+			//   §5.2 — REPLACES (per the stale-comment rule, not edits) the
+			//   block that stood here, whose premise was that a Pending on an
+			//   already-tracked slot "overwrites that slot's library_episodes
+			//   row ... and silently orphans the existing file", plus its
+			//   WRITE BRANCH 2 note. That premise is now FALSE:
+			//   ApplyLibrarySeries folds a second file into
+			//   library_episode_files as an alternate, resolving the collision
+			//   against LIVE DB state (existing.FilePath != "") rather than a
+			//   Scan-time snapshot. This is the Laurel & Hardy population's
+			//   path, so hard-declining here would leave it Unmatched.
+			//   WRITE BRANCH 2 IS GONE — there are two write branches now, the
+			//   ambiguity decline above and the Pending emit below. That is
+			//   deliberate and costs nothing: this row now FALLS THROUGH to the
+			//   Pending emit (WRITE BRANCH 3), which populates every field as
+			//   an ordinary anthology match would AND sets handled[i] = true on
+			//   its own line. Do NOT "helpfully" short-circuit here and call
+			//   acceptDuplicatePendingEpisode at this point — that loses both
+			//   the branch-3 field population and the handled[i] write in one
+			//   edit. The intervening gate.allows(pin.title, pin.synthID) is
+			//   not an obstacle: this gate's pinnedTMDBID is 0, so allowsID
+			//   fails open and Check A (folder-name seed vs pin.title) is the
+			//   entire test — and on a tracked-slot hit pin.title IS the
+			//   tracked row's own title, which is what produced the folder name
+			//   being compared against.
+			//   handled[i] is retained as defense-in-depth only, NOT as live
+			//   protection: a softened row is Pending with a non-zero synthetic
+			//   TMDBID, so it already fails aiEpisodeRecoveryPass' eligibility
+			//   test (series_ai_episode_match.go:160) on both conjuncts.
+			//   Softening makes the row LESS eligible, not more.
+			// Troubleshooting: an anthology duplicate Applied and OVERWROTE the
+			//   slot's library_episodes row instead of folding in — the
+			//   Apply-side fold-in gate (existing.FilePath != "") did not fire;
+			//   check §0.3.
+			// Review if: operators report unwanted alternates accumulating and
+			//   want same-slot duplicates declined again.
+			duplicateSlot := tracked[episodeKey{tmdbID: pin.synthID, season: m.season, episode: m.episode}]
 
 			// Spec-mandated per-file gate composition. It evaluates TRUE by
 			// construction, and the exact reason matters — BE PRECISE HERE,
@@ -717,6 +732,16 @@ func tvdbAnthologyPass(
 				tvdbAnthologyReasonPrefix, m.name, m.season, m.episode, pin.tvdbID)
 			out[i] = q
 			handled[i] = true // WRITE BRANCH 3 of 3 — the Pending emit
+			// Site 6's softened outcome, applied AFTER branch 3 has run so both
+			// the full field population above and the handled[i] write survive.
+			// Status+Reason only — the branch-3 Title/TMDBID/TVDBID/Year/Root
+			// stay exactly as an ordinary anthology match's would be. (The
+			// "of 3" labels are kept as stable identifiers even though the
+			// retired tracked-slot decline was branch 2 — see the SITE 6 block
+			// above.)
+			if duplicateSlot {
+				acceptDuplicatePendingEpisode(&out[i], pin.title, m.season, m.episode)
+			}
 		}
 	}
 

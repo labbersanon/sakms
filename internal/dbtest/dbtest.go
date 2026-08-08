@@ -29,7 +29,7 @@ var (
 //
 // Claude 2026-08-04: TEMPLATE-database harness (schema-per-test was ~20s/goose).
 // Reason: WS5 — replace TempDir sakms.db; SAKMS_TEST_DATABASE_URL gates skips.
-// Troubleshooting: skip message names the env var; set REQUIRED=1 or CI=true to fail.
+// Troubleshooting: skip message names the env var; set SAKMS_TEST_DATABASE_URL_REQUIRED=1 or CI=true to fail.
 // Review if: CI pin / compose Postgres major version diverge.
 func New(t *testing.T) *sql.DB {
 	t.Helper()

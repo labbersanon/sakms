@@ -334,6 +334,92 @@ func TestScanLibraryPHash_TransitiveGroupUsesWorstPairSimilarity(t *testing.T) {
 	}
 }
 
+// TestScanLibraryPHash_SkipsAppliedAlternates proves plan §11.2/§9.8: a
+// tracked item's applied alternate — a deliberate second copy recorded as a
+// non-primary row in library_item_files — is never re-discovered as an
+// orphan and phash-grouped against its own primary. Without the AllFilePaths
+// known-set pass in ScanLibraryPHash, this fails against main today (the
+// pre-existing Movies defect §0.10 describes): the alternate would surface
+// as an orphan, phash-match its own primary (same hash on purpose here), and
+// produce a Dedup proposal offering to delete the file Rename just placed.
+func TestScanLibraryPHash_SkipsAppliedAlternates(t *testing.T) {
+	dir := t.TempDir()
+	primaryFile := writeVideoFile(t, dir, "Some Movie (2020).mkv", 100)
+	alternateFile := writeVideoFile(t, dir, "Some Movie (2020) - 720p h264.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	item, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 42, Title: "Some Movie", FilePath: primaryFile, RootFolderPath: dir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
+		ItemID: item.ID, FilePath: alternateFile, IsPrimary: false,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Movies}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		primaryFile:   {CodecName: "h264", Width: 1920, Height: 1080, BitRate: 8000},
+		alternateFile: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+	}}
+
+	got, err := ScanLibraryPHash(ctx, sess, libStore, dir, prober, matchingPHasher(primaryFile, alternateFile), 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected the applied alternate to be excluded from Dedup consideration, got %+v", got)
+	}
+}
+
+// TestScanLibrarySeriesPHash_SkipsAppliedAlternates is the Series counterpart
+// of TestScanLibraryPHash_SkipsAppliedAlternates via library_episode_files.
+// An episode with a primary plus an alternate row, both files on disk, must
+// produce no Dedup proposal — without the Series known-set pass the
+// alternate is discovered as an orphan and phash-grouped against its own
+// primary episode.
+func TestScanLibrarySeriesPHash_SkipsAppliedAlternates(t *testing.T) {
+	dir := t.TempDir()
+	primaryFile := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01.mkv", 100)
+	alternateFile := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01 - 720p h264.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: primaryFile,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
+		EpisodeID: ep.ID, FilePath: alternateFile, IsPrimary: false,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		primaryFile:   {CodecName: "h264", Width: 1920, Height: 1080, BitRate: 8000},
+		alternateFile: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+	}}
+
+	got, err := ScanLibrarySeriesPHash(ctx, sess, libStore, dir, prober, matchingPHasher(primaryFile, alternateFile), 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected the applied alternate to be excluded from Dedup consideration, got %+v", got)
+	}
+}
+
 // Claude 2026-08-04: ported here (Wave 4, legacy-scan retirement per
 // .omc/plans/autopilot-impl-phash-grouping.md) and adapted from the
 // now-deleted dedup_library_series_test.go's

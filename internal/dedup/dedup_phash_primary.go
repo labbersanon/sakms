@@ -156,6 +156,20 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		known[t.FilePath] = true
 	}
 
+	// Claude 2026-08-08: mark alternate paths known so Dedup stops re-discovering them
+	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §11.2 — an applied
+	//   alternate is a DELIBERATE second copy; re-discovering it as an orphan and
+	//   phash-grouping it against its own primary offers the operator a delete for a file
+	//   the Rename workflow just placed on purpose. Pre-existing since alternates shipped
+	//   2026-08-05; fixed for both modes together so neither is left asymmetric.
+	// Troubleshooting: Dedup proposes deleting a " - 1080p h264"/" - alternate" file.
+	// Review if: AllFilePaths stops covering library_item_files.
+	if paths, err := libStore.AllFilePaths(ctx, mode.Movies); err == nil {
+		for _, p := range paths {
+			known[p] = true
+		}
+	}
+
 	entries, err := library.ScanRootFolder(rootFolderPath, known)
 	if err != nil {
 		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
@@ -310,6 +324,14 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 			}
 			known[ep.FilePath] = true
 			trackedEpisodes = append(trackedEpisodes, ep)
+		}
+	}
+
+	// Claude 2026-08-08: same fix as the Movies pass above, for episode alternates
+	// Review if: AllEpisodeFilePaths stops covering library_episode_files.
+	if paths, err := libStore.AllEpisodeFilePaths(ctx); err == nil {
+		for _, p := range paths {
+			known[p] = true
 		}
 	}
 

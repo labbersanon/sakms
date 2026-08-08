@@ -331,20 +331,35 @@ func aiEpisodeMode2(
 		return
 	}
 
-	// Tracked-slot collision guard, mirroring tvdbAnthologyPass's own: a match
-	// onto an already-tracked slot would produce a Pending whose Apply
-	// overwrites that slot's library_episodes row (UNIQUE(series_id,
-	// season_number, episode_number)) and silently orphans the existing file.
-	// `tracked` is keyed on series.TMDBID with no sign filter, so the negative
-	// synthetic id keys it correctly on rescan.
-	if tracked[episodeKey{tmdbID: r.pin.synthID, season: m.season, episode: m.episode}] {
-		q := out[i]
-		q.Status = proposals.Unmatched
-		q.Reason = fmt.Sprintf("%s recovered episode title %q from %q; appears to already be in the library as %q S%02dE%02d — leaving in place for manual review",
-			aiEpisodeMatchReasonPrefix, episodeTitle, name, r.pin.title, m.season, m.episode)
-		out[i] = q
-		return
-	}
+	// Claude 2026-08-07: SITE 7 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.6)
+	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
+	//   REPLACES (per the stale-comment rule, not edits) the block that stood
+	//   here, whose premise was that a Pending on an already-tracked slot
+	//   "overwrites that slot's library_episodes row ... and silently orphans
+	//   the existing file." That premise is now FALSE: ApplyLibrarySeries folds
+	//   a second file into library_episode_files as an alternate, resolving the
+	//   collision against LIVE DB state (existing.FilePath != "") rather than a
+	//   Scan-time snapshot. Same shape as Site 6, operating on out[i]: record
+	//   the duplicate here, let the gate/Kids-routing/emit below run unchanged,
+	//   and overwrite only Status+Reason at the end.
+	//   NEEDS NO handled[i] WRITE, and that asymmetry with Site 6 is correct —
+	//   do not "fix" it. This pass never writes handled (the map appears in
+	//   this file only as a read at :157 and in the file doc), because nothing
+	//   runs after it that consults the map.
+	//   DELIBERATE, DOCUMENTED LOSS: acceptDuplicatePendingEpisode writes Reason
+	//   WHOLESALE, so the aiEpisodeMatchReasonPrefix the retired branch built
+	//   inline is GONE from a softened row. That is a real, if minor, loss of
+	//   grep-ability, accepted rather than worked around: re-prefixing would
+	//   have to happen at this site only, and changing the helper is not an
+	//   option — seven sites share it. Contrast aiEpisodeMode1 (:282-283),
+	//   which WRAPS rather than replaces and therefore keeps its prefix, so the
+	//   two AI-recovery modes now produce different reason shapes on purpose.
+	// Troubleshooting: an AI-recovered duplicate Applied and OVERWROTE the
+	//   slot's library_episodes row instead of folding in — the Apply-side
+	//   fold-in gate (existing.FilePath != "") did not fire; check §0.3.
+	// Review if: operators report unwanted alternates accumulating and want
+	//   same-slot duplicates declined again.
+	duplicateSlot := tracked[episodeKey{tmdbID: r.pin.synthID, season: m.season, episode: m.episode}]
 
 	// Gate composition, seeded with the SHOW FOLDER NAME exactly as
 	// tvdbAnthologyPass seeds it. NEVER re-seed with the filename: the filename
@@ -394,5 +409,12 @@ func aiEpisodeMode2(
 	// would be the split-provenance defect again.
 	q.Reason = fmt.Sprintf("%s recovered episode title %q from %q -> %q S%02dE%02d (tvdb %d)",
 		aiEpisodeMatchReasonPrefix, episodeTitle, name, m.name, m.season, m.episode, r.pin.tvdbID)
+	// Site 7's softened outcome — Status+Reason only; the emit's
+	// Title/TMDBID/TVDBID/Year/Root above stay as an ordinary match's would be.
+	// This is where aiEpisodeMatchReasonPrefix is lost, deliberately (see the
+	// SITE 7 block above).
+	if duplicateSlot {
+		acceptDuplicatePendingEpisode(&q, r.pin.title, m.season, m.episode)
+	}
 	out[i] = q
 }

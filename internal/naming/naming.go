@@ -207,3 +207,43 @@ func EpisodeRangeFileName(preset Preset, seriesTitle string, seasonNumber int, e
 	}
 	return base + ext
 }
+
+// EpisodeAlternateFileName formats a non-primary copy of an episode living in
+// the same "Season NN" folder as its primary — the Series counterpart to
+// MovieAlternateFileName. Tokens (res/codec/bitrate) are caller-supplied
+// quality labels; empty tokens are omitted rather than rendering placeholders,
+// and an all-empty token set falls back to a literal " - alternate" suffix so
+// the name is still guaranteed distinct from the primary's.
+//
+// episodeNumbers is a slice, not a single number, so a logical-episode-split
+// alternate ("S01E01-E02") renders correctly — it delegates its base to
+// EpisodeRangeFileName, which already falls straight through to
+// EpisodeFileName for fewer than 2 numbers, exactly as RelocateEpisode
+// delegates to RelocateEpisodeRange.
+//
+// Preset affects only the BASE name (via EpisodeRangeFileName); the token
+// suffix is preset-independent, mirroring MovieAlternateFileName exactly.
+//
+// Claude 2026-08-07: Series alternate filename with quality tokens
+// Reason: deep-interview-sakms-series-parsing-accuracy-improvements — same
+//
+//	Season NN folder as the primary, not extras/, mirroring Movies.
+//
+// Troubleshooting: a duplicate episode Apply needs a stable unique name beside
+// EpisodeFileName's.
+// Review if: Jellyfin edition tags ([Edition …]) become the preferred alternate shape.
+func EpisodeAlternateFileName(preset Preset, seriesTitle string, seasonNumber int, episodeNumbers []int, episodeTitle, res, codec, bitrate, ext string) string {
+	base := EpisodeRangeFileName(preset, seriesTitle, seasonNumber, episodeNumbers, episodeTitle, "")
+	var parts []string
+	for _, tok := range []string{res, codec, bitrate} {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		parts = append(parts, SafePathComponent(tok))
+	}
+	if len(parts) == 0 {
+		return base + " - alternate" + ext
+	}
+	return base + " - " + strings.Join(parts, " ") + ext
+}

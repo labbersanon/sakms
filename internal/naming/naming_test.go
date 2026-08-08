@@ -1,6 +1,9 @@
 package naming
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestValid(t *testing.T) {
 	if !Valid(Jellyfin) || !Valid(Legacy) {
@@ -127,5 +130,130 @@ func TestEpisodeRangeFileName(t *testing.T) {
 	}
 	if got := EpisodeRangeFileName(Jellyfin, "Show Name", 3, nil, "", ".mkv"); got != "Show Name S03E00.mkv" {
 		t.Errorf("expected empty-slice fallback to episode 0, got %q", got)
+	}
+}
+
+// episodeAlternateCase is shared by TestEpisodeAlternateFileName and
+// TestEpisodeAlternateFileName_MatchesSeriesSchema on purpose: a case added for
+// the byte-exact rendering is automatically also checked for schema
+// conformance, which is what keeps the second test a real regression guard
+// rather than a hand-maintained second list that drifts out of sync.
+type episodeAlternateCase struct {
+	name                string
+	preset              Preset
+	seriesTitle         string
+	seasonNumber        int
+	episodeNumbers      []int
+	episodeTitle        string
+	res, codec, bitrate string
+	ext                 string
+	want                string
+}
+
+// The plan's §4.3 matrix in full: Jellyfin + Legacy × (all tokens / partial
+// tokens / no tokens) × (single / range) × (with title / without), plus §4.3's
+// own four rendered examples verbatim as named cases.
+var episodeAlternateCases = []episodeAlternateCase{
+	// --- Jellyfin, single episode ---
+	{"jellyfin single with-title all-tokens", Jellyfin, "Some Show", 6, []int{14}, "Funny Faces", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show S06E14 Funny Faces - 1080p h264 5 Mbps.mkv"},
+	{"jellyfin single with-title partial-tokens", Jellyfin, "Some Show", 6, []int{14}, "Funny Faces", "720p", "", "", ".mkv",
+		"Some Show S06E14 Funny Faces - 720p.mkv"},
+	{"jellyfin single with-title no-tokens", Jellyfin, "Some Show", 6, []int{14}, "Funny Faces", "", "", "", ".mkv",
+		"Some Show S06E14 Funny Faces - alternate.mkv"},
+	{"jellyfin single no-title all-tokens", Jellyfin, "Some Show", 6, []int{14}, "", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show S06E14 - 1080p h264 5 Mbps.mkv"},
+	{"jellyfin single no-title partial-tokens", Jellyfin, "Some Show", 6, []int{14}, "", "720p", "", "", ".mkv",
+		"Some Show S06E14 - 720p.mkv"},
+	{"jellyfin single no-title no-tokens", Jellyfin, "Some Show", 6, []int{14}, "", "", "", "", ".mkv",
+		"Some Show S06E14 - alternate.mkv"},
+
+	// --- Jellyfin, range (logical-episode-split) ---
+	{"jellyfin range with-title all-tokens", Jellyfin, "Some Show", 6, []int{14, 15}, "Funny Faces", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show S06E14-E15 Funny Faces - 1080p h264 5 Mbps.mkv"},
+	{"jellyfin range with-title partial-tokens", Jellyfin, "Some Show", 6, []int{14, 15}, "Funny Faces", "720p", "", "", ".mkv",
+		"Some Show S06E14-E15 Funny Faces - 720p.mkv"},
+	{"jellyfin range with-title no-tokens", Jellyfin, "Some Show", 6, []int{14, 15}, "Funny Faces", "", "", "", ".mkv",
+		"Some Show S06E14-E15 Funny Faces - alternate.mkv"},
+	{"jellyfin range no-title all-tokens", Jellyfin, "Some Show", 6, []int{14, 15}, "", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show S06E14-E15 - 1080p h264 5 Mbps.mkv"},
+	{"jellyfin range no-title partial-tokens", Jellyfin, "Some Show", 6, []int{14, 15}, "", "720p", "", "", ".mkv",
+		"Some Show S06E14-E15 - 720p.mkv"},
+	{"jellyfin range no-title no-tokens", Jellyfin, "Some Show", 6, []int{14, 15}, "", "", "", "", ".mkv",
+		"Some Show S06E14-E15 - alternate.mkv"},
+
+	// --- Legacy, single episode ---
+	{"legacy single with-title all-tokens", Legacy, "Some Show", 6, []int{14}, "Funny Faces", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show - S06E14 - Funny Faces - 1080p h264 5 Mbps.mkv"},
+	{"legacy single with-title partial-tokens", Legacy, "Some Show", 6, []int{14}, "Funny Faces", "720p", "", "", ".mkv",
+		"Some Show - S06E14 - Funny Faces - 720p.mkv"},
+	{"legacy single with-title no-tokens", Legacy, "Some Show", 6, []int{14}, "Funny Faces", "", "", "", ".mkv",
+		"Some Show - S06E14 - Funny Faces - alternate.mkv"},
+	{"legacy single no-title all-tokens", Legacy, "Some Show", 6, []int{14}, "", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show - S06E14 - 1080p h264 5 Mbps.mkv"},
+	{"legacy single no-title partial-tokens", Legacy, "Some Show", 6, []int{14}, "", "720p", "", "", ".mkv",
+		"Some Show - S06E14 - 720p.mkv"},
+	{"legacy single no-title no-tokens", Legacy, "Some Show", 6, []int{14}, "", "", "", "", ".mkv",
+		"Some Show - S06E14 - alternate.mkv"},
+
+	// --- Legacy, range (logical-episode-split) ---
+	{"legacy range with-title all-tokens", Legacy, "Some Show", 6, []int{14, 15}, "Funny Faces", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show - S06E14-E15 - Funny Faces - 1080p h264 5 Mbps.mkv"},
+	{"legacy range with-title partial-tokens", Legacy, "Some Show", 6, []int{14, 15}, "Funny Faces", "720p", "", "", ".mkv",
+		"Some Show - S06E14-E15 - Funny Faces - 720p.mkv"},
+	{"legacy range with-title no-tokens", Legacy, "Some Show", 6, []int{14, 15}, "Funny Faces", "", "", "", ".mkv",
+		"Some Show - S06E14-E15 - Funny Faces - alternate.mkv"},
+	{"legacy range no-title all-tokens", Legacy, "Some Show", 6, []int{14, 15}, "", "1080p", "h264", "5 Mbps", ".mkv",
+		"Some Show - S06E14-E15 - 1080p h264 5 Mbps.mkv"},
+	{"legacy range no-title partial-tokens", Legacy, "Some Show", 6, []int{14, 15}, "", "720p", "", "", ".mkv",
+		"Some Show - S06E14-E15 - 720p.mkv"},
+	{"legacy range no-title no-tokens", Legacy, "Some Show", 6, []int{14, 15}, "", "", "", "", ".mkv",
+		"Some Show - S06E14-E15 - alternate.mkv"},
+
+	// --- Plan §4.3's four rendered examples, verbatim ---
+	{"§4.3 jellyfin all tokens", Jellyfin, "The Red Skelton Hour", 6, []int{14}, "Funny Faces", "1080p", "h264", "5 Mbps", ".mkv",
+		"The Red Skelton Hour S06E14 Funny Faces - 1080p h264 5 Mbps.mkv"},
+	{"§4.3 legacy all tokens", Legacy, "The Red Skelton Hour", 6, []int{14}, "Funny Faces", "1080p", "h264", "5 Mbps", ".mkv",
+		"The Red Skelton Hour - S06E14 - Funny Faces - 1080p h264 5 Mbps.mkv"},
+	{"§4.3 jellyfin no title no tokens", Jellyfin, "The Red Skelton Hour", 6, []int{14}, "", "", "", "", ".mkv",
+		"The Red Skelton Hour S06E14 - alternate.mkv"},
+	{"§4.3 jellyfin range partial tokens", Jellyfin, "Show", 1, []int{1, 2}, "Pilot", "720p", "", "", ".mkv",
+		"Show S01E01-E02 Pilot - 720p.mkv"},
+}
+
+func TestEpisodeAlternateFileName(t *testing.T) {
+	for _, c := range episodeAlternateCases {
+		t.Run(c.name, func(t *testing.T) {
+			got := EpisodeAlternateFileName(c.preset, c.seriesTitle, c.seasonNumber, c.episodeNumbers,
+				c.episodeTitle, c.res, c.codec, c.bitrate, c.ext)
+			if got != c.want {
+				t.Errorf("got  %q\nwant %q", got, c.want)
+			}
+		})
+	}
+}
+
+// Every alternate name must be accepted by MatchesSeriesSchema under its own
+// preset, or Rename re-proposes the alternate on every subsequent Scan —
+// forever, with no error and no log line. Nothing else in the suite would catch
+// a change to the " - " suffix separator.
+//
+// MatchesSeriesSchema does no filesystem access (pure filepath.Base/Dir plus a
+// regex), so a synthetic path is sufficient — no temp dir or real file needed.
+// The Jellyfin grandparent must itself be schema-conformant; Legacy's series
+// folder has no fixed shape and is not checked, so one path shape serves both.
+func TestEpisodeAlternateFileName_MatchesSeriesSchema(t *testing.T) {
+	for _, c := range episodeAlternateCases {
+		t.Run(c.name, func(t *testing.T) {
+			name := EpisodeAlternateFileName(c.preset, c.seriesTitle, c.seasonNumber, c.episodeNumbers,
+				c.episodeTitle, c.res, c.codec, c.bitrate, c.ext)
+			path := filepath.Join("/tv",
+				SeriesFolderName(Jellyfin, c.seriesTitle, 2019, 555),
+				SeasonDirName(c.seasonNumber),
+				name)
+			if !MatchesSeriesSchema(path, c.preset) {
+				t.Errorf("alternate %q is not %s-schema-conformant; it would be re-proposed on every Scan", path, c.preset)
+			}
+		})
 	}
 }

@@ -287,6 +287,40 @@ func tryWebAuthoritySeries(
 	}
 	synth := WebAuthorityTMDBID(grounded.Title, grounded.Year)
 	key := episodeKey{tmdbID: synth, season: season, episode: episode}
+	// Claude 2026-08-07: SITE 8 of 8 — DELIBERATELY NOT SOFTENED (plan §5.2a)
+	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements softened
+	//   the other SEVEN tracked-guard sites to accept-as-alternate; this one is
+	//   deferred, so it is now the ONLY tracked[] read that still declines.
+	//   Recorded here because a mechanical `grep tracked\[` sweep will find it
+	//   and must know it was considered, not missed. Three reasons, in order of
+	//   weight:
+	//   1. PRIMARY — returning nil hands control to gateRejectedReason() and the
+	//      terminal-reason ladder below it, which rename.go:1295-1298 documents
+	//      as load-bearing in one direction ("gateRejectedReason() must keep
+	//      winning when it fires"). Emitting a Pending here bypasses that ladder,
+	//      and re-deriving which of the competing terminal reasons an operator
+	//      should see in the duplicate case is a real design question this spec
+	//      never asked. Movies has no such ladder, so no Movies precedent
+	//      touches this reason.
+	//   2. No spec-named population routes here (Beverly Hillbillies → Site 1,
+	//      Red Skelton → Site 5, Laurel & Hardy → Site 6), so softening buys
+	//      nothing the spec asked for while carrying reason 1's cost.
+	//   3. SECONDARY, and explicitly counter-weighted: this key is a SYNTHETIC
+	//      negative id, so a hit means "two files independently grounded to the
+	//      same title+year", not "TMDB/TVDB says same show, same slot". This is
+	//      NOT a safety argument — Movies already ships exactly this softening on
+	//      the same WebAuthorityTMDBID key (web_authority.go:248's
+	//      acceptDuplicatePending, with rename.go:557-558 documenting the
+	//      Apply-side counterpart as intentional). What remains is only that an
+	//      episode-slot collision has more degrees of freedom than a title one.
+	//   Consequence to state honestly: a duplicate whose show was resolved ONLY
+	//   by the web-naming-authority path still lands Unmatched. Known, accepted
+	//   residual — not a bug, and not something tests should assert away. Note
+	//   this branch writes NO proposal and therefore NO reason string, so it
+	//   contributes zero hits to the retired-reason-string audits.
+	// Review if: a follow-up spec asks for Site 8 — the work is then to answer
+	//   reason 1 (which terminal reason wins in the duplicate case), NOT to
+	//   overcome reason 3, which Movies has already refuted in production.
 	if tracked[key] {
 		return nil
 	}

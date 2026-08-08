@@ -374,7 +374,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			//   empty library_episodes.title. Both are nil-safe (no TVDB connection
 			//   configured leaves sess.TVDB nil, degrading to that same behaviour).
 			// Review if: Proposal gains a real EpisodeTitle column, retiring both fetches.
-			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, sess.TMDB, sess.TVDB, p, preset, tier)
+			episodeID, changes, err := rename.ApplyLibrarySeries(ctx, libStore, sess.TMDB, sess.TVDB, p, preset, tier, prober)
 			if err != nil {
 				return changes, err
 			}

@@ -180,16 +180,56 @@ func isPlaceholderEpisodeName(name string) bool {
 	return strings.TrimSpace(name) == "" || placeholderEpisodeNameRe.MatchString(name)
 }
 
-// discriminating mirrors HasTitleTokenOverlap's own "strong || shared >= 2"
-// bar (web_authority.go): one >=4-rune token, or two tokens of any length.
-func discriminating(toks map[string]struct{}) bool {
+// Claude 2026-08-08: single-token residuals reject on SOURCE-WORD COLLAPSE
+// Reason: REPLACES (per the stale-comment rule, not an edit) the retired
+//   comment "discriminating mirrors HasTitleTokenOverlap's own
+//   'strong || shared >= 2' bar (web_authority.go): one >=4-rune token, or
+//   two tokens of any length." That claim is now FALSE in one direction:
+//   this predicate is strictly NARROWER than that bar, because a >=4-rune
+//   single token no longer suffices on its own. The multi-token half still
+//   mirrors it exactly.
+// Reason (2): TheTVDB's real Laurel & Hardy episode "That's That" tokenizes
+//   to the single 4-rune token "that" from TWO distinct source words, so it
+//   read as discriminating and matched any file containing the word "that" —
+//   including the correct file for the DIFFERENT episode "That's My Wife",
+//   which is what produced the live ambiguity decline this fixes. A
+//   common-word denylist was considered and rejected in the interview
+//   (fragile, English-only); the structural collapse signal needs no list.
+// Troubleshooting: a legitimate single-word episode ("Liberty", "Scram!",
+//   "Blotto") stopped matching — check srcCounts for its token; it must be 1.
+//   A residual token missing from srcCounts entirely REJECTS by design (see
+//   the ok-guard below), because that is an impossible input on an
+//   acceptance path.
+// Review if: the multi-token path is ever found vulnerable to the same
+//   collapse pattern — it is not today (two genuinely distinct surviving
+//   tokens cannot both be one collapsed word), and widening this to
+//   len(toks) >= 2 is explicitly OUT of scope per the spec.
+// Context: see .omc/specs/deep-interview-sakms-episode-title-discriminating-residual-collapse-fix.md
+
+// discriminating reports whether a residual token set is specific enough to
+// accept a match on. Two tokens of any length qualify. ONE token qualifies
+// only when it is >= 4 runes AND exactly ONE source word position produced
+// it — srcCounts is the per-token source-word-position count from
+// titleTokenCounts over the episode title the residual was derived from.
+func discriminating(toks map[string]struct{}, srcCounts map[string]int) bool {
 	if len(toks) >= 2 {
 		return true
 	}
 	for t := range toks {
-		if len(t) >= 4 {
-			return true
+		if len(t) < 4 {
+			continue
 		}
+		// Collapse check. A count of 2+ means two distinct source words
+		// normalized onto this one token, so the token is a common word rather
+		// than a distinctive title — reject regardless of length. A MISSING
+		// count is impossible by construction (residual is a subset of
+		// srcCounts' keys — see the spec's §0.5 proof) and is therefore
+		// treated as unknown and rejected, matching this package's uniform
+		// "refuse rather than assume" posture on acceptance paths.
+		if c, ok := srcCounts[t]; !ok || c >= 2 {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -250,8 +290,14 @@ func episodeTitleMatches(basename, showTitle, episodeName string) bool {
 	}
 	fileToks := titleTokens(searchterm.FromName(basename))
 	showToks := titleTokens(showTitle)
-	residual := subtractTokens(titleTokens(episodeName), showToks)
-	if !discriminating(residual) {
+	// One tokenization of episodeName, same as before: the counts ARE the
+	// tokenization, and tokenSetFrom is a free projection of it. Taking the
+	// counts BEFORE the subtraction is sound because subtractTokens removes
+	// whole tokens, never individual positions of a token it keeps — so every
+	// residual token's count is unchanged by the subtraction (spec plan §0.5).
+	epCounts := titleTokenCounts(episodeName)
+	residual := subtractTokens(tokenSetFrom(epCounts), showToks)
+	if !discriminating(residual, epCounts) {
 		return false
 	}
 	return tokensSubsetOf(residual, fileToks)

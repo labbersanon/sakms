@@ -106,3 +106,64 @@ func TestHasWordToken(t *testing.T) {
 		}
 	}
 }
+
+// TestTitleTokensMatchesTitleTokenCounts pins the ONE invariant the
+// titleTokens/titleTokenCounts split rests on: the count table's KEY SET is
+// exactly the set titleTokens returns. If the two ever desynchronize, the
+// collapse check in discriminating() counts source positions for tokens the
+// residual never had -- a silent wrong answer with no crash and no other
+// failing test.
+//
+// The parity half is TAUTOLOGICAL as long as titleTokens is literally
+// tokenSetFrom(titleTokenCounts(s)), and that is the point: it is a drift lock
+// against a future session re-forking the two filter loops, not a claim that
+// today's code could fail it. Fixtures cover every filter rule at least once.
+// Context: see .omc/specs/deep-interview-sakms-episode-title-discriminating-residual-collapse-fix.md
+func TestTitleTokensMatchesTitleTokenCounts(t *testing.T) {
+	fixtures := []struct {
+		name string
+		in   string
+	}{
+		{"a collapse -- two source words, one token", "That's That"},
+		{"a non-collapse single-word control", "Liberty"},
+		{"a stopword drop (and)", "Love 'em and Weep"},
+		{"a short roman-numeral drop (III)", "Funny Faces III"},
+		{"a len < 2 drop (the s of That's)", "That's My Wife"},
+		{"a digit token", "Episode 12"},
+		{"empty string", ""},
+		{"punctuation only", "!!! --- ???"},
+	}
+	for _, f := range fixtures {
+		t.Run(f.name, func(t *testing.T) {
+			set := titleTokens(f.in)
+			counts := titleTokenCounts(f.in)
+			if len(set) != len(counts) {
+				t.Fatalf("titleTokens(%q) has %d tokens, titleTokenCounts has %d: %v vs %v", f.in, len(set), len(counts), set, counts)
+			}
+			for tok := range set {
+				if _, ok := counts[tok]; !ok {
+					t.Errorf("token %q is in titleTokens(%q) but missing from titleTokenCounts", tok, f.in)
+				}
+			}
+			for tok := range counts {
+				if _, ok := set[tok]; !ok {
+					t.Errorf("token %q is in titleTokenCounts(%q) but missing from titleTokens", tok, f.in)
+				}
+			}
+		})
+	}
+
+	// The COUNT VALUES the key-set check above cannot reach. These two are the
+	// exact pair the whole collapse mechanism turns on -- 2 for the collapsed
+	// case, 1 for the genuinely-single-word case -- and this is the only place
+	// in the suite where they are checked directly rather than inferred from
+	// P6's and P11's pass/fail outcome. Do NOT weaken these to "every count
+	// >= 1": out[f]++ starts from a zero value, so any key present at all
+	// necessarily has a value of at least 1 and that assertion cannot fail.
+	if got := titleTokenCounts("That's That")["that"]; got != 2 {
+		t.Errorf(`titleTokenCounts("That's That")["that"] = %d, want 2`, got)
+	}
+	if got := titleTokenCounts("Liberty")["liberty"]; got != 1 {
+		t.Errorf(`titleTokenCounts("Liberty")["liberty"] = %d, want 1`, got)
+	}
+}

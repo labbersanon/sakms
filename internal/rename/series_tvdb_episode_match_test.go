@@ -206,6 +206,75 @@ func TestAnthologyEpisodeCatalogSearch(t *testing.T) {
 	})
 }
 
+// TestEpisodeTitleCollapse_ProductionCatalog is the CATALOG-level half of the
+// discriminating-residual collapse fix. Two of that fix's acceptance criteria
+// are statements about a whole catalog's match SET, which no single
+// episodeTitleMatches call can express:
+//
+//   - (a) the real production pair must resolve to exactly ONE slot. Pre-fix
+//     this reported Found == 2 with First = S00E43 "That's That" -- byte for
+//     byte the live ambiguity-decline reason observed on the production
+//     Laurel & Hardy folder, because "That's That" collapses to the single
+//     token "that", which IS present in the "That's My Wife" file.
+//   - (b) a bare "That's That" file must match NOTHING and, just as
+//     importantly, must not silently slide onto some OTHER wrong episode.
+//     Pre-fix this reported Found == 1 on S00E43.
+//
+// The catalog is widened past the two slots the defect needs so that (b)'s
+// Found == 0 is a claim about a populated catalog rather than a two-element
+// one. Mirrors TestAnthologyEpisodeCatalogSearch deliberately: pure, no
+// httptest server, no TMDB cache reset. That test's `ep` helper is a closure
+// inside its own function body and is NOT reachable from here (see
+// tvdbEpisodesFrom's note), so this declares its own.
+// Context: see .omc/specs/deep-interview-sakms-episode-title-discriminating-residual-collapse-fix.md
+func TestEpisodeTitleCollapse_ProductionCatalog(t *testing.T) {
+	const show = "Laurel & Hardy"
+	const thatsMyWifeFile = "Laurel & Hardy - That's My Wife(B&W)-DVDRip.XviD-DIE-DVD09.mp4"
+	const bareThatsThatFile = "That's That.mp4"
+
+	ep := func(season, number int, name string) tvdb.Episode {
+		return tvdb.Episode{SeriesID: 71663, SeasonNumber: season, Number: number, Name: name, Aired: "1929-02-23"}
+	}
+	catalog := []tvdb.Episode{
+		ep(0, 43, "That's That"),
+		ep(5, 3, "That's My Wife"),
+		ep(1, 7, "Duck Soup"),
+		ep(5, 4, "Below Zero"),
+		ep(5, 1, "Liberty"),
+	}
+
+	t.Run("the real production pair resolves to exactly one slot", func(t *testing.T) {
+		got := searchTVDBEpisodeByTitle(catalog, show, thatsMyWifeFile)
+		if got.Found != 1 {
+			t.Fatalf("Found = %d, want 1 (result %+v)", got.Found, got)
+		}
+		if got.Match == nil {
+			t.Fatal("Match = nil, want the That's My Wife slot")
+		}
+		if got.Match.season != 5 || got.Match.episode != 3 || got.Match.name != "That's My Wife" {
+			t.Errorf("Match = S%02dE%02d %q, want S05E03 %q", got.Match.season, got.Match.episode, got.Match.name, "That's My Wife")
+		}
+		if got.Second != nil {
+			t.Errorf("Second = %+v, want nil -- a non-nil Second here IS the live production ambiguity", got.Second)
+		}
+	})
+
+	t.Run("a bare That's That file matches nothing and mismatches nothing", func(t *testing.T) {
+		// The "That's That" slot is rejected by the collapse check; the
+		// "That's My Wife" slot is rejected by containment (residual
+		// {that, my, wife} is not a subset of the file's {that}); the three
+		// widening slots share no token with the file at all. So the outcome
+		// is a clean zero, not a silent slide onto the wrong episode.
+		got := searchTVDBEpisodeByTitle(catalog, show, bareThatsThatFile)
+		if got.Found != 0 {
+			t.Fatalf("Found = %d, want 0 (result %+v)", got.Found, got)
+		}
+		if got.Match != nil || got.First != nil || got.Second != nil {
+			t.Errorf("got %+v, want the zero value -- any non-nil slot here is a silent mismatch", got)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // autopilot-impl.md §2.3 / §4.2(b2) -- PRODUCER-side coverage of the `handled`
 // return value.

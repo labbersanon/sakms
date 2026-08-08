@@ -66,8 +66,37 @@ var tokenStop = map[string]struct{}{
 	"proper": {}, "repack": {}, "extended": {}, "unrated": {}, "internal": {},
 }
 
-func titleTokens(s string) map[string]struct{} {
-	out := map[string]struct{}{}
+// Claude 2026-08-08: titleTokens is now a projection of titleTokenCounts
+// Reason: the discriminating-residual collapse check
+//   (series_episode_title_match.go) needs to know how many SOURCE WORD
+//   POSITIONS produced a surviving token — "That's That" yields the fields
+//   [that, s, that], which dedupe to the single 4-rune token "that" and used
+//   to read as a discriminating residual. A set cannot carry that, so the
+//   count has to come from the tokenizer itself.
+// Reason (2): counting is done by the SAME loop that builds the set, not by a
+//   parallel reimplementation. If the two ever drifted the collapse check
+//   would count positions the token set never had — a silent, direction-
+//   dependent wrong answer, not a crash. titleTokenCounts is therefore the
+//   single filter definition and titleTokens is derived from it.
+// Troubleshooting: a single-word episode title stopped matching — check
+//   titleTokenCounts' count for its one token; it must be 1. A count of 2 on
+//   a genuinely single-word title means the FieldsFunc split produced a
+//   duplicate field that the len<2/stopword/roman filters did not drop.
+// Review if: titleTokens' filter rules change — the change belongs in
+//   titleTokenCounts and both callers inherit it automatically.
+// Context: see .omc/specs/deep-interview-sakms-episode-title-discriminating-residual-collapse-fix.md
+
+// titleTokenCounts is titleTokens' filter loop, returning how many SURVIVING
+// FILTERED FIELDS of s produced each token rather than a bare set. A count of
+// 2+ means two distinct source word positions collapsed onto one normalized
+// token ("That's That" -> {"that": 2}).
+//
+// "Word position" deliberately means a strings.FieldsFunc field that survived
+// every filter, NOT a whitespace-delimited word: the split is on every
+// non-letter/non-digit rune, so "That's" is two fields ("that", "s") and the
+// second is dropped by the len < 2 rule.
+func titleTokenCounts(s string) map[string]int {
+	out := map[string]int{}
 	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
@@ -81,9 +110,23 @@ func titleTokens(s string) map[string]struct{} {
 		if len(f) <= 3 && onlyLetters(f) && isMostlyRoman(f) {
 			continue
 		}
-		out[f] = struct{}{}
+		out[f]++
 	}
 	return out
+}
+
+// tokenSetFrom projects a titleTokenCounts result onto the deduped token set
+// every existing caller expects.
+func tokenSetFrom(counts map[string]int) map[string]struct{} {
+	out := make(map[string]struct{}, len(counts))
+	for t := range counts {
+		out[t] = struct{}{}
+	}
+	return out
+}
+
+func titleTokens(s string) map[string]struct{} {
+	return tokenSetFrom(titleTokenCounts(s))
 }
 
 // Claude 2026-08-07: hasWordToken — "is this a title or just a code" predicate (plan §1.4)

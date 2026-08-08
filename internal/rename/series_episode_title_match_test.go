@@ -2,14 +2,24 @@ package rename
 
 import "testing"
 
-// TestEpisodeTitleMatches is the P1-P13 predicate table — pure function tests,
+// TestEpisodeTitleMatches is the P1-P17 predicate table — pure function tests,
 // no fake TMDB server and no fixture data needed.
 //
 // P1-P5 predate the discriminating-residual collapse fix and are unchanged by
 // it. P6-P13 were added with that fix: P6/P11/P13 are the collapse rejections,
 // P8/P9/P10 the genuinely-single-word controls that must keep matching, and
 // P7/P12 the len(toks) >= 2 branch that the fix does not touch at all.
+//
+// P14-P17 were added with the tokenStop filename/title split. P14/P15 are the
+// fix itself (the production file matches the plain catalog entry and not the
+// Extended one); P16/P17 are its two ACCEPTED regressions, asserted on purpose
+// — P16 the lost-match sub-class and P17 the wrong-slot redirect. Read P16's
+// and P17's own comments before treating either as a defect. Every P1-P13
+// fixture is inert under the split: none of their showTitle/episodeName values
+// contains a release-scene word, so all thirteen produce byte-identical token
+// sets before and after (plan §7.1).
 // Context: see .omc/specs/deep-interview-sakms-episode-title-discriminating-residual-collapse-fix.md
+// and .omc/plans/autopilot-impl.md §6.2
 func TestEpisodeTitleMatches(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -158,6 +168,91 @@ func TestEpisodeTitleMatches(t *testing.T) {
 			showTitle:   "The Path",
 			episodeName: "Round and Round Path",
 			want:        false,
+		},
+		{
+			// P14: THE FIX, at the predicate level. The real production
+			// filename must NOT match the Extended variant. "extended" is now
+			// RETAINED in the catalog title's residual ({chump, oxford,
+			// extended}) and is absent from fileToks, so containment fails.
+			//
+			// If this flips to true, the two lists have been merged back
+			// together and S00E17/S16E01 are indistinguishable again — which is
+			// the exact live failure this whole change exists to fix.
+			name:        "P14 the production file does NOT match the Extended catalog variant",
+			basename:    "Laurel & Hardy - A Chump at Oxford(Colour)-DVDRip.XviD-DIE-DVD01.mp4",
+			showTitle:   "Laurel & Hardy",
+			episodeName: "A Chump at Oxford (Extended)",
+			want:        false,
+		},
+		{
+			// P15: the same file DOES match the plain variant. P14 and P15
+			// together ARE the disambiguation — either one alone proves
+			// nothing, because "matches neither" and "matches both" would each
+			// satisfy exactly one of them.
+			name:        "P15 the production file DOES match the plain catalog variant",
+			basename:    "Laurel & Hardy - A Chump at Oxford(Colour)-DVDRip.XviD-DIE-DVD01.mp4",
+			showTitle:   "Laurel & Hardy",
+			episodeName: "A Chump At Oxford",
+			want:        true,
+		},
+		{
+			// P16: the accepted regression, LOST-MATCH sub-class. Pre-fix this
+			// returned true. Attributable to filenameTokens specifically: "vs"
+			// is one of the only THREE release-scene words searchterm.FromName
+			// does not strip, so it reaches the tokenizer and is dropped there
+			// on the file side while surviving on the catalog side.
+			//
+			// want:false is the CHOSEN outcome, not an accident — see the
+			// plan's §4. Do not "fix" this to true by carving vs/feat/ft back
+			// into the universal list; that is the spec's explicitly rejected
+			// per-word judgment call, and it would not help the 15 words
+			// searchterm.FromName already strips.
+			//
+			// Note also how this case exits: the retained "vs" pushes the
+			// residual to {freddy, vs, jason}, which takes the len(toks) >= 2
+			// branch and SKIPS the collapse check — then tokensSubsetOf
+			// rejects, because fileToks cannot contain a release-scene word.
+			// 96d27cd's protective outcome is preserved through a different
+			// exit, not weakened (plan §7.2).
+			name:        "P16 accepted regression, lost-match sub-class — a vs-bearing title no longer matches its own file",
+			basename:    "Freddy vs Jason.mkv",
+			showTitle:   "Horror Anthology",
+			episodeName: "Freddy vs Jason",
+			want:        false,
+		},
+		{
+			// P17: the accepted regression, REDIRECT sub-class. basename is a
+			// HYPOTHETICAL, CONSTRUCTED sibling of the real production file —
+			// it does not exist on disk (confirmed absent from production
+			// 2026-08-08, plan §8.1); do not go looking for it.
+			//
+			// want:true DOCUMENTS THE ACCEPTED REDIRECT RISK — it is NOT an
+			// assertion of desired behaviour. This file genuinely belongs to
+			// S00E17 "A Chump at Oxford (Extended)" and is matching S16E01's
+			// plain entry instead. This is a KNOWN, RECORDED, ACCEPTED
+			// consequence of the design (the spec's Round 3 decision: all 18
+			// release-scene words move to filename-only, no exceptions) — see
+			// the plan's §4.1 and §4.2.2. It is not a defect this plan
+			// undertakes to fix. If this row ever flips to false, the redirect
+			// stopped happening: find out why before "fixing" the test, because
+			// something about the FromName/titleTokens vocabulary split
+			// changed.
+			//
+			// Mechanism: "extended" is one of the 15 words FromName DOES strip,
+			// so this file's tokens are identical to the plain file's, while
+			// the correct S00E17 entry keeps the word and matches nothing.
+			//
+			// NO companion "== false" row asserting the (Extended) entry
+			// stopped matching is needed: one row suffices for a two-sided
+			// failure, because
+			// TestSearchTVDBEpisodeByTitle_ExtendedVariantRedirectsToWrongSlot
+			// already proves it via Found == 1 — were S00E17 still matching,
+			// Found would be 2.
+			name:        "P17 accepted regression, redirect sub-class — an Extended-shaped file lands on the WRONG slot",
+			basename:    "Laurel & Hardy - A Chump at Oxford Extended(Colour)-DVDRip.XviD-DIE-DVD02.mp4",
+			showTitle:   "Laurel & Hardy",
+			episodeName: "A Chump At Oxford",
+			want:        true,
 		},
 	}
 	for _, tc := range cases {

@@ -63,13 +63,28 @@ func (g *seriesGate) reject() {
 // allowsTitle is Check A: a meaningful token overlap between the query seed
 // and the candidate's title, reusing HasTitleTokenOverlap unmodified. Fails
 // open (allows) when either side tokenizes to the EMPTY SET, not merely an
-// empty string — titleTokens drops every token shorter than 2 runes and every
-// short roman-numeral-only token, so a legitimate title like "9-1-1" or "V"
-// can flatten to no tokens on a non-empty string (§1.2a). Mirrors
+// empty string — filenameTokens drops every token shorter than 2 runes and
+// every short roman-numeral-only token, so a legitimate title like "9-1-1" or
+// "V" can flatten to no tokens on a non-empty string (§1.2a). Mirrors
 // HasTitleTokenOverlap's own asymmetry: searchterm.FromName runs on the seed
 // side only, matching argument 1 of HasTitleTokenOverlap.
+//
+// The seed side MUST use the SAME tokenizer HasTitleTokenOverlap uses for its
+// argument 1 (filenameTokens today). If the two ever diverge, this guard
+// reports "has tokens" for a seed the overlap check will then tokenize to the
+// empty set — and the candidate is REJECTED instead of failing open, inverting
+// this guard's whole contract. See the plan's §2.2 for the worked "vs" case
+// and series_folder_guard_test.go's release-scene-seed row for the lock.
+//
+// The IDENTICAL coupling exists on the CANDIDATE side: this guard's
+// candidateTitle emptiness pre-check (site 5) predicts what
+// HasTitleTokenOverlap computes for its argument 2 (site 3). Both are
+// titleTokens today, so the constraint is satisfied by inaction and no
+// code enforces it — which is exactly why it is written down here. Moving
+// either one alone breaks the candidate side the same way, in the same
+// direction, for the same reason.
 func (g *seriesGate) allowsTitle(candidateTitle string) bool {
-	if len(titleTokens(searchterm.FromName(g.titleSeed))) == 0 ||
+	if len(filenameTokens(searchterm.FromName(g.titleSeed))) == 0 ||
 		len(titleTokens(candidateTitle)) == 0 {
 		return true // no discriminating tokens — no basis to reject
 	}

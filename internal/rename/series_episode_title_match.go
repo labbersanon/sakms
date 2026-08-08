@@ -269,6 +269,11 @@ func tokensSubsetOf(a, b map[string]struct{}) bool {
 //     the cheap short-circuit that keeps the per-episode cost near-zero
 //     across a long-running show. Do not delete it as dead logic, and do not
 //     "fix" it thinking it is the real gate — steps 2-3 are.
+//     "Identically" means both this function and HasTitleTokenOverlap
+//     tokenize the file side with filenameTokens(searchterm.FromName(
+//     basename)). Moving one of the two to a different tokenizer silently
+//     invalidates this proof and makes step 1 a real gate that can reject
+//     what step 3 would accept.
 //  2. Subtract the SHOW's own tokens from the episode's tokens before testing
 //     anything else — without this, any episode whose TMDB name is a subset
 //     of the show's own title (e.g. an episode also titled "The Path" on a
@@ -281,6 +286,9 @@ func tokensSubsetOf(a, b map[string]struct{}) bool {
 //     "Red Skelton More Funny Faces.mp4" recovers to tokens that are a
 //     SUPERSET of the episode "More Funny Faces"'s tokens, not equal to them
 //     — exact-equality would reject the feature's own motivating shape.
+//     Note the two sides use DIFFERENT stopword lists on purpose (residual
+//     via titleTokens, fileToks via filenameTokens) — see web_authority.go's
+//     2026-08-08 block.
 func episodeTitleMatches(basename, showTitle, episodeName string) bool {
 	if isPlaceholderEpisodeName(episodeName) {
 		return false
@@ -288,7 +296,7 @@ func episodeTitleMatches(basename, showTitle, episodeName string) bool {
 	if !HasTitleTokenOverlap(basename, episodeName) {
 		return false
 	}
-	fileToks := titleTokens(searchterm.FromName(basename))
+	fileToks := filenameTokens(searchterm.FromName(basename))
 	showToks := titleTokens(showTitle)
 	// One tokenization of episodeName, same as before: the counts ARE the
 	// tokenization, and tokenSetFrom is a free projection of it. Taking the

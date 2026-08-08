@@ -97,6 +97,37 @@ func TestSeriesGate_Allows(t *testing.T) {
 			candidateTitle: "V", candidateID: 300,
 			want: true,
 		},
+		{
+			// 11a — SITE 4 COUPLING LOCK (plan §2.2/§6.6). allowsTitle's seed
+			// side (site 4) MUST use the same tokenizer HasTitleTokenOverlap
+			// uses for its argument 1 (site 2). Both are filenameTokens today,
+			// so filenameTokens(FromName("vs")) is EMPTY and the guard fails
+			// open with no basis to reject.
+			//
+			// This row is the entire point of the coupling: leave site 4 on
+			// titleTokens while site 2 moves and titleTokens("vs") = {vs} is
+			// non-empty, so the emptiness pre-check passes, Check A runs, the
+			// overlap call then tokenizes the seed to nothing on its own side,
+			// and the candidate is REJECTED — inverting this guard's fail-open
+			// contract. This row goes false and the test fails, which is what
+			// it is here to do.
+			name:           "11a_release_scene_only_seed_fails_open_site4_coupling",
+			gate:           seriesGate{titleSeed: "vs"},
+			candidateTitle: "The Path", candidateID: 100,
+			want: true,
+		},
+		{
+			// 11b — the CANDIDATE side of the same coupling (site 5, plan §3).
+			// candidateTitle keeps using titleTokens, so titleTokens("Extended")
+			// is now {extended} — non-empty — Check A stays ACTIVE and rejects a
+			// candidate sharing no token with the seed. Pre-fix "extended" was
+			// in the one shared stop list, this tokenized to the empty set, and
+			// the guard failed open and ALLOWED.
+			name:           "11b_release_scene_only_candidate_keeps_check_A_active",
+			gate:           seriesGate{titleSeed: "The Path"},
+			candidateTitle: "Extended", candidateID: 100,
+			want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

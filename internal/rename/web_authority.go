@@ -58,44 +58,121 @@ func IsJunkRenameFilename(name string) bool {
 	return false
 }
 
-var tokenStop = map[string]struct{}{
+// tokenStopUniversal is the 14 genuine English grammatical stopwords. They are
+// safe to strip from ANY string — a filename on disk or a catalog title — and
+// are applied by both titleTokenCounts and filenameTokenCounts.
+var tokenStopUniversal = map[string]struct{}{
 	"a": {}, "an": {}, "the": {}, "and": {}, "or": {}, "of": {}, "for": {},
 	"to": {}, "in": {}, "on": {}, "at": {}, "with": {}, "from": {}, "by": {},
+}
+
+// tokenStopReleaseScene is the 18 torrent/release-scene vocabulary words. They
+// are applied to FILENAME-derived strings only. Stripping them from a CATALOG
+// title destroys real signal: TheTVDB's own Laurel & Hardy episodes
+// "A Chump at Oxford (Extended)" (S00E17) and "A Chump At Oxford" (S16E01)
+// both collapsed to {chump, oxford} and became permanently indistinguishable.
+var tokenStopReleaseScene = map[string]struct{}{
 	"vs": {}, "feat": {}, "ft": {}, "av1": {}, "x264": {}, "x265": {}, "hevc": {},
 	"h264": {}, "bluray": {}, "webrip": {}, "webdl": {}, "hdtv": {}, "remux": {},
 	"proper": {}, "repack": {}, "extended": {}, "unrated": {}, "internal": {},
 }
 
-// Claude 2026-08-08: titleTokens is now a projection of titleTokenCounts
-// Reason: the discriminating-residual collapse check
-//   (series_episode_title_match.go) needs to know how many SOURCE WORD
-//   POSITIONS produced a surviving token — "That's That" yields the fields
-//   [that, s, that], which dedupe to the single 4-rune token "that" and used
-//   to read as a discriminating residual. A set cannot carry that, so the
-//   count has to come from the tokenizer itself.
-// Reason (2): counting is done by the SAME loop that builds the set, not by a
-//   parallel reimplementation. If the two ever drifted the collapse check
-//   would count positions the token set never had — a silent, direction-
-//   dependent wrong answer, not a crash. titleTokenCounts is therefore the
-//   single filter definition and titleTokens is derived from it.
-// Troubleshooting: a single-word episode title stopped matching — check
-//   titleTokenCounts' count for its one token; it must be 1. A count of 2 on
-//   a genuinely single-word title means the FieldsFunc split produced a
-//   duplicate field that the len<2/stopword/roman filters did not drop.
-// Review if: titleTokens' filter rules change — the change belongs in
-//   titleTokenCounts and both callers inherit it automatically.
-// Context: see .omc/specs/deep-interview-sakms-episode-title-discriminating-residual-collapse-fix.md
+// tokenStopFilename is the FULL list — tokenStopUniversal ∪ tokenStopReleaseScene,
+// 32 entries — built once at package init.
+var tokenStopFilename = mergeTokenStops(tokenStopUniversal, tokenStopReleaseScene)
 
-// titleTokenCounts is titleTokens' filter loop, returning how many SURVIVING
-// FILTERED FIELDS of s produced each token rather than a bare set. A count of
-// 2+ means two distinct source word positions collapsed onto one normalized
-// token ("That's That" -> {"that": 2}).
+// mergeTokenStops ALLOCATES a new map. It must never write into either input:
+// a merge that mutated tokenStopUniversal in place would silently give
+// titleTokens the full 32-word list back, making this entire fix a no-op —
+// and EVERY existing test would still pass, because no current fixture has a
+// release-scene word in a catalog title. That is the single most dangerous
+// implementation error available here; TestTokenStopLists (web_authority_test.go)
+// is the assertion that catches it.
+func mergeTokenStops(sets ...map[string]struct{}) map[string]struct{} {
+	n := 0
+	for _, s := range sets {
+		n += len(s)
+	}
+	out := make(map[string]struct{}, n)
+	for _, s := range sets {
+		for k := range s {
+			out[k] = struct{}{}
+		}
+	}
+	return out
+}
+
+// Claude 2026-08-08: tokenStop split into universal + release-scene; two
+//   tokenizer pairs (deep-interview-sakms-tokenstop-filename-title-split).
+// Reason: one shared 32-word list was applied to filenames AND catalog titles
+//   alike. TheTVDB's real Laurel & Hardy episodes "A Chump at Oxford
+//   (Extended)" (S00E17) and "A Chump At Oxford" (S16E01) both tokenized to
+//   {chump, oxford} because "extended" was stripped from BOTH, making two
+//   human-obviously-different episodes indistinguishable and permanently
+//   declining the file as ambiguous.
+// Reason (2): two distinctly-named function pairs, NOT a context flag —
+//   callers select by name, which removes the whole class of "passed the
+//   wrong flag value" bug. Choose by where the STRING comes from, not by what
+//   the comparison is for: a filesystem path/basename/folder segment ->
+//   filenameTokens; a TVDB/TMDB/web-grounded title -> titleTokens.
+// Reason (3): ONE filter loop (tokenCountsWithStop) parameterized by the stop
+//   set, and each *Tokens function is tokenSetFrom(its own *TokenCounts) —
+//   96d27cd's no-forked-loop constraint now covers four functions, not two.
+// Troubleshooting: this fix appears to do nothing and every test still passes
+//   -> mergeTokenStops mutated tokenStopUniversal instead of allocating, so
+//   titleTokens silently regained all 32 words. TestTokenStopLists is the
+//   assertion for it.
+// Troubleshooting (2): a legitimate episode stopped matching -> its catalog
+//   title probably contains one of the 18 release-scene words, which is now
+//   retained on the title side and stripped on the filename side. That is the
+//   same mechanism as the fix, not a separate bug — see the plan's §4.
+// Troubleshooting (3): a file landed on the WRONG episode slot, confidently,
+//   with no ambiguity decline -> same mechanism again, resolving in the worse
+//   direction. If the correct catalog entry differs from a sibling ONLY by one
+//   of the 18 words, and searchterm.FromName strips that word from the
+//   filename (it strips 15 of the 18, "extended" included), then the file's
+//   tokens collide with the sibling's while the correct entry keeps the word
+//   and matches nothing — so the sibling matches uniquely and WRONGLY. This is
+//   a KNOWN, ACCEPTED consequence of the split, locked by P17 and by
+//   TestSearchTVDBEpisodeByTitle_ExtendedVariantRedirectsToWrongSlot, both of
+//   which assert the wrong-slot result on purpose. See the plan's §4.1/§4.2.2.
+// Review if: searchterm.FromName's noiseTokens list changes — 15 of the 18
+//   release-scene words are already stripped there, and that overlap is what
+//   makes the filename side's behaviour unchanged.
+// Context: see .omc/plans/autopilot-impl.md and
+//   .omc/specs/deep-interview-sakms-tokenstop-filename-title-split.md
+
+// titleTokenCounts is titleTokens' counting core — tokenCountsWithStop against
+// the universal stop list only — returning how many SURVIVING FILTERED FIELDS
+// of s produced each token rather than a bare set. A count of 2+ means two
+// distinct source word positions collapsed onto one normalized token
+// ("That's That" -> {"that": 2}).
 //
 // "Word position" deliberately means a strings.FieldsFunc field that survived
 // every filter, NOT a whitespace-delimited word: the split is on every
 // non-letter/non-digit rune, so "That's" is two fields ("that", "s") and the
 // second is dropped by the len < 2 rule.
 func titleTokenCounts(s string) map[string]int {
+	return tokenCountsWithStop(s, tokenStopUniversal)
+}
+
+// filenameTokenCounts is titleTokenCounts' filename-side twin: the SAME filter
+// loop against the full 32-word stop list.
+//
+// It has no production caller today, and that is intentional rather than dead
+// code — it is the delegation target that keeps filenameTokens from forking
+// the filter loop, and it has a real test consumer
+// (TestFilenameTokensMatchesFilenameTokenCounts). Exclude it from any
+// mechanical unused-symbol sweep.
+func filenameTokenCounts(s string) map[string]int {
+	return tokenCountsWithStop(s, tokenStopFilename)
+}
+
+// tokenCountsWithStop is THE filter loop — the single definition all four
+// tokenizer entry points route through. Adding a fifth filter rule here is
+// inherited by every caller automatically; adding it anywhere else reintroduces
+// exactly the drift 96d27cd's comment block forbids.
+func tokenCountsWithStop(s string, stop map[string]struct{}) map[string]int {
 	out := map[string]int{}
 	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
@@ -104,7 +181,7 @@ func titleTokenCounts(s string) map[string]int {
 		if len(f) < 2 {
 			continue
 		}
-		if _, stop := tokenStop[f]; stop {
+		if _, ok := stop[f]; ok {
 			continue
 		}
 		if len(f) <= 3 && onlyLetters(f) && isMostlyRoman(f) {
@@ -129,16 +206,23 @@ func titleTokens(s string) map[string]struct{} {
 	return tokenSetFrom(titleTokenCounts(s))
 }
 
+func filenameTokens(s string) map[string]struct{} {
+	return tokenSetFrom(filenameTokenCounts(s))
+}
+
 // Claude 2026-08-07: hasWordToken — "is this a title or just a code" predicate (plan §1.4)
 // Reason: the compact-eNNNN seed cascade in proposeOneEpisodeLibrary needs to
 //   detect a seed that carries no title at all ("e614_720x480.mp4"). Three
 //   simpler predicates all silently fail on it: `looseTitle == ""` (the string
-//   is non-empty), `len(titleTokens(...)) == 0` (titleTokens keeps both "e614"
-//   and "720x480" — each is >= 2 runes, not a stop-word, not a roman numeral),
-//   and "does any token contain a letter" ("e614" has an 'e', "720x480" an 'x').
+//   is non-empty), `len(filenameTokens(...)) == 0` (filenameTokens keeps both
+//   "e614" and "720x480" — each is >= 2 runes, not a stop-word, not a roman
+//   numeral), and "does any token contain a letter" ("e614" has an 'e',
+//   "720x480" an 'x').
+// Reason (2): filenameTokens, not titleTokens — looseTitle is always a
+//   basename or a show-folder segment (rename.go:1096-1111).
 // Troubleshooting: an eNNNN file parses its season/episode but stays Unmatched
 //   with a gate-rejection reason — confirm the seed cascade's step 3 fired.
-// Review if: titleTokens starts dropping digit-bearing tokens itself.
+// Review if: filenameTokens starts dropping digit-bearing tokens itself.
 
 // wordTokenRe matches two or more consecutive ASCII letters — the "is this a
 // word rather than a code" test.
@@ -147,9 +231,10 @@ var wordTokenRe = regexp.MustCompile(`[A-Za-z]{2,}`)
 // hasWordToken reports whether s tokenizes to at least one token containing two
 // consecutive letters. Do not weaken it to a plain "contains a letter" check —
 // that is the third rejected alternative in the Reason block above, not an
-// untried simplification.
+// untried simplification. Tokenizes with filenameTokens: s is always a
+// filesystem-derived string (basename or show folder segment).
 func hasWordToken(s string) bool {
-	for tok := range titleTokens(searchterm.FromName(s)) {
+	for tok := range filenameTokens(searchterm.FromName(s)) {
 		if wordTokenRe.MatchString(tok) {
 			return true
 		}
@@ -180,8 +265,16 @@ func isMostlyRoman(s string) bool {
 // HasTitleTokenOverlap requires a meaningful token match between the filename
 // stem and the grounded web title (blocks inventing titles for TitleN, and
 // blocks weak single-token hits like filename "Red …" vs grounded "Red").
+//
+// The two sides are tokenized DIFFERENTLY and deliberately so: argument 1 is
+// filename-derived and goes through searchterm.FromName + filenameTokens (full
+// 32-word list); argument 2 is a catalog/web-grounded title and goes through
+// titleTokens (14 universal stopwords only). Do not "fix" this to use one
+// tokenizer on both sides — the asymmetry IS the mechanism that lets a
+// release-scene word survive in a real episode title while never appearing in
+// a filename's token set.
 func HasTitleTokenOverlap(filename, groundedTitle string) bool {
-	fileToks := titleTokens(searchterm.FromName(filename))
+	fileToks := filenameTokens(searchterm.FromName(filename))
 	groundToks := titleTokens(groundedTitle)
 	if len(fileToks) == 0 || len(groundToks) == 0 {
 		return false

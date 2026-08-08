@@ -301,6 +301,160 @@ func anthologyHandledCatalog() []fakeTVDBEpisode {
 	)
 }
 
+// TestSearchTVDBEpisodeByTitle_ChumpAtOxfordIsNoLongerAmbiguous is THE TEST
+// THAT REPRODUCES THE LIVE FAILURE. A bare episodeTitleMatches predicate row
+// does not, and that distinction is the reason this test exists at all: the
+// message an operator actually saw in production is emitted by the TVDB
+// ANTHOLOGY path (series_tvdb_episode_match.go:719-726), not by the TMDB
+// episode-title path, which is a different code path whose format string has
+// no "on TheTVDB" in it.
+//
+// Pre-fix behaviour, recorded verbatim so this test explains what it defends:
+// "extended" was in the ONE shared 32-word stop list, so it was stripped from
+// the CATALOG side too. Both entries tokenized to {chump, oxford}, both
+// matched, Found reached 2, Match was cleared, and the file was declined with
+//
+//	"...on TheTVDB (S00E17 A Chump at Oxford (Extended) and S16E01 A Chump At Oxford)"
+//
+// Post-fix, "extended" is retained on the catalog side, so S00E17's residual
+// {chump, oxford, extended} matches nothing and exactly one slot survives.
+// Context: see .omc/plans/autopilot-impl.md §6.5 and §0.3
+func TestSearchTVDBEpisodeByTitle_ChumpAtOxfordIsNoLongerAmbiguous(t *testing.T) {
+	// Built inline rather than via a helper: TestAnthologyEpisodeCatalogSearch's
+	// own `ep` closure is scoped to its function body and is not reachable here,
+	// and each of the three Chump-at-Oxford tests declares this two-entry
+	// catalog locally so no edit can move all three at once. Series id 71663 is
+	// TheTVDB's real Laurel & Hardy id.
+	catalog := []tvdb.Episode{
+		{SeriesID: 71663, SeasonNumber: 0, Number: 17, Name: "A Chump at Oxford (Extended)"},
+		{SeriesID: 71663, SeasonNumber: 16, Number: 1, Name: "A Chump At Oxford"},
+	}
+
+	r := searchTVDBEpisodeByTitle(catalog, "Laurel & Hardy",
+		"Laurel & Hardy - A Chump at Oxford(Colour)-DVDRip.XviD-DIE-DVD01.mp4")
+
+	if r.Found != 1 {
+		t.Fatalf("Found = %d, want 1 — Found == 2 means the ambiguity decline is back", r.Found)
+	}
+	if r.Match == nil {
+		t.Fatal("Match = nil, want the S16E01 slot")
+	}
+	if r.Match.season != 16 {
+		t.Errorf("Match.season = %d, want 16", r.Match.season)
+	}
+	if r.Match.episode != 1 {
+		t.Errorf("Match.episode = %d, want 1", r.Match.episode)
+	}
+	if r.Match.name != "A Chump At Oxford" {
+		t.Errorf("Match.name = %q, want %q", r.Match.name, "A Chump At Oxford")
+	}
+	if r.Second != nil {
+		t.Errorf("Second = %+v, want nil — a second slot means the collision survived", r.Second)
+	}
+}
+
+// TestSearchTVDBEpisodeByTitle_ExtendedVariantRedirectsToWrongSlot ASSERTS A
+// WRONG-SLOT RESULT ON PURPOSE.
+//
+// The -DVD02 filename is a HYPOTHETICAL, CONSTRUCTED sibling of the real
+// production -DVD01 file; it does not exist on disk (confirmed absent from
+// production 2026-08-08 — see the plan's §8.1). The file it models genuinely
+// belongs to S00E17 "A Chump at Oxford (Extended)", and this test asserts it
+// lands on S16E01 instead. That is a KNOWN, RECORDED, ACCEPTED consequence of
+// the design (the spec's Round 3 decision: all 18 release-scene words move to
+// filename-only, no exceptions), not a defect this plan undertakes to fix —
+// see the plan's §4.1, §4.2.2 and §10. Pre-fix, this same input returned
+// Found == 2 with a nil Match and declined as ambiguous, which was SAFER; the
+// fix trades that safe decline for a confident wrong placement in this
+// specific shape.
+//
+// Mechanism: searchterm.FromName strips the bare whole-word "Extended" from the
+// FILENAME (internal/searchterm/searchterm.go:92, a whole-word regex over the
+// whole string), so this file's tokens are identical to the plain file's —
+// while the narrowed titleTokens RETAINS "extended" on the CATALOG side, so
+// S00E17's residual {chump, oxford, extended} matches nothing. Found == 1 here
+// is also what proves S00E17 stopped matching entirely: were it still matching,
+// Found would be 2. If this test ever goes red, the vocabulary split changed —
+// investigate before editing the assertion.
+//
+// This is the SIBLING of P17 (series_episode_title_match_test.go) and is
+// deliberately a SEPARATE function rather than extra assertions inside
+// TestSearchTVDBEpisodeByTitle_ChumpAtOxfordIsNoLongerAmbiguous: P17 locks the
+// redirect at the predicate level, this locks it at searchTVDBEpisodeByTitle —
+// the ACTUAL production emitter. A predicate-level test alone would not prove
+// the emitter reproduces it.
+// Context: see .omc/plans/autopilot-impl.md §6.5.1
+func TestSearchTVDBEpisodeByTitle_ExtendedVariantRedirectsToWrongSlot(t *testing.T) {
+	// RE-DECLARED locally, deliberately: this test must not share a value with
+	// TestSearchTVDBEpisodeByTitle_ChumpAtOxfordIsNoLongerAmbiguous, whose
+	// catalog literal, call and six assertions are all off-limits to this one.
+	// Only the basename argument differs between the two.
+	catalog := []tvdb.Episode{
+		{SeriesID: 71663, SeasonNumber: 0, Number: 17, Name: "A Chump at Oxford (Extended)"},
+		{SeriesID: 71663, SeasonNumber: 16, Number: 1, Name: "A Chump At Oxford"},
+	}
+
+	r := searchTVDBEpisodeByTitle(catalog, "Laurel & Hardy",
+		"Laurel & Hardy - A Chump at Oxford Extended(Colour)-DVDRip.XviD-DIE-DVD02.mp4")
+
+	if r.Found != 1 {
+		t.Fatalf("Found = %d, want 1 (the ACCEPTED redirect — see this test's doc comment)", r.Found)
+	}
+	if r.Match == nil {
+		t.Fatal("Match = nil, want the (wrong) S16E01 slot")
+	}
+	if r.Match.season != 16 {
+		t.Errorf("Match.season = %d, want 16 (the WRONG slot, asserted deliberately)", r.Match.season)
+	}
+	if r.Match.episode != 1 {
+		t.Errorf("Match.episode = %d, want 1 (the WRONG slot, asserted deliberately)", r.Match.episode)
+	}
+	if r.Second != nil {
+		t.Errorf("Second = %+v, want nil", r.Second)
+	}
+}
+
+// TestEstablishedPinCorroborated_ChumpAtOxford locks 5d47947's anthology
+// established-pin corroboration as an IMPROVEMENT under this fix, which is a
+// stronger and more surprising claim than "unchanged" and therefore worth its
+// own test.
+//
+// Derivation (plan §7.3): searchterm.FromName("A Chump at Oxford (Extended)")
+// strips the bracketed "(Extended)" because it contains a noise token, giving
+// "A Chump at Oxford", which filenameTokens reduces to {chump, oxford}.
+// Against the catalog, the (Extended) entry's residual {chump, oxford,
+// extended} fails containment while the plain entry's {chump, oxford} passes —
+// Found == 1, so the tracked episode corroborates.
+//
+// PRE-FIX both entries matched, Found was 2, and the function ABSTAINED for
+// this title. The pin then starved itself out exactly when it was best
+// established, which is the failure mode 5d47947 exists to prevent.
+//
+// Note the general shape of this interaction, for the record: on this path both
+// sides originate in the catalog, but the "file" side is deliberately routed
+// through FromName + filenameTokens. So a tracked title containing one of the
+// 18 release-scene words can no longer corroborate ITSELF against its own
+// identical catalog entry. Here that is exactly what breaks the tie. Where the
+// identical entry is the ONLY catalog entry, corroboration for that one title
+// is lost — but the function returns true if ANY tracked episode corroborates,
+// so it degrades to abstention only when EVERY tracked title in the folder
+// carries a release-scene word. Accepted; same mechanism, same §4 tradeoff.
+// Context: see .omc/plans/autopilot-impl.md §6.7 and §7.3
+func TestEstablishedPinCorroborated_ChumpAtOxford(t *testing.T) {
+	// Same two-entry catalog as the two searchTVDBEpisodeByTitle tests above,
+	// declared locally for the same reason.
+	catalog := []tvdb.Episode{
+		{SeriesID: 71663, SeasonNumber: 0, Number: 17, Name: "A Chump at Oxford (Extended)"},
+		{SeriesID: 71663, SeasonNumber: 16, Number: 1, Name: "A Chump At Oxford"},
+	}
+
+	if !establishedPinCorroborated(catalog, "Laurel & Hardy",
+		[]library.Episode{{Title: "A Chump at Oxford (Extended)"}}) {
+		t.Fatal("want corroborated: the tracked (Extended) title must now match exactly ONE catalog slot " +
+			"(pre-fix it matched both and abstained)")
+	}
+}
+
 // TestTVDBAnthologyPass_HandledCoversEveryWrittenIndex is the ONE deliberate
 // exception to rename_library_series_test.go:2200's "every case drives the
 // REAL ScanLibrarySeries, not tvdbAnthologyPass directly" convention, and the

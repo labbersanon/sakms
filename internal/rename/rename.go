@@ -705,6 +705,20 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	//   non-empty, i.e. that ApplyLibrarySeries actually persisted TVDBID.
 	// Review if: library_series gains a real per-show folder-path column.
 	seriesByTVDBID := make(map[int]library.Series, len(allSeries))
+	// Claude 2026-08-08: trackedEpisodesByTVDBID — the established pin's second corroboration channel
+	// Reason: the anthology-starvation plan §1.4
+	//   (spec: deep-interview-sakms-anthology-established-pin-starvation-fix.md) —
+	//   tvdbAnthologyPass' established-pin qualification can no longer depend on
+	//   this scan's shrinking candidate group alone. `episodes` below is ALREADY
+	//   fetched for every tracked series (the ListEpisodes call on the next line
+	//   predates this change); retaining the slice for TVDB-tracked series costs
+	//   zero extra queries and is what lets the pass stay free of *library.Store.
+	// Troubleshooting: an established anthology rescan still declines whole —
+	//   confirm this map is non-empty for the show's TVDB id, i.e. that
+	//   ApplyLibrarySeries persisted TVDBID and the episodes carry titles.
+	// Review if: tvdbAnthologyPass ever gains direct store access.
+	// Context: .omc/specs/deep-interview-sakms-anthology-established-pin-starvation-fix.md
+	trackedEpisodesByTVDBID := make(map[int][]library.Episode, len(allSeries))
 	for _, series := range allSeries {
 		episodes, err := libStore.ListEpisodes(ctx, series.ID)
 		if err != nil {
@@ -713,6 +727,12 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 		seriesByID[series.TMDBID] = series
 		if series.TVDBID > 0 {
 			seriesByTVDBID[series.TVDBID] = series
+			// ASSIGNMENT, not append, and it must stay in this same branch:
+			// seriesByTVDBID is last-wins if two rows ever shared a tvdb_id
+			// (library_series is UNIQUE on tmdb_id only), so appending here would
+			// mix a SHADOWED row's episodes into corroboration for a row the pass
+			// never sees. The two maps must describe the same series row.
+			trackedEpisodesByTVDBID[series.TVDBID] = episodes
 		}
 		// Title feed: a tracked show's own title claims its normalized key,
 		// even with zero tracked episode files on disk (§3.1).
@@ -798,7 +818,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	//   would silently overwrite the earlier one's library_episodes row.
 	// Review if: library_series gains a real per-show folder-path column, which
 	//   would replace showFolderKey's normalized-name heuristic outright.
-	resolved, handled := tvdbAnthologyPass(ctx, sess, tracked, seriesByTVDBID, folderIDs,
+	resolved, handled := tvdbAnthologyPass(ctx, sess, tracked, seriesByTVDBID, trackedEpisodesByTVDBID, folderIDs,
 		roots, rootFolderPath, anthologyIdx, out)
 
 	// Claude 2026-08-07: AI-assisted episode recovery post-pass (autopilot-impl.md §2.2)

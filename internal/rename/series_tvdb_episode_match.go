@@ -220,6 +220,62 @@ func searchTVDBEpisodeByTitle(catalog []tvdb.Episode, showTitle, basename string
 	return res
 }
 
+// establishedPinCorroborated reports whether ANY already-tracked episode of an
+// already-established anthology pin still matches THIS scan's freshly-fetched
+// TheTVDB catalog.
+//
+// This is the second corroboration channel for an established pin, alongside
+// this scan's own candidate group. It exists because that group is a SHRINKING
+// pool: naming.MatchesSeriesSchema (rename.go:757) permanently removes every
+// applied file from the scan, so a folder approaching full resolution retains
+// only the files that cannot corroborate anything — and the pin starved itself
+// out exactly when it was best established.
+//
+// It re-uses searchTVDBEpisodeByTitle VERBATIM — the same function, the same
+// arguments in the same positions, the same acceptance shape
+// (Found == 1 && Match != nil) the per-file loop applies below. There is NO
+// forked matching algorithm here and there must never be one:
+// episodeTitleMatches' residual/containment rule is the thing being reused, not
+// merely referenced.
+//
+// candName MUST be the CATALOG's own show name (cand.Name), never pin.title.
+// episodeTitleMatches SUBTRACTS the show-title argument's tokens from every
+// episode name before comparing, so feeding it a different string than the
+// catalog was scanned with silently changes the match set — and the
+// established-pin shortcut overwrites pin.title with the TRACKED ROW's title,
+// which on a rescan is genuinely a different string. Same trap, same wording, as
+// anthologyCandidate.candName and aiEpisodeMode2.
+//
+// Rows with an empty Title are skipped, and that is NOT sampling: it is the
+// absence of any input to match with. library_episodes.title is populated from
+// the TheTVDB catalog at Apply time (rename.go's resolveEpisodeMeta) but that
+// fetch is deliberately fail-SOFT, so "" is a reachable, benign state.
+//
+// Short-circuits on the FIRST corroborating episode. Also not sampling: the
+// full set is walked whenever the answer is "no", which is the only outcome
+// where the count matters (it is the outcome that declines the folder).
+//
+// Cost: pure in-memory string comparison against a catalog the caller already
+// fetched. ZERO additional TheTVDB calls, ZERO additional database queries —
+// trackedEpisodes was materialised by the ListEpisodes call rename.go's
+// allSeries loop already makes for every tracked series.
+//
+// A nil or empty trackedEpisodes returns false, which is the fail-closed answer.
+func establishedPinCorroborated(catalog []tvdb.Episode, candName string, trackedEpisodes []library.Episode) bool {
+	for _, ep := range trackedEpisodes {
+		title := strings.TrimSpace(ep.Title)
+		if title == "" {
+			continue
+		}
+		// Same acceptance shape as the per-file loop: a tracked title that
+		// matches TWO catalog slots proves nothing about identity and abstains.
+		if r := searchTVDBEpisodeByTitle(catalog, candName, title); r.Found == 1 && r.Match != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // anthologyPin is the single value object a corroborated folder resolves to.
 //
 // Computed EXACTLY ONCE per folder group and threaded to every file in that
@@ -247,9 +303,27 @@ const (
 	// candidate show's catalog must be claimed by distinct files of one folder
 	// before the folder is pinned to that show FOR THE FIRST TIME.
 	//
-	// It is the threshold for ESTABLISHING a new pin only. Honouring an
-	// ALREADY-established pin — a candidate found in seriesByTVDBID — needs 1,
-	// not 3 (the rescan shortcut, applied per candidate in step 4). Note also
+	// It is the threshold for ESTABLISHING a new pin only, and the
+	// established-pin corroboration change does NOT touch it. Honouring an
+	// ALREADY-established pin does not consult this const at all: that
+	// candidate qualifies on ONE corroborating file from this scan's group OR
+	// on any already-tracked episode of the series still matching this scan's
+	// freshly-fetched catalog (establishedPinCorroborated). Both rules live in
+	// step 4; there is no longer a single `threshold` int, deliberately — the
+	// two rules differ in KIND now, not merely in magnitude.
+	//
+	// Leaving 3 alone for a NEW pin is a decision with a reason, not an
+	// omission (§7 of the anthology-starvation plan). A new pin's evidence base
+	// only ever ACCUMULATES: nothing has been applied, nothing has been removed
+	// from the candidate pool, and the group is the largest it will ever be at
+	// exactly the moment this threshold is evaluated — so a new pin has none of
+	// the shrinking-pool inversion that starves an established one. Nor is
+	// there a second channel available to it even in principle: a show that has
+	// never been pinned has NO tracked episodes, so establishedPinCorroborated
+	// would be called with an empty slice and return false. Extending the fix
+	// to this branch would be a no-op by construction.
+	//
+	// Note also
 	// that this const is NOT a group-size gate: step 3 uses it only in a cheap
 	// pre-filter that additionally requires seriesByTVDBID to be empty,
 	// precisely so a one-file rescan of an established show is not skipped
@@ -339,10 +413,21 @@ type anthologyResolution struct {
 //
 // Both maps are always non-nil, including on every early return, so a caller
 // may write to handled without a nil check.
+//
+// An ALREADY-ESTABLISHED pin qualifies on one corroborating file from this scan
+// OR on any already-tracked episode of the series still matching the fresh
+// catalog; establishing a NEW pin is unchanged and still needs
+// minCorroboratingFiles distinct slots from this scan alone.
 func tvdbAnthologyPass(
 	ctx context.Context, sess *mode.Session,
 	tracked map[episodeKey]bool,
 	seriesByTVDBID map[int]library.Series,
+	// trackedEpisodesByTVDBID carries the SAME rows seriesByTVDBID's values own —
+	// built in the same lockstep branch of rename.go's allSeries loop, from the
+	// ListEpisodes call that loop already makes. Read ONLY by the established-pin
+	// corroboration branch. A nil map is safe: it indexes to a nil slice and
+	// establishedPinCorroborated returns false, i.e. today's behaviour.
+	trackedEpisodesByTVDBID map[int][]library.Episode,
 	folderIDs map[string]int,
 	roots []string, generalRoot string,
 	candidates []int,
@@ -519,12 +604,46 @@ func tvdbAnthologyPass(
 			if isEstablished && established.TMDBID != anthologyTMDBID(cand.TVDBID) {
 				isEstablished = false // a real TMDB show, not a prior anthology pin
 			}
-			threshold := minCorroboratingFiles // establishing a NEW pin
+			// Claude 2026-08-08: established pins may corroborate from ALREADY-TRACKED episodes
+			// Reason: the anthology-starvation plan §1.1
+			//   (spec: deep-interview-sakms-anthology-established-pin-starvation-fix.md) —
+			//   the retired `threshold := minCorroboratingFiles; if isEstablished { threshold = 1 }`
+			//   form required at least one corroborating file from THIS scan's
+			//   candidate group. That group shrinks monotonically as a folder is
+			//   worked through (naming.MatchesSeriesSchema removes every applied file
+			//   at rename.go:757), so a nearly-finished anthology show converges on
+			//   files that CANNOT self-corroborate — Found == 0 or Found >= 2, neither
+			//   of which enters `slots`. The established pin then failed its own
+			//   threshold of 1, step 5 declined the whole folder, resolved[key] was
+			//   never written, and aiEpisodeRecoveryPass' mode 2 never ran on exactly
+			//   the files that needed it (confirmed live: Laurel & Hardy, tvdb 73910,
+			//   77/96 applied, 6 files reverted to the raw parse-failure reason).
+			// Reason (2): the two rules are now SPELLED OUT rather than folded into one
+			//   int, because they no longer differ only in magnitude — the NEW-pin rule
+			//   counts distinct slots and nothing else; the ESTABLISHED-pin rule accepts
+			//   EITHER one such slot OR corroboration from the series' tracked episodes.
+			// Troubleshooting: an established anthology folder still declines whole —
+			//   check, in order: `established.TMDBID == anthologyTMDBID(cand.TVDBID)`
+			//   (a real TMDB row deliberately does not take this path);
+			//   trackedEpisodesByTVDBID[cand.TVDBID] non-empty (rename.go's allSeries
+			//   loop only populates it for series.TVDBID > 0);
+			//   at least one of those rows carrying a non-empty Title
+			//   (§0.4 of the anthology-starvation plan).
+			// Review if: library_series gains a real per-show folder-path column, or
+			//   `slots` stops being the only per-scan evidence channel.
+			// Context: .omc/specs/deep-interview-sakms-anthology-established-pin-starvation-fix.md
 			if isEstablished {
-				threshold = 1 // honouring an ALREADY-established pin
-			}
-			if len(slots) < threshold {
-				continue // this candidate does not qualify
+				// len(slots) == 0 is EXACTLY the retired `len(slots) < 1` test —
+				// unchanged in meaning. The second clause is the entire fix, and it is
+				// evaluated ONLY when this scan produced no corroborating file, so the
+				// ordinary rescan path pays nothing for it.
+				if len(slots) == 0 && !establishedPinCorroborated(catalog, cand.Name, trackedEpisodesByTVDBID[cand.TVDBID]) {
+					continue // neither this scan's group nor the tracked episodes corroborate — decline
+				}
+			} else if len(slots) < minCorroboratingFiles {
+				// establishing a NEW pin — 3 distinct slots, UNCHANGED
+				// (§7 of the anthology-starvation plan).
+				continue
 			}
 
 			// Step 6 — build the pin (per qualifying candidate; step 5 below

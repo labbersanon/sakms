@@ -3415,6 +3415,159 @@ func TestScanLibrarySeries_TVDBAnthology_EstablishedPinShortcutPlacesOneFile(t *
 	})
 }
 
+// anthologyAmbiguousMusicBoxCatalog is anthologyScanCatalog plus a SECOND
+// "The Music Box" in a different season, so anthologyMusicBoxFile yields
+// Found == 2 and contributes nothing to `slots`.
+//
+// The duplicated title is deliberately DISJOINT from every tracked
+// corroboration title seeded below. Duplicating "Duck Soup" instead — and then
+// using it as the corroboration source — would make establishedPinCorroborated
+// see Found == 2, abstain, and decline the folder: the test would fail against
+// a CORRECT implementation, for a fixture reason.
+//
+// Kept local rather than reusing anthologyHandledCatalog(), which duplicates
+// "Below Zero" for a different case's purposes.
+//
+// The APPEND POSITION is load-bearing for the expected ambiguity reason below:
+// searchTVDBEpisodeByTitle fills First/Second in catalog ITERATION order, so
+// the S08E03 entry (from anthologyScanCatalog) is First and the S05E07 entry
+// appended here is Second. Move the append and the expected reason string
+// swaps its two slots. That ordering carries no "preferred slot" meaning — it
+// is purely the reason string's rendering order.
+func anthologyAmbiguousMusicBoxCatalog() []fakeTVDBEpisode {
+	return append(anthologyScanCatalog(),
+		fakeTVDBEpisode{ID: 7, SeriesID: anthologyTVDBSeriesID, Name: "The Music Box", Number: 7, SeasonNumber: 5, Aired: "1932-04-16"},
+	)
+}
+
+// TestScanLibrarySeries_TVDBAnthology_EstablishedPinCorroboratesFromTrackedEpisodes
+// is the plan's §6.5 — the end-to-end reproduction of the production defect,
+// and the ONLY test that exercises rename.go's trackedEpisodesByTVDBID map
+// builder. A wiring mistake there (wrong key, wrong branch, populated only for
+// TMDBID > 0) is invisible to every unit-level case, which passes the map in
+// by hand.
+//
+// The fixture is the shrinking pool, literally: two episodes have already been
+// applied and their rows are what the pin now corroborates from, while the ONE
+// file left in the un-applied folder is ambiguous in the catalog and can
+// corroborate nothing. Before the fix that folder declined whole and the row
+// reverted to the raw parse-failure reason — exactly what production regressed
+// to (Laurel & Hardy, tvdb 73910, 77/96 applied, 6 files reverting).
+//
+// DOCUMENTED DEVIATION from the plan's §6.5 fixture note, which says to "name
+// the applied file in the active preset's shape so naming.MatchesSeriesSchema
+// excludes it from the candidate pool — that IS the shrinking-pool mechanism
+// under test." That rationale does not hold for an ANTHOLOGY show and the
+// fixture must not pretend it does: naming.SeriesFolderName omits the
+// [tmdbid-N] tag whenever tmdbID <= 0 (naming.MovieFolderName), an anthology
+// show's synthetic id is strictly negative, and MatchesSeriesSchema's
+// seriesFolderJellyfin pattern REQUIRES that tag — so it returns false for
+// every applied anthology file, forever. The mechanism that actually removes
+// an applied file from the scan is rename.go's `known[ep.FilePath] = true`
+// feeding library.ScanRootFolder, which is what this fixture relies on. The
+// applied files are still named in the preset's shape because that is what
+// ApplyLibrarySeries genuinely writes; they are just not excluded BY that.
+func TestScanLibrarySeries_TVDBAnthology_EstablishedPinCorroboratesFromTrackedEpisodes(t *testing.T) {
+	// applied seeds one already-applied episode file on disk under root and
+	// returns its path, in the shape ApplyLibrarySeries writes.
+	applied := func(t *testing.T, root string, season, episode int, epTitle, ext string) string {
+		t.Helper()
+		dir := filepath.Join(root,
+			naming.SeriesFolderName(naming.Jellyfin, "Laurel & Hardy", 1921, anthologyTMDBID(anthologyTVDBSeriesID)),
+			naming.SeasonDirName(season))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		path := filepath.Join(dir, naming.EpisodeFileName(naming.Jellyfin, "Laurel & Hardy", season, episode, epTitle, ext))
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return path
+	}
+
+	// setup builds the whole fixture and runs the scan. trackedTitles are the
+	// library_episodes.title values the two applied rows carry — the ONLY thing
+	// that differs between the two sub-cases.
+	setup := func(t *testing.T, trackedTitles [2]string) []proposals.Proposal {
+		t.Helper()
+		root := t.TempDir()
+		seedAnthologyFiles(t, root, anthologyShowFolder, anthologyMusicBoxFile)
+
+		tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+			ID: anthologyTVDBSeriesID, Name: "Laurel & Hardy", Year: "1921",
+			Catalog: anthologyAmbiguousMusicBoxCatalog(),
+		}})
+		// MainstreamAI left nil so aiEpisodeRecoveryPass returns immediately and
+		// this test measures the anthology pass alone.
+		sess := &mode.Session{Mode: mode.Series, TMDB: fatalTMDBSeriesServer(t), TVDB: tvdbClient}
+
+		libStore := newTestLibraryStore(t)
+		ctx := context.Background()
+		// BOTH ids are required: rename.go's allSeries loop gates
+		// trackedEpisodesByTVDBID on series.TVDBID > 0, and step 4's deviation
+		// guard requires TMDBID == anthologyTMDBID(TVDBID). Drop either and the
+		// folder declines for a WIRING reason while looking like a real decline.
+		series, err := libStore.UpsertSeries(ctx, library.Series{
+			TMDBID: anthologyTMDBID(anthologyTVDBSeriesID), TVDBID: anthologyTVDBSeriesID,
+			Title: "Laurel & Hardy", Year: 1921, RootFolderPath: root,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, ep := range []library.Episode{
+			{SeriesID: series.ID, SeasonNumber: 3, EpisodeNumber: 1, Title: trackedTitles[0],
+				FilePath: applied(t, root, 3, 1, "Duck Soup", ".mp4")},
+			{SeriesID: series.ID, SeasonNumber: 2, EpisodeNumber: 5, Title: trackedTitles[1],
+				FilePath: applied(t, root, 2, 5, "Berth Marks", ".mp4")},
+		} {
+			if _, err := libStore.UpsertEpisode(ctx, ep); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		}
+
+		got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return got
+	}
+
+	t.Run("tracked episode titles corroborate the established pin", func(t *testing.T) {
+		got := setup(t, [2]string{"Duck Soup", "Berth Marks"})
+
+		// One proposal only: the two applied files are in `known`, so
+		// ScanRootFolder never reports them.
+		if len(got) != 1 {
+			t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+		}
+		p := proposalByName(t, got, anthologyMusicBoxFile)
+		if p.Status != proposals.Unmatched {
+			t.Fatalf("status = %v (%s), want Unmatched", p.Status, p.Reason)
+		}
+		// THE ASSERTION: the AMBIGUITY reason, not parseFailureReason. Reaching
+		// it at all requires the folder to have RESOLVED, which with len(slots)
+		// == 0 is only possible through the tracked-episode channel. Before the
+		// fix this row carried the raw parse-failure reason instead.
+		wantReason := fmt.Sprintf(
+			"%q matches more than one episode of %q on TheTVDB (S%02dE%02d %q and S%02dE%02d %q) — ambiguous, leaving in place for manual review",
+			anthologyMusicBoxFile, "Laurel & Hardy", 8, 3, "The Music Box", 5, 7, "The Music Box")
+		if p.Reason != wantReason {
+			t.Errorf("reason = %q,\nwant %q", p.Reason, wantReason)
+		}
+		if p.Reason == parseFailureReason(anthologyMusicBoxFile) {
+			t.Errorf("reason is still the raw parse failure — the folder declined whole, which is the production symptom this test reproduces")
+		}
+	})
+
+	t.Run("tracked episode titles absent from the catalog decline the folder", func(t *testing.T) {
+		// Real Laurel & Hardy shorts deliberately absent from the served
+		// catalog: neither channel corroborates, so the row is back to the
+		// untouched parse failure.
+		got := setup(t, [2]string{"A Chump at Oxford", "Night Owls"})
+		assertUntouchedParseFailures(t, got, anthologyMusicBoxFile)
+	})
+}
+
 // TestScanLibrarySeries_TVDBAnthology_RunsBeforeTheSeenGuard is §8.3 case L,
 // the ORDERING test (§3.2). Two files in a corroborated folder resolve to the
 // SAME slot; the within-batch `seen` guard annotates the second claimant.

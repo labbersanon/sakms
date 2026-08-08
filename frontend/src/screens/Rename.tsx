@@ -228,11 +228,45 @@ const RepickPanel: Component<{
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
 
+  // Manual slot assignment (series only) — for a file with no recoverable
+  // episode signal at all. Pre-filled from the proposal's current values when
+  // they are non-zero so an operator correcting an ambiguous match starts from
+  // what is already there, null otherwise ("not assigning a slot").
+  const [season, setSeason] = createSignal<number | null>(
+    props.proposal.seasonNumber ? props.proposal.seasonNumber : null,
+  );
+  const [episode, setEpisode] = createSignal<number | null>(
+    props.proposal.episodeNumber ? props.proposal.episodeNumber : null,
+  );
+  const parseSlot = (raw: string): number | null => {
+    const t = raw.trim();
+    if (t === "") return null;
+    const n = Number(t);
+    return Number.isInteger(n) ? n : null;
+  };
+  // Exactly one of the two filled — the server 400s this too; the inline error
+  // is the UX, not the guard.
+  const halfPair = () => (season() != null) !== (episode() != null);
+
   const use = async (id: number, title: string, year?: number) => {
     setError("");
+    if (halfPair()) {
+      setError("Enter both a season and an episode, or leave both blank.");
+      return;
+    }
     setBusy(true);
     try {
-      await repickProposal(props.proposal.id, { tmdbId: id, title, year });
+      // `!= null`, NEVER a truthiness check: season 0 is Specials, a real
+      // value an operator can mean, and `if (s)` would silently drop it —
+      // the exact defect the *int DTO fields exist to prevent.
+      const s = season();
+      const e = episode();
+      await repickProposal(
+        props.proposal.id,
+        s != null && e != null
+          ? { tmdbId: id, title, year, seasonNumber: s, episodeNumber: e }
+          : { tmdbId: id, title, year },
+      );
       props.onDone();
     } catch (e) {
       setError((e as Error).message);
@@ -268,6 +302,46 @@ const RepickPanel: Component<{
         <Button type="submit">Search</Button>
         <Button onClick={props.onCancel}>Cancel</Button>
       </form>
+      <Show when={props.mode === "series"}>
+        <div class="mt-3 rounded-md border border-border bg-surface-2 p-3">
+          <Muted>
+            Optional: assign a season and episode directly. Use this when the
+            filename has no recoverable episode information. Season 0 is
+            Specials.
+          </Muted>
+          <div class="mt-2 flex items-center gap-3">
+            <label class="flex items-center gap-2 text-sm text-fg">
+              Season
+              <input
+                type="number"
+                min="0"
+                step="1"
+                class="w-24 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none focus:border-accent"
+                value={season() ?? ""}
+                onInput={(e) => setSeason(parseSlot(e.currentTarget.value))}
+                aria-label="Season number"
+              />
+            </label>
+            <label class="flex items-center gap-2 text-sm text-fg">
+              Episode
+              <input
+                type="number"
+                min="1"
+                step="1"
+                class="w-24 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none focus:border-accent"
+                value={episode() ?? ""}
+                onInput={(e) => setEpisode(parseSlot(e.currentTarget.value))}
+                aria-label="Episode number"
+              />
+            </label>
+          </div>
+          <Show when={halfPair()}>
+            <ErrorText>
+              Enter both a season and an episode, or leave both blank.
+            </ErrorText>
+          </Show>
+        </div>
+      </Show>
       <Show when={error()}>
         <ErrorText>{error()}</ErrorText>
       </Show>

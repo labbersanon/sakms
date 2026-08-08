@@ -280,6 +280,39 @@ const (
 type anthologyCandidate struct {
 	pin     anthologyPin
 	matches map[int]tvdbEpisodeSearch // index into out -> that file's result
+
+	// catalog is the SeriesEpisodes fetch this candidate was evaluated
+	// against, carried out of the pass so a later consumer can match against
+	// an already-fetched catalog rather than re-fetching it. Zero new network
+	// calls — it is already in memory and was previously discarded.
+	catalog []tvdb.Episode
+
+	// candName is this candidate's OWN TheTVDB name (cand.Name), which is the
+	// show-title argument searchTVDBEpisodeByTitle is called with below.
+	// It CANNOT be recovered from pin.title later: the established-pin
+	// shortcut overwrites pin.title with the TRACKED ROW's title, and
+	// episodeTitleMatches subtracts the CATALOG's own show name from each
+	// episode name. Capture it at the append or it is gone.
+	candName string
+}
+
+// anthologyResolution is what tvdbAnthologyPass learned about ONE show folder,
+// published for a later pass so it can match against an already-fetched
+// catalog rather than re-fetching it (autopilot-impl.md §2.3).
+//
+// A folder gets an entry ONLY when it resolved to exactly one qualifying
+// candidate. Folders declined as ambiguous (>= 2 qualifying candidates) or
+// uncorroborated (0) get NO entry at all — publishing one for a folder this
+// pass deliberately REFUSED to resolve would let a downstream pass match
+// against a contested show's catalog, inverting the deterministic-first
+// precedence order.
+type anthologyResolution struct {
+	pin     anthologyPin
+	catalog []tvdb.Episode
+
+	// candName is the winning candidate's own TheTVDB name — NEVER pin.title.
+	// See anthologyCandidate.candName for why the two can differ.
+	candName string
 }
 
 // tvdbAnthologyPass resolves unpinned show folders whose parse-failed files
@@ -290,7 +323,22 @@ type anthologyCandidate struct {
 // never derived by matching on out[i].Reason.
 //
 // out is a slice: this mutates elements in place through the shared backing
-// array and needs no return value. It must NEVER append to out.
+// array, so the two return values carry NO proposal data — they are the
+// structural record of what this pass learned and what it spoke about
+// (autopilot-impl.md §2.3). It must NEVER append to out.
+//
+//   - resolved maps a show-folder KEY to the one candidate that won that
+//     folder. Written at exactly ONE point (the winner-selection point below),
+//     never inside the per-candidate loop.
+//   - handled marks every index in out this pass WROTE to — all three write
+//     branches, including both declines. A downstream pass must skip these
+//     structurally, BY INDEX, never by parsing out[i].Reason: overwriting an
+//     ambiguity or already-tracked reason with a vaguer one is a silent
+//     regression in operator diagnosability that no "the row is Unmatched"
+//     assertion would catch.
+//
+// Both maps are always non-nil, including on every early return, so a caller
+// may write to handled without a nil check.
 func tvdbAnthologyPass(
 	ctx context.Context, sess *mode.Session,
 	tracked map[episodeKey]bool,
@@ -299,7 +347,12 @@ func tvdbAnthologyPass(
 	roots []string, generalRoot string,
 	candidates []int,
 	out []proposals.Proposal,
-) {
+) (resolved map[string]anthologyResolution, handled map[int]bool) {
+	// '=' not ':=' — ':=' would shadow the named returns and every caller
+	// would receive nil maps, on which handled[i] = true panics.
+	resolved = make(map[string]anthologyResolution)
+	handled = make(map[int]bool)
+
 	// Step 0 — preconditions. TVDB is an OPTIONAL connection (mode.Build only
 	// constructs it when one is configured), so a nil client is the normal
 	// case on most installs, not an error.
@@ -492,7 +545,13 @@ func tvdbAnthologyPass(
 				// name ever changed.
 				pin.title, pin.year, pin.root = established.Title, established.Year, established.RootFolderPath
 			}
-			qualified = append(qualified, anthologyCandidate{pin: pin, matches: matches})
+			// catalog and cand.Name are captured HERE, at the append, and
+			// deliberately not published anywhere yet: a candidate that
+			// qualifies is not yet a winner — step 5 below can still decline
+			// the whole folder as ambiguous.
+			qualified = append(qualified, anthologyCandidate{
+				pin: pin, matches: matches, catalog: catalog, candName: cand.Name,
+			})
 		}
 
 		// Step 5 — SHOW-LEVEL uniqueness. Two or more qualifying candidates
@@ -510,6 +569,19 @@ func tvdbAnthologyPass(
 		}
 		winner := qualified[0]
 		pin := winner.pin
+
+		// The ONE resolved[key] write point, and it is HERE deliberately —
+		// AFTER step 5's uniqueness check, never inside the candidate loop
+		// above. The candidate loop can qualify TWO candidates for one folder,
+		// which step 5 then declines; writing there would publish a resolution
+		// for a folder this pass refused to resolve, and a downstream pass
+		// would match a file against a CONTESTED show's catalog. Folders that
+		// `continue` at the check above get no entry at all.
+		resolved[key] = anthologyResolution{
+			pin:      winner.pin,
+			catalog:  winner.catalog,
+			candName: winner.candName,
+		}
 
 		// Step 7 — emit, per file in the group, from the ONE shared pin.
 		for _, i := range group {
@@ -533,6 +605,7 @@ func tvdbAnthologyPass(
 					res.Second.season, res.Second.episode, res.Second.name,
 				)
 				out[i] = q
+				handled[i] = true // WRITE BRANCH 1 of 3 — ambiguity decline
 				continue
 			case res.Match == nil:
 				// Cannot happen given searchTVDBEpisodeByTitle's construction
@@ -555,6 +628,14 @@ func tvdbAnthologyPass(
 				q.Status = proposals.Unmatched
 				q.Reason = fmt.Sprintf("appears to already be in the library as %q S%02dE%02d — leaving in place for manual review", pin.title, m.season, m.episode)
 				out[i] = q
+				// WRITE BRANCH 2 of 3 — tracked-slot-already-claimed decline.
+				// The subtlest of the three and the one an earlier draft
+				// MISSED: this row is Unmatched with TMDBID == 0, so it looks
+				// untouched to any status/id-shaped eligibility test. Only
+				// this bit stops a downstream pass re-deriving the same
+				// refusal by a longer route and overwriting this precise
+				// reason with a vaguer one.
+				handled[i] = true
 				continue
 			}
 
@@ -635,6 +716,12 @@ func tvdbAnthologyPass(
 			q.Reason = fmt.Sprintf("%s %q -> S%02dE%02d (tvdb %d)",
 				tvdbAnthologyReasonPrefix, m.name, m.season, m.episode, pin.tvdbID)
 			out[i] = q
+			handled[i] = true // WRITE BRANCH 3 of 3 — the Pending emit
 		}
 	}
+
+	// The three no-write `continue`s above (res.Found == 0, the defensive
+	// res.Match == nil, and the !gate.allows refusal) deliberately do NOT set
+	// handled: those rows are genuinely still unspoken-for.
+	return resolved, handled
 }

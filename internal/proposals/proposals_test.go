@@ -811,3 +811,121 @@ func TestRepick_AlreadyPendingStaysPending(t *testing.T) {
 		t.Errorf("unexpected result: %+v", got)
 	}
 }
+
+// seedSeriesUnmatched stages one Unmatched Series Rename proposal shaped like
+// the real gap population this feature exists for — a file whose basename
+// carries no recoverable season/episode signal at all.
+func seedSeriesUnmatched(t *testing.T, s *Store, p Proposal) int64 {
+	t.Helper()
+	saved, err := s.ReplacePending(context.Background(), mode.Series, Rename, []Proposal{p})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return saved[0].ID
+}
+
+func TestRepickEpisode_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RepickEpisode(context.Background(), 999, "The Path", 42, 2020, 1, 3); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestRepickEpisode_SetsSeasonAndEpisode(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	id := seedSeriesUnmatched(t, s, Proposal{
+		Status:         Unmatched,
+		SourceName:     "a3f9c2e1b7d84f0e.mkv",
+		SourcePath:     "/media/Series/a3f9c2e1b7d84f0e.mkv",
+		RootFolderPath: "/media/Series",
+		Reason:         "could not parse a season/episode from the filename",
+	})
+
+	if err := s.RepickEpisode(ctx, id, "The Path", 777, 2016, 2, 7); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Status != Pending {
+		t.Errorf("expected the manual assignment to promote the proposal to pending, got %q", got.Status)
+	}
+	if got.Title != "The Path" || got.TMDBID != 777 || got.Year != 2016 {
+		t.Errorf("expected the overwritten show fields to stick, got title=%q tmdbId=%d year=%d", got.Title, got.TMDBID, got.Year)
+	}
+	if got.SeasonNumber != 2 || got.EpisodeNumber != 7 {
+		t.Errorf("expected the operator's slot to persist, got season=%d episode=%d", got.SeasonNumber, got.EpisodeNumber)
+	}
+	if got.Reason != "" {
+		t.Errorf("expected the stale rejection reason to be cleared, got %q", got.Reason)
+	}
+}
+
+// TestRepickEpisode_AcceptsSeasonZero is the falsy-guard regression this
+// feature's *int DTO fields exist to prevent: season 0 is Specials, a real
+// value an operator can legitimately mean, and it must survive the round trip
+// rather than being read as "no season supplied".
+func TestRepickEpisode_AcceptsSeasonZero(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	id := seedSeriesUnmatched(t, s, Proposal{
+		Status:         Unmatched,
+		SourceName:     "VIDEO_TS.VOB",
+		SourcePath:     "/media/Series/Candid Camera/VIDEO_TS/VIDEO_TS.VOB",
+		RootFolderPath: "/media/Series",
+		Reason:         "no episode information in a DVD authoring filename",
+	})
+
+	if err := s.RepickEpisode(ctx, id, "Candid Camera", 555, 1960, 0, 3); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.SeasonNumber != 0 || got.EpisodeNumber != 3 {
+		t.Fatalf("expected season 0 / episode 3 to persist verbatim, got season=%d episode=%d", got.SeasonNumber, got.EpisodeNumber)
+	}
+	if got.Status != Pending {
+		t.Errorf("expected pending, got %q", got.Status)
+	}
+}
+
+// TestRepickEpisode_ClearsExtraEpisodeNumbers pins the deliberate clear: a
+// manual single-slot assignment supersedes whatever multi-episode bundle a
+// prior parse claimed, so Apply never upserts episode rows the operator never
+// chose.
+func TestRepickEpisode_ClearsExtraEpisodeNumbers(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	id := seedSeriesUnmatched(t, s, Proposal{
+		Status:              Pending,
+		SourceName:          "Show.S01E01-E02.mkv",
+		SourcePath:          "/media/Series/Show.S01E01-E02.mkv",
+		RootFolderPath:      "/media/Series",
+		Title:               "Wrong Show",
+		TMDBID:              111,
+		SeasonNumber:        1,
+		EpisodeNumber:       1,
+		ExtraEpisodeNumbers: []int{2, 3},
+	})
+
+	if err := s.RepickEpisode(ctx, id, "Right Show", 222, 2001, 4, 9); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.ExtraEpisodeNumbers) != 0 {
+		t.Errorf("expected the stale episode bundle to be cleared, got %v", got.ExtraEpisodeNumbers)
+	}
+	if got.SeasonNumber != 4 || got.EpisodeNumber != 9 {
+		t.Errorf("expected the operator's slot, got season=%d episode=%d", got.SeasonNumber, got.EpisodeNumber)
+	}
+}

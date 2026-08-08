@@ -3183,3 +3183,318 @@ func TestScanLibrarySeries_LiveTVDBAnthologyMatch(t *testing.T) {
 		}
 	}
 }
+
+// seriesGroundingAIServer stands in for the Ollama endpoint on the two prompts a
+// Series scan reaches here. GroundTitleViaSearch's prompt is the only one that
+// embeds the web-search snippets, so that substring is the discriminator;
+// GuessTitle always declines, which forces the web-authority path to build its
+// own queries from the entry name (the shape production actually takes for this
+// population).
+func seriesGroundingAIServer(t *testing.T, groundedTitle string, groundedYear int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		prompt := ""
+		if len(body.Messages) > 0 {
+			prompt = body.Messages[len(body.Messages)-1].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(prompt, "Web search results:") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{
+				"content": fmt.Sprintf(`{"title":%q,"year":%d}`, groundedTitle, groundedYear),
+			}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": `{"title":null}`}})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// seriesBraveServer returns one canned web result so GroundTitleViaSearch gets
+// past its "no results" early return and actually calls the AI.
+func seriesBraveServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"web": map[string]any{"results": []map[string]any{
+			{"title": "The Red Skelton Show (TV Series 1951-1971)", "description": "American variety show.", "url": "https://example.invalid/red-skelton"},
+		}}})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestScanLibrarySeries_CompactCodeBlockedFromWebAuthority is the safety-critical
+// regression test for the §1.3a guard.
+//
+// The compact eNNNN parser newly makes this population reachable by
+// tryWebAuthoritySeries — a path that makes NO SeasonDetails existence check and
+// mints a SYNTHETIC NEGATIVE TMDB id. "The Red Skelton Show" has a real TMDB
+// entry (10534), so a web-authority Pending here would create a SECOND
+// library_series row for an already-tracked show. HasTitleTokenOverlap does not
+// stop it: "skelton" is a >= 4-rune shared token, so the overlap gate passes on
+// its strong branch. The guard is what keeps e2516 (season 25 — the show's
+// highest is 20) Unmatched instead of confidently wrong.
+//
+// The SxxExx file in the same folder is a POSITIVE CONTROL, and it is what stops
+// this test being vacuous: it proves the fake grounding chain really does drive
+// tryWebAuthoritySeries to a synthetic-negative-id Pending, so the compact-code
+// file's Unmatched is the guard firing rather than the chain simply not working.
+// It also pins the flag's meaning — the block keys on HOW the season/episode was
+// parsed, not on whether the filename happens to contain an eNNNN token.
+func TestScanLibrarySeries_CompactCodeBlockedFromWebAuthority(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, "The Red Skelton Show")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	compactPath := filepath.Join(showDir, "RED SKELTON e2516.mp4")
+	markerPath := filepath.Join(showDir, "RED SKELTON S05E03.mp4")
+	for _, p := range []string{compactPath, markerPath} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	aiSrv := seriesGroundingAIServer(t, "The Red Skelton Show", 1951)
+	braveSrv := seriesBraveServer(t)
+
+	sess := &mode.Session{
+		Mode: mode.Series,
+		// No TMDB search result for anything: the catalog paths all decline, so
+		// web authority is the ONLY thing that could produce a Pending here.
+		TMDB:         fakeTMDBSeriesServer(t, nil, nil),
+		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
+		WebSearch:    websearch.Brave{Inner: bravesearch.New(braveSrv.URL, "k", braveSrv.Client())},
+	}
+	// A real duration makes sig.HasAny() true, which is what puts both files on
+	// the MAIN path (rename.go's post-search block) rather than the defensive
+	// !sig.HasAny() branch — matching production, where a compact-code file is
+	// always a real, probeable .mp4.
+	prober := &fakeProber{durations: map[string]float64{compactPath: 1500, markerPath: 1500}}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	byName := map[string]proposals.Proposal{}
+	for _, p := range got {
+		byName[p.SourceName] = p
+	}
+	if len(byName) != 2 {
+		t.Fatalf("expected 2 proposals, got %d: %+v", len(got), got)
+	}
+
+	compact := byName["RED SKELTON e2516.mp4"]
+	if compact.Status != proposals.Unmatched {
+		t.Errorf("compact-code file must stay Unmatched, got %v title=%q tmdb=%d reason=%q",
+			compact.Status, compact.Title, compact.TMDBID, compact.Reason)
+	}
+	if compact.Reason != compactCodeWebAuthorityRefusedReason {
+		t.Errorf("compact-code file must carry the distinct web-authority-refused reason for positive attribution;\n got  %q\n want %q", compact.Reason, compactCodeWebAuthorityRefusedReason)
+	}
+	// A NEGATIVE TMDBID on this row means the guard did not fire — that is a
+	// blocker (a duplicate library_series row under a synthetic show identity),
+	// not a bonus Pending.
+	if compact.TMDBID < 0 {
+		t.Errorf("compact-code file landed a SYNTHETIC NEGATIVE TMDB id (%d) — the §1.3a guard is not firing", compact.TMDBID)
+	}
+	// The season/episode must still have PARSED — the guard blocks a matching
+	// route, it does not undo the parse.
+	if compact.SeasonNumber != 0 && compact.SeasonNumber != 25 {
+		t.Errorf("unexpected season on the compact-code row: %d", compact.SeasonNumber)
+	}
+	if strings.Contains(compact.Reason, "could not determine season/episode") {
+		t.Errorf("compact-code file must parse its season/episode, got reason %q", compact.Reason)
+	}
+
+	marker := byName["RED SKELTON S05E03.mp4"]
+	if marker.Status != proposals.Pending {
+		t.Fatalf("POSITIVE CONTROL failed: the SxxExx file should reach tryWebAuthoritySeries and land Pending, got %v reason=%q — without this the compact-code assertion above is vacuous",
+			marker.Status, marker.Reason)
+	}
+	if marker.TMDBID >= 0 {
+		t.Errorf("POSITIVE CONTROL failed: expected a synthetic NEGATIVE web-authority TMDB id, got %d", marker.TMDBID)
+	}
+	if marker.Title != "The Red Skelton Show" {
+		t.Errorf("POSITIVE CONTROL: expected the grounded title, got %q", marker.Title)
+	}
+}
+
+// TestScanLibrarySeries_CompactCodeGateRejectionWinsOverWebAuthorityRefusal pins
+// the one direction in which the terminal-reason ordering is load-bearing: when
+// BOTH the gate rejected candidates and the web-authority guard fired, the gate's
+// reason must win, because "rejected N candidates that did not share a title
+// token" is strictly more diagnostic than "web authority was skipped."
+func TestScanLibrarySeries_CompactCodeGateRejectionWinsOverWebAuthorityRefusal(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, "The Red Skelton Show")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	compactPath := filepath.Join(showDir, "RED SKELTON e1524.mp4")
+	if err := os.WriteFile(compactPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Every TMDB search returns one candidate whose title shares no token with
+	// either the file-derived seed or the grounded title, so the seriesGate
+	// rejects it and bumps its shared counter.
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/search/tv":
+			_, _ = w.Write([]byte(`{"results":[{"id":777,"name":"Completely Unrelated Program","first_air_date":"1999-01-01"}]}`))
+		case strings.Contains(r.URL.Path, "/season/"):
+			_, _ = w.Write([]byte(`{"episodes":[{"episode_number":24,"name":"Ep","air_date":"1999-01-01","runtime":25}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":777,"name":"Completely Unrelated Program","first_air_date":"1999-01-01","genres":[]}`))
+		}
+	}))
+	t.Cleanup(tmdbSrv.Close)
+
+	aiSrv := seriesGroundingAIServer(t, "Grounded Alpha Beta", 1951)
+	braveSrv := seriesBraveServer(t)
+
+	sess := &mode.Session{
+		Mode:         mode.Series,
+		TMDB:         tmdb.New(tmdb.Config{BaseURL: tmdbSrv.URL, APIKey: "test-key"}, tmdbSrv.Client()),
+		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
+		WebSearch:    websearch.Brave{Inner: bravesearch.New(braveSrv.URL, "k", braveSrv.Client())},
+	}
+	prober := &fakeProber{durations: map[string]float64{compactPath: 1500}}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Unmatched {
+		t.Fatalf("expected Unmatched, got %v title=%q tmdb=%d reason=%q", p.Status, p.Title, p.TMDBID, p.Reason)
+	}
+	if !strings.Contains(p.Reason, "did not match this folder's tracked show or share a title token") {
+		t.Errorf("the gate rejection reason must WIN over the web-authority-refused reason, got %q", p.Reason)
+	}
+	if p.Reason == compactCodeWebAuthorityRefusedReason {
+		t.Errorf("the web-authority-refused reason swallowed the more specific gate rejection")
+	}
+	if p.TMDBID < 0 {
+		t.Errorf("compact-code file landed a SYNTHETIC NEGATIVE TMDB id (%d) — the §1.3a guard is not firing", p.TMDBID)
+	}
+}
+
+// TestScanLibrarySeries_CompactCodeSeedFallsBackToShowFolder is the only
+// behavioral coverage of STEP 3 of the compact-code title-seed cascade, and it
+// is the only thing that proves the new `roots` parameter is threaded with a
+// usable value: an empty slice makes showFolderName return "" and silently
+// leaves the seed as "_720x480.mp4", which compiles and passes every other test
+// in this file.
+//
+// "e614_720x480.mp4" is the real file the fallback exists for (plan §0.4 —
+// three such files sit directly in the show folder). Its cascade is:
+// StripEpisodeMarkerLoose no-ops (no SxxExx in the file OR its parent), step 2
+// strips the code to "_720x480.mp4", hasWordToken is false on the surviving
+// {720x480} token, and step 3 substitutes the SHOW FOLDER's own name. Without
+// step 3 the seed shares ZERO tokens with any real show title, seriesGate
+// Check A rejects every candidate, and the file can never match.
+//
+// The seed is observed where production actually consumes it — the
+// bravePhase2Series web query and the GuessTitle prompt both receive looseTitle
+// verbatim.
+func TestScanLibrarySeries_CompactCodeSeedFallsBackToShowFolder(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, "The Red Skelton Show")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	videoPath := filepath.Join(showDir, "e614_720x480.mp4")
+	if err := os.WriteFile(videoPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var braveQueries []string
+	braveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		braveQueries = append(braveQueries, r.URL.Query().Get("q"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"web": map[string]any{"results": []map[string]any{}}})
+	}))
+	t.Cleanup(braveSrv.Close)
+
+	var aiPrompts []string
+	aiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Messages) > 0 {
+			aiPrompts = append(aiPrompts, body.Messages[len(body.Messages)-1].Content)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Always decline, so nothing can accidentally match and the assertions
+		// below are about the SEED alone.
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": `{"title":null}`}})
+	}))
+	t.Cleanup(aiSrv.Close)
+
+	sess := &mode.Session{
+		Mode:         mode.Series,
+		TMDB:         fakeTMDBSeriesServer(t, nil, nil),
+		MainstreamAI: ollama.New(aiSrv.URL, "m", aiSrv.Client()),
+		WebSearch:    websearch.Brave{Inner: bravesearch.New(braveSrv.URL, "k", braveSrv.Client())},
+	}
+	prober := &fakeProber{durations: map[string]float64{videoPath: 1500}}
+
+	got, err := ScanLibrarySeries(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), prober)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	// The season/episode must have parsed via the compact code (S06E14) — the
+	// seed fallback is downstream of that, not a substitute for it.
+	if strings.Contains(got[0].Reason, "could not determine season/episode") {
+		t.Fatalf("expected the compact code to parse, got reason %q", got[0].Reason)
+	}
+
+	if len(braveQueries) == 0 {
+		t.Fatal("expected at least one bravePhase2Series web query")
+	}
+	sawFolderSeed := false
+	for _, q := range braveQueries {
+		if strings.Contains(strings.ToLower(q), "red skelton") {
+			sawFolderSeed = true
+		}
+		if strings.Contains(q, "720x480") {
+			t.Errorf("the resolution noise reached the web query — step 3 did not fire (check that roots is threaded into proposeOneEpisodeLibrary): %q", q)
+		}
+	}
+	if !sawFolderSeed {
+		t.Errorf("expected the show folder's own name to become the title seed, got brave queries: %v", braveQueries)
+	}
+	for _, prompt := range aiPrompts {
+		if strings.Contains(prompt, "720x480") {
+			t.Errorf("the resolution noise reached an AI prompt instead of the show-folder seed: %q", prompt)
+		}
+	}
+}

@@ -86,11 +86,25 @@ type Proposal struct {
 	TMDBID         int       `json:"tmdbId,omitempty"`
 	// SeasonNumber/EpisodeNumber are Series-only — a season-pack orphan
 	// produces one proposal per episode file found inside it, never a
-	// bulk proposal, so each needs to record which episode it is. Unlike
-	// grabs.Grab's fields of the same name, no companion "was this
-	// specified" flag is needed here: a Proposal's SeasonNumber always
-	// comes from a successful library.ParseEpisodeFilename call, so 0
-	// unambiguously means the filename itself encoded season 0 (Specials).
+	// bulk proposal, so each needs to record which episode it is.
+	//
+	// CORRECTED 2026-08-07 — the superseded claim, quoted so a future session
+	// can find it: "a Proposal's SeasonNumber always comes from a successful
+	// library.ParseEpisodeFilename call, so 0 unambiguously means the filename
+	// itself encoded season 0 (Specials)." There is now a SECOND source: the
+	// operator, via Store.RepickEpisode (the manual slot-assignment path for a
+	// file with no recoverable episode signal). So a Proposal's SeasonNumber
+	// comes from EITHER a successful ParseEpisodeFilename call OR a direct
+	// operator assignment.
+	//
+	// The CONCLUSION the superseded sentence drew is UNCHANGED and still holds:
+	// 0 still unambiguously means Specials, and no companion "was this
+	// specified" flag is needed (unlike grabs.Grab's fields of the same name).
+	// That is not luck — internal/api's repickProposalHandler enforces it,
+	// rejecting an operator-supplied episodeNumber < 1 and accepting
+	// seasonNumber == 0 deliberately, and the DTO carries *int precisely so a
+	// literal 0 cannot be dropped in transit. What changed is the PROVENANCE,
+	// not the semantics.
 	SeasonNumber  int `json:"seasonNumber,omitempty"`
 	EpisodeNumber int `json:"episodeNumber,omitempty"`
 	// ExtraEpisodeNumbers holds any ADDITIONAL episode numbers bundled into
@@ -598,6 +612,46 @@ func (s *Store) Repick(ctx context.Context, id int64, title string, tmdbID, year
 	`, title, tmdbID, year, string(Pending), id)
 	if err != nil {
 		return fmt.Errorf("re-picking proposal %d: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// RepickEpisode is Repick's Series-only sibling: it does everything Repick does
+// (overwrite title/tmdb_id/year, promote to Pending, clear reason) AND assigns
+// season_number/episode_number directly — the manual-assignment path for a file
+// with no recoverable episode signal at all (an opaque hash basename, a raw DVD
+// VIDEO_TS authoring name, an ambiguous multi-slot title match).
+//
+// A separate method rather than optional parameters on Repick, per this repo's
+// no-premature-abstraction convention: it keeps the Movies re-pick path
+// PROVABLY untouched by this feature rather than merely reviewed as untouched.
+// The cost is one duplicated UPDATE statement, priced and accepted.
+//
+// Callers pass a validated pair — internal/api's repickProposalHandler enforces
+// both-or-neither, mode == Series, season >= 0 and episode >= 1 before this is
+// reached, exactly as it already enforces the eligible-status precondition for
+// Repick.
+//
+// extra_episode_numbers is deliberately CLEARED: a manual single-slot
+// assignment supersedes whatever multi-episode bundle a prior parse claimed,
+// and leaving a stale bundle would make Apply upsert episode rows the operator
+// never chose (rename.ApplyLibrarySeries' extra-episode loop). The cleared
+// value comes from marshalExtraEpisodes(nil) rather than a literal so it stays
+// in lockstep with ReplacePending's own encoding — "" (not "[]", not NULL),
+// which is what scanProposal's non-empty guard expects.
+func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbID, year, season, episode int) error {
+	extra, err := marshalExtraEpisodes(nil)
+	if err != nil {
+		return fmt.Errorf("clearing extra episode numbers for proposal %d: %w", id, err)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE proposals SET title = ?, tmdb_id = ?, year = ?,
+			season_number = ?, episode_number = ?, extra_episode_numbers = ?,
+			status = ?, reason = ''
+		WHERE id = ?
+	`, title, tmdbID, year, season, episode, extra, string(Pending), id)
+	if err != nil {
+		return fmt.Errorf("re-picking episode for proposal %d: %w", id, err)
 	}
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }

@@ -1115,3 +1115,231 @@ func TestUpsertEpisodeCatalog_InsertsTheFilelessRow(t *testing.T) {
 			ep.PHash, ep.PHashFileSize, ep.PHashFileMTime)
 	}
 }
+
+// --- compact "eNNNN" episode-code siblings (plan §1.2 / §1.4) ---
+//
+// Pure unit tests, no network, no fixtures. These pin the eSSEE semantic, the
+// resolution blocklist's fail-closed behaviour, the submatch-index strip, and
+// (TestParseEpisodeNumbers_UnaffectedByCompactCode) the §1.1 containment
+// promise that the strict parser every non-rename caller uses is untouched.
+
+func TestParseCompactEpisodeCode_FourDigit(t *testing.T) {
+	season, episode, ok := ParseCompactEpisodeCode("RED SKELTON e1524.mp4")
+	if !ok || season != 15 || episode != 24 {
+		t.Fatalf("expected (15, 24, true), got (%d, %d, %v)", season, episode, ok)
+	}
+}
+
+func TestParseCompactEpisodeCode_ThreeDigit(t *testing.T) {
+	season, episode, ok := ParseCompactEpisodeCode("RED SKELTON e601.mp4")
+	if !ok || season != 6 || episode != 1 {
+		t.Fatalf("expected (6, 1, true), got (%d, %d, %v)", season, episode, ok)
+	}
+}
+
+func TestParseCompactEpisodeCode_LeadingCode(t *testing.T) {
+	season, episode, ok := ParseCompactEpisodeCode("e614_720x480.mp4")
+	if !ok || season != 6 || episode != 14 {
+		t.Fatalf("expected (6, 14, true), got (%d, %d, %v)", season, episode, ok)
+	}
+}
+
+// TestParseCompactEpisodeCode_TrailingPartIndicator pins the rejected
+// alternative "interpret the trailing _1 as a part or episode number": it is a
+// filesystem duplicate-suffix, and reading it would fabricate a second episode.
+func TestParseCompactEpisodeCode_TrailingPartIndicator(t *testing.T) {
+	season, episode, ok := ParseCompactEpisodeCode("e827_720x480_1.mp4")
+	if !ok || season != 8 || episode != 27 {
+		t.Fatalf("expected (8, 27, true), got (%d, %d, %v)", season, episode, ok)
+	}
+}
+
+func TestParseCompactEpisodeCode_RejectsTwoDigit(t *testing.T) {
+	if _, _, ok := ParseCompactEpisodeCode("e61.mp4"); ok {
+		t.Fatal("expected ok == false for a two-digit code")
+	}
+}
+
+func TestParseCompactEpisodeCode_RejectsFiveDigit(t *testing.T) {
+	if _, _, ok := ParseCompactEpisodeCode("e12345.mp4"); ok {
+		t.Fatal("expected ok == false for a five-digit code")
+	}
+}
+
+// TestParseCompactEpisodeCode_RejectsZeroSeasonOrEpisode pins the deliberate
+// refusal of Season 0 / episode 0 — a leading-zero-stripped compact code cannot
+// distinguish "season 0" from "malformed", and Proposal.SeasonNumber's 0 must
+// keep meaning "the filename encoded Specials".
+func TestParseCompactEpisodeCode_RejectsZeroSeasonOrEpisode(t *testing.T) {
+	for _, name := range []string{"e001.mp4", "e600.mp4"} {
+		if season, episode, ok := ParseCompactEpisodeCode(name); ok {
+			t.Errorf("%s: expected ok == false, got (%d, %d, true)", name, season, episode)
+		}
+	}
+}
+
+func TestParseCompactEpisodeCode_DoesNotMatchMidWord(t *testing.T) {
+	for _, name := range []string{"Movie2016e1234.mp4", "Sample e12 34.mp4"} {
+		if season, episode, ok := ParseCompactEpisodeCode(name); ok {
+			t.Errorf("%s: expected ok == false (boundary classes), got (%d, %d, true)", name, season, episode)
+		}
+	}
+}
+
+// TestParseCompactEpisodeCode_DoesNotHijackReleaseNames is necessary but
+// VACUOUS on its own: neither input contains an 'e' followed by 3-4 digits, so
+// it cannot fail regardless of the pattern. Kept as a sanity row only — the
+// real regression guard is
+// TestParseCompactEpisodeCode_DoesNotHijackResolutionCodes below.
+func TestParseCompactEpisodeCode_DoesNotHijackReleaseNames(t *testing.T) {
+	for _, name := range []string{"Show.S01E02.1080p.WEB.h265-NiXON.mkv", "Some.Movie.2016.1080p.mkv"} {
+		if season, episode, ok := ParseCompactEpisodeCode(name); ok {
+			t.Errorf("%s: expected ok == false, got (%d, %d, true)", name, season, episode)
+		}
+	}
+}
+
+// TestParseCompactEpisodeCode_DoesNotHijackResolutionCodes is the regression
+// guard that actually matters. Both inputs DO contain an 'e' followed by 3-4
+// digits and are refused only by the resolution blocklist; a false positive
+// here assigns S10E80 / S21E60 to perfectly ordinary library files.
+// "Movie_1080p_e2160.mkv" specifically is the probe that proves a regex
+// narrowing (right-anchoring the code before the extension) would NOT have been
+// sufficient — there the resolution genuinely IS the last token.
+func TestParseCompactEpisodeCode_DoesNotHijackResolutionCodes(t *testing.T) {
+	for _, name := range []string{"Show.Name.e1080.WEB.mkv", "Movie_1080p_e2160.mkv"} {
+		if season, episode, ok := ParseCompactEpisodeCode(name); ok {
+			t.Errorf("%s: expected ok == false, got (%d, %d, true)", name, season, episode)
+		}
+	}
+}
+
+// TestParseCompactEpisodeCode_BlocklistedValuesRefused pins the blocklist
+// itself, INCLUDING the accepted cost: "e720" would legitimately mean S07E20
+// and is deliberately refused. No such file exists in the current library, and
+// a false positive on a real release name is materially worse.
+func TestParseCompactEpisodeCode_BlocklistedValuesRefused(t *testing.T) {
+	for _, code := range []string{"480", "576", "720", "1080", "1440", "2160"} {
+		name := "Show.e" + code + ".mkv"
+		if season, episode, ok := ParseCompactEpisodeCode(name); ok {
+			t.Errorf("%s: expected ok == false (blocklisted), got (%d, %d, true)", name, season, episode)
+		}
+	}
+}
+
+// TestParseCompactEpisodeCode_AcceptsLeadingZeroFourDigit pins a deliberate
+// acceptance, not an oversight: no narrowing rule can exclude this shape without
+// also excluding the legitimate 4-digit codes in the real population, and
+// catalog validation (the SeasonDetails existence check at the call site) bounds
+// the risk to "fails to find a candidate", never to a wrong Pending.
+func TestParseCompactEpisodeCode_AcceptsLeadingZeroFourDigit(t *testing.T) {
+	season, episode, ok := ParseCompactEpisodeCode("Some.Show.2016.e0501.mkv")
+	if !ok || season != 5 || episode != 1 {
+		t.Fatalf("expected (5, 1, true), got (%d, %d, %v)", season, episode, ok)
+	}
+}
+
+func TestParseCompactEpisodeCodeLoose_FallsBackToParent(t *testing.T) {
+	season, episode, ok := ParseCompactEpisodeCodeLoose("VTS_01_0.VOB", filepath.Join("/library", "Show e1201"))
+	if !ok || season != 12 || episode != 1 {
+		t.Fatalf("expected (12, 1, true), got (%d, %d, %v)", season, episode, ok)
+	}
+}
+
+// TestStripCompactEpisodeCode asserts an EXACT string, never a Contains check:
+// `strings.Contains(out, "RED SKELTON") && !strings.Contains(out, "e1524")`
+// passes on the BROKEN "RED SKELTONmp4" output that a naive
+// ReplaceAllString(name, "") produces, because the pattern's classes consume the
+// surrounding space and dot. The exact-string form is the only one that catches
+// it.
+func TestStripCompactEpisodeCode(t *testing.T) {
+	if got := StripCompactEpisodeCode("RED SKELTON e1524.mp4"); got != "RED SKELTON .mp4" {
+		t.Fatalf("expected %q, got %q", "RED SKELTON .mp4", got)
+	}
+}
+
+// TestStripCompactEpisodeCode_PreservesDelimiters pins the submatch-index
+// removal and the blocklist's effect on the stripper. Row 1's leading underscore
+// is PRESERVED: the match starts at index 0 via the zero-width `^` alternative,
+// so name[:loc[2]-1] is empty and the terminator '_' at loc[3] survives. An
+// assertion of "720x480.mp4" here is the WRONG expectation and would force a
+// position-dependent implementation.
+func TestStripCompactEpisodeCode_PreservesDelimiters(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"e614_720x480.mp4", "_720x480.mp4"},
+		{"Some.Show.Name.mkv", "Some.Show.Name.mkv"},
+		{"Show.Name.e1080.WEB.mkv", "Show.Name.e1080.WEB.mkv"},
+	}
+	for _, c := range cases {
+		if got := StripCompactEpisodeCode(c.in); got != c.want {
+			t.Errorf("StripCompactEpisodeCode(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestParseEpisodeNumbers_UnaffectedByCompactCode is the containment proof,
+// asserted rather than argued: the strict parser that import.go,
+// releasematch.go, dedup_phash_primary.go and autograb all consume must still
+// refuse the compact shape outright. A wrong (season, episode) in Dedup's orphan
+// matching deletes files.
+func TestParseEpisodeNumbers_UnaffectedByCompactCode(t *testing.T) {
+	for _, name := range []string{"e1524.mp4", "RED SKELTON e601.mp4"} {
+		if season, episodes, ok := ParseEpisodeNumbers(name); ok {
+			t.Errorf("%s: ParseEpisodeNumbers must stay unaffected, got (%d, %v, true)", name, season, episodes)
+		}
+	}
+}
+
+// TestCompactEpisodeCode_RedSkeltonPopulationArithmetic pins the deterministic,
+// network-free half of the end-to-end expectation for the real 13-file
+// population: every file parses, and the distinct-slot arithmetic that sets the
+// Pending CEILING is what it is claimed to be. The observed Pending count itself
+// is a live-scan number (it depends on TMDB, WebSearch and the AI grounding
+// chain) and is deliberately NOT asserted here.
+func TestCompactEpisodeCode_RedSkeltonPopulationArithmetic(t *testing.T) {
+	population := []string{
+		"Uncompressed/RED SKELTON e601.mp4",
+		"Uncompressed/RED SKELTON e614.mp4",
+		"Uncompressed/RED SKELTON e701.mp4",
+		"Uncompressed/RED SKELTON e721.mp4",
+		"Uncompressed/RED SKELTON e1524.mp4",
+		"Uncompressed/RED SKELTON e1801.mp4",
+		"Uncompressed/RED SKELTON e1804.mp4",
+		"Uncompressed/RED SKELTON e1817.mp4",
+		"Uncompressed/RED SKELTON e1906.mp4",
+		"Uncompressed/RED SKELTON e2516.mp4",
+		"e614_720x480.mp4",
+		"e701_720x480.mp4",
+		"e827_720x480_1.mp4",
+	}
+	type slot struct{ season, episode int }
+	slots := map[slot]int{}
+	for _, path := range population {
+		season, episode, ok := ParseCompactEpisodeCode(filepath.Base(path))
+		if !ok {
+			t.Errorf("%s: expected a parsed (season, episode), got ok == false", path)
+			continue
+		}
+		slots[slot{season, episode}]++
+	}
+	if len(slots) != 11 {
+		t.Errorf("expected 11 distinct slots across the 13 files, got %d: %v", len(slots), slots)
+	}
+	duplicateLosers := 0
+	for _, n := range slots {
+		duplicateLosers += n - 1
+	}
+	if duplicateLosers != 2 {
+		t.Errorf("expected 2 duplicate-pair losers (e614/e701 each appear twice), got %d", duplicateLosers)
+	}
+	// e2516 -> S25E16 parses, but season 25 does not exist for this show (its
+	// highest is 20), so the SeasonDetails existence check declines it on the
+	// only live path. It is the one deliberate non-resolution, closed by manual
+	// repick — NOT a parse failure.
+	if _, ok := slots[slot{25, 16}]; !ok {
+		t.Fatal("expected e2516 to parse to S25E16 (it must parse, then decline at the catalog)")
+	}
+	if ceiling := len(slots) - 1; ceiling != 10 {
+		t.Errorf("expected a 10-slot Pending ceiling once the uncatalogued S25E16 is removed, got %d", ceiling)
+	}
+}

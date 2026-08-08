@@ -86,6 +86,34 @@ func titleTokens(s string) map[string]struct{} {
 	return out
 }
 
+// Claude 2026-08-07: hasWordToken — "is this a title or just a code" predicate (plan §1.4)
+// Reason: the compact-eNNNN seed cascade in proposeOneEpisodeLibrary needs to
+//   detect a seed that carries no title at all ("e614_720x480.mp4"). Three
+//   simpler predicates all silently fail on it: `looseTitle == ""` (the string
+//   is non-empty), `len(titleTokens(...)) == 0` (titleTokens keeps both "e614"
+//   and "720x480" — each is >= 2 runes, not a stop-word, not a roman numeral),
+//   and "does any token contain a letter" ("e614" has an 'e', "720x480" an 'x').
+// Troubleshooting: an eNNNN file parses its season/episode but stays Unmatched
+//   with a gate-rejection reason — confirm the seed cascade's step 3 fired.
+// Review if: titleTokens starts dropping digit-bearing tokens itself.
+
+// wordTokenRe matches two or more consecutive ASCII letters — the "is this a
+// word rather than a code" test.
+var wordTokenRe = regexp.MustCompile(`[A-Za-z]{2,}`)
+
+// hasWordToken reports whether s tokenizes to at least one token containing two
+// consecutive letters. Do not weaken it to a plain "contains a letter" check —
+// that is the third rejected alternative in the Reason block above, not an
+// untried simplification.
+func hasWordToken(s string) bool {
+	for tok := range titleTokens(searchterm.FromName(s)) {
+		if wordTokenRe.MatchString(tok) {
+			return true
+		}
+	}
+	return false
+}
+
 func onlyLetters(s string) bool {
 	for _, r := range s {
 		if !unicode.IsLetter(r) {

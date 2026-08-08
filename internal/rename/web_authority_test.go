@@ -78,3 +78,31 @@ func TestWebAuthorityTMDBID_StableNegative(t *testing.T) {
 		t.Fatalf("different years should differ")
 	}
 }
+
+// TestHasWordToken pins the compact-code seed cascade's step-3 predicate. Three
+// simpler predicates all silently fail on these rows — see hasWordToken's own
+// doc comment — so each row here is a guard against a specific weakening.
+//
+// The {720x480} row is the one PRODUCTION actually sees: step 3 runs on the seed
+// step 2 already stripped, so for "e614_720x480.mp4" the input is
+// "_720x480.mp4" -> searchterm.FromName -> "720x480" -> {720x480}, not the
+// pre-strip {e614, 720x480}. Both forms are kept: the pre-strip one is still
+// reachable whenever step 2 no-ops (a blocklisted code), and both must be false.
+func TestHasWordToken(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"stripped compact-code seed keeps real title tokens", "RED SKELTON .mp4", true},
+		{"pre-strip seed is all codes", "e614_720x480.mp4", false},
+		{"post-strip seed is all codes — the production form", "_720x480.mp4", false},
+		{"empty seed", "", false},
+		{"an ordinary title is unaffected", "Some.Show.Name.mkv", true},
+	}
+	for _, c := range cases {
+		if got := hasWordToken(c.in); got != c.want {
+			t.Errorf("%s: hasWordToken(%q) = %v, want %v", c.name, c.in, got, c.want)
+		}
+	}
+}

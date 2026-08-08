@@ -870,6 +870,142 @@ func ParseEpisodeNumbersLoose(basename, parentDir string) (season int, episodes 
 	return ParseEpisodeNumbers(filepath.Base(parentDir))
 }
 
+// Claude 2026-08-07: compact "eNNNN" episode-code siblings, rename-path-only (plan §1.1/§1.2)
+// Reason: 13 real "The Red Skelton Show" rows name the episode as "eSSEE"
+//   ("RED SKELTON e1524.mp4", "e614_720x480.mp4") with no SxxExx/NxNN marker in
+//   the basename OR the parent directory, so ParseEpisodeNumbers(Loose) cannot
+//   reach them. Kept OUT of episodePattern/ParseEpisodeNumbers so import.go,
+//   releasematch.go, dedup_phash_primary.go and autograb (via
+//   ParseEpisodeFilename) are provably unaffected — a WRONG (season, episode)
+//   in Dedup's orphan matching is materially worse than no parse at all,
+//   because Dedup deletes files.
+// Troubleshooting: an eNNNN file still reports "could not determine
+//   season/episode" — check compactEpisodeCodePattern's terminator class
+//   before suspecting the search path.
+// Review if: ParseEpisodeNumbers itself learns the compact shape, at which
+//   point these three siblings become dead and must be deleted, not left.
+// Related files: internal/rename/rename.go (the only consumer)
+
+// compactEpisodeCodePattern matches the "eNNNN" compact episode-number
+// convention: a word-boundary 'e' (case-insensitive) followed by exactly 3 or 4
+// digits, terminated by end-of-string, a '_', a '.', a '-', or whitespace.
+var compactEpisodeCodePattern = regexp.MustCompile(`(?i)(?:^|[\s._-])e(\d{3,4})(?:$|[\s._-])`)
+
+// compactCodeResolutionBlocklist refuses a captured code whose digits are a
+// standard video-height value. "e1080"/"e2160" are an ordinary release-name
+// shape (a stray 'e' abutting a resolution), and reading them as eSSEE would
+// assign S10E80 / S21E60 to perfectly ordinary library files. A value check,
+// NOT a regex narrowing: right-anchoring the pattern refuses
+// "Show.Name.e1080.WEB.mkv" but still parses "Movie_1080p_e2160.mkv", where the
+// resolution IS the last token before the extension.
+//
+// ACCEPTED COST: a legitimate "e720" code — which under the eSSEE semantic
+// would mean S07E20 — becomes unparseable. No such file exists in the current
+// library, and a false positive on a real release name is materially worse (a
+// WRONG Pending on an ordinary file) than no Pending on an unusual one. Such a
+// file stays Unmatched and is closed by manual repick, the fail-closed outcome.
+var compactCodeResolutionBlocklist = map[int]bool{
+	480: true, 576: true, 720: true, 1080: true, 1440: true, 2160: true,
+}
+
+// compactEpisodeCodeMatch is the ONE match-selection helper both
+// ParseCompactEpisodeCode and StripCompactEpisodeCode use, so the blocklist can
+// never be applied by one and skipped by the other — a StripCompactEpisodeCode
+// that stripped "e1080" while ParseCompactEpisodeCode refused it would corrupt
+// the title seed of a file that was otherwise matching correctly.
+//
+// FAIL-CLOSED ON THE FIRST MATCH: only compactEpisodeCodePattern's FIRST match
+// is considered. When that match's digits are blocklisted the helper reports
+// "no token present" and does NOT scan rightward for a second candidate.
+// Returns the full submatch-index slice (loc[2], loc[3] bracket the digits; the
+// 'e' sits exactly one byte before loc[2]) alongside the parsed digit value.
+func compactEpisodeCodeMatch(name string) ([]int, int, bool) {
+	loc := compactEpisodeCodePattern.FindStringSubmatchIndex(name)
+	if loc == nil {
+		return nil, 0, false
+	}
+	digits, err := strconv.Atoi(name[loc[2]:loc[3]])
+	if err != nil {
+		return nil, 0, false
+	}
+	if compactCodeResolutionBlocklist[digits] {
+		return nil, 0, false
+	}
+	return loc, digits, true
+}
+
+// ParseCompactEpisodeCode extracts a season and episode from the "eSSEE"
+// compact convention ("RED SKELTON e1524.mp4" -> S15E24, "e614_720x480.mp4" ->
+// S06E14). The LAST TWO digits are the episode; every leading digit is the
+// season. ok is false when no such token is present, when the FIRST matched
+// code's digits are in compactCodeResolutionBlocklist (fail-closed), when the
+// derived season is 0, or when the derived episode is 0.
+//
+// Both zeros are refused rather than treated as Season 0 / Specials: unlike
+// SxxE00, where an operator deliberately typed a Specials marker, a
+// leading-zero-stripped compact code cannot distinguish "season 0" from
+// "malformed", and proposals.Proposal.SeasonNumber's own doc comment promises
+// that a Proposal's 0 unambiguously means "the filename encoded Specials".
+//
+// The semantic is NOT trusted on its own — it is catalog-validated for free by
+// proposeOneEpisodeLibrary's existing SeasonDetails existence check, so an
+// implausible parse ("e2516" -> S25E16 for a 20-season show) can only fail to
+// find a candidate and fall through to Unmatched. That refusal IS the guarantee;
+// do not "fix" it by loosening the season check.
+func ParseCompactEpisodeCode(name string) (season, episode int, ok bool) {
+	_, digits, matched := compactEpisodeCodeMatch(name)
+	if !matched {
+		return 0, 0, false
+	}
+	season, episode = digits/100, digits%100
+	if season == 0 || episode == 0 {
+		return 0, 0, false
+	}
+	return season, episode, true
+}
+
+// ParseCompactEpisodeCodeLoose is ParseCompactEpisodeCode's rename-path-only
+// sibling: basename first, then parentDir's own basename, mirroring
+// ParseEpisodeNumbersLoose's delegation shape exactly. Callers pass
+// filepath.Dir(sourcePath) as parentDir.
+func ParseCompactEpisodeCodeLoose(basename, parentDir string) (season, episode int, ok bool) {
+	if season, episode, ok = ParseCompactEpisodeCode(basename); ok {
+		return season, episode, ok
+	}
+	return ParseCompactEpisodeCode(filepath.Base(parentDir))
+}
+
+// StripCompactEpisodeCode removes a compactEpisodeCodePattern token (and
+// nothing else) from name, leaving the show-title remainder. Returns name
+// unchanged when no token is present, and unchanged when the first matched
+// code's digits are blocklisted (it must never strip a resolution token).
+//
+// REMOVES ONLY THE `e\d{3,4}` SPAN, via submatch indices — it does NOT replace
+// the whole match. The pattern's leading and trailing classes CONSUME a
+// delimiter, so ReplaceAllString(name, "") on "RED SKELTON e1524.mp4" (whose
+// match is " e1524.", space and dot INCLUDED) yields "RED SKELTONmp4" — a
+// single fused token that shares only "red" with the real show title and
+// therefore FAILS HasTitleTokenOverlap's `strong || shared >= 2` bar, silently
+// breaking the very seed this function exists to repair. Replacing with a single
+// space is also wrong: it yields "RED SKELTON mp4". Preserving the surrounding
+// delimiters is the only correct behaviour.
+//
+// Consequence worth stating because it looks like an off-by-one and is not:
+// "e614_720x480.mp4" yields "_720x480.mp4", with the LEADING UNDERSCORE
+// PRESERVED. The leading class matches the zero-width `^` alternative there, so
+// name[:loc[2]-1] is the empty string and the terminator '_' at loc[3] survives
+// into the tail. Do NOT "fix" this to strip the underscore — consuming it would
+// make the behaviour position-dependent (trimming a delimiter at string start
+// but not mid-string), which is precisely the inconsistency submatch-index
+// removal exists to avoid.
+func StripCompactEpisodeCode(name string) string {
+	loc, _, matched := compactEpisodeCodeMatch(name)
+	if !matched {
+		return name
+	}
+	return name[:loc[2]-1] + name[loc[3]:]
+}
+
 // StripEpisodeMarker removes the first SxxExx/NxNN token (and everything
 // after it) from name, so what's left is just the show title — the
 // preprocessing searchterm.FromName needs before it runs, since that

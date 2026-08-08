@@ -864,6 +864,15 @@ type repickProposalRequest struct {
 	TMDBID int    `json:"tmdbId"`
 	Title  string `json:"title"`
 	Year   int    `json:"year,omitempty"`
+	// SeasonNumber/EpisodeNumber are OPTIONAL and Series-only — the operator's
+	// direct slot assignment for a file with no recoverable episode signal.
+	// POINTERS, not ints: season 0 is Specials, a legitimate operator choice,
+	// and an int+omitempty cannot tell "the operator typed 0" from "the
+	// operator left it blank". Same reasoning as applyProposalRequest.KeepIndex
+	// and grabs.Grab.SeasonSpecified. Mirrors apidto.RepickRequest, which
+	// carries the full rationale.
+	SeasonNumber  *int `json:"seasonNumber,omitempty"`
+	EpisodeNumber *int `json:"episodeNumber,omitempty"`
 }
 
 // repickProposalHandler is Rename's manual-override workflow: when Scan's
@@ -913,8 +922,52 @@ func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 			return
 		}
 
-		if err := propStore.Repick(ctx, id, req.Title, req.TMDBID, req.Year); err != nil {
-			proposalNotFoundOr500(w, err)
+		// Claude 2026-08-07: additive season/episode pair validation (plan §3.3)
+		// Reason: every check above is UNCHANGED — this runs after them, and
+		//   after propStore.Get, because it needs p.Mode. The first case being
+		//   "neither supplied" is load-bearing ordering: a Movies show-level
+		//   re-pick exits here and never reaches the Series-only arm below.
+		// Troubleshooting: an operator assigns a slot on a Movies proposal, or
+		//   supplies half the pair, and the write lands anyway.
+		// Review if: season/episode ever becomes valid on a Movies proposal.
+		hasSeason, hasEpisode := req.SeasonNumber != nil, req.EpisodeNumber != nil
+		switch {
+		case !hasSeason && !hasEpisode:
+			// show-level re-pick — unchanged path
+		case p.Mode != mode.Series:
+			http.Error(w, "season/episode assignment is only supported for series rename proposals", http.StatusBadRequest)
+			return
+		case hasSeason != hasEpisode:
+			http.Error(w, "seasonNumber and episodeNumber must be supplied together", http.StatusBadRequest)
+			return
+		case *req.SeasonNumber < 0 || *req.EpisodeNumber < 1:
+			// season 0 IS valid (Specials); episode 0 is not — every real
+			// episode numbering starts at 1, and a 0 here is the falsy-guard
+			// bug reaching the database rather than an operator's intent.
+			http.Error(w, "seasonNumber must be >= 0 and episodeNumber must be >= 1", http.StatusBadRequest)
+			return
+		}
+
+		// Claude 2026-08-07: dispatch on the validated season/episode pair (plan §3.3)
+		// Reason: the switch above has already established that the pair is
+		//   both-or-neither, Series-only, season >= 0 and episode >= 1. BOTH
+		//   present is the manual slot-assignment case and MUST go to
+		//   RepickEpisode; BOTH absent is the pre-existing show-level re-pick
+		//   and MUST stay on Repick, so the Movies path is provably untouched.
+		// Troubleshooting: an operator assigns a slot and the proposal comes
+		//   back Pending with the OLD season/episode — this dispatch fell
+		//   through to Repick, which does not write those columns at all.
+		// Review if: Repick and RepickEpisode are ever merged into one method,
+		//   at which point this branch becomes dead and must be deleted.
+		var repickErr error
+		if hasSeason && hasEpisode {
+			repickErr = propStore.RepickEpisode(ctx, id, req.Title, req.TMDBID, req.Year,
+				*req.SeasonNumber, *req.EpisodeNumber)
+		} else {
+			repickErr = propStore.Repick(ctx, id, req.Title, req.TMDBID, req.Year)
+		}
+		if repickErr != nil {
+			proposalNotFoundOr500(w, repickErr)
 			return
 		}
 

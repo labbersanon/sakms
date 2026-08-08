@@ -1,8 +1,15 @@
 package rename
 
 import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/tvdb"
 )
 
@@ -197,4 +204,297 @@ func TestAnthologyEpisodeCatalogSearch(t *testing.T) {
 			t.Errorf("duck soup matched S%02dE%02d %q, want S01E07 %q", duck.Match.season, duck.Match.episode, duck.Match.name, "Duck Soup")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// autopilot-impl.md §2.3 / §4.2(b2) -- PRODUCER-side coverage of the `handled`
+// return value.
+// ---------------------------------------------------------------------------
+
+// handledFixtureRoot is a SYNTHETIC path prefix, never a real directory.
+// tvdbAnthologyPass touches no filesystem at all -- it does pure path math
+// (showFolderKey/showFolderName) over out[i].SourcePath plus HTTP against the
+// TheTVDB fake -- so seeding real files here would add a t.TempDir() that
+// nothing reads.
+const handledFixtureRoot = "/lib"
+
+// anthologyHandledCatalog is anthologyScanCatalog plus ONE title deliberately
+// duplicated across two seasons ("Below Zero"), which is what drives a file to
+// the ambiguity-decline branch. Kept local rather than folded into the shared
+// helper: every existing case A-O expectation table is written against the
+// four-entry catalog, and adding a fifth title there would change what those
+// cases assert.
+func anthologyHandledCatalog() []fakeTVDBEpisode {
+	c := anthologyScanCatalog()
+	return append(c,
+		fakeTVDBEpisode{ID: 5, SeriesID: anthologyTVDBSeriesID, Name: "Below Zero", Number: 4, SeasonNumber: 5, Aired: "1930-04-26"},
+		fakeTVDBEpisode{ID: 6, SeriesID: anthologyTVDBSeriesID, Name: "Below Zero", Number: 9, SeasonNumber: 6, Aired: "1930-04-26"},
+	)
+}
+
+// TestTVDBAnthologyPass_HandledCoversEveryWrittenIndex is the ONE deliberate
+// exception to rename_library_series_test.go:2200's "every case drives the
+// REAL ScanLibrarySeries, not tvdbAnthologyPass directly" convention, and the
+// exception is forced: `handled` is a RETURN VALUE that ScanLibrarySeries
+// consumes internally, so no end-to-end test can observe it at all. The 14
+// existing TestScanLibrarySeries_TVDBAnthology_* cases each exercise one of
+// these branches through the real scan; none of them can see this bit.
+//
+// The property asserted is a BICONDITIONAL, in both directions:
+//
+//	handled[i] == true  <=>  out[i] differs from its pre-call snapshot
+//
+// The reverse direction is the one that catches the likely regression -- a
+// future edit hoisting handled[i] = true to the top of the step-7 loop, which
+// would mark every file in a resolved folder including the ones the pass
+// deliberately leaves alone. That is why the fixture carries a SIXTH file
+// ("Towed in a Hole") matching nothing in the catalog: with only the five
+// files the branch enumeration needs, every index is written and the reverse
+// direction is vacuously true.
+//
+// Fixture details that are not obvious:
+//   - THREE clean files are required, not one. minCorroboratingFiles is 3 and
+//     counts DISTINCT SLOTS from Found == 1 files only, so the ambiguous file
+//     (Found == 2) and the tracked-slot file contribute nothing toward
+//     qualification -- the tracked check runs well AFTER it.
+//   - the tracked key uses the SYNTHETIC NEGATIVE id, anthologyTMDBID(...),
+//     because the branch keys on pin.synthID. A real positive id never fires.
+//   - folderIDs is EMPTY (a present key skips the folder outright at step 2)
+//     and seriesByTVDBID is EMPTY (a hit there would drop the threshold to 1).
+func TestTVDBAnthologyPass_HandledCoversEveryWrittenIndex(t *testing.T) {
+	const (
+		belowZeroFile = "Laurel & Hardy - Below Zero(B&W)-DVDRip.XviD-DIE-DVD07.mp4"
+		towedFile     = "Laurel & Hardy - Towed in a Hole(B&W)-DVDRip.XviD-DIE-DVD19.mp4"
+	)
+	// wantWritten is the EXPECTED branch outcome per file, declared up front so
+	// the assertion below cannot be quietly rewritten to match whatever the
+	// code did.
+	files := []struct {
+		name        string
+		wantWritten bool
+		branch      string
+	}{
+		{anthologyDuckSoupFile, true, "3 (Pending emit)"},
+		{anthologyBerthMarksFile, true, "3 (Pending emit)"},
+		{anthologyBigBusinessFile, true, "3 (Pending emit)"},
+		{belowZeroFile, true, "1 (ambiguity decline)"},
+		{anthologyMusicBoxFile, true, "2 (tracked-slot decline)"},
+		{towedFile, false, "none -- Found == 0, left untouched"},
+	}
+
+	out := make([]proposals.Proposal, 0, len(files))
+	candidates := make([]int, 0, len(files))
+	for i, f := range files {
+		out = append(out, proposals.Proposal{
+			Mode:           mode.Series,
+			Workflow:       "rename",
+			Status:         proposals.Unmatched,
+			SourceName:     f.name,
+			SourcePath:     filepath.Join(handledFixtureRoot, anthologyShowFolder, f.name),
+			RootFolderPath: handledFixtureRoot,
+			Reason:         fmt.Sprintf("could not determine season/episode from %q", f.name),
+		})
+		candidates = append(candidates, i)
+	}
+	snapshot := append([]proposals.Proposal(nil), out...)
+
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: anthologyTVDBSeriesID, Name: "Laurel & Hardy", Year: "1921", Catalog: anthologyHandledCatalog(),
+	}})
+	// fatalTMDBSeriesServer, not nil: this pass must never reach TMDB, and a
+	// nil client would make that pass vacuously rather than assert it.
+	sess := &mode.Session{Mode: mode.Series, TMDB: fatalTMDBSeriesServer(t), TVDB: tvdbClient}
+
+	tracked := map[episodeKey]bool{
+		{tmdbID: anthologyTMDBID(anthologyTVDBSeriesID), season: 8, episode: 3}: true,
+	}
+
+	resolved, handled := tvdbAnthologyPass(context.Background(), sess, tracked,
+		map[int]library.Series{}, map[string]int{},
+		[]string{handledFixtureRoot}, handledFixtureRoot, candidates, out)
+
+	if handled == nil || resolved == nil {
+		t.Fatalf("both return maps must be non-nil (handled[i] = true panics on a nil map): resolved=%v handled=%v", resolved, handled)
+	}
+
+	key := showFolderKey(out[0].SourcePath, []string{handledFixtureRoot})
+	got, ok := resolved[key]
+	if !ok {
+		t.Fatalf("folder %q resolved to one candidate but published no resolution: %+v", key, resolved)
+	}
+	// candName is the CATALOG's own show name, which is what the pass feeds to
+	// searchTVDBEpisodeByTitle -- never pin.title, which the established-pin
+	// shortcut can overwrite with a tracked row's title.
+	if got.candName != "Laurel & Hardy" {
+		t.Errorf("resolved[%q].candName = %q, want %q", key, got.candName, "Laurel & Hardy")
+	}
+	if got.pin.tvdbID != anthologyTVDBSeriesID || got.pin.synthID != anthologyTMDBID(anthologyTVDBSeriesID) {
+		t.Errorf("resolved[%q].pin = %+v, want tvdbID %d / synthID %d", key, got.pin, anthologyTVDBSeriesID, anthologyTMDBID(anthologyTVDBSeriesID))
+	}
+	if len(got.catalog) != len(anthologyHandledCatalog()) {
+		t.Errorf("resolved[%q].catalog has %d episodes, want the whole %d-episode fetch carried out of the pass",
+			key, len(got.catalog), len(anthologyHandledCatalog()))
+	}
+
+	for i, f := range files {
+		// reflect.DeepEqual, not ==: proposals.Proposal carries slice fields
+		// (ExtraEpisodeNumbers, Genres, Cast) and is not comparable.
+		written := !reflect.DeepEqual(out[i], snapshot[i])
+		if written != f.wantWritten {
+			t.Errorf("%q (branch %s): out[%d] written = %v, want %v (reason now %q)",
+				f.name, f.branch, i, written, f.wantWritten, out[i].Reason)
+		}
+		if handled[i] != written {
+			t.Errorf("%q (branch %s): handled[%d] = %v but out[%d] written = %v -- handled must cover EXACTLY the written indices, in both directions",
+				f.name, f.branch, i, handled[i], i, written)
+		}
+	}
+}
+
+// TestTVDBAnthologyPass_ResolvedCandNameIsNotPinTitle pins the ONE property
+// that makes candName a separate field rather than something a consumer could
+// read off pin.title: the established-pin shortcut OVERWRITES pin.title with
+// the TRACKED ROW's title, while candName must keep the CATALOG's own show
+// name.
+//
+// That distinction is invisible on the ordinary path -- with no established
+// row the two strings are byte-identical, so
+// TestTVDBAnthologyPass_HandledCoversEveryWrittenIndex above cannot catch a
+// consumer (or a future edit) sourcing candName from the pin. This is the
+// fixture where they genuinely diverge.
+//
+// It matters because candName is the show-title argument
+// searchTVDBEpisodeByTitle takes, and episodeTitleMatches SUBTRACTS that
+// title's tokens from every episode name before comparing. Feed it the tracked
+// row's title instead and the residual computation is done against a string
+// the catalog was never written in.
+func TestTVDBAnthologyPass_ResolvedCandNameIsNotPinTitle(t *testing.T) {
+	// Deliberately spelled "and" where TheTVDB spells the show "&", so the two
+	// strings are distinguishable while still clearing the folder-name gate.
+	const trackedTitle = "Laurel and Hardy"
+
+	out := []proposals.Proposal{{
+		Mode:           mode.Series,
+		Workflow:       "rename",
+		Status:         proposals.Unmatched,
+		SourceName:     anthologyDuckSoupFile,
+		SourcePath:     filepath.Join(handledFixtureRoot, anthologyShowFolder, anthologyDuckSoupFile),
+		RootFolderPath: handledFixtureRoot,
+		Reason:         "could not determine season/episode",
+	}}
+
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: anthologyTVDBSeriesID, Name: "Laurel & Hardy", Year: "1921", Catalog: anthologyScanCatalog(),
+	}})
+	sess := &mode.Session{Mode: mode.Series, TMDB: fatalTMDBSeriesServer(t), TVDB: tvdbClient}
+
+	// TMDBID MUST be the synthetic id: the established-pin shortcut refuses a
+	// row whose TMDBID is anything else (a real TMDB-tracked show landing here
+	// would mint a second library_series row for the same folder).
+	seriesByTVDBID := map[int]library.Series{
+		anthologyTVDBSeriesID: {
+			TMDBID: anthologyTMDBID(anthologyTVDBSeriesID), TVDBID: anthologyTVDBSeriesID,
+			Title: trackedTitle, Year: 1921, RootFolderPath: handledFixtureRoot,
+		},
+	}
+
+	// ONE file only: with an established row the threshold drops from
+	// minCorroboratingFiles to 1, which is what makes this fixture a rescan
+	// rather than a fresh pin.
+	resolved, handled := tvdbAnthologyPass(context.Background(), sess, map[episodeKey]bool{},
+		seriesByTVDBID, map[string]int{},
+		[]string{handledFixtureRoot}, handledFixtureRoot, []int{0}, out)
+
+	key := showFolderKey(out[0].SourcePath, []string{handledFixtureRoot})
+	got, ok := resolved[key]
+	if !ok {
+		t.Fatalf("established-pin rescan published no resolution for %q: %+v", key, resolved)
+	}
+	if got.pin.title != trackedTitle {
+		t.Fatalf("pin.title = %q, want the TRACKED row's title %q -- the established-pin shortcut did not fire, so this test proves nothing",
+			got.pin.title, trackedTitle)
+	}
+	if got.candName != "Laurel & Hardy" {
+		t.Errorf("candName = %q, want the CATALOG's own name %q (it must NOT be sourced from pin.title, which is %q here)",
+			got.candName, "Laurel & Hardy", got.pin.title)
+	}
+	if !handled[0] {
+		t.Errorf("handled[0] = false, want true -- the row was emitted as %v with reason %q", out[0].Status, out[0].Reason)
+	}
+}
+
+// TestTVDBAnthologyPass_AmbiguousFolderPublishesNoResolution is the REVERSE
+// direction for `resolved`, and it is the test that pins WHERE the write
+// happens rather than merely THAT it happens.
+//
+// TestTVDBAnthologyPass_HandledCoversEveryWrittenIndex above proves a resolved
+// folder gets an entry. It cannot prove the entry is written at the
+// winner-selection point, because with one qualifying candidate the forbidden
+// per-candidate write point produces byte-identical contents. Two qualifying
+// candidates is the only fixture where the two points differ:
+//
+//	winner-selection point (correct) -> no entry, the folder declined
+//	per-candidate point   (forbidden) -> an entry for a CONTESTED show
+//
+// The forbidden variant is the specific bug autopilot-impl.md §2.3 fix 5
+// exists to prevent: publishing a resolution for a folder this pass
+// deliberately REFUSED to resolve lets a downstream AI-assisted pass match a
+// file against a catalog the deterministic pass would not commit to,
+// inverting the deterministic-first precedence order.
+//
+// The two show NAMES are lifted verbatim from
+// TestScanLibrarySeries_TVDBAnthology_ShowLevelAmbiguityDeclines
+// (rename_library_series_test.go) rather than invented: both must clear
+// gate.allowsTitle against the "Laurel and Hardy" FOLDER seed, and a name that
+// fails Check A would silently collapse this back into a one-candidate test
+// that passes vacuously. Both are served the same catalog so both clear the
+// 3-slot threshold; maxAnthologyCandidates is 3, so both are evaluated.
+func TestTVDBAnthologyPass_AmbiguousFolderPublishesNoResolution(t *testing.T) {
+	names := []string{anthologyDuckSoupFile, anthologyBerthMarksFile, anthologyBigBusinessFile, anthologyMusicBoxFile}
+	out := make([]proposals.Proposal, 0, len(names))
+	candidates := make([]int, 0, len(names))
+	for i, name := range names {
+		out = append(out, proposals.Proposal{
+			Mode:           mode.Series,
+			Workflow:       "rename",
+			Status:         proposals.Unmatched,
+			SourceName:     name,
+			SourcePath:     filepath.Join(handledFixtureRoot, anthologyShowFolder, name),
+			RootFolderPath: handledFixtureRoot,
+			Reason:         fmt.Sprintf("could not determine season/episode from %q", name),
+		})
+		candidates = append(candidates, i)
+	}
+	snapshot := append([]proposals.Proposal(nil), out...)
+
+	tvdbClient, counts := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{
+		{ID: anthologyTVDBSeriesID, Name: "Laurel & Hardy", Year: "1921", Catalog: anthologyScanCatalog()},
+		{ID: 99999, Name: "Laurel and Hardy Collection", Year: "1930", Catalog: anthologyScanCatalog()},
+	})
+	sess := &mode.Session{Mode: mode.Series, TMDB: fatalTMDBSeriesServer(t), TVDB: tvdbClient}
+
+	resolved, handled := tvdbAnthologyPass(context.Background(), sess, map[episodeKey]bool{},
+		map[int]library.Series{}, map[string]int{},
+		[]string{handledFixtureRoot}, handledFixtureRoot, candidates, out)
+
+	// BOTH catalogs fetched == both candidates genuinely evaluated and both
+	// qualified. Without this the case cannot distinguish "declined because
+	// TWO qualified" from "declined because ZERO did" — and only the former
+	// puts the forbidden write point in reach at all.
+	// 4 == two candidates x one paginated fetch (page 0 plus the terminating
+	// empty page 1).
+	if n := counts.Episodes.Load(); n != 4 {
+		t.Fatalf("SeriesEpisodes requests = %d, want 4 (2 candidates x 1 paginated fetch) — both candidates must qualify or this test proves nothing", n)
+	}
+	if len(resolved) != 0 {
+		t.Errorf("resolved = %+v, want EMPTY: two candidates qualified, so the folder declined and must publish NOTHING. A non-empty map here means resolved[key] is written inside the candidate loop instead of at the winner-selection point (autopilot-impl.md §2.3 fix 5)", resolved)
+	}
+	if len(handled) != 0 {
+		t.Errorf("handled = %+v, want EMPTY: a declined folder writes to no row at all", handled)
+	}
+	for i, name := range names {
+		if !reflect.DeepEqual(out[i], snapshot[i]) {
+			t.Errorf("%q: out[%d] was rewritten (status %v, reason %q), want byte-identical to the pre-call snapshot", name, i, out[i].Status, out[i].Reason)
+		}
+	}
 }

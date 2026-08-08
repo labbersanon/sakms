@@ -752,7 +752,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 						}
 					}
 				}
-				p, parseFailed := proposeOneEpisodeLibrary(ctx, sess, tracked, pin, rootFolderPath, root, videoPath, cfg, prober)
+				p, parseFailed := proposeOneEpisodeLibrary(ctx, sess, tracked, pin, rootFolderPath, root, videoPath, roots, cfg, prober)
 				out = append(out, p)
 				if parseFailed {
 					anthologyIdx = append(anthologyIdx, len(out)-1)
@@ -784,7 +784,35 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	//   would silently overwrite the earlier one's library_episodes row.
 	// Review if: library_series gains a real per-show folder-path column, which
 	//   would replace showFolderKey's normalized-name heuristic outright.
-	tvdbAnthologyPass(ctx, sess, tracked, seriesByTVDBID, folderIDs, roots, rootFolderPath, anthologyIdx, out)
+	resolved, handled := tvdbAnthologyPass(ctx, sess, tracked, seriesByTVDBID, folderIDs,
+		roots, rootFolderPath, anthologyIdx, out)
+
+	// Claude 2026-08-07: AI-assisted episode recovery post-pass (autopilot-impl.md §2.2)
+	// Reason: a POST-pass, never an inline call inside proposeOneEpisodeLibrary.
+	//   An inline attempt would return parseFailed == false for any file it
+	//   resolved, removing that file from anthologyIdx — and tvdbAnthologyPass
+	//   needs 3 DISTINCT files to clear its new-pin threshold, so one AI guess
+	//   could drop a folder below 3 and pre-empt STRONGER multi-file
+	//   deterministic evidence for every other file in it. Running here makes
+	//   that inversion structurally impossible: deterministic first, model last.
+	// Troubleshooting: rows the AI pass should have spoken for stay untouched —
+	//   check, in order: sess.MainstreamAI non-nil (the AI-fallback gate); the
+	//   row's index present in anthologyIdx; handled[i] FALSE (a row
+	//   tvdbAnthologyPass already wrote is deliberately off-limits, so its
+	//   precise ambiguity / already-in-the-library reason is not overwritten
+	//   with a vaguer one); the folder key resolving to either folderIDs (mode
+	//   1) or resolved (mode 2) — a key in neither is mode 3, DEFERRED scope.
+	// ORDERING IS LOAD-BEARING in BOTH directions: it must run AFTER
+	//   tvdbAnthologyPass (whose resolved/handled it consumes) and BEFORE the
+	//   `seen` guard below (so the Pending rows it creates inherit the
+	//   within-batch episodeKey-collision check for free).
+	// Note the map argument differs from the line above deliberately: anthology
+	//   takes seriesByTVDBID (it resolves TheTVDB shows); this takes seriesByID
+	//   (TMDB-keyed) because mode 1 resolves against a TMDB-pinned folder.
+	// Review if: mode 3 (§2.6) is ever implemented — it would widen the
+	//   eligible set to folders resolved by neither map.
+	aiEpisodeRecoveryPass(ctx, sess, tracked, seriesByID, folderIDs, resolved, handled,
+		roots, rootFolderPath, anthologyIdx, out)
 
 	// Claude 2026-08-06: within-batch episodeKey collision guard
 	// Reason: code-reviewer MEDIUM finding — ParseEpisodeNumbersLoose lets
@@ -838,7 +866,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 // Review if: a second parse-failure exit is ever added to this function.
 func proposeOneEpisodeLibrary(
 	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool, pin pinnedShow,
-	generalRoot, foundRoot, videoPath string, cfg MatchConfig, prober Prober,
+	generalRoot, foundRoot, videoPath string, roots []string, cfg MatchConfig, prober Prober,
 ) (proposals.Proposal, bool) {
 	cfg = cfg.Normalize()
 	name := filepath.Base(videoPath)
@@ -858,7 +886,40 @@ func proposeOneEpisodeLibrary(
 	//   hash-named file whose parent folder is a normal release name.
 	// Review if: ParseEpisodeNumbers itself changes — this must keep
 	//   delegating to it unmodified.
+	// seasonEpisodeViaCompactCode records that the (season, episode) below was
+	// recovered by library.ParseCompactEpisodeCodeLoose rather than by
+	// ParseEpisodeNumbersLoose. It is read at exactly three places — the two
+	// tryWebAuthoritySeries call sites and the terminal-reason branch that
+	// attributes their refusal (plan §1.3a) — and nowhere else.
+	//
+	// NAME IT FOR THE PARSE, NOT FOR THE FILENAME. It means "the season/episode
+	// came from ParseCompactEpisodeCodeLoose", NOT "this filename contains an
+	// eNNNN token". The guard's correctness depends on the former: a file whose
+	// SxxExx marker parsed normally is not blocked, even if its name also
+	// happens to carry a compact code somewhere.
+	seasonEpisodeViaCompactCode := false
 	season, episodes, ok := library.ParseEpisodeNumbersLoose(name, filepath.Dir(videoPath))
+	if !ok {
+		// Claude 2026-08-07: compact eNNNN episode code, rename-path-only (plan §1.2/§1.3)
+		// Reason: 13 real "The Red Skelton Show" rows name the episode as
+		//   "eSSEE" ("RED SKELTON e1524.mp4", "e614_720x480.mp4") with no
+		//   SxxExx marker anywhere in the basename OR the parent directory, so
+		//   ParseEpisodeNumbersLoose cannot reach them. Kept OUT of
+		//   ParseEpisodeNumbers so import.go / releasematch.go /
+		//   dedup_phash_primary.go / autograb are provably unaffected.
+		//   Runs BEFORE tryEpisodeTitleMatchSeries below so the deterministic
+		//   parser strictly pre-empts the title-matching heuristic.
+		// Troubleshooting: an eNNNN file still reports "could not determine
+		//   season/episode" — check compactEpisodeCodePattern's terminator
+		//   class before suspecting the search path.
+		// Review if: ParseEpisodeNumbers itself learns the compact shape, at
+		//   which point this second attempt becomes dead and must be deleted,
+		//   not left.
+		if cs, ce, cok := library.ParseCompactEpisodeCodeLoose(name, filepath.Dir(videoPath)); cok {
+			season, episodes, ok = cs, []int{ce}, true
+			seasonEpisodeViaCompactCode = true
+		}
+	}
 	if !ok {
 		// Claude 2026-08-06: episode-title matching for files with no season/episode marker
 		// Reason: autopilot-impl-episode-title-matching §2 — a file whose show is
@@ -949,7 +1010,32 @@ func proposeOneEpisodeLibrary(
 	// Troubleshooting: a hash-basename file lands on a confident Pending with
 	//   a plausible-looking but wrong TMDB match instead of staying Unmatched.
 	// Review if: StripEpisodeMarkerLoose's fallback shape changes.
+	//
+	// Claude 2026-08-07: three-step title seed for the compact-code population (plan §1.4)
+	// Reason: StripEpisodeMarkerLoose is a NO-OP on an eNNNN basename (there is
+	//   no SxxExx/NxNN marker to strip in the file OR its parent), so the seed
+	//   keeps the "e1524"/"720x480" noise. For "e614_720x480.mp4" the surviving
+	//   tokens are {e614, 720x480}, which share ZERO tokens with any real show
+	//   title — seriesGate Check A then rejects every candidate and the file can
+	//   never match. Falling back to the SHOW FOLDER's own name is what recovers
+	//   it, and showFolderName is the SAME traversal showFolderKey uses
+	//   (series_tvdb_episode_match.go:showFolderSegment), so the seed and the
+	//   pin can never describe different directories.
+	// Troubleshooting: an eNNNN file parses its season/episode but stays
+	//   Unmatched with a gate-rejection reason — confirm this cascade reached
+	//   step 3.
+	// Review if: StripEpisodeMarkerLoose learns the compact shape itself.
 	looseTitle := library.StripEpisodeMarkerLoose(name, filepath.Dir(videoPath))
+	if looseTitle == name {
+		if stripped := library.StripCompactEpisodeCode(name); stripped != name {
+			looseTitle = stripped // "RED SKELTON e1524.mp4" -> "RED SKELTON .mp4"
+		}
+	}
+	if !hasWordToken(looseTitle) {
+		if folder := showFolderName(videoPath, roots); folder != "" {
+			looseTitle = folder // "e614_720x480.mp4" -> "The Red Skelton Show"
+		}
+	}
 	// Claude 2026-08-06: seriesGate — title-collision precision gate (Check A + B)
 	// Reason: autopilot-impl-title-collision-fix — see series_folder_guard.go's
 	//   package doc for the full mechanism this gate implements.
@@ -1027,8 +1113,31 @@ func proposeOneEpisodeLibrary(
 		if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, gate, season, episode, guessed, looseTitle); got != nil {
 			return *got, false
 		}
-		if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
-			return *got, false
+		// Claude 2026-08-07: compact-code files are refused by the web-naming-authority path (plan §1.3a)
+		// Reason: the eNNNN parser newly makes this population reachable here,
+		//   and this path has NO season-existence check and mints a SYNTHETIC
+		//   NEGATIVE TMDB id (WebAuthorityTMDBID). "The Red Skelton Show" has a
+		//   real TMDB entry (10534), so a web-authority Pending would create a
+		//   SECOND library_series row for a show already tracked under a
+		//   positive id — the split-show corruption
+		//   series_tvdb_episode_match.go documents from the other direction.
+		//   HasTitleTokenOverlap does not stop it: "skelton" is a >= 4-rune
+		//   shared token, so the overlap gate passes on its strong branch.
+		//   DEFENSIVE at this site — a compact-code file is a real .mp4, so
+		//   sig.HasAny() is true and this branch is unreachable for it today.
+		//   Guarded anyway: an unprobeable or zero-byte compact-code file would
+		//   land here, and an unguarded twin of a guarded call is unreadable to
+		//   a future reviewer.
+		// Troubleshooting: an eNNNN file parses correctly and stays Unmatched —
+		//   check p.Reason for compactCodeWebAuthorityRefusedReason, which the
+		//   MAIN site below sets and this defensive one deliberately does not.
+		// Review if: tryWebAuthoritySeries gains a SeasonDetails existence check
+		//   AND a real-positive-TMDB-id preference, at which point this guard
+		//   can be opened up — delete it deliberately, do not leave it dead.
+		if !seasonEpisodeViaCompactCode {
+			if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
+				return *got, false
+			}
 		}
 		if gateRejectedReason() {
 			return p, false
@@ -1134,8 +1243,28 @@ func proposeOneEpisodeLibrary(
 	if got := bravePhase2Series(ctx, sess, sig, cfg, acceptSeries, gate, season, episode, guessed, looseTitle); got != nil {
 		return *got, false
 	}
-	if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
-		return *got, false
+	// Claude 2026-08-07: compact-code files are refused by the web-naming-authority path (plan §1.3a)
+	// Reason: the eNNNN parser newly makes this population reachable here, and
+	//   this path has NO season-existence check and mints a SYNTHETIC NEGATIVE
+	//   TMDB id (WebAuthorityTMDBID). "The Red Skelton Show" has a real TMDB
+	//   entry (10534), so a web-authority Pending would create a SECOND
+	//   library_series row for a show already tracked under a positive id — the
+	//   split-show corruption series_tvdb_episode_match.go documents from the
+	//   other direction. HasTitleTokenOverlap does not stop it: "skelton" is a
+	//   >= 4-rune shared token, so the overlap gate passes on its strong branch.
+	//   This is the LIVE hazard site (the main path, after bravePhase2Series).
+	// Troubleshooting: an eNNNN file parses correctly and stays Unmatched —
+	//   check p.Reason for compactCodeWebAuthorityRefusedReason below, which is
+	//   the ONLY string that identifies this guard. A generic "no catalog/web
+	//   title+year" reason means web authority genuinely declined, NOT that
+	//   this fired.
+	// Review if: tryWebAuthoritySeries gains a SeasonDetails existence check AND
+	//   a real-positive-TMDB-id preference, at which point this guard can be
+	//   opened up — delete it deliberately, do not leave it dead.
+	if !seasonEpisodeViaCompactCode {
+		if got := tryWebAuthoritySeries(ctx, sess, tracked, generalRoot, foundRoot, season, episode, extraEpisodes, name, guessed, p); got != nil {
+			return *got, false
+		}
 	}
 
 	// Claude 2026-08-06: distinct Unmatched reason when the gate rejected candidates
@@ -1146,12 +1275,44 @@ func proposeOneEpisodeLibrary(
 	//   clue why — check p.Reason for this prefix before assuming a catalog gap.
 	// Review if: library_series gains a real per-show folder-path column.
 	if gateRejectedReason() {
+		return p, false // unchanged — a real gate rejection is MORE specific, so it still wins
+	}
+	// Claude 2026-08-07: positive attribution for §1.3a's web-authority block
+	// Reason: without a distinct terminal reason the block is INVISIBLE. Trace a
+	//   blocked "e2516" to its end state: gateRejectedReason() does not fire
+	//   (inside bravePhase2Series the SeasonDetails check returns before
+	//   seeded.allows, so *gate.rejected stays 0), control reaches
+	//   unmatchedAfterWebAuthority, and the row is emitted with "no catalog/web
+	//   title+year after top %d candidates" — a string that ASSERTS web
+	//   authority was consulted and found nothing. It was structurally refused.
+	//   It also leaves an unwired guard indistinguishable from a
+	//   GroundTitleViaSearch miss: byte-identical output, no positive detector.
+	// Troubleshooting: this reason on a file with a real SxxExx marker means the
+	//   flag is being set for the wrong parse — it must mean "the season/episode
+	//   came from ParseCompactEpisodeCodeLoose", not "the name contains eNNNN".
+	// Review if: the guard above is opened up — this reason must go with it.
+	//
+	// ORDERING IS LOAD-BEARING IN ONE DIRECTION ONLY: gateRejectedReason() must
+	// keep winning when it fires, because "the gate rejected N candidates that
+	// did not share a title token" is strictly more diagnostic than "web
+	// authority was skipped." Putting this branch first would swallow it.
+	if seasonEpisodeViaCompactCode {
+		p.Status = proposals.Unmatched
+		p.Reason = compactCodeWebAuthorityRefusedReason
 		return p, false
 	}
 
 	unmatchedAfterWebAuthority(&p, name, lastLimit, lastTerm)
 	return p, false
 }
+
+// compactCodeWebAuthorityRefusedReason marks a row that the compact-code
+// web-authority guard refused, so an operator can tell "web authority was
+// skipped by policy" apart from "web authority ran and declined". Without it the
+// two are indistinguishable in the proposals table.
+const compactCodeWebAuthorityRefusedReason = "season/episode came from a compact eNNNN code; " +
+	"web naming authority is not consulted for these (it cannot verify the season exists and " +
+	"would mint a synthetic show id) — needs manual review"
 
 func trySeriesQueries(
 	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,

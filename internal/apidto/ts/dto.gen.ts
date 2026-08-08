@@ -1170,6 +1170,21 @@ export interface RepickRequest {
   tmdbId: number /* int */;
   title: string;
   year?: number /* int */;
+  /**
+   * SeasonNumber/EpisodeNumber are OPTIONAL and Series-only: the operator's
+   * direct slot assignment for a file with no recoverable season/episode
+   * signal (an opaque hash basename, a raw DVD VIDEO_TS authoring name, or an
+   * ambiguous multi-slot title match). Both nil means "show-level re-pick
+   * only" — the pre-existing behaviour, unchanged.
+   * POINTERS, NOT ints, and this is load-bearing: season 0 is Specials, a
+   * real value an operator can legitimately mean. Same reasoning as
+   * DedupApplyRequest.KeepIndex below and grabs.Grab.SeasonSpecified. A
+   * client that omits a literal 0 assigns the wrong slot silently.
+   * Validated as a PAIR: supplying one without the other is a 400. Both are
+   * rejected outright on a Movies proposal.
+   */
+  seasonNumber?: number /* int */;
+  episodeNumber?: number /* int */;
 }
 /**
  * DedupApplyRequest is the OPTIONAL body of POST /api/proposals/{id}/apply when

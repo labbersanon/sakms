@@ -19,13 +19,35 @@ import (
 
 // countingAI counts ChatJSON calls and always returns resp — lets tests
 // assert whether the legacy AI/text pipeline actually ran.
+//
+// Claude 2026-08-07: prompts capture added (additive — .calls is unchanged)
+// Reason: sess.MainstreamAI has eleven-plus consumers reachable from one scan
+//
+//	(Movies GuessTitle, Kids classify.WithAI, ...), so a bare .calls counter
+//	is not a discriminator for "THIS path made no AI call": it fails
+//	spuriously when an unrelated consumer fires and proves nothing when it is
+//	0. Series-episode assertions must inspect prompt CONTENT for
+//	identify.SeriesEpisodePromptMarker instead — see seriesPromptCount in
+//	series_ai_episode_match_test.go.
+//
+// Troubleshooting: a "no AI call" test passing vacuously — confirm it uses
+//
+//	seriesPromptCount, not .calls.
+//
+// Review if: .calls gains a reader. Verified 2026-08-07 by grep: it has NONE,
+//
+//	in this package or any other — it is incremented and never asserted on,
+//	and was already write-only at HEAD before this change, so no Adult-mode
+//	assertion was disturbed. Delete the field if no reader ever lands.
 type countingAI struct {
-	calls int
-	resp  map[string]any
+	calls   int
+	prompts []string
+	resp    map[string]any
 }
 
 func (a *countingAI) ChatJSON(ctx context.Context, prompt string) (map[string]any, error) {
 	a.calls++
+	a.prompts = append(a.prompts, prompt)
 	return a.resp, nil
 }
 

@@ -551,27 +551,61 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     setSelections((prev) => ({ ...prev, [id]: action }));
   };
 
-  // Seed Rename for newly visible matches; clear invalid choices.
+  // Claude 2026-08-09: track each row's PREVIOUS status, not just its current
+  //   one, so the seeding effect below can detect a genuine unmatched ->
+  //   pending TRANSITION rather than only re-checking validity in isolation.
+  // Reason: rowActionEnabled treats "repick" (and dismiss/delete/move:*) as
+  //   valid for BOTH "pending" and "unmatched" BY DESIGN, so an operator can
+  //   still re-pick an already-matched row. That means a stale "repick"
+  //   selection stays "technically valid" straight through a successful
+  //   Re-pick (unmatched -> pending), and the validity check below never
+  //   catches it — the dropdown stays stuck on Re-pick and Apply just
+  //   re-opens the takeover instead of applying the fresh match. A plain
+  //   object, not a signal: nothing else reads this, so it doesn't need to be
+  //   reactive.
+  // Troubleshooting: after committing a Re-pick match, the row's dropdown
+  //   still reads "Re-pick" instead of resetting to "Rename".
+  // Review if: a third status value is added that this effect needs to seed
+  //   through.
+  // Context: .omc/state/sessions/432c4084-7a92-43fb-9208-320d3452ed3c/prd.json US-001.
+  let lastKnownStatus: Record<number, string> = {};
+
+  // Seed Rename for newly visible matches; reset a row whose status just
+  // transitioned unmatched -> pending; clear invalid choices.
   createEffect(() => {
     const titleMode = isTitleMode();
     const items = proposals();
+    const nextStatus: Record<number, string> = {};
     setSelections((prev) => {
       let changed = false;
       const next = { ...prev };
       for (const p of items) {
+        nextStatus[p.id] = p.status;
         if (next[p.id] === undefined) {
           next[p.id] = defaultRowAction(p.status, titleMode);
           changed = true;
-        } else {
-          const cur = next[p.id];
-          if (cur && !rowActionEnabled(cur, p.status, titleMode)) {
-            next[p.id] = defaultRowAction(p.status, titleMode);
-            changed = true;
-          }
+          continue;
+        }
+        const transitionedToPending =
+          lastKnownStatus[p.id] === "unmatched" && p.status === "pending";
+        if (transitionedToPending) {
+          // Unconditional reset — deliberately NOT gated on rowActionEnabled,
+          // since a stale "repick"/"dismiss"/"delete"/"move:*" selection is
+          // exactly what stays "valid" for the new "pending" status and is
+          // exactly what this branch exists to catch.
+          next[p.id] = defaultRowAction(p.status, titleMode);
+          changed = true;
+          continue;
+        }
+        const cur = next[p.id];
+        if (cur && !rowActionEnabled(cur, p.status, titleMode)) {
+          next[p.id] = defaultRowAction(p.status, titleMode);
+          changed = true;
         }
       }
       return changed ? next : prev;
     });
+    lastKnownStatus = nextStatus;
   });
 
   const { actionError, setActionError, scanning, acting, scan, act } =

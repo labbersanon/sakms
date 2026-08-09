@@ -516,6 +516,121 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
   });
 });
 
+// US-001/US-002 (.omc/state/sessions/432c4084-7a92-43fb-9208-320d3452ed3c/prd.json):
+// rowActionEnabled treats "repick" (and dismiss/delete/move:*) as valid for
+// BOTH "unmatched" and "pending" BY DESIGN, so an already-matched row can
+// still be re-picked. That means a stale "repick" selection stays
+// "technically valid" straight through a successful Re-pick
+// (unmatched -> pending), and the seeding effect's old validity-only check
+// never caught it — the dropdown stayed stuck on "Re-pick" and Apply just
+// re-opened the takeover instead of applying the fresh match.
+describe("Rename — Re-pick selection reset (stale dropdown after a successful match)", () => {
+  it("resets the dropdown to Rename once a successful Re-pick moves the row unmatched -> pending", async () => {
+    let matched = false;
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/rename/proposals")) {
+        return jsonResponse(
+          matched
+            ? [
+                proposal({
+                  id: 30,
+                  status: "pending",
+                  sourceName: "Stale.Selection.mkv",
+                  title: "The Real Movie",
+                  year: 2019,
+                }),
+              ]
+            : [
+                proposal({
+                  id: 30,
+                  status: "unmatched",
+                  sourceName: "Stale.Selection.mkv",
+                  title: "",
+                  year: 0,
+                  reason: "no match",
+                }),
+              ],
+        );
+      }
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse([
+          tmdbItem({ id: 55, title: "The Real Movie", releaseDate: "2019-03-01" }),
+        ]);
+      if (
+        url.includes("/api/proposals/30/repick") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      ) {
+        matched = true;
+        return noContent();
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await runRowAction("Stale.Selection.mkv", "repick");
+
+    // Commit the fresh match — Movies has no season/episode step, so this
+    // single click commits immediately (same as the "commits immediately
+    // for movies" case in Rename.repick.test.tsx).
+    fireEvent.click(await screen.findByLabelText("Use The Real Movie"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.includes("/repick"))).toBe(true),
+    );
+
+    // onDone closes the takeover and refetches; the row re-renders from the
+    // now-"pending" proposal. Before the fix, the dropdown stayed on
+    // "repick" here — this is the assertion that would have failed against
+    // the old code (verified by temporarily reverting the fix: FAILS,
+    // select.value === "repick").
+    await waitFor(() => {
+      const row = screen.getByText("Stale.Selection.mkv").closest("tr")!;
+      const select = within(row).getByRole("combobox") as HTMLSelectElement;
+      expect(select.value).toBe("rename");
+    });
+  });
+
+  it("does not disturb a deliberate manual selection on an already-pending row with no status transition", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 31, sourceName: "Already.Matched.mkv" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    const row = (await screen.findByText("Already.Matched.mkv")).closest(
+      "tr",
+    )!;
+    const select = within(row).getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("rename"); // seeded default, before the manual override
+
+    fireEvent.change(select, { target: { value: "dismiss" } });
+    expect(select.value).toBe("dismiss");
+
+    // Force the seeding effect to re-run against the SAME "pending" status
+    // (no unmatched -> pending transition occurs) by toggling the history
+    // view twice — createResource refetches a brand-new proposals array
+    // containing the same still-"pending" row both times. A regression that
+    // reset on every effect run (not just on a genuine transition) would
+    // clobber the manual "dismiss" choice back to "rename" here.
+    fireEvent.click(screen.getByText("Show history"));
+    await waitFor(() =>
+      expect(screen.getByText("Already.Matched.mkv")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("Show history"));
+    await waitFor(() =>
+      expect(screen.getByText("Already.Matched.mkv")).toBeInTheDocument(),
+    );
+
+    const selectAfter = within(
+      screen.getByText("Already.Matched.mkv").closest("tr")!,
+    ).getByRole("combobox") as HTMLSelectElement;
+    expect(selectAfter.value).toBe("dismiss");
+  });
+});
+
 describe("Rename — Dismiss (single row)", () => {
   it("dismisses exactly one proposal", async () => {
     const calls = stubFetch((url, init) => {

@@ -162,7 +162,19 @@ func classifyModes(rest []string, out Set) {
 	switch rest[1] {
 	case "collections":
 		out.Add(SectionCollections)
-	case "rename", "purge", "dedup":
+	// Claude 2026-08-09: added "proposals" to the Organize case.
+	// Reason: the workflow-agnostic per-proposal media route (today:
+	// /video, generalizing the Dedup-only video-preview endpoint to serve
+	// Rename and any future workflow's proposals too) is Organize-screen
+	// data, and the {mode} segment in front of it in the URL path is what
+	// keeps the existing Adult-content section-lock rule reachable for
+	// this route family.
+	// Troubleshooting: TestSectionLock_SL9_EveryRoutePatternIsClassified
+	// fails without this — /api/modes/{mode}/proposals/{id}/video
+	// classified into {adult-content} for Adult and nothing at all for
+	// Movies/Series.
+	// Review if: this route family moves off /api/modes/{mode}/proposals/.
+	case "rename", "purge", "dedup", "proposals":
 		out.Add(SectionOrganize)
 	case "discover", "search", "autograb", "tmdb-search",
 		"performers", "studios", "newest-rows":

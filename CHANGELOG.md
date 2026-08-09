@@ -7006,3 +7006,147 @@ server1 verification are the review step that follows — the spec mandates
 that a human (Wade) explicitly designate the throwaway file used for the
 one live delete test, rather than an agent choosing one autonomously,
 given the operation's irreversibility.
+
+## 2026-08-09 — Rename gains a source-file video preview, generalizing Dedup's video endpoint to any workflow
+
+Rename's queue rows (Pending/Unmatched only) and `SearchTakeover` (the
+shared Repick/Move candidate-picking screen) both gain a click-to-expand
+preview of the **actual source video file** — not a TMDB/TPDB metadata
+poster. Powered by generalizing Dedup's existing video-serving endpoint
+(`internal/api/dedup_video.go` → `proposal_video.go`) to work for **any**
+workflow's proposal, per an explicit spec requirement: "fully generic
+across workflows, not an explicit Dedup+Rename allowlist."
+
+**The route path changed, and the choice was a security decision, not a
+naming preference.** The obvious shape by analogy with this repo's other
+row-addressed routes (`POST /api/proposals/{id}/dismiss`,
+`POST /api/proposals/delete-batch`) would be `/api/proposals/{id}/video` —
+**this was explicitly rejected.** With no `/modes/{mode}/` segment, the
+route's Layer-1 section-lock classification (`sectionlock/routes.go`'s
+`classifyModes`) cannot see it's an Adult request at all, stripping the
+existing Adult-content coverage this endpoint has always had and making a
+new handler-level check the *only* line of defense instead of
+defense-in-depth. The chosen path,
+`GET /api/modes/{mode}/proposals/{id}/video`, keeps the mode segment (so
+Layer 1 keeps working exactly as it does today) while dropping the now-false
+`dedup` segment. `internal/sectionlock/routes.go` gained a `"proposals"`
+case in its organize-classifying switch to make this route classifiable at
+all — verified via `TestSectionLock_SL9_EveryRoutePatternIsClassified`,
+which fails without it, and verified via grep that no existing route
+collides with the new path shape.
+
+**Dispatches on proposal SHAPE, never on workflow.** The proposals table has
+exactly two shapes — candidate-indexed (Dedup: `len(p.Candidates) > 0`,
+selected via `?candidateIndex=N`) and single-source (Rename/Purge: no
+candidates, `p.SourcePath`). A `switch p.Workflow` was considered and
+rejected: it's an allowlist wearing a different hat, and the spec requires
+any future workflow's proposal to be servable with zero backend change. The
+new `proposalVideoPath` function dispatches on the query parameter's
+**presence** (`url.Values.Has`), not its value — `Get()` alone returns `""`
+for both "absent" and "present-but-empty," which would silently serve the
+wrong file for one of them.
+
+**A defense-in-depth Adult PIN-lock check was added — precisely worded
+because planning found the spec's own premise was imprecise.** The spec
+assumed this would close a "live bypass" in Dedup's existing endpoint.
+Verified independently by both the architect and the critic against actual
+source (`auth.Middleware` → `serveSectionGated` → `classifyModes`): **there
+is no live bypass today** — Layer 1's existing path-based classification
+already refuses a locked Adult section's Dedup video request before the
+handler ever runs. The new `denyIfAdultLocked` check (placed immediately
+after `propStore.Get`, **before** both the mode-mismatch check and the
+candidate-index resolution — proven by a mutation test that moved it later
+and watched marker bytes leak through a locked section) ships as
+**defense-in-depth for when the route shape ever changes**, not as a fix
+for something actively broken. Two orderings, each independently
+security-motivated: refusing before the mode-mismatch check prevents a
+locked-Adult-via-wrong-mode-path request from confirming "this id exists
+and isn't that mode" (an existence oracle); refusing before candidate-index
+resolution prevents "candidateIndex out of range" from leaking a duplicate
+group's size.
+
+**`SearchTakeover` gained a caller-supplied `preview?: JSX.Element` slot,
+not a `previewSrc: string` prop — a design forced by a real blocker found
+during planning.** `SearchTakeover` has three mount sites, and Dedup's Move
+mount passes a proposal with **no `SourcePath` at all** (only
+`Candidates[]`, verified against all three production Dedup scan call
+sites). A string-URL prop would let that call site pass a URL anyway; the
+backend would answer 400 ("candidateIndex is required for this proposal"),
+producing a silent dead player with no console error and no failing test.
+The slot design sidesteps this structurally: Dedup's mount simply doesn't
+pass the prop, and Rename's two mounts (Repick, Move) do.
+
+**A real copy-paste hazard was found and guarded against during critic
+review, before it ever shipped.** Rename's Move-flow `SearchTakeover` mount
+has an adjacent, pre-existing line that picks the *move target's* mode for
+search scoping (`st.target`, since the operator searches the destination
+catalog). The new preview prop sits right next to it and must **always**
+use the proposal's *own* mode (`props.mode`) — the source file lives at its
+own mode's storage regardless of which mode it's being moved to. Copying
+the adjacent expression would silently 400 the preview on every Move
+takeover with zero visible error. A dedicated regression test (a Movies
+proposal moved to Adult, asserting the preview URL is
+`/api/modes/movies/proposals/{id}/video` with an explicit
+`.not.toContain("/adult/")`) pins this.
+
+**Deliberate divergence from Dedup's own video-tile convention:** the new
+preview is `preload="none"` and uses native controls like Dedup's, but is
+**unmuted by default** — Dedup's tiles stay muted because a page can show N
+of them simultaneously; this is a single pop-out, so unmuted is correct
+here. Documented on the component with an explicit "do not align the two"
+instruction.
+
+**Verification.** `go build ./... && go vet ./...` clean. Both
+`internal/api` and `internal/sectionlock` clean against a real Postgres
+instance (`SAKMS_TEST_DATABASE_URL_REQUIRED=1`, forcing hard failures
+instead of the silent test-skips discovered as a real problem earlier this
+session). Full `go test ./...` clean, zero failures at all this run
+(including the previously-seen, environment-flaky `internal/sysinfo` GPU
+test, which did not recur). `cd frontend && tsc --noEmit && vitest run &&
+vite build` all clean: 924/925 (the one failure, the same pre-existing
+unrelated `Settings.test.tsx` phash-threshold assertion named in prior
+entries, confirmed unrelated again). The critical Adult PIN-lock test
+(`TestProposalVideoHandler_AdultLockedRefusesBeforeAnyBytes`) proves byte
+absence, not just a status code, for **both** a Dedup Adult proposal and a
+Rename Adult proposal — seeded with real on-disk marker files rather than
+the pre-existing suite's non-existent literal fixtures, which would have
+made the same regression yield a 500 either way and the assertion
+structurally incapable of firing. Proven non-vacuous by mutation: moving
+the PIN check after file-serving made both sub-cases fail with marker bytes
+genuinely present in a 200 response; reverted cleanly, byte-identical to
+before. Deslop pass (`ai-slop-cleaner`): **no changes needed** — every dense
+comment traced to a real, plan-documented decision, not AI verbosity.
+
+**Planning process, worth noting:** this feature's plan went through **3**
+rounds of critic review (REVISE → REVISE → APPROVE), the most of any
+feature this session — the first REVISE caught two missing wiring tests, an
+underspecified security test that could pass vacuously, a factual error
+about Dedup's `SourcePath` shape, and three bare absence assertions needing
+guard-the-guard preambles; the second REVISE caught that the retracted
+factual claim survived verbatim inside a doc comment destined to ship
+straight into `SearchTakeover.tsx`'s source — the one place a future reader
+would actually encounter it before making a change.
+
+| File | Change |
+|---|---|
+| `internal/sectionlock/routes.go`, `routes_test.go` | New `"proposals"` case classifying into `SectionOrganize`; 2 new `Classify` assertions |
+| `internal/api/dedup_video.go` → `proposal_video.go` (`git mv`) | `dedupVideoHandler` → `proposalVideoHandler`; new shape-dispatching `proposalVideoPath`; Adult PIN-lock check added with deliberate 3-way ordering; route path changed; 28-line trust-boundary doc comment preserved verbatim, 2 new sections added |
+| `internal/api/dedup_video_test.go` → `proposal_video_test.go` (`git mv`) | Existing suite retargeted (zero regression); new `T-1`–`T-5b`: cross-mode/cross-shape serving, the critical Adult PIN-lock byte-absence test (2 sub-cases, real marker files), a false-positive ticket-unlock guard, an existence-oracle guard, a mode-mismatch-oracle guard |
+| `internal/api/handler.go` | Route: `GET /api/modes/{mode}/dedup/proposals/{id}/video` → `GET /api/modes/{mode}/proposals/{id}/video`, no compat alias |
+| `frontend/src/api/organize.ts` | New `proposalVideoUrl(mode, id, candidateIndex?)`, shared by Dedup and the new Rename/SearchTakeover callers |
+| `frontend/src/api/dedup.ts` | `dedupVideoUrl` deleted (zero remaining references anywhere in the repo) |
+| `frontend/src/screens/Dedup.tsx` | Its one video-tile call site retargeted to the shared builder, zero behavior change; its `SearchTakeover` mount genuinely unchanged (no `preview` prop passed) |
+| `frontend/src/components/SourcePreview.tsx`, `SourcePreview.test.tsx` | **New** — `SourcePreviewVideo`/`Popout`/`Disclosure`; unmuted-by-default divergence documented |
+| `frontend/src/screens/SearchTakeover.tsx`, `SearchTakeover.test.tsx` | New `preview?: JSX.Element` slot prop with a doc comment stating the correct no-`SourcePath`/400 mechanism; collapsed-by-default and absent-when-unsupplied tests with guard-the-guard preambles |
+| `frontend/src/screens/Rename.tsx` | New `"preview"` row action (Pending/Unmatched, reuses `rowActionEnabled`'s existing gate, placed inside the existing Source cell); both `SearchTakeover` mounts wired with an explicit `props.mode`-not-`st.target` guard comment |
+| `frontend/src/screens/Rename.preview.test.tsx` | **New** — 9 tests incl. the two CRITICAL regression tests (Move-mount own-mode assertion, real-gesture Repick wiring test) |
+| `frontend/src/screens/Dedup.test.tsx` | New "Dedup's Move takeover renders no video preview" test, guard-the-guard'd on the takeover heading |
+
+**No `CLAUDE.md` amendment** — an explicit plan decision, not an oversight:
+this feature reverses no documented decision and invalidates no documented
+invariant (the section-lock sub-bullet's claims all stay true, the
+staged-for-approval list is untouched since nothing here mutates anything,
+the scheduler count is unchanged). The two decisions a future session must
+not reverse — the forbidden route shape and the unmuted divergence — are
+recorded in the code they govern instead, where someone about to break them
+will actually be reading.

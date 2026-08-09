@@ -3,6 +3,7 @@
 
 import { api } from "./client";
 import type { OrganizeEvent, Proposal, ProposalPage } from "@dto";
+import type { Mode } from "./discover";
 
 export type OrganizeWorkflow = "rename" | "dedup" | "purge";
 
@@ -76,6 +77,30 @@ export function fetchPendingIDs(mode: string): Promise<number[]> {
   return api<{ ids: number[] }>(
     `/api/modes/${mode}/rename/proposals/pending-ids`,
   ).then((r) => r.ids ?? []);
+}
+
+// proposalVideoUrl builds the src for a <video> preview: the workflow-generic,
+// provenance-only streaming endpoint that resolves {mode, proposalId} — plus an
+// optional candidateIndex for a candidate-carrying (Dedup) proposal — to a file
+// SAK itself recorded during its own scan. Never a client-supplied path; see
+// internal/api/proposal_video.go.
+//
+// candidateIndex is OMITTED, not zeroed, for a single-source (Rename/Purge)
+// proposal: the backend dispatches on the parameter's PRESENCE, and sending
+// `candidateIndex=0` against a proposal with no candidate array is a 400.
+//
+// A plain same-origin URL the browser loads with the session cookie. It does
+// NOT go through api() — that is for JSON; a <video> streams bytes with Range
+// requests.
+export function proposalVideoUrl(
+  mode: Mode,
+  id: number,
+  candidateIndex?: number,
+): string {
+  const base = `/api/modes/${mode}/proposals/${id}/video`;
+  return candidateIndex === undefined
+    ? base
+    : `${base}?candidateIndex=${candidateIndex}`;
 }
 
 /** Streaming apply-batch with live progress callbacks. */

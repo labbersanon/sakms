@@ -83,6 +83,11 @@ func TestClassify(t *testing.T) {
 		{"/api/proposals/apply-batch", []string{SectionOrganize}},
 		{"/api/proposals/12/dismiss", []string{SectionOrganize}},
 
+		// The workflow-agnostic per-proposal media route (rename-preview
+		// plan §2.2): the {mode} segment keeps the Adult rule reachable.
+		{"/api/modes/adult/proposals/1/video", []string{SectionAdultContent, SectionOrganize}},
+		{"/api/modes/movies/proposals/1/video", []string{SectionOrganize}},
+
 		// Dashboard widgets vs. genuinely administrative controls, which
 		// share the /api/admin prefix.
 		{"/api/admin/sysinfo/stream", []string{SectionDashboard}},

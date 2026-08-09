@@ -143,6 +143,18 @@ export const SearchTakeover: Component<{
   // notes renders the caller's advisory block above the results — the move
   // callers' cross-device / dedup-scope / adult-phash copy, or nothing.
   notes?: JSX.Element;
+  // preview renders the caller's OPTIONAL click-to-expand source-file preview,
+  // between the subheading and the search form.
+  //
+  // A SLOT, not a proposal/URL prop, for one structural reason: Dedup's Move
+  // entry point (Dedup.tsx) mounts this component for a proposal that has NO
+  // SourcePath at all — only Candidates[]. A `previewSrc: string` prop would
+  // invite that call site to pass one anyway; the backend then answers 400
+  // ("candidateIndex is required for this proposal"), which surfaces as a
+  // silent dead player — no console error, no failing test.
+  // Dedup passes NOTHING here, deliberately — its card view already shows every
+  // candidate's own always-visible tile (Dedup.tsx).
+  preview?: JSX.Element;
 
   // --- search behaviour -------------------------------------------------
   // searchMode selects the ENDPOINT and the card shape:
@@ -321,6 +333,10 @@ export const SearchTakeover: Component<{
       </div>
       <Show when={props.subheading}>
         <div class="mt-1">{props.subheading}</div>
+      </Show>
+
+      <Show when={props.preview}>
+        <div class="mt-3">{props.preview}</div>
       </Show>
 
       <form

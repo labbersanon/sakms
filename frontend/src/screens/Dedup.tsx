@@ -68,7 +68,6 @@ import {
   type ProposalStatus,
   applyKeep,
   applyKeepAll,
-  dedupVideoUrl,
   dismissProposal,
   fetchDedupProposals,
   fetchDedupVmaf,
@@ -78,6 +77,7 @@ import {
   applyBatchStreaming,
   loadPageSize,
   loadShowHistory,
+  proposalVideoUrl,
   savePageSize,
   saveShowHistory,
 } from "../api/organize";
@@ -848,7 +848,7 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
                                       controls
                                       muted
                                       preload="none"
-                                      src={dedupVideoUrl(props.mode, p.id, i())}
+                                      src={proposalVideoUrl(props.mode, p.id, i())}
                                       aria-label={`Preview ${c.label}`}
                                     />
                                     <div class="mb-2 flex items-center justify-between gap-2">

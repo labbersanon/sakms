@@ -35,9 +35,14 @@ import {
 import {
   loadPageSize,
   loadShowHistory,
+  proposalVideoUrl,
   savePageSize,
   saveShowHistory,
 } from "../api/organize";
+import {
+  SourcePreviewDisclosure,
+  SourcePreviewPopout,
+} from "../components/SourcePreview";
 import {
   BatchResultSummary,
   Button,
@@ -63,7 +68,8 @@ type RowActionId =
   | "delete"
   | "move:movies"
   | "move:series"
-  | "move:adult";
+  | "move:adult"
+  | "preview";
 
 // Claude 2026-08-09: "Delete file", not "Delete", and LAST in the base list.
 // Reason: every other option here acts on the PROPOSAL; this one destroys the
@@ -115,6 +121,16 @@ function rowActionEnabled(
     case "move:movies":
     case "move:series":
     case "move:adult":
+      return status === "pending" || status === "unmatched";
+    case "preview":
+      // Same eligibility as dismiss/delete: Pending and Unmatched only. An
+      // Applied row's sourcePath no longer points anywhere (the file moved);
+      // a Dismissed row's may or may not, and neither is worth previewing.
+      // Deliberately NOT added to BASE_ROW_ACTIONS above — this is a row
+      // control rendered in the Source cell, not a dropdown action, so
+      // rowActions() (which builds the dropdown from BASE_ROW_ACTIONS only)
+      // never sees it. An id in RowActionId with no BASE_ROW_ACTIONS entry
+      // looks like an omission; it is not.
       return status === "pending" || status === "unmatched";
   }
 }
@@ -644,6 +660,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     } else if (id === "dismiss") {
       void act(() => dismissProposal(p.id)).then(() => setLogKey((k) => k + 1));
     }
+    // Claude 2026-08-09: "preview" deliberately gets NO branch here, answering
+    //   the "Review if" note on the move:* branch above directly.
+    // Reason: "preview" is never selectable in the row's <select> (it has no
+    //   BASE_ROW_ACTIONS entry — see rowActionEnabled's "preview" case), so it
+    //   never reaches onRun/runRowAction at all. Falling through every branch
+    //   above and doing nothing is therefore the correct outcome here, not a
+    //   gap to fill.
+    // Review if: this chain is ever converted to an exhaustive switch —
+    //   "preview" will then need an explicit no-op case, which is a good
+    //   outcome, not a problem.
   };
 
   const openApplyAll = (): void => {
@@ -865,7 +891,23 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                     <For each={proposals()}>
                       {(p) => (
                         <tr class="border-b border-border/60 align-top">
-                          <td class="px-2 py-2 font-mono text-xs">{p.sourceName}</td>
+                          <td class="px-2 py-2 font-mono text-xs">
+                            <div class="flex items-center gap-1">
+                              <span>{p.sourceName}</span>
+                              <Show
+                                when={rowActionEnabled(
+                                  "preview",
+                                  p.status,
+                                  isTitleMode(),
+                                )}
+                              >
+                                <SourcePreviewPopout
+                                  src={proposalVideoUrl(props.mode, p.id)}
+                                  label={p.sourceName}
+                                />
+                              </Show>
+                            </div>
+                          </td>
                           <td class="px-2 py-2">
                             <div class="flex flex-wrap items-center gap-1">
                               <span>{p.title}</span>
@@ -988,6 +1030,20 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                     </Show>
                   </>
                 ) : undefined
+              }
+              // CRITICAL: props.mode, NEVER st.target, on BOTH kinds. The
+              // adjacent searchMode prop below deliberately uses st.target on
+              // a move (searching the DESTINATION catalog) — but the file
+              // being previewed still lives at the proposal's OWN mode's
+              // storage regardless of which mode it is being moved to. Using
+              // st.target here would silently 400 the preview on every Move
+              // takeover (prop.Mode != m) with no console error and no
+              // visible failure — see .omc/plans/autopilot-impl-rename-preview.md §6.3.
+              preview={
+                <SourcePreviewDisclosure
+                  src={proposalVideoUrl(props.mode, p.id)}
+                  label={p.sourceName}
+                />
               }
               searchMode={st.kind === "repick" ? props.mode : st.target}
               initialQuery={

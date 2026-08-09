@@ -436,6 +436,55 @@ unchanged — unit tests are unaffected. Commit `29a56f3`.
 
 ## Recently shipped (outside this backlog)
 
+### Rename source-file video preview — shipped 2026-08-09
+`.omc/specs/deep-interview-rename-preview.md`, built per
+`.omc/plans/autopilot-impl-rename-preview.md` (3 critic rounds — REVISE,
+REVISE, APPROVE, the most of any feature this session). Rename's queue rows
+(Pending/Unmatched) and `SearchTakeover` (the shared Repick/Move picking
+screen) both gain a click-to-expand preview of the **actual source video
+file**, powered by generalizing Dedup's existing video-serving endpoint to
+work for any workflow's proposal — dispatching on proposal SHAPE
+(candidate-indexed vs single-source), never on workflow, per the spec's
+explicit "fully generic" requirement. See the 2026-08-09 CHANGELOG entry for
+the full file list and verification numbers.
+
+Standout findings from planning, recorded in more detail in the CHANGELOG:
+- The obvious route shape (`/api/proposals/{id}/video`, matching this
+  repo's other row-addressed routes) was **explicitly rejected** — it would
+  strip the endpoint's existing Adult-content section-lock coverage
+  entirely. The chosen path keeps the `{mode}` segment specifically to keep
+  that coverage intact.
+- Planning found the spec's own premise imprecise: adding a PIN-lock check
+  to the generalized endpoint does not close a "live bypass" — verified
+  independently that Layer 1's existing path-based classification already
+  covers the pre-generalization route today. The check ships as
+  defense-in-depth for when the route shape changes, not as a fix for
+  something broken; the CHANGELOG is worded to not overclaim this.
+- A real blocker forced `SearchTakeover`'s new preview into a
+  caller-supplied `preview?: JSX.Element` slot rather than a simple
+  `previewSrc: string` prop: one of its three mount sites (Dedup's) passes
+  a proposal with no `SourcePath` at all, which a string-URL design would
+  have silently 400'd with no visible error.
+- A real copy-paste hazard was caught during critic review before shipping:
+  Rename's Move-flow takeover mount sits right next to an existing line
+  that picks the *move target's* mode for search scoping — the new preview
+  must always use the proposal's *own* mode instead, and a dedicated
+  regression test now pins this.
+
+Things a future session should not quietly undo:
+- **Never move this route to `/api/proposals/{id}/video`** (no mode
+  segment) — that shape structurally cannot be Adult-classified at Layer 1.
+  The instruction lives in the handler's own doc comment, not just here.
+- **Dispatch is by proposal shape (`len(Candidates)`), never by
+  `p.Workflow`** — a workflow switch would need a backend change for every
+  future workflow, which the spec forbids.
+- **The preview is unmuted by default, deliberately diverging from Dedup's
+  own muted video-tile convention** (Dedup shows N tiles simultaneously;
+  this is a single pop-out). Do not "fix" this to match Dedup.
+- **`SearchTakeover`'s `preview` prop is a slot, not a URL string** — see
+  the blocker above. Do not simplify it back to a string prop without first
+  re-solving the Dedup-no-`SourcePath` problem it exists to avoid.
+
 ### Rename "Delete file" action — shipped 2026-08-09
 `.omc/specs/deep-interview-rename-delete-selection.md`, built per
 `.omc/plans/autopilot-impl.md`. Rename's per-row action dropdown gains a

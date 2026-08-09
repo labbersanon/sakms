@@ -282,14 +282,23 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// background computation and returns "computing"; the cache (vmaf_scores)
 	// serves repeat views without recomputing (AC2). See vmaf.go.
 	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals/{id}/vmaf", vmafHandler(propStore, libStore))
-	// Raw video bytes of one Dedup candidate, for the card view's click-to-play
-	// preview. Resolves the file server-side by {id}+candidateIndex (bounds-
-	// checked) — never a client-supplied path — and streams it via
+	// Raw video bytes of one proposal's source file, for the card view's
+	// click-to-play preview. Workflow-generic (Dedup, Rename, and any future
+	// workflow all resolve through this one handler): proposalVideoPath
+	// dispatches on the proposal's SHAPE (candidate-indexed vs single-source),
+	// never on its workflow, so a new workflow needs no backend change here.
+	// Resolves the file server-side by {id} + an optional candidateIndex
+	// (bounds-checked) — never a client-supplied path — and streams it via
 	// http.ServeContent (range/seek support, no in-memory buffering). The trust
 	// boundary is provenance (SAK's own recorded scan path), NOT lexical-root
-	// confinement — see dedupVideoHandler's doc comment and the plan's
+	// confinement — see proposalVideoHandler's doc comment and the plan's
 	// pre-mortem #2 for the full history of why no root check is applied.
-	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals/{id}/video", dedupVideoHandler(propStore))
+	// The /modes/{mode}/ segment is security-load-bearing, not cosmetic: it is
+	// what keeps Layer 1's Adult-content section-lock classification reachable
+	// for this route (see internal/sectionlock/routes.go's "proposals" case) —
+	// proposalVideoHandler's own doc comment explains why this route must never
+	// move to /api/proposals/{id}/video.
+	mux.HandleFunc("GET /api/modes/{mode}/proposals/{id}/video", proposalVideoHandler(propStore))
 
 	// Discover is a read-only proxy against TMDB (trending/popular titles,
 	// poster art) — the browse entry point into Search. Search itself is a

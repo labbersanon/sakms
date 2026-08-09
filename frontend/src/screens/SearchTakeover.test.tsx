@@ -44,6 +44,7 @@ import {
 } from "@solidjs/testing-library";
 import type { AdultSceneCandidate, DiscoverItem } from "@dto";
 import { moveProposalMode } from "../api/rename";
+import { SourcePreviewDisclosure } from "../components/SourcePreview";
 import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -598,6 +599,114 @@ describe("SearchTakeover — the takeover is never a dialog", () => {
     fireEvent.click(screen.getByLabelText("Use A Show"));
     await screen.findByText("Season 4");
     expectNotADialog(container);
+  });
+});
+
+// The preview slot — .omc/plans/autopilot-impl-rename-preview.md §6.2/§8.5.
+// SearchTakeover knows nothing about proposals or video URLs; it just renders
+// whatever JSX.Element the caller hands it under `preview`, between the
+// subheading and the search form. These three tests cover the slot's CONTRACT
+// (collapsed by default, absent when not supplied, survives the Series step-2
+// transition) — not what Rename/Dedup actually pass into it, which is covered
+// in Rename.preview.test.tsx and Dedup.test.tsx respectively.
+describe("SearchTakeover — the caller-supplied preview slot", () => {
+  it("renders the caller's preview slot, collapsed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        throw new Error("unexpected fetch: " + String(input));
+      }),
+    );
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="movies"
+        initialQuery="A Movie"
+        autoSearch={false}
+        preview={
+          <SourcePreviewDisclosure
+            src="/api/modes/movies/proposals/9/video"
+            label="A Movie"
+          />
+        }
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    expect(
+      await screen.findByText("Preview source file"),
+    ).toBeInTheDocument();
+    expect(document.querySelector("video")).toBeNull();
+  });
+
+  it("renders nothing when no preview is supplied", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        throw new Error("unexpected fetch: " + String(input));
+      }),
+    );
+
+    const { container } = render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="movies"
+        initialQuery="A Movie"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    // GUARD THE GUARD FIRST — same shape as expectNotADialog above: a scoping
+    // change that matched nothing would otherwise make the absence checks
+    // below pass against an empty DOM.
+    expect(
+      container.querySelector('section[aria-label="Search"]'),
+    ).not.toBeNull();
+    expect(
+      screen.getByLabelText("Catalog search query"),
+    ).toBeInTheDocument();
+
+    expect(document.querySelector("video")).toBeNull();
+    expect(screen.queryByText("Preview source file")).toBeNull();
+  });
+
+  it("the preview survives the Series step-2 transition", async () => {
+    vi.stubGlobal("fetch", seriesFetch([season4]));
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        preview={
+          <SourcePreviewDisclosure
+            src="/api/modes/series/proposals/11/video"
+            label="A Show"
+          />
+        }
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    expect(
+      await screen.findByText("Preview source file"),
+    ).toBeInTheDocument();
+
+    await pickShow();
+    await screen.findByText("Season 4");
+
+    // Still present alongside the season grid — §6.2's placement (above the
+    // results block, which is what keeps it reachable in both steps).
+    expect(screen.getByText("Preview source file")).toBeInTheDocument();
   });
 });
 

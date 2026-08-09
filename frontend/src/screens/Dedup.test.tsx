@@ -1607,6 +1607,41 @@ describe("Dedup — Move to another mode (AC6)", () => {
         .length,
     ).toBe(1);
   });
+
+  // §6.1/§6.4 of .omc/plans/autopilot-impl-rename-preview.md — SearchTakeover's
+  // preview slot is a caller-supplied JSX.Element, and Dedup's Move mount passes
+  // NOTHING for it, deliberately: a Dedup proposal carries Candidates[] and no
+  // SourcePath at all, so wiring a preview here would 400 on every Move
+  // ("candidateIndex is required for this proposal") and render a silent dead
+  // player. GUARD THE GUARD FIRST: Dedup's card view renders <video> tiles
+  // unconditionally, so if the takeover never actually opened, an absence
+  // assertion against `document.querySelector("video")` would pass against a
+  // list that also happens to render no video — a double negative proving
+  // nothing. The takeover's own heading is the positive anchor that rules that
+  // out (it replaces the group list in place, Dedup.tsx).
+  it("Dedup's Move takeover renders no video preview", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 40, title: "No Preview Here" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("No Preview Here");
+
+    const select = screen.getByLabelText(
+      "Move group No Preview Here to another mode",
+    );
+    fireEvent.change(select, { target: { value: "series" } });
+
+    // Positive anchor first: the takeover actually opened.
+    expect(
+      await screen.findByText(/Move .+ to another section/),
+    ).toBeInTheDocument();
+    // Now the absence assertions this test exists for.
+    expect(document.querySelector("video")).toBeNull();
+    expect(screen.queryByText("Preview source file")).toBeNull();
+  });
 });
 
 // Wave 5 — the full-page search takeover (.omc/plans/autopilot-impl.md §8.5,

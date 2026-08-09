@@ -125,20 +125,6 @@ export function applyKeep(
   });
 }
 
-// dedupVideoUrl builds the src for a card tile's click-to-play <video> element:
-// the provenance-only streaming endpoint that resolves proposalId+candidateIndex
-// to a file SAK itself recorded during its own scan (never a client-supplied
-// path — see internal/api/dedup_video.go). It is a plain same-origin URL the
-// browser loads with the session cookie; it does NOT go through api() (that is
-// for JSON, and a <video> streams bytes with Range requests).
-export function dedupVideoUrl(
-  mode: Mode,
-  id: number,
-  candidateIndex: number,
-): string {
-  return `/api/modes/${mode}/dedup/proposals/${id}/video?candidateIndex=${candidateIndex}`;
-}
-
 // DedupVmafScore is the shape of GET /api/modes/{mode}/dedup/proposals/{id}/vmaf.
 // There is no generated DTO for it (the backend type vmafScoreResponse is
 // unexported in internal/api, not internal/apidto), so it is declared locally

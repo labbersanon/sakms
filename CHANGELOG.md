@@ -6639,3 +6639,210 @@ than rewrites of the paragraphs above, per this file's append-only rule:**
   Unmatched → moved → Pending → Applied loop, not just the move step in
   isolation. Re-verified clean: `go build ./... && go vet ./...`, and the
   full real-DB suite across all six affected packages, zero regressions.
+
+## 2026-08-08 — Full-page search takeover for Repick & Move (Rename + Dedup)
+
+`.omc/specs/deep-interview-repick-move-fullpage-takeover.md`, built per
+`.omc/plans/autopilot-impl.md` (this plan file collided with the immediately
+preceding "Cross-mode move" session's own `autopilot-impl.md` — that plan was
+copied, not moved, to `.omc/plans/autopilot-impl-cross-mode-move.md` before
+this one overwrote the path; see that file for the cross-mode move work's own
+plan). A new shared component, `frontend/src/screens/SearchTakeover.tsx`,
+replaces three separate implementations — `RepickPanel` (a non-exported local
+const in `Rename.tsx`), `MoveModePanel.tsx`, and `MoveModePanel`'s hand-rolled
+modal wrapper `MoveModeOverlay` in `Dedup.tsx` — with one component mounted at
+all three call sites: Rename's Repick action, Rename's Move action, and
+Dedup's per-group "Move to…" action. The container changes from a
+`fixed inset-0 z-50` modal overlay to a full-page **in-place swap**: opening a
+takeover removes the row/group list from the DOM entirely (two sibling
+`<Show>` blocks, not a `fallback` prop, so the list tree is never eagerly
+built while the takeover is open) and renders the takeover in its place; there
+is no dialog, no backdrop, and no layering. `SearchTakeover` owns none of the
+commit payload — each of the three call sites supplies an `onCommit` callback
+that closes over its own proposal id and builds its own DTO
+(`repickProposal` vs `moveProposalMode`), a deliberate seam: the search box,
+403 classification, card grid, and Series season/episode hand-off are ~90%+
+identical across all three callers, but the commit endpoint, DTO shape, and
+required fields are 0% shared. `RepickPanel`, `MoveModePanel.tsx`, and
+`MoveModeOverlay` are deleted outright, along with `MoveModePanel.test.tsx`.
+
+**D-1 — episode 0 is a 400, not a pass-through.** The spec asked for the
+hand-off to preserve `SeasonEpisodePicker`'s "Whole season (episode 0)"
+semantics literally. Both `POST /api/proposals/{id}/repick`
+(`internal/api/proposals.go:944`) and `POST /api/proposals/{id}/move-mode`
+(`internal/api/proposals_movemode.go:154`) reject `episodeNumber < 1` with a
+400, and a repick/move proposal is one file occupying exactly one episode
+slot — there is no "whole season" concept to preserve in that domain, unlike
+grab context where a season pack is a real dispatchable thing. Shipped
+mapping: `episode === 0` (from either the whole-season tile or the degraded
+`FreeTextPicker` fallback's blank-episode coercion) commits with **both slot
+fields omitted** — a show-level match, byte-identical to today's "leave both
+blank" repick — and `episode >= 1` commits `{seasonNumber, episodeNumber}`
+normally. A deliberate, accepted consequence: a Specials whole-season click
+(`{season: 0, episode: 0}`) collapses into the same show-level commit as any
+other whole-season click; season 0 stays distinguishable only when paired
+with a real episode. The degraded fallback's silent-discard case — an
+operator types a season and leaves episode blank, which can't be honoured
+because a season without an episode also 400s — renders an inline notice
+above the free-text inputs instead of eating the input silently, pointing the
+operator at the show-level button below.
+
+**D-2 — the season/episode pre-fill becomes read-only display context.** The
+old panels pre-filled season/episode inputs from the proposal's existing
+guess. `SeasonEpisodePicker`'s single-select mode has no pre-selection prop
+(adding one was out of scope — spec Non-Goal 3, "don't modify
+`SeasonEpisodePicker`"), so the prior guess is now shown as read-only text
+above the picker rather than pre-populating an editable field.
+
+**D-5 — "Use show-level match only" is a new, mandatory button, not a
+redundant one.** Today, leaving both season and episode blank is the default
+and overwhelmingly common Series repick path — the filename already carries
+the right episode, the operator just needs to re-point the show match. If
+picking a show handed straight off to `SeasonEpisodePicker` with no other
+affordance, that path would require drilling into a season and picking the
+whole-season tile — two extra clicks for the most common action, and
+completely unreachable when the seasons fetch soft-fails to an empty list.
+`SearchTakeover` therefore renders a primary "Use show-level match only"
+button as a sibling of `SeasonEpisodePicker`, above it, committing
+`{tmdbId, title, year}` with no slot fields — the same payload D-1's
+`episode === 0` branch produces. Without it, a real, currently-shipped
+workflow becomes unreachable; it is not redundant with the whole-season tile.
+
+**The Dedup mode-switch hazard, and the one-line fix that closes it.**
+`Dedup.tsx`'s `resetOnModeChange` clears every other piece of stale
+per-scan state on a Movies↔Series↔Adult switch but never cleared `moveFor` —
+harmless under the old overlay because its `fixed inset-0 z-50` backdrop
+visually occluded `ModeTabs` (which lives in the `Dedup` shell, outside
+`DedupView`), so the tabs were unreachable while the overlay was open. Once
+the container became a full-page in-place swap, `ModeTabs` stays visible and
+clickable *above* the takeover: switching modes mid-takeover would leave a
+takeover mounted holding a stale proposal id from the previous mode, and
+committing it would move the wrong proposal. Fixed with one line —
+`setMoveFor(null);` added to `resetOnModeChange` — mirroring what
+`Rename.tsx` already did correctly for its own signals.
+
+**Two incidental improvements from unifying three implementations into
+one, neither requested by the spec, both recorded so they don't read as
+unexplained diffs:**
+1. Repick gains section-agnostic 403 copy it never had. `MoveModePanel`
+   classified a search `SectionLockedError` through `searchLockMessage()`;
+   `RepickPanel` had no `SectionLockedError` import at all and rendered the
+   raw error message. Unification gives repick the same classified copy.
+2. A latent resource re-throw bug in the old `RepickPanel` is fixed as a
+   side effect. `RepickPanel` had a `<Show when={results.error}>` with a
+   *sibling* `<Show when={!results.loading}>` whose body read `results()` —
+   a Solid resource re-throws on read after its fetcher errors, and
+   `results.loading` is `false` once errored, so the sibling body executed
+   and threw mid-render. Latent only because no existing repick test
+   exercised a search failure. `MoveModePanel` already guarded this with an
+   outer `<Show when={!results.error}>`; `SearchTakeover` inherits that
+   guard, so the bug class (the same one CLAUDE.md documents for
+   `GrabDialog`) disappears from repick too.
+
+**The scroll-restore story is the highest-severity finding in this
+feature, and it is a two-part story, not one bug.** The spec asserted no new
+state-preservation mechanism was needed — half true. Filters, pagination,
+selections, and the loaded page all survive for free (`RenameQueue`/
+`DedupView` are never unmounted, only their JSX subtree is), but removing the
+list from the DOM collapses the scroll container's height and the browser
+clamps `scrollTop`; re-adding the list does not restore it. **This app's
+document does not scroll at all** — the shell root is
+`h-screen overflow-hidden` and the routed screen renders inside AppShell's
+`<main class="... overflow-y-auto ...">`, the app's one and only scroll
+region (`frontend/src/screens/AppShell.tsx:676`, `:738-739`). An early
+version of this mechanism targeted `window.scrollY`/`window.scrollTo()`,
+which would have compiled, passed a naive test, and silently done nothing in
+production, forever, because `window.scrollY` is permanently `0` in this
+app. Caught during planning, not after: the shipped mechanism reads a `ref`
+on the screen's own root element and walks up via `.closest("main")` rather
+than a global `document.querySelector` lookup, so it asks "what is *my*
+scrolling ancestor" and degrades to `null` (the exact state the isolated
+screen tests render into) instead of silently targeting the wrong element.
+
+That would have been enough on its own, but implementation surfaced a second,
+independent defect: **three separate `onDone` call sites — Rename's repick,
+Rename's move, and Dedup's move — all called `setTakeover(null)` before
+`void refetch()`.** `onDone` runs from a post-`await` async continuation
+(`await moveProposalMode(...); props.onDone();`), and Solid does **not**
+auto-batch a post-`await` continuation the way it auto-batches a delegated
+DOM event handler. Stepping through the original order: `setTakeover(null)`
+flushes synchronously, the restore effect runs, observes `page.loading` still
+`false` (`refetch()` hasn't been called yet) and the stale list still
+loaded, and restores immediately — into the *current*, soon-to-be-replaced
+DOM. Then `refetch()` runs, `page.loading` flips to `true`, the table is
+replaced by the `Loading…` fallback, and the restore silently landed nowhere:
+the `page.loading` gate that was supposed to be the safety net for this exact
+race was unreachable at the call ordering actually shipped. This is a defect
+in the production path, not a test artifact — the fix was reordering
+`refetch()` before `setTakeover(null)` **and** wrapping both in `batch()` at
+all three sites, so the restore effect observes one consistent state
+containing both writes instead of racing two separate update cycles.
+`batch()` is the guarantee, not decoration: reordering alone makes
+correctness depend on an internal Solid implementation detail (that
+`refetch()` happens to flip `loading` synchronously before it awaits) that
+this feature has no business betting on.
+
+A third, related defect was found and fixed in the same pass, and it is
+**not** the same bug as the `onDone` ordering issue above — conflating the
+two would misrepresent what actually broke. Dedup's `openTakeover` (the
+function that *opens* the takeover and saves the scroll offset, not the one
+that closes it) has exactly one entry point: a `<select onChange>` on the
+per-group "Move to…" dropdown. `change` is **not** in SolidJS's
+delegated-event set, so — unlike Rename's `openTakeover`, whose sole entry
+point is a `Button onClick` and which Solid auto-batches for free because
+`click` *is* delegated — Dedup's two writes (`setSavedScrollTop`,
+`setMoveFor`) were never batched by the framework at all. Unbatched, the
+restore effect could run in the gap between the two writes, observe
+`savedScrollTop` freshly set but `moveFor` still `null`, "restore" against a
+list that had not gone anywhere, and clear `savedScrollTop` — leaving
+nothing to restore when the takeover actually closed later. This made
+Dedup's scroll-restore **100% dead in production**, not merely degraded,
+independent of and in addition to the three-site `onDone` bug above. Fixed
+by wrapping Dedup's `openTakeover` body in its own `batch()` call.
+
+**The generalizable lesson, worth carrying into any future SolidJS work in
+this app:** correct write ordering is not sufficient for a downstream effect
+to observe consistent state. Two categories of code path escape Solid's
+automatic batching — post-`await` async continuations (any `onDone`-style
+callback invoked after an awaited network call) and non-delegated DOM events
+(`change` on a `<select>`, among others) — and both need an explicit
+`batch()` around any multi-signal write a later effect depends on reading
+together. Ordering fixes the common case; only `batch()` makes the guarantee
+structural rather than incidental. All three of the plan's own dedicated
+regression tests (N4, mid-flight-pending N4b, and Dedup's own N4/N4b pair)
+exist because jsdom never clamps `scrollTop`, so a naive "set 400, open,
+close, assert 400" test would pass even against a completely absent restore
+mechanism — the tests hold the refetch's GET pending and assert the scroll
+host is still unmoved mid-flight, which is the only way to prove the gate is
+actually live rather than vacuously true.
+
+**Verification.** `node_modules/.bin/tsc --noEmit` clean.
+`node_modules/.bin/vitest run`: 894/895 (the one failure, a
+`Settings.test.tsx` phash-threshold assertion, is pre-existing, unrelated to
+and untouched by this work, and has been independently confirmed unrelated
+across multiple prior sessions). `node_modules/.bin/vite build` clean.
+`go build ./... && go vet ./...` clean — this is a frontend-only feature; zero
+Go files were touched, confirmed via `git status`.
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | **New** — the shared full-page takeover: search box + `createResource` search (TMDB catalog or Adult scene search), search-403 classification, the re-throw guard, the card grid, the Series two-step flow with `SeasonEpisodePicker` and D-1's episode-0 mapping, the D-5 show-level button, the back arrow, and busy/commit-error UI incl. the Adult commit-403 branch |
+| `frontend/src/screens/SearchTakeover.test.tsx` | **New** — the consolidated test suite for the shared component, including the scroll-restore regression tests (N4/N4b and their Dedup counterparts) |
+| `frontend/src/screens/moveTargets.ts` | **New** — `otherModes` and related move-target helpers, extracted out of the deleted `MoveModePanel.tsx` |
+| `frontend/src/screens/MoveModePanel.tsx` | **Deleted** |
+| `frontend/src/screens/MoveModePanel.test.tsx` | **Deleted** |
+| `frontend/src/screens/Rename.tsx` | `RepickPanel` deleted; both Repick and Move entry points now open `SearchTakeover` via `openTakeover`/two sibling `<Show>` blocks; `ref`-based scroll-host capture; both entry points share ONE `onDone` handler (reordered + `batch()`-wrapped) since the two mounts unified into a single `<Show>` |
+| `frontend/src/screens/Rename.test.tsx`, `Rename.repick.test.tsx` | Rewritten for the new component and container; stale `RepickPanel`/`MoveModePanel` prose references repointed to `SearchTakeover` |
+| `frontend/src/screens/Dedup.tsx` | `MoveModeOverlay` deleted; per-group "Move to…" now opens `SearchTakeover` via a `batch()`-wrapped `openTakeover`; `resetOnModeChange` gained `setMoveFor(null)`; `onDone` reordered + `batch()`-wrapped; scroll-restore effect added |
+| `frontend/src/screens/Dedup.test.tsx` | Rewritten for the new component and container; stale `MoveModePanel` prose references repointed |
+| `frontend/src/screens/workflowHooks.ts` | One stale comment referencing `RepickPanel`'s `onDone` repointed to `SearchTakeover` |
+
+**Not done, deliberately (operator-only / out of scope for this session):**
+no commit/push/deploy triggered; `deslop` on the changed files and the
+`~/Documents/Homelab/claude-changelog.md` entry are left for the review step
+that follows this one, per the workflow that requested this verification
+pass, rather than run here. The manual dev-server click-through was run
+against a data directory with no seeded proposals/duplicate groups and no
+configured TMDB/TPDB connection — see the session notes for exactly which of
+the three entry points' interactions could and could not be exercised as a
+result.

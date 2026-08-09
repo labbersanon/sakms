@@ -546,6 +546,97 @@ Still open (deliberately, not forgotten):
 - AC9's manual dev click-through and AC10's live server1 deploy verification
   are Wade's to run.
 
+<!-- Claude 2026-08-08: added for the full-page search takeover feature.
+     Reason: this feature's plan filename collided with the cross-mode move
+     entry directly above (both are per-feature autopilot-impl.md runs); the
+     older plan was preserved to autopilot-impl-cross-mode-move.md rather than
+     overwritten silently — a future session grepping for "autopilot-impl.md"
+     needs to know which plan that bare filename means as of this date.
+     Review if: SearchTakeover is ever split back into per-caller components,
+     or if the batch()-around-multi-signal-writes lesson below is violated by
+     a new async onDone/openTakeover call site. -->
+### Full-page search takeover for Repick & Move (Rename + Dedup) — shipped 2026-08-08
+`.omc/specs/deep-interview-repick-move-fullpage-takeover.md`, built per
+`.omc/plans/autopilot-impl.md`. Replaces three separate implementations —
+`RepickPanel` (Rename), `MoveModePanel` + its hand-rolled `MoveModeOverlay`
+modal (Rename + Dedup) — with one shared `frontend/src/screens/
+SearchTakeover.tsx`, mounted at all three call sites as a full-page in-place
+swap of the row/group list rather than a modal overlay. See the 2026-08-08
+CHANGELOG entry for the full file list and verification numbers.
+
+**Standout technical finding — a two-part scroll-restore defect, not one.**
+This app has exactly one scroll region, AppShell's `<main>` — the document
+itself never scrolls (`h-screen overflow-hidden` at the shell root), so an
+early `window.scrollY`-based design would have compiled, passed a naive test,
+and silently no-op'd in production forever. Caught during planning; the
+shipped mechanism uses a `ref` + `.closest("main")` instead. Implementation
+then surfaced a live defect the plan's own risk register had flagged as a top
+risk but not yet fully closed: **three entry points across two `onDone` call
+sites** (Rename's repick and move entry points share one handler since their
+mounts unified into a single `<Show>`; Dedup move has its own) called
+`setTakeover(null)`/`setMoveFor(null)` before `void refetch()`, so the
+`page.loading` gate meant to hold the restore until the real list DOM was
+back was unreachable — the restore fired immediately, into DOM about to be
+replaced by a `Loading…` fallback, and silently landed nowhere on every
+successful commit. Fixed by reordering (`refetch()` first) **and** wrapping
+both writes in `batch()` at both sites — the reorder alone would have made
+correctness depend on an internal Solid timing detail.
+A **separate, fourth defect** was found in Dedup's `openTakeover` (the open
+path, not the close path): its sole entry point is a `<select onChange>`,
+and `change` is not in SolidJS's delegated-event set, so its two writes were
+never auto-batched at all — making Dedup's scroll-restore **100% dead in
+production**, independently of the three-site `onDone` bug. Fixed with its
+own `batch()` wrap. **The generalizable lesson:** in this app, correct
+write-ordering is not sufficient on its own — post-`await` async
+continuations and non-delegated DOM events (`change`, among others) both
+escape Solid's automatic batching, so any multi-signal write a downstream
+effect must observe atomically needs an explicit `batch()`, not just correct
+ordering.
+
+**D-1/D-5 mapping decisions (see the CHANGELOG entry for the full reasoning):**
+a repick/move proposal is one file occupying one episode slot, with no
+"whole season" concept — unlike grab context, where a season pack is a real
+dispatchable thing. `episode === 0` (the whole-season tile, or the degraded
+fallback's blank-episode coercion) is mapped to a **show-level commit with
+both slot fields omitted**, because both backend endpoints 400 on
+`episodeNumber < 1` and there is nothing else it could legally mean here. A
+new, mandatory **"Use show-level match only"** button was added as a sibling
+of `SeasonEpisodePicker` for exactly this payload — without it, the default
+and overwhelmingly common Series repick path (leave both blank) would become
+unreachable, since reaching the whole-season tile requires drilling into a
+season first.
+
+Things a future session should not quietly undo:
+- **`SearchTakeover` owns the search/grid/picker UI and nothing about the
+  commit payload.** Each of the three call sites supplies its own `onCommit`
+  adapter closing over its own proposal id and DTO — a deliberate seam kept
+  as parallel sibling functions rather than a shared discriminated-union
+  commit path, because the commit is 0% shared (different endpoint,
+  different DTO, different required fields) even though the search/grid/
+  picker logic above it is ~90%+ shared. Don't collapse the two adapters
+  into one branching function.
+- **Never send `episodeNumber: 0`.** Both `/repick` and `/move-mode` 400 on
+  it. `SeasonEpisodePicker` itself was not modified to accommodate this (spec
+  Non-Goal 3) — the D-1 mapping lives entirely in `SearchTakeover`'s commit
+  callback.
+- **The season/episode pre-fill is read-only display context now, not an
+  editable pre-selection** — `SeasonEpisodePicker`'s single-select mode has
+  no pre-selection prop, and adding one was explicitly out of scope.
+- **Dedup's `resetOnModeChange` must keep clearing `moveFor` on every mode
+  switch.** It didn't before this feature and got away with it only because
+  the old overlay's backdrop occluded `ModeTabs`; the full-page swap leaves
+  `ModeTabs` clickable above the takeover, so without this a mode switch
+  mid-takeover would commit a stale proposal id against the new mode's data.
+- **Any new async `onDone`/`openTakeover`-style call site that writes more
+  than one signal a downstream effect depends on needs its own explicit
+  `batch()`.** Do not assume ordering alone is sufficient, and do not assume
+  a `Button onClick` entry point generalizes to every entry point — a
+  `<select onChange>` is not delegated and will not auto-batch.
+
+Still open (deliberately, not forgotten):
+- No live server1 deployment was performed or requested for this session —
+  verification was dev-server-only, per the workflow that requested it.
+
 
 ### Season/episode picker redesign (poster grid + TMDB response cache) — shipped 2026-08-02
 `.omc/specs/deep-interview-season-episode-picker-redesign.md`, built per

@@ -51,6 +51,7 @@
 
 import {
   type Component,
+  batch,
   createEffect,
   createResource,
   createSignal,
@@ -71,6 +72,7 @@ import {
   dismissProposal,
   fetchDedupProposals,
   fetchDedupVmaf,
+  moveProposalMode,
 } from "../api/dedup";
 import {
   applyBatchStreaming,
@@ -89,7 +91,8 @@ import {
   StatusPill,
 } from "../components/ui";
 import { type LogLine, useDedupScanStream } from "./dedupScanStream";
-import { MoveModePanel, otherModes } from "./MoveModePanel";
+import { otherModes } from "./moveTargets";
+import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
 import {
   ActivityLogPanel,
@@ -97,35 +100,6 @@ import {
   PaginationBar,
   ShowHistoryToggle,
 } from "./OrganizeChrome";
-
-// MoveModeOverlay is the hand-rolled dialog wrapper for MoveModePanel — Dedup
-// has zero modal/dialog usage today, and Modal (screens/discover/shared.tsx)
-// is a Discover-feature component crossing a feature-folder boundary (D-3).
-// Structurally copied from Rename.tsx's ApplyAllConfirm overlay.
-const MoveModeOverlay: Component<{
-  proposal: Proposal;
-  target: Mode;
-  onDone: () => void;
-  onCancel: () => void;
-}> = (props) => (
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-    role="dialog"
-    aria-modal="true"
-    aria-label="Move to another section"
-  >
-    <div class="max-h-[80vh] w-full max-w-2xl overflow-y-auto">
-      <MoveModePanel
-        proposalId={props.proposal.id}
-        sourceName={props.proposal.title || props.proposal.sourceName || ""}
-        targetMode={props.target}
-        workflow="dedup"
-        onDone={props.onDone}
-        onCancel={props.onCancel}
-      />
-    </div>
-  </div>
-);
 
 // winnerIndex returns the index of the group's flagged keeper, defaulting to 0
 // when none is flagged (mirrors the backend's own winnerIndex fallback).
@@ -388,12 +362,43 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   const [batchResult, setBatchResult] = createSignal<ApplyBatchResponse | null>(
     null,
   );
-  // moveFor tracks the one group whose "Move to…" overlay is currently open
-  // (AC6) — at most one at a time, across the whole mode's queue.
+  // moveFor tracks the one group whose "Move to…" full-page takeover is
+  // currently open (AC6) — at most one at a time, across the whole mode's
+  // queue. Non-null means the list tree below is swapped out for
+  // <SearchTakeover>; it is not an overlay any more, nothing is layered.
   const [moveFor, setMoveFor] = createSignal<{
     proposal: Proposal;
     target: Mode;
   } | null>(null);
+
+  // savedScrollTop preserves the list's scroll offset across a takeover. The
+  // scroll host is AppShell's <main>, NOT the document: the shell root is
+  // `h-screen overflow-hidden` and <main> is the app's only scroll region, so
+  // window.scrollY is permanently 0 and window.scrollTo() does nothing. Reached
+  // through a ref on this screen's own root rather than a global
+  // document.querySelector, so it asks "what is MY scrolling ancestor" and
+  // degrades to null (the isolated screen tests) instead of to a wrong element.
+  let rootEl!: HTMLDivElement;
+  const scrollHost = (): HTMLElement | null => rootEl?.closest("main") ?? null;
+  const [savedScrollTop, setSavedScrollTop] = createSignal<number | null>(null);
+
+  // batch() is REQUIRED here, and this is the one place Dedup's copy of the
+  // shared scroll-restore mechanism genuinely differs from Rename's. Dedup's
+  // only entry point is a <select onChange> (:965), and `change` is NOT in
+  // Solid's delegated-event set — so, unbatched, each setter drives its own
+  // synchronous update cycle. The restore effect below would then run in the
+  // gap between the two writes, observe savedScrollTop = 400 with moveFor
+  // still null and page.loading false, "restore" against the list that has
+  // not gone anywhere yet, and CLEAR savedScrollTop — leaving nothing to
+  // restore when the takeover actually closes. Rename escapes this only
+  // because its entry point is a Button onClick, and `click` IS delegated,
+  // so Solid auto-batches it. Caught by Dedup-N4/N4b in Dedup.test.tsx.
+  const openTakeover = (t: { proposal: Proposal; target: Mode }): void => {
+    batch(() => {
+      setSavedScrollTop(scrollHost()?.scrollTop ?? null);
+      setMoveFor(t);
+    });
+  };
 
   // resetQueueState drops every stale per-scan selection so it never survives a
   // queue refresh or mode switch: the primary overrides, the additional-keep
@@ -413,6 +418,15 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
       setSkippedIds(readSkipped(props.mode));
       setOffset(0);
       setApplyProgress("");
+      // ModeTabs lives in the Dedup shell, OUTSIDE this component, so it stays
+      // visible and clickable above the takeover — switching Movies→Series
+      // mid-takeover would otherwise leave it mounted holding a proposal id
+      // from the previous mode, and committing would move the wrong proposal.
+      // (Harmless before the takeover, only because the old overlay's
+      // `fixed inset-0 z-50` backdrop occluded the tabs.) The saved scroll
+      // offset goes with it: it was measured against the OLD mode's list.
+      setMoveFor(null);
+      setSavedScrollTop(null);
     },
     resetAfterAct: () => {
       setKeepSel({});
@@ -450,6 +464,67 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
       return next;
     });
   });
+
+  // Restore the saved scroll offset exactly once, after the list DOM is
+  // genuinely back — not merely after the takeover closes. On the commit path
+  // onDone fires refetch() first, so page.loading is already true here and this
+  // holds the value until the real table has replaced the Loading… fallback.
+  // queueMicrotask is required: the effect runs before Solid has flushed the
+  // re-inserted rows, so a synchronous assignment would clamp against the
+  // pre-insert height. A null host (no <main> ancestor — the isolated screen
+  // tests) is an expected state: clear the value and no-op.
+  createEffect(() => {
+    const y = savedScrollTop();
+    if (y === null) return;
+    if (moveFor() !== null) return;
+    if (page.loading) return;
+    if (proposals().length === 0) {
+      setSavedScrollTop(null);
+      return;
+    }
+    const host = scrollHost();
+    if (host) {
+      queueMicrotask(() => {
+        host.scrollTop = y;
+      });
+    }
+    setSavedScrollTop(null);
+  });
+
+  // commitMove is Dedup's own commit adapter. It is deliberately NOT shared
+  // with Rename's line-for-line twin: the two read different `Proposal` types
+  // (../api/dedup vs ../api/rename), and two callers of an eight-line adapter
+  // is exactly the case this repo's no-premature-abstraction convention says
+  // to leave duplicated. The slot pair is `!= null`, never truthiness — season
+  // 0 is Specials and must ship a literal 0.
+  const commitMove =
+    (p: Proposal, target: Mode) =>
+    async (pick: TakeoverPick): Promise<void> => {
+      await moveProposalMode(
+        p.id,
+        pick.kind === "adult"
+          ? {
+              targetMode: "adult",
+              title: pick.title,
+              box: pick.box,
+              sceneId: pick.sceneId,
+              studio: pick.studio,
+              date: pick.date,
+            }
+          : {
+              targetMode: target,
+              tmdbId: pick.tmdbId,
+              title: pick.title,
+              year: pick.year,
+              ...(pick.seasonNumber != null && pick.episodeNumber != null
+                ? {
+                    seasonNumber: pick.seasonNumber,
+                    episodeNumber: pick.episodeNumber,
+                  }
+                : {}),
+            },
+      );
+    };
 
   const setViewModeAndPersist = (vm: ViewMode): void => {
     setViewMode(vm);
@@ -587,393 +662,434 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   };
 
   return (
-    <div>
-      <div class="flex flex-wrap items-center gap-3">
-        <Button
-          variant="primary"
-          onClick={() => scanStream.initiate(props.mode)}
-          disabled={scanStream.scanning()}
-        >
-          {scanStream.scanning() ? "Scanning…" : "Scan"}
-        </Button>
-        {/* List/Card view toggle (AC1) — mirrors Tag's Table/Grid toggle. */}
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class="rounded-md px-3 py-1.5 text-sm font-medium transition"
-            classList={{
-              "bg-accent text-accent-fg": viewMode() === "list",
-              "bg-surface-2 text-muted hover:text-fg": viewMode() !== "list",
-            }}
-            onClick={() => setViewModeAndPersist("list")}
-          >
-            List
-          </button>
-          <button
-            type="button"
-            class="rounded-md px-3 py-1.5 text-sm font-medium transition"
-            classList={{
-              "bg-accent text-accent-fg": viewMode() === "card",
-              "bg-surface-2 text-muted hover:text-fg": viewMode() !== "card",
-            }}
-            onClick={() => setViewModeAndPersist("card")}
-          >
-            Card
-          </button>
-        </div>
-        <Show when={pendingIds().length > 0}>
-          <label class="flex items-center gap-2 text-sm text-muted">
-            <input
-              type="checkbox"
-              aria-label="Select all pending"
-              checked={allPendingSelected()}
-              onChange={toggleSelectAll}
-            />
-            Select all pending
-          </label>
-        </Show>
-        <Show when={selection.size() > 0}>
-          <Button variant="primary" onClick={applySelected}>
-            Apply Selected ({selection.size()})
-          </Button>
-        </Show>
-        <PageSizeSelect
-          value={pageSize()}
-          onChange={(n) => {
-            savePageSize("dedup", n);
-            setPageSize(n);
-            setOffset(0);
-          }}
-        />
-        <ShowHistoryToggle
-          checked={showHistory()}
-          onChange={(on) => {
-            saveShowHistory("dedup", on);
-            setShowHistory(on);
-            setOffset(0);
-            selection.clear();
-          }}
-        />
-      </div>
-
-      <Show when={applyProgress()}>
-        <Muted class="mt-2">{applyProgress()}</Muted>
-      </Show>
-
-      <Show when={actionError()}>
-        <ErrorText>{actionError()}</ErrorText>
-      </Show>
-
-      <Show
-        when={scanStream.scanError()}
-        fallback={
-          <Show
-            when={scanStream.scanning() || scanStream.logLines().length > 0}
-          >
-            <ScanLogBox
-              lines={scanStream.logLines()}
-              progress={scanStream.progress()}
-            />
-          </Show>
-        }
-      >
-        <ErrorText>{scanStream.scanError()}</ErrorText>
-      </Show>
-
-      <Show when={batchResult()}>
-        {(res) => <BatchResultSummary result={res()} titleOf={titleOf} />}
-      </Show>
-
-      <Show when={page.error}>
-        <ErrorText>{(page.error as Error)?.message}</ErrorText>
-      </Show>
-      <Show
-        when={!page.loading}
-        fallback={<Muted class="mt-4">Loading…</Muted>}
-      >
-        <Show
-          when={visibleProposals().length > 0}
-          fallback={
-            <Show when={!scanStream.scanning()}>
-              <Muted class="mt-4">
-                {showHistory()
-                  ? "No history yet."
-                  : "No duplicate groups yet — click Scan."}
-              </Muted>
+    <>
+      <Show when={!moveFor()}>
+        <div ref={rootEl}>
+          <div class="flex flex-wrap items-center gap-3">
+            <Button
+              variant="primary"
+              onClick={() => scanStream.initiate(props.mode)}
+              disabled={scanStream.scanning()}
+            >
+              {scanStream.scanning() ? "Scanning…" : "Scan"}
+            </Button>
+            {/* List/Card view toggle (AC1) — mirrors Tag's Table/Grid toggle. */}
+            <div class="flex items-center gap-1">
+              <button
+                type="button"
+                class="rounded-md px-3 py-1.5 text-sm font-medium transition"
+                classList={{
+                  "bg-accent text-accent-fg": viewMode() === "list",
+                  "bg-surface-2 text-muted hover:text-fg": viewMode() !== "list",
+                }}
+                onClick={() => setViewModeAndPersist("list")}
+              >
+                List
+              </button>
+              <button
+                type="button"
+                class="rounded-md px-3 py-1.5 text-sm font-medium transition"
+                classList={{
+                  "bg-accent text-accent-fg": viewMode() === "card",
+                  "bg-surface-2 text-muted hover:text-fg": viewMode() !== "card",
+                }}
+                onClick={() => setViewModeAndPersist("card")}
+              >
+                Card
+              </button>
+            </div>
+            <Show when={pendingIds().length > 0}>
+              <label class="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  aria-label="Select all pending"
+                  checked={allPendingSelected()}
+                  onChange={toggleSelectAll}
+                />
+                Select all pending
+              </label>
             </Show>
-          }
-        >
-          <div class="mt-4 flex flex-col gap-4">
-            <For each={visibleProposals()}>
-              {(p) => {
-                const status = () => p.status as ProposalStatus;
-                const candidates = () => p.candidates ?? [];
-                const radioName = `keep-${p.id}`;
-                const pending = () => status() === "pending";
-                return (
-                  <div class="rounded-xl border border-border bg-surface p-4">
-                    <div class="flex items-center gap-2">
-                      <Show when={pending()}>
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${p.title || p.sourceName || ""}`}
-                          checked={selection.has(p.id)}
-                          onChange={() => selection.toggle(p.id)}
-                        />
-                      </Show>
-                      <strong class="text-fg">
-                        {p.title || p.sourceName || ""}
-                      </strong>
-                      <StatusPill status={p.status} />
-                      <Show when={(p.pHashSimilarity ?? 0) > 0}>
-                        <span class="text-xs text-muted">
-                          {fmtSimilarity(p.pHashSimilarity!)} ·{" "}
-                          {similarityLabel(p.pHashSimilarity!)}
-                        </span>
-                      </Show>
-                    </div>
+            <Show when={selection.size() > 0}>
+              <Button variant="primary" onClick={applySelected}>
+                Apply Selected ({selection.size()})
+              </Button>
+            </Show>
+            <PageSizeSelect
+              value={pageSize()}
+              onChange={(n) => {
+                savePageSize("dedup", n);
+                setPageSize(n);
+                setOffset(0);
+              }}
+            />
+            <ShowHistoryToggle
+              checked={showHistory()}
+              onChange={(on) => {
+                saveShowHistory("dedup", on);
+                setShowHistory(on);
+                setOffset(0);
+                selection.clear();
+              }}
+            />
+          </div>
 
-                    {/* CARD view — a row of candidate tiles with a click-to-play
-                        video, metadata badge, keep controls, and (non-primary)
-                        VMAF score. */}
-                    <Show when={viewMode() === "card"}>
-                      <div class="mt-3 flex flex-wrap gap-3">
-                        <For each={candidates()}>
-                          {(c, i) => (
-                            <div class="w-64 shrink-0 rounded-xl border border-border bg-surface p-4">
-                              {/* Not Card: the label can be a long unwrapped
-                                  filename, and Card's title is a plain
-                                  unstyled <h3> with no way to inject a
-                                  truncate class or title= tooltip from the
-                                  call site. This renders Card's exact
-                                  classes plus a truncated, tooltipped
-                                  heading so the fixed-width card row stays
-                                  even while the full label stays reachable
-                                  on hover and in the DOM (getByText still
-                                  finds it — only CSS clips it). Card's own
-                                  mb-4 is dropped here — this row's gap-3
-                                  already spaces cards on both axes, and
-                                  mb-4 was sized for Card's original stacked
-                                  (non-flex) usage. */}
-                              <h3
-                                class="mb-2 truncate px-2 text-sm font-semibold text-fg"
-                                title={c.label}
-                              >
-                                {c.label}
-                              </h3>
-                              <div class="w-56">
-                                {/* preload="none": no bytes are fetched until
-                                    the operator hits play (AC3, click-to-play).
-                                    muted default; each <video> is independent so
-                                    unmuting one does not affect others (AC4). */}
-                                <video
-                                  class="mb-2 w-full rounded bg-surface-2"
-                                  controls
-                                  muted
-                                  preload="none"
-                                  src={dedupVideoUrl(props.mode, p.id, i())}
-                                  aria-label={`Preview ${c.label}`}
-                                />
-                                <div class="mb-2 flex items-center justify-between gap-2">
-                                  <CandidateMeta c={c} />
-                                  <Show
-                                    when={!isPrimary(p, i())}
-                                    fallback={
-                                      <span class="text-xs font-medium text-ok">
-                                        primary
-                                      </span>
-                                    }
-                                  >
-                                    <VmafBadge
-                                      mode={props.mode}
-                                      proposalId={p.id}
-                                      candidateIndex={i()}
-                                      referenceIndex={primaryOf(p)}
-                                    />
-                                  </Show>
-                                </div>
-                                <Show when={pending()}>
-                                  <div class="flex flex-col gap-1">
-                                    <label class="flex items-center gap-2 text-sm text-fg">
-                                      <input
-                                        type="radio"
-                                        name={radioName}
-                                        value={i()}
-                                        checked={isPrimary(p, i())}
-                                        aria-label={`Keep ${c.label}`}
-                                        onChange={() => onPickPrimary(p, i())}
-                                      />
-                                      Primary (tracked)
-                                    </label>
-                                    <Show when={!isPrimary(p, i())}>
-                                      <label class="flex items-center gap-2 text-sm text-muted">
-                                        <input
-                                          type="checkbox"
-                                          checked={isAlsoKept(p, i())}
-                                          aria-label={`Also keep ${c.label}`}
-                                          onChange={() =>
-                                            onToggleAlsoKeep(p, i())
-                                          }
-                                        />
-                                        Also keep
-                                      </label>
-                                    </Show>
-                                  </div>
-                                </Show>
-                              </div>
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
+          <Show when={applyProgress()}>
+            <Muted class="mt-2">{applyProgress()}</Muted>
+          </Show>
 
-                    {/* LIST view — the original compact table, plus an
-                        Also-keep column for the multi-keep set. */}
-                    <Show when={viewMode() === "list"}>
-                      <div class="mt-3 overflow-x-auto">
-                        <table class="w-full text-left text-sm">
-                          <thead>
-                            <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
-                              <th class="px-2 py-2 font-medium">Keep</th>
-                              <th class="px-2 py-2 font-medium">Also keep</th>
-                              <th class="px-2 py-2 font-medium">Label</th>
-                              <th class="px-2 py-2 font-medium">Path</th>
-                              <th class="px-2 py-2 font-medium">Resolution</th>
-                              <th class="px-2 py-2 font-medium">Codec</th>
-                              <th class="px-2 py-2 font-medium">Bitrate</th>
-                            </tr>
-                          </thead>
-                          <tbody>
+          <Show when={actionError()}>
+            <ErrorText>{actionError()}</ErrorText>
+          </Show>
+
+          <Show
+            when={scanStream.scanError()}
+            fallback={
+              <Show
+                when={scanStream.scanning() || scanStream.logLines().length > 0}
+              >
+                <ScanLogBox
+                  lines={scanStream.logLines()}
+                  progress={scanStream.progress()}
+                />
+              </Show>
+            }
+          >
+            <ErrorText>{scanStream.scanError()}</ErrorText>
+          </Show>
+
+          <Show when={batchResult()}>
+            {(res) => <BatchResultSummary result={res()} titleOf={titleOf} />}
+          </Show>
+
+          <Show when={page.error}>
+            <ErrorText>{(page.error as Error)?.message}</ErrorText>
+          </Show>
+          <Show
+            when={!page.loading}
+            fallback={<Muted class="mt-4">Loading…</Muted>}
+          >
+            <Show
+              when={visibleProposals().length > 0}
+              fallback={
+                <Show when={!scanStream.scanning()}>
+                  <Muted class="mt-4">
+                    {showHistory()
+                      ? "No history yet."
+                      : "No duplicate groups yet — click Scan."}
+                  </Muted>
+                </Show>
+              }
+            >
+              <div class="mt-4 flex flex-col gap-4">
+                <For each={visibleProposals()}>
+                  {(p) => {
+                    const status = () => p.status as ProposalStatus;
+                    const candidates = () => p.candidates ?? [];
+                    const radioName = `keep-${p.id}`;
+                    const pending = () => status() === "pending";
+                    return (
+                      <div class="rounded-xl border border-border bg-surface p-4">
+                        <div class="flex items-center gap-2">
+                          <Show when={pending()}>
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ${p.title || p.sourceName || ""}`}
+                              checked={selection.has(p.id)}
+                              onChange={() => selection.toggle(p.id)}
+                            />
+                          </Show>
+                          <strong class="text-fg">
+                            {p.title || p.sourceName || ""}
+                          </strong>
+                          <StatusPill status={p.status} />
+                          <Show when={(p.pHashSimilarity ?? 0) > 0}>
+                            <span class="text-xs text-muted">
+                              {fmtSimilarity(p.pHashSimilarity!)} ·{" "}
+                              {similarityLabel(p.pHashSimilarity!)}
+                            </span>
+                          </Show>
+                        </div>
+
+                        {/* CARD view — a row of candidate tiles with a click-to-play
+                            video, metadata badge, keep controls, and (non-primary)
+                            VMAF score. */}
+                        <Show when={viewMode() === "card"}>
+                          <div class="mt-3 flex flex-wrap gap-3">
                             <For each={candidates()}>
                               {(c, i) => (
-                                <tr class="border-b border-border/60 align-top">
-                                  <td class="px-2 py-2">
-                                    <input
-                                      type="radio"
-                                      name={radioName}
-                                      value={i()}
-                                      checked={isPrimary(p, i())}
-                                      aria-label={`Keep ${c.label}`}
-                                      onChange={() => onPickPrimary(p, i())}
+                                <div class="w-64 shrink-0 rounded-xl border border-border bg-surface p-4">
+                                  {/* Not Card: the label can be a long unwrapped
+                                      filename, and Card's title is a plain
+                                      unstyled <h3> with no way to inject a
+                                      truncate class or title= tooltip from the
+                                      call site. This renders Card's exact
+                                      classes plus a truncated, tooltipped
+                                      heading so the fixed-width card row stays
+                                      even while the full label stays reachable
+                                      on hover and in the DOM (getByText still
+                                      finds it — only CSS clips it). Card's own
+                                      mb-4 is dropped here — this row's gap-3
+                                      already spaces cards on both axes, and
+                                      mb-4 was sized for Card's original stacked
+                                      (non-flex) usage. */}
+                                  <h3
+                                    class="mb-2 truncate px-2 text-sm font-semibold text-fg"
+                                    title={c.label}
+                                  >
+                                    {c.label}
+                                  </h3>
+                                  <div class="w-56">
+                                    {/* preload="none": no bytes are fetched until
+                                        the operator hits play (AC3, click-to-play).
+                                        muted default; each <video> is independent so
+                                        unmuting one does not affect others (AC4). */}
+                                    <video
+                                      class="mb-2 w-full rounded bg-surface-2"
+                                      controls
+                                      muted
+                                      preload="none"
+                                      src={dedupVideoUrl(props.mode, p.id, i())}
+                                      aria-label={`Preview ${c.label}`}
                                     />
-                                  </td>
-                                  <td class="px-2 py-2">
-                                    <Show
-                                      when={!isPrimary(p, i())}
-                                      fallback={<span class="text-xs text-muted">—</span>}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={isAlsoKept(p, i())}
-                                        aria-label={`Also keep ${c.label}`}
-                                        onChange={() => onToggleAlsoKeep(p, i())}
-                                      />
+                                    <div class="mb-2 flex items-center justify-between gap-2">
+                                      <CandidateMeta c={c} />
+                                      <Show
+                                        when={!isPrimary(p, i())}
+                                        fallback={
+                                          <span class="text-xs font-medium text-ok">
+                                            primary
+                                          </span>
+                                        }
+                                      >
+                                        <VmafBadge
+                                          mode={props.mode}
+                                          proposalId={p.id}
+                                          candidateIndex={i()}
+                                          referenceIndex={primaryOf(p)}
+                                        />
+                                      </Show>
+                                    </div>
+                                    <Show when={pending()}>
+                                      <div class="flex flex-col gap-1">
+                                        <label class="flex items-center gap-2 text-sm text-fg">
+                                          <input
+                                            type="radio"
+                                            name={radioName}
+                                            value={i()}
+                                            checked={isPrimary(p, i())}
+                                            aria-label={`Keep ${c.label}`}
+                                            onChange={() => onPickPrimary(p, i())}
+                                          />
+                                          Primary (tracked)
+                                        </label>
+                                        <Show when={!isPrimary(p, i())}>
+                                          <label class="flex items-center gap-2 text-sm text-muted">
+                                            <input
+                                              type="checkbox"
+                                              checked={isAlsoKept(p, i())}
+                                              aria-label={`Also keep ${c.label}`}
+                                              onChange={() =>
+                                                onToggleAlsoKeep(p, i())
+                                              }
+                                            />
+                                            Also keep
+                                          </label>
+                                        </Show>
+                                      </div>
                                     </Show>
-                                  </td>
-                                  <td class="px-2 py-2 text-fg">{c.label}</td>
-                                  <td class="px-2 py-2 text-muted">{c.path}</td>
-                                  <td class="px-2 py-2 text-muted">
-                                    {c.resolution ? `${c.resolution}p` : ""}
-                                  </td>
-                                  <td class="px-2 py-2 text-muted">
-                                    {c.codec || ""}
-                                  </td>
-                                  <td class="px-2 py-2 text-muted">
-                                    {fmtBitrate(c.bitRate)}
-                                  </td>
-                                </tr>
+                                  </div>
+                                </div>
                               )}
                             </For>
-                          </tbody>
-                        </table>
-                      </div>
-                    </Show>
+                          </div>
+                        </Show>
 
-                    <div class="mt-3 flex flex-wrap items-center gap-2">
-                      {/* "Move to…" is deliberately gated on
-                          pending-or-unmatched, NOT the pending-only Show
-                          below: the backend accepts a move for either status
-                          (§4.4 step 6), and an Unmatched group is exactly the
-                          one an operator most needs to move — the one that's
-                          stuck. Gating it inside the pending-only block would
-                          hide the affordance where it matters most. */}
-                      <Show when={pending() || p.status === "unmatched"}>
-                        <select
-                          class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
-                          aria-label={`Move group ${p.title ?? p.sourceName} to another mode`}
-                          value=""
-                          onChange={(e) => {
-                            const target = e.currentTarget.value as Mode | "";
-                            // Reset back to the placeholder immediately so
-                            // re-selecting the SAME target later still fires
-                            // onChange (a select that keeps its "selected"
-                            // state would not re-fire for a repeat pick).
-                            e.currentTarget.value = "";
-                            if (!target) return;
-                            setMoveFor({ proposal: p, target });
-                          }}
-                        >
-                          <option value="" disabled>
-                            Move to…
-                          </option>
-                          <For each={otherModes(props.mode)}>
-                            {(m) => (
-                              <option value={m}>
-                                Move to {modeLabel(m)}
+                        {/* LIST view — the original compact table, plus an
+                            Also-keep column for the multi-keep set. */}
+                        <Show when={viewMode() === "list"}>
+                          <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-left text-sm">
+                              <thead>
+                                <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
+                                  <th class="px-2 py-2 font-medium">Keep</th>
+                                  <th class="px-2 py-2 font-medium">Also keep</th>
+                                  <th class="px-2 py-2 font-medium">Label</th>
+                                  <th class="px-2 py-2 font-medium">Path</th>
+                                  <th class="px-2 py-2 font-medium">Resolution</th>
+                                  <th class="px-2 py-2 font-medium">Codec</th>
+                                  <th class="px-2 py-2 font-medium">Bitrate</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <For each={candidates()}>
+                                  {(c, i) => (
+                                    <tr class="border-b border-border/60 align-top">
+                                      <td class="px-2 py-2">
+                                        <input
+                                          type="radio"
+                                          name={radioName}
+                                          value={i()}
+                                          checked={isPrimary(p, i())}
+                                          aria-label={`Keep ${c.label}`}
+                                          onChange={() => onPickPrimary(p, i())}
+                                        />
+                                      </td>
+                                      <td class="px-2 py-2">
+                                        <Show
+                                          when={!isPrimary(p, i())}
+                                          fallback={<span class="text-xs text-muted">—</span>}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={isAlsoKept(p, i())}
+                                            aria-label={`Also keep ${c.label}`}
+                                            onChange={() => onToggleAlsoKeep(p, i())}
+                                          />
+                                        </Show>
+                                      </td>
+                                      <td class="px-2 py-2 text-fg">{c.label}</td>
+                                      <td class="px-2 py-2 text-muted">{c.path}</td>
+                                      <td class="px-2 py-2 text-muted">
+                                        {c.resolution ? `${c.resolution}p` : ""}
+                                      </td>
+                                      <td class="px-2 py-2 text-muted">
+                                        {c.codec || ""}
+                                      </td>
+                                      <td class="px-2 py-2 text-muted">
+                                        {fmtBitrate(c.bitRate)}
+                                      </td>
+                                    </tr>
+                                  )}
+                                </For>
+                              </tbody>
+                            </table>
+                          </div>
+                        </Show>
+
+                        <div class="mt-3 flex flex-wrap items-center gap-2">
+                          {/* "Move to…" is deliberately gated on
+                              pending-or-unmatched, NOT the pending-only Show
+                              below: the backend accepts a move for either status
+                              (§4.4 step 6), and an Unmatched group is exactly the
+                              one an operator most needs to move — the one that's
+                              stuck. Gating it inside the pending-only block would
+                              hide the affordance where it matters most. */}
+                          <Show when={pending() || p.status === "unmatched"}>
+                            <select
+                              class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
+                              aria-label={`Move group ${p.title ?? p.sourceName} to another mode`}
+                              value=""
+                              onChange={(e) => {
+                                const target = e.currentTarget.value as Mode | "";
+                                // Reset back to the placeholder immediately so
+                                // re-selecting the SAME target later still fires
+                                // onChange (a select that keeps its "selected"
+                                // state would not re-fire for a repeat pick).
+                                e.currentTarget.value = "";
+                                if (!target) return;
+                                // openTakeover, not setMoveFor: the scroll offset
+                                // must be read off <main> BEFORE the list is
+                                // swapped out for the takeover.
+                                openTakeover({ proposal: p, target });
+                              }}
+                            >
+                              <option value="" disabled>
+                                Move to…
                               </option>
-                            )}
-                          </For>
-                        </select>
-                      </Show>
-                      <Show when={pending()}>
-                        <Button variant="primary" onClick={() => onApply(p)}>
-                          Apply
-                        </Button>
-                        <Button
-                          onClick={() => void act(() => applyKeepAll(p.id))}
-                        >
-                          Keep All
-                        </Button>
-                        <Button onClick={() => onSkip(p)}>Skip</Button>
-                        <Button
-                          class="!bg-danger !text-accent-fg"
-                          onClick={() => void act(() => dismissProposal(p.id))}
-                        >
-                          Dismiss
-                        </Button>
-                      </Show>
-                    </div>
-                  </div>
-                );
-              }}
-            </For>
-          </div>
-        </Show>
+                              <For each={otherModes(props.mode)}>
+                                {(m) => (
+                                  <option value={m}>
+                                    Move to {modeLabel(m)}
+                                  </option>
+                                )}
+                              </For>
+                            </select>
+                          </Show>
+                          <Show when={pending()}>
+                            <Button variant="primary" onClick={() => onApply(p)}>
+                              Apply
+                            </Button>
+                            <Button
+                              onClick={() => void act(() => applyKeepAll(p.id))}
+                            >
+                              Keep All
+                            </Button>
+                            <Button onClick={() => onSkip(p)}>Skip</Button>
+                            <Button
+                              class="!bg-danger !text-accent-fg"
+                              onClick={() => void act(() => dismissProposal(p.id))}
+                            >
+                              Dismiss
+                            </Button>
+                          </Show>
+                        </div>
+                      </div>
+                    );
+                  }}
+                </For>
+              </div>
+            </Show>
+          </Show>
+
+          <PaginationBar
+            total={page()?.total ?? 0}
+            limit={pageSize()}
+            offset={offset()}
+            onPrev={() => setOffset((o) => Math.max(0, o - pageSize()))}
+            onNext={() => setOffset((o) => o + pageSize())}
+          />
+          <ActivityLogPanel workflow="dedup" refreshKey={logKey()} />
+        </div>
       </Show>
 
-      <PaginationBar
-        total={page()?.total ?? 0}
-        limit={pageSize()}
-        offset={offset()}
-        onPrev={() => setOffset((o) => Math.max(0, o - pageSize()))}
-        onNext={() => setOffset((o) => o + pageSize())}
-      />
-      <ActivityLogPanel workflow="dedup" refreshKey={logKey()} />
-
+      {/* The takeover REPLACES the list in place (two sibling <Show>s, not a
+          fallback prop, so the list tree is genuinely not created while it is
+          open). ModeTabs stays visible above it — it lives in the Dedup shell,
+          outside DedupView — which is deliberate: the tab bar is the app's mode
+          chrome, and a mode switch safely closes the takeover through
+          resetOnModeChange. */}
       <Show when={moveFor()}>
         {(mf) => (
-          <MoveModeOverlay
-            proposal={mf().proposal}
-            target={mf().target}
+          // searchMode is the TARGET mode, not props.mode: it selects both the
+          // search endpoint (scene-search for Adult) and the shape of the pick
+          // the commit adapter receives. autoSearch is false and load-bearing —
+          // a mount-time GET would break the "Cancel issues zero requests"
+          // guarantee this entry point has always had.
+          <SearchTakeover
+            heading={`Move “${mf().proposal.title || mf().proposal.sourceName || ""}” to another section`}
+            initialQuery={mf().proposal.title || mf().proposal.sourceName || ""}
+            searchMode={mf().target}
+            autoSearch={false}
+            notes={
+              <>
+                <Muted>
+                  {"Files stay where they are; only the group's mode changes. Run a Rename scan in the target mode to relocate them."}
+                </Muted>
+                <Show when={mf().target === "adult"}>
+                  <Muted class="mt-1">
+                    This file has no perceptual hash yet, so it will be renamed
+                    without its [phash-...] tag. A later Adult scan will add it.
+                  </Muted>
+                </Show>
+              </>
+            }
+            onCommit={commitMove(mf().proposal, mf().target)}
             onDone={() => {
-              setMoveFor(null);
-              void refetch();
+              // refetch() FIRST, then close, both inside batch(). onDone runs in
+              // a post-await microtask, which Solid does NOT auto-batch — with
+              // the setter first, the scroll-restore effect would observe
+              // page.loading === false, restore into the about-to-be-replaced
+              // DOM, and silently discard the offset on every commit.
+              batch(() => {
+                void refetch();
+                setMoveFor(null);
+              });
             }}
             onCancel={() => setMoveFor(null)}
           />
         )}
       </Show>
-    </div>
+    </>
   );
 };
 

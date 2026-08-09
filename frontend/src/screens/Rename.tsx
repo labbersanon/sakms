@@ -11,6 +11,7 @@
 // Review if: Re-pick becomes batchable (needs a chosen alternate).
 
 import {
+  batch,
   type Component,
   createEffect,
   createResource,
@@ -26,9 +27,9 @@ import {
   applyProposal,
   dismissProposal,
   fetchProposals,
+  moveProposalMode,
   repickProposal,
   scanRename,
-  tmdbSearch,
 } from "../api/rename";
 import {
   loadPageSize,
@@ -43,10 +44,10 @@ import {
   modeLabel,
   ModeTabs,
   Muted,
-  yearOf,
 } from "../components/ui";
 import { useWorkflowActions } from "./workflowHooks";
-import { MoveModePanel, otherModes } from "./MoveModePanel";
+import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
+import { otherModes } from "./moveTargets";
 import {
   ActivityLogPanel,
   PageSizeSelect,
@@ -238,178 +239,6 @@ function episodeDisplay(
   return `${episodeNumber}-${last}`;
 }
 
-const RepickPanel: Component<{
-  mode: "movies" | "series";
-  proposal: Proposal;
-  onDone: () => void;
-  onCancel: () => void;
-}> = (props) => {
-  const [query, setQuery] = createSignal(
-    props.proposal.title || props.proposal.sourceName || "",
-  );
-  const [submitted, setSubmitted] = createSignal(query());
-  const [results] = createResource(submitted, async (q) => {
-    if (!q.trim()) return [];
-    return tmdbSearch(props.mode, q);
-  });
-  const [error, setError] = createSignal("");
-  const [busy, setBusy] = createSignal(false);
-
-  // Manual slot assignment (series only) — for a file with no recoverable
-  // episode signal at all. Pre-filled from the proposal's current values when
-  // they are non-zero so an operator correcting an ambiguous match starts from
-  // what is already there, null otherwise ("not assigning a slot").
-  const [season, setSeason] = createSignal<number | null>(
-    props.proposal.seasonNumber ? props.proposal.seasonNumber : null,
-  );
-  const [episode, setEpisode] = createSignal<number | null>(
-    props.proposal.episodeNumber ? props.proposal.episodeNumber : null,
-  );
-  const parseSlot = (raw: string): number | null => {
-    const t = raw.trim();
-    if (t === "") return null;
-    const n = Number(t);
-    return Number.isInteger(n) ? n : null;
-  };
-  // Exactly one of the two filled — the server 400s this too; the inline error
-  // is the UX, not the guard.
-  const halfPair = () => (season() != null) !== (episode() != null);
-
-  const use = async (id: number, title: string, year?: number) => {
-    setError("");
-    if (halfPair()) {
-      setError("Enter both a season and an episode, or leave both blank.");
-      return;
-    }
-    setBusy(true);
-    try {
-      // `!= null`, NEVER a truthiness check: season 0 is Specials, a real
-      // value an operator can mean, and `if (s)` would silently drop it —
-      // the exact defect the *int DTO fields exist to prevent.
-      const s = season();
-      const e = episode();
-      await repickProposal(
-        props.proposal.id,
-        s != null && e != null
-          ? { tmdbId: id, title, year, seasonNumber: s, episodeNumber: e }
-          : { tmdbId: id, title, year },
-      );
-      props.onDone();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div class="mt-4 rounded-xl border border-border bg-surface p-4">
-      <h4 class="text-sm font-semibold text-fg">
-        Re-pick match for “{props.proposal.sourceName}”
-      </h4>
-      <Show when={props.proposal.title}>
-        <Muted class="mt-1">
-          Currently matched: {props.proposal.title}
-          {props.proposal.year ? ` (${props.proposal.year})` : ""}
-        </Muted>
-      </Show>
-      <form
-        class="mt-2 flex items-center gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setSubmitted(query());
-        }}
-      >
-        <input
-          class="w-80 max-w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-          value={query()}
-          onInput={(e) => setQuery(e.currentTarget.value)}
-          aria-label="Re-pick search query"
-        />
-        <Button type="submit">Search</Button>
-        <Button onClick={props.onCancel}>Cancel</Button>
-      </form>
-      <Show when={props.mode === "series"}>
-        <div class="mt-3 rounded-md border border-border bg-surface-2 p-3">
-          <Muted>
-            Optional: assign a season and episode directly. Use this when the
-            filename has no recoverable episode information. Season 0 is
-            Specials.
-          </Muted>
-          <div class="mt-2 flex items-center gap-3">
-            <label class="flex items-center gap-2 text-sm text-fg">
-              Season
-              <input
-                type="number"
-                min="0"
-                step="1"
-                class="w-24 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none focus:border-accent"
-                value={season() ?? ""}
-                onInput={(e) => setSeason(parseSlot(e.currentTarget.value))}
-                aria-label="Season number"
-              />
-            </label>
-            <label class="flex items-center gap-2 text-sm text-fg">
-              Episode
-              <input
-                type="number"
-                min="1"
-                step="1"
-                class="w-24 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none focus:border-accent"
-                value={episode() ?? ""}
-                onInput={(e) => setEpisode(parseSlot(e.currentTarget.value))}
-                aria-label="Episode number"
-              />
-            </label>
-          </div>
-          <Show when={halfPair()}>
-            <ErrorText>
-              Enter both a season and an episode, or leave both blank.
-            </ErrorText>
-          </Show>
-        </div>
-      </Show>
-      <Show when={error()}>
-        <ErrorText>{error()}</ErrorText>
-      </Show>
-      <div class="mt-3">
-        <Show when={results.error}>
-          <ErrorText>{(results.error as Error)?.message}</ErrorText>
-        </Show>
-        <Show when={!results.loading} fallback={<Muted>Searching…</Muted>}>
-          <Show
-            when={results() && results()!.length > 0}
-            fallback={<Muted>No results.</Muted>}
-          >
-            <ul class="flex flex-col gap-1">
-              <For each={results()}>
-                {(item) => {
-                  const y = yearOf(item.releaseDate);
-                  return (
-                    <li class="flex items-center gap-3 rounded-md border border-border bg-surface-2 p-2">
-                      <span class="min-w-0 flex-1 truncate text-sm text-fg">
-                        {item.title}
-                        {y ? ` (${y})` : ""} — TMDB #{item.id}
-                      </span>
-                      <Button
-                        variant="primary"
-                        disabled={busy()}
-                        onClick={() => use(item.id, item.title, y)}
-                      >
-                        Use this
-                      </Button>
-                    </li>
-                  );
-                }}
-              </For>
-            </ul>
-          </Show>
-        </Show>
-      </div>
-    </div>
-  );
-};
-
 const ApplyAllConfirm: Component<{
   plan: ApplyAllPlanItem[];
   onCancel: () => void;
@@ -474,6 +303,15 @@ const ApplyAllConfirm: Component<{
   </div>
 );
 
+// TakeoverState replaces the two former `repickFor` / `moveFor` signals with
+// ONE discriminated value, because the two entry points now render the SAME
+// component (SearchTakeover) in the SAME slot — two independent signals could
+// both be non-null at once and would race for that one slot.
+// See .omc/plans/autopilot-impl.md §5.1 R2.
+type TakeoverState =
+  | { kind: "repick"; proposal: Proposal }
+  | { kind: "move"; proposal: Proposal; target: Mode };
+
 const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const [pageSize, setPageSize] = createSignal(loadPageSize("rename"));
   const [offset, setOffset] = createSignal(0);
@@ -492,11 +330,112 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     ({ mode, limit, offset, view }) => fetchProposals(mode, limit, offset, view),
   );
   const proposals = () => page()?.items ?? [];
-  const [repickFor, setRepickFor] = createSignal<Proposal | null>(null);
-  const [moveFor, setMoveFor] = createSignal<{
-    proposal: Proposal;
-    target: Mode;
-  } | null>(null);
+  const [takeover, setTakeover] = createSignal<TakeoverState | null>(null);
+
+  // Claude 2026-08-08: scroll save/restore around the full-page takeover.
+  // Reason: the takeover removes the table from the DOM, which collapses the
+  //   scroll container's height and makes the browser clamp its scrollTop —
+  //   nothing restores it on return. The host is AppShell's <main>, NOT the
+  //   document: the shell root is `h-screen overflow-hidden` and <main> is the
+  //   app's only scroll region (AppShell.tsx:676, :738-739), so window.scrollY
+  //   is permanently 0 and window.scrollTo() does nothing.
+  // Troubleshooting: returning from Re-pick / Move jumps the list back to the
+  //   top instead of where the operator was.
+  // Review if: AppShell stops being the single-scroll-region shell, or the
+  //   routed screen gains its own overflow-y-auto ancestor.
+  // Context: see .omc/plans/autopilot-impl.md §1.3.
+  let rootEl!: HTMLDivElement;
+  const scrollHost = (): HTMLElement | null => rootEl?.closest("main") ?? null;
+
+  const [savedScrollTop, setSavedScrollTop] = createSignal<number | null>(null);
+
+  // Claude 2026-08-08: both setters wrapped in batch().
+  // Reason: defence in depth, applied here after the IDENTICAL unbatched shape
+  //   turned out to be a live production bug in Dedup.tsx. Dedup's only entry
+  //   point is a <select onChange>, and `change` is NOT in Solid's delegated-
+  //   event set, so setSavedScrollTop drove its own synchronous update cycle:
+  //   the restore effect below ran in the gap between the two writes, saw
+  //   savedScrollTop set with takeover still null and page.loading false,
+  //   "restored" against a list that had not gone anywhere, and CLEARED the
+  //   saved value — leaving nothing to restore on the way back. Rename's two
+  //   call sites (:505, :519) both route through delegated `click` events
+  //   today, and `click` IS auto-batched, which is the ONLY reason this
+  //   currently works. batch() removes that dependency, so a future entry
+  //   point on change/submit/anything non-delegated cannot silently
+  //   reintroduce the dead-restore bug.
+  // Troubleshooting: returning from Re-pick / Move jumps the list to the top.
+  // Review if: the restore effect below stops reading savedScrollTop.
+  // Context: .omc/plans/autopilot-impl.md §1.3; Dedup.tsx's twin comment.
+  const openTakeover = (t: TakeoverState) => {
+    batch(() => {
+      setSavedScrollTop(scrollHost()?.scrollTop ?? null);
+      setTakeover(t);
+    });
+  };
+
+  createEffect(() => {
+    const y = savedScrollTop();
+    if (y === null) return;
+    if (takeover() !== null) return; // still in the takeover
+    if (page.loading) return; // the refetch is in flight; the table is not back
+    if (proposals().length === 0) {
+      // nothing to scroll to; drop the saved value
+      setSavedScrollTop(null);
+      return;
+    }
+    const host = scrollHost();
+    // null host = no <main> ancestor (the isolated screen tests). Clear and
+    // move on; this is an expected state, not a failure. The queueMicrotask is
+    // required: this effect runs before Solid has flushed the re-inserted rows,
+    // so a synchronous assignment would clamp against the pre-insert height.
+    if (host) queueMicrotask(() => { host.scrollTop = y; });
+    setSavedScrollTop(null);
+  });
+
+  // commitRepick / commitMove are parallel sibling adapters, deliberately NOT
+  // hoisted into a shared module: they share none of their payload shape (a
+  // RepickRequest vs a MoveModeRequest, different endpoints, different required
+  // fields) and are ~8 lines each — exactly the case this repo's
+  // no-premature-abstraction convention says to leave duplicated.
+  // See .omc/plans/autopilot-impl.md §5.1 R9.
+  const commitRepick = (p: Proposal) => async (pick: TakeoverPick) => {
+    if (pick.kind !== "catalog") throw new Error("repick requires a catalog match");
+    // `!= null`, never truthiness — season 0 is Specials (unchanged semantics,
+    // now enforced by TakeoverPick's shape: the pair is present or absent).
+    await repickProposal(p.id, {
+      tmdbId: pick.tmdbId,
+      title: pick.title,
+      year: pick.year,
+      ...(pick.seasonNumber != null && pick.episodeNumber != null
+        ? { seasonNumber: pick.seasonNumber, episodeNumber: pick.episodeNumber }
+        : {}),
+    });
+  };
+
+  const commitMove = (p: Proposal, target: Mode) => async (pick: TakeoverPick) => {
+    await moveProposalMode(
+      p.id,
+      pick.kind === "adult"
+        ? {
+            targetMode: "adult",
+            title: pick.title,
+            box: pick.box,
+            sceneId: pick.sceneId,
+            studio: pick.studio,
+            date: pick.date,
+          }
+        : {
+            targetMode: target,
+            tmdbId: pick.tmdbId,
+            title: pick.title,
+            year: pick.year,
+            ...(pick.seasonNumber != null && pick.episodeNumber != null
+              ? { seasonNumber: pick.seasonNumber, episodeNumber: pick.episodeNumber }
+              : {}),
+          },
+    );
+  };
+
   const [batchResult, setBatchResult] = createSignal<ApplyBatchResponse | null>(
     null,
   );
@@ -547,8 +486,10 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const { actionError, setActionError, scanning, acting, scan, act } =
     useWorkflowActions(() => props.mode, {
       resetOnModeChange: () => {
-        setRepickFor(null);
-        setMoveFor(null);
+        // A mode switch abandons the pending scroll restore outright — the
+        // list it was measured against is gone. (§5.1 R4.)
+        setTakeover(null);
+        setSavedScrollTop(null);
         setBatchResult(null);
         setApplyAllPlan(null);
         setSelections({});
@@ -564,8 +505,8 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         setLogKey((k) => k + 1);
       },
       resetAfterAct: () => {
-        setRepickFor(null);
-        setMoveFor(null);
+        setTakeover(null);
+        setSavedScrollTop(null);
       },
       refetch,
     },
@@ -580,20 +521,25 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     if (id === "rename") {
       void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
     } else if (id === "repick") {
-      setRepickFor(p);
+      openTakeover({ kind: "repick", proposal: p });
     } else if (id.startsWith("move:")) {
       // Claude 2026-08-08: explicit move:* branch BEFORE the dismiss check.
       // Reason: the previous trailing `else` was a catch-all (any unmatched
       //   id silently dismissed), not an "id === dismiss" check — a move:*
       //   id added to the union without this branch would have fallen
       //   through and dismissed the proposal instead of opening the move
-      //   panel. See .omc/plans/autopilot-impl.md §6.3 step 5.
+      //   takeover. See .omc/plans/autopilot-impl-cross-mode-move.md §6.3
+      //   step 5 for the original fix.
       // Troubleshooting: a Move action deleting/dismissing a proposal instead
-      //   of opening MoveModePanel.
+      //   of opening SearchTakeover.
       // Review if: RowActionId gains another id — it needs its own branch
       //   here too, since the trailing branch below is now id-specific, not
       //   a catch-all.
-      setMoveFor({ proposal: p, target: id.slice("move:".length) as Mode });
+      openTakeover({
+        kind: "move",
+        proposal: p,
+        target: id.slice("move:".length) as Mode,
+      });
     } else if (id === "dismiss") {
       void act(() => dismissProposal(p.id)).then(() => setLogKey((k) => k + 1));
     }
@@ -679,212 +625,284 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   };
 
   return (
-    <div>
-      <div class="flex flex-wrap items-center gap-3">
-        <Button
-          variant="primary"
-          onClick={() => void scan(props.mode)}
-          disabled={scanning() || acting()}
-        >
-          {scanning() ? "Scanning…" : "Scan"}
-        </Button>
-        <Show when={!showHistory()}>
-          <Button
-            variant="primary"
-            onClick={openApplyAll}
-            disabled={applyAllLoading() || scanning() || acting()}
-          >
-            {applyAllLoading()
-              ? "Loading…"
-              : acting()
-                ? "Applying…"
-                : "Apply all"}
-          </Button>
-        </Show>
-        <PageSizeSelect
-          value={pageSize()}
-          onChange={(n) => {
-            savePageSize("rename", n);
-            setPageSize(n);
-            setOffset(0);
-          }}
-        />
-        <ShowHistoryToggle
-          checked={showHistory()}
-          onChange={(on) => {
-            saveShowHistory("rename", on);
-            setShowHistory(on);
-            setOffset(0);
-          }}
-        />
-      </div>
-
-      <Show when={applyProgress()}>
-        <Muted class="mt-2">{applyProgress()}</Muted>
-      </Show>
-      <Show when={actionError()}>
-        <ErrorText>{actionError()}</ErrorText>
-      </Show>
-      <Show when={batchResult()}>
-        {(res) => <BatchResultSummary result={res()} titleOf={titleOf} />}
-      </Show>
-      <Show when={page.error}>
-        <ErrorText>{(page.error as Error)?.message}</ErrorText>
-      </Show>
-
-      <Show
-        when={!page.loading}
-        fallback={
-          <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
-            <Muted>Loading…</Muted>
+    <>
+      <Show when={!takeover()}>
+        <div ref={rootEl}>
+          <div class="flex flex-wrap items-center gap-3">
+            <Button
+              variant="primary"
+              onClick={() => void scan(props.mode)}
+              disabled={scanning() || acting()}
+            >
+              {scanning() ? "Scanning…" : "Scan"}
+            </Button>
+            <Show when={!showHistory()}>
+              <Button
+                variant="primary"
+                onClick={openApplyAll}
+                disabled={applyAllLoading() || scanning() || acting()}
+              >
+                {applyAllLoading()
+                  ? "Loading…"
+                  : acting()
+                    ? "Applying…"
+                    : "Apply all"}
+              </Button>
+            </Show>
+            <PageSizeSelect
+              value={pageSize()}
+              onChange={(n) => {
+                savePageSize("rename", n);
+                setPageSize(n);
+                setOffset(0);
+              }}
+            />
+            <ShowHistoryToggle
+              checked={showHistory()}
+              onChange={(on) => {
+                saveShowHistory("rename", on);
+                setShowHistory(on);
+                setOffset(0);
+              }}
+            />
           </div>
-        }
-      >
-        <Show
-          when={proposals().length > 0}
-          fallback={
-            <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
-              <Muted>
-                {showHistory()
-                  ? "No history yet."
-                  : "No proposals yet — click Scan."}
-              </Muted>
-            </div>
-          }
-        >
-          <div class="mt-4 overflow-x-auto rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
-            <table class="w-full text-left text-sm">
-              <thead>
-                <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
-                  <th class="px-2 py-2 font-medium">Source</th>
-                  <th class="px-2 py-2 font-medium">Title</th>
-                  <Show when={props.mode === "movies" || props.mode === "series"}>
-                    <th class="px-2 py-2 font-medium">Year</th>
-                  </Show>
-                  <Show when={props.mode === "series"}>
-                    <th class="px-2 py-2 font-medium">Season</th>
-                    <th class="px-2 py-2 font-medium">Episode</th>
-                  </Show>
-                  <Show when={props.mode === "adult"}>
-                    <th class="px-2 py-2 font-medium">Studio</th>
-                    <th class="px-2 py-2 font-medium">Date</th>
-                    <th class="px-2 py-2 font-medium">PHash</th>
-                  </Show>
-                  <th class="px-2 py-2 font-medium">Root Folder</th>
-                  <th class="px-2 py-2 font-medium">Reason</th>
-                  <th class="px-2 py-2 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <For each={proposals()}>
-                  {(p) => (
-                    <tr class="border-b border-border/60 align-top">
-                      <td class="px-2 py-2 font-mono text-xs">{p.sourceName}</td>
-                      <td class="px-2 py-2">
-                        <div class="flex flex-wrap items-center gap-1">
-                          <span>{p.title}</span>
-                          <Show
-                            when={(p.reason || "")
-                              .toLowerCase()
-                              .startsWith("web match:")}
-                          >
-                            <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
-                              web match
-                            </span>
-                          </Show>
-                        </div>
-                      </td>
+
+          <Show when={applyProgress()}>
+            <Muted class="mt-2">{applyProgress()}</Muted>
+          </Show>
+          <Show when={actionError()}>
+            <ErrorText>{actionError()}</ErrorText>
+          </Show>
+          <Show when={batchResult()}>
+            {(res) => <BatchResultSummary result={res()} titleOf={titleOf} />}
+          </Show>
+          <Show when={page.error}>
+            <ErrorText>{(page.error as Error)?.message}</ErrorText>
+          </Show>
+
+          <Show
+            when={!page.loading}
+            fallback={
+              <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
+                <Muted>Loading…</Muted>
+              </div>
+            }
+          >
+            <Show
+              when={proposals().length > 0}
+              fallback={
+                <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
+                  <Muted>
+                    {showHistory()
+                      ? "No history yet."
+                      : "No proposals yet — click Scan."}
+                  </Muted>
+                </div>
+              }
+            >
+              <div class="mt-4 overflow-x-auto rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
+                <table class="w-full text-left text-sm">
+                  <thead>
+                    <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
+                      <th class="px-2 py-2 font-medium">Source</th>
+                      <th class="px-2 py-2 font-medium">Title</th>
                       <Show when={props.mode === "movies" || props.mode === "series"}>
-                        <td class="px-2 py-2">{p.year || ""}</td>
+                        <th class="px-2 py-2 font-medium">Year</th>
                       </Show>
                       <Show when={props.mode === "series"}>
-                        <td class="px-2 py-2">{p.seasonNumber ?? ""}</td>
-                        <td class="px-2 py-2">
-                          {episodeDisplay(p.episodeNumber, p.extraEpisodeNumbers)}
-                        </td>
+                        <th class="px-2 py-2 font-medium">Season</th>
+                        <th class="px-2 py-2 font-medium">Episode</th>
                       </Show>
                       <Show when={props.mode === "adult"}>
-                        <td class="px-2 py-2">{p.studio}</td>
-                        <td class="px-2 py-2">{p.date}</td>
-                        <td class="px-2 py-2" title={p.phash}>
-                          {shortHash(p.phash || "")}
-                        </td>
+                        <th class="px-2 py-2 font-medium">Studio</th>
+                        <th class="px-2 py-2 font-medium">Date</th>
+                        <th class="px-2 py-2 font-medium">PHash</th>
                       </Show>
-                      <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
-                      <td class="px-2 py-2 text-muted">{p.reason}</td>
-                      <td class="px-2 py-2">
-                        <RowActions
-                          proposal={p}
-                          mode={props.mode}
-                          titleMode={isTitleMode()}
-                          selected={selectionOf(p)}
-                          onSelect={(id) => setSelection(p.id, id)}
-                          onRun={(id) => runRowAction(p, id)}
-                          disabled={acting() || scanning()}
-                        />
-                      </td>
+                      <th class="px-2 py-2 font-medium">Root Folder</th>
+                      <th class="px-2 py-2 font-medium">Reason</th>
+                      <th class="px-2 py-2 font-medium">Actions</th>
                     </tr>
-                  )}
-                </For>
-              </tbody>
-            </table>
-          </div>
-          <PaginationBar
-            total={page()?.total ?? 0}
-            limit={pageSize()}
-            offset={offset()}
-            onPrev={() => setOffset((o) => Math.max(0, o - pageSize()))}
-            onNext={() => setOffset((o) => o + pageSize())}
-          />
-        </Show>
+                  </thead>
+                  <tbody>
+                    <For each={proposals()}>
+                      {(p) => (
+                        <tr class="border-b border-border/60 align-top">
+                          <td class="px-2 py-2 font-mono text-xs">{p.sourceName}</td>
+                          <td class="px-2 py-2">
+                            <div class="flex flex-wrap items-center gap-1">
+                              <span>{p.title}</span>
+                              <Show
+                                when={(p.reason || "")
+                                  .toLowerCase()
+                                  .startsWith("web match:")}
+                              >
+                                <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                                  web match
+                                </span>
+                              </Show>
+                            </div>
+                          </td>
+                          <Show when={props.mode === "movies" || props.mode === "series"}>
+                            <td class="px-2 py-2">{p.year || ""}</td>
+                          </Show>
+                          <Show when={props.mode === "series"}>
+                            <td class="px-2 py-2">{p.seasonNumber ?? ""}</td>
+                            <td class="px-2 py-2">
+                              {episodeDisplay(p.episodeNumber, p.extraEpisodeNumbers)}
+                            </td>
+                          </Show>
+                          <Show when={props.mode === "adult"}>
+                            <td class="px-2 py-2">{p.studio}</td>
+                            <td class="px-2 py-2">{p.date}</td>
+                            <td class="px-2 py-2" title={p.phash}>
+                              {shortHash(p.phash || "")}
+                            </td>
+                          </Show>
+                          <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
+                          <td class="px-2 py-2 text-muted">{p.reason}</td>
+                          <td class="px-2 py-2">
+                            <RowActions
+                              proposal={p}
+                              mode={props.mode}
+                              titleMode={isTitleMode()}
+                              selected={selectionOf(p)}
+                              onSelect={(id) => setSelection(p.id, id)}
+                              onRun={(id) => runRowAction(p, id)}
+                              disabled={acting() || scanning()}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+              <PaginationBar
+                total={page()?.total ?? 0}
+                limit={pageSize()}
+                offset={offset()}
+                onPrev={() => setOffset((o) => Math.max(0, o - pageSize()))}
+                onNext={() => setOffset((o) => o + pageSize())}
+              />
+            </Show>
+          </Show>
+
+          <Show when={applyAllPlan()}>
+            {(plan) => (
+              <ApplyAllConfirm
+                plan={plan()}
+                onCancel={() => setApplyAllPlan(null)}
+                onConfirm={confirmApplyAll}
+              />
+            )}
+          </Show>
+
+          <ActivityLogPanel workflow="rename" refreshKey={logKey()} />
+        </div>
       </Show>
 
-      <Show when={isTitleMode() && repickFor()}>
-        {(p) => (
-          <RepickPanel
-            mode={props.mode as "movies" | "series"}
-            proposal={p()}
-            onDone={() => {
-              setActionError("");
-              setRepickFor(null);
-              void refetch();
-            }}
-            onCancel={() => setRepickFor(null)}
-          />
-        )}
+      {/* ONE mount for BOTH entry points, and it deliberately carries NO
+          isTitleMode() guard — this is intentional, not an oversight
+          (.omc/plans/autopilot-impl.md §5.1). (a) Re-pick is already gated
+          upstream: rowActionEnabled("repick", ...) requires titleMode, so a
+          repick takeover is structurally unreachable for Adult rows through
+          the UI. (b) Move MUST mount for Adult rows (AC7) — adding a guard
+          here would silently break every Adult move. Do not "fix" this.
+          ModeTabs stays visible above it (it lives in the parent shell,
+          outside RenameQueue); a mode switch closes the takeover through
+          resetOnModeChange. */}
+      <Show when={takeover()}>
+        {(t) => {
+          // Bound ONCE so TypeScript's discriminant narrowing carries across
+          // the props below; the state only ever changes to null, which
+          // unmounts this block, so there is no reactivity lost.
+          const st = t();
+          const p = st.proposal;
+          return (
+            <SearchTakeover
+              heading={
+                st.kind === "repick"
+                  ? `Re-pick match for “${p.sourceName}”`
+                  : `Move “${p.sourceName}” to another section`
+              }
+              subheading={
+                st.kind === "repick" && p.title ? (
+                  <Muted class="mt-1">
+                    Currently matched: {p.title}
+                    {p.year ? ` (${p.year})` : ""}
+                  </Muted>
+                ) : undefined
+              }
+              notes={
+                st.kind === "move" ? (
+                  <>
+                    <Muted>
+                      If the target library is on a different filesystem, Apply
+                      may fail with a cross-device error. The move itself is
+                      reversible.
+                    </Muted>
+                    <Show when={st.target === "adult"}>
+                      <Muted class="mt-1">
+                        This file has no perceptual hash yet, so it will be
+                        renamed without its [phash-...] tag. A later Adult scan
+                        will add it.
+                      </Muted>
+                    </Show>
+                  </>
+                ) : undefined
+              }
+              searchMode={st.kind === "repick" ? props.mode : st.target}
+              initialQuery={
+                st.kind === "repick" ? p.title || p.sourceName || "" : p.sourceName
+              }
+              // LOAD-BEARING and deliberately asymmetric: repick searches on
+              // mount, move must NOT — a mount-time GET would break the move
+              // entry point's "Cancel issues zero requests" guarantee. See
+              // SearchTakeover's own autoSearch prop doc.
+              autoSearch={st.kind === "repick"}
+              currentSlot={
+                p.seasonNumber != null && p.episodeNumber != null
+                  ? { season: p.seasonNumber, episode: p.episodeNumber }
+                  : null
+              }
+              onCommit={
+                st.kind === "repick"
+                  ? commitRepick(p)
+                  : commitMove(p, st.target)
+              }
+              // Claude 2026-08-08: refetch() runs FIRST, and both writes are
+              //   inside batch().
+              // Reason: onDone is invoked from SearchTakeover's commit handler
+              //   in a POST-await microtask, which Solid does NOT auto-batch.
+              //   refetch() flips page.loading to true synchronously; if
+              //   setTakeover(null) ran first, the scroll-restore effect's
+              //   `if (page.loading) return` gate would still read false, fire
+              //   against the about-to-be-replaced DOM, and be discarded — the
+              //   restore would silently fail on EVERY successful commit in
+              //   production, not just in tests. batch() removes the
+              //   dependence on refetch()'s exact microtask timing by making
+              //   both writes observable as one consistent state.
+              // Troubleshooting: list jumps to the top after a successful
+              //   Re-pick / Move commit.
+              // Review if: the scroll-restore effect stops gating on
+              //   page.loading. Do NOT reorder these two calls.
+              // Context: .omc/plans/autopilot-impl.md §1.3 and §5.1 R5b.
+              onDone={() => {
+                setActionError("");
+                batch(() => {
+                  void refetch();
+                  setTakeover(null);
+                });
+              }}
+              // onCancel needs no batch/reorder: no refetch happens, so the
+              // restore correctly fires straight away against the still-loaded
+              // list.
+              onCancel={() => setTakeover(null)}
+            />
+          );
+        }}
       </Show>
-
-      {/* No isTitleMode() guard, deliberately (AC7/§6.3 step 6) — this must
-          mount for Adult rows too. */}
-      <Show when={moveFor()}>
-        {(m) => (
-          <MoveModePanel
-            workflow="rename"
-            proposalId={m().proposal.id}
-            sourceName={m().proposal.sourceName}
-            targetMode={m().target}
-            onDone={() => {
-              setActionError("");
-              setMoveFor(null);
-              void refetch();
-            }}
-            onCancel={() => setMoveFor(null)}
-          />
-        )}
-      </Show>
-
-      <Show when={applyAllPlan()}>
-        {(plan) => (
-          <ApplyAllConfirm
-            plan={plan()}
-            onCancel={() => setApplyAllPlan(null)}
-            onConfirm={confirmApplyAll}
-          />
-        )}
-      </Show>
-
-      <ActivityLogPanel workflow="rename" refreshKey={logKey()} />
-    </div>
+    </>
   );
 };
 

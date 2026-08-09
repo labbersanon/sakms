@@ -53,7 +53,7 @@ export interface WorkflowActions {
   /** Reactive accessor for the current action error string (empty = none). */
   actionError: Accessor<string>;
   /** Setter — screens that clear the error from outside act/scan (e.g. Rename
-   * clearing it in the onDone callback of RepickPanel) use this directly. */
+   * clearing it in the onDone callback of SearchTakeover) use this directly. */
   setActionError: (err: string) => void;
   /** Whether a scan is currently in flight. Always false for screens with no
    * scanFn (Tag). */

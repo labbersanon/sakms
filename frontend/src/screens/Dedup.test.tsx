@@ -1298,14 +1298,14 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
   });
 });
 
-// Wave 4 — wiring the shared MoveModePanel into Dedup (AC6, see
-// .omc/plans/autopilot-impl.md §6.4). These tests cover exactly what this
+// Wave 4 — wiring the shared SearchTakeover into Dedup (AC6, see
+// .omc/plans/autopilot-impl-cross-mode-move.md §6.4). These tests cover exactly what this
 // wave owns: the per-group "Move to…" select's option set, its
 // pending-or-unmatched visibility (a deliberate decision — an Unmatched
 // group is precisely the one an operator most needs to move), the
 // reset-to-placeholder onChange contract, and that this wiring never touches
-// the candidate grid. MoveModePanel's own search/commit/error-branch
-// behavior is covered by MoveModePanel.test.tsx, not duplicated here.
+// the candidate grid. SearchTakeover's own search/commit/error-branch
+// behavior is covered by SearchTakeover.test.tsx, not duplicated here.
 describe("Dedup — Move to another mode (AC6)", () => {
   it("renders exactly the 2 other-mode options for a Movies group, never the group's own mode", async () => {
     stubFetch((url) => {
@@ -1413,6 +1413,10 @@ describe("Dedup — Move to another mode (AC6)", () => {
         return jsonResponse([
           { id: 555, title: "New Show", releaseDate: "2020-01-01" },
         ]);
+      // A series target drills into SeasonEpisodePicker, which self-fetches
+      // its season list. Empty seasons routes it to its degraded free-text
+      // fallback, which is irrelevant here — this test commits show-level.
+      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/32/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1432,18 +1436,29 @@ describe("Dedup — Move to another mode (AC6)", () => {
     const select = screen.getByLabelText("Move group Move Me to another mode");
     fireEvent.change(select, { target: { value: "series" } });
 
-    await screen.findByRole("dialog", { name: "Move to another section" });
+    // The takeover is a plain <section aria-label="Search"> now, not a
+    // role="dialog" — it REPLACES the list in place. Its heading is the
+    // stable identity probe. Curly quotes wrap the title, so the regex is
+    // deliberately quote-agnostic.
+    await screen.findByText(/Move .+ to another section/);
     fireEvent.click(screen.getByText("Search"));
-    await screen.findByText(/New Show/);
-    fireEvent.click(screen.getByText("Use this"));
+    fireEvent.click(await screen.findByLabelText("Use New Show"));
+    // A SERIES target drills into the slot step instead of committing on the
+    // tile click (SearchTakeover's useCatalogItem). "Use show-level match
+    // only" is the no-slot commit — it sends the identical
+    // {tmdbId,title,year} body the old single-click "Use this" sent, so this
+    // is still a selector-level change: nothing about what is asserted moved.
+    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(
         calls.some((c) => c.url.includes("/api/proposals/32/move-mode")),
       ).toBe(true),
     );
-    // Commit succeeded → onDone closed the overlay and refetched.
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // Commit succeeded → onDone closed the takeover and refetched.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Back to list")).toBeNull(),
+    );
 
     // The candidate grid this feature must never touch is byte-identical
     // after the move commits — same labels, paths, resolution, and codec.
@@ -1460,7 +1475,7 @@ describe("Dedup — Move to another mode (AC6)", () => {
     expect(screen.getAllByText("8000 kbps")).toHaveLength(2);
   });
 
-  it("selecting Move to Series then Cancel issues no /move-mode POST", async () => {
+  it("selecting Move to Series then Back issues no /move-mode POST", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/movies/dedup/proposals"))
         return jsonResponse([dedupProposal({ id: 35, title: "Cancel Me" })]);
@@ -1473,20 +1488,22 @@ describe("Dedup — Move to another mode (AC6)", () => {
 
     const select = screen.getByLabelText("Move group Cancel Me to another mode");
     fireEvent.change(select, { target: { value: "series" } });
-    await screen.findByRole("dialog", { name: "Move to another section" });
+    await screen.findByText(/Move .+ to another section/);
 
-    fireEvent.click(screen.getByText("Cancel"));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByLabelText("Back to list"));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Back to list")).toBeNull(),
+    );
 
     expect(calls.some((c) => c.url.includes("/move-mode"))).toBe(false);
     // The group's own row is untouched — still there, unresolved.
     expect(screen.getByText("Cancel Me")).toBeInTheDocument();
   });
 
-  // D-1a commit-403 (frontend) — .omc/plans/autopilot-impl.md §7's test
-  // table. MoveModePanel.test.tsx already covers this branch at the
+  // D-1a commit-403 (frontend) — .omc/plans/autopilot-impl-cross-mode-move.md §7's test
+  // table. SearchTakeover.test.tsx already covers this branch at the
   // component level, in isolation. This test proves the SAME behavior
-  // through Dedup's real per-group "Move to…" select + MoveModeOverlay
+  // through Dedup's real per-group "Move to…" select + SearchTakeover
   // wiring, not a standalone panel render. Adult->Movies is used
   // deliberately: the search (movies/tmdb-search) is NOT gated by the Adult
   // lock and succeeds, while the commit is gated because the group's own
@@ -1542,9 +1559,11 @@ describe("Dedup — Move to another mode (AC6)", () => {
     );
     fireEvent.change(select, { target: { value: "movies" } });
 
-    await screen.findByRole("dialog", { name: "Move to another section" });
+    await screen.findByText(/Move .+ to another section/);
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.click(await screen.findByText("Use this"));
+    // Adult→MOVIES: searchMode is "movies", so a tile click commits directly
+    // (no series slot step).
+    fireEvent.click(await screen.findByLabelText("Use Target Movie"));
 
     // (a) shows the fixed Adult commit-403 copy.
     expect(
@@ -1552,16 +1571,16 @@ describe("Dedup — Move to another mode (AC6)", () => {
     ).toBeInTheDocument();
     // (b) never the search-blocked copy — the search succeeded here.
     expect(screen.queryByText(/unlock it to search/)).toBeNull();
-    // (c) the dialog stays open with the picked candidate still selected and
+    // (c) the takeover stays open with the picked candidate still selected and
     // clickable — unlock-and-retry is one click.
     expect(
-      screen.getByRole("dialog", { name: "Move to another section" }),
+      screen.getByText(/Move .+ to another section/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Target Movie/)).toBeInTheDocument();
-    expect(screen.getByText("Use this")).toBeInTheDocument();
-    // (d) never commits: onDone would close the dialog AND refetch the Adult
-    // group list — confirm that second GET never fired, and the candidate
-    // grid this feature must never touch stays byte-identical. Matched on
+    // The tile renders its title twice (TextPoster art fallback + caption).
+    expect(screen.getAllByText("Target Movie").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Use Target Movie")).toBeInTheDocument();
+    // (d) never commits: onDone would close the takeover AND refetch the Adult
+    // group list — confirm that second GET never fired. Matched on
     // "proposals?" (the list query string), not a bare substring — a bare
     // "adult/dedup/proposals" substring also matches the per-candidate VMAF
     // endpoint (".../proposals/40/vmaf?..."), which fires independently of
@@ -1570,7 +1589,297 @@ describe("Dedup — Move to another mode (AC6)", () => {
       calls.filter((c) => c.url.includes("/api/modes/adult/dedup/proposals?"))
         .length,
     ).toBe(1);
+    // (e) the candidate grid this feature must never touch is byte-identical.
+    // It is asserted AFTER backing out, not while the takeover is up: the
+    // takeover REPLACES the list in place now (it is not the old layered
+    // `fixed inset-0` overlay), so the grid is legitimately absent from the
+    // document while it is open. Backing out re-renders it from the SAME
+    // already-resolved page resource — no refetch — so this still proves the
+    // failed commit disturbed nothing.
+    fireEvent.click(screen.getByLabelText("Back to list"));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Back to list")).toBeNull(),
+    );
     expect(screen.getByText("tracked")).toBeInTheDocument();
     expect(screen.getByText("orphan.mp4")).toBeInTheDocument();
+    expect(
+      calls.filter((c) => c.url.includes("/api/modes/adult/dedup/proposals?"))
+        .length,
+    ).toBe(1);
+  });
+});
+
+// Wave 5 — the full-page search takeover (.omc/plans/autopilot-impl.md §8.5,
+// rows N3/N8/N9, plus Dedup copies of N4/N4b). What is new here relative to the
+// block above is CONTAINER semantics, not search/commit behaviour:
+//
+//   N3  the takeover REPLACES the list in place — the group card is genuinely
+//       gone, not merely covered by a `fixed inset-0` backdrop.
+//   N8  because ModeTabs stays visible and clickable above the takeover (it
+//       lives in the Dedup shell, outside DedupView), a mode switch MUST close
+//       it — otherwise it stays mounted holding a proposal id from the previous
+//       mode and committing would move the wrong group (§1.4's regression).
+//   N9  the takeover's stable selectors are the SAME ones SearchTakeover.test
+//       and Rename.test assert, proving all three entry points render one
+//       component rather than three lookalikes.
+//   N4  / N4b — the scroll restore. Dedup's copy of this mechanism is an
+//       independent implementation of Rename's, not a shared module, so it can
+//       silently drift out of sync with zero coverage catching it. These two
+//       are what stop that.
+describe("Dedup — search takeover container semantics (N3, N8, N9)", () => {
+  it("N3: opening Move replaces the group list in place — the group card is genuinely gone, not overlaid", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 50, title: "Vanish Me" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Vanish Me");
+    expect(screen.getByText("tracked")).toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByLabelText("Move group Vanish Me to another mode"),
+      { target: { value: "series" } },
+    );
+    await screen.findByText(/Move .+ to another section/);
+
+    // The whole list subtree is un-created, not hidden: the group's own card,
+    // its candidate rows, and the queue chrome are all absent. Under the old
+    // MoveModeOverlay every one of these would still be in the document,
+    // merely painted over — which is exactly what this row exists to rule out.
+    expect(
+      screen.queryByLabelText("Move group Vanish Me to another mode"),
+    ).toBeNull();
+    expect(screen.queryByText("tracked")).toBeNull();
+    expect(screen.queryByText("orphan.mkv")).toBeNull();
+    expect(screen.queryByText("Scan")).toBeNull();
+    expect(screen.queryByLabelText("Page size")).toBeNull();
+    // ModeTabs is deliberately NOT gone — it lives outside DedupView, which is
+    // precisely why N8 below is required.
+    expect(screen.getByText("Movies")).toBeInTheDocument();
+  });
+
+  it("N8: switching mode while the takeover is open closes it and shows the new mode's queue", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 51, title: "Movies Group" })]);
+      if (url.includes("/api/modes/series/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 52, title: "Series Group" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Movies Group");
+
+    fireEvent.change(
+      screen.getByLabelText("Move group Movies Group to another mode"),
+      { target: { value: "adult" } },
+    );
+    await screen.findByText(/Move .+ to another section/);
+
+    // ModeTabs is reachable above the takeover, so this is a real user path.
+    fireEvent.click(screen.getByText("Series"));
+
+    // resetOnModeChange must clear moveFor. Without that one line the takeover
+    // stays mounted holding proposal 51 — a MOVIES id — while the screen is on
+    // Series, and committing it would move the wrong group.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Back to list")).toBeNull(),
+    );
+    expect(screen.queryByText(/Move .+ to another section/)).toBeNull();
+    expect(await screen.findByText("Series Group")).toBeInTheDocument();
+    expect(screen.queryByText("Movies Group")).toBeNull();
+  });
+
+  it("N9: the takeover opened from Dedup exposes the same shared stable selectors as every other entry point", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 53, title: "Shared Me" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Shared Me");
+
+    fireEvent.change(
+      screen.getByLabelText("Move group Shared Me to another mode"),
+      { target: { value: "series" } },
+    );
+
+    // Exactly the selectors SearchTakeover.test.tsx and Rename.test.tsx use.
+    // If Dedup ever grew its own lookalike panel, these would drift and this
+    // test is what would catch it.
+    expect(await screen.findByLabelText("Back to list")).toBeInTheDocument();
+    const input = screen.getByLabelText(
+      "Catalog search query",
+    ) as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    expect(input.value).toBe("Shared Me");
+    expect(
+      screen.getByRole("region", { name: "Search" }),
+    ).toBeInTheDocument();
+    // ...and it is NOT a modal: SearchTakeover has no role="dialog" at all.
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+// renderInMain mounts the screen inside a real <main>, which is what
+// Dedup's scroll-restore actually targets: it reaches its host with
+// rootEl.closest("main") (AppShell's <main> is the app's only scroll region —
+// the shell root is h-screen overflow-hidden, so window.scrollY is always 0).
+// Every other test in this file renders hostless on purpose, exercising the
+// documented null-host degrade path.
+const renderInMain = (): HTMLElement => {
+  const main = document.createElement("main");
+  document.body.appendChild(main);
+  render(() => <Dedup />, { container: main });
+  return main;
+};
+
+describe("Dedup — takeover scroll restore (N4, N4b)", () => {
+  // Dedup-N4 — the back-arrow path. No refetch happens here, so the list
+  // re-renders synchronously from the already-resolved page resource.
+  it("N4: backing out restores the list scroll offset, with the page size and the grid untouched and no extra GET", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/vmaf")) return jsonResponse({});
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 60, title: "Scroll Me" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const main = renderInMain();
+    await screen.findByText("Scroll Me");
+
+    // A NON-default page size, so the assertion below proves the restore left
+    // the operator's list configuration alone rather than resetting it.
+    fireEvent.change(screen.getByLabelText("Page size"), {
+      target: { value: "100" },
+    });
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.includes("limit=100"))).toBe(true),
+    );
+    await screen.findByText("Scroll Me");
+
+    const pageGets = () =>
+      calls.filter((c) => c.url.includes("/dedup/proposals?")).length;
+    const baseline = pageGets();
+
+    // Set BEFORE the select fires: openTakeover reads the host's scrollTop and
+    // only then flips the signal.
+    main.scrollTop = 400;
+    fireEvent.change(
+      screen.getByLabelText("Move group Scroll Me to another mode"),
+      { target: { value: "series" } },
+    );
+    await screen.findByText(/Move .+ to another section/);
+
+    // MANDATORY, and the single line that stops this test being vacuous.
+    // jsdom has no layout engine: removing the scroll container's children
+    // never clamps scrollTop the way a real browser does, so "set 400, open,
+    // close, assert 400" passes IDENTICALLY whether the restore works or is
+    // absent entirely. Zeroing here simulates the browser's layout collapse,
+    // which is what makes the final assertion mean "the restore WROTE this",
+    // not "nothing disturbed it".
+    main.scrollTop = 0;
+
+    fireEvent.click(screen.getByLabelText("Back to list"));
+    // The restore is deferred by a queueMicrotask (the effect runs before Solid
+    // has flushed the re-inserted rows), hence waitFor rather than a bare read.
+    await waitFor(() => expect(main.scrollTop).toBe(400));
+
+    expect(await screen.findByText("Scroll Me")).toBeInTheDocument();
+    expect(screen.getByText("tracked")).toBeInTheDocument();
+    expect(screen.getByText("orphan.mkv")).toBeInTheDocument();
+    expect(
+      (screen.getByLabelText("Page size") as HTMLSelectElement).value,
+    ).toBe("100");
+    // The back path refetches nothing — the list comes back off the resolved
+    // resource, which is also why the restore can fire immediately here.
+    expect(pageGets()).toBe(baseline);
+  });
+
+  // Dedup-N4b — the commit path, and the harder of the two. The restore must
+  // fire only AFTER page.loading clears; a restore fired straight after
+  // setMoveFor(null) lands on the "Loading…" DOM, where a real browser clamps
+  // it to ~0 and the offset is silently lost. The mid-flight `=== 0` assertion
+  // below is the executable proof that Dedup.tsx's onDone really does
+  // batch(refetch-then-setMoveFor) — see the walkthrough in that comment.
+  it("N4b: on a successful commit the restore is held until the refetch lands — still 0 mid-flight, 400 only after", async () => {
+    let releaseRefetch!: () => void;
+    let pageGetCount = 0;
+    const group = dedupProposal({ id: 61, title: "Commit Scroll" });
+
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/vmaf")) return jsonResponse({});
+      if (url.includes("/api/modes/movies/dedup/proposals?")) {
+        pageGetCount += 1;
+        if (pageGetCount === 1) return jsonResponse([group]);
+        // The post-commit refetch is held PENDING and resolved by hand, so the
+        // test can observe the in-flight window rather than only the end state.
+        return new Promise<Response>((resolve) => {
+          releaseRefetch = () => resolve(jsonResponse([group]));
+        });
+      }
+      if (url.includes("/api/modes/series/tmdb-search"))
+        return jsonResponse([
+          { id: 999, title: "New Show", releaseDate: "2021-01-01" },
+        ]);
+      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
+      if (
+        url.includes("/api/proposals/61/move-mode") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const main = renderInMain();
+    await screen.findByText("Commit Scroll");
+
+    main.scrollTop = 400;
+    fireEvent.change(
+      screen.getByLabelText("Move group Commit Scroll to another mode"),
+      { target: { value: "series" } },
+    );
+    await screen.findByText(/Move .+ to another section/);
+
+    // Same mandatory zeroing as N4 — see that test's comment.
+    main.scrollTop = 0;
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use New Show"));
+    fireEvent.click(await screen.findByText("Use show-level match only"));
+
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.includes("/api/proposals/61/move-mode")),
+      ).toBe(true),
+    );
+    // The takeover is closed and the refetch is in flight: the queue shows the
+    // Loading… fallback, NOT the real table.
+    await waitFor(() =>
+      expect(screen.getByText("Loading…")).toBeInTheDocument(),
+    );
+
+    // THE POINT OF THIS TEST. A plain synchronous read, never wrapped in
+    // waitFor — a retrying matcher on a negative proves nothing. If onDone
+    // reverted to `setMoveFor(null); void refetch();` (unbatched, setter
+    // first), the restore effect would observe page.loading === false, queue
+    // `scrollTop = 400` via queueMicrotask, and clear savedScrollTop — and
+    // microtasks drain before waitFor's next poll, so this line would read 400
+    // and fail. Under the shipped batch(refetch-then-close) ordering the effect
+    // observes one consistent state with loading already true, returns early,
+    // and the value is still held.
+    expect(main.scrollTop).toBe(0);
+    expect(screen.queryByText("Commit Scroll")).toBeNull();
+
+    releaseRefetch();
+
+    // Only now, with the real table back, does the restore fire.
+    expect(await screen.findByText("Commit Scroll")).toBeInTheDocument();
+    await waitFor(() => expect(main.scrollTop).toBe(400));
+    expect(screen.getByText("tracked")).toBeInTheDocument();
+    expect(screen.getByText("orphan.mkv")).toBeInTheDocument();
   });
 });

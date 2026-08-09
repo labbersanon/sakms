@@ -4,6 +4,17 @@
 //   Rename auto-selected on match; Apply all honors per-row selections.
 // Reason: Status pill duplicated the action; Rename (not Apply) in the select.
 // Review if: Purge/Dedup gain Apply all summary confirm.
+//
+// Claude 2026-08-08: Re-pick/Move selectors retargeted at SearchTakeover, and
+//   the sole end-to-end repick-commit test rewritten for the two-step Series
+//   flow (tile click mounts the picker; the commit is a second click).
+// Reason: RepickPanel/MoveModePanel are deleted — "Use this" and "Cancel" no
+//   longer exist. The candidate tile is aria-labelled `Use <title>` and the
+//   back control is aria-label "Back to list" (visible text "Back").
+// Troubleshooting: findByText("Use this"/"Cancel") timing out on a
+//   repick/move test.
+// Review if: SearchTakeover stops rendering the season grid inline.
+// Context: .omc/plans/autopilot-impl.md §8.3.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
@@ -419,6 +430,13 @@ describe("Rename — Apply all (summary confirm)", () => {
 });
 
 describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () => {
+  // The ONLY end-to-end repick-commit test that runs through Rename's real row
+  // wiring (runRowAction -> SearchTakeover -> commitRepick), so it must survive
+  // every refactor of that path rather than being replaced by a component-level
+  // render. It does double duty: it is simultaneously that commit guard AND
+  // D-5's show-level-escape-hatch guard — leaving both slot fields off is the
+  // default, most common Series repick, and the season grid structurally cannot
+  // express it (SeasonEpisodePicker always drills into a season first).
   it("re-points the proposal at the NEWLY chosen tmdbId, not its current one", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
@@ -436,6 +454,24 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
         return jsonResponse([
           tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" }),
         ]);
+      // SeasonEpisodePicker self-fetches its grid. Without this branch the
+      // handler's trailing throw would reject it, the picker would resolve to
+      // [] and silently render its degraded free-text fallback — where the
+      // show-level button below is still clickable, so the rest of this test
+      // would pass while exercising the wrong state entirely.
+      if (url.includes("/api/modes/series/discover/detail"))
+        return jsonResponse({
+          seasons: [
+            {
+              seasonNumber: 1,
+              name: "Season 1",
+              airDate: "2018-01-01",
+              episodeCount: 1,
+              posterPath: "",
+              episodes: [],
+            },
+          ],
+        });
       if (
         url.includes("/api/proposals/12/repick") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -447,8 +483,20 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
     render(() => <Rename />);
     fireEvent.click(await screen.findByText("Series"));
     await runRowAction("Wrong.Match.Show", "repick");
-    expect(await screen.findByText(/The Right Show/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Use this"));
+
+    // Step 1 — the auto-search resolves and the candidate tile is clicked. For
+    // Series this COMMITS NOTHING; it mounts the season/episode picker.
+    fireEvent.click(await screen.findByLabelText("Use The Right Show"));
+
+    // Step 2 — the picker really mounted, in its GRID state (a season tile),
+    // not the degraded fallback. Asserting only the loading skeleton would not
+    // discriminate: it is shown on the failing path too.
+    expect(
+      await screen.findByRole("button", { name: /Season 1/ }),
+    ).toBeInTheDocument();
+    expect(calls.some((c) => c.url.includes("sections=seasons"))).toBe(true);
+
+    fireEvent.click(screen.getByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/repick"))).toBe(true),
@@ -459,6 +507,12 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
       title: "The Right Show",
       year: 2018,
     });
+    // toMatchObject is a PARTIAL match and would not notice a stray slot key,
+    // so these two negatives — not the match above — are the D-1/D-5 guard:
+    // both endpoints 400 on episodeNumber < 1, and a show-level commit must
+    // send neither field.
+    expect(repick?.body).not.toHaveProperty("seasonNumber");
+    expect(repick?.body).not.toHaveProperty("episodeNumber");
   });
 });
 
@@ -635,8 +689,8 @@ describe("Rename — Adult (dropdown; no Status column)", () => {
   });
 });
 
-// Wave 4 (AC5) — MoveModePanel wired into the row action dropdown.
-// .omc/plans/autopilot-impl.md §6.3.
+// Wave 4 (AC5) — SearchTakeover wired into the row action dropdown.
+// .omc/plans/autopilot-impl-cross-mode-move.md §6.3.
 describe("Rename — Move to another section (row action set, AC5)", () => {
   it("offers exactly the two OTHER modes' Move actions, never the current one", async () => {
     stubFetch((url) => {
@@ -711,13 +765,13 @@ describe("Rename — Move to another section (row action set, AC5)", () => {
     expect(
       await screen.findByText(/Move “Movie\.A” to another section/),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.click(screen.getByLabelText("Back to list"));
 
     await runRowAction("Movie.A", "move:adult");
     expect(
       await screen.findByText(/Move “Movie\.A” to another section/),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.click(screen.getByLabelText("Back to list"));
 
     // Series mode — the third move id, move:movies.
     fireEvent.click(screen.getByText("Series"));
@@ -729,11 +783,11 @@ describe("Rename — Move to another section (row action set, AC5)", () => {
     expect(calls.some((c) => c.url.includes("/dismiss"))).toBe(false);
   });
 
-  // D-1a commit-403 (frontend) — .omc/plans/autopilot-impl.md §7's test
-  // table. MoveModePanel.test.tsx already covers this branch at the
+  // D-1a commit-403 (frontend) — .omc/plans/autopilot-impl-cross-mode-move.md §7's test
+  // table. SearchTakeover.test.tsx already covers this branch at the
   // component level, in isolation. This test proves the SAME behavior
   // through Rename's real row-action wiring (runRowAction -> setMoveFor ->
-  // <MoveModePanel>), not a standalone panel render — i.e. that the wiring
+  // <SearchTakeover>), not a standalone panel render — i.e. that the wiring
   // itself surfaces the commit-403 UX, not just that the panel component can
   // theoretically do it. Adult->Movies is used deliberately: the search
   // (movies/tmdb-search) is NOT gated by the Adult lock and succeeds, while
@@ -777,7 +831,7 @@ describe("Rename — Move to another section (row action set, AC5)", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.click(await screen.findByText("Use this"));
+    fireEvent.click(await screen.findByLabelText("Use Target Movie"));
 
     // (a) shows the fixed Adult commit-403 copy.
     expect(
@@ -791,7 +845,7 @@ describe("Rename — Move to another section (row action set, AC5)", () => {
       screen.getByText(/Move “Scene\.To\.Move” to another section/),
     ).toBeInTheDocument();
     expect(screen.getByText(/Target Movie/)).toBeInTheDocument();
-    expect(screen.getByText("Use this")).toBeInTheDocument();
+    expect(screen.getByLabelText("Use Target Movie")).toBeInTheDocument();
     // (d) never calls onDone: onDone would setMoveFor(null) (unmounting the
     // panel, contradicting (c) above) AND refetch() the Adult proposal list
     // — confirm that second GET never fired.
@@ -799,5 +853,306 @@ describe("Rename — Move to another section (row action set, AC5)", () => {
       calls.filter((c) => c.url.includes("/api/modes/adult/rename/proposals"))
         .length,
     ).toBe(1);
+  });
+});
+
+// Wave 5 — the full-page search takeover (.omc/plans/autopilot-impl.md §8.5,
+// rows N1/N2/N4/N4b/N5). What these add over the blocks above is CONTAINER
+// semantics and scroll state, not search/commit behaviour:
+//
+//   N1/N2  the takeover REPLACES the queue in place — the row table is
+//          genuinely un-created, not merely covered by a `fixed inset-0`
+//          backdrop the way the deleted RepickPanel/MoveModePanel were.
+//   N5     a successful commit returns to the list and refetches EXACTLY once.
+//   N4/N4b the scroll restore. Rename's copy of this mechanism is an
+//          independent implementation of Dedup's, not a shared module, so it
+//          can silently drift out of sync with zero coverage catching it.
+//
+// `/rename/proposals?` (with the ?) is the page GET throughout: the bare
+// `/rename/proposals` prefix also matches `/rename/proposals/pending-ids`,
+// which Apply all fires and which must never be counted as a page fetch.
+const pageGets = (calls: Call[], mode = "movies") =>
+  calls.filter((c) => c.url.includes(`/api/modes/${mode}/rename/proposals?`))
+    .length;
+
+describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
+  it("N1: Re-pick replaces the row table in place — the proposal row is genuinely gone, not overlaid", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 70, sourceName: "Vanish.Me.mkv", title: "Vanish Me" }),
+        ]);
+      // Re-pick auto-searches on mount (autoSearch={kind === "repick"}), so
+      // this branch is required — without it the handler's trailing throw
+      // would surface an error state instead of the takeover.
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse([tmdbItem({ id: 800, title: "Real Movie" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("Vanish.Me.mkv");
+
+    await runRowAction("Vanish.Me.mkv", "repick");
+    expect(
+      await screen.findByText(/Re-pick match for “Vanish\.Me\.mkv”/),
+    ).toBeInTheDocument();
+
+    // The whole queue subtree is un-created, not hidden: the proposal's own
+    // source cell, the table header, and the queue chrome are all absent.
+    // Under the deleted inline RepickPanel every one of these would still be
+    // in the document, merely painted over — which is what this row rules out.
+    //
+    // The source-name negative is EXACT-MATCH on purpose, and must stay that
+    // way: queryByText's string form matches a whole text node, and the
+    // takeover's own heading renders `Re-pick match for “Vanish.Me.mkv”` — the
+    // name IS still on screen, just not as its own cell. "Strengthening" this
+    // to a /Vanish\.Me\.mkv/ regex fails on the heading and looks like a
+    // regression that is not one. "Source"/"Scan"/"Page size" below are the
+    // load-bearing negatives: those are gone outright.
+    expect(screen.queryByText("Vanish.Me.mkv")).toBeNull();
+    expect(screen.queryByText("Source")).toBeNull();
+    expect(screen.queryByText("Scan")).toBeNull();
+    expect(screen.queryByLabelText("Page size")).toBeNull();
+    // ModeTabs is deliberately NOT gone — it lives outside RenameQueue. This
+    // positive is what makes the negatives above mean "replaced in place"
+    // rather than "the screen blew up and rendered nothing".
+    expect(screen.getByText("Movies")).toBeInTheDocument();
+  });
+
+  it("N2: Move replaces the row table in place too — same in-place replacement, different entry point", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 71, sourceName: "Move.Me.mkv", title: "Move Me" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("Move.Me.mkv");
+
+    await runRowAction("Move.Me.mkv", "move:series");
+    expect(
+      await screen.findByText(/Move “Move\.Me\.mkv” to another section/),
+    ).toBeInTheDocument();
+
+    // Exact-match on purpose — see N1's comment; the move heading also
+    // contains this name, so a regex here would fail for the wrong reason.
+    expect(screen.queryByText("Move.Me.mkv")).toBeNull();
+    expect(screen.queryByText("Source")).toBeNull();
+    expect(screen.queryByText("Scan")).toBeNull();
+    expect(screen.queryByLabelText("Page size")).toBeNull();
+    expect(screen.getByText("Movies")).toBeInTheDocument();
+  });
+
+  it("N5: a successful commit returns to the list and refetches the proposals exactly once", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 72, sourceName: "Commit.Me.mkv", title: "Commit Me" }),
+        ]);
+      if (url.includes("/api/modes/series/tmdb-search"))
+        return jsonResponse([
+          tmdbItem({ id: 901, title: "Target Show", releaseDate: "2019-01-01" }),
+        ]);
+      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
+      if (
+        url.includes("/api/proposals/72/move-mode") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("Commit.Me.mkv");
+    const baseline = pageGets(calls);
+
+    await runRowAction("Commit.Me.mkv", "move:series");
+    await screen.findByText(/Move “Commit\.Me\.mkv” to another section/);
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use Target Show"));
+    // Series target with zero seasons → the picker degrades and the
+    // show-level escape hatch is the commit.
+    fireEvent.click(await screen.findByText("Use show-level match only"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.includes("/move-mode"))).toBe(true),
+    );
+
+    // Back on the list: the takeover is unmounted and the table is rendered.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Back to list")).toBeNull(),
+    );
+    expect(await screen.findByText("Commit.Me.mkv")).toBeInTheDocument();
+    expect(screen.getByText("Source")).toBeInTheDocument();
+
+    // EXACTLY one refetch — not zero (a stale list still showing a proposal
+    // that has moved to another section) and not two (onDone's refetch racing
+    // a second trigger, which would double every commit's server load).
+    expect(pageGets(calls)).toBe(baseline + 1);
+  });
+});
+
+// renderInMain mounts the screen inside a real <main>, which is what Rename's
+// scroll-restore actually targets: it reaches its host with
+// rootEl.closest("main") (AppShell's <main> is the app's only scroll region —
+// the shell root is h-screen overflow-hidden, so window.scrollY is always 0).
+// Every other test in this file renders hostless on purpose, exercising the
+// documented null-host degrade path.
+const renderInMain = (): HTMLElement => {
+  const main = document.createElement("main");
+  document.body.appendChild(main);
+  render(() => <Rename />, { container: main });
+  return main;
+};
+
+describe("Rename — takeover scroll restore (N4, N4b)", () => {
+  // Rename-N4 — the back-arrow path. No refetch happens here, so the list
+  // re-renders synchronously from the already-resolved page resource.
+  //
+  // Move (not Re-pick) is the entry point deliberately: Re-pick auto-searches
+  // on mount, which would add a GET and muddy the "Back refetches nothing"
+  // assertion at the end.
+  it("N4: backing out restores the list scroll offset, with the page size and the table untouched and no extra GET", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 73, sourceName: "Scroll.Me.mkv", title: "Scroll Me" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const main = renderInMain();
+    await screen.findByText("Scroll.Me.mkv");
+
+    // A NON-default page size, so the assertion below proves the restore left
+    // the operator's list configuration alone rather than resetting it.
+    fireEvent.change(screen.getByLabelText("Page size"), {
+      target: { value: "100" },
+    });
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.includes("limit=100"))).toBe(true),
+    );
+    await screen.findByText("Scroll.Me.mkv");
+    const baseline = pageGets(calls);
+
+    // Set BEFORE the row action fires: openTakeover reads the host's scrollTop
+    // and only then flips the signal.
+    main.scrollTop = 400;
+    await runRowAction("Scroll.Me.mkv", "move:series");
+    await screen.findByText(/Move “Scroll\.Me\.mkv” to another section/);
+
+    // MANDATORY, and the single line that stops this test being vacuous.
+    // jsdom has no layout engine: removing the scroll container's children
+    // never clamps scrollTop the way a real browser does, so "set 400, open,
+    // close, assert 400" passes IDENTICALLY whether the restore works or is
+    // absent entirely. Zeroing here simulates the browser's layout collapse,
+    // which is what makes the final assertion mean "the restore WROTE this",
+    // not "nothing disturbed it".
+    main.scrollTop = 0;
+
+    fireEvent.click(screen.getByLabelText("Back to list"));
+    // The restore is deferred by a queueMicrotask (the effect runs before Solid
+    // has flushed the re-inserted rows), hence waitFor rather than a bare read.
+    await waitFor(() => expect(main.scrollTop).toBe(400));
+
+    expect(await screen.findByText("Scroll.Me.mkv")).toBeInTheDocument();
+    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(screen.getByText("Scroll Me")).toBeInTheDocument();
+    expect(
+      (
+        screen.getByLabelText("Page size") as HTMLSelectElement
+      ).value,
+    ).toBe("100");
+    // The back path refetches nothing — the list comes back off the resolved
+    // resource, which is also why the restore can fire immediately here.
+    expect(pageGets(calls)).toBe(baseline);
+  });
+
+  // Rename-N4b — the commit path, and the harder of the two. The restore must
+  // fire only AFTER page.loading clears; a restore fired straight after
+  // setTakeover(null) lands on the "Loading…" DOM, where a real browser clamps
+  // it to ~0 and the offset is silently lost. The mid-flight `=== 0` assertion
+  // below is the executable proof that Rename.tsx's onDone really does
+  // batch(refetch-then-setTakeover) — see the walkthrough in that comment.
+  it("N4b: on a successful commit the restore is held until the refetch lands — still 0 mid-flight, 400 only after", async () => {
+    let releaseRefetch!: () => void;
+    let pageGetCount = 0;
+    const row = proposal({
+      id: 74,
+      sourceName: "Commit.Scroll.mkv",
+      title: "Commit Scroll",
+    });
+
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/rename/proposals?")) {
+        pageGetCount += 1;
+        if (pageGetCount === 1) return jsonResponse([row]);
+        // The post-commit refetch is held PENDING and resolved by hand, so the
+        // test can observe the in-flight window rather than only the end state.
+        return new Promise<Response>((resolve) => {
+          releaseRefetch = () => resolve(jsonResponse([row]));
+        });
+      }
+      if (url.includes("/api/modes/series/tmdb-search"))
+        return jsonResponse([
+          tmdbItem({ id: 902, title: "Target Show", releaseDate: "2019-01-01" }),
+        ]);
+      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
+      if (
+        url.includes("/api/proposals/74/move-mode") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const main = renderInMain();
+    await screen.findByText("Commit.Scroll.mkv");
+
+    main.scrollTop = 400;
+    await runRowAction("Commit.Scroll.mkv", "move:series");
+    await screen.findByText(/Move “Commit\.Scroll\.mkv” to another section/);
+
+    // Same mandatory zeroing as N4 — see that test's comment.
+    main.scrollTop = 0;
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use Target Show"));
+    fireEvent.click(await screen.findByText("Use show-level match only"));
+
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.includes("/api/proposals/74/move-mode")),
+      ).toBe(true),
+    );
+    // The takeover is closed and the refetch is in flight: the queue shows the
+    // Loading… fallback, NOT the real table.
+    await waitFor(() =>
+      expect(screen.getByText("Loading…")).toBeInTheDocument(),
+    );
+
+    // THE POINT OF THIS TEST. A plain synchronous read, never wrapped in
+    // waitFor — a retrying matcher on a negative proves nothing. If onDone
+    // reverted to `setTakeover(null); void refetch();` (unbatched, setter
+    // first), the restore effect would observe page.loading === false, queue
+    // `scrollTop = 400` via queueMicrotask, and clear savedScrollTop — and
+    // microtasks drain before waitFor's next poll, so this line would read 400
+    // and fail. Under the shipped batch(refetch-then-close) ordering the effect
+    // observes one consistent state with loading already true, returns early,
+    // and the value is still held.
+    expect(main.scrollTop).toBe(0);
+    expect(screen.queryByText("Commit.Scroll.mkv")).toBeNull();
+
+    releaseRefetch();
+
+    // Only now, with the real table back, does the restore fire.
+    expect(await screen.findByText("Commit.Scroll.mkv")).toBeInTheDocument();
+    await waitFor(() => expect(main.scrollTop).toBe(400));
+    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(screen.getByText("Commit Scroll")).toBeInTheDocument();
   });
 });

@@ -254,6 +254,25 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 	return tx.Commit()
 }
 
+// DeleteItemTx is Delete's caller-transaction-scoped sibling, added for the
+// cross-mode move's source-row retirement (.omc/plans/autopilot-impl.md
+// §4.2b). It takes a *sql.Tx rather than using s.db because retirement must
+// commit or roll back together with the proposals.mode UPDATE that owns the
+// transaction (Store.MoveMode) — a partial apply is data loss.
+//
+// Single statement, unlike Delete's explicit two-statement body: the schema
+// (now Postgres, not SQLite) declares library_tags.item_id and
+// library_item_files.item_id as ON DELETE CASCADE on library_items(id)
+// (0001_baseline.sql:476, 0003_library_item_files.sql:22), so both dependent
+// tables clear themselves. Deleting an id that doesn't exist is not an
+// error, matching Delete's convention.
+func (s *Store) DeleteItemTx(ctx context.Context, tx *sql.Tx, id int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM library_items WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("deleting library item %d: %w", id, err)
+	}
+	return nil
+}
+
 // Tags returns itemID's assigned tags, alphabetically.
 func (s *Store) Tags(ctx context.Context, itemID int64) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT tag FROM library_tags WHERE item_id = ? ORDER BY tag`, itemID)

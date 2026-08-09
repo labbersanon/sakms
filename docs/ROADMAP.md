@@ -492,6 +492,60 @@ Still open (deliberately, not forgotten):
   purpose" comments (`fixedURLServices`, the legacy `TestConnection` case)
   point at it as their review trigger.
 
+<!-- Claude 2026-08-08: added for the cross-mode move feature.
+     Reason: the feature's plan went through 5 critic REVISE rounds finding
+     two real, severe defects during planning (a cross-mode Dedup data-loss
+     bug and an Adult-library exfiltration path) — a future session touching
+     this endpoint needs that context before "simplifying" anything here.
+     Review if: the copy+unlink relocation fallback below ever gets built,
+     or if D-1a's Adult-gating design is ever revisited. -->
+### Cross-mode "move to another section" (Rename + Dedup) — shipped 2026-08-08
+`.omc/specs/deep-interview-sakms-cross-mode-move-rename-dedup.md`, built per
+`.omc/plans/autopilot-impl.md` (5 critic REVISE rounds before APPROVE — the
+most adversarially reviewed plan this project has produced). New
+`POST /api/proposals/{id}/move-mode` lets an operator reassign a Proposal
+scanned into the wrong Mode (Movies/Series/Adult); new
+`GET /api/modes/adult/scene-search` gives Adult its first multi-result
+correction surface. See the 2026-08-08 CHANGELOG entry for the full file
+list, both defects found during planning, and the mutation-testing evidence
+that the regression tests for them actually catch the bugs they're named
+for.
+
+Things a future session should not quietly undo:
+- **Every candidate's `TrackedID` is zeroed on move, and the source mode's
+  tracking rows are retired in the SAME transaction as the mode UPDATE.**
+  Neither half alone is safe — zeroing without retirement leaves dangling/
+  double-tracked library rows; retirement without the shared transaction
+  means a routine 409 conflict silently destroys library rows while
+  reporting the move as "failed". Don't split these into separate steps
+  outside `Store.MoveMode`'s ownership.
+- **Never call `DeleteSeries` from the retirement path.** A Series
+  candidate's `TrackedID` is an EPISODE id, not a series id — `DeleteSeries`
+  would cascade-delete an entire unrelated series' tracking history. Use
+  `DeleteEpisodeTx`.
+- **Any move touching Adult (source OR target) requires the Adult section
+  unlocked — this deliberately deviates from the spec's literal AC7 text**,
+  which said the PIN lock should only gate viewing, not moving. Confirmed
+  with Wade during planning after the ungated design turned out to be an
+  enumerable way to read Adult filenames out of the Movies queue without
+  ever entering the PIN. Movies↔Series stays fully ungated.
+- **Dedup moves never relocate files and preserve `root_folder_path`**
+  (`internal/dedup` has no relocation call anywhere) — the opposite of the
+  Rename-workflow behavior, which rewrites `root_folder_path` to the target
+  root. Don't unify these two without re-deriving why they differ.
+
+Still open (deliberately, not forgotten):
+- **No cross-device (EXDEV) relocation fallback.** A move whose target
+  library root is on a different filesystem than the source commits the
+  mode change and then fails at Apply with `invalid cross-device link` — a
+  recoverable, non-destructive outcome (Apply declines, the proposal stays
+  Pending), but not a great one. The real fix is a copy+unlink fallback in
+  `internal/rename`, which benefits every relocation path in the app, not
+  just this feature — genuinely out of scope here, filed as a real backlog
+  item, not a rejected idea.
+- AC9's manual dev click-through and AC10's live server1 deploy verification
+  are Wade's to run.
+
 
 ### Season/episode picker redesign (poster grid + TMDB response cache) — shipped 2026-08-02
 `.omc/specs/deep-interview-season-episode-picker-redesign.md`, built per

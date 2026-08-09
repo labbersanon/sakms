@@ -12,7 +12,7 @@ import { Rename } from "./Rename";
 
 const runRowAction = async (
   sourceName: string,
-  action: "rename" | "repick" | "dismiss",
+  action: "rename" | "repick" | "dismiss" | "move:movies" | "move:series" | "move:adult",
 ) => {
   const row = (await screen.findByText(sourceName)).closest("tr");
   expect(row).toBeTruthy();
@@ -632,5 +632,172 @@ describe("Rename — Adult (dropdown; no Status column)", () => {
         name: "Apply selected action for Studio - Unidentified Scene",
       }),
     ).toBeNull();
+  });
+});
+
+// Wave 4 (AC5) — MoveModePanel wired into the row action dropdown.
+// .omc/plans/autopilot-impl.md §6.3.
+describe("Rename — Move to another section (row action set, AC5)", () => {
+  it("offers exactly the two OTHER modes' Move actions, never the current one", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([proposal({ id: 1, sourceName: "Movie.A" })]);
+      if (url.includes("/api/modes/series/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 2, sourceName: "Show.A", title: "Show A" }),
+        ]);
+      if (url.includes("/api/modes/adult/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 3, sourceName: "Scene.A", title: "Scene A" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+
+    const assertOptions = async (
+      sourceName: string,
+      expectedLabels: string[],
+      excludedLabel: string,
+    ) => {
+      const row = (await screen.findByText(sourceName)).closest("tr")!;
+      const select = within(row).getByRole("combobox");
+      for (const label of expectedLabels) {
+        expect(
+          within(select).getByRole("option", { name: label }),
+        ).toBeInTheDocument();
+      }
+      expect(
+        within(select).queryByRole("option", { name: excludedLabel }),
+      ).toBeNull();
+    };
+
+    await assertOptions(
+      "Movie.A",
+      ["Move to Series", "Move to Adult"],
+      "Move to Movies",
+    );
+
+    fireEvent.click(screen.getByText("Series"));
+    await assertOptions(
+      "Show.A",
+      ["Move to Movies", "Move to Adult"],
+      "Move to Series",
+    );
+
+    fireEvent.click(screen.getByText("Adult"));
+    await assertOptions(
+      "Scene.A",
+      ["Move to Movies", "Move to Series"],
+      "Move to Adult",
+    );
+  });
+
+  it("selecting a Move action never dismisses the proposal", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([proposal({ id: 1, sourceName: "Movie.A" })]);
+      if (url.includes("/api/modes/series/rename/proposals"))
+        return jsonResponse([
+          proposal({ id: 2, sourceName: "Show.A", title: "Show A" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+
+    // Movies mode — both other-mode move actions.
+    await runRowAction("Movie.A", "move:series");
+    expect(
+      await screen.findByText(/Move “Movie\.A” to another section/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Cancel"));
+
+    await runRowAction("Movie.A", "move:adult");
+    expect(
+      await screen.findByText(/Move “Movie\.A” to another section/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Cancel"));
+
+    // Series mode — the third move id, move:movies.
+    fireEvent.click(screen.getByText("Series"));
+    await runRowAction("Show.A", "move:movies");
+    expect(
+      await screen.findByText(/Move “Show\.A” to another section/),
+    ).toBeInTheDocument();
+
+    expect(calls.some((c) => c.url.includes("/dismiss"))).toBe(false);
+  });
+
+  // D-1a commit-403 (frontend) — .omc/plans/autopilot-impl.md §7's test
+  // table. MoveModePanel.test.tsx already covers this branch at the
+  // component level, in isolation. This test proves the SAME behavior
+  // through Rename's real row-action wiring (runRowAction -> setMoveFor ->
+  // <MoveModePanel>), not a standalone panel render — i.e. that the wiring
+  // itself surfaces the commit-403 UX, not just that the panel component can
+  // theoretically do it. Adult->Movies is used deliberately: the search
+  // (movies/tmdb-search) is NOT gated by the Adult lock and succeeds, while
+  // the commit is gated because the proposal's own (source) mode is Adult —
+  // the one case the section-agnostic search-403 test structurally can't
+  // reach, since there the search itself is what fails.
+  it("commit-403 (Adult PIN-locked) is a separate branch from search-403 through the real row-action wiring — Adult→Movies, where the search succeeds", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/adult/rename/proposals"))
+        return jsonResponse([
+          proposal({
+            id: 9,
+            sourceName: "Scene.To.Move",
+            title: "Scene To Move",
+          }),
+        ]);
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse([
+          tmdbItem({ id: 555, title: "Target Movie", releaseDate: "2020-01-01" }),
+        ]);
+      if (url.includes("/api/proposals/9/move-mode")) {
+        return new Response(
+          JSON.stringify({
+            error: "section locked",
+            code: "section_locked",
+            section: "adult-content",
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await runRowAction("Scene.To.Move", "move:movies");
+    expect(
+      await screen.findByText(/Move “Scene\.To\.Move” to another section/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByText("Use this"));
+
+    // (a) shows the fixed Adult commit-403 copy.
+    expect(
+      await screen.findByText("Adult is PIN-locked — unlock to continue"),
+    ).toBeInTheDocument();
+    // (b) never the search-blocked copy — the search succeeded here.
+    expect(screen.queryByText(/unlock it to search/)).toBeNull();
+    // (c) the panel stays open with the picked candidate still selected and
+    // clickable — unlock-and-retry is one click.
+    expect(
+      screen.getByText(/Move “Scene\.To\.Move” to another section/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Target Movie/)).toBeInTheDocument();
+    expect(screen.getByText("Use this")).toBeInTheDocument();
+    // (d) never calls onDone: onDone would setMoveFor(null) (unmounting the
+    // panel, contradicting (c) above) AND refetch() the Adult proposal list
+    // — confirm that second GET never fired.
+    expect(
+      calls.filter((c) => c.url.includes("/api/modes/adult/rename/proposals"))
+        .length,
+    ).toBe(1);
   });
 });

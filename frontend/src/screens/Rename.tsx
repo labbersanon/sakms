@@ -40,11 +40,13 @@ import {
   BatchResultSummary,
   Button,
   ErrorText,
+  modeLabel,
   ModeTabs,
   Muted,
   yearOf,
 } from "../components/ui";
 import { useWorkflowActions } from "./workflowHooks";
+import { MoveModePanel, otherModes } from "./MoveModePanel";
 import {
   ActivityLogPanel,
   PageSizeSelect,
@@ -52,12 +54,28 @@ import {
   ShowHistoryToggle,
 } from "./OrganizeChrome";
 
-type RowActionId = "rename" | "repick" | "dismiss";
+type RowActionId =
+  | "rename"
+  | "repick"
+  | "dismiss"
+  | "move:movies"
+  | "move:series"
+  | "move:adult";
 
-const ROW_ACTIONS: { id: RowActionId; label: string }[] = [
+const BASE_ROW_ACTIONS: { id: RowActionId; label: string }[] = [
   { id: "rename", label: "Rename" },
   { id: "repick", label: "Re-pick" },
   { id: "dismiss", label: "Dismiss" },
+];
+
+// rowActions is a function of the proposal's CURRENT mode: the two move
+// entries offered are always the OTHER two modes, never the current one.
+const rowActions = (m: Mode): { id: RowActionId; label: string }[] => [
+  ...BASE_ROW_ACTIONS,
+  ...otherModes(m).map((t) => ({
+    id: `move:${t}` as RowActionId,
+    label: `Move to ${modeLabel(t)}`,
+  })),
 ];
 
 function rowActionEnabled(
@@ -71,6 +89,13 @@ function rowActionEnabled(
     case "repick":
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
+      return status === "pending" || status === "unmatched";
+    // Move affordances are deliberately NOT gated on titleMode (AC7): the
+    // row-level control is available regardless of PIN-lock state; the
+    // actual PIN gating happens deeper, in the panel's commit call.
+    case "move:movies":
+    case "move:series":
+    case "move:adult":
       return status === "pending" || status === "unmatched";
   }
 }
@@ -129,15 +154,17 @@ type ApplyAllPlanItem = {
 
 const RowActions: Component<{
   proposal: Proposal;
+  mode: Mode;
   titleMode: boolean;
   selected: RowActionId | "";
   onSelect: (id: RowActionId | "") => void;
   onRun: (id: RowActionId) => void;
   disabled?: boolean;
 }> = (props) => {
+  const actions = () => rowActions(props.mode);
   const enabled = (id: RowActionId) =>
     rowActionEnabled(id, props.proposal.status, props.titleMode);
-  const hasAny = () => ROW_ACTIONS.some((a) => enabled(a.id));
+  const hasAny = () => actions().some((a) => enabled(a.id));
   const selectedOk = () => {
     const id = props.selected;
     return id && enabled(id) ? id : "";
@@ -173,7 +200,7 @@ const RowActions: Component<{
       >
         {/* Placeholder must stay enabled — Chromium skips disabled empty options. */}
         <option value="">select action</option>
-        <For each={ROW_ACTIONS}>
+        <For each={actions()}>
           {(a) => (
             <option value={a.id} disabled={!enabled(a.id)}>
               {a.label}
@@ -466,6 +493,10 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   );
   const proposals = () => page()?.items ?? [];
   const [repickFor, setRepickFor] = createSignal<Proposal | null>(null);
+  const [moveFor, setMoveFor] = createSignal<{
+    proposal: Proposal;
+    target: Mode;
+  } | null>(null);
   const [batchResult, setBatchResult] = createSignal<ApplyBatchResponse | null>(
     null,
   );
@@ -517,6 +548,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     useWorkflowActions(() => props.mode, {
       resetOnModeChange: () => {
         setRepickFor(null);
+        setMoveFor(null);
         setBatchResult(null);
         setApplyAllPlan(null);
         setSelections({});
@@ -533,6 +565,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       },
       resetAfterAct: () => {
         setRepickFor(null);
+        setMoveFor(null);
       },
       refetch,
     },
@@ -548,7 +581,20 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
     } else if (id === "repick") {
       setRepickFor(p);
-    } else {
+    } else if (id.startsWith("move:")) {
+      // Claude 2026-08-08: explicit move:* branch BEFORE the dismiss check.
+      // Reason: the previous trailing `else` was a catch-all (any unmatched
+      //   id silently dismissed), not an "id === dismiss" check — a move:*
+      //   id added to the union without this branch would have fallen
+      //   through and dismissed the proposal instead of opening the move
+      //   panel. See .omc/plans/autopilot-impl.md §6.3 step 5.
+      // Troubleshooting: a Move action deleting/dismissing a proposal instead
+      //   of opening MoveModePanel.
+      // Review if: RowActionId gains another id — it needs its own branch
+      //   here too, since the trailing branch below is now id-specific, not
+      //   a catch-all.
+      setMoveFor({ proposal: p, target: id.slice("move:".length) as Mode });
+    } else if (id === "dismiss") {
       void act(() => dismissProposal(p.id)).then(() => setLogKey((k) => k + 1));
     }
   };
@@ -769,6 +815,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                       <td class="px-2 py-2">
                         <RowActions
                           proposal={p}
+                          mode={props.mode}
                           titleMode={isTitleMode()}
                           selected={selectionOf(p)}
                           onSelect={(id) => setSelection(p.id, id)}
@@ -803,6 +850,25 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
               void refetch();
             }}
             onCancel={() => setRepickFor(null)}
+          />
+        )}
+      </Show>
+
+      {/* No isTitleMode() guard, deliberately (AC7/§6.3 step 6) — this must
+          mount for Adult rows too. */}
+      <Show when={moveFor()}>
+        {(m) => (
+          <MoveModePanel
+            workflow="rename"
+            proposalId={m().proposal.id}
+            sourceName={m().proposal.sourceName}
+            targetMode={m().target}
+            onDone={() => {
+              setActionError("");
+              setMoveFor(null);
+              void refetch();
+            }}
+            onCancel={() => setMoveFor(null)}
           />
         )}
       </Show>

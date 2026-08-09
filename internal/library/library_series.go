@@ -202,6 +202,32 @@ func (s *Store) DeleteSeries(ctx context.Context, seriesID int64) error {
 	return tx.Commit()
 }
 
+// DeleteEpisodeTx removes ONE episode row, inside a caller-supplied
+// transaction, added for the cross-mode move's source-row retirement
+// (.omc/plans/autopilot-impl.md §4.2b). It takes a *sql.Tx rather than
+// using s.db because retirement must commit or roll back together with the
+// proposals.mode UPDATE that owns the transaction (Store.MoveMode) — a
+// partial apply is data loss.
+//
+// It is deliberately NOT DeleteSeries, and must never be implemented by
+// calling DeleteSeries(episodeID): a Series-sourced Dedup Candidate's
+// TrackedID is an EPISODE id, not a series id
+// (internal/dedup/dedup_library_series_test.go:169). DeleteSeries cascades —
+// it deletes every episode for a series plus library_series_tags,
+// library_season_monitored, and the library_series row itself. Passing an
+// episode id into it would silently cascade-delete an entirely unrelated
+// series' complete tracking history. This method is single-row, single-
+// statement, and touches nothing else: library_episode_files.episode_id is
+// ON DELETE CASCADE on library_episodes(id) (0005_library_episode_files.sql:25),
+// so that dependent clears itself. Deleting an id that doesn't exist is not
+// an error, matching DeleteSeries' convention.
+func (s *Store) DeleteEpisodeTx(ctx context.Context, tx *sql.Tx, episodeID int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM library_episodes WHERE id = ?`, episodeID); err != nil {
+		return fmt.Errorf("deleting episode %d: %w", episodeID, err)
+	}
+	return nil
+}
+
 // UpsertEpisode creates or updates the row for one (seriesID, season,
 // episode) — the same call records both "TMDB says this episode exists"
 // (FilePath left "") and "we found/grabbed the file" (FilePath set),

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,6 +257,173 @@ func TestSceneByID_Found(t *testing.T) {
 	}
 	if got == nil || got.Source != "stashdb_id" || got.SceneID != "uuid1" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// newBoxSearcherMultiFakes is newBoxSearcherWithFakes' multi-stash-box
+// sibling: ListSceneCandidates fans out across an arbitrary number of
+// configured stash boxes (unlike SearchStashBox's single-box lookups above),
+// so its tests need more than one named fake to configure.
+func newBoxSearcherMultiFakes(t *testing.T, stashboxHandlers map[string]http.HandlerFunc, tpdbHandler http.HandlerFunc) *BoxSearcher {
+	t.Helper()
+	boxes := map[string]*stashbox.Client{}
+	for name, handler := range stashboxHandlers {
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+		boxes[name] = stashbox.New(stashbox.Config{Endpoint: srv.URL, APIKey: "k"}, &http.Client{Timeout: 5 * time.Second})
+	}
+	var tpdb *tpdbrest.Client
+	if tpdbHandler != nil {
+		srv := httptest.NewServer(tpdbHandler)
+		t.Cleanup(srv.Close)
+		tpdb = tpdbrest.New(srv.URL, "k", &http.Client{Timeout: 5 * time.Second})
+	}
+	return NewBoxSearcher(boxes, tpdb)
+}
+
+func TestListSceneCandidates_MultiBoxFanOut(t *testing.T) {
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"s1","title":"Scene From StashDB","release_date":"2020-01-01","studio":{"name":"Studio A","parent":null},"duration":1800}
+			]}}}`))
+		},
+		"fansdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"f1","title":"Scene From FansDB","release_date":"2021-02-02","studio":{"name":"Studio B","parent":null},"duration":900}
+			]}}}`))
+		},
+	}, nil)
+
+	order := []DatabaseRef{{Name: "stashdb"}, {Name: "fansdb"}}
+	items, softErrs := b.ListSceneCandidates(context.Background(), "Some Title", order)
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items (one per box), got %d: %+v", len(items), items)
+	}
+	var sawStashdb, sawFansdb bool
+	for _, it := range items {
+		switch it.Box {
+		case "stashdb":
+			sawStashdb = true
+			if it.SceneID != "s1" || it.Title != "Scene From StashDB" || it.Studio != "Studio A" || it.Date != "2020-01-01" || it.DurationSeconds != 1800 {
+				t.Errorf("stashdb item mismapped: %+v", it)
+			}
+		case "fansdb":
+			sawFansdb = true
+			if it.SceneID != "f1" || it.Title != "Scene From FansDB" {
+				t.Errorf("fansdb item mismapped: %+v", it)
+			}
+		}
+	}
+	if !sawStashdb || !sawFansdb {
+		t.Fatalf("expected results from both boxes, got %+v", items)
+	}
+}
+
+func TestListSceneCandidates_TPDBIncluded(t *testing.T) {
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[]}}`))
+		},
+	}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"_id":"t1","title":"Scene From TPDB","date":"2022-03-03","site":{"name":"Studio C"},"image":"http://cdn/t1.jpg","duration":1200}]}`))
+	})
+
+	items, softErrs := b.ListSceneCandidates(context.Background(), "Some Title", []DatabaseRef{{Name: "stashdb"}})
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected exactly 1 TPDB item, got %d: %+v", len(items), items)
+	}
+	got := items[0]
+	if got.Box != "tpdb" || got.SceneID != "t1" || got.Title != "Scene From TPDB" || got.Studio != "Studio C" || got.Date != "2022-03-03" || got.ImageURL != "http://cdn/t1.jpg" || got.DurationSeconds != 1200 {
+		t.Fatalf("TPDB item mismapped: %+v", got)
+	}
+}
+
+func TestListSceneCandidates_PerBoxSoftFailureTolerated(t *testing.T) {
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+		"fansdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"f1","title":"Scene From FansDB","release_date":"2021-02-02","studio":{"name":"Studio B","parent":null},"duration":900}
+			]}}}`))
+		},
+	}, nil)
+
+	order := []DatabaseRef{{Name: "stashdb"}, {Name: "fansdb"}}
+	items, softErrs := b.ListSceneCandidates(context.Background(), "Some Title", order)
+	if len(items) != 1 || items[0].Box != "fansdb" {
+		t.Fatalf("expected the healthy box's results to still come back, got %+v", items)
+	}
+	if len(softErrs) != 1 || !strings.Contains(softErrs[0], "stashdb") {
+		t.Fatalf("expected exactly 1 soft error mentioning stashdb, got %v", softErrs)
+	}
+}
+
+func TestListSceneCandidates_CapAt50(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString(`{"data":{"searchScene":[`)
+	for i := 0; i < 60; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(`{"id":"id` + strconv.Itoa(i) + `","title":"Scene ` + strconv.Itoa(i) + `","release_date":"2020-01-01","studio":{"name":"Studio","parent":null}}`)
+	}
+	sb.WriteString(`]}}`)
+	body := sb.String()
+
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		},
+	}, nil)
+
+	items, softErrs := b.ListSceneCandidates(context.Background(), "Some Title", []DatabaseRef{{Name: "stashdb"}})
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 50 {
+		t.Fatalf("expected the union to be capped at 50, got %d", len(items))
+	}
+}
+
+func TestListSceneCandidates_EmptyOrderFallsBackToLegacyCascade(t *testing.T) {
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"s1","title":"Scene From StashDB","release_date":"2020-01-01","studio":{"name":"Studio A","parent":null}}
+			]}}}`))
+		},
+		"fansdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"f1","title":"Scene From FansDB","release_date":"2021-02-02","studio":{"name":"Studio B","parent":null}}
+			]}}}`))
+		},
+	}, nil)
+
+	// order == nil must behave exactly like the legacy {"stashdb","fansdb"}
+	// sequence (cascade.go's legacyCascade), consulting BOTH configured boxes.
+	items, softErrs := b.ListSceneCandidates(context.Background(), "Some Title", nil)
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected the legacy fallback to consult both stashdb and fansdb, got %d items: %+v", len(items), items)
 	}
 }
 

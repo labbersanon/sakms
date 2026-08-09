@@ -6480,3 +6480,162 @@ rule):**
   `go test ./...` green except the pre-existing `internal/sysinfo` GPU tests,
   which read the host's real sysfs and fail on any machine with a GPU
   installed — unrelated to and untouched by this work.
+
+## 2026-08-08 — Cross-mode "move to another section" (Rename + Dedup)
+
+A file scanned into the wrong Mode (Movies/Series/Adult) had no recovery
+path — repick only re-matches within the proposal's own Mode's catalog. This
+adds a new `POST /api/proposals/{id}/move-mode` endpoint plus UI on both the
+Rename and Dedup screens to reassign a Proposal to a different Mode, with a
+new `GET /api/modes/adult/scene-search` surface (Adult had no multi-result
+correction path of any kind before this — `SearchStashBox`/`SearchTPDB`
+each collapse to one best guess, structurally unusable for a "pick one of
+these" UI).
+
+Went through `/deep-interview` (6 rounds, 20% ambiguity) → architect plan →
+critic, **5 REVISE rounds before APPROVE** — this is the most adversarially
+reviewed plan this project has produced, because planning surfaced two real,
+severe defects before a line of implementation code existed:
+
+1. **Cross-mode Dedup data loss.** `Candidate.TrackedID` is a foreign key
+   scoped to whichever library table the proposal's Mode implies
+   (`library_items`/episode rows/`library_scenes` — three independent id
+   sequences). Carrying it across a Mode change re-points it at an unrelated
+   row in a *different* table: an Adult Dedup group moved to Movies and then
+   Applied would `os.Remove` an unrelated movie file from disk. Fixed by
+   zeroing every candidate's `TrackedID` on move (routes Apply's removal
+   helpers into their existing path-based-delete branch) — which on its own
+   creates a second, subtler bug: the *source* mode's tracking row is now
+   orphaned or, on the other Apply outcome, double-tracked. Fixed by
+   **retiring the source mode's tracking rows inside the same transaction**
+   as the mode UPDATE, via a new `RetireFunc` callback `Store.MoveMode` owns
+   — a routine `ErrModeMoveConflict` (409) now genuinely rolls back both
+   halves together instead of destroying library rows on an ordinary error
+   path. New `library.Store.DeleteItemTx`/`DeleteSceneTx`/`DeleteEpisodeTx`
+   are tx-scoped single/two-statement deletes — critically **not**
+   `DeleteSeries` for the episode case (a Series candidate's `TrackedID` is
+   an *episode* id; calling `DeleteSeries` with it would cascade-delete an
+   entire unrelated series' tracking history) and **not** a wrapper around
+   the existing self-committing `DeleteScene` (which would commit
+   independently of `MoveMode`'s transaction). `DeleteSceneTx` is
+   deliberately two statements (tags then scene) because
+   `library_scene_tags.scene_id` is `ON DELETE NO ACTION`, not CASCADE —
+   confirmed against the migration set, the only one of the four relevant
+   FKs that isn't.
+2. **An ungated move endpoint is an enumerable Adult-library exfiltration
+   primitive.** The interview's own answer was that the Adult PIN lock
+   should gate viewing, not moving, in either direction. Correct in the
+   abstract, but the move endpoint necessarily preserves `source_name`/
+   `source_path` (the file hasn't relocated yet), and an Adult file's name
+   IS its scene metadata (`Studio - Title (Date) [phash-...]`). Since the
+   Adult section-lock gate keys off the URL path (`rest[0] == "adult"`), a
+   PIN-locked session could move Adult proposals to Movies one at a time by
+   sequential proposal id, then read the original filenames straight out of
+   the now-unlocked Movies queue — a complete, silent defeat of the lock,
+   not an edge case. **Presented to Wade as an explicit, narrow deviation
+   from the interview's literal answer and confirmed**: any move where
+   source OR target Mode is Adult now requires the Adult section unlocked
+   (`denyIfAdultLocked`, mirroring `dismissProposalHandler`'s existing
+   row-addressed check); Movies↔Series stays fully ungated, matching the
+   original answer. The move-commit endpoint's UI-visible half of AC7 is
+   preserved — "Move to Adult" is never hidden or disabled by lock state,
+   a locked operator just gets an actionable "unlock to continue" message
+   at commit time instead of a silently missing option.
+
+Implementation ran in 5 waves (DTOs → 4 parallel backend/frontend pieces →
+2 parallel HTTP handlers → 2 parallel screen-wiring pieces → integration
+tests), each independently build/vet/test-verified, then confirmed to
+integrate cleanly as a whole. The final integration wave used **mutation
+testing** to prove the critical regression tests aren't vacuous — reverting
+the `TrackedID` zeroing line, the retirement callback, and a
+branch-scoped skip each turned the correct, specific tests red (including
+reproducing the exact original bug signature: an unrelated movie file
+actually deleted from disk), then green again on revert. Final architect
+review (THOROUGH tier, fresh evidence — independently reproduced one
+mutation itself rather than trusting the report) found no logic defects but
+REJECTed on three bounded, non-logic issues, since fixed: three source
+comments left over from the parallel-wave process that were true when
+written and false once the next wave landed (now removed), and zero backend
+test coverage for moving an `Unmatched`-status proposal — the Dedup
+screen's own stated primary use case for this feature ("exactly the one an
+operator most needs to move").
+
+**Not done, deliberately:**
+- **No cross-device (EXDEV) pre-flight check.** Every relocation in this
+  repo is a bare `os.Rename` with no fallback; a move whose target library
+  root is on a different filesystem than the source commits the mode
+  change and then fails at Apply with `invalid cross-device link`. A
+  blocking pre-flight was drafted and withdrawn as self-contradictory — on
+  a multi-mount deployment (this repo's own, per `~/CLAUDE.md`: Movies/
+  Series under CIFS, Adult elsewhere) it would reject the feature's own
+  headline use case. Documented as a known limitation with a non-blocking
+  frontend advisory; the real fix (a copy+unlink fallback in
+  `internal/rename`) is out of scope, filed as follow-up in
+  `docs/ROADMAP.md`.
+- **Dedup moves never relocate files** — `internal/dedup` has no
+  `os.Rename`/`Relocate*` call anywhere, so a moved Dedup group's files stay
+  physically where they are; only the group's Mode re-keys. A subsequent
+  Rename scan in the target mode is what actually relocates them.
+  `root_folder_path` is therefore preserved (not rewritten) for Dedup moves,
+  the opposite of the Rename-workflow behavior.
+- **No catalog validation on the commit.** The handler trusts the
+  TMDB id / `(box, sceneId)` the operator picked out of a search result,
+  same as `repickProposalHandler` already does — a hand-crafted bogus id
+  yields a proposal that simply fails at Apply.
+
+**Verification.** `go build ./... && go vet ./...` clean. Real-DB
+(`SAKMS_TEST_DATABASE_URL_REQUIRED=1`) suite: 1659/1659 across
+`internal/proposals`, `internal/api`, `internal/identify`,
+`internal/sectionlock`, `internal/library`, `internal/dedup` — zero
+regressions, no pre-existing test file modified. `Repick`/`RepickEpisode`
+confirmed byte-identical against `HEAD` (their line range shifted +2 from
+two new imports; content unchanged). `go run ./cmd/gendto` regeneration
+produces zero drift. Frontend: `tsc --noEmit` and `vite build` clean,
+878/879 (the one failure, a `Settings.test.tsx` phash-threshold assertion,
+is pre-existing and reproduces identically on a clean `main` checkout —
+unrelated to and untouched by this work).
+
+| File | Change |
+|---|---|
+| `internal/apidto/dto.go` | + `MoveModeRequest`, `AdultSceneCandidate`, `AdultSceneSearchResponse`; regenerated `ts/dto.gen.ts` |
+| `internal/api/proposals_movemode.go` | **New** — `moveProposalModeHandler`, the 12-step flow incl. the D-1a Adult gate, root-folder resolution, retirement-closure build, single-transaction commit |
+| `internal/api/adult_scene_search.go` | **New** — `adultSceneSearchHandler`, gated by the Adult section lock |
+| `internal/api/handler.go` | Registered both new routes |
+| `internal/api/proposals.go` | Two stale doc comments (claiming an Adult correction path already existed) corrected to point at the new endpoint |
+| `internal/api/dto_drift_test.go` | + `moveModeRequest`/`adultSceneCandidate` cases (deliberately NOT `adultSceneSearchResponse` — nested named-type field comparison differs by package by construction) |
+| `internal/api/movemode_test.go`, `movemode_validation_test.go`, `movemode_retire_test.go`, `movemode_dedup_apply_test.go` | **New** — the full integration suite: dispatch per target mode, D-1a both directions, TrackedID zeroing + the delete-unrelated-file regression test (both directions), winner-registration incl. the Series-only path, source-row retirement (Movies/Series/Adult+tagged-scene, keep-either-candidate variants), conflict-rollback, and the smaller rejection-gate/validation cases |
+| `internal/proposals/proposals.go` | + `Store.MoveMode`, `MoveTarget`, `RetireFunc`, `ErrModeMoveConflict`, appended strictly after `RepickEpisode` |
+| `internal/proposals/repick_frozen_test.go` | **New** — AST-based test asserting only `Repick`/`RepickEpisode`'s SQL column lists against goldens (survives a gofmt run or comment edit; the column list is the actual invariant) |
+| `internal/proposals/movemode_test.go` | **New** — store-level `MoveMode` tests |
+| `internal/library/library.go`, `library_scene.go`, `library_series.go` | + `DeleteItemTx`/`DeleteSceneTx`/`DeleteEpisodeTx`, tx-scoped, never `DeleteSeries` |
+| `internal/library/library_movetx_test.go` | **New** — tagged-scene FK case, sibling-episode/parent-series survival, rollback-atomicity |
+| `internal/identify/boxlookup.go` | + `BoxSearcher.ListSceneCandidates`, `SceneCandidate` — the list-shaped Adult search the automatic identification path's single-best-guess methods can't back |
+| `internal/sectionlock/routes.go` | `classifyModes` gained `case "scene-search"` |
+| `frontend/src/screens/MoveModePanel.tsx` | **New** — the shared picker both screens mount; section-agnostic search-403 vs. a separate Adult-specific commit-403 branch (D-1a), cross-device + missing-phash advisories |
+| `frontend/src/screens/Rename.tsx` | `ROW_ACTIONS` widened per-mode; fixed a live footgun in `runRowAction` where the trailing catch-all `else` silently called `dismissProposal` — any new action id added without its own branch would have fallen through to it |
+| `frontend/src/screens/Dedup.tsx` | New whole-group "Move to…" select, deliberately outside the pending-only guard (Unmatched groups need it too); D-3's hand-rolled overlay (`ApplyAllConfirm`'s pattern), not the Discover-feature `Modal` |
+| `frontend/src/api/rename.ts`, `dedup.ts` | + `moveProposalMode` (typed `Promise<void>` — the endpoint returns 204), `adultSceneSearch` |
+
+**Not done, deliberately (operator-only steps):** no commit/push/deploy
+triggered by this session; AC9's manual dev click-through and AC10's live
+server1 verification are Wade's to run per the spec.
+
+**Corrections made after final review, recorded here as additions rather
+than rewrites of the paragraphs above, per this file's append-only rule:**
+
+- **Final backend test count is 1660/1660, not 1659/1659.** Final architect
+  review (THOROUGH tier) independently reproduced one of the three claimed
+  mutation tests itself rather than trusting the report, confirmed all six
+  critical plan decisions with fresh evidence, and found zero logic defects
+  — but REJECTed on three bounded, non-logic issues: three source comments
+  left over from the 5-wave parallel-executor process claiming work "lands
+  in a later wave" that had, by review time, already landed (removed); this
+  CHANGELOG entry and the matching `docs/ROADMAP.md` "Recently shipped"
+  entry (both mandated by the plan, neither had been written yet); and zero
+  backend test coverage for moving an `Unmatched`-status proposal — the
+  Dedup screen's own stated primary use case for this feature. Added
+  `TestMoveMode_UnmatchedProposalMovesPromotesAndApplies`
+  (`internal/api/movemode_validation_test.go`), closing the full
+  Unmatched → moved → Pending → Applied loop, not just the move step in
+  isolation. Re-verified clean: `go build ./... && go vet ./...`, and the
+  full real-DB suite across all six affected packages, zero regressions.

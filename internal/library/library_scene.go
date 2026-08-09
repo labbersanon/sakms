@@ -143,6 +143,32 @@ func (s *Store) DeleteScene(ctx context.Context, id int64) error {
 	return tx.Commit()
 }
 
+// DeleteSceneTx is DeleteScene's caller-transaction-scoped sibling, added
+// for the cross-mode move's source-row retirement
+// (.omc/plans/autopilot-impl.md §4.2b). It takes a *sql.Tx rather than using
+// s.db because retirement must commit or roll back together with the
+// proposals.mode UPDATE that owns the transaction (Store.MoveMode) — a
+// partial apply is data loss. It is NOT a thin wrapper around DeleteScene:
+// DeleteScene opens its OWN BeginTx/Commit on s.db, which would commit the
+// retirement independently of MoveMode's transaction.
+//
+// The tag delete is NOT optional and NOT a tidy-up, and the ORDER is not a
+// style choice: library_scene_tags.scene_id references library_scenes(id)
+// ON DELETE NO ACTION (0001_baseline.sql:443) — unlike library_items'
+// dependents, this one does not cascade. Deleting the scene row first while
+// a tag row still references it raises a foreign-key-violation (23503) and
+// aborts the caller's whole transaction. Deleting an id that doesn't exist
+// is not an error, matching DeleteScene's convention.
+func (s *Store) DeleteSceneTx(ctx context.Context, tx *sql.Tx, id int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM library_scene_tags WHERE scene_id = ?`, id); err != nil {
+		return fmt.Errorf("deleting tags for scene %d: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM library_scenes WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("deleting scene %d: %w", id, err)
+	}
+	return nil
+}
+
 // UpdateScenePHash writes a freshly-computed perceptual hash and its file-
 // identity key (size + mtime) onto an existing tracked scene, without
 // rewriting the rest of the row — the targeted write Dedup's Scan uses to

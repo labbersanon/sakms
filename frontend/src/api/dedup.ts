@@ -39,6 +39,10 @@ import type {
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
 import { fetchProposalPage, type ProposalListView } from "./organize";
+// Dedup is structurally different from Rename (see the header comment above)
+// and the two API surfaces must not be aligned into a shared module for just
+// two callers — so this is a plain re-export, not a new abstraction.
+export { moveProposalMode, adultSceneSearch } from "./rename";
 
 export type { Candidate, Proposal };
 // ProposalStatus is the single shared narrowing (see discover.ts); re-exported

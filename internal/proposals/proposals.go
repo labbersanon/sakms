@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/labbersanon/sakms/internal/dbutil"
 	"github.com/labbersanon/sakms/internal/mode"
 )
@@ -654,6 +656,146 @@ func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbI
 		return fmt.Errorf("re-picking episode for proposal %d: %w", id, err)
 	}
 	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// ErrModeMoveConflict is returned when a cross-mode move would collide with
+// an existing live proposal for the same file in the target mode — the
+// partial unique index proposals_live_source_path_uidx
+// (mode, workflow, source_path) WHERE status IN ('pending','unmatched').
+// Rename-only in practice: Dedup rows carry an empty source_path, which the
+// index's own `source_path <> ''` predicate excludes.
+var ErrModeMoveConflict = errors.New("a live proposal for this file already exists in the target mode")
+
+// MoveTarget is the fully-resolved destination of a cross-mode move. Every
+// field is the value to WRITE; the caller (the handler) has already resolved
+// RootFolderPath from the target mode's settings key and validated the
+// catalog-specific fields. MoveMode writes all of them plus an explicit zero
+// for every column belonging to the OTHER catalogs.
+type MoveTarget struct {
+	Mode            mode.Mode
+	RootFolderPath  string
+	Title           string
+	TMDBID          int
+	Year            int
+	SeasonNumber    int
+	EpisodeNumber   int
+	Studio          string
+	Date            string
+	GiveBackBox     string
+	GiveBackSceneID string
+	ForeignID       string
+	ItemType        string
+	// Candidates is the group's candidate list with every TrackedID already
+	// zeroed by the caller (see .omc/plans/autopilot-impl.md §4.2a). Nil for
+	// a Rename proposal, whose candidates_json is '[]' and stays that way.
+	Candidates []Candidate
+}
+
+// RetireFunc deletes the source mode's tracking rows inside MoveMode's
+// transaction. Nil when the proposal has no tracked candidates.
+//
+// It must run INSIDE the same transaction as MoveMode's UPDATE — see the
+// MoveMode doc comment for why this is not optional.
+type RetireFunc func(ctx context.Context, tx *sql.Tx) error
+
+// MoveMode reassigns one proposal to a different Mode in a single
+// transaction, writing the target catalog's metadata and CLEARING every
+// column owned by the catalogs it is leaving.
+//
+// It is deliberately NOT a variant of Repick/RepickEpisode. Those two treat
+// the proposal's Mode as canonical and immutable — an invariant the repick
+// handler documents at internal/api/proposals.go:951-961 — and this feature's
+// spec confirms that invariant is load-bearing. Keeping this as a separate
+// method is what makes "the existing repick DB writes are byte-for-byte
+// unchanged" verifiable by a plain `git diff` of lines 608-657.
+//
+// candidates_json IS written, and writing it is a DATA-SAFETY REQUIREMENT,
+// not a convenience — see the CRITICAL note in the plan's §4.2a. The group's
+// membership and per-candidate file metadata are preserved byte-for-byte;
+// ONLY each Candidate.TrackedID is zeroed, because a TrackedID is a
+// mode-scoped foreign key and preserving it across a move makes Apply delete
+// an unrelated file (dedup.go:284-295, dedup_adult_library.go:356 both key a
+// deletion off TrackedID with no mode check). phash_similarity IS absent —
+// it describes the group's perceptual similarity, not its catalog.
+// source_name/source_path are absent: the file on disk has not moved yet.
+//
+// draft_id / draft_submitted_at / fingerprint_submitted_at ARE cleared. They
+// are give-back provenance stamps for the identification that is being
+// discarded; leaving them would attribute an Adult fingerprint submission to
+// a proposal that is no longer an Adult scene. This is the one place that
+// deviates from ReplacePending's deliberate preservation of those columns,
+// and it deviates because a rescan re-derives the SAME identity while a move
+// replaces it.
+//
+// Transaction ownership (§4.2b): MoveMode owns a single BeginTx/Commit
+// covering BOTH retire(ctx, tx) — if non-nil — and the mode UPDATE below,
+// with a deferred Rollback. This is not optional: ErrModeMoveConflict is a
+// ROUTINE Rename outcome (the partial unique index on source_path), not an
+// edge case. If retirement ran as a separate step before this call, a
+// conflict would destroy the source library's tracking rows while reporting
+// "the move failed" — silent data loss on an ordinary error path. Running
+// both inside one transaction means a conflict rolls both back together, so
+// "failed" truthfully means "nothing changed". proposals.go's own
+// ReplacePending (:220) already establishes this exact BeginTx/defer
+// Rollback/Commit idiom in this file.
+func (s *Store) MoveMode(ctx context.Context, id int64, t MoveTarget, retire RetireFunc) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction for move of proposal %d: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	if retire != nil {
+		if err := retire(ctx, tx); err != nil {
+			return fmt.Errorf("retiring source rows for proposal %d: %w", id, err)
+		}
+	}
+
+	// Marshal exactly as ReplacePending does at :262 — Candidates is nil for
+	// a Rename proposal, which json.Marshal encodes as "null", not "[]"; that
+	// matches candidates_json's existing zero-value convention throughout
+	// this file (see scanProposal's non-empty guard).
+	candidatesJSON, err := json.Marshal(t.Candidates)
+	if err != nil {
+		return fmt.Errorf("encoding candidates for move of proposal %d: %w", id, err)
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE proposals SET
+			mode = ?, root_folder_path = ?,
+			candidates_json = ?, tracked_id = 0,
+			title = ?, tmdb_id = ?, tvdb_id = 0, year = ?,
+			season_number = ?, episode_number = ?, extra_episode_numbers = '',
+			studio = ?, scene_date = ?,
+			give_back_box = ?, give_back_scene_id = ?,
+			foreign_id = ?, item_type = ?,
+			phash = '', duration_seconds = 0,
+			genres = '[]', "cast" = '[]',
+			draft_id = '', draft_submitted_at = NULL,
+			fingerprint_submitted_at = NULL,
+			status = ?, reason = ''
+		WHERE id = ?
+	`, string(t.Mode), t.RootFolderPath,
+		string(candidatesJSON), t.Title, t.TMDBID, t.Year,
+		t.SeasonNumber, t.EpisodeNumber,
+		t.Studio, t.Date,
+		t.GiveBackBox, t.GiveBackSceneID,
+		t.ForeignID, t.ItemType,
+		string(Pending), id)
+	if err != nil {
+		// Claude 2026-08-08: Postgres UNIQUE is SQLSTATE 23505, same idiom as
+		// internal/grabs/grabs.go:254-256 — reused verbatim rather than
+		// inventing a second one.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
+			return ErrModeMoveConflict
+		}
+		return fmt.Errorf("moving proposal %d to mode %q: %w", id, t.Mode, err)
+	}
+	if err := dbutil.CheckAffected(res, id, ErrNotFound); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // MarkDraftSubmitted records that a scene draft was successfully submitted to

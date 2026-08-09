@@ -83,11 +83,13 @@ import {
   BatchResultSummary,
   Button,
   ErrorText,
+  modeLabel,
   ModeTabs,
   Muted,
   StatusPill,
 } from "../components/ui";
 import { type LogLine, useDedupScanStream } from "./dedupScanStream";
+import { MoveModePanel, otherModes } from "./MoveModePanel";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
 import {
   ActivityLogPanel,
@@ -95,6 +97,35 @@ import {
   PaginationBar,
   ShowHistoryToggle,
 } from "./OrganizeChrome";
+
+// MoveModeOverlay is the hand-rolled dialog wrapper for MoveModePanel — Dedup
+// has zero modal/dialog usage today, and Modal (screens/discover/shared.tsx)
+// is a Discover-feature component crossing a feature-folder boundary (D-3).
+// Structurally copied from Rename.tsx's ApplyAllConfirm overlay.
+const MoveModeOverlay: Component<{
+  proposal: Proposal;
+  target: Mode;
+  onDone: () => void;
+  onCancel: () => void;
+}> = (props) => (
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Move to another section"
+  >
+    <div class="max-h-[80vh] w-full max-w-2xl overflow-y-auto">
+      <MoveModePanel
+        proposalId={props.proposal.id}
+        sourceName={props.proposal.title || props.proposal.sourceName || ""}
+        targetMode={props.target}
+        workflow="dedup"
+        onDone={props.onDone}
+        onCancel={props.onCancel}
+      />
+    </div>
+  </div>
+);
 
 // winnerIndex returns the index of the group's flagged keeper, defaulting to 0
 // when none is flagged (mirrors the backend's own winnerIndex fallback).
@@ -357,6 +388,12 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
   const [batchResult, setBatchResult] = createSignal<ApplyBatchResponse | null>(
     null,
   );
+  // moveFor tracks the one group whose "Move to…" overlay is currently open
+  // (AC6) — at most one at a time, across the whole mode's queue.
+  const [moveFor, setMoveFor] = createSignal<{
+    proposal: Proposal;
+    target: Mode;
+  } | null>(null);
 
   // resetQueueState drops every stale per-scan selection so it never survives a
   // queue refresh or mode switch: the primary overrides, the additional-keep
@@ -852,8 +889,43 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
                       </div>
                     </Show>
 
-                    <Show when={pending()}>
-                      <div class="mt-3 flex flex-wrap gap-2">
+                    <div class="mt-3 flex flex-wrap items-center gap-2">
+                      {/* "Move to…" is deliberately gated on
+                          pending-or-unmatched, NOT the pending-only Show
+                          below: the backend accepts a move for either status
+                          (§4.4 step 6), and an Unmatched group is exactly the
+                          one an operator most needs to move — the one that's
+                          stuck. Gating it inside the pending-only block would
+                          hide the affordance where it matters most. */}
+                      <Show when={pending() || p.status === "unmatched"}>
+                        <select
+                          class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
+                          aria-label={`Move group ${p.title ?? p.sourceName} to another mode`}
+                          value=""
+                          onChange={(e) => {
+                            const target = e.currentTarget.value as Mode | "";
+                            // Reset back to the placeholder immediately so
+                            // re-selecting the SAME target later still fires
+                            // onChange (a select that keeps its "selected"
+                            // state would not re-fire for a repeat pick).
+                            e.currentTarget.value = "";
+                            if (!target) return;
+                            setMoveFor({ proposal: p, target });
+                          }}
+                        >
+                          <option value="" disabled>
+                            Move to…
+                          </option>
+                          <For each={otherModes(props.mode)}>
+                            {(m) => (
+                              <option value={m}>
+                                Move to {modeLabel(m)}
+                              </option>
+                            )}
+                          </For>
+                        </select>
+                      </Show>
+                      <Show when={pending()}>
                         <Button variant="primary" onClick={() => onApply(p)}>
                           Apply
                         </Button>
@@ -869,8 +941,8 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
                         >
                           Dismiss
                         </Button>
-                      </div>
-                    </Show>
+                      </Show>
+                    </div>
                   </div>
                 );
               }}
@@ -887,6 +959,20 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
         onNext={() => setOffset((o) => o + pageSize())}
       />
       <ActivityLogPanel workflow="dedup" refreshKey={logKey()} />
+
+      <Show when={moveFor()}>
+        {(mf) => (
+          <MoveModeOverlay
+            proposal={mf().proposal}
+            target={mf().target}
+            onDone={() => {
+              setMoveFor(null);
+              void refetch();
+            }}
+            onCancel={() => setMoveFor(null)}
+          />
+        )}
+      </Show>
     </div>
   );
 };

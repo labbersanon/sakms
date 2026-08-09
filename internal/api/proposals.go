@@ -835,8 +835,8 @@ func submitDraftHandler(httpClient *http.Client, connStore *connections.Store, s
 // Its sibling repickProposalHandler needs NO check, and the asymmetry is
 // deliberate rather than an omission: repick already refuses any proposal
 // whose Mode is not Movies or Series (Adult identification uses a different
-// id space and has its own correction path), so it can never act on Adult in
-// the first place.
+// id space; its correction path is moveProposalModeHandler, not this one),
+// so it can never act on Adult in the first place.
 func dismissProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
@@ -886,10 +886,11 @@ type repickProposalRequest struct {
 //
 // Movies/Series Rename proposals only — Purge/Dedup have no "wrong
 // identification" concept to correct, and Adult's Whisparr-lookup
-// identification uses a different id space (foreignId, not tmdbId) with its
-// own correction path, not this one. Applied/Dismissed proposals are
-// refused: re-picking one would silently rewrite the queue's record of what
-// already happened without touching anything on disk to match.
+// identification uses a different id space (foreignId, not tmdbId) whose
+// correction path is moveProposalModeHandler (POST
+// /api/proposals/{id}/move-mode), not this one. Applied/Dismissed proposals
+// are refused: re-picking one would silently rewrite the queue's record of
+// what already happened without touching anything on disk to match.
 func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)

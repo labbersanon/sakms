@@ -453,6 +453,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// it needs the same means to dispatch. Second of BE-5's two registration
 	// edits made on BE-6's behalf (R4-3).
 	mux.HandleFunc("GET /api/modes/adult/search", adultSearchHandler(connStore, scStore, settingsStore, adultNewestReleaseStore, feedHealth, dl, nzb, grabsStore, whStore))
+	// Cross-mode move's Adult candidate picker (plan §5.3) — a multi-result
+	// text search across every configured stash box plus TPDB, unlike the
+	// automatic identification path's single-best-guess search. Gated by the
+	// Adult section lock (see classifyModes' "scene-search" case in
+	// internal/sectionlock/routes.go) even though the move/commit endpoint it
+	// feeds is ungated for Movies<->Series moves (D-1).
+	mux.HandleFunc("GET /api/modes/adult/scene-search", adultSceneSearchHandler(httpClient, connStore, scStore, settingsStore))
 	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, whStore))
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +
 	// bitrate-quality-floor scoring, then either grab the top qualifier or
@@ -656,6 +663,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, scStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/repick", repickProposalHandler(propStore))
+	// Cross-mode "move to another section" commit (plan §4.4). Deliberately
+	// UNGATED for Movies<->Series moves (D-1); gated only when the source OR
+	// target mode is Adult, via the handler's own denyIfAdultLocked check
+	// (D-1a) rather than a path-based section-lock rule — see
+	// moveProposalModeHandler's doc comment.
+	mux.HandleFunc("POST /api/proposals/{id}/move-mode", moveProposalModeHandler(propStore, settingsStore, libStore))
 
 	return mux
 }

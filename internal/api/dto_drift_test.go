@@ -64,6 +64,12 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		// applyBatchItem is all primitives, so it IS a full mirror worth guarding.
 		{"applyBatchItem/ApplyBatchItem", applyBatchItem{}, apidto.ApplyBatchItem{}},
 		{"repickProposalRequest/RepickRequest", repickProposalRequest{}, apidto.RepickRequest{}},
+		{"moveModeRequest/MoveModeRequest", moveModeRequest{}, apidto.MoveModeRequest{}},
+		{"adultSceneCandidate/AdultSceneCandidate", adultSceneCandidate{}, apidto.AdultSceneCandidate{}},
+		// adultSceneSearchResponse is excluded for the same reason
+		// applyBatchRequest/storageAllocationRow are: its Items field is a
+		// nested named-type ([]adultSceneCandidate vs []apidto.AdultSceneCandidate),
+		// whose f.Type.String() differs by package by construction.
 		{"libraryTagEntry/TagEntry", libraryTagEntry{}, apidto.TagEntry{}},
 		// libraryTrackedItem is excluded: Files is []libraryTrackedFile vs
 		// []apidto.TrackedItemFile — nested named types differ by package.

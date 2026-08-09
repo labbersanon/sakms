@@ -173,6 +173,16 @@ func classifyModes(rest []string, out Set) {
 		out.Add(SectionDiscover)
 	case "grabs":
 		out.Add(SectionQueue)
+	case "scene-search":
+		// Claude 2026-08-08: cross-mode move's Adult candidate picker.
+		// Reason: attributed to Organize (the only screens that call it — Rename
+		//   and Dedup), per the shared-route attribution rule. The adult-content
+		//   section is added anyway by the rest[0]=="adult" rule above, and that
+		//   is deliberate: this route RENDERS Adult scene metadata, so the
+		//   view-only PIN gate applies to it even though the move/commit endpoint
+		//   it feeds is ungated (see .omc/plans/autopilot-impl.md D-1).
+		// Review if: AC7 is ever widened to ungate the Adult search too.
+		out.Add(SectionOrganize)
 	case "tags", "items", "scenes":
 		// items/{itemId}/tags and scenes/{sceneId}/tags are tag CRUD;
 		// neither prefix has any non-tag route under it today.

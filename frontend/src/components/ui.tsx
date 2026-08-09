@@ -161,6 +161,13 @@ export const MODES: { id: Mode; label: string }[] = [
   { id: "adult", label: "Adult" },
 ];
 
+// modeLabel resolves a Mode id to its friendly MODES label, so a mode's
+// display name never drifts between the screens that render one (e.g. a
+// "Move to…" control) and the tab bar defined by MODES above.
+export function modeLabel(m: Mode): string {
+  return MODES.find((x) => x.id === m)?.label ?? m;
+}
+
 // TabDef is one entry in a screen's tab set. `id` is an opaque string (Movies/
 // Series/Adult for the workflow screens today; Mainstream/Adult for Discover
 // and section names for Settings in later waves) — the tab mechanism is

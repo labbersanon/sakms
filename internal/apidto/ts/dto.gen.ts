@@ -1187,6 +1187,79 @@ export interface RepickRequest {
   episodeNumber?: number /* int */;
 }
 /**
+ * MoveModeRequest is the body of POST /api/proposals/{id}/move-mode — the
+ * cross-mode reassignment path. Deliberately NOT an extension of
+ * RepickRequest: repick's handler treats the proposal's own Mode as canonical
+ * and immutable (internal/api/proposals.go:916-919), and bolting a Mode field
+ * onto it would silently no-op. See .omc/plans/autopilot-impl.md.
+ * The payload is discriminated by TargetMode. Exactly one catalog group is
+ * read; fields belonging to the other groups are ignored, and every field
+ * belonging to the NON-target catalog is CLEARED in the database by the write.
+ */
+export interface MoveModeRequest {
+  /**
+   * TargetMode is "movies" | "series" | "adult" and must differ from the
+   * proposal's current mode (a same-mode move is a 400, not a no-op —
+   * silently accepting it would mask a frontend bug).
+   */
+  targetMode: string;
+  /**
+   * --- Movies / Series (TMDB) ---
+   * TMDBID and Title are required when TargetMode is movies or series.
+   */
+  tmdbId?: number /* int */;
+  title: string;
+  year?: number /* int */;
+  /**
+   * SeasonNumber/EpisodeNumber are OPTIONAL and Series-only, with exactly
+   * the semantics RepickRequest documents: POINTERS, not ints, because
+   * season 0 is Specials and an int+omitempty cannot distinguish "the
+   * operator chose 0" from "the operator left it blank". Both nil is a
+   * show-level move. Half a pair is a 400. Non-nil on a non-Series target
+   * is a 400.
+   */
+  seasonNumber?: number /* int */;
+  episodeNumber?: number /* int */;
+  /**
+   * --- Adult (stash-box / TPDB) ---
+   * Box and SceneID are required when TargetMode is "adult" and are the
+   * hard prerequisite for Apply: rename.ApplyLibraryAdult refuses any
+   * proposal missing either (internal/rename/rename_adult_library.go:195-197).
+   * Box is "stashdb" | "fansdb" | "tpdb". Studio and Date feed
+   * naming.AdultFileName and should be echoed straight back from the
+   * chosen AdultSceneCandidate.
+   */
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
+}
+/**
+ * AdultSceneCandidate is one row of GET /api/modes/adult/scene-search — a
+ * pickable stash-box/TPDB scene for the cross-mode move's Adult target. It is
+ * deliberately a LIST shape: identify.BoxSearcher's existing SearchStashBox /
+ * SearchTPDB collapse to a single best *MatchResult, which cannot back a
+ * "pick one of these" UI.
+ */
+export interface AdultSceneCandidate {
+  box: string;
+  sceneId: string;
+  title: string;
+  studio?: string;
+  date?: string;
+  imageUrl?: string;
+  durationSeconds?: number /* int */;
+}
+/**
+ * AdultSceneSearchResponse envelopes the candidate list plus per-box soft
+ * failures, so one unreachable stash-box degrades the result instead of
+ * failing the whole search (same tolerance internal/identify's cascade has).
+ */
+export interface AdultSceneSearchResponse {
+  items: AdultSceneCandidate[];
+  errors?: string[];
+}
+/**
  * DedupApplyRequest is the OPTIONAL body of POST /api/proposals/{id}/apply when
  * the proposal is a Dedup group (Rename/Purge send an empty body and ignore
  * these fields — see internal/api's applyProposalRequest, which this mirrors).

@@ -17,9 +17,11 @@
 
 import { api } from "./client";
 import type {
+  AdultSceneSearchResponse,
   ApplyBatchItem,
   ApplyBatchResponse,
   DiscoverItem,
+  MoveModeRequest,
   Proposal,
   ProposalPage,
   RepickRequest,
@@ -92,4 +94,24 @@ export function repickProposal(
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+// Promise<void>, NOT Promise<Proposal>: the endpoint returns 204 and client.ts
+// yields `null as T` on a 204 — typing this as Promise<Proposal> is a lie
+// TypeScript cannot catch, and the first `.title` deref on the result would be
+// a runtime null crash. Callers refetch through the gated list endpoint instead.
+export function moveProposalMode(
+  id: number,
+  req: MoveModeRequest,
+): Promise<void> {
+  return api(`/api/proposals/${id}/move-mode`, {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export function adultSceneSearch(
+  query: string,
+): Promise<AdultSceneSearchResponse> {
+  return api(`/api/modes/adult/scene-search?q=${encodeURIComponent(query)}`);
 }

@@ -1297,3 +1297,280 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
     expect(calls.filter((c) => c.url.includes("/vmaf")).length).toBe(afterUnmount);
   });
 });
+
+// Wave 4 — wiring the shared MoveModePanel into Dedup (AC6, see
+// .omc/plans/autopilot-impl.md §6.4). These tests cover exactly what this
+// wave owns: the per-group "Move to…" select's option set, its
+// pending-or-unmatched visibility (a deliberate decision — an Unmatched
+// group is precisely the one an operator most needs to move), the
+// reset-to-placeholder onChange contract, and that this wiring never touches
+// the candidate grid. MoveModePanel's own search/commit/error-branch
+// behavior is covered by MoveModePanel.test.tsx, not duplicated here.
+describe("Dedup — Move to another mode (AC6)", () => {
+  it("renders exactly the 2 other-mode options for a Movies group, never the group's own mode", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 30, title: "Movable" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Movable");
+
+    const select = screen.getByLabelText(
+      "Move group Movable to another mode",
+    ) as HTMLSelectElement;
+    const optionLabels = Array.from(select.options).map((o) => o.textContent);
+    expect(optionLabels).toEqual(["Move to…", "Move to Series", "Move to Adult"]);
+  });
+
+  it("renders exactly the 2 other-mode options for an Adult group, never the group's own mode", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/adult/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 31, title: "Adult Movable" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("Adult Movable");
+
+    const select = screen.getByLabelText(
+      "Move group Adult Movable to another mode",
+    ) as HTMLSelectElement;
+    const optionLabels = Array.from(select.options).map((o) => o.textContent);
+    expect(optionLabels).toEqual(["Move to…", "Move to Movies", "Move to Series"]);
+  });
+
+  it("shows the affordance for an Unmatched group too, not only Pending — the deliberate pending-or-unmatched gate", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({ id: 33, title: "Stuck", status: "unmatched" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Stuck");
+    expect(
+      screen.getByLabelText("Move group Stuck to another mode"),
+    ).toBeInTheDocument();
+    // Unmatched groups get no Apply/Keep All/Skip/Dismiss row (pending-only)
+    // — proving the select's own Show is a SEPARATE guard, not nested inside
+    // the pending-only one.
+    expect(screen.queryByText("Apply")).toBeNull();
+    expect(screen.queryByText("Keep All")).toBeNull();
+  });
+
+  it("resets the select back to the placeholder immediately after choosing a target", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 34, title: "Reset Me" })]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Reset Me");
+
+    const select = screen.getByLabelText(
+      "Move group Reset Me to another mode",
+    ) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "series" } });
+    // Reset immediately, so re-selecting the SAME target later still fires
+    // onChange (a select that kept its "selected" state would not re-fire).
+    expect(select.value).toBe("");
+  });
+
+  it("moving a group leaves its candidate rows byte-identical after the move commits", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 32,
+            title: "Move Me",
+            candidates: [
+              candidate({
+                label: "tracked",
+                path: "/movies/keep.mkv",
+                winner: true,
+                resolution: 1080,
+                codec: "h264",
+              }),
+              candidate({
+                label: "orphan.mkv",
+                path: "/movies/dupe.mkv",
+                winner: false,
+                resolution: 720,
+                codec: "h265",
+              }),
+            ],
+          }),
+        ]);
+      if (url.includes("/api/modes/series/tmdb-search"))
+        return jsonResponse([
+          { id: 555, title: "New Show", releaseDate: "2020-01-01" },
+        ]);
+      if (
+        url.includes("/api/proposals/32/move-mode") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Move Me");
+    // List view exercises the exact table this wave must never touch.
+    fireEvent.click(screen.getByText("List"));
+    expect(await screen.findByText("Path")).toBeInTheDocument();
+    expect(screen.getByText("/movies/keep.mkv")).toBeInTheDocument();
+    expect(screen.getByText("/movies/dupe.mkv")).toBeInTheDocument();
+
+    const select = screen.getByLabelText("Move group Move Me to another mode");
+    fireEvent.change(select, { target: { value: "series" } });
+
+    await screen.findByRole("dialog", { name: "Move to another section" });
+    fireEvent.click(screen.getByText("Search"));
+    await screen.findByText(/New Show/);
+    fireEvent.click(screen.getByText("Use this"));
+
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.includes("/api/proposals/32/move-mode")),
+      ).toBe(true),
+    );
+    // Commit succeeded → onDone closed the overlay and refetched.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The candidate grid this feature must never touch is byte-identical
+    // after the move commits — same labels, paths, resolution, and codec.
+    // findByText (not getByText) for the first assertion: the refetch onDone
+    // triggers is async, so the queue briefly shows "Loading…" again.
+    expect(await screen.findByText("tracked")).toBeInTheDocument();
+    expect(screen.getByText("orphan.mkv")).toBeInTheDocument();
+    expect(screen.getByText("/movies/keep.mkv")).toBeInTheDocument();
+    expect(screen.getByText("/movies/dupe.mkv")).toBeInTheDocument();
+    expect(screen.getByText("1080p")).toBeInTheDocument();
+    expect(screen.getByText("h264")).toBeInTheDocument();
+    expect(screen.getByText("720p")).toBeInTheDocument();
+    expect(screen.getByText("h265")).toBeInTheDocument();
+    expect(screen.getAllByText("8000 kbps")).toHaveLength(2);
+  });
+
+  it("selecting Move to Series then Cancel issues no /move-mode POST", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([dedupProposal({ id: 35, title: "Cancel Me" })]);
+      if (url.includes("/api/modes/series/tmdb-search")) return jsonResponse([]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Cancel Me");
+
+    const select = screen.getByLabelText("Move group Cancel Me to another mode");
+    fireEvent.change(select, { target: { value: "series" } });
+    await screen.findByRole("dialog", { name: "Move to another section" });
+
+    fireEvent.click(screen.getByText("Cancel"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    expect(calls.some((c) => c.url.includes("/move-mode"))).toBe(false);
+    // The group's own row is untouched — still there, unresolved.
+    expect(screen.getByText("Cancel Me")).toBeInTheDocument();
+  });
+
+  // D-1a commit-403 (frontend) — .omc/plans/autopilot-impl.md §7's test
+  // table. MoveModePanel.test.tsx already covers this branch at the
+  // component level, in isolation. This test proves the SAME behavior
+  // through Dedup's real per-group "Move to…" select + MoveModeOverlay
+  // wiring, not a standalone panel render. Adult->Movies is used
+  // deliberately: the search (movies/tmdb-search) is NOT gated by the Adult
+  // lock and succeeds, while the commit is gated because the group's own
+  // (source) mode is Adult — the one case the section-agnostic search-403
+  // test structurally can't reach, since there the search itself is what
+  // fails.
+  it("commit-403 (Adult PIN-locked) is a separate branch from search-403 through the real wiring, stays open with the candidate grid untouched, and never commits — Adult→Movies, where the search succeeds", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/dedup/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/adult/dedup/proposals"))
+        return jsonResponse([
+          dedupProposal({
+            id: 40,
+            title: "Adult Move Me",
+            candidates: [
+              candidate({
+                label: "tracked",
+                path: "/adult/keep.mp4",
+                winner: true,
+              }),
+              candidate({
+                label: "orphan.mp4",
+                path: "/adult/dupe.mp4",
+                winner: false,
+              }),
+            ],
+          }),
+        ]);
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse([
+          { id: 777, title: "Target Movie", releaseDate: "2019-05-01" },
+        ]);
+      if (url.includes("/api/proposals/40/move-mode")) {
+        return new Response(
+          JSON.stringify({
+            error: "section locked",
+            code: "section_locked",
+            section: "adult-content",
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("Adult Move Me");
+
+    const select = screen.getByLabelText(
+      "Move group Adult Move Me to another mode",
+    );
+    fireEvent.change(select, { target: { value: "movies" } });
+
+    await screen.findByRole("dialog", { name: "Move to another section" });
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByText("Use this"));
+
+    // (a) shows the fixed Adult commit-403 copy.
+    expect(
+      await screen.findByText("Adult is PIN-locked — unlock to continue"),
+    ).toBeInTheDocument();
+    // (b) never the search-blocked copy — the search succeeded here.
+    expect(screen.queryByText(/unlock it to search/)).toBeNull();
+    // (c) the dialog stays open with the picked candidate still selected and
+    // clickable — unlock-and-retry is one click.
+    expect(
+      screen.getByRole("dialog", { name: "Move to another section" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Target Movie/)).toBeInTheDocument();
+    expect(screen.getByText("Use this")).toBeInTheDocument();
+    // (d) never commits: onDone would close the dialog AND refetch the Adult
+    // group list — confirm that second GET never fired, and the candidate
+    // grid this feature must never touch stays byte-identical. Matched on
+    // "proposals?" (the list query string), not a bare substring — a bare
+    // "adult/dedup/proposals" substring also matches the per-candidate VMAF
+    // endpoint (".../proposals/40/vmaf?..."), which fires independently of
+    // this wave's wiring and would falsely inflate the count.
+    expect(
+      calls.filter((c) => c.url.includes("/api/modes/adult/dedup/proposals?"))
+        .length,
+    ).toBe(1);
+    expect(screen.getByText("tracked")).toBeInTheDocument();
+    expect(screen.getByText("orphan.mp4")).toBeInTheDocument();
+  });
+});

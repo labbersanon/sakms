@@ -1367,6 +1367,42 @@ export interface ApplyBatchResponse {
   results: ApplyBatchResultItem[];
 }
 /**
+ * --- Rename Delete action -------------------------------------------------
+ * DeleteBatch is Rename's Delete action: POST /api/proposals/delete-batch
+ * permanently removes each proposal's source file from disk AND deletes the
+ * proposal row entirely (NOT a Dismiss — the operator chose to leave no
+ * trace). Pending/Unmatched Rename proposals only, enforced server-side.
+ * It is a SEPARATE endpoint from apply-batch on purpose. Apply-vs-dismiss is
+ * already partitioned client-side by endpoint (Rename.tsx's confirmApplyAll
+ * splits one apply-batch call from N per-id dismiss calls); delete is the
+ * third partition, and gets a BATCH endpoint rather than a per-item one
+ * because unlike dismiss it commits real PathChanges that must reach
+ * NotifyPlayers as one grouped call per mode. See
+ * .omc/plans/autopilot-impl.md §1.
+ */
+export interface DeleteBatchItem {
+  id: number /* int64 */;
+  sourcePath?: string;
+}
+export interface DeleteBatchRequest {
+  items: DeleteBatchItem[];
+}
+/**
+ * DeleteBatchResultItem carries NO proposal field, unlike
+ * ApplyBatchResultItem. A deleted item has no row to refresh — that absence
+ * IS the success condition. The existing dismiss path already returns this
+ * exact {id, ok, error} shape client-side and BatchResultSummary already
+ * consumes it, so nothing downstream needs widening.
+ */
+export interface DeleteBatchResultItem {
+  id: number /* int64 */;
+  ok: boolean;
+  error?: string;
+}
+export interface DeleteBatchResponse {
+  results: DeleteBatchResultItem[];
+}
+/**
  * TagEntry is one entry in a mode's tag vocabulary — mirrors internal/api's
  * libraryTagEntry. A local tag has no numeric id, so ID and Label are the same
  * string value; ID exists only to keep the {id, label} shape the frontend's

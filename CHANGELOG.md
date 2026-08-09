@@ -6846,3 +6846,163 @@ against a data directory with no seeded proposals/duplicate groups and no
 configured TMDB/TPDB connection — see the session notes for exactly which of
 the three entry points' interactions could and could not be exercised as a
 result.
+
+## 2026-08-09 — Rename gains a "Delete file" action: the first irreversible file deletion reachable from Rename's UI
+
+Rename's per-row action dropdown gains a third choice, **Delete file**
+(Pending/Unmatched proposals only), integrated as a third client-side
+partition alongside the existing `apply`/`dismiss` split in
+`confirmApplyAll` (`Rename.tsx`) — not a new button, not a new confirmation
+flow. It permanently `os.Remove()`s the source file from disk (ENOENT
+tolerated as success, mirroring Dedup's/Purge's existing precedent) and
+deletes the proposal's DB row **entirely** — no `Dismissed` status, no
+history entry, no trash, no undo. Dedup and Purge already delete files;
+Rename never did until now, which is why this is called out explicitly
+rather than folded quietly into the existing bulk-apply description.
+
+**The request/DTO mechanism, resolved.** The spec that kicked this off
+guessed the delete path would extend `ApplyBatchItem` with an `action`
+field on the existing `apply-batch` endpoint. That guess was wrong: apply
+vs. dismiss has never been a server-side dispatch — it's a pure
+client-side partition by endpoint (`apply-batch` for renames, N per-id
+`dismiss` calls for dismissals). Extending `apply-batch` would have fired
+`workflowEvent(Rename)` webhooks for destroyed files and logged deletions
+as `KindApplyBatch` "renames" in the activity log — two concrete
+corruptions, not hypothetical ones. Built instead: a genuinely separate
+`POST /api/proposals/delete-batch` (`internal/api/proposals_delete.go`),
+with its own DTOs (`internal/apidto`'s `DeleteBatchItem`/`DeleteBatchRequest`/
+`DeleteBatchResultItem`/`DeleteBatchResponse` — the result item deliberately
+carries no `Proposal` field, unlike apply's, since a deleted item has no row
+left to refresh) and its own `organizeevents.KindDeleteBatch` audit kind.
+
+**A lying-confirmation-dialog bug was found and fixed during planning,
+before any frontend code shipped.** `ApplyAllConfirm`'s existing
+confirmation table used two-way ternaries with `dismiss` as an *implicit
+else* (`item.action === "apply" ? X : Y`). Naively adding `"delete"` to the
+action union would have rendered the modal's Detail column as the literal
+string "Dismiss proposal" for a permanent file deletion — TypeScript-clean,
+would have shipped, and the operator's one confirmation step would have
+actively lied to them about what they were about to do. Fixed with an
+explicit `PLAN_ACTION_LABEL: Record<ApplyAllPlanItem["action"], string>`
+lookup plus an exhaustive `planActionDetail` switch with no default case,
+so a missing action is a compile error, not a silently-wrong render. The
+fix's non-vacuity is proven twice over: the implementing agent temporarily
+deleted the `delete:` map entry and confirmed a `TS2741` compile error
+before restoring it, and the test suite (below) mutates the fix back to a
+hardcoded `"Dismiss proposal"` return and confirms the regression test
+goes red.
+
+**The Adult PIN-lock ordering hazard.** `/api/proposals/*` routes classify
+under `{organize}` only — the Adult section lock is enforced *solely* by
+`mode.Build` returning `sectionlock.ErrSectionLocked`, the same trap
+`dismissProposalHandler`'s own doc comment already documents.
+`deleteBatchHandler` builds/fetches the mode session via `mode.Build`
+**before** any `os.Remove` call, per item, cached per mode. Deferring that
+"for efficiency" would silently delete Adult files while Adult is
+PIN-locked. Proven by mutation: moving `mode.Build` after `DeleteSource` in
+a throwaway test run made `TestDeleteBatch_AdultLockedRefusedBeforeFileRemoved`
+fail with the Adult file genuinely gone from disk.
+
+**Workflow-scoping, enforced server-side, not just in the UI.**
+`rename.DeleteSource` (`internal/rename/delete.go`) rejects any proposal
+whose `Workflow != Rename` before touching the filesystem — so a
+hand-crafted `POST /api/proposals/delete-batch` naming a Dedup or Purge
+proposal id is refused, not silently turned into a generic
+delete-any-tracked-file primitive. `TestDeleteBatch_RejectsDedupAndPurgeProposals`
+is the direct regression test for this property.
+
+**The audit-log capture bug, found during critic review of the plan (not
+discovered in code that had already shipped).** The original draft copied
+`applyBatchHandler`'s pattern of populating the `organizeevents` log
+entry's `Workflow`/`Mode` fields via a post-loop `propStore.Get(req.Items[0].ID)`.
+That's correct for apply (the row survives) and silently broken for delete
+(a successful delete destroys the row, so the post-loop `Get` returns
+`ErrNotFound` and the fields stay empty) — which would have made the
+`delete_batch` audit event invisible on the Rename activity log, since
+`organizeevents.Store.List` filters `WHERE workflow = ?`. Fixed by
+capturing `logWF`/`logMode` from the **first successfully resolved**
+proposal **inside** the delete loop, before `DeleteSource` runs on it and
+before the eligibility re-check — so even a batch where every item is
+ultimately rejected still logs against the correct workflow/mode. Proven
+by mutation: reverting to the old post-loop-`Get` pattern made both
+`TestDeleteBatch_LogsDeleteBatchOrganizeEvent` and
+`TestDeleteBatch_LogsCorrectWorkflowWhenFirstItemFailsToResolve` fail
+exactly as predicted, and a third mutation (keeping the broken pattern but
+removing only the workflow/mode assertions) proved the tests' independent
+`organizeevents.Store.List(ctx, "rename", 40)` retrieval assertion is
+load-bearing on its own, not redundant with the field assertions.
+
+**Other bounds, all enforced server-side:** the deleted path is always the
+resolved DB row's `source_path`, never a client-supplied one; the batch is
+capped at `MaxProposalPageSize` (200) — a **deliberate divergence** from
+Rename's uncapped `apply-batch`, because an uncapped destructive request is
+not the same risk class as an uncapped rename (Purge/Dedup, the closer
+analogues, already carry this same cap); file deletion happens **before**
+row deletion, deliberately, so a row-delete failure after a successful
+`os.Remove` still returns the committed `PathChange` and still reaches one
+grouped `NotifyPlayers` call per mode — a partial failure never silently
+drops a player notification for a file that is, in fact, already gone.
+
+**`rename.DeleteSource` needs no `libStore` interaction, and the doc
+comment names the actual mechanism rather than asserting it as
+self-evident:** `ScanLibrary`/`ScanLibrarySeries`/`ScanLibraryAdult` each
+feed a `known` tracked-path set into `library.ScanRootFolder`, which skips
+any path already in that set — so a tracked file can never become an
+`UnmappedEntry` and can never become a Pending/Unmatched Rename proposal in
+the first place. `TestScanLibrary_TrackedPathsNeverBecomeRenameProposals`
+(new, in `internal/rename/rename_library_test.go`) is the real behavioral
+safety-net test for this invariant; a "helpful" future `libStore.Delete`
+call inside `DeleteSource` would be dead code today and would mask a
+genuine regression if this invariant ever broke.
+
+**Verification.** `go build ./... && go vet ./...` clean. Scoped
+`go test ./internal/rename/... ./internal/api/... ./internal/proposals/...
+./internal/organizeevents/... ./internal/apidto/...` clean **against a real
+`SAKMS_TEST_DATABASE_URL` Postgres instance with `SAKMS_TEST_DATABASE_URL_REQUIRED=1`**
+— an earlier local run without that env var reported the same "clean" result
+while silently *skipping* all 16 `TestDeleteBatch_*` tests and 3 of 8
+`TestDeleteSource_*` tests (found during the THOROUGH-tier architect review
+below), so this run is the one that actually exercises the destructive path.
+Full `go test ./...`, same real-DB env, clean apart from two failures, both
+confirmed pre-existing and unrelated to this feature: `internal/sysinfo`'s
+`TestReadGPUs_NVIDIA` (hardware-dependent GPU-sysfs test), and
+`internal/downloader`'s `TestUploadSpeed_ComputedWhileSeeding`, which failed
+once under full-suite parallel load but passed 3/3 in isolation — a
+load-contention timing flake in an untouched package, not a regression.
+`go run ./cmd/gendto`
+regenerates `internal/apidto/ts/dto.gen.ts` with zero drift beyond this
+feature's own DTOs (`internal/apidto/gen`'s `TestNoDrift` is the real
+enforcement, covered by the full `go test ./...` run above).
+`cd frontend && tsc --noEmit && vitest run && vite build` all clean:
+904/905 (the one failure, the same pre-existing unrelated
+`Settings.test.tsx` phash-threshold assertion named in the prior two
+entries, confirmed unrelated again). New Go tests: 8 in
+`internal/rename/delete_test.go`, 16 in `internal/api/delete_batch_test.go`,
+4 in `internal/proposals/proposals_test.go`, plus the ScanLibrary
+safety-net test. New frontend tests: 10 in the new
+`frontend/src/screens/Rename.delete.test.tsx`. Multiple rounds of mutation
+testing across both Go and TypeScript suites proved the safety-critical
+assertions (PIN-lock ordering, audit-log capture, the lying-confirmation-dialog
+fix, workflow scoping) are non-vacuous, not just passing.
+
+| File | Change |
+|---|---|
+| `internal/proposals/proposals.go` | New `Store.Delete(ctx, id)`; new narrower `proposalResolver` interface split out of `proposalApplyStore`, widening `resolveBatchProposal`'s parameter type with zero call-site edits |
+| `internal/proposals/proposals_test.go` | 4 new tests incl. one independently verifying both directions of the Dismiss-vs-Delete history-view distinction |
+| `internal/organizeevents/store.go` | New `KindDeleteBatch = "delete_batch"` constant |
+| `internal/apidto/dto.go`, `internal/apidto/ts/dto.gen.ts` | 4 new DTOs, regenerated |
+| `internal/rename/delete.go` | **New** — `DeleteSource`: workflow/status/path guards, ENOENT-tolerant `os.Remove`, file-then-row deletion ordering, no `libStore` interaction (documented mechanism, not assumption) |
+| `internal/rename/delete_test.go` | **New** — 8 tests incl. the row-delete-fails-after-file-removed partial-failure case |
+| `internal/rename/rename_library_test.go` | New `TestScanLibrary_TrackedPathsNeverBecomeRenameProposals` safety-net test |
+| `internal/api/proposals_delete.go` | **New** — `deleteBatchHandler`: 8-step ordered flow, mode.Build-before-DeleteSource PIN-lock ordering, grouped per-mode `NotifyPlayers`, no webhook dispatch, in-loop audit-log workflow/mode capture |
+| `internal/api/delete_batch_test.go` | **New** — 16 tests incl. the PIN-lock, workflow-scoping, grouped-notify, and audit-log CRITICAL tests |
+| `internal/api/handler.go` | Route registered: `POST /api/proposals/delete-batch` |
+| `frontend/src/api/rename.ts` | New `deleteBatch()` client function |
+| `frontend/src/screens/Rename.tsx` | `RowActionId`/`BASE_ROW_ACTIONS` gain `delete`; `rowActionEnabled`/`planActionForRow` gain the eligibility gate; `ApplyAllPlanItem.action` widened; `ApplyAllConfirm`'s `PLAN_ACTION_LABEL`/`planActionDetail` fix; `confirmApplyAll`'s third `toDelete` partition (dispatched last, one batch call); `runRowAction`'s delete branch (seeds the shared confirm modal, no immediate delete); `planActionForRow` exported for direct testing |
+| `frontend/src/screens/Rename.delete.test.tsx` | **New** — 10 tests, split from `Rename.test.tsx`/`Rename.repick.test.tsx` per the existing split-file precedent |
+
+**Not done in this entry, deliberately:** commit/push/deploy and the live
+server1 verification are the review step that follows — the spec mandates
+that a human (Wade) explicitly designate the throwaway file used for the
+one live delete test, rather than an agent choosing one autonomously,
+given the operation's irreversibility.

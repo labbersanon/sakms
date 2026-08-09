@@ -526,9 +526,10 @@ func RelocateMovie(sourcePath, destRoot, title string, year, tmdbID int, preset 
 
 // ApplyLibrary is Rename's Movies-library apply. p must be Pending. There's
 // no reconcile-drift case (ScanLibrary never produces one — see its doc
-// comment), so this only ever handles a new orphan: resolve the actual video
-// file (p.SourcePath may be a directory
-// wrapping it, or the file itself), relocate just that file into a
+// comment), so this only ever handles a new orphan: p.SourcePath is always
+// the resolved video file itself (ScanLibrary calls library.ResolveVideoFile
+// before ever proposing an entry — never a wrapping directory, corrected
+// 2026-08-09), relocate that file into a
 // preset-formatted folder via RelocateMovie, then record it directly in
 // libStore — no registration/rescan round trip needed, since
 // libStore.Upsert itself IS the "now tracked" state, immediately.

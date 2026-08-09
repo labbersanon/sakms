@@ -184,6 +184,15 @@ type proposalApplyStore interface {
 	MarkFingerprintSubmitted(ctx context.Context, id int64) error
 }
 
+// proposalResolver is the read-only subset resolveBatchProposal needs — the
+// id lookup plus the source-path re-resolve safety net. Split out of
+// proposalApplyStore so the delete-batch path can reuse the resolver without
+// pulling in MarkApplied/MarkFingerprintSubmitted, which it never calls.
+type proposalResolver interface {
+	Get(ctx context.Context, id int64) (*proposals.Proposal, error)
+	GetLiveBySourcePath(ctx context.Context, m mode.Mode, wf proposals.Workflow, sourcePath string) (*proposals.Proposal, error)
+}
+
 // markAppliedResilient marks p.ID applied; on ErrNotFound re-resolves by
 // source_path and marks that live row. If neither exists, returns nil (work
 // already committed; live queue no longer has the row).
@@ -496,7 +505,7 @@ type applyBatchItem struct {
 // Reason: belt-and-suspenders with apply-gate + upsert; covers leftover races.
 // Troubleshooting: apply-batch still reports "no proposal with that id".
 // Review if: client always sends sourcePath and ids never churn.
-func resolveBatchProposal(ctx context.Context, store proposalApplyStore, item applyBatchItem, gateActive map[applyGateKey]bool) (*proposals.Proposal, error) {
+func resolveBatchProposal(ctx context.Context, store proposalResolver, item applyBatchItem, gateActive map[applyGateKey]bool) (*proposals.Proposal, error) {
 	p, err := store.Get(ctx, item.ID)
 	if err == nil {
 		return p, nil

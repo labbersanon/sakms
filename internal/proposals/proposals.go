@@ -600,6 +600,21 @@ func (s *Store) Dismiss(ctx context.Context, id int64) error {
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// Delete permanently removes proposal id's row — no status transition, no
+// history entry, nothing left in the queue or the history view.
+//
+// Contrast Dismiss directly above: Dismiss is reversible-ish (a future Scan
+// re-discovers the same source item and re-proposes it). Delete is not —
+// the source file is gone by the time this runs, so no Scan can ever
+// re-propose the row this destroys.
+func (s *Store) Delete(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM proposals WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("deleting proposal %d: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
 // Repick overwrites proposal id's title/tmdbId/year with an operator-chosen
 // alternative and promotes it to Pending — Rename's manual-override
 // workflow (see internal/api's repickProposalHandler, which enforces the

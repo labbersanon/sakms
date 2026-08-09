@@ -595,6 +595,126 @@ func TestDismiss_NotFound(t *testing.T) {
 	}
 }
 
+func TestStoreDelete_RemovesRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	saved, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Delete Me", SourcePath: "/d", RootFolderPath: "/m", Title: "Delete"},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	id := saved[0].ID
+
+	if err := s.Delete(ctx, id); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if _, err := s.Get(ctx, id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound from Get after delete, got %v", err)
+	}
+
+	all, err := s.List(ctx, mode.Movies, Rename)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, p := range all {
+		if p.ID == id {
+			t.Fatalf("expected deleted row %d absent from List, found %+v", id, p)
+		}
+	}
+}
+
+func TestStoreDelete_UnknownIDReturnsErrNotFound(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Delete(context.Background(), 999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestStoreDelete_LeavesSiblingsIntact(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	saved, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Sibling A", SourcePath: "/a", RootFolderPath: "/m", Title: "A"},
+		{Status: Pending, SourceName: "Delete Me", SourcePath: "/d", RootFolderPath: "/m", Title: "Delete"},
+		{Status: Pending, SourceName: "Sibling B", SourcePath: "/b", RootFolderPath: "/m", Title: "B"},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := s.Delete(ctx, saved[1].ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	remaining, err := s.List(ctx, mode.Movies, Rename)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 surviving siblings, got %d: %+v", len(remaining), remaining)
+	}
+	for _, p := range remaining {
+		if p.ID == saved[1].ID {
+			t.Fatalf("deleted row %d still present: %+v", saved[1].ID, p)
+		}
+		if p.ID != saved[0].ID && p.ID != saved[2].ID {
+			t.Fatalf("unexpected surviving row: %+v", p)
+		}
+	}
+	if got, err := s.Get(ctx, saved[0].ID); err != nil || got.SourceName != "Sibling A" {
+		t.Fatalf("sibling A not intact: got=%+v err=%v", got, err)
+	}
+	if got, err := s.Get(ctx, saved[2].ID); err != nil || got.SourceName != "Sibling B" {
+		t.Fatalf("sibling B not intact: got=%+v err=%v", got, err)
+	}
+}
+
+// TestStoreDelete_RowIsGoneFromHistoryView is the concrete assertion that
+// distinguishes Delete from Dismiss: Dismiss leaves a row in ListViewHistory
+// (it stays queryable as an audit trail); Delete's row does not appear even
+// there, because the row itself no longer exists. The Dismiss half is
+// asserted here too, as the contrast, rather than assumed.
+func TestStoreDelete_RowIsGoneFromHistoryView(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	saved, err := s.ReplacePending(ctx, mode.Movies, Rename, []Proposal{
+		{Status: Pending, SourceName: "Will Delete", SourcePath: "/d", RootFolderPath: "/m", Title: "Delete"},
+		{Status: Pending, SourceName: "Will Dismiss", SourcePath: "/dm", RootFolderPath: "/m", Title: "Dismiss"},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	deleteID, dismissID := saved[0].ID, saved[1].ID
+
+	if err := s.Delete(ctx, deleteID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.Dismiss(ctx, dismissID); err != nil {
+		t.Fatalf("dismiss: %v", err)
+	}
+
+	hist, total, err := s.ListPage(ctx, mode.Movies, Rename, 50, 0, ListViewHistory)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if total != 1 || len(hist) != 1 {
+		t.Fatalf("expected exactly 1 history row (the dismissed one), got total=%d len=%d %+v", total, len(hist), hist)
+	}
+	if hist[0].ID != dismissID {
+		t.Fatalf("expected the dismissed row in history, got %+v", hist[0])
+	}
+	for _, p := range hist {
+		if p.ID == deleteID {
+			t.Fatalf("deleted row %d leaked into history view", deleteID)
+		}
+	}
+}
+
 func TestRepick_NotFound(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Repick(context.Background(), 999, "New Title", 42, 2020); !errors.Is(err, ErrNotFound) {

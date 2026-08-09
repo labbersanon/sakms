@@ -1413,6 +1413,44 @@ type ApplyBatchResponse struct {
 	Results []ApplyBatchResultItem `json:"results"`
 }
 
+// --- Rename Delete action -------------------------------------------------
+//
+// DeleteBatch is Rename's Delete action: POST /api/proposals/delete-batch
+// permanently removes each proposal's source file from disk AND deletes the
+// proposal row entirely (NOT a Dismiss — the operator chose to leave no
+// trace). Pending/Unmatched Rename proposals only, enforced server-side.
+//
+// It is a SEPARATE endpoint from apply-batch on purpose. Apply-vs-dismiss is
+// already partitioned client-side by endpoint (Rename.tsx's confirmApplyAll
+// splits one apply-batch call from N per-id dismiss calls); delete is the
+// third partition, and gets a BATCH endpoint rather than a per-item one
+// because unlike dismiss it commits real PathChanges that must reach
+// NotifyPlayers as one grouped call per mode. See
+// .omc/plans/autopilot-impl.md §1.
+type DeleteBatchItem struct {
+	ID         int64  `json:"id"`
+	SourcePath string `json:"sourcePath,omitempty"`
+}
+
+type DeleteBatchRequest struct {
+	Items []DeleteBatchItem `json:"items"`
+}
+
+// DeleteBatchResultItem carries NO proposal field, unlike
+// ApplyBatchResultItem. A deleted item has no row to refresh — that absence
+// IS the success condition. The existing dismiss path already returns this
+// exact {id, ok, error} shape client-side and BatchResultSummary already
+// consumes it, so nothing downstream needs widening.
+type DeleteBatchResultItem struct {
+	ID    int64  `json:"id"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+type DeleteBatchResponse struct {
+	Results []DeleteBatchResultItem `json:"results"`
+}
+
 // --- Tag workflow: vocabulary + tracked-item picker ------------------------
 //
 // The Tag workflow is direct CRUD on a tracked item's tags — no staged

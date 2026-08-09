@@ -18,12 +18,13 @@ const (
 
 // Kind values written by API handlers.
 const (
-	KindScan       = "scan"
-	KindApply      = "apply"
-	KindApplyItem  = "apply_item"
-	KindDismiss    = "dismiss"
-	KindError      = "error"
-	KindApplyBatch = "apply_batch"
+	KindScan        = "scan"
+	KindApply       = "apply"
+	KindApplyItem   = "apply_item"
+	KindDismiss     = "dismiss"
+	KindError       = "error"
+	KindApplyBatch  = "apply_batch"
+	KindDeleteBatch = "delete_batch"
 )
 
 // Event is one persisted organize activity row.

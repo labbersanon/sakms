@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/ollama"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/searchterm"
+	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/websearch"
 )
@@ -839,4 +840,150 @@ func TestScanLibrary_WebAuthority_RejectsTitleN(t *testing.T) {
 	if !strings.Contains(got[0].Reason, "too generic") {
 		t.Errorf("expected junk reason, got %q", got[0].Reason)
 	}
+}
+
+// TestScanLibrary_TrackedPathsNeverBecomeRenameProposals is the behavioral
+// guard for the invariant rename.DeleteSource's design rests on: a tracked
+// library file can NEVER surface as a Rename proposal, and therefore can never
+// be the target of a Delete.
+//
+// The mechanism, in one line: each Scan builds a `known` set of tracked file
+// paths and feeds it to library.ScanRootFolder, which skips any path in the set
+// (internal/library/library.go:484). If a future edit to any of the three
+// `known`-set constructions (rename.go:176/:654, rename_adult_library.go:49)
+// drops a tracked path, DeleteSource would os.Remove a tracked file and orphan
+// its library row — invisible library corruption, with nothing else in the
+// suite catching it.
+//
+// Each subtest seeds a tracked file AND an untracked sibling, and asserts BOTH
+// directions: the tracked path is absent from the results, and the sibling is
+// present. Tracked-only would leave an empty result set that satisfies the
+// absence check vacuously.
+func TestScanLibrary_TrackedPathsNeverBecomeRenameProposals(t *testing.T) {
+	assertTrackedExcluded := func(t *testing.T, got []proposals.Proposal, tracked, sibling string) {
+		t.Helper()
+		for _, p := range got {
+			if p.SourcePath == tracked {
+				t.Fatalf("tracked file %q surfaced as a Rename proposal — DeleteSource could destroy a tracked library file: %+v", tracked, p)
+			}
+		}
+		found := false
+		for _, p := range got {
+			if p.SourcePath == sibling {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected the untracked sibling %q to still be proposed (otherwise the absence check above is vacuous), got %+v", sibling, got)
+		}
+	}
+
+	t.Run("movies", func(t *testing.T) {
+		root := t.TempDir()
+		// The tracked file gets its OWN release folder rather than sharing one
+		// with the sibling. Sharing hides the regression: with `known` dropped,
+		// a shared folder becomes one atomic entry whose ResolveVideoFile picks
+		// a single file, and it can pick the sibling — so the tracked path never
+		// appears and the assertion below passes without the exclusion doing any
+		// work. One file per folder makes each an independent entry, so dropping
+		// `known` genuinely surfaces the tracked path.
+		trackedDir := filepath.Join(root, "A.Beautiful.Mind.2001.1080p.BluRay.x264-GROUP")
+		siblingDir := filepath.Join(root, "Some.Other.Film.1999.1080p.BluRay.x264-GROUP")
+		for _, d := range []string{trackedDir, siblingDir} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+		}
+		tracked := filepath.Join(trackedDir, "movie.mkv")
+		if err := os.WriteFile(tracked, []byte("x"), 0o644); err != nil {
+			t.Fatalf("writing tracked file: %v", err)
+		}
+		sibling := filepath.Join(siblingDir, "movie.mkv")
+		if err := os.WriteFile(sibling, []byte("x"), 0o644); err != nil {
+			t.Fatalf("writing untracked sibling: %v", err)
+		}
+
+		sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
+			"Some Other Film 1999": `{"results":[{"id":99,"title":"Some Other Film","release_date":"1999-05-05"}]}`,
+		})}
+		libStore := newTestLibraryStore(t)
+		if _, err := libStore.Upsert(context.Background(), library.Item{
+			Mode: mode.Movies, TMDBID: 453, Title: "A Beautiful Mind", FilePath: tracked, RootFolderPath: root,
+		}); err != nil {
+			t.Fatalf("seeding tracked item: %v", err)
+		}
+
+		got, err := ScanLibrary(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertTrackedExcluded(t, got, tracked, sibling)
+	})
+
+	t.Run("series", func(t *testing.T) {
+		root := t.TempDir()
+		seasonDir := filepath.Join(root, "Show Name", "Season 01")
+		if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		tracked := filepath.Join(seasonDir, "Show Name - S01E01.mkv")
+		if err := os.WriteFile(tracked, []byte("x"), 0o644); err != nil {
+			t.Fatalf("writing tracked file: %v", err)
+		}
+		sibling := filepath.Join(seasonDir, "Show.Name.2020.S01E02.mkv")
+		if err := os.WriteFile(sibling, []byte("x"), 0o644); err != nil {
+			t.Fatalf("writing untracked sibling: %v", err)
+		}
+
+		ctx := context.Background()
+		sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{
+			"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
+		}, nil)}
+		libStore := newTestLibraryStore(t)
+		series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: root})
+		if err != nil {
+			t.Fatalf("seeding series: %v", err)
+		}
+		if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+			SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: tracked,
+		}); err != nil {
+			t.Fatalf("seeding tracked episode: %v", err)
+		}
+
+		got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertTrackedExcluded(t, got, tracked, sibling)
+	})
+
+	t.Run("adult", func(t *testing.T) {
+		root := t.TempDir()
+		// Tracked at the SAME path this scan walks — that is what puts it in the
+		// `known` set. (Contrast TestScanLibraryAdult_SkipsAlreadyTrackedScene,
+		// which tracks at /elsewhere to exercise the identity-based dedup
+		// instead; that path never reaches ScanRootFolder's exclusion at all.)
+		tracked := writeSceneFile(t, root, "tracked-original.mp4")
+		sibling := writeSceneFile(t, root, "new-release.mp4")
+
+		hasher := &fakeHasher{hashes: map[string]string{sibling: "hash-new"}}
+		prober := &fakeProber{durations: map[string]float64{sibling: 1800}}
+		stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+			"hash-new": {id: "box-scene-new", title: "Fresh Scene"},
+		}, nil, nil)
+		sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
+		libStore := newTestLibraryStore(t)
+		if _, err := libStore.UpsertScene(context.Background(), library.Scene{
+			Box: "stashdb", SceneID: "box-scene-tracked", Title: "Tracked Scene",
+			FilePath: tracked, RootFolderPath: root,
+		}); err != nil {
+			t.Fatalf("seeding tracked scene: %v", err)
+		}
+
+		got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertTrackedExcluded(t, got, tracked, sibling)
+	})
 }

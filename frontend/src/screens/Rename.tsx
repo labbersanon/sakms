@@ -25,6 +25,7 @@ import {
   type Proposal,
   applyBatchStreaming,
   applyProposal,
+  deleteBatch,
   dismissProposal,
   fetchProposals,
   moveProposalMode,
@@ -59,14 +60,25 @@ type RowActionId =
   | "rename"
   | "repick"
   | "dismiss"
+  | "delete"
   | "move:movies"
   | "move:series"
   | "move:adult";
 
+// Claude 2026-08-09: "Delete file", not "Delete", and LAST in the base list.
+// Reason: every other option here acts on the PROPOSAL; this one destroys the
+//   FILE. Two words of disambiguation on a permanent action is cheap, and the
+//   operator sees this label far more often than the confirm modal. Last so it
+//   is never adjacent to the auto-selected "Rename" default.
+// Troubleshooting: an operator reporting they meant to dismiss, not delete.
+// Review if: the dropdown grows a second destructive entry — the positional
+//   argument stops carrying its weight and needs a visual separator instead.
+// Context: .omc/plans/autopilot-impl.md §3.2.
 const BASE_ROW_ACTIONS: { id: RowActionId; label: string }[] = [
   { id: "rename", label: "Rename" },
   { id: "repick", label: "Re-pick" },
   { id: "dismiss", label: "Dismiss" },
+  { id: "delete", label: "Delete file" },
 ];
 
 // rowActions is a function of the proposal's CURRENT mode: the two move
@@ -91,6 +103,12 @@ function rowActionEnabled(
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
       return status === "pending" || status === "unmatched";
+    case "delete":
+      // Same eligibility as dismiss. Deliberately NOT gated on titleMode: like
+      // the move:* entries below, the row-level control's availability is
+      // independent of PIN-lock state — the Adult section lock is enforced
+      // server-side (mode.Build), not by hiding this option.
+      return status === "pending" || status === "unmatched";
     // Move affordances are deliberately NOT gated on titleMode (AC7): the
     // row-level control is available regardless of PIN-lock state; the
     // actual PIN gating happens deeper, in the panel's commit call.
@@ -112,11 +130,18 @@ function defaultRowAction(
   return "";
 }
 
-function planActionForRow(
+// Claude 2026-08-09: exported (was module-private).
+// Reason: Rename.delete.test.tsx (US-005) asserts directly against this
+//   function for the "stale/invalid selection on an ineligible status never
+//   enters the plan" guard — that assertion needs the real function, not a
+//   UI-driven proxy for it. No behavior change.
+// Review if: this acquires a second exported test-only helper — consider a
+//   dedicated test-utils re-export instead of widening the module surface.
+export function planActionForRow(
   p: Proposal,
   dropdown: RowActionId | "",
   titleMode: boolean,
-): "apply" | "dismiss" | null {
+): "apply" | "dismiss" | "delete" | null {
   const action =
     dropdown || defaultRowAction(p.status, titleMode);
   if (action === "rename" && rowActionEnabled("rename", p.status, titleMode)) {
@@ -124,6 +149,14 @@ function planActionForRow(
   }
   if (action === "dismiss" && rowActionEnabled("dismiss", p.status, titleMode)) {
     return "dismiss";
+  }
+  // Each branch re-checks rowActionEnabled so a stale dropdown selection on a
+  // row whose status changed underneath it is DROPPED from the plan rather
+  // than executed. That re-check is what makes the client-side gate honest,
+  // and it matters far more for delete than for the other two — do not
+  // collapse it as redundant.
+  if (action === "delete" && rowActionEnabled("delete", p.status, titleMode)) {
+    return "delete";
   }
   return null;
 }
@@ -148,9 +181,13 @@ async function fetchAllLiveProposals(mode: Mode): Promise<Proposal[]> {
   return out;
 }
 
+// This literal union is declared SEPARATELY from planActionForRow's return
+// type, not by reference to it. That duplication is deliberate: it is what
+// makes PLAN_ACTION_LABEL's Record<ApplyAllPlanItem["action"], string> below a
+// real compile-time guard rather than a tautology. Edit the two in lockstep.
 type ApplyAllPlanItem = {
   proposal: Proposal;
-  action: "apply" | "dismiss";
+  action: "apply" | "dismiss" | "delete";
 };
 
 const RowActions: Component<{
@@ -239,6 +276,41 @@ function episodeDisplay(
   return `${episodeNumber}-${last}`;
 }
 
+// Claude 2026-08-09: explicit per-action label/detail maps, no ternary
+//   catch-all. Module scope (not inside ApplyAllConfirm) because that
+//   component is a concise arrow body, and because both are pure functions of
+//   their inputs — same placement as newNameOf above.
+// Reason: both confirm-table cells used to be `action === "apply" ? X : Y`,
+//   with dismiss as the IMPLICIT else. Adding a third action would have
+//   silently rendered "Dismiss proposal" as the Detail for a permanent file
+//   deletion — TypeScript-clean, and the operator's one confirmation step
+//   would have been actively lying. Same defect shape as the
+//   move:-before-dismiss catch-all fixed in runRowAction below.
+// Troubleshooting: the confirm modal describing the wrong action for a row.
+// Review if: ApplyAllPlanItem["action"] gains a fourth member — it needs an
+//   entry in BOTH structures below, and the Record<> type plus the exhaustive
+//   switch will fail the build if it does not get one.
+// Context: .omc/plans/autopilot-impl.md §3.6.
+const PLAN_ACTION_LABEL: Record<ApplyAllPlanItem["action"], string> = {
+  apply: "rename",
+  dismiss: "dismiss",
+  delete: "DELETE FILE",
+};
+
+// Full sourcePath, not sourceName: the Original-name column already shows the
+// bare name, and for an irreversible deletion the operator should see the
+// absolute path being destroyed.
+const planActionDetail = (item: ApplyAllPlanItem): string => {
+  switch (item.action) {
+    case "apply":
+      return newNameOf(item.proposal);
+    case "dismiss":
+      return "Dismiss proposal";
+    case "delete":
+      return `Permanently delete ${item.proposal.sourcePath} — cannot be undone`;
+  }
+};
+
 const ApplyAllConfirm: Component<{
   plan: ApplyAllPlanItem[];
   onCancel: () => void;
@@ -260,6 +332,13 @@ const ApplyAllConfirm: Component<{
           Runs each row’s dropdown choice (Rename is selected when a match is
           found; Re-pick is skipped — needs a manual pick).
         </Muted>
+        <Show when={props.plan.some((x) => x.action === "delete")}>
+          <p class="mt-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+            {props.plan.filter((x) => x.action === "delete").length} file(s)
+            will be permanently deleted from disk. This cannot be undone —
+            there is no trash or recycle bin.
+          </p>
+        </Show>
       </div>
       <div class="max-h-[50vh] overflow-y-auto px-4 py-2">
         <table class="w-full text-left text-sm">
@@ -278,13 +357,9 @@ const ApplyAllConfirm: Component<{
                     {item.proposal.sourceName}
                   </td>
                   <td class="py-2 pr-2 text-sm capitalize">
-                    {item.action === "apply" ? "rename" : item.action}
+                    {PLAN_ACTION_LABEL[item.action]}
                   </td>
-                  <td class="py-2 text-sm">
-                    {item.action === "apply"
-                      ? newNameOf(item.proposal)
-                      : "Dismiss proposal"}
-                  </td>
+                  <td class="py-2 text-sm">{planActionDetail(item)}</td>
                 </tr>
               )}
             </For>
@@ -522,6 +597,31 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
     } else if (id === "repick") {
       openTakeover({ kind: "repick", proposal: p });
+    } else if (id === "delete") {
+      // Claude 2026-08-09: explicit delete branch, placed with the move:*
+      //   branch BELOW the rename/repick checks and ABOVE the id-specific
+      //   dismiss branch — the same explicit-branch-not-catch-all rule the
+      //   move:* comment below records.
+      // Reason: this branch does NOT delete immediately. It seeds a ONE-ROW
+      //   plan and opens the SAME ApplyAllConfirm modal the bulk flow uses,
+      //   so a permanent, irreversible file deletion can never be a single
+      //   unconfirmed click — note the dismiss branch below fires with ZERO
+      //   confirmation, which is fine for a reversible status flip and is not
+      //   fine here. It also keeps exactly ONE code path to delete-batch
+      //   app-wide (single-row and bulk both funnel through confirmApplyAll),
+      //   so there is no second call site that could drift from the first.
+      // Troubleshooting: choosing "Delete file" and clicking Apply either
+      //   destroying the file with no confirmation, or doing nothing at all.
+      // NOTE FOR TESTS/DOCS: the row's clickable control is labelled literally
+      //   "Apply" and does NOT relabel itself per selection. The real operator
+      //   gesture is "choose 'Delete file' in the row's dropdown, then click
+      //   the row's 'Apply' button" — which opens the confirm modal, not an
+      //   immediate deletion. Writing "click Delete" describes a control that
+      //   does not exist.
+      // Review if: an immediate single-row delete is ever explicitly
+      //   requested — it would need its own confirmation, not a bare act().
+      // Context: .omc/plans/autopilot-impl.md §3.8.
+      setApplyAllPlan([{ proposal: p, action: "delete" }]);
     } else if (id.startsWith("move:")) {
       // Claude 2026-08-08: explicit move:* branch BEFORE the dismiss check.
       // Reason: the previous trailing `else` was a catch-all (any unmatched
@@ -534,7 +634,8 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       //   of opening SearchTakeover.
       // Review if: RowActionId gains another id — it needs its own branch
       //   here too, since the trailing branch below is now id-specific, not
-      //   a catch-all.
+      //   a catch-all. (2026-08-09: that prediction came true — "delete" is
+      //   the second instance, and it got its own branch above.)
       openTakeover({
         kind: "move",
         proposal: p,
@@ -587,9 +688,10 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     const toDismiss = plan
       .filter((x) => x.action === "dismiss")
       .map((x) => x.proposal.id);
+    const toDelete = plan.filter((x) => x.action === "delete");
     void act(async () => {
       const results: ApplyBatchResultItem[] = [];
-      const total = toApply.length + toDismiss.length;
+      const total = toApply.length + toDismiss.length + toDelete.length;
       let done = 0;
       if (toApply.length > 0) {
         const out = (await applyBatchStreaming(
@@ -616,6 +718,42 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
           results.push({ id, ok: false, error: (e as Error).message });
         }
         done++;
+        setApplyProgress(`Processed ${done}/${total}…`);
+      }
+      // Claude 2026-08-09: delete runs LAST, and as ONE batch call.
+      // Reason: (a) ordering — if the operator's session dies mid-flow, the
+      //   non-destructive work has already committed and only the
+      //   irreversible work is skipped, the strictly better failure mode.
+      //   (b) one call, not a per-id loop like dismiss above — the backend
+      //   groups every deletion's PathChange by mode and fires ONE
+      //   NotifyPlayers per mode; looping here would defeat that grouping.
+      // Troubleshooting: N separate player-rescan notifications for one bulk
+      //   delete, or deletes committing before renames that then fail.
+      // Review if: delete-batch ever gains NDJSON streaming (then it wants
+      //   applyBatchStreaming's per-item progress shape, not this).
+      // Context: .omc/plans/autopilot-impl.md §1.2 and §3.7.
+      if (toDelete.length > 0) {
+        try {
+          const out = await deleteBatch(
+            toDelete.map((x) => ({
+              id: x.proposal.id,
+              sourcePath: x.proposal.sourcePath,
+            })),
+          );
+          results.push(...out.results);
+        } catch (e) {
+          // A transport-level failure of the whole call — attribute it to
+          // every item so no requested id silently vanishes from the summary
+          // (the per-id dismiss loop gets this for free from its own catch).
+          for (const x of toDelete) {
+            results.push({
+              id: x.proposal.id,
+              ok: false,
+              error: (e as Error).message,
+            });
+          }
+        }
+        done += toDelete.length;
         setApplyProgress(`Processed ${done}/${total}…`);
       }
       setBatchResult({ results });

@@ -436,6 +436,64 @@ unchanged — unit tests are unaffected. Commit `29a56f3`.
 
 ## Recently shipped (outside this backlog)
 
+### Rename "Delete file" action — shipped 2026-08-09
+`.omc/specs/deep-interview-rename-delete-selection.md`, built per
+`.omc/plans/autopilot-impl.md`. Rename's per-row action dropdown gains a
+third choice, **Delete file** (Pending/Unmatched only), integrated as a
+third client-side partition alongside the existing apply/dismiss split in
+`confirmApplyAll` — permanently `os.Remove()`s the source file and deletes
+the proposal row entirely, no `Dismissed` status, no trash, no undo. The
+**first irreversible file deletion reachable from Rename's UI** (Dedup and
+Purge already deleted files; Rename never did). See the 2026-08-09
+CHANGELOG entry for the full file list, the resolved request/DTO mechanism,
+and verification numbers.
+
+Standout findings from this session, all recorded in more detail in
+CLAUDE.md's Staged-for-approval amendment and the CHANGELOG entry:
+- A **lying-confirmation-dialog bug** was caught during planning, before any
+  frontend code shipped — `ApplyAllConfirm`'s existing ternaries would have
+  silently rendered a permanent deletion as "Dismiss proposal" in the exact
+  modal meant to warn the operator. Fixed with an exhaustive
+  `Record<ApplyAllPlanItem["action"], string>` + switch, so a missing case
+  is a compile error.
+- An **Adult PIN-lock ordering hazard**: `/api/proposals/*` only enforces the
+  section lock via `mode.Build` erroring, so `deleteBatchHandler` must call
+  `mode.Build` before any `os.Remove`, per item — not "for efficiency" after.
+- An **audit-log capture bug** found during critic review of the plan (not in
+  shipped code): copying `applyBatchHandler`'s post-loop `propStore.Get`
+  pattern would leave the `delete_batch` organize-event's workflow/mode
+  fields empty (the row is gone by then), making the event invisible on the
+  Rename activity log's `WHERE workflow = ?` filter. Fixed by capturing
+  those fields from the first successfully-resolved proposal inside the
+  loop, before `DeleteSource` runs.
+
+Things a future session should not quietly undo:
+- **This is a genuinely separate `POST /api/proposals/delete-batch`
+  endpoint, not an `action` field on `apply-batch`.** Routing delete through
+  apply-batch would fire rename webhooks and log deletions as
+  `KindApplyBatch` for destroyed files.
+- **File deletion happens before row deletion, deliberately.** A row-delete
+  failure after a successful `os.Remove` still returns the committed
+  `PathChange` so `NotifyPlayers` still fires — a partial failure must never
+  silently drop a player notification for a file that is, in fact, gone.
+- **`rename.DeleteSource` needs no `libStore` interaction** — a Pending/
+  Unmatched Rename proposal's source file can never be a tracked library
+  file, because the three `ScanLibrary*` functions all skip paths already in
+  their `known` tracked-path set. Don't "helpfully" add a `libStore.Delete`
+  call; it would be dead code today and would mask a real regression if this
+  invariant ever broke. `TestScanLibrary_TrackedPathsNeverBecomeRenameProposals`
+  is the regression test for it.
+- **Delete is capped at `MaxProposalPageSize` (200), deliberately narrower
+  than Rename's uncapped `apply-batch`** — Purge/Dedup, the closer
+  analogues, already carry this same cap for the same reason.
+
+Still open (deliberately, not forgotten):
+- Live server1 verification has NOT been performed as of this entry —
+  required before this feature ships to production, and mandated to stop
+  and ask Wade to explicitly designate the throwaway test file used, rather
+  than an agent choosing one autonomously, given the operation's
+  irreversibility.
+
 <!-- Claude 2026-08-04: added for Stage 5 (configurable stash-box databases).
      Reason: the Stage 5 spec described a UI layered on an "approved backend
      design" that did not exist; this entry records that BOTH layers landed in

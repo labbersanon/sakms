@@ -20,6 +20,8 @@ import type {
   AdultSceneSearchResponse,
   ApplyBatchItem,
   ApplyBatchResponse,
+  DeleteBatchRequest,
+  DeleteBatchResponse,
   DiscoverItem,
   MoveModeRequest,
   Proposal,
@@ -71,6 +73,16 @@ export function applyBatch(
   return api<ApplyBatchResponse>(`/api/proposals/apply-batch`, {
     method: "POST",
     body: JSON.stringify({ items }),
+  });
+}
+
+/** Rename's Delete action — see .omc/plans/autopilot-impl.md §1. */
+export function deleteBatch(
+  items: DeleteBatchRequest["items"],
+): Promise<DeleteBatchResponse> {
+  return api("/api/proposals/delete-batch", {
+    method: "POST",
+    body: JSON.stringify({ items } satisfies DeleteBatchRequest),
   });
 }
 

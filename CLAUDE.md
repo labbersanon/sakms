@@ -885,6 +885,68 @@ above, so don't drop them for convenience:
          deliberately client-side (`listGrabsHandler` stays general), so the
          test lives in the frontend suite. That is the right engineering call,
          and it means one AC-named assertion does not exist as a Go test.
+  - **AMENDED 2026-08-09 — Rename gains a DESTRUCTIVE third bulk outcome, and
+    the bulk-apply exception's own description needs one clarification.** The
+    2026-07-17 bulk-apply amendment says the operator "checks several
+    already-reviewed Pending rows/groups from ONE workflow+mode screen and
+    clicks 'Apply Selected,' which POSTs **one** `apply-batch` request." That
+    was already loose — Rename's "Apply Selected" has always issued one
+    `apply-batch` call **plus N per-id `dismiss` calls**, partitioned
+    client-side in `confirmApplyAll` (`Rename.tsx`). This feature adds a
+    **third** partition, `POST /api/proposals/delete-batch`, which
+    **permanently deletes the source file from disk (`os.Remove`) and
+    destroys the proposal row entirely** — no `Dismissed` status, no history
+    entry, no trash, no undo.
+
+    **This is NOT a new auto-grab-style exception and adds no unattended
+    anything.** Staged-for-approval is fully intact: the operator picks the
+    action per row, reviews every row in `ApplyAllConfirm`, and clicks
+    Confirm. It is recorded here because it is the **first irreversible file
+    deletion reachable from Rename's UI** — Dedup and Purge already delete
+    files, Rename never did.
+
+    **Four bounds, all enforced in code:** (1) Pending/Unmatched **Rename**
+    proposals only, re-checked **server-side** on the resolved row, so a
+    hand-crafted request cannot delete an Applied proposal's file or reach a
+    Dedup/Purge row; (2) the deleted path is always the **resolved DB row's**
+    `source_path`, never a client-supplied path; (3) capped at
+    `MaxProposalPageSize` (200) — a **deliberate divergence** from Rename
+    apply-batch, which is uncapped, because an uncapped destructive request
+    is not the same risk as an uncapped rename; (4) `mode.Build` runs
+    **before** any `os.Remove`, which is the **only** thing enforcing the
+    Adult section lock on `/api/proposals/*` (that route classifies as
+    `{organize}` only — see `dismissProposalHandler`'s doc comment for the
+    same trap). **Reordering `mode.Build` after the deletion for "efficiency"
+    silently deletes Adult files while Adult is locked.**
+
+    **`applyBatchHandler` and `ApplyBatchItem` are UNTOUCHED, deliberately.**
+    Routing delete through an `action` field on apply-batch would have fired
+    `workflowEvent(Rename)` webhooks and logged `KindApplyBatch` activity for
+    destroyed files — corrupting the one durable record a "leave no trace"
+    deletion has. See `.omc/plans/autopilot-impl.md` §1.3.
+
+    **Only trace a delete leaves anywhere:** the `delete_batch` organize-event
+    row — whose `workflow`/`mode` MUST be captured from the first resolved
+    proposal *inside* the delete loop. Copying `applyBatchHandler`'s
+    post-loop `propStore.Get(req.Items[0].ID)` writes an empty workflow (the
+    row is gone by then), and `organize_events` is queried `WHERE workflow =
+    ?`, so the entry would never render on the Rename activity log. Treat
+    that log line as load-bearing.
+
+    **Two documented spec deviations, recorded here because a future session
+    reading the spec alone would think the implementation is wrong:** (1)
+    AC #5 said the delete path is "added to the batch-apply flow"; it is a
+    **separate** `delete-batch` endpoint instead, because routing it through
+    `applyBatchHandler` would fire rename webhooks and log `KindApplyBatch`
+    for destroyed files. The AC's premise — that a server-side apply/dismiss
+    dispatch exists to extend — was factually wrong; the partition is
+    client-side, so a separate endpoint *is* the existing pattern. (2) AC #10
+    asked for a **Go** test covering a mixed rename+dismiss+delete batch;
+    that is structurally impossible under three separate endpoints, so the
+    mixed-dispatch assertion lives in the frontend suite
+    (`Rename.delete.test.tsx`, "a mixed confirm issues apply-batch, per-id
+    dismiss, and ONE delete-batch") and the Go suite covers delete-only
+    skip-and-continue. See `.omc/plans/autopilot-impl.md` §9.
 
 - **Secrets encrypted at rest** (`internal/secrets`, a locally generated
   key file, not an OS keychain — the primary deployment target is a

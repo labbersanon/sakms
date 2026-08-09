@@ -660,6 +660,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 
 	mux.HandleFunc("POST /api/proposals/{id}/apply", applyProposalHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore, prober))
 	mux.HandleFunc("POST /api/proposals/apply-batch", applyBatchHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, whStore, prober))
+	// NOTE the parameter list: NO libStore and NO whStore, both deliberate —
+	// libStore because a Pending/Unmatched Rename proposal is untracked by
+	// definition, whStore because workflowEvent(Rename) means "a rename was
+	// applied" and there is no delete webhook event to invent. See
+	// deleteBatchHandler's doc comment.
+	mux.HandleFunc("POST /api/proposals/delete-batch", deleteBatchHandler(httpClient, connStore, scStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, scStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/repick", repickProposalHandler(propStore))

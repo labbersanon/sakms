@@ -60,6 +60,16 @@
 //    discarding a season the operator explicitly typed. Surfacing that is worth
 //    one always-on line. If SeasonEpisodePicker ever gains an `onDegraded`
 //    callback, this can be scoped; until then do not add absence assertions.
+//    APPENDED 2026-08-09: Series step 2 now mounts SeasonEpisodeAccordion, not
+//    SeasonEpisodePicker (a new sibling component built precisely so that
+//    Non-Goal-3 file stays untouched — see SeasonEpisodeAccordion.tsx's header).
+//    Rules 1, 2 and 5 all carry over to it UNCHANGED: it emits `episode: 0`
+//    from the same two places, it still cannot express "leave both blank", and
+//    its degraded state is still not observable from here. The accordion COULD
+//    now grow an `onDegraded` callback without touching a protected file — but
+//    adding one is out of scope (spec Non-Goal: "no changes to selection/confirm
+//    logic"), so the notice stays unconditional and absence assertions stay
+//    forbidden.
 
 import {
   type Component,
@@ -75,7 +85,7 @@ import { adultSceneSearch, tmdbSearch } from "../api/rename";
 import { SectionLockedError } from "../api/client";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import { Button, ErrorText, Muted, yearOf } from "../components/ui";
-import { SeasonEpisodePicker } from "./discover/SeasonEpisodePicker";
+import { SeasonEpisodeAccordion } from "./discover/SeasonEpisodeAccordion";
 import { TextPoster } from "./discover/shared";
 
 // Duplicated from SeasonEpisodePicker.tsx:69/71-72 rather than imported.
@@ -176,6 +186,11 @@ export const SearchTakeover: Component<{
   // selectionMode="single" has no pre-selection concept and adding one would
   // modify a Non-Goal-3 component, so the pre-fill's PURPOSE ("start from what
   // is already there") is preserved as read-only context instead (D-2).
+  // APPENDED 2026-08-09: "DISPLAY-ONLY" is no longer literally true — it is
+  // now ALSO handed to SeasonEpisodeAccordion, which expands the matching
+  // season row on mount. D-2's actual constraint is intact: nothing is
+  // pre-SELECTED, and no commit is pre-staged. The sentence about
+  // SeasonEpisodePicker remains true of that (still untouched) component.
   currentSlot?: { season: number; episode: number } | null;
 
   // --- outcomes ---------------------------------------------------------
@@ -401,13 +416,16 @@ export const SearchTakeover: Component<{
               show-level match only” above.
             </Muted>
             <div class="mt-2">
-              {/* SELF-FETCH. `seasons` is omitted ENTIRELY — its PRESENCE, not
-                  its value, switches the picker into caller-managed mode
-                  (SeasonEpisodePicker.tsx:196), so even `seasons={undefined}`
-                  would leave it with no data. */}
-              <SeasonEpisodePicker
+              {/* SELF-FETCH ONLY. The accordion has no caller-managed
+                  `seasons`/`loading` pair at all — this is its one mount point
+                  and it has always self-fetched here, so the prop pair would be
+                  dead surface. `currentSlot` is passed IN ADDITION to the
+                  read-only "Currently:" line above, not instead of it: here it
+                  only expands the matching season row, which pre-selects
+                  nothing (D-2's no-pre-fill reasoning is unaffected). */}
+              <SeasonEpisodeAccordion
                 tmdbId={show().tmdbId}
-                selectionMode="single"
+                currentSlot={props.currentSlot}
                 onSubmit={(s, e) => commitSlot(show(), s, e)}
               />
             </div>

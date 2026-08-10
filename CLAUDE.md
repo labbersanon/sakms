@@ -1817,3 +1817,42 @@ above, so don't drop them for convenience:
       see the CORRECTED 2026-08-02 note under **Established engineering
       conventions → Staged-for-approval**. The per-card Grab button remains
       strictly single-item.
+    - **AMENDED 2026-08-09 — a SEVENTH surface exists, and it is a separate
+      component rather than a mode of this one:
+      `frontend/src/screens/discover/SeasonEpisodeAccordion.tsx`** (spec
+      `.omc/specs/deep-interview-rename-episode-picker-collapsible.md`, plan
+      `.omc/plans/autopilot-impl-rename-episode-picker-collapsible.md`).
+      Rename's Re-pick / Move takeover (`SearchTakeover.tsx`'s Series step 2)
+      mounts the accordion instead of the grid: seasons are collapsible rows,
+      multi-open, with the season matching the proposal's current slot expanded
+      on mount, and episodes render as compact text rows with **no stills**.
+      **This does NOT change the enumeration above — there are still SIX
+      `SeasonEpisodePicker` mount points, and all six keep the poster grid,
+      unchanged.** SearchTakeover was a seventh mount point of the picker and is
+      now the sole mount point of the accordion; the picker is not imported
+      there any more.
+
+      **Duplicated, not parameterised — deliberately, and the interview
+      originally decided the other way.** Round 3 chose "prop flag on the
+      existing component"; that was reversed before implementation on
+      discovering the existing Non-Goal in
+      `.omc/specs/deep-interview-repick-move-fullpage-takeover.md`: *"No change
+      to `SeasonEpisodePicker`'s own internal behavior, its 5 existing mount
+      points, its degraded fallback, or its 'Whole season' (`episode: 0`)
+      semantics — it is consumed as-is, not modified."* So `seasonLabel`, the
+      degraded `FreeTextPicker` (both notice strings, both aria-labels, the
+      season-required/episode-optional asymmetry) and the
+      `fetchTitleDetail(…, "seasons")` self-fetch are copied into the new file,
+      the same precedent as `SearchTakeover.tsx`'s own `GRID_CLASS`/`TILE_CLASS`
+      duplication (D-6). `git diff` on `SeasonEpisodePicker.tsx` is empty.
+      **The duplicated fallback is the one thing that can silently drift** —
+      `SearchTakeover.test.tsx`'s "degraded free-text fallback maps a blank
+      Episode through the same D-1 rule" test is what pins it.
+
+      **The `currentSlot` auto-expand does NOT reopen D-2.** That deviation
+      (`SearchTakeover.tsx`'s `currentSlot` prop doc) says the current slot is
+      read-only context rather than a pre-fill, because the picker has no
+      pre-selection concept and adding one would modify a protected file.
+      Expanding a row selects nothing and stages no commit, so the constraint
+      holds; only the prop's "DISPLAY-ONLY" wording needed amending, which it
+      got in place.

@@ -1,5 +1,5 @@
 // Season/episode assignment on a Re-pick, driven through SearchTakeover's
-// two-step Series flow (candidate tile -> SeasonEpisodePicker grid).
+// two-step Series flow (candidate tile -> SeasonEpisodeAccordion).
 //
 // Separate from Rename.test.tsx deliberately: every assertion here is about the
 // RAW request body string, not a parsed call-arg object. A mock-arg assertion
@@ -8,14 +8,19 @@
 // Rename's commitRepick exist to prevent. Keep the string assertions; do not
 // "modernize" them into toHaveProperty checks, which is Rename.test.tsx's job.
 //
-// Claude 2026-08-08: rewritten against SearchTakeover's season grid; the
-//   free-text S/E inputs this file used to drive no longer exist.
-// Reason: the grid cannot emit half a season/episode pair, so the former
-//   "inline error when only one is filled" test is structurally unreachable
-//   and was deleted rather than kept as a passing no-op.
+// Claude 2026-08-09: reworded for SearchTakeover's swap to
+//   SeasonEpisodeAccordion (see CLAUDE.md's "AMENDED 2026-08-09" note) — the
+//   underlying condition below was met verbatim, so the prior dated block
+//   (Claude 2026-08-08, rewritten against the season grid) was removed rather
+//   than left stale. Nothing about the test bodies changed: the accordion
+//   self-fetches the same endpoint and needs the same two clicks (expand a
+//   row, then click a row), so every assertion here still passes unmodified.
+// Reason: the accordion, like the grid before it, cannot emit half a
+//   season/episode pair, so the former "inline error when only one is filled"
+//   test remains structurally unreachable and stays deleted.
 // Troubleshooting: getByLabelText("Season number") not found here.
-// Review if: SearchTakeover stops mounting SeasonEpisodePicker for Series.
-// Context: .omc/plans/autopilot-impl.md §8.2.
+// Review if: SearchTakeover stops mounting SeasonEpisodeAccordion for Series.
+// Context: .omc/plans/autopilot-impl-rename-episode-picker-collapsible.md.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -115,7 +120,7 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
       if (url.includes("/api/modes/series/rename/proposals"))
         return jsonResponse(pageOf(opts.series ?? []));
       if (url.includes("/tmdb-search")) return jsonResponse([tmdbResult]);
-      // SeasonEpisodePicker's self-fetch. Serving it is load-bearing: a
+      // SeasonEpisodeAccordion's self-fetch. Serving it is load-bearing: a
       // REJECTED seasons fetch resolves to [] and degrades to the free-text
       // fallback, where "Use show-level match only" still commits — so the
       // show-level test below would pass against the wrong state.
@@ -160,14 +165,14 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("Rename re-pick — season/episode assignment through the grid", () => {
-  it("drills into the season grid after a series candidate is picked", async () => {
+describe("Rename re-pick — season/episode assignment through the accordion", () => {
+  it("renders a season row after a series candidate is picked", async () => {
     const calls = stubRawFetch({ series: [seriesProposal] });
     fireEvent.click(await openRepick("Series", "a3f9c2e1b7d84f0e.mkv"));
 
-    // A real season TILE, not just the loading skeleton: the skeleton also
-    // renders while a doomed fetch is in flight, so it cannot tell the grid
-    // state apart from the degraded free-text fallback.
+    // A real season ROW, not just the loading skeleton: the skeleton also
+    // renders while a doomed fetch is in flight, so it cannot tell the
+    // accordion state apart from the degraded free-text fallback.
     expect(
       await screen.findByRole("button", { name: /Specials/ }),
     ).toBeInTheDocument();
@@ -175,7 +180,7 @@ describe("Rename re-pick — season/episode assignment through the grid", () => 
     expect(seasonsFetched(calls)).toBe(true);
   });
 
-  it("commits immediately for movies — no seasons fetch, no grid", async () => {
+  it("commits immediately for movies — no seasons fetch, no accordion", async () => {
     const calls = stubRawFetch({ movies: [moviesProposal] });
     fireEvent.click(await openRepick("Movies", "gibberish"));
 
@@ -205,8 +210,9 @@ describe("Rename re-pick — season/episode assignment through the grid", () => 
     const calls = stubRawFetch({ series: [seriesProposal] });
     fireEvent.click(await openRepick("Series", "a3f9c2e1b7d84f0e.mkv"));
 
-    // Reached from the grid state, so this proves the escape hatch coexists
-    // with the picker rather than only surviving in its degraded fallback.
+    // Reached from the loaded-seasons state, so this proves the escape hatch
+    // coexists with the accordion rather than only surviving in its degraded
+    // fallback.
     expect(
       await screen.findByRole("button", { name: /Specials/ }),
     ).toBeInTheDocument();

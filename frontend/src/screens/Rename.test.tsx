@@ -13,8 +13,14 @@
 //   back control is aria-label "Back to list" (visible text "Back").
 // Troubleshooting: findByText("Use this"/"Cancel") timing out on a
 //   repick/move test.
-// Review if: SearchTakeover stops rendering the season grid inline.
+// Review if: SearchTakeover stops rendering a season/episode picker inline.
 // Context: .omc/plans/autopilot-impl.md §8.3.
+//
+// Claude 2026-08-09: SearchTakeover's Series step 2 swapped from
+//   SeasonEpisodePicker (grid) to SeasonEpisodeAccordion (collapsible list) —
+//   see CLAUDE.md's "AMENDED 2026-08-09" note. The above Review-if condition
+//   was NOT met (still an inline picker), so left in place; only the two
+//   component-name references below were stale and are corrected.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
@@ -435,8 +441,9 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
   // every refactor of that path rather than being replaced by a component-level
   // render. It does double duty: it is simultaneously that commit guard AND
   // D-5's show-level-escape-hatch guard — leaving both slot fields off is the
-  // default, most common Series repick, and the season grid structurally cannot
-  // express it (SeasonEpisodePicker always drills into a season first).
+  // default, most common Series repick, and the accordion structurally cannot
+  // express it (SeasonEpisodeAccordion always requires expanding a season row
+  // first).
   it("re-points the proposal at the NEWLY chosen tmdbId, not its current one", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
@@ -454,11 +461,12 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
         return jsonResponse([
           tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" }),
         ]);
-      // SeasonEpisodePicker self-fetches its grid. Without this branch the
-      // handler's trailing throw would reject it, the picker would resolve to
-      // [] and silently render its degraded free-text fallback — where the
-      // show-level button below is still clickable, so the rest of this test
-      // would pass while exercising the wrong state entirely.
+      // SeasonEpisodeAccordion self-fetches its season list. Without this
+      // branch the handler's trailing throw would reject it, the accordion
+      // would resolve to [] and silently render its degraded free-text
+      // fallback — where the show-level button below is still clickable, so
+      // the rest of this test would pass while exercising the wrong state
+      // entirely.
       if (url.includes("/api/modes/series/discover/detail"))
         return jsonResponse({
           seasons: [

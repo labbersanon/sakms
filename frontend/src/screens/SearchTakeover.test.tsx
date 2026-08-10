@@ -6,17 +6,28 @@
 // season-0 case) is REWRITTEN against the two-step grid flow rather than the
 // deleted number inputs.
 //
+// APPENDED 2026-08-09: Series step 2 mounts SeasonEpisodeAccordion now, not
+// SeasonEpisodePicker. The D-1 tests below kept every assertion AND every click
+// — the two UIs happen to need the identical two-step interaction ("Season 4"
+// then "Whole season"; "Specials" then "E3 · Special Three"), because expanding
+// an accordion row and drilling into a season tile are the same two clicks. Only
+// the comments changed, plus one NEW test for the accordion's currentSlot
+// auto-expand wiring. The accordion's own behavior (multi-open, toggle-collapse,
+// no images) is covered at component level in
+// discover/SeasonEpisodeAccordion.test.tsx. The paragraph above stands as
+// written: it is the migration's own history, not a claim about today's UI.
+//
 // WHAT THIS FILE IS FOR, beyond the migration. SearchTakeover's own header
 // names five things a future session must not simplify away; the four that are
 // observable from a test have a dedicated guard here:
 //
 //   rule 1 (D-1) — `episode === 0` maps to a SHOW-LEVEL commit with BOTH slot
 //     fields omitted, because both endpoints 400 on `episodeNumber < 1`. Guarded
-//     twice, once through the whole-season tile and once through the degraded
+//     twice, once through the whole-season row and once through the degraded
 //     free-text fallback. Season 0 is NOT collapsed by that rule, which is what
 //     the rewritten season-0 test proves.
 //   rule 2 (D-5) — "Use show-level match only" is not a redundant duplicate of
-//     the whole-season tile; it has its own omits-both-keys guard.
+//     the whole-season row; it has its own omits-both-keys guard.
 //   rule 4 — the results block is wrapped in `<Show when={!results.error}>`
 //     because a Solid resource re-throws on read once its fetcher has errored.
 //     Guarded by forcing a search error and asserting the takeover still
@@ -83,7 +94,7 @@ const adultCandidate = (
   ...over,
 });
 
-// Season 0 is reserved for the season-0 test. Every other season-grid test uses
+// Season 0 is reserved for the season-0 test. Every other accordion test uses
 // season 4, so an omitted `seasonNumber` there is unambiguously "the D-1 rule
 // fired" rather than "season 0 got dropped by a truthiness check".
 const specialsSeason = {
@@ -124,7 +135,7 @@ const SEARCH_URL = "/api/modes/series/tmdb-search";
 const SEASONS_URL = "/api/modes/series/discover/detail";
 
 // seriesFetch is the shared stub for the Series two-step flow: one tmdb-search
-// hit, one ?sections=seasons hit. `seasons` is what the picker's self-fetch
+// hit, one ?sections=seasons hit. `seasons` is what the accordion's self-fetch
 // resolves to — pass [] to force its degraded free-text fallback.
 const seriesFetch = (seasons: unknown[]) =>
   vi.fn(async (input: RequestInfo | URL) => {
@@ -313,7 +324,7 @@ describe("SearchTakeover — commit 403 is a SEPARATE branch from search 403", (
 });
 
 describe("SearchTakeover — season/episode `!= null` semantics (D-1)", () => {
-  it("season 0 (Specials) survives the SeasonEpisodePicker swap and ships a literal 0 paired with a real episode", async () => {
+  it("season 0 (Specials) survives the SeasonEpisodeAccordion swap and ships a literal 0 paired with a real episode", async () => {
     const fetchMock = seriesFetch([specialsSeason]);
     vi.stubGlobal("fetch", fetchMock);
     const onCommit = commitSpy();
@@ -346,7 +357,12 @@ describe("SearchTakeover — season/episode `!= null` semantics (D-1)", () => {
     )!;
     expect(String(seasonsCall[0])).toContain("sections=seasons");
 
-    // Drill: Specials -> E3.
+    // Expand the Specials row, then click its E3 episode row. Identical two
+    // clicks to the grid's old drill-down — expanding a collapsed accordion row
+    // and drilling into a season tile happen to need the same interaction, so
+    // this test's steps did not have to change with the accordion swap. No
+    // currentSlot is passed here, so every row starts collapsed and the first
+    // click genuinely expands rather than collapsing.
     fireEvent.click((await screen.findByText("Specials")).closest("button")!);
     fireEvent.click(
       (await screen.findByText("E3 · Special Three")).closest("button")!,
@@ -363,7 +379,7 @@ describe("SearchTakeover — season/episode `!= null` semantics (D-1)", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
   });
 
-  it("the whole-season tile omits BOTH slot keys (never ships episodeNumber: 0)", async () => {
+  it("the whole-season row omits BOTH slot keys (never ships episodeNumber: 0)", async () => {
     // Season 4, deliberately not season 0: an omitted `seasonNumber` here can
     // only mean the D-1 mapping fired, never "season 0 was dropped".
     const fetchMock = seriesFetch([season4]);
@@ -383,6 +399,7 @@ describe("SearchTakeover — season/episode `!= null` semantics (D-1)", () => {
     ));
 
     await pickShow();
+    // Expand season 4's row, then take the whole season.
     fireEvent.click((await screen.findByText("Season 4")).closest("button")!);
     fireEvent.click(
       (await screen.findByText("Whole season")).closest("button")!,
@@ -399,7 +416,11 @@ describe("SearchTakeover — season/episode `!= null` semantics (D-1)", () => {
   });
 
   it("the degraded free-text fallback maps a blank Episode through the same D-1 rule, and warns that the typed season was not applied", async () => {
-    // Zero seasons -> SeasonEpisodePicker's state 4, the free-text S/E inputs.
+    // Zero seasons -> SeasonEpisodeAccordion's state 4, the free-text S/E
+    // inputs. The accordion duplicates that fallback from SeasonEpisodePicker
+    // rather than importing it, so this test is also the guard that the
+    // duplicate did not drift — same aria-labels, same blank-Episode-means-0
+    // coercion, same "Go" submit.
     const fetchMock = seriesFetch([]);
     vi.stubGlobal("fetch", fetchMock);
     const onCommit = commitSpy();
@@ -439,8 +460,40 @@ describe("SearchTakeover — season/episode `!= null` semantics (D-1)", () => {
   });
 });
 
+describe("SearchTakeover — currentSlot reaches the accordion", () => {
+  // The WIRING guard, deliberately separate from the accordion's own
+  // auto-expand test (SeasonEpisodeAccordion.test.tsx). That one proves the
+  // component honours the prop; this one proves SearchTakeover actually hands
+  // it over — a component-level test passes just as happily against a mount
+  // point that never passes `currentSlot` at all.
+  it("expands the currently-matched season on mount, with no click", async () => {
+    vi.stubGlobal("fetch", seriesFetch([specialsSeason, season4]));
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        currentSlot={{ season: 4, episode: 7 }}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    await pickShow();
+
+    // Season 4's body is open without any interaction; Specials' is not. The
+    // negative half is what makes this meaningful — an accordion that ignored
+    // the prop and expanded everything would satisfy the positive half alone.
+    expect(await screen.findByText("E7 · Seven")).toBeInTheDocument();
+    expect(screen.queryByText("E3 · Special Three")).toBeNull();
+  });
+});
+
 describe("SearchTakeover — 'Use show-level match only' (D-5)", () => {
-  it("commits the no-slot payload without ever entering the season grid", async () => {
+  it("commits the no-slot payload without ever expanding a season row", async () => {
     const fetchMock = seriesFetch([season4]);
     vi.stubGlobal("fetch", fetchMock);
     const onCommit = commitSpy();
@@ -461,9 +514,10 @@ describe("SearchTakeover — 'Use show-level match only' (D-5)", () => {
     await pickShow();
 
     // The escape hatch is a SIBLING of the picker, above it — reachable with
-    // the season grid untouched. That is the whole point of D-5: the grid
-    // structurally cannot express "leave both blank", which is today's default
-    // and most common Series repick.
+    // every accordion row still collapsed. That is the whole point of D-5: the
+    // picker structurally cannot express "leave both blank", which is today's
+    // default and most common Series repick. Unchanged by the accordion swap:
+    // an accordion cannot express it either.
     fireEvent.click(screen.getByText("Use show-level match only"));
 
     await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));

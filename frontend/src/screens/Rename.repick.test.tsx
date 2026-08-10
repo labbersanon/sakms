@@ -119,6 +119,26 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
         return jsonResponse(pageOf(opts.movies ?? []));
       if (url.includes("/api/modes/series/rename/proposals"))
         return jsonResponse(pageOf(opts.series ?? []));
+      // A SERIES-mode search now queries BOTH TMDB catalogs — SearchTakeover
+      // merges movie results into a Series search, so a short film filed under
+      // movies is findable there. That means the movies URL is hit by every
+      // test in this file, not just the Movies-mode one, and a single
+      // `/tmdb-search` branch serving `tmdbResult` to both would render "The
+      // Path" TWICE — making openRepick's findByLabelText throw "found multiple
+      // elements" in all three Series tests.
+      //
+      // So the movies catalog serves the candidate only when this stub was
+      // built for a Movies proposal, and stays EMPTY in the Series tests, which
+      // keeps their one tile a genuine series-catalog hit rather than silently
+      // becoming a movie-origin pick exercising a different code path.
+      //
+      // `opts.movies?.length`, NOT `opts.movies` — an empty array is truthy,
+      // so a bare truthiness check here would silently start serving
+      // `tmdbResult` into the movies catalog the moment a future test calls
+      // `stubRawFetch({ movies: [], series: [...] })`, recreating the exact
+      // duplicate-tile hazard this guard exists to prevent.
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse(opts.movies?.length ? [tmdbResult] : []);
       if (url.includes("/tmdb-search")) return jsonResponse([tmdbResult]);
       // SeasonEpisodeAccordion's self-fetch. Serving it is load-bearing: a
       // REJECTED seasons fetch resolves to [] and degrades to the free-text

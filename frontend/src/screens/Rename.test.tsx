@@ -457,6 +457,11 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
             year: 2010,
           }),
         ]);
+      // A Series-mode search queries BOTH TMDB catalogs (SearchTakeover merges
+      // movie results in), so this branch is required or the Promise.all
+      // rejects on the trailing throw. Empty keeps this test's single candidate
+      // tile unambiguous.
+      if (url.includes("/api/modes/movies/tmdb-search")) return jsonResponse([]);
       if (url.includes("/api/modes/series/tmdb-search"))
         return jsonResponse([
           tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" }),
@@ -1075,6 +1080,8 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
         return jsonResponse([
           proposal({ id: 72, sourceName: "Commit.Me.mkv", title: "Commit Me" }),
         ]);
+      // Series search queries both catalogs — see the Series Re-pick test above.
+      if (url.includes("/api/modes/movies/tmdb-search")) return jsonResponse([]);
       if (url.includes("/api/modes/series/tmdb-search"))
         return jsonResponse([
           tmdbItem({ id: 901, title: "Target Show", releaseDate: "2019-01-01" }),
@@ -1220,6 +1227,8 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
           releaseRefetch = () => resolve(jsonResponse([row]));
         });
       }
+      // Series search queries both catalogs — see the Series Re-pick test above.
+      if (url.includes("/api/modes/movies/tmdb-search")) return jsonResponse([]);
       if (url.includes("/api/modes/series/tmdb-search"))
         return jsonResponse([
           tmdbItem({ id: 902, title: "Target Show", releaseDate: "2019-01-01" }),

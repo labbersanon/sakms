@@ -1409,6 +1409,11 @@ describe("Dedup — Move to another mode (AC6)", () => {
             ],
           }),
         ]);
+      // A Series-mode search queries BOTH TMDB catalogs (SearchTakeover merges
+      // movie results in), so this branch is required or the Promise.all
+      // rejects on the trailing throw. Empty keeps the single candidate tile
+      // unambiguous.
+      if (url.includes("/api/modes/movies/tmdb-search")) return jsonResponse([]);
       if (url.includes("/api/modes/series/tmdb-search"))
         return jsonResponse([
           { id: 555, title: "New Show", releaseDate: "2020-01-01" },
@@ -1856,6 +1861,8 @@ describe("Dedup — takeover scroll restore (N4, N4b)", () => {
           releaseRefetch = () => resolve(jsonResponse([group]));
         });
       }
+      // Series search queries both catalogs — see the AC6 move test above.
+      if (url.includes("/api/modes/movies/tmdb-search")) return jsonResponse([]);
       if (url.includes("/api/modes/series/tmdb-search"))
         return jsonResponse([
           { id: 999, title: "New Show", releaseDate: "2021-01-01" },

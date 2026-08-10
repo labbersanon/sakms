@@ -1856,3 +1856,76 @@ above, so don't drop them for convenience:
       Expanding a row selects nothing and stages no commit, so the constraint
       holds; only the prop's "DISPLAY-ONLY" wording needed amending, which it
       got in place.
+
+    - **AMENDED 2026-08-09 (later, same day) — `SearchTakeover`'s Series-mode
+      search queries BOTH TMDB catalogs and merges them, and the ONE thing worth
+      recording here is why that merge is not in the backend** (spec
+      `.omc/specs/deep-interview-series-search-includes-movies.md`, plan
+      `.omc/plans/autopilot-impl-series-search-includes-movies.md`). A Series
+      search now calls `tmdb-search` twice (movies + series, `Promise.all`,
+      movies-first per `Mainstream.tsx:826-827`), badges each row "Movie"/"Series",
+      and does not de-duplicate. Motivating case: a short film TMDB files under
+      movies that the operator tracks in their Series library.
+
+      **`GET /api/modes/{mode}/tmdb-search` has ZERO diff, and blending there is
+      the trap.** It is the obvious place to fix this and it is wrong: that
+      endpoint is SHARED with Discover's Mainstream search bar, which already
+      does its own client-side dual-call merge — a series-mode response that
+      included movies would make Mainstream render every movie TWICE. That
+      reasoning is not derivable from `SearchTakeover.tsx`, which otherwise has
+      no reason to know Mainstream exists, so the full WHY lives as a comment on
+      the dual-call block itself. `internal/api/proposals.go` and
+      `internal/rename` are likewise untouched: `repickProposalHandler` never
+      verifies a `tmdbId` is a real TV show, and `ApplyLibrarySeries` already
+      degrades to a bare `SxxExx` when episode-title lookup fails — the same path
+      an anthology proposal's synthetic id already takes.
+
+      **`useCatalogItem` still branches on `props.searchMode`, never on a hit's
+      origin** — a movie-origin pick in Series mode drills to step 2 like any
+      other, and the accordion's existing zero-seasons free-text fallback is
+      reused verbatim with its copy unchanged (deliberate, spec Round 5). Known
+      accepted tradeoff: the `Promise.all` is NOT caught, so a movies-catalog
+      failure now fails a Series search. Mainstream catches only because it feeds
+      `setSetupError`; there is no equivalent here, and a rejection is what
+      populates `results.error`, which the render already handles.
+
+    - **CORRECTED 2026-08-09 (same day, Phase-4 review) — the anthology-precedent
+      sentence directly above is FALSE, and the actual risk it was papering over
+      is a real one: possible silent overwrite of a tracked show's library row.**
+      The superseded sentence, quoted verbatim so a future session can find it:
+      *"`ApplyLibrarySeries` already degrades to a bare `SxxExx` when episode-title
+      lookup fails — the same path an anthology proposal's synthetic id already
+      takes."* That equivalence does not hold. Anthology synthetic ids are always
+      **negative** (`anthologyTMDBID`, `series_tvdb_episode_match.go:131-137`,
+      an FNV hash negated), and `rename.go:1900` gates the TMDB episode-title
+      lookup on `p.TMDBID > 0` — so a synthetic id **provably never reaches**
+      `SeasonDetails`. A movie-origin pick's id is **positive and real**. TMDB's
+      movie and TV catalogs are independently numbered and CAN share an integer
+      (TV ids run roughly 1 to the high-200,000s; plenty of older movies —
+      exactly the "old short film" motivating case — fall in that range too).
+
+      **What actually happens on a collision, worse than the superseded sentence
+      implied:** `SeasonDetails(ctx, movieId, season)` can SUCCEED against an
+      unrelated TV show sharing that id — the accordion shows that show's
+      season/episode names as if they belonged to the picked title, and on Apply,
+      `UpsertSeries`'s `ON CONFLICT(tmdb_id) DO UPDATE` (`library_series.go:88-100`,
+      `UNIQUE(tmdb_id)`) **overwrites that real tracked show's title/year/
+      root_folder_path/genres/cast** with the short film's — a direct hit on
+      this file's own "no drift, no corruption" mission bar, not a cosmetic
+      mislabel.
+
+      **A structural fix exists and was NOT taken — Wade's explicit decision,
+      recorded so a future session does not "helpfully" add it without
+      re-asking.** Negating a movie-origin id before commit (mirroring
+      `anthologyTMDBID`'s own negative-synthetic-id trick) would make
+      `p.TMDBID > 0` false and structurally skip the hazard, no backend change
+      required. Offered during Phase-4 review; Wade chose the warning-only
+      mitigation instead — the `origin: "movies" | "series"` field on
+      `PickedShow` and the `ErrorText` advisory in step 2 (*"the season list
+      below ... may belong to an unrelated show"*) are what shipped. **This is a
+      known, accepted residual risk, not an oversight**: the corruption is
+      possible only on an id collision AND only when the operator ignores the
+      warning and proceeds past a wrong-looking episode name. If this is ever
+      revisited, the id-negation approach is the one already priced out as
+      cheap and backend-free — re-derive it from this note rather than
+      re-investigating from scratch.

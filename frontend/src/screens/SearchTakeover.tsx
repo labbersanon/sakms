@@ -76,6 +76,7 @@ import {
   type JSX,
   createResource,
   createSignal,
+  createUniqueId,
   For,
   Show,
 } from "solid-js";
@@ -110,8 +111,27 @@ function searchLockMessage(err: SectionLockedError): string {
     : "This section is PIN-locked";
 }
 
+// CatalogHit tags a search result with WHICH CATALOG IT CAME OUT OF, mirroring
+// Mainstream.tsx:95's `ModedTitle = { mode, item }` conceptually (duplicated,
+// not imported — this is a screen, and it has no other reason to depend on
+// Discover's Mainstream page).
+//
+// DiscoverItem DOES carry its own `mediaType` ("movie"/"tv", set server-side by
+// tmdb.normalizeAll), so this wrapper looks redundant. It is not, for two
+// reasons, and Mainstream carries the same wrapper against the same field:
+//   - Vocabulary. `mediaType` is TMDB's classification; `mode` is SAK's, and
+//     every routing decision in this app keys off SAK's ("movies"/"series",
+//     the `Mode` values that select an endpoint). Reading the DTO field here
+//     would mean translating two vocabularies at the one place that must not
+//     get it wrong.
+//   - Provenance, not classification. What the badge and the merge need to
+//     record is which of the two `tmdb-search` calls produced this row. That
+//     is a fact about the request, which no field on the response can be
+//     trusted to restate.
+type CatalogHit = { mode: "movies" | "series"; item: DiscoverItem };
+
 type SearchResult =
-  | { kind: "catalog"; items: DiscoverItem[] }
+  | { kind: "catalog"; items: CatalogHit[] }
   | { kind: "adult"; items: AdultSceneCandidate[]; errors?: string[] };
 
 type CommitError = { adultLocked: boolean; message: string };
@@ -142,7 +162,19 @@ export type TakeoverPick =
 // PickedShow is Series step 2's local state: the show whose season/episode grid
 // is open. It deliberately does NOT touch the search resource, so "Change show"
 // is free and issues no request.
-type PickedShow = { tmdbId: number; title: string; year?: number };
+// origin is informational only — NEVER branched on for commit/routing logic
+// (see useCatalogItem's own comment for why). It exists solely to drive the
+// step-2 advisory below for a movie-origin pick: the id is looked up against
+// TMDB's TV catalog by SeasonEpisodeAccordion exactly like any other Series
+// pick, and if it happens to collide with a real TV show's id (the two
+// catalogs are independently numbered and can share an integer), the season
+// list shown may belong to an unrelated show. See CLAUDE.md's note on this.
+type PickedShow = {
+  tmdbId: number;
+  title: string;
+  year?: number;
+  origin: "movies" | "series";
+};
 
 export const SearchTakeover: Component<{
   // --- identity / copy -------------------------------------------------
@@ -224,11 +256,55 @@ export const SearchTakeover: Component<{
       const res = await adultSceneSearch(q);
       return { kind: "adult", items: res.items, errors: res.errors };
     }
+    // SERIES SEARCHES BOTH CATALOGS. The motivating case is a short film that
+    // TMDB files under movies but the operator tracks in their Series library;
+    // in Series mode it was previously unfindable here at all.
+    //
+    // THIS MERGE MUST STAY ON THE CLIENT — do not "simplify" it by teaching
+    // GET /api/modes/series/tmdb-search to blend movies in server-side. That
+    // endpoint is SHARED with Discover's Mainstream search bar
+    // (api/discover.ts's fetchTmdbSearch), which ALREADY does its own
+    // client-side dual-call merge (Mainstream.tsx:821-828). A series-mode
+    // response that included movies would make Mainstream show every movie
+    // TWICE — once from its own "movies" call, once from the now-blended
+    // "series" one. The backend handler is deliberately left mode-gated.
+    //
+    // Movies-first, mirroring Mainstream.tsx:826-827's concatenation order, so
+    // the two search UIs read the same way side by side. NO DE-DUPLICATION: a
+    // title in both catalogs appears twice, once per badge — Mainstream's own
+    // precedent, and the two rows are genuinely different tmdbIds.
+    //
+    // Deliberately NOT wrapped in try/catch. Mainstream catches only because it
+    // feeds setSetupError to raise its setup modal; here a rejection is what
+    // populates `results.error`, which the render already handles. The tradeoff
+    // is real and accepted: a movies-catalog failure now fails a series search.
+    if (props.searchMode === "series") {
+      const [movies, series] = await Promise.all([
+        tmdbSearch("movies", q),
+        tmdbSearch("series", q),
+      ]);
+      return {
+        kind: "catalog",
+        items: [
+          ...movies.map((item) => ({ mode: "movies" as const, item })),
+          ...series.map((item) => ({ mode: "series" as const, item })),
+        ],
+      };
+    }
+    // Movies mode is UNCHANGED behaviourally — still exactly one call, no merge
+    // and (see the render) no badge. It is wrapped in the same CatalogHit shape
+    // only so the grid has one item type to render. `"movies" as const` rather
+    // than a cast of props.searchMode: adult and series have both returned by
+    // this line, so the literal is honest and a cast would silently admit
+    // "adult" if that narrowing ever broke.
     const items = await tmdbSearch(props.searchMode, q);
-    return { kind: "catalog", items };
+    return {
+      kind: "catalog",
+      items: items.map((item) => ({ mode: "movies" as const, item })),
+    };
   });
 
-  const catalogItems = (): DiscoverItem[] => {
+  const catalogItems = (): CatalogHit[] => {
     const r = results();
     return r && r.kind === "catalog" ? r.items : [];
   };
@@ -290,11 +366,23 @@ export const SearchTakeover: Component<{
 
   // useCatalogItem: Movies/Adult commit on a single click (today's behaviour);
   // Series drills into step 2 instead.
-  const useCatalogItem = (item: DiscoverItem) => {
+  //
+  // ROUTING BRANCHES ON props.searchMode, NOT ON hit.mode — deliberately, and
+  // it needed no change when series search started merging in movie results.
+  // A movie-origin pick in Series mode goes to step 2 exactly like a
+  // series-origin one: the operator is placing a file into their SERIES
+  // library, so it needs a season/episode slot regardless of which TMDB
+  // catalog the id came from. Branching on `hit.mode` here would send a short
+  // film straight to a show-level commit and silently skip the slot
+  // assignment. `origin` IS still threaded through — onto `PickedShow`, not
+  // into this routing decision — purely so step 2 can render the movie-origin
+  // advisory below; see PickedShow's own doc comment.
+  const useCatalogItem = (item: DiscoverItem, origin: "movies" | "series") => {
     const show: PickedShow = {
       tmdbId: item.id,
       title: item.title,
       year: yearOf(item.releaseDate),
+      origin,
     };
     if (props.searchMode === "series") {
       setCommitError(null);
@@ -391,6 +479,24 @@ export const SearchTakeover: Component<{
                 {show().year ? ` (${show().year})` : ""}
               </span>
             </div>
+            {/* WARNING ONLY, NOT A GUARD — a deliberate, accepted-risk choice
+                (see CLAUDE.md). TMDB's movie and TV catalogs are numbered
+                independently and can share an id; the accordion below looks
+                this id up against the TV catalog exactly like any other
+                Series pick, so if it collides with a real show's id, the
+                season/episode names shown belong to that unrelated show, not
+                to this title. The chosen season/episode NUMBERS are still
+                whatever the operator picks and are unaffected either way —
+                this notice exists so a wrong-looking name is recognized as a
+                warning sign rather than trusted. */}
+            <Show when={show().origin === "movies"}>
+              <ErrorText>
+                This title came from TMDB's movie catalog — the season list
+                below is looked up under the same id in the TV catalog and may
+                belong to an unrelated show. If the episode names look wrong,
+                prefer “Use show-level match only” below.
+              </ErrorText>
+            </Show>
             <Show when={props.currentSlot}>
               {(slot) => (
                 <Muted class="mt-1">
@@ -465,16 +571,40 @@ export const SearchTakeover: Component<{
                 >
                   <div class={GRID_CLASS}>
                     <For each={catalogItems()}>
-                      {(item) => {
+                      {(hit) => {
+                        // `item` is the DiscoverItem; every line below reads
+                        // from it exactly as before. `hit.mode` also feeds the
+                        // badge below (Series mode only) and its
+                        // aria-describedby wiring — never used for routing,
+                        // see useCatalogItem's own comment.
+                        const item = hit.item;
                         const src = () => tmdbPoster(item.posterPath);
                         const y = () => yearOf(item.releaseDate);
+                        const badgeLabel = hit.mode === "movies" ? "Movie" : "Series";
+                        // aria-describedby, NOT aria-label. An explicit
+                        // aria-label overrides ALL descendant content for the
+                        // accessible NAME, so folding the badge into the label
+                        // would (a) still leave the visible badge unannounced
+                        // and (b) change every tile's accessible name — this
+                        // file's aria-label is `Use ${title}` and is queried
+                        // by `getByLabelText` throughout this suite and its
+                        // siblings (Rename/Dedup tests), so changing it would
+                        // ripple across dozens of unrelated assertions for no
+                        // reason: describedby adds the badge as supplementary
+                        // description (announced after the name) without
+                        // touching the name at all. Only wired in series mode,
+                        // matching the badge's own visibility.
+                        const badgeId = createUniqueId();
                         return (
                           <button
                             type="button"
                             class={TILE_CLASS}
                             aria-label={`Use ${item.title}`}
+                            aria-describedby={
+                              props.searchMode === "series" ? badgeId : undefined
+                            }
                             disabled={busy()}
-                            onClick={() => useCatalogItem(item)}
+                            onClick={() => useCatalogItem(item, hit.mode)}
                           >
                             <div class="aspect-[2/3] w-full">
                               <Show
@@ -495,6 +625,24 @@ export const SearchTakeover: Component<{
                               </div>
                               <div class="text-[11px] text-muted">
                                 <Show when={y()}>{(yy) => <>{yy()}</>}</Show>
+                                {/* SERIES-MODE ONLY. A movies-mode search
+                                    returns one catalog, so every row would
+                                    carry an identical "Movie" badge — pure
+                                    clutter. Deliberately diverges from
+                                    Mainstream, which merges without any badge:
+                                    a wrong pick there costs a re-search, but
+                                    here it renames or moves a real file. Same
+                                    class literal as the Adult card's `box`
+                                    badge below, not a new badge style. */}
+                                <Show when={props.searchMode === "series"}>
+                                  {" "}
+                                  <span
+                                    id={badgeId}
+                                    class="rounded bg-surface px-1 py-0.5 text-xs uppercase text-muted"
+                                  >
+                                    {badgeLabel}
+                                  </span>
+                                </Show>
                               </div>
                             </div>
                           </button>

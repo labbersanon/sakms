@@ -54,7 +54,7 @@ import {
   within,
 } from "@solidjs/testing-library";
 import type { AdultSceneCandidate, DiscoverItem } from "@dto";
-import { moveProposalMode } from "../api/rename";
+import { moveProposalMode, repickProposal } from "../api/rename";
 import { SourcePreviewDisclosure } from "../components/SourcePreview";
 import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
 
@@ -132,14 +132,26 @@ const season4 = {
 };
 
 const SEARCH_URL = "/api/modes/series/tmdb-search";
+const MOVIE_SEARCH_URL = "/api/modes/movies/tmdb-search";
 const SEASONS_URL = "/api/modes/series/discover/detail";
 
-// seriesFetch is the shared stub for the Series two-step flow: one tmdb-search
-// hit, one ?sections=seasons hit. `seasons` is what the accordion's self-fetch
+// seriesFetch is the shared stub for the Series two-step flow: TWO tmdb-search
+// hits, one ?sections=seasons hit. `seasons` is what the accordion's self-fetch
 // resolves to — pass [] to force its degraded free-text fallback.
-const seriesFetch = (seasons: unknown[]) =>
+//
+// THE MOVIES BRANCH IS NOT OPTIONAL. Series search is a dual call now (series
+// catalog + movies catalog, Promise.all) — without it every test here would
+// reject on the throw below rather than on any behaviour under test.
+//
+// `movies` DEFAULTS TO EMPTY on purpose. Every pre-existing test in this file
+// expects exactly one result tile, and both stubs returning catalogItem() would
+// render "A Show" twice — making getByLabelText("Use A Show") throw "found
+// multiple elements" across the whole suite. The merge tests below pass their
+// own movie fixtures explicitly.
+const seriesFetch = (seasons: unknown[], movies: DiscoverItem[] = []) =>
   vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.startsWith(MOVIE_SEARCH_URL)) return jsonResponse(movies);
     if (url.startsWith(SEARCH_URL)) return jsonResponse([catalogItem()]);
     if (url.startsWith(SEASONS_URL)) return jsonResponse({ seasons });
     throw new Error("unexpected fetch: " + url);
@@ -561,6 +573,9 @@ describe("SearchTakeover — Cancel is a structural no-op", () => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, _init?: RequestInit) => {
         const url = String(input);
+        // Series mode fans out to the movies catalog too; empty keeps this
+        // test's single "Auto Show" tile unambiguous.
+        if (url.startsWith(MOVIE_SEARCH_URL)) return jsonResponse([]);
         if (url.startsWith(SEARCH_URL)) {
           return jsonResponse([catalogItem({ title: "Auto Show" })]);
         }
@@ -602,8 +617,13 @@ describe("SearchTakeover — Cancel is a structural no-op", () => {
     // the read-only search GET, never a POST to a commit endpoint.
     expect(onCommit).not.toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
+    // Widened to `(movies|series)` because Series search is a dual call now —
+    // one read-only GET per catalog. Kept as a PER-CALL assertion over every
+    // request that happened, per this test's own comment above: the guarantee
+    // is "cancelling WRITES nothing", so what matters is that each call was a
+    // search GET, not how many there were.
     for (const [url, init] of fetchMock.mock.calls) {
-      expect(String(url)).toMatch(/^\/api\/modes\/series\/tmdb-search/);
+      expect(String(url)).toMatch(/^\/api\/modes\/(movies|series)\/tmdb-search/);
       expect((init as RequestInit | undefined)?.method ?? "GET").toBe("GET");
     }
   });
@@ -865,6 +885,400 @@ describe("SearchTakeover — images are proxied, never hot-linked", () => {
     );
     // image.tmdb.org never reaches an <img src> unencoded.
     expect(src.startsWith("https://")).toBe(false);
+  });
+});
+
+// Series-mode search merges BOTH TMDB catalogs. Spec:
+// .omc/specs/deep-interview-series-search-includes-movies.md. The motivating
+// case is a short film TMDB files under movies that the operator tracks in
+// their Series library.
+//
+// mergeFetch is separate from seriesFetch rather than a third parameter on it:
+// seriesFetch's series branch is FIXED at one `catalogItem()`, and that is
+// precisely what keeps the seven pre-existing tests' `getByLabelText("Use A
+// Show")` unambiguous. These tests need both catalogs controlled independently,
+// including an EMPTY series side, which that helper cannot express.
+const mergeFetch = (
+  movies: DiscoverItem[],
+  series: DiscoverItem[],
+  seasons: unknown[] = [],
+) =>
+  vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith(MOVIE_SEARCH_URL)) return jsonResponse(movies);
+    if (url.startsWith(SEARCH_URL)) return jsonResponse(series);
+    if (url.startsWith(SEASONS_URL)) return jsonResponse({ seasons });
+    if (url === "/api/proposals/7/repick") return jsonResponse({ ok: true });
+    throw new Error("unexpected fetch: " + url);
+  });
+
+// A short film: a MOVIES-catalog hit, with an id and title deliberately
+// distinct from `catalogItem()`'s 42/"A Show". The distinctness is load-bearing
+// in the end-to-end test below — with a shared id, that test would pass whether
+// or not the movie's own tmdbId actually reached the wire.
+const shortFilm = () =>
+  catalogItem({ id: 777, title: "A Short Film", mediaType: "movie" });
+
+const tmdbSearchCalls = (fetchMock: { mock: { calls: unknown[][] } }) =>
+  fetchMock.mock.calls
+    .map(([u]) => String(u))
+    .filter((u) => u.includes("/tmdb-search"));
+
+describe("SearchTakeover — Series search merges the movies catalog", () => {
+  it("issues one tmdb-search per catalog, for the same query, and renders both sets in one grid", async () => {
+    const fetchMock = mergeFetch([shortFilm()], [catalogItem()]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    // Both catalogs' results reach the one grid.
+    expect(await screen.findByLabelText("Use A Short Film")).toBeInTheDocument();
+    expect(screen.getByLabelText("Use A Show")).toBeInTheDocument();
+
+    const searches = tmdbSearchCalls(fetchMock);
+    expect(searches).toHaveLength(2);
+    expect(searches.some((u) => u.startsWith(MOVIE_SEARCH_URL))).toBe(true);
+    expect(searches.some((u) => u.startsWith(SEARCH_URL))).toBe(true);
+    // One query, fanned out — not two different searches.
+    for (const u of searches) expect(u).toContain("q=A%20Show");
+  });
+
+  it("badges each result with the catalog it came out of, never crossed over", async () => {
+    vi.stubGlobal("fetch", mergeFetch([shortFilm()], [catalogItem()]));
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    const movieTile = await screen.findByLabelText("Use A Short Film");
+    const seriesTile = screen.getByLabelText("Use A Show");
+    expect(within(movieTile).getByText("Movie")).toBeInTheDocument();
+    expect(within(seriesTile).getByText("Series")).toBeInTheDocument();
+    // The negative half is what makes this meaningful: a badge hardcoded to one
+    // literal would satisfy the positive half on whichever tile matched it.
+    expect(within(movieTile).queryByText("Series")).toBeNull();
+    expect(within(seriesTile).queryByText("Movie")).toBeNull();
+  });
+
+  it("does NOT de-duplicate a title present in both catalogs — both rows render, each badged", async () => {
+    // Distinct ids, same title: genuinely two different TMDB entries, which is
+    // why no dedup pass is correct (matching Mainstream's own precedent).
+    vi.stubGlobal(
+      "fetch",
+      mergeFetch(
+        [catalogItem({ id: 900, title: "Doubled" })],
+        [catalogItem({ id: 901, title: "Doubled" })],
+      ),
+    );
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="Doubled"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    // getAllBy, not getBy: two tiles share one aria-label here by design, and
+    // getByLabelText would throw "found multiple elements".
+    const tiles = await screen.findAllByLabelText("Use Doubled");
+    expect(tiles).toHaveLength(2);
+    // Movies-first, mirroring Mainstream.tsx:826-827's concatenation order.
+    // Asserting the badges (not just the count) is what proves the two rows are
+    // correctly tagged rather than merely duplicated.
+    expect(within(tiles[0]!).getByText("Movie")).toBeInTheDocument();
+    expect(within(tiles[1]!).getByText("Series")).toBeInTheDocument();
+  });
+
+  it("Movies-mode search is untouched: exactly one call, and no badge", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith(MOVIE_SEARCH_URL)) {
+        return jsonResponse([catalogItem({ title: "Target Film" })]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Move “Some File” to another section"
+        searchMode="movies"
+        initialQuery="Target Film"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    // GUARD THE GUARD FIRST — the tile, and specifically the footer line the
+    // badge would live in (the year). Without this the absence checks below
+    // would pass just as happily against a card that never rendered.
+    const tile = await screen.findByLabelText("Use Target Film");
+    expect(within(tile).getByText("2020")).toBeInTheDocument();
+
+    // A movies-mode search returns one catalog, so a badge on every row would
+    // be pure clutter. The badge test above proves the mechanism works, which
+    // is what keeps this absence assertion non-vacuous.
+    expect(within(tile).queryByText("Movie")).toBeNull();
+    expect(within(tile).queryByText("Series")).toBeNull();
+
+    const searches = tmdbSearchCalls(fetchMock);
+    expect(searches).toHaveLength(1);
+    expect(searches[0]!.startsWith(MOVIE_SEARCH_URL)).toBe(true);
+  });
+
+  it("a movie-origin pick drills into step 2 like any other, and degrades to free text with its EXISTING copy", async () => {
+    // Zero seasons is not a contrivance here — it is what TMDB genuinely
+    // returns for a movie's id, and letting it degrade naturally (rather than
+    // special-casing movie picks) is the spec's explicit Round-5 choice.
+    const fetchMock = mergeFetch([shortFilm()], [], []);
+    vi.stubGlobal("fetch", fetchMock);
+    const onCommit = commitSpy();
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Some.Short.Film”"
+        searchMode="series"
+        initialQuery="A Short Film"
+        autoSearch={false}
+        onCommit={onCommit}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use A Short Film"));
+
+    // Step 2, not an immediate commit — useCatalogItem branches on
+    // props.searchMode, never on the hit's origin.
+    expect(
+      await screen.findByText("Use show-level match only"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Change show")).toBeInTheDocument();
+    expect(onCommit).not.toHaveBeenCalled();
+
+    // The accordion self-fetched against the MOVIE's own tmdbId.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([u]) =>
+          String(u).startsWith(SEASONS_URL),
+        ),
+      ).toBe(true),
+    );
+    const seasonsCall = fetchMock.mock.calls.find(([u]) =>
+      String(u).startsWith(SEASONS_URL),
+    )!;
+    expect(String(seasonsCall[0])).toContain("tmdbId=777");
+
+    // Zero seasons -> the free-text fallback, unchanged and unreworded.
+    expect(await screen.findByLabelText("Season")).toBeInTheDocument();
+    expect(screen.getByLabelText("Episode")).toBeInTheDocument();
+  });
+
+  it("END-TO-END: a movie-origin pick with a typed season/episode POSTs a real repick carrying the MOVIE's tmdbId", async () => {
+    // The acceptance criterion the spec singles out as needing a test rather
+    // than inspection: this is the one place a silent regression would ship an
+    // actually-bad proposal. So it asserts the REAL POST BODY produced by the
+    // real repickProposal adapter (copied from Rename.tsx's commitRepick), not
+    // just an onCommit spy's argument.
+    const fetchMock = mergeFetch([shortFilm()], [], []);
+    vi.stubGlobal("fetch", fetchMock);
+    const onDone = vi.fn();
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Some.Short.Film”"
+        searchMode="series"
+        initialQuery="A Short Film"
+        autoSearch={false}
+        onCommit={async (pick) => {
+          if (pick.kind !== "catalog") {
+            throw new Error("repick requires a catalog match");
+          }
+          await repickProposal(7, {
+            tmdbId: pick.tmdbId,
+            title: pick.title,
+            year: pick.year,
+            ...(pick.seasonNumber != null && pick.episodeNumber != null
+              ? {
+                  seasonNumber: pick.seasonNumber,
+                  episodeNumber: pick.episodeNumber,
+                }
+              : {}),
+          });
+        }}
+        onDone={onDone}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use A Short Film"));
+
+    // A REAL episode number, deliberately not blank: a blank Episode hits the
+    // D-1 rule and collapses to a show-level commit, which would not exercise
+    // the slot-carrying payload this test exists for.
+    fireEvent.input(await screen.findByLabelText("Season"), {
+      target: { value: "2" },
+    });
+    fireEvent.input(screen.getByLabelText("Episode"), {
+      target: { value: "5" },
+    });
+    fireEvent.click(screen.getByText("Go"));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+
+    const post = fetchMock.mock.calls.find(
+      ([u]) => String(u) === "/api/proposals/7/repick",
+    )!;
+    expect(post).toBeDefined();
+    expect((post[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse(String((post[1] as RequestInit).body));
+    // 777, not 42: the MOVIE catalog's id reached the wire.
+    expect(body).toHaveProperty("tmdbId", 777);
+    expect(body).toHaveProperty("title", "A Short Film");
+    expect(body).toHaveProperty("seasonNumber", 2);
+    expect(body).toHaveProperty("episodeNumber", 5);
+  });
+
+  // Phase-4 review: the file header's `Promise.all` comment ASSERTS a
+  // movies-catalog failure fails the whole series search and does not throw
+  // mid-render — this is the test that PROVES it rather than leaving it
+  // asserted. Mirrors "a failed search does not re-throw mid-render" below,
+  // but that test fails every URL in adult mode; this one needs the series
+  // half to succeed so the dual-call shape itself is what is under test.
+  it("a movies-catalog failure fails the whole series search without re-throwing mid-render", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith(MOVIE_SEARCH_URL)) {
+          return jsonResponse({ error: "TMDB is unreachable" }, 500);
+        }
+        if (url.startsWith(SEARCH_URL)) return jsonResponse([catalogItem()]);
+        throw new Error("unexpected fetch: " + url);
+      }),
+    );
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    // The series half SUCCEEDED — if the merge partially rendered instead of
+    // failing outright, "A Show" would appear here.
+    expect(await screen.findByText("TMDB is unreachable")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Use A Show")).toBeNull();
+    expect(screen.getByLabelText("Back to list")).toBeInTheDocument();
+    expect(screen.queryByText("No results.")).toBeNull();
+  });
+
+  // The badge's own SIGHTED text isn't enough — an explicit aria-label
+  // overrides all descendant content for the accessible NAME, so the badge is
+  // wired as a DESCRIPTION (aria-describedby) instead, deliberately leaving
+  // every tile's accessible name (`Use ${title}`) untouched so this feature
+  // doesn't ripple `getByLabelText` queries across this suite and its
+  // siblings. This test is what would catch a regression back to folding the
+  // badge into aria-label.
+  it("wires the badge as aria-describedby, not into the accessible name", async () => {
+    vi.stubGlobal("fetch", mergeFetch([shortFilm()], [catalogItem()]));
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    const movieTile = await screen.findByLabelText("Use A Short Film");
+    const describedBy = movieTile.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    const badge = document.getElementById(describedBy!);
+    expect(badge).not.toBeNull();
+    expect(badge!.textContent).toBe("Movie");
+  });
+
+  // The corruption-risk finding from Phase-4 review, recorded in CLAUDE.md's
+  // CORRECTED 2026-08-09 note: the id-negation structural fix was offered and
+  // declined in favor of this warning. This is the test for the warning
+  // itself, not for the (deliberately unfixed) underlying risk.
+  it("shows the movie-origin advisory in step 2, and ONLY for a movie-origin pick", async () => {
+    vi.stubGlobal("fetch", mergeFetch([shortFilm()], [catalogItem()], []));
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use A Short Film"));
+
+    expect(
+      await screen.findByText(/came from TMDB's movie catalog/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Change show"));
+    fireEvent.click(await screen.findByLabelText("Use A Show"));
+
+    expect(
+      screen.queryByText(/came from TMDB's movie catalog/),
+    ).toBeNull();
   });
 });
 

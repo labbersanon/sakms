@@ -89,8 +89,18 @@ func TestMigration0005LibraryEpisodeFiles(t *testing.T) {
 	}
 
 	// --- Up: 0004 -> 0005, re-running the backfill --------------------------
-	if err := goose.Up(sqlDB, "migrations"); err != nil {
-		t.Fatalf("goose up: %v", err)
+	// Claude 2026-08-09: UpTo(5), was bare Up().
+	// Reason: this test is scoped to 0005's own Down/Up round-trip (see the
+	//   function doc), but bare Up() runs EVERY migration, so the version
+	//   assertion below was really asserting "0005 is the newest migration in
+	//   the tree" — a claim this test never meant to make and which any later
+	//   migration falsifies. UpTo pins the round-trip to the pair of versions
+	//   actually under test (4 -> 5) and leaves the assertion meaningful.
+	// Troubleshooting: adding migration 0006 failed this as
+	//   "after Up: goose version 6, want 5" despite 0005 being correct.
+	// Review if: this test grows assertions about migrations after 0005.
+	if err := goose.UpTo(sqlDB, "migrations", 5); err != nil {
+		t.Fatalf("goose up to 5: %v", err)
 	}
 	if version := currentVersion(t, sqlDB); version != 5 {
 		t.Fatalf("after Up: goose version %d, want 5", version)

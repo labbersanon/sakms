@@ -104,6 +104,17 @@ const stubFetch = (handler: Handler) => {
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
     if (url.includes("/api/organize/events")) return jsonResponse([]);
+    // Rename Undo's "Recently Applied" list mounts unconditionally, so every
+    // test in this file now hits it. Same try/fall-back shape as pending-ids
+    // below: a test that cares stubs it in its own handler and wins; every
+    // other handler stays about the case it was written for.
+    if (url.includes("/rename/recently-applied")) {
+      try {
+        return await handler(url, init);
+      } catch {
+        return jsonResponse([]);
+      }
+    }
     if (url.includes("/pending-ids")) {
       try {
         return await handler(url, init);

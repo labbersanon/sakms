@@ -74,6 +74,9 @@ const stubFetch = (handler: Handler) => {
     const url = String(input);
     calls.push({ url, method: (init?.method ?? "GET").toUpperCase() });
     if (url.includes("/api/organize/events")) return jsonResponse([]);
+    // Rename Undo's "Recently Applied" list mounts unconditionally — default
+    // it to empty so no handler in this file has to know about it.
+    if (url.includes("/rename/recently-applied")) return jsonResponse([]);
     if (url.includes("/pending-ids")) {
       try {
         return await handler(url, init);

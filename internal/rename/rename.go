@@ -563,7 +563,29 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	if p.TMDBID != 0 {
 		existing, getErr := libStore.GetByTMDBID(ctx, mode.Movies, p.TMDBID)
 		if getErr == nil && existing != nil {
-			return applyLibraryAlternate(ctx, libStore, existing, p, videoPath, preset, tier, prober)
+			// Claude 2026-08-10: capture the pre-Apply row and archive the fold-in.
+			// Reason: deep-interview-rename-undo — `existing` IS the pre-Apply
+			//   library_items row and this is the last point it can be read; the
+			//   very next call overwrites it. Archiving happens on the way out
+			//   because the row id and the file's landing path are not known
+			//   until the fold-in has actually committed.
+			// Troubleshooting: undo of a folded-in Apply reverted nothing, or
+			//   reverted to post-Apply values — capture ran after the mutation.
+			// Review if: ApplyLibrary stops routing folds through this branch.
+			itemID, changes, promoted, err := applyLibraryAlternate(ctx, libStore, existing, p, videoPath, preset, tier, prober)
+			if err == nil {
+				// viaAlternateFold is `promoted`, NOT a literal true. Only the
+				// promote branch renames a DIFFERENT proposal's already-applied
+				// file, and only it must suppress undo's file move. On the
+				// lose/tie branch just this proposal's own file moved to an
+				// alternate name, so undo moves it back under the ordinary
+				// size-match gate like any other Apply.
+				landed := lastCreatedPath(changes, videoPath)
+				recordUndoArchive(ctx, mode.Movies, p, videoPath,
+					movieTouchedRows(p, existing, itemID),
+					landed, library.FileSize(landed), promoted, false)
+			}
+			return itemID, changes, err
 		}
 		if getErr != nil && !errors.Is(getErr, library.ErrNotFound) {
 			return 0, nil, fmt.Errorf("looking up existing library title: %w", getErr)
@@ -605,6 +627,26 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	}); err != nil {
 		return item.ID, changes, fmt.Errorf("recording primary file for %q: %w", p.Title, err)
 	}
+	// Undo capture, Step B. Reaching here means GetByTMDBID found nothing (or
+	// was skipped for a zero TMDB id), so the Upsert above was an INSERT —
+	// undo deletes the row rather than restoring a pre-image. For p.TMDBID == 0
+	// movieTouchedRows deliberately returns an EMPTY set: that Upsert wrote
+	// through the SHARED (mode='movies', tmdb_id=0) row, which undo must never
+	// delete or revert. destPath/its size are the size-match gate's inputs.
+	//
+	// Claude 2026-08-10: archive this Apply so it can be undone.
+	// Reason: deep-interview-rename-undo — nothing else in the schema records a
+	//   file's pre-Apply location, so without this the move is irreversible.
+	//   viaAlternateFold is false: this branch is reachable only when
+	//   GetByTMDBID found nothing (or was skipped for a zero id), so no other
+	//   proposal's file was touched.
+	// Troubleshooting: POST /api/proposals/{id}/undo returned 404 right after a
+	//   successful Apply — either this call did not run or no undo store was
+	//   registered at boot (archiving no-ops when unset, by design).
+	// Review if: ApplyLibrary gains a third write path alongside the simple and
+	//   fold-in ones.
+	recordUndoArchive(ctx, mode.Movies, p, videoPath,
+		movieTouchedRows(p, nil, item.ID), destPath, library.FileSize(destPath), false, false)
 	return item.ID, changes, nil
 }
 
@@ -2049,8 +2091,35 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 		}
 	}
 	if occupied != nil {
-		return applyLibrarySeriesAlternate(ctx, libStore, series, occupied, resolved, p, p.SourcePath,
+		// Claude 2026-08-10: capture the pre-Apply episode row and archive the fold-in.
+		// Reason: deep-interview-rename-undo — `occupied` IS the pre-Apply
+		//   library_episodes row for the slot the tier comparison is made
+		//   against, read by the gate loop above before any
+		//   UpdateEpisodePrimaryPath/UpsertEpisodeFile write. ONLY
+		//   library_episodes is ever captured, never the shared library_series
+		//   row (see episodeTouchedRows) — that row is written by every episode
+		//   of the show, so reverting it would clobber a sibling's Apply.
+		// Troubleshooting: undoing one episode rolled back the whole show's
+		//   title/year — a library_series entry reached touched_rows_snapshot.
+		// Review if: library_series stops being keyed UNIQUE(tmdb_id).
+		episodeID, changes, promoted, err := applyLibrarySeriesAlternate(ctx, libStore, series, occupied, resolved, p, p.SourcePath,
 			allEpisodeNumbers, fileTitle, preset, tier, prober)
+		if err == nil {
+			// viaAlternateFold is `promoted`, NOT a literal true — and this
+			// matters far more here than in Movies. Both Series-only refusals
+			// (range proposals never promote; promotion is refused against a
+			// shared/bundled primary) force the lose/tie branch, so EVERY range
+			// alternate Apply lands here with promoted == false. Hardcoding true
+			// would make every one of them permanently un-undoable.
+			landed := lastCreatedPath(changes, p.SourcePath)
+			recordUndoArchive(ctx, mode.Series, p, p.SourcePath,
+				[]touchedRow{{
+					Table: tableLibraryEpisodes, RowID: occupied.ID, WasInsert: false,
+					PreApplyRowJSON: snapshotRow(*occupied), FilePath: occupied.FilePath,
+				}},
+				landed, library.FileSize(landed), promoted, false)
+		}
+		return episodeID, changes, err
 	}
 
 	moved, err := RelocateEpisodeRange(p.SourcePath, p.RootFolderPath, p.Title, p.Year, p.TMDBID, p.SeasonNumber, allEpisodeNumbers, fileTitle, preset)
@@ -2134,5 +2203,19 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 				p.Title, ep.SeasonNumber, ep.EpisodeNumber, ferr)
 		}
 	}
+	// Claude 2026-08-10: archive this Apply so it can be undone.
+	// Reason: deep-interview-rename-undo — `resolved` was built by the fold-in
+	//   gate in one full pass BEFORE RelocateEpisodeRange, so it holds each
+	//   slot's genuine pre-Apply row (or nil where none existed). That is what
+	//   lets a range Apply archive one entry per bundled episode with the right
+	//   insert/update disposition each. The shared library_series row is never
+	//   captured — see episodeTouchedRows.
+	// Troubleshooting: undo of a range Apply reverted only the first episode,
+	//   or deleted a row it should have restored — `resolved` was consulted
+	//   after the upsert instead of before.
+	// Review if: the gate loop stops building `resolved` for every number in
+	//   the range (the two are a pair; see that loop's own comment).
+	recordUndoArchive(ctx, mode.Series, p, p.SourcePath,
+		episodeTouchedRows(upserted, resolved), moved, movedSize, false, false)
 	return upserted[0].ID, changes, nil
 }

@@ -26,6 +26,7 @@ import type {
   MoveModeRequest,
   Proposal,
   ProposalPage,
+  RecentlyAppliedEntry,
   RepickRequest,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
@@ -35,7 +36,7 @@ import {
   type ProposalListView,
 } from "./organize";
 
-export type { Proposal, RepickRequest };
+export type { Proposal, RecentlyAppliedEntry, RepickRequest };
 export type { ProposalStatus };
 
 export function scanRename(mode: Mode): Promise<void> {
@@ -126,4 +127,48 @@ export function adultSceneSearch(
   query: string,
 ): Promise<AdultSceneSearchResponse> {
   return api(`/api/modes/adult/scene-search?q=${encodeURIComponent(query)}`);
+}
+
+// ---- Rename Undo ----------------------------------------------------------
+
+// UndoResult is hand-declared rather than imported from @dto because the
+// endpoint emits internal/rename's own UndoResult, not an internal/apidto type
+// — the same "no generated DTO for this endpoint, so the wire shape is inlined
+// here" precedent settings.ts's fetchDiscoverRefreshInterval /
+// fetchAdultNewestScanInterval already set. (RecentlyAppliedEntry below IS
+// generated: its Go struct lives in internal/apidto precisely because it was
+// new, so there was nothing to mirror.)
+// Review if: a generated DTO is ever added for POST /api/proposals/{id}/undo.
+//
+// A 200 does NOT mean "fully restored" — undo is best-effort by design, so the
+// caller MUST branch on fileRestored/driftDetected in the body. The failure
+// cases (400/404/409/500/503) come back as a thrown ApiError instead.
+export interface UndoResult {
+  proposalId: number;
+  mode: Mode;
+  /** False whenever no file was moved back, for ANY reason. fileMessage says which. */
+  fileRestored: boolean;
+  fileMessage: string;
+  /** Where the file actually landed — not necessarily the original source path. */
+  restoredPath?: string;
+  driftDetected: boolean;
+  driftWarnings?: string[];
+  rowsReverted: number;
+  /** Adult-only: the Apply's external stash-box submission cannot be retracted. */
+  giveBackNotRetractable: boolean;
+}
+
+export function undoProposal(id: number): Promise<UndoResult> {
+  return api<UndoResult>(`/api/proposals/${id}/undo`, { method: "POST" });
+}
+
+// The bounded, undo-eligible-only list — NOT the general `view=history`
+// proposals list. Answers 200 [] when undo is unavailable or nothing is
+// undoable, so this never needs its own error branch for those two states.
+export function fetchRecentlyApplied(
+  mode: Mode,
+): Promise<RecentlyAppliedEntry[]> {
+  return api<RecentlyAppliedEntry[]>(
+    `/api/modes/${mode}/rename/recently-applied`,
+  );
 }

@@ -141,8 +141,19 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/admin/entity-sync"))
     return jsonResponse({ studioCount: 0, performerCount: 0, sources: [] });
   if (url.includes("/library/root-folder")) return jsonResponse({ path: "" });
+  // undoDepth is REQUIRED on QualityPrefsResponse (a plain int, never
+  // omitted — the backend substitutes rename.DefaultUndoDepth when nothing is
+  // stored), and QualityPrefsSection registers a `valid` predicate on it. A
+  // stub that omits it yields undefined, which is not an integer, which
+  // correctly disables the WHOLE Library section's batched Save — so an
+  // omission here breaks unrelated tests on other tabs rather than this one.
   if (url.includes("/quality-prefs"))
-    return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+    return jsonResponse({
+      tier: "high",
+      maxResolution: 0,
+      protocol: "",
+      undoDepth: 10,
+    });
   if (url.includes("/naming-preset")) return jsonResponse({ preset: "jellyfin" });
   if (url.includes("/rename/kids-root-path")) return jsonResponse({ path: "" });
   if (url.includes("/phash-threshold")) return jsonResponse({ threshold: 8 });

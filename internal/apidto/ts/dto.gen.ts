@@ -1403,6 +1403,44 @@ export interface DeleteBatchResponse {
   results: DeleteBatchResultItem[];
 }
 /**
+ * --- Rename Undo: the "Recently Applied" list ------------------------------
+ * RecentlyAppliedEntry is one row of GET /api/modes/{mode}/rename/recently-applied
+ * — the bounded, undo-eligible-only list the Rename screen's "Recently Applied"
+ * section renders (deep-interview-rename-undo). It is NOT the general history
+ * view (`?view=history` on the proposals list, which shows every
+ * Applied/Dismissed proposal): this list IS the full undoable set by
+ * construction, capped at the mode's configured undoDepth.
+ * It is a LEAN PROJECTION of internal/rename's UndoEntry, deliberately: that
+ * struct carries PreApplyProposalSnapshot and TouchedRowsJSON, two raw internal
+ * JSON blobs the UI has no use for and must never be handed. SourceName/Title
+ * are extracted from the proposal snapshot server-side rather than re-read from
+ * the live proposal row — the archive's whole point is that it records the
+ * pre-Apply state, and a second DB read would also re-introduce a dependency on
+ * a row that may since have been retired.
+ * ViaAlternateFold true means undoing this entry will NOT move any file back
+ * (the Apply took Movies'/Series' promote-demote-by-tier branch, whose file the
+ * undo must not touch — it belongs to a different, still-valid proposal). The
+ * UI has to surface that up front; an operator who does not know it will read
+ * the resulting "file not restored" as a failure.
+ * DEVIATION from the implementation plan's §1, recorded rather than left
+ * implicit: the plan spelled this as a local unexported `recentlyAppliedEntry`
+ * struct inside internal/api/rename_undo.go. It lives here instead so the
+ * frontend type is GENERATED (internal/apidto/gen's TestNoDrift then fails the
+ * Go suite if the two ever disagree) rather than hand-declared and free to
+ * drift. Mode is a plain string, not internal/mode.Mode: this package
+ * deliberately imports no internal domain packages, and the frontend narrows it
+ * to its own Mode union at the call boundary.
+ */
+export interface RecentlyAppliedEntry {
+  undoId: number /* int64 */;
+  proposalId: number /* int64 */;
+  mode: string;
+  appliedAt: string;
+  sourceName: string;
+  title?: string;
+  viaAlternateFold: boolean;
+}
+/**
  * TagEntry is one entry in a mode's tag vocabulary — mirrors internal/api's
  * libraryTagEntry. A local tag has no numeric id, so ID and Label are the same
  * string value; ID exists only to keep the {id, label} shape the frontend's
@@ -1562,16 +1600,35 @@ export interface AIModelRequest {
  * "no cap" (a SOFT cap — see internal/quality's own package doc: it never
  * excludes a result outside the cap, only prefers at-or-below-cap when
  * choosing). Protocol is "usenet", "torrent", or "" for no preference.
+ * UndoDepth is Rename Undo's per-mode rolling depth: how many of this mode's
+ * most recent Applies stay undoable (deep-interview-rename-undo). It rides on
+ * this existing per-mode request rather than a new endpoint, so the Settings
+ * screen gains one field instead of a second round trip. 1..100; the response
+ * substitutes the default (10) when nothing is stored, and a request carrying 0
+ * — an older client that predates the field — stores the default rather than
+ * failing the whole quality save.
  */
 export interface QualityPrefsResponse {
   tier: string;
   maxResolution: number /* int */;
   protocol: string;
+  undoDepth: number /* int */;
 }
+/**
+ * UndoDepth is a POINTER here and a plain int on the response, deliberately.
+ * The generated TS makes a non-pointer field REQUIRED, and the existing
+ * putQualityPrefs caller does not send this one yet (Pass 2 adds the control),
+ * so a plain int fails `tsc --noEmit` and takes the whole frontend build — and
+ * therefore `go build ./cmd/sakms`, which embeds it — down with it. The pointer
+ * also carries the three-state meaning the save path needs: nil = "not sent,
+ * leave the stored value alone", which is NOT the same as an explicit value and
+ * must not be collapsed into a default (see putQualityPrefsHandler).
+ */
 export interface QualityPrefsRequest {
   tier: string;
   maxResolution: number /* int */;
   protocol: string;
+  undoDepth?: number /* int */;
 }
 /**
  * NamingPresetResponse / NamingPresetRequest back

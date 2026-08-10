@@ -40,6 +40,7 @@ import (
 	"github.com/labbersanon/sakms/internal/organizeevents"
 	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/recheck"
+	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/rssfeeds"
 	"github.com/labbersanon/sakms/internal/scanschedule"
 	"github.com/labbersanon/sakms/internal/secrets"
@@ -138,6 +139,20 @@ func run() error {
 	// persisted at all (see migration 0054).
 	grabsStore := grabs.New(sqlDB, secretStore)
 	libStore := library.New(sqlDB)
+	// Claude 2026-08-10: register Rename Undo's archive store.
+	// Reason: deep-interview-rename-undo — process-wide default for the same
+	//   reason organizeevents.SetDefault above is: the alternative is threading
+	//   it through ApplyLibrary/ApplyLibrarySeries/ApplyLibraryAdult's exported
+	//   signatures and every one of their call sites and tests. Archiving
+	//   no-ops entirely when this is never called, so an Apply on an instance
+	//   that skipped it behaves exactly as it did before the feature existed.
+	//   api.UndoDepthFor supplies the per-mode rolling depth — internal/rename
+	//   owns eviction but deliberately never imports internal/settings.
+	// Troubleshooting: POST /api/proposals/{id}/undo answered 503, or Applies
+	//   archived nothing — this line was missing or ran before sqlDB was open.
+	// Review if: internal/rename stops needing a settings-derived depth, or the
+	//   Apply functions gain a dependency struct that could carry this instead.
+	rename.SetDefaultUndoStore(rename.NewUndoStore(sqlDB, api.UndoDepthFor(settingsStore)))
 	slidersStore := discoversliders.New(sqlDB)
 	// Excluded titles back the Requests "remove" feature (see api.NewRequestsMux).
 	// A dependency NewMux doesn't carry, so — like recheck's watchStore — it's

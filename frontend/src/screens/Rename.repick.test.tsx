@@ -114,6 +114,9 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
         body: init?.body as string | undefined,
       });
       if (url.includes("/api/organize/events")) return jsonResponse([]);
+      // Rename Undo's "Recently Applied" list mounts unconditionally — empty
+      // here, since nothing in this file applies anything.
+      if (url.includes("/rename/recently-applied")) return jsonResponse([]);
       if (url.includes("/pending-ids")) return jsonResponse({ ids: [] });
       if (url.includes("/api/modes/movies/rename/proposals"))
         return jsonResponse(pageOf(opts.movies ?? []));

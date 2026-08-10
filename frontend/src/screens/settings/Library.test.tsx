@@ -19,7 +19,7 @@ import {
   screen,
   waitFor,
 } from "@solidjs/testing-library";
-import { SeriesNewSeasonDiscoverySection } from "./Library";
+import { QualityPrefsSection, SeriesNewSeasonDiscoverySection } from "./Library";
 
 const DISCOVERY_COPY =
   "With new-season discovery on, a brand-new season is monitored automatically — even if every existing season of that series is unmonitored.";
@@ -119,5 +119,126 @@ describe("Settings → Library — new-season discovery toggle", () => {
     await waitFor(() => expect(toggle()).toBeDisabled());
     expect(toggle()).not.toBeChecked();
     expect(screen.getByText(/Discovery is off/)).toBeInTheDocument();
+  });
+});
+
+// ---- Rename Undo's per-mode depth, on the quality-prefs card ---------------
+//
+// QualityPrefsSection renders STANDALONE here for the same reason the section
+// above does: outside a <SectionSave> provider, useSectionSaveItem's no-context
+// branch keeps the card's own Save button, so the PUT can be driven directly
+// instead of through the tab's batched button.
+//
+// undoDepth rides the EXISTING quality-prefs request rather than an endpoint of
+// its own, so the assertion that matters is that the PUT still carries the
+// other three fields alongside it — a save that dropped tier/maxResolution/
+// protocol would look like a working undo-depth field and quietly reset the
+// operator's search preferences.
+
+const stubQualityFetch = (undoDepth: number) => {
+  const calls: Call[] = [];
+  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    calls.push({
+      url,
+      method,
+      body: init?.body ? JSON.parse(init.body as string) : undefined,
+    });
+    if (!url.includes("/quality-prefs"))
+      throw new Error("unexpected fetch: " + url);
+    if (method === "GET")
+      return jsonResponse({
+        tier: "medium",
+        maxResolution: 1080,
+        protocol: "usenet",
+        undoDepth,
+      });
+    return noContent();
+  });
+  vi.stubGlobal("fetch", fn);
+  return calls;
+};
+
+const depthField = () =>
+  screen.getByLabelText("Undoable recent Applies") as HTMLInputElement;
+
+describe("Settings → Library — quality prefs: Rename Undo depth", () => {
+  it("loads the stored depth, dirty-tracks an edit, and PUTs it with the other prefs", async () => {
+    const calls = stubQualityFetch(25);
+    render(() => <QualityPrefsSection mode={() => "movies"} />);
+
+    // Seeded from the GET, not from the 10 placeholder the signal starts at.
+    await waitFor(() => expect(depthField().value).toBe("25"));
+
+    fireEvent.input(depthField(), { target: { value: "3" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "PUT")).toBe(true),
+    );
+    expect(calls.find((c) => c.method === "PUT")!.body).toEqual({
+      tier: "medium",
+      maxResolution: 1080,
+      protocol: "usenet",
+      undoDepth: 3,
+    });
+  });
+
+  // The backend rejects undoDepth outside 1..100 with a 400 for the WHOLE
+  // quality-prefs request, so an out-of-range value would take tier /
+  // maxResolution / protocol down with it. Three cases, each reaching the guard
+  // by a different route, and NONE of them blocked by the input's own
+  // min/max/step attributes:
+  //   ""    — a cleared field; Number("") === 0, below the minimum.
+  //   "150" — above the maximum; browsers let out-of-range values be typed.
+  //   "5.5" — a FRACTION, and the one a bare range check misses entirely: it
+  //           sits inside 1..100, so without Number.isInteger the Save button
+  //           stays enabled and PUTs a float that Go's *int decode 400s.
+  it.each([
+    ["cleared", ""],
+    ["above the maximum", "150"],
+    ["fractional", "5.5"],
+  ])("blocks Save while the depth is %s, and PUTs nothing", async (_label, value) => {
+    // 25, deliberately NOT the component's own 10 placeholder — waiting on a
+    // value the signal already holds before the GET resolves would let the
+    // rest of this test run against unloaded tier/maxResolution/protocol.
+    const calls = stubQualityFetch(25);
+    render(() => <QualityPrefsSection mode={() => "movies"} />);
+    await waitFor(() => expect(depthField().value).toBe("25"));
+
+    const saveButton = screen.getByText("Save") as HTMLButtonElement;
+    fireEvent.input(depthField(), { target: { value } });
+    await waitFor(() => expect(saveButton.disabled).toBe(true));
+
+    // A disabled button ignores clicks at the DOM level — this confirms the
+    // whole card's save really cannot fire, not just that it looks greyed out.
+    fireEvent.click(saveButton);
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+
+    // Correcting the value re-enables it and the save goes through intact.
+    fireEvent.input(depthField(), { target: { value: "7" } });
+    await waitFor(() => expect(saveButton.disabled).toBe(false));
+    fireEvent.click(saveButton);
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "PUT")).toBe(true),
+    );
+    expect(calls.find((c) => c.method === "PUT")!.body).toEqual({
+      tier: "medium",
+      maxResolution: 1080,
+      protocol: "usenet",
+      undoDepth: 7,
+    });
+  });
+
+  it("carries the help text explaining what the depth controls", async () => {
+    stubQualityFetch(10);
+    render(() => <QualityPrefsSection mode={() => "movies"} />);
+
+    expect(
+      await screen.findByText(
+        /how many recent Applies stay undoable before the oldest is pruned/,
+      ),
+    ).toBeInTheDocument();
   });
 });

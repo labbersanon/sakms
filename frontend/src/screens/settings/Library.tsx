@@ -191,6 +191,11 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   const [tier, setTier] = createSignal("high");
   const [maxRes, setMaxRes] = createSignal(0);
   const [protocol, setProtocol] = createSignal("");
+  // 10 is rename.DefaultUndoDepth (internal/rename/undo_store.go). It is only
+  // ever a pre-load placeholder — the mount GET always answers with a real
+  // value, since the backend substitutes the same default when nothing is
+  // stored.
+  const [undoDepth, setUndoDepth] = createSignal(10);
   const [dirty, setDirty] = createSignal(false);
   createEffect(
     on(prefs, (p) => {
@@ -198,17 +203,61 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         setTier(p.tier);
         setMaxRes(p.maxResolution);
         setProtocol(p.protocol);
+        setUndoDepth(p.undoDepth);
         setDirty(false);
       }
     }),
   );
+  // Claude 2026-08-10: undoDepth's range is mirrored client-side, and BOTH
+  //   Save buttons disable while it is out of range.
+  // Reason: the backend rejects undoDepth < 1 or > MaxUndoDepth (100) with a
+  //   400 for the WHOLE quality-prefs request — so a cleared field (an empty
+  //   number input reads as 0) or a typo'd 150 would fail the tier /
+  //   maxResolution / protocol save alongside it, for a field the operator may
+  //   not even have meant to touch. `min`/`max` on the input do not prevent
+  //   this: browsers let out-of-range values be typed, and they are not
+  //   enforced for programmatic input at all. Same shape and same rationale as
+  //   Advanced.tsx's NumberSetting (which registers the identical `valid`
+  //   predicate) — the operator sees the block before clicking rather than an
+  //   error after.
+  // Troubleshooting: clearing the depth field and clicking Save 400ing the
+  //   whole card with "undoDepth must be between 1 and 100".
+  // Review if: the backend's MaxUndoDepth changes — this constant must follow.
+  const MAX_UNDO_DEPTH = 100;
+  // Number.isInteger FIRST, and it is doing two jobs a bare range check cannot.
+  // (1) FRACTIONS: a type="number" input hands back "5.5" for typed decimal
+  //     input — a step mismatch does not blank the value, only unparseable
+  //     input does — and 5.5 sits happily inside 1..100, so the range check
+  //     alone would leave Save enabled and PUT a float that Go's *int decode
+  //     rejects, 400ing the whole card. That is precisely the failure this
+  //     mirror exists to prevent, so the mirror has to model the wire type too,
+  //     not just the range. (2) NaN: `NaN < 1` and `NaN > 100` are BOTH false,
+  //     so a bare range check is NaN-permissive; Number.isInteger(NaN) is
+  //     false, which closes that hole in the same expression.
+  // step={1} on the input is the matching native affordance (spinner steps and
+  // browser validation UI), NOT the enforcement — this predicate is.
+  const undoDepthOutOfRange = () =>
+    !Number.isInteger(undoDepth()) ||
+    undoDepth() < 1 ||
+    undoDepth() > MAX_UNDO_DEPTH;
   const status = useSaveStatus();
   const save = async () => {
+    // Defense in depth: both Save buttons are disabled while out of range, so
+    // normal use cannot reach this — but a direct save() call must reject
+    // rather than PUT, so the section summary never falsely reports "saved".
+    if (undoDepthOutOfRange()) {
+      const err = new Error(
+        `Undoable recent Applies must be a whole number between 1 and ${MAX_UNDO_DEPTH}`,
+      );
+      status.failed(err);
+      throw err;
+    }
     try {
       await putQualityPrefs(props.mode(), {
         tier: tier(),
         maxResolution: maxRes(),
         protocol: protocol(),
+        undoDepth: undoDepth(),
       });
       setDirty(false);
       status.saved();
@@ -221,6 +270,7 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
     id: "library-quality",
     label: "quality preferences",
     dirty,
+    valid: () => !undoDepthOutOfRange(),
     save,
   });
   return (
@@ -255,9 +305,36 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
           setDirty(true);
         }}
       />
+      {/* A bounded integer, not a small fixed option set, so a plain number
+          input rather than a fourth PillSelector — the Usenet page's port
+          field is the shape reused here. It rides the same dirty/save flow as
+          the three pills above; nothing about this field saves on its own. */}
+      <label class="mb-3 block">
+        <span class={labelClass}>Undoable recent Applies</span>
+        <input
+          type="number"
+          min={1}
+          max={MAX_UNDO_DEPTH}
+          step={1}
+          class={`${inputClass} !w-32`}
+          aria-label="Undoable recent Applies"
+          value={undoDepth()}
+          onInput={(e) => {
+            // Plain Number(), NOT `|| 0`: a cleared field reads as 0, which is
+            // out of range and blocks Save — exactly what should happen. `|| 0`
+            // would have collapsed a real 0 into the same value silently.
+            setUndoDepth(Number(e.currentTarget.value));
+            setDirty(true);
+          }}
+        />
+      </label>
       <div class="mt-3 flex items-center gap-2">
         <Show when={!batched()}>
-          <Button variant="primary" onClick={() => void save().catch(() => {})}>
+          <Button
+            variant="primary"
+            disabled={undoDepthOutOfRange()}
+            onClick={() => void save().catch(() => {})}
+          >
             Save
           </Button>
         </Show>
@@ -270,6 +347,10 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         results, falling back to whatever's available if nothing meets it.
         Protocol is the Discover popup's default pick when both are available;
         it still falls back to whichever protocol actually has a release.
+        Undoable recent Applies (1–100) is how many recent Applies stay undoable
+        before the oldest is pruned — Rename's “Recently Applied” list shows
+        them. Lowering it shrinks that list immediately, though the entries it
+        stops showing stay undoable until a later Apply actually evicts them.
       </Muted>
     </Card>
   );

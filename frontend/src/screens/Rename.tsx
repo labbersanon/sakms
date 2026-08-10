@@ -16,21 +16,27 @@ import {
   createEffect,
   createResource,
   createSignal,
+  createUniqueId,
   For,
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
 import type { ApplyBatchResponse, ApplyBatchResultItem } from "@dto";
+import { ApiError } from "../api/client";
 import {
   type Proposal,
+  type RecentlyAppliedEntry,
+  type UndoResult,
   applyBatchStreaming,
   applyProposal,
   deleteBatch,
   dismissProposal,
   fetchProposals,
+  fetchRecentlyApplied,
   moveProposalMode,
   repickProposal,
   scanRename,
+  undoProposal,
 } from "../api/rename";
 import {
   loadPageSize,
@@ -394,6 +400,142 @@ const ApplyAllConfirm: Component<{
   </div>
 );
 
+// ---- Rename Undo: the "Recently Applied" section ---------------------------
+//
+// Its OWN section below the proposal table, deliberately NOT another entry in
+// the per-row Actions dropdown (spec Round 6): undo acts on already-Applied
+// items, which have left the live proposal list entirely, so there is no row to
+// hang it off. It is also NOT the `Show history` view — that lists every
+// Applied/Dismissed proposal; this is only the bounded, still-undoable set,
+// capped at the mode's configured undo depth (Settings → Library).
+//
+// UndoOutcome renders a 200 response. A 200 does NOT mean "fully restored":
+// undo is best-effort by design, so a drifted or not-moved-back file has to
+// read visibly differently from a clean success, or the operator is told
+// "done" about a file that never moved.
+const UndoOutcome: Component<{ result: UndoResult }> = (props) => {
+  const degraded = () =>
+    !props.result.fileRestored || props.result.driftDetected;
+  return (
+    <>
+      <Show
+        when={degraded()}
+        fallback={
+          <Muted class="mt-2">Undo complete — {props.result.fileMessage}</Muted>
+        }
+      >
+        <div class="mt-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          <div>Undo completed with warnings — {props.result.fileMessage}</div>
+          <For each={props.result.driftWarnings ?? []}>
+            {(wmsg) => <div class="mt-1">{wmsg}</div>}
+          </For>
+        </div>
+      </Show>
+      {/* Adult-only, and deliberately Muted rather than a warning: an
+          already-sent community-database submission is an expected,
+          irreversible side effect of the Apply, not a failure of the undo. */}
+      <Show when={props.result.giveBackNotRetractable}>
+        <Muted class="mt-1">
+          This Apply submitted a fingerprint or draft to a community database —
+          that submission cannot be retracted.
+        </Muted>
+      </Show>
+    </>
+  );
+};
+
+const RecentlyAppliedSection: Component<{
+  entries: RecentlyAppliedEntry[];
+  loadError: string;
+  busyId: number | null;
+  disabled: boolean;
+  result: UndoResult | null;
+  error: string;
+  onUndo: (entry: RecentlyAppliedEntry) => void;
+}> = (props) => (
+  <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
+    <div class="text-xs font-medium uppercase tracking-wide text-muted">
+      Recently applied
+    </div>
+    {/* A failed LIST fetch is reported here, scoped to this section — the
+        proposal table above must keep working. An empty list is NOT an error
+        (the endpoint answers 200 [] for "undo unavailable" and "nothing
+        undoable"), so this only ever fires on a real 500 / transport failure. */}
+    <Show when={props.loadError}>
+      <ErrorText>Could not load recently applied: {props.loadError}</ErrorText>
+    </Show>
+    <Show
+      when={props.entries.length > 0}
+      fallback={<Muted class="mt-2">Nothing to undo yet.</Muted>}
+    >
+      <table class="mt-2 w-full text-left text-sm">
+        <thead>
+          <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
+            <th class="px-2 py-2 font-medium">Source</th>
+            <th class="px-2 py-2 font-medium">Title</th>
+            <th class="px-2 py-2 font-medium">Applied</th>
+            <th class="px-2 py-2 font-medium">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <For each={props.entries}>
+            {(e) => {
+              // aria-describedby rather than folding the note into the
+              // button's aria-label, mirroring SearchTakeover's
+              // movie-origin badge: the label stays the stable
+              // `Undo <sourceName>` every test and screen-reader user
+              // navigates by, and the caveat is announced after it.
+              const noteId = createUniqueId();
+              return (
+                <tr class="border-b border-border/60 align-top">
+                  <td class="px-2 py-2 font-mono text-xs">{e.sourceName}</td>
+                  <td class="px-2 py-2">
+                    <div class="flex flex-wrap items-center gap-1">
+                      <span>{e.title}</span>
+                      {/* Visible, not tooltip-buried: viaAlternateFold means
+                          Undo will NEVER move this file back (the Apply took
+                          the promote/demote-by-tier branch, whose file now
+                          belongs to a different, still-valid proposal). An
+                          operator who does not know that reads the resulting
+                          "file not restored" as a failure. */}
+                      <Show when={e.viaAlternateFold}>
+                        <span
+                          id={noteId}
+                          class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted"
+                        >
+                          quality alternate — file won’t be moved back on undo
+                        </span>
+                      </Show>
+                    </div>
+                  </td>
+                  <td class="px-2 py-2 text-muted">{e.appliedAt}</td>
+                  <td class="px-2 py-2">
+                    <Button
+                      onClick={() => props.onUndo(e)}
+                      disabled={props.disabled || props.busyId !== null}
+                      aria-label={`Undo ${e.sourceName}`}
+                      aria-describedby={e.viaAlternateFold ? noteId : undefined}
+                    >
+                      {props.busyId === e.proposalId ? "Undoing…" : "Undo"}
+                    </Button>
+                  </td>
+                </tr>
+              );
+            }}
+          </For>
+        </tbody>
+      </table>
+    </Show>
+    <Show when={props.result}>{(r) => <UndoOutcome result={r()} />}</Show>
+    {/* Surfaced VERBATIM. internal/api/rename_undo.go writes these as
+        complete, operator-readable sentences (which live proposal collides,
+        what to do about it) — rewrapping them would throw that away. */}
+    <Show when={props.error}>
+      <ErrorText>{props.error}</ErrorText>
+    </Show>
+  </div>
+);
+
 // TakeoverState replaces the two former `repickFor` / `moveFor` signals with
 // ONE discriminated value, because the two entry points now render the SAME
 // component (SearchTakeover) in the SAME slot — two independent signals could
@@ -421,6 +563,31 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     ({ mode, limit, offset, view }) => fetchProposals(mode, limit, offset, view),
   );
   const proposals = () => page()?.items ?? [];
+
+  // Rename Undo's "Recently Applied" list. Its own resource keyed on the mode
+  // signal, so a mode switch refetches it alongside the proposals list with no
+  // manual wiring in resetOnModeChange (adding one there would double-fetch).
+  // This is NOT the `view=history` list above — that shows every
+  // Applied/Dismissed proposal; this is only the bounded, still-undoable set.
+  const [recent, { refetch: refetchRecent }] = createResource(
+    () => props.mode,
+    fetchRecentlyApplied,
+  );
+  // Claude 2026-08-10: the `recent.error` guard is NOT redundant with `?? []`.
+  // Reason: a Solid resource RE-THROWS on read once its fetcher has errored (by
+  //   design, for ErrorBoundary integration) — `?? []` only handles undefined,
+  //   so reading recent() after a 500 would throw mid-render and take the whole
+  //   Rename screen (proposal table included) down with it. This is the exact
+  //   shipped-bug shape CLAUDE.md records for GrabDialog's sibling <Show>
+  //   blocks. The handler answers 200 [] for "undo unavailable" and "nothing
+  //   undoable", so this fires only on a genuine 500 or transport failure — and
+  //   that is precisely when the rest of the screen must survive.
+  // Troubleshooting: the whole Rename screen blanking when
+  //   /rename/recently-applied fails.
+  // Review if: the section moves under its own ErrorBoundary.
+  const recentEntries = (): RecentlyAppliedEntry[] =>
+    recent.error ? [] : (recent() ?? []);
+
   const [takeover, setTakeover] = createSignal<TakeoverState | null>(null);
 
   // Claude 2026-08-08: scroll save/restore around the full-page takeover.
@@ -608,6 +775,47 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     lastKnownStatus = nextStatus;
   });
 
+  const [undoBusyId, setUndoBusyId] = createSignal<number | null>(null);
+  const [undoResult, setUndoResult] = createSignal<UndoResult | null>(null);
+  const [undoError, setUndoError] = createSignal("");
+
+  // Claude 2026-08-10: the hook's refetch refreshes BOTH lists.
+  // Reason: an Apply is the primary way an entry ENTERS "Recently Applied", so
+  //   a list that only refreshed on mode change or after an Undo would read
+  //   stale during the exact workflow it exists to serve. act() is the single
+  //   chokepoint for BOTH the single-row Apply (runRowAction's
+  //   act(() => applyProposal(...))) and the batch path (confirmApplyAll, which
+  //   wraps apply-batch + dismiss + delete in one act()), so wiring it here
+  //   covers both — wiring only the single-row call site would pass casual
+  //   manual testing and still be wrong for "Apply Selected".
+  // Troubleshooting: applying a proposal, then finding no Undo button for it
+  //   until the mode is switched away and back.
+  // Review if: act() stops being the one post-Apply refresh path. Note the
+  //   OTHER refetch() call site (SearchTakeover's onDone) deliberately does NOT
+  //   use this — Re-pick/Move create no undo entries, and that call sits inside
+  //   a batch() with a load-bearing ordering comment.
+  //
+  // Claude 2026-08-10: the `.catch()` below is a guard, not a live code path.
+  // Reason: Solid's resource refetch() never rejects — load() resolves a
+  //   fetcher error through p.then(_, e => loadEnd(...)), and loadEnd records
+  //   it on the resource (recent.error) instead of rethrowing, so the promise
+  //   always fulfils. Kept because it costs nothing and a rejection reaching
+  //   act() would banner an ACTION error above a batch that succeeded. (This
+  //   is distinct from recentEntries()'s recent.error guard above, which
+  //   protects reading recent() — read() DOES rethrow on an errored resource;
+  //   only refetch()'s own returned promise does not.)
+  // Review if: Solid changes refetch()'s error propagation.
+  const refetchRecentQuietly = (): Promise<unknown> =>
+    Promise.resolve(refetchRecent()).catch(() => undefined);
+
+  const refetchBoth = async (): Promise<void> => {
+    // Started first, awaited last: the MAIN list is what determines whether
+    // act() reports success, so it is the one awaited directly.
+    const recentDone = refetchRecentQuietly();
+    await refetch();
+    await recentDone;
+  };
+
   const { actionError, setActionError, scanning, acting, scan, act } =
     useWorkflowActions(() => props.mode, {
       resetOnModeChange: () => {
@@ -620,6 +828,12 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         setSelections({});
         setOffset(0);
         setApplyProgress("");
+        // The undo feedback belongs to the mode it was produced in. The
+        // recently-applied RESOURCE needs no reset here — its source signal is
+        // props.mode, so it refetches on its own (a manual refetch would just
+        // double-fetch on every mode switch).
+        setUndoResult(null);
+        setUndoError("");
       },
       scanFn: scanRename,
       resetAfterScan: () => {
@@ -633,7 +847,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         setTakeover(null);
         setSavedScrollTop(null);
       },
-      refetch,
+      refetch: refetchBoth,
     },
   );
 
@@ -704,6 +918,66 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     // Review if: this chain is ever converted to an exhaustive switch —
     //   "preview" will then need an explicit no-op case, which is a good
     //   outcome, not a problem.
+  };
+
+  // Claude 2026-08-10: the 400/404 vs 409 branch below is load-bearing.
+  // Reason: ListActive filters on mode + consumed_at/evicted_at only — it does
+  //   NOT check that the underlying proposal is still Applied, and the archive
+  //   row has no FK to it. So a row can sit here looking undoable while a
+  //   cross-mode Move, a Purge, or anything else that retires the proposal has
+  //   moved on underneath it; the mutation handler then answers 400 (no longer
+  //   Applied) or 404 (proposal or entry gone). Those rows are genuinely dead,
+  //   so refetching (which drops them) is correct. A 409 is the opposite: a
+  //   live proposal now occupies the same source path, the entry is STILL
+  //   undoable, and the operator resolves that proposal and retries — dropping
+  //   the row there would hide a valid, still-actionable retry path.
+  // Troubleshooting: a Recently Applied row vanishing after a collision error,
+  //   or a permanently dead row that no click can clear.
+  // Review if: the list endpoint starts joining against proposal status (then
+  //   the 400/404 refetch becomes redundant, not wrong).
+  // Claude 2026-08-10: every write below the await is gated on stillHere().
+  // Reason: resetOnModeChange clears undoResult/undoError, but this IIFE can
+  //   resolve AFTER a mode switch has already happened — and then it would
+  //   write Movies' "Undo complete — moved back to /inbox/X.mkv" into Series'
+  //   Recently Applied section, and `await refetch()` would refresh the NEW
+  //   mode's proposals as though the undo belonged to it. props.mode is
+  //   captured at CALL time, not read after the await, which is the whole
+  //   point — reading it afterwards would compare the new value with itself.
+  //   Bailing skips the refetches too, deliberately: switching modes already
+  //   refetches both of the new mode's lists through their own source signals,
+  //   and switching back refetches again, so nothing goes stale.
+  // Troubleshooting: an undo banner from the previous mode appearing under the
+  //   new mode's list after switching mid-undo.
+  // Review if: the undo feedback ever moves to a mode-keyed store instead of
+  //   these two plain signals.
+  const runUndo = (entry: RecentlyAppliedEntry): void => {
+    const startedIn = props.mode;
+    const stillHere = () => props.mode === startedIn;
+    setUndoBusyId(entry.proposalId);
+    setUndoError("");
+    setUndoResult(null);
+    void (async () => {
+      try {
+        const res = await undoProposal(entry.proposalId);
+        if (!stillHere()) return;
+        setUndoResult(res);
+        // BOTH lists: the entry is consumed and gone from this one, and the
+        // proposal is back in Pending and should reappear in the main table.
+        void refetchRecentQuietly();
+        await refetch();
+        setLogKey((k) => k + 1);
+      } catch (e) {
+        if (!stillHere()) return;
+        setUndoError((e as Error).message);
+        const status = e instanceof ApiError ? e.status : 0;
+        if (status === 400 || status === 404) void refetchRecentQuietly();
+      } finally {
+        // Unconditional: the busy id is per-click UI state, not mode-scoped
+        // feedback, and leaving it set would disable every Undo button on the
+        // mode the operator switched to.
+        setUndoBusyId(null);
+      }
+    })();
   };
 
   const openApplyAll = (): void => {
@@ -1010,6 +1284,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
               />
             )}
           </Show>
+
+          <RecentlyAppliedSection
+            entries={recentEntries()}
+            loadError={(recent.error as Error | undefined)?.message ?? ""}
+            busyId={undoBusyId()}
+            disabled={acting() || scanning()}
+            result={undoResult()}
+            error={undoError()}
+            onUndo={runUndo}
+          />
 
           <ActivityLogPanel workflow="rename" refreshKey={logKey()} />
         </div>

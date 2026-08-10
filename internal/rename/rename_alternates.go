@@ -19,15 +19,31 @@ import (
 // Troubleshooting: byTMDB used to Unmatched; Apply now folds second file into library_item_files
 // Review if: equal-tier policy changes from keep-existing-primary
 
+// Claude 2026-08-10: added the `promoted` return value.
+// Reason: deep-interview-rename-undo — this function has TWO branches and only
+//   ONE of them is hazardous to undo. The promote branch (orphanWins) renames a
+//   DIFFERENT proposal's already-applied file as a side effect, so undo must
+//   never move a file for it. The lose/tie branch moves ONLY the incoming file
+//   to an alternate name and touches no other row or file, so undo can and
+//   should move it back under the ordinary size-match gate. The caller cannot
+//   tell the branches apart from itemID/changes alone.
+// Troubleshooting: undoing a lose/tie alternate Apply reported "physically
+//   renamed another proposal's already-applied file" and left the proposal
+//   Pending at a source path holding no file.
+// Review if: the equal-tier policy changes from keep-existing-primary, which
+//   would move the promote/no-promote boundary this return value reports.
+
 // applyLibraryAlternate folds orphan videoPath into an already-tracked title.
 // Equal probed tier keeps the existing primary (orphan becomes alternate).
+// promoted reports which branch ran: true only for the promote (orphanWins)
+// branch, which is the one undo must never move a file for.
 func applyLibraryAlternate(
 	ctx context.Context, libStore *library.Store, existing *library.Item,
 	p proposals.Proposal, videoPath string, preset naming.Preset, settingsTier string, prober Prober,
-) (itemID int64, changes []mode.PathChange, err error) {
+) (itemID int64, changes []mode.PathChange, promoted bool, err error) {
 	folder := filepath.Join(p.RootFolderPath, naming.MovieFolderName(preset, p.Title, p.Year, p.TMDBID))
 	if err := os.MkdirAll(folder, 0o755); err != nil {
-		return 0, nil, fmt.Errorf("creating %q: %w", folder, err)
+		return 0, nil, false, fmt.Errorf("creating %q: %w", folder, err)
 	}
 
 	orphanMeta := probeFileMeta(ctx, prober, videoPath, settingsTier)
@@ -49,6 +65,10 @@ func applyLibraryAlternate(
 	}
 
 	orphanWins := quality.RankString(orphanMeta.Tier) > quality.RankString(primaryMeta.Tier)
+	// Reported to the caller so undo can distinguish the two branches — see this
+	// function's doc comment. Assigned here, at the single point where the
+	// decision is final, rather than duplicated into each return below.
+	promoted = orphanWins
 
 	primaryDest := filepath.Join(folder, naming.MovieFileName(preset, p.Title, p.Year, p.TMDBID, filepath.Ext(videoPath)))
 	if orphanWins {
@@ -59,20 +79,20 @@ func applyLibraryAlternate(
 		altDest := filepath.Join(folder, altName)
 		movedPrimary, ch, moveErr := moveUnique(primaryPath, altDest)
 		if moveErr != nil {
-			return 0, changes, fmt.Errorf("demoting previous primary %q: %w", primaryPath, moveErr)
+			return 0, changes, promoted, fmt.Errorf("demoting previous primary %q: %w", primaryPath, moveErr)
 		}
 		changes = append(changes, ch...)
 		primaryPath = movedPrimary
 
 		movedOrphan, ch, moveErr := moveUnique(videoPath, primaryDest)
 		if moveErr != nil {
-			return 0, changes, fmt.Errorf("promoting orphan to primary %q: %w", primaryDest, moveErr)
+			return 0, changes, promoted, fmt.Errorf("promoting orphan to primary %q: %w", primaryDest, moveErr)
 		}
 		changes = append(changes, ch...)
 		videoPath = movedOrphan
 
 		if err := libStore.UpdateItemPrimaryPath(ctx, existing.ID, videoPath, orphanMeta.Tier, library.FileSize(videoPath)); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
 		if _, err := libStore.UpsertFile(ctx, library.ItemFile{
 			ItemID: existing.ID, FilePath: videoPath, IsPrimary: true,
@@ -80,7 +100,7 @@ func applyLibraryAlternate(
 			Width: orphanMeta.Width, Height: orphanMeta.Height, VideoCodec: orphanMeta.Codec,
 			BitRate: orphanMeta.BitRate, DurationSec: orphanMeta.Duration,
 		}); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
 		if _, err := libStore.UpsertFile(ctx, library.ItemFile{
 			ItemID: existing.ID, FilePath: primaryPath, IsPrimary: false,
@@ -88,9 +108,9 @@ func applyLibraryAlternate(
 			Width: primaryMeta.Width, Height: primaryMeta.Height, VideoCodec: primaryMeta.Codec,
 			BitRate: primaryMeta.BitRate, DurationSec: primaryMeta.Duration,
 		}); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
-		return existing.ID, changes, nil
+		return existing.ID, changes, promoted, nil
 	}
 
 	// Orphan loses or ties — keep existing primary; place orphan as alternate.
@@ -100,7 +120,7 @@ func applyLibraryAlternate(
 	altDest := filepath.Join(folder, altName)
 	movedOrphan, ch, moveErr := moveUnique(videoPath, altDest)
 	if moveErr != nil {
-		return 0, nil, fmt.Errorf("placing alternate %q: %w", altDest, moveErr)
+		return 0, nil, promoted, fmt.Errorf("placing alternate %q: %w", altDest, moveErr)
 	}
 	changes = append(changes, ch...)
 
@@ -112,7 +132,7 @@ func applyLibraryAlternate(
 			Width: primaryMeta.Width, Height: primaryMeta.Height, VideoCodec: primaryMeta.Codec,
 			BitRate: primaryMeta.BitRate, DurationSec: primaryMeta.Duration,
 		}); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
 	}
 	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
@@ -121,9 +141,9 @@ func applyLibraryAlternate(
 		Width: orphanMeta.Width, Height: orphanMeta.Height, VideoCodec: orphanMeta.Codec,
 		BitRate: orphanMeta.BitRate, DurationSec: orphanMeta.Duration,
 	}); err != nil {
-		return 0, changes, err
+		return 0, changes, promoted, err
 	}
-	return existing.ID, changes, nil
+	return existing.ID, changes, promoted, nil
 }
 
 type fileMeta struct {

@@ -200,6 +200,26 @@ func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *librar
 	if err != nil {
 		return 0, false, nil, fmt.Errorf("resolving the video file under %q: %w", p.SourcePath, err)
 	}
+
+	// Claude 2026-08-10: read the pre-Apply scene row before anything mutates it.
+	// Reason: deep-interview-rename-undo — undo needs the prior row to restore,
+	//   and UpsertScene's ON CONFLICT(box, scene_id) destroys it. Unlike Movies
+	//   (GetByTMDBID) and Series (the fold-in gate's `resolved` map), Adult's
+	//   Apply had no pre-existing lookup to reuse, so this read is ADDED here
+	//   rather than derived later — there is no later. A lookup failure other
+	//   than "not found" is swallowed, leaving existingScene nil, which undo
+	//   reads as "this Apply INSERTed the row": losing undoability must never
+	//   fail an Apply that would otherwise succeed.
+	// Troubleshooting: undoing an Adult Apply DELETED a scene row that existed
+	//   beforehand instead of restoring it — this read ran too late, or its
+	//   error was treated as fatal.
+	// Review if: library_scenes stops being keyed UNIQUE(box, scene_id), or
+	//   ApplyLibraryAdult grows an earlier lookup this can reuse.
+	existingScene, sceneErr := libStore.GetScene(ctx, p.GiveBackBox, p.GiveBackSceneID)
+	if sceneErr != nil {
+		existingScene = nil
+	}
+
 	destPath, err := RelocateAdultScene(videoPath, p.RootFolderPath, p.Studio, p.Title, p.Date, p.PHash)
 	if err != nil {
 		return 0, false, nil, fmt.Errorf("relocating %q into %q: %w", videoPath, p.RootFolderPath, err)
@@ -236,7 +256,25 @@ func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *librar
 		return 0, false, changes, fmt.Errorf("recording scene %q in the library: %w", p.Title, err)
 	}
 
-	return scene.ID, submitFingerprintGiveBack(ctx, sess, p), changes, nil
+	submitted := submitFingerprintGiveBack(ctx, sess, p)
+	// Claude 2026-08-10: archive this Apply so it can be undone.
+	// Reason: deep-interview-rename-undo — viaAlternateFold is ALWAYS false for
+	//   Adult (no promote/demote branch exists here at all), so undo always
+	//   evaluates the ordinary size-match gate. `submitted` is threaded in
+	//   because it is otherwise unrecoverable at undo time: it is persisted onto
+	//   the PROPOSAL via MarkFingerprintSubmitted, and this entry's proposal
+	//   snapshot is the PRE-Apply row, where it is empty by definition — so
+	//   reading the live proposal later cannot distinguish "this Apply
+	//   submitted" from "a later manual retry did". Undo reports it as "cannot
+	//   be retracted"; it never makes an outbound call of its own.
+	// Troubleshooting: an undone Adult Apply failed to warn that a community
+	//   give-back had fired — `submitted` was computed after this call, or the
+	//   flag was read back off the proposal instead of the archive.
+	// Review if: ApplyLibraryAdult gains an alternate/promote branch, or
+	//   fingerprint submission moves off the proposal row.
+	recordUndoArchive(ctx, mode.Adult, p, videoPath,
+		sceneTouchedRows(existingScene, scene.ID), destPath, fileSize, false, submitted)
+	return scene.ID, submitted, changes, nil
 }
 
 // RelocateAdultScene moves sourcePath directly under destRoot, renaming it to

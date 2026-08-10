@@ -191,16 +191,63 @@ func qualityTierKey(m mode.Mode) string        { return string(m) + "_quality_ti
 func maxResolutionKey(m mode.Mode) string      { return string(m) + "_max_resolution" }
 func protocolPreferenceKey(m mode.Mode) string { return string(m) + "_protocol_preference" }
 
+// Claude 2026-08-10: added undoDepthKey / MaxUndoDepth / UndoDepthFor.
+// Reason: deep-interview-rename-undo — Rename Undo needs a per-mode rolling
+//   depth. It rides the flat KV `settings` table with a mode-scoped key, exactly
+//   like qualityTierKey above, rather than a new table; and it is read/written
+//   through the EXISTING per-mode quality-prefs request so the frontend gains
+//   one field instead of a second round trip. Stored as a string-encoded int
+//   because internal/settings has no GetInt/SetInt and one call site does not
+//   justify adding a pair.
+// Troubleshooting: the configured depth had no effect on eviction — main.go
+//   never wired UndoDepthFor, so the store fell back to DefaultUndoDepth.
+// Review if: internal/settings grows typed getters, or per-mode settings move
+//   off the flat KV table.
+// Related files: internal/rename/undo_store.go, cmd/sakms/main.go
+
+// undoDepthKey is Rename Undo's per-mode rolling depth: how many of this mode's
+// most recent Applies stay undoable. Unset falls back to
+// rename.DefaultUndoDepth wherever it is READ — never pre-seeded.
+func undoDepthKey(m mode.Mode) string { return string(m) + "_undo_depth" }
+
+// MaxUndoDepth bounds the configurable rolling depth. An unbounded value would
+// let the archive grow without limit, defeating the eviction mechanism the spec
+// requires ("prune, don't accumulate unboundedly").
+const MaxUndoDepth = 100
+
+// UndoDepthFor builds the rename.DepthFunc the undo archive evicts against.
+// internal/rename owns the eviction but deliberately does not import
+// internal/settings, so the resolver is supplied from here — where the key
+// lives — and wired in main.go.
+func UndoDepthFor(settingsStore *settings.Store) rename.DepthFunc {
+	return func(ctx context.Context, m mode.Mode) int {
+		raw, err := settingsStore.Get(ctx, undoDepthKey(m))
+		if err != nil || raw == "" {
+			return rename.DefaultUndoDepth
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return rename.DefaultUndoDepth
+		}
+		return n
+	}
+}
+
 type qualityPrefsResponse struct {
 	Tier          string `json:"tier"`
 	MaxResolution int    `json:"maxResolution"`
 	Protocol      string `json:"protocol"`
+	UndoDepth     int    `json:"undoDepth"`
 }
 
+// UndoDepth is a POINTER, mirroring apidto.QualityPrefsRequest — see that type
+// for why (a required TS field breaks the frontend build, and nil must mean
+// "not sent, leave the stored value alone" rather than "use the default").
 type qualityPrefsRequest struct {
 	Tier          string `json:"tier"`
 	MaxResolution int    `json:"maxResolution"`
 	Protocol      string `json:"protocol"`
+	UndoDepth     *int   `json:"undoDepth,omitempty"`
 }
 
 // getQualityPrefsHandler returns {mode}'s Search scoring preferences —
@@ -237,8 +284,36 @@ func getQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			return
 		}
 
+		// Claude 2026-08-10: report the effective undo depth on this GET.
+		// Reason: deep-interview-rename-undo — the response carries the RESOLVED
+		//   value (default substituted when unset or malformed) rather than an
+		//   empty/zero, so Pass 2's control renders the depth actually in force
+		//   without duplicating the fallback client-side. Malformed values fall
+		//   through to the default rather than erroring the GET, mirroring
+		//   resolveAdultModeEnabled.
+		// Troubleshooting: the Settings field rendered 0 on a fresh install.
+		// Review if: the response DTO's UndoDepth becomes a pointer (it must
+		//   not — only the REQUEST needs three-state; see qualityPrefsRequest).
+		undoDepthStr, err := settingsStore.Get(ctx, undoDepthKey(m))
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Default applied where the value is READ, not by pre-seeding the
+		// settings table — same shape as resolveAdultModeEnabled's fallback,
+		// and a malformed stored value falls through to the default rather
+		// than erroring the GET.
+		undoDepth := rename.DefaultUndoDepth
+		if undoDepthStr != "" {
+			if n, convErr := strconv.Atoi(undoDepthStr); convErr == nil && n > 0 {
+				undoDepth = n
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(qualityPrefsResponse{Tier: tier, MaxResolution: maxRes, Protocol: protocol})
+		json.NewEncoder(w).Encode(qualityPrefsResponse{
+			Tier: tier, MaxResolution: maxRes, Protocol: protocol, UndoDepth: undoDepth,
+		})
 	}
 }
 
@@ -281,6 +356,21 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			http.Error(w, "protocol must be one of: \"\" (no preference), usenet, torrent", http.StatusBadRequest)
 			return
 		}
+		// Claude 2026-08-10: undoDepth is validated only when actually sent.
+		// Reason: deep-interview-rename-undo — nil means "this client does not
+		//   know about the field", which is every client until Pass 2 ships the
+		//   control. Substituting the default for nil would silently RESET an
+		//   operator's configured depth to 10 on every unrelated quality save.
+		//   Nil therefore skips the Set entirely, further down, rather than
+		//   writing anything.
+		// Troubleshooting: a configured undo depth kept reverting to 10 after
+		//   saving Tier/MaxResolution/Protocol.
+		// Review if: the field becomes a plain int again (it must not — see
+		//   apidto.QualityPrefsRequest for why the pointer is load-bearing).
+		if req.UndoDepth != nil && (*req.UndoDepth < 1 || *req.UndoDepth > MaxUndoDepth) {
+			http.Error(w, fmt.Sprintf("undoDepth must be between 1 and %d", MaxUndoDepth), http.StatusBadRequest)
+			return
+		}
 
 		ctx := r.Context()
 		if err := settingsStore.Set(ctx, qualityTierKey(m), req.Tier); err != nil {
@@ -294,6 +384,14 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 		if err := settingsStore.Set(ctx, protocolPreferenceKey(m), req.Protocol); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Only written when the client actually sent one — a nil pointer leaves
+		// whatever is stored completely untouched (see the validation block).
+		if req.UndoDepth != nil {
+			if err := settingsStore.Set(ctx, undoDepthKey(m), strconv.Itoa(*req.UndoDepth)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

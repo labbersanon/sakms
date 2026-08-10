@@ -222,6 +222,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/modes/{mode}/rename/scan", renameScanHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
 	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals", listProposalsHandler(propStore, proposals.Rename))
 	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals/pending-ids", listPendingIDsHandler(propStore, proposals.Rename))
+	// The read half of Rename Undo. Its store is resolved from
+	// rename.DefaultUndoStore() at request time, exactly as
+	// POST /api/proposals/{id}/undo does — see rename_undo.go's file doc.
+	mux.HandleFunc("GET /api/modes/{mode}/rename/recently-applied", recentlyAppliedHandler())
 	mux.HandleFunc("GET /api/modes/{mode}/rename/kids-root-path", getKidsRootPathHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/rename/kids-root-path", putKidsRootPathHandler(settingsStore))
 
@@ -678,6 +682,21 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/proposals/{id}/submit-draft", submitDraftHandler(httpClient, connStore, scStore, settingsStore, propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/dismiss", dismissProposalHandler(propStore))
 	mux.HandleFunc("POST /api/proposals/{id}/repick", repickProposalHandler(propStore))
+	// Claude 2026-08-10: Rename Undo route.
+	// Reason: deep-interview-rename-undo — Rename-workflow only, and it
+	//   deliberately does NOT extend to Delete or Dismiss: Delete's files are
+	//   physically gone (documented "no undo" by design, CLAUDE.md) and Dismiss
+	//   never moved a file or wrote a library row, so there is nothing to
+	//   reverse. The archive store is resolved inside the handler from
+	//   rename.DefaultUndoStore() rather than passed here — NewMux carries no
+	//   *sql.DB and has ~283 call sites, so widening its signature for one
+	//   optional dependency is not worth it (same reasoning as the
+	//   discoverRefreshDeps block at the top of this function).
+	// Troubleshooting: the route answered 503 — main.go never called
+	//   rename.SetDefaultUndoStore.
+	// Review if: Delete or Dismiss ever gain undo, or NewMux starts taking a
+	//   *sql.DB for other reasons.
+	mux.HandleFunc("POST /api/proposals/{id}/undo", undoProposalHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore))
 	// Cross-mode "move to another section" commit (plan §4.4). Deliberately
 	// UNGATED for Movies<->Series moves (D-1); gated only when the source OR
 	// target mode is Adult, via the handler's own denyIfAdultLocked check

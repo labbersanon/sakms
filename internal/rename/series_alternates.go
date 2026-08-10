@@ -67,6 +67,22 @@ func acceptDuplicatePendingEpisode(p *proposals.Proposal, showTitle string, seas
 		showTitle, season, episode)
 }
 
+// Claude 2026-08-10: added the `promoted` return value, mirroring
+//   applyLibraryAlternate's (see that function's own Claude block for the full
+//   rationale).
+// Reason: deep-interview-rename-undo — only the promote branch renames another
+//   proposal's already-applied file; the lose/tie branch moves ONLY the incoming
+//   file, so undo can safely move it back. THIS MATTERS MORE FOR SERIES THAN FOR
+//   MOVIES: the two Series-only refusals below (range proposals never promote,
+//   and promotion is refused against a shared/bundled primary) force
+//   orphanWins = false, so EVERY range alternate Apply takes the lose/tie branch.
+//   Reporting a blanket "alternate fold" for those would make every one of them
+//   un-undoable.
+// Troubleshooting: undoing a range alternate Apply never moved the file back and
+//   reported that another proposal's file had been renamed, which never happened.
+// Review if: either Series-only refusal is lifted, or the equal-tier policy
+//   changes — both move the boundary this return value reports.
+
 // Claude 2026-08-07: Series alternate fold-in (promote/demote by probed tier)
 // Reason: deep-interview-sakms-series-parsing-accuracy-improvements — Movies parity for
 //   episode slots; duplicates stay under the show, distinctly named, no Dedup/Purge involvement.
@@ -103,6 +119,10 @@ func acceptDuplicatePendingEpisode(p *proposals.Proposal, showTitle string, seas
 //
 // Reuses probeFileMeta, moveUnique and fileMeta from rename_alternates.go
 // unchanged — same package, deliberately not duplicated.
+//
+// promoted reports which branch ran: true only for the promote (orphanWins)
+// branch, which is the one undo must never move a file for. See the Claude
+// 2026-08-10 block above for why Series needs this more than Movies does.
 func applyLibrarySeriesAlternate(
 	ctx context.Context,
 	libStore *library.Store,
@@ -116,12 +136,12 @@ func applyLibrarySeriesAlternate(
 	preset naming.Preset,
 	settingsTier string,
 	prober Prober,
-) (episodeID int64, changes []mode.PathChange, err error) {
+) (episodeID int64, changes []mode.PathChange, promoted bool, err error) {
 	seasonDir := filepath.Join(p.RootFolderPath,
 		naming.SeriesFolderName(preset, p.Title, p.Year, p.TMDBID),
 		naming.SeasonDirName(p.SeasonNumber))
 	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
-		return 0, nil, fmt.Errorf("creating %q: %w", seasonDir, err)
+		return 0, nil, false, fmt.Errorf("creating %q: %w", seasonDir, err)
 	}
 
 	orphanMeta := probeFileMeta(ctx, prober, sourcePath, settingsTier)
@@ -180,6 +200,13 @@ func applyLibrarySeriesAlternate(
 		}
 	}
 
+	// Reported to the caller so undo can distinguish the two branches — see this
+	// function's doc comment. Assigned HERE, after BOTH Series-only refusals
+	// above have had their chance to force orphanWins false, not at the initial
+	// tier comparison: a range proposal and a bundled-primary collision both
+	// end up on the lose/tie branch, and undo must treat them as such.
+	promoted = orphanWins
+
 	primaryDest := filepath.Join(seasonDir,
 		naming.EpisodeRangeFileName(preset, p.Title, p.SeasonNumber, episodeNumbers, episodeTitle, filepath.Ext(sourcePath)))
 
@@ -194,19 +221,19 @@ func applyLibrarySeriesAlternate(
 			quality.BitrateLabel(primaryMeta.BitRate), filepath.Ext(primaryPath))
 		movedPrimary, ch, moveErr := moveUnique(primaryPath, filepath.Join(seasonDir, altName))
 		if moveErr != nil {
-			return 0, changes, fmt.Errorf("demoting previous primary %q: %w", primaryPath, moveErr)
+			return 0, changes, promoted, fmt.Errorf("demoting previous primary %q: %w", primaryPath, moveErr)
 		}
 		changes = append(changes, ch...)
 		primaryPath = movedPrimary
 
 		movedOrphan, ch, moveErr := moveUnique(sourcePath, primaryDest)
 		if moveErr != nil {
-			return 0, changes, fmt.Errorf("promoting orphan to primary %q: %w", primaryDest, moveErr)
+			return 0, changes, promoted, fmt.Errorf("promoting orphan to primary %q: %w", primaryDest, moveErr)
 		}
 		changes = append(changes, ch...)
 
 		if err := libStore.UpdateEpisodePrimaryPath(ctx, existing.ID, movedOrphan, orphanMeta.Tier, library.FileSize(movedOrphan)); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
 		// UpsertEpisodeFile's own demote-siblings step means the IsPrimary:true
 		// write must come FIRST, exactly as in Movies.
@@ -216,7 +243,7 @@ func applyLibrarySeriesAlternate(
 			Width: orphanMeta.Width, Height: orphanMeta.Height, VideoCodec: orphanMeta.Codec,
 			BitRate: orphanMeta.BitRate, DurationSec: orphanMeta.Duration,
 		}); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
 		if _, err := libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
 			EpisodeID: existing.ID, FilePath: primaryPath, IsPrimary: false,
@@ -224,9 +251,9 @@ func applyLibrarySeriesAlternate(
 			Width: primaryMeta.Width, Height: primaryMeta.Height, VideoCodec: primaryMeta.Codec,
 			BitRate: primaryMeta.BitRate, DurationSec: primaryMeta.Duration,
 		}); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
-		return existing.ID, changes, nil
+		return existing.ID, changes, promoted, nil
 	}
 
 	// Orphan loses or ties — keep the existing primary; place the orphan as an
@@ -237,7 +264,7 @@ func applyLibrarySeriesAlternate(
 	altDest := filepath.Join(seasonDir, altName)
 	movedOrphan, ch, moveErr := moveUnique(sourcePath, altDest)
 	if moveErr != nil {
-		return 0, changes, fmt.Errorf("placing alternate %q: %w", altDest, moveErr)
+		return 0, changes, promoted, fmt.Errorf("placing alternate %q: %w", altDest, moveErr)
 	}
 	changes = append(changes, ch...)
 
@@ -249,7 +276,7 @@ func applyLibrarySeriesAlternate(
 			Width: primaryMeta.Width, Height: primaryMeta.Height, VideoCodec: primaryMeta.Codec,
 			BitRate: primaryMeta.BitRate, DurationSec: primaryMeta.Duration,
 		}); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
 	}
 
@@ -283,10 +310,10 @@ func applyLibrarySeriesAlternate(
 			Width: orphanMeta.Width, Height: orphanMeta.Height, VideoCodec: orphanMeta.Codec,
 			BitRate: orphanMeta.BitRate, DurationSec: orphanMeta.Duration,
 		}); err != nil {
-			return 0, changes, err
+			return 0, changes, promoted, err
 		}
 	}
-	return existing.ID, changes, nil
+	return existing.ID, changes, promoted, nil
 }
 
 // fileExists reports whether path names something that currently stats. Used by

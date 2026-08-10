@@ -589,6 +589,85 @@ func (s *Store) MarkApplied(ctx context.Context, id int64, trackedID int) error 
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// Claude 2026-08-10: added RestoreSnapshot.
+// Reason: deep-interview-rename-undo — undo restores the proposal from a full
+//   pre-Apply snapshot, so it needs a whole-row writer. Deliberately NOT built
+//   from MarkApplied/Repick/Dismiss: each of those writes a hand-picked subset,
+//   and composing them would silently leave every column none of them names at
+//   its post-Apply value.
+// Troubleshooting: an undone proposal returned to Pending but kept a
+//   post-Apply tracked_id/applied_at — a subset writer was used instead.
+// Review if: the proposals table gains a column (this UPDATE must list it, the
+//   same way ReplacePending's INSERT must).
+// Related files: internal/rename/undo_apply.go
+
+// RestoreSnapshot writes a previously-captured Proposal row back WHOLESALE —
+// every column, not a hand-picked subset — keyed by p.ID. It is Rename Undo's
+// step 4 (see internal/rename/undo_apply.go): the undo archive already stores
+// the complete pre-Apply row, so there is nothing to determine or merge here.
+//
+// Deliberately writes status/applied_at like any other column rather than
+// special-casing them: a pre-Apply snapshot is Pending with an empty
+// applied_at, so restoring it faithfully is exactly the "return the proposal to
+// the Pending queue" the spec asks for, with no separate MarkPending step that
+// could drift from it.
+//
+// The three "set once, never cleared" timestamps (draft_submitted_at,
+// fingerprint_submitted_at, applied_at) are stored NULL when the snapshot holds
+// "", matching how every other writer of these columns treats the empty string
+// — List/Get read them back through COALESCE.
+//
+// mode and workflow are NOT restored: they are the row's identity for every
+// queue query, a snapshot can only ever agree with them, and MoveMode owns the
+// one legitimate path that changes a proposal's mode.
+func (s *Store) RestoreSnapshot(ctx context.Context, p Proposal) error {
+	candidatesJSON, err := json.Marshal(p.Candidates)
+	if err != nil {
+		return fmt.Errorf("encoding candidates for proposal %d: %w", p.ID, err)
+	}
+	extraEpisodesJSON, err := marshalExtraEpisodes(p.ExtraEpisodeNumbers)
+	if err != nil {
+		return fmt.Errorf("encoding extra episode numbers for proposal %d: %w", p.ID, err)
+	}
+	genresJSON, err := marshalStringSlice(p.Genres)
+	if err != nil {
+		return fmt.Errorf("encoding genres for proposal %d: %w", p.ID, err)
+	}
+	castJSON, err := marshalStringSlice(p.Cast)
+	if err != nil {
+		return fmt.Errorf("encoding cast for proposal %d: %w", p.ID, err)
+	}
+	nullable := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE proposals SET
+			status = ?, source_name = ?, source_path = ?, root_folder_path = ?,
+			title = ?, tvdb_id = ?, tmdb_id = ?, season_number = ?, episode_number = ?,
+			year = ?, quality_profile_id = ?, reason = ?, tracked_id = ?,
+			foreign_id = ?, item_type = ?, candidates_json = ?, studio = ?,
+			scene_date = ?, phash = ?, duration_seconds = ?, give_back_box = ?,
+			give_back_scene_id = ?, extra_episode_numbers = ?, genres = ?, "cast" = ?,
+			phash_similarity = ?, draft_id = ?, draft_submitted_at = ?,
+			fingerprint_submitted_at = ?, applied_at = ?
+		WHERE id = ?
+	`, string(p.Status), p.SourceName, p.SourcePath, p.RootFolderPath,
+		p.Title, p.TVDBID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber,
+		p.Year, p.QualityProfileID, p.Reason, p.TrackedID,
+		p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio,
+		p.Date, p.PHash, p.DurationSeconds, p.GiveBackBox,
+		p.GiveBackSceneID, extraEpisodesJSON, genresJSON, castJSON,
+		p.PHashSimilarity, p.DraftID, nullable(p.DraftSubmittedAt),
+		nullable(p.FingerprintSubmittedAt), nullable(p.AppliedAt), p.ID)
+	if err != nil {
+		return fmt.Errorf("restoring proposal %d: %w", p.ID, err)
+	}
+	return dbutil.CheckAffected(res, p.ID, ErrNotFound)
+}
+
 // Dismiss marks proposal id as reviewed-and-rejected — it stays in history
 // but drops out of the live queue, and won't reappear unless a future Scan
 // re-discovers the same source item.

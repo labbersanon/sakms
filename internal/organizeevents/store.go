@@ -25,6 +25,14 @@ const (
 	KindError       = "error"
 	KindApplyBatch  = "apply_batch"
 	KindDeleteBatch = "delete_batch"
+	// Claude 2026-08-10: added KindUndo.
+	// Reason: deep-interview-rename-undo — every other Rename action already
+	//   logs here, and an undo that left no activity-log trace would be the
+	//   only mutating Rename action with none.
+	// Troubleshooting: undo entries missing from the Rename activity log —
+	//   Append's workflow must be "rename" (the log is queried WHERE workflow).
+	// Review if: Delete or Dismiss ever gain undo (they are excluded by design).
+	KindUndo = "undo"
 )
 
 // Event is one persisted organize activity row.

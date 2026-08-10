@@ -818,7 +818,7 @@ describe("Rename — Adult (dropdown; no Status column)", () => {
     expect(within(select).queryByRole("option", { name: "Give back" })).toBeNull();
     expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
     expect(within(select).getByRole("option", { name: "Rename" })).toBeDisabled();
-    expect(within(select).getByRole("option", { name: "Re-pick" })).toBeDisabled();
+    expect(within(select).getByRole("option", { name: "Search" })).toBeDisabled();
     expect(within(select).getByRole("option", { name: "Dismiss" })).not.toBeDisabled();
     expect(
       within(row).queryByRole("button", {
@@ -1034,7 +1034,7 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
 
     await runRowAction("Vanish.Me.mkv", "repick");
     expect(
-      await screen.findByText(/Re-pick match for “Vanish\.Me\.mkv”/),
+      await screen.findByText(/Search for a new match for “Vanish\.Me\.mkv”/),
     ).toBeInTheDocument();
 
     // The whole queue subtree is un-created, not hidden: the proposal's own
@@ -1044,7 +1044,7 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
     //
     // The source-name negative is EXACT-MATCH on purpose, and must stay that
     // way: queryByText's string form matches a whole text node, and the
-    // takeover's own heading renders `Re-pick match for “Vanish.Me.mkv”` — the
+    // takeover's own heading renders `Search for a new match for “Vanish.Me.mkv”` — the
     // name IS still on screen, just not as its own cell. "Strengthening" this
     // to a /Vanish\.Me\.mkv/ regex fails on the heading and looks like a
     // regression that is not one. "Source"/"Scan"/"Page size" below are the

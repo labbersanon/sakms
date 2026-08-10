@@ -924,11 +924,11 @@ func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 			return
 		}
 		if p.Workflow != proposals.Rename || (p.Mode != mode.Movies && p.Mode != mode.Series) {
-			http.Error(w, "re-picking is only supported for movies/series rename proposals", http.StatusBadRequest)
+			http.Error(w, "searching is only supported for movies/series rename proposals", http.StatusBadRequest)
 			return
 		}
 		if p.Status != proposals.Pending && p.Status != proposals.Unmatched {
-			http.Error(w, fmt.Sprintf("proposal %d is %q — only pending or unmatched proposals can be re-picked", id, p.Status), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("proposal %d is %q — only pending or unmatched proposals can be searched", id, p.Status), http.StatusBadRequest)
 			return
 		}
 

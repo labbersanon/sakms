@@ -88,7 +88,7 @@ type RowActionId =
 // Context: .omc/plans/autopilot-impl.md §3.2.
 const BASE_ROW_ACTIONS: { id: RowActionId; label: string }[] = [
   { id: "rename", label: "Rename" },
-  { id: "repick", label: "Re-pick" },
+  { id: "repick", label: "Search" },
   { id: "dismiss", label: "Dismiss" },
   { id: "delete", label: "Delete file" },
 ];
@@ -352,7 +352,7 @@ const ApplyAllConfirm: Component<{
         </h3>
         <Muted class="mt-1">
           Runs each row’s dropdown choice (Rename is selected when a match is
-          found; Re-pick is skipped — needs a manual pick).
+          found; searching is skipped — needs a manual pick).
         </Muted>
         <Show when={props.plan.some((x) => x.action === "delete")}>
           <p class="mt-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
@@ -1320,7 +1320,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
             <SearchTakeover
               heading={
                 st.kind === "repick"
-                  ? `Re-pick match for “${p.sourceName}”`
+                  ? `Search for a new match for “${p.sourceName}”`
                   : `Move “${p.sourceName}” to another section`
               }
               subheading={

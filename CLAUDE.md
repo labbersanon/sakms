@@ -325,7 +325,7 @@ above, so don't drop them for convenience:
     every item gets its own ok/error result, no automatic retry) and fires
     one combined player-notify for the whole batch. This is still NOT a
     queue-wide "apply everything," a scheduler, or cross-mode/cross-workflow
-    batching — every single row's own Apply/Give back/Re-pick/Dismiss button
+    batching — every single row's own Apply/Give back/Search/Dismiss button
     still acts on exactly one item, unchanged, and a batch never includes
     anything the operator didn't explicitly check. Grabs and tag actions are
     untouched by this — they still take exactly one already-approved thing,

@@ -253,7 +253,7 @@ describe("Rename — source-file preview (queue row control)", () => {
     expect(optionLabels).toEqual([
       "select action",
       "Rename",
-      "Re-pick",
+      "Search",
       "Dismiss",
       "Delete file",
       "Move to Series",

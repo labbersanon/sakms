@@ -1,4 +1,5 @@
-// Usenet — its own top-level Settings tab, not a row in a connections table.
+// Usenet — a sub-tab of the Settings > Download tab (see Download.tsx), not a
+// row in a connections table.
 //
 // It has its own page precisely because a Usenet subscription's field set is
 // richer than the URL + API-key shape ConnectionRow renders: label, host, port,

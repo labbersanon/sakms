@@ -23,7 +23,7 @@ const grab = (over: Partial<Grab>): Grab => ({
   title: "Some Movie",
   indexer: "IndexerA",
   protocol: "torrent",
-  downloadClient: "qbittorrent",
+  downloadClient: "anacrolix",
   status: "imported",
   rootFolderPath: "/movies",
   createdAt: "2026-07-13T00:00:00Z",

@@ -101,9 +101,11 @@ func (s *Store) Upsert(ctx context.Context, service, url, apiKey string) error {
 	return s.UpsertWithUsername(ctx, service, url, "", apiKey)
 }
 
-// UpsertWithUsername is Upsert plus a plaintext username — for services like
-// qBittorrent and NZBGet that authenticate with username+password rather
-// than a single API key. secret is encrypted the same way apiKey always has
+// UpsertWithUsername is Upsert plus a plaintext username — for a service that
+// authenticates with username+password rather than a single API key. nntp is
+// the live one (see testNNTP, internal/api/connections.go); qBittorrent and
+// NZBGet were the original reason this parameter exists and were removed on
+// 2026-08-10. secret is encrypted the same way apiKey always has
 // been; the column name (api_key_encrypted) predates this and stays generic
 // in meaning (whatever secret the service needs), not renamed, to avoid a
 // second migration for a cosmetic-only change.

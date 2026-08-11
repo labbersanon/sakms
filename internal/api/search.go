@@ -439,7 +439,7 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 		return "anacrolix", gid, http.StatusOK, nil
 	case prowlarr.Usenet:
 		if nzb == nil {
-			return "", "", http.StatusBadRequest, errors.New("add a Usenet subscription on the Settings → Usenet page to grab usenet releases")
+			return "", "", http.StatusBadRequest, errors.New("add a Usenet subscription on the Settings → Download → Usenet page to grab usenet releases")
 		}
 		gid, err := nzb.AddNZB(ctx, downloadURL, title)
 		if err != nil {

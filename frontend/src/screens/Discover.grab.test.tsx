@@ -308,47 +308,6 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
       "http://10.1.10.3:9696",
     );
   });
-
-  it("a qbittorrent-not-configured failure (found once a release is picked) prompts for URL + username + password, not just a key", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/modes/movies/autograb"))
-        return plainTextError("qbittorrent isn't configured yet — add it in Settings first\n");
-      if (url.includes("/api/netscan/known")) return jsonResponse([]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
-
-    expect(await screen.findByText(/qBittorrent isn't configured yet/)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("https://qbittorrent.example.com")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("username")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("password")).toBeInTheDocument();
-    // Prowlarr-only affordances must not appear for a download-client prompt.
-    expect(screen.queryByText("Fetch API key")).not.toBeInTheDocument();
-    expect(screen.queryByText(/wiki\.servarr\.com/)).not.toBeInTheDocument();
-  });
-
-  it("an nzbget-not-configured failure prompts for URL + username + password", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/modes/movies/autograb"))
-        return plainTextError("nzbget isn't configured yet — add it in Settings first\n");
-      if (url.includes("/api/netscan/known")) return jsonResponse([]);
-      const d = mainstreamDefaults(url);
-      if (d) return d;
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Discover />);
-    fireEvent.click((await screen.findAllByText("Grab"))[0]!);
-
-    expect(await screen.findByText(/NZBGet isn't configured yet/)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("https://nzbget.example.com")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("username")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("password")).toBeInTheDocument();
-  });
 });
 
 describe("Discover auto-grab — blocked by global pause (HTTP 423)", () => {

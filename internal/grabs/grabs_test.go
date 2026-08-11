@@ -30,7 +30,7 @@ func TestCreate_StartsQueuedWithTimestampsPopulated(t *testing.T) {
 
 	g, err := s.Create(ctx, Grab{
 		Mode: mode.Movies, Title: "Some Movie", TMDBID: 123,
-		Indexer: "SomeIndexer", Protocol: "torrent", DownloadClient: "qbittorrent",
+		Indexer: "SomeIndexer", Protocol: "torrent", DownloadClient: "anacrolix",
 		ClientRef: "abc123", RootFolderPath: "/movies",
 	})
 	if err != nil {
@@ -54,7 +54,7 @@ func TestGet_RoundTripsEveryField(t *testing.T) {
 	created, err := s.Create(ctx, Grab{
 		Mode: mode.Series, Title: "Some Show S01E01", TVDBID: 456,
 		SeasonNumber: 1, EpisodeNumber: 1, SeasonSpecified: true,
-		Indexer: "SomeUsenetIndexer", Protocol: "usenet", DownloadClient: "nzbget",
+		Indexer: "SomeUsenetIndexer", Protocol: "usenet", DownloadClient: "nntp",
 		ClientRef: "42", RootFolderPath: "/tv",
 	})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestGet_RoundTripsEveryField(t *testing.T) {
 	}
 	if got.Mode != mode.Series || got.Title != "Some Show S01E01" || got.TVDBID != 456 ||
 		got.SeasonNumber != 1 || got.EpisodeNumber != 1 || !got.SeasonSpecified ||
-		got.Indexer != "SomeUsenetIndexer" || got.Protocol != "usenet" || got.DownloadClient != "nzbget" ||
+		got.Indexer != "SomeUsenetIndexer" || got.Protocol != "usenet" || got.DownloadClient != "nntp" ||
 		got.ClientRef != "42" || got.RootFolderPath != "/tv" || got.Status != Queued {
 		t.Errorf("unexpected round-tripped grab: %+v", got)
 	}
@@ -79,7 +79,7 @@ func TestCreate_SeasonSpecifiedDefaultsFalse(t *testing.T) {
 
 	created, err := s.Create(ctx, Grab{
 		Mode: mode.Movies, Title: "Some Movie", TMDBID: 123,
-		Indexer: "SomeIndexer", Protocol: "torrent", DownloadClient: "qbittorrent",
+		Indexer: "SomeIndexer", Protocol: "torrent", DownloadClient: "anacrolix",
 		RootFolderPath: "/movies",
 	})
 	if err != nil {
@@ -185,7 +185,7 @@ func TestUpdateStatus_ChangesStatusAndTimestamp(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	created, err := s.Create(ctx, Grab{Mode: mode.Movies, Title: "X", Indexer: "I", Protocol: "torrent", DownloadClient: "qbittorrent", RootFolderPath: "/movies"})
+	created, err := s.Create(ctx, Grab{Mode: mode.Movies, Title: "X", Indexer: "I", Protocol: "torrent", DownloadClient: "anacrolix", RootFolderPath: "/movies"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestFlag_RoundTripsAndDefaultsUnflagged(t *testing.T) {
 
 	created, err := s.Create(ctx, Grab{
 		Mode: mode.Movies, Title: "Some Movie", TMDBID: 123,
-		Indexer: "I", Protocol: "torrent", DownloadClient: "qbittorrent", RootFolderPath: "/movies",
+		Indexer: "I", Protocol: "torrent", DownloadClient: "anacrolix", RootFolderPath: "/movies",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -256,13 +256,13 @@ func TestList_ScopedByModeAndOrderedNewestFirst(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if _, err := s.Create(ctx, Grab{Mode: mode.Movies, Title: "Movie A", Indexer: "I", Protocol: "torrent", DownloadClient: "qbittorrent", RootFolderPath: "/movies"}); err != nil {
+	if _, err := s.Create(ctx, Grab{Mode: mode.Movies, Title: "Movie A", Indexer: "I", Protocol: "torrent", DownloadClient: "anacrolix", RootFolderPath: "/movies"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := s.Create(ctx, Grab{Mode: mode.Movies, Title: "Movie B", Indexer: "I", Protocol: "torrent", DownloadClient: "qbittorrent", RootFolderPath: "/movies"}); err != nil {
+	if _, err := s.Create(ctx, Grab{Mode: mode.Movies, Title: "Movie B", Indexer: "I", Protocol: "torrent", DownloadClient: "anacrolix", RootFolderPath: "/movies"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := s.Create(ctx, Grab{Mode: mode.Series, Title: "Show A", Indexer: "I", Protocol: "usenet", DownloadClient: "nzbget", RootFolderPath: "/tv"}); err != nil {
+	if _, err := s.Create(ctx, Grab{Mode: mode.Series, Title: "Show A", Indexer: "I", Protocol: "usenet", DownloadClient: "nntp", RootFolderPath: "/tv"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -724,7 +724,7 @@ func TestDueForRelease_PromotionFiresExactlyOnce(t *testing.T) {
 			t.Fatalf("create: %v", err)
 		}
 		if err := s.Relaunch(ctx, g.ID, Dispatch{
-			Indexer: "I", Protocol: "usenet", DownloadClient: "nzbget",
+			Indexer: "I", Protocol: "usenet", DownloadClient: "nntp",
 			RootFolderPath: "/movies", DownloadURL: "https://x/1.nzb", GID: "gid-931",
 		}); err != nil {
 			t.Fatalf("relaunch: %v", err)
@@ -933,7 +933,7 @@ func TestCreate_HeldRequestUniquenessIsScopedAndPartial(t *testing.T) {
 	// re-grab, or a retry that minted a fresh row.
 	ordinary := Grab{
 		Mode: mode.Movies, Title: "Ordinary", TMDBID: 961,
-		Indexer: "I", Protocol: "torrent", DownloadClient: "qbittorrent", RootFolderPath: "/movies",
+		Indexer: "I", Protocol: "torrent", DownloadClient: "anacrolix", RootFolderPath: "/movies",
 	}
 	for i := range 2 {
 		if _, err := s.Create(ctx, ordinary); err != nil {
@@ -970,7 +970,7 @@ func TestRearmHeldRequest_ResetsEveryGuardDueForReleaseChecks(t *testing.T) {
 	}
 	// Promote and dispatch, then take it down permanently — the real sequence.
 	if err := s.Relaunch(ctx, g.ID, Dispatch{
-		Indexer: "I", Protocol: "usenet", DownloadClient: "nzbget",
+		Indexer: "I", Protocol: "usenet", DownloadClient: "nntp",
 		RootFolderPath: "/movies", DownloadURL: "https://x/1.nzb", GID: "gid-970",
 	}); err != nil {
 		t.Fatalf("relaunch: %v", err)
@@ -1081,7 +1081,7 @@ func TestRearmHeldRequest_RefusesANonHeldRow(t *testing.T) {
 
 	g, err := s.Create(ctx, Grab{
 		Mode: mode.Movies, Title: "Ordinary", TMDBID: 990,
-		Indexer: "I", Protocol: "torrent", DownloadClient: "qbittorrent", RootFolderPath: "/movies",
+		Indexer: "I", Protocol: "torrent", DownloadClient: "anacrolix", RootFolderPath: "/movies",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)

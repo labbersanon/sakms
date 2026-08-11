@@ -4,8 +4,8 @@
 //
 // Plus one SERIES-ONLY panel: new-season discovery
 // (SeriesNewSeasonDiscoverySection). It lives here rather than under Settings →
-// Usenet deliberately — it is a Series-library behavior, and the Usenet page's
-// own doc says that page must not grow unrelated rows. That the backend gates
+// Download → Usenet deliberately — it is a Series-library behavior, and the
+// Usenet sub-tab's own doc says that page must not grow unrelated rows. That the backend gates
 // the resulting dispatch on the usenet auto-grab flag is an implementation
 // detail of dispatch, not a reason to file the control under Usenet.
 
@@ -306,7 +306,7 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         }}
       />
       {/* A bounded integer, not a small fixed option set, so a plain number
-          input rather than a fourth PillSelector — the Usenet page's port
+          input rather than a fourth PillSelector — the Usenet sub-tab's port
           field is the shape reused here. It rides the same dirty/save flow as
           the three pills above; nothing about this field saves on its own. */}
       <label class="mb-3 block">

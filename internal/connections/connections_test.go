@@ -45,11 +45,11 @@ func TestUpsertWithUsername_RoundTripsUsernameAndDecryptedSecret(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	if err := s.UpsertWithUsername(ctx, "qbittorrent", "http://192.168.1.12:8080", "wade", "hunter2"); err != nil {
+	if err := s.UpsertWithUsername(ctx, "nntp", "http://192.168.1.12:8080", "wade", "hunter2"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := s.Get(ctx, "qbittorrent")
+	got, err := s.Get(ctx, "nntp")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,5 +1,6 @@
 // Torrent-engine configuration data access — GET/PUT /api/downloader/config,
-// the single settings document behind Settings -> Torrent (Torrent.tsx). Every
+// the single settings document behind Settings -> Download -> Torrent
+// (Torrent.tsx). Every
 // call goes through api() (src/api/client.ts) so it inherits the session cookie
 // and the global 401 → re-boot session-expiry fallback. The request/response
 // shape is the generated DTO (@dto), never hand-duplicated.

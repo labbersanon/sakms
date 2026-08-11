@@ -1,5 +1,6 @@
-// Torrent — its own top-level Settings tab, the torrent engine's counterpart to
-// the Usenet page beside it (a symmetric Usenet / Torrent pair in the tab bar).
+// Torrent — a sub-tab of the Settings > Download tab (see Download.tsx), the
+// torrent engine's counterpart to the Usenet sub-tab beside it (a symmetric
+// Usenet / Torrent pair in Download's inner tab bar).
 //
 // It has its own page for the same reason Usenet.tsx does: the field set is far
 // richer than any generic connection row renders — engine (staging directory,

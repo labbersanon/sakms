@@ -11,11 +11,9 @@ import (
 	"github.com/labbersanon/sakms/internal/searxng"
 	"github.com/labbersanon/sakms/internal/emby"
 	"github.com/labbersanon/sakms/internal/jellyfin"
-	"github.com/labbersanon/sakms/internal/nzbget"
 	"github.com/labbersanon/sakms/internal/ollama"
 	"github.com/labbersanon/sakms/internal/plex"
 	"github.com/labbersanon/sakms/internal/prowlarr"
-	"github.com/labbersanon/sakms/internal/qbittorrent"
 	"github.com/labbersanon/sakms/internal/stashapi"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tmdb"
@@ -34,7 +32,7 @@ type ConnectionTestRequest struct {
 	// "jellyfin" deliberately (one dispatch, two callers).
 	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "nntp" | "tmdb" | "tvdb" | "trakt"
 	URL      string `json:"url"`
-	Username string `json:"username,omitempty"` // only qbittorrent/nzbget use this
+	Username string `json:"username,omitempty"` // only nntp uses this (testNNTP)
 	APIKey   string `json:"apiKey,omitempty"`
 }
 
@@ -102,10 +100,12 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 	// No "qbittorrent"/"nzbget" cases: the unified aria2c downloader replaced
 	// both as SAK's download engine (Unified downloader, 2026-07-18), so there
 	// is no external download-client connection to test anymore — same
-	// precedent as the removed radarr/sonarr/whisparr cases. internal/qbittorrent
-	// and internal/nzbget are kept as generic capability (their testQBittorrent/
-	// testNZBGet helpers stay for potential reuse) but no live connection type
-	// reaches them.
+	// precedent as the removed radarr/sonarr/whisparr cases. The
+	// internal/qbittorrent and internal/nzbget packages, and their
+	// testQBittorrent/testNZBGet helpers, were DELETED outright on 2026-08-10
+	// (they had no caller for nearly a month); reaching either now would need
+	// new wiring, not an un-deleted case. See CHANGELOG.md for the reversal of
+	// the earlier keep-as-generic-capability decision.
 	case "tmdb":
 		return testTMDB(ctx, httpClient, req)
 	case "tvdb":
@@ -246,22 +246,6 @@ func testSearXNG(ctx context.Context, httpClient *http.Client, req ConnectionTes
 func testProwlarr(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	c := prowlarr.New(prowlarr.Config{BaseURL: req.URL, APIKey: req.APIKey}, httpClient)
 	if _, err := c.Search(ctx, "", nil); err != nil {
-		return ConnectionTestResult{Error: err.Error()}
-	}
-	return ConnectionTestResult{OK: true}
-}
-
-func testQBittorrent(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
-	c := qbittorrent.New(qbittorrent.Config{BaseURL: req.URL, Username: req.Username, Password: req.APIKey}, httpClient)
-	if err := c.Ping(ctx); err != nil {
-		return ConnectionTestResult{Error: err.Error()}
-	}
-	return ConnectionTestResult{OK: true}
-}
-
-func testNZBGet(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
-	c := nzbget.New(nzbget.Config{BaseURL: req.URL, Username: req.Username, Password: req.APIKey}, httpClient)
-	if err := c.Ping(ctx); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}
 	return ConnectionTestResult{OK: true}

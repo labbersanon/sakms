@@ -499,7 +499,7 @@ describe("Library — per-season monitoring (Series only)", () => {
   const UNMONITORED_COPY =
     "An unmonitored season is never searched automatically, no matter how long ago it aired.";
   const AUTOGRAB_COPY =
-    "Monitoring a season does nothing until Settings → Usenet → Enable auto-grab is on, and that takes effect on restart.";
+    "Monitoring a season does nothing until Settings → Download → Usenet → Enable auto-grab is on, and that takes effect on restart.";
 
   const breakingBad = item({ id: 77, title: "Breaking Bad", tmdbId: 1396 });
   const seasons: SeasonState[] = [

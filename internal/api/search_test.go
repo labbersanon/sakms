@@ -360,12 +360,16 @@ func TestListGrabsHandler_ScopedByMode(t *testing.T) {
 	}
 }
 
-// TestCheckImportHandler_QBittorrentCompleted_PerformsImport exercises the
+// TestCheckImportHandler_TorrentCompleted_PerformsImport exercises the
 // full completed-download -> relocate -> record-in-library loop against a
-// real on-disk directory (standing in for qBittorrent's actual download
+// real on-disk directory (standing in for the torrent engine's actual staging
 // directory) — no Radarr involved anymore, the same rigor as Dedup's
 // end-to-end test.
-func TestCheckImportHandler_QBittorrentCompleted_PerformsImport(t *testing.T) {
+//
+// Renamed from ..._QBittorrentCompleted_... on 2026-08-10: the old name was the
+// only place a reader learned which client the fixture modelled, and it
+// modelled one that no longer exists.
+func TestCheckImportHandler_TorrentCompleted_PerformsImport(t *testing.T) {
 	dir := t.TempDir()
 	downloadDir := filepath.Join(dir, "downloads", "Some.Movie.2023.1080p.WEB-DL.x264-GROUP")
 	moviesRoot := filepath.Join(dir, "Movies")

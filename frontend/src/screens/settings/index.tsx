@@ -7,11 +7,12 @@
 // and no kids classification; new-season discovery for Series only); Pruning
 // (Claude 2026-08-03: operator-authored propose-only Purge rules — CRUD list +
 // per-rule age/size/quality-tier conditions with a soft match-count preview,
-// plus the Purge background-scan interval control, see PruningRules.tsx); Usenet (the multi-subscription page + the
-// auto-grab toggle, its own tab because a subscription's field set is richer
-// than a connection row, see Usenet.tsx); Torrent (the torrent engine's
-// counterpart to Usenet — engine/performance/seeding/stale-handling settings,
-// its own tab for the same reason, see Torrent.tsx); UI (screen-presentation admin
+// plus the Purge background-scan interval control, see PruningRules.tsx); Download (the two native
+// download panels under one tab, as Usenet/Torrent sub-tabs drawn by a plain
+// inline ScreenTabBar — Usenet first and default, the multi-subscription page
+// + the auto-grab toggle, see Usenet.tsx; Torrent second, the torrent engine's
+// engine/performance/seeding/stale-handling settings, see Torrent.tsx. Each
+// panel keeps its own SectionSave; Download.tsx adds none); UI (screen-presentation admin
 // controls — a Discover subsection with Mainstream/Adult sub-tabs hosting the
 // custom slider and Adult-newest-row editors, plus the Trakt watchlist
 // connection, see UI.tsx); AI (provider/model config + the AI-provider/Brave
@@ -29,12 +30,16 @@
 // of the singleton `connections` table into the `service_connections` registry
 // (migration 0053) entirely.
 //
-// There are TWO INDEPENDENT selectors here and they must not be conflated: the
-// section-tab selector (SECTION_TABS below), and a Movies/Series/Adult MODE
-// selector (ModeSelector) rendered INLINE inside the Library and Advanced tabs
-// (the only tabs with per-mode content). The mode selector is a plain
-// ScreenTabBar — it is NOT registered with the shell, since the shell's single
-// tab slot already holds the section tabs. One shared `mode` signal backs both
+// There are INDEPENDENT selectors here and they must not be conflated. Exactly
+// ONE of them is registered with the shell: the section-tab selector
+// (SECTION_TABS below). Every other tab bar in this screen is a plain, INLINE
+// ScreenTabBar that never touches the shell registration, because the shell's
+// single tab slot already holds the section tabs. There are three such inline
+// bars today: the Movies/Series/Adult MODE selector (ModeSelector) rendered
+// inside the Library and Advanced tabs (the only tabs with per-mode content);
+// UI's Mainstream/Adult Discover switch (UI.tsx); and Download's Usenet/Torrent
+// switch (Download.tsx). Using ScreenTabs/useScreenTabs for any of the three
+// would overwrite the section tabs the moment that tab mounts. One shared `mode` signal backs both
 // per-mode tabs, so switching between Library and Advanced preserves the
 // selected mode. GlobalSection sits ABOVE the Advanced tab's mode selector
 // precisely because none of its settings vary by mode — the selector below it
@@ -42,7 +47,7 @@
 //
 // This screen is split across settings/: shared primitives (Card, SaveStatus,
 // useSaveStatus, MODE_LABELS) in shared.tsx; one file per section (Library/
-// Usenet/UI/AI/Auth/Webhooks/Nodes/Advanced — Global is composed into the
+// Download/UI/AI/Auth/Webhooks/Nodes/Advanced — Global is composed into the
 // Advanced tab here, it has no tab of its own); UI.tsx additionally composes
 // several standalone subsection files (SliderAdmin, AdultRowAdmin,
 // RssFeedAdmin, Trakt) under its one top-level tab; this file is the thin tab
@@ -68,8 +73,7 @@ import {
   QualityPrefsSection,
   SeriesNewSeasonDiscoverySection,
 } from "./Library";
-import { UsenetSection } from "./Usenet";
-import { TorrentSection } from "./Torrent";
+import { DownloadSection } from "./Download";
 import { AdvancedSection } from "./Advanced";
 import { GlobalSection } from "./Global";
 import { SectionSave } from "./shared";
@@ -95,8 +99,13 @@ const SECTION_TABS: TabDef[] = [
   // screens/organizeTabs.ts) deliberately — it is the same three workflows.
   { id: "organize", label: "Organize" },
   { id: "pruning", label: "Pruning" },
-  { id: "usenet", label: "Usenet" },
-  { id: "torrent", label: "Torrent" },
+  // Claude 2026-08-10: the standalone Usenet and Torrent tabs were folded
+  // into one Download tab, with Usenet (default) and Torrent as sub-tabs
+  // inside it (plan .omc/plans/autopilot-impl-download-settings-consolidation.md
+  // §2.1). Download takes the slot Usenet held; Torrent's slot is gone.
+  // Reason: both panels configure ONE native downloader, so two sibling
+  // top-level tabs overstated how separate they are.
+  { id: "download", label: "Download" },
   { id: "ui", label: "UI" },
   { id: "ai", label: "AI" },
   { id: "auth", label: "Auth" },
@@ -216,12 +225,8 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
         <PruningRulesSection />
       </Show>
 
-      <Show when={section() === "usenet"}>
-        <UsenetSection />
-      </Show>
-
-      <Show when={section() === "torrent"}>
-        <TorrentSection />
+      <Show when={section() === "download"}>
+        <DownloadSection />
       </Show>
 
       <Show when={section() === "ui"}>

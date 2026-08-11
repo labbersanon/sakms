@@ -26,12 +26,10 @@ import (
 	"github.com/labbersanon/sakms/internal/gemini"
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/jellyfin"
-	"github.com/labbersanon/sakms/internal/nzbget"
 	"github.com/labbersanon/sakms/internal/ollama"
 	"github.com/labbersanon/sakms/internal/openai"
 	"github.com/labbersanon/sakms/internal/plex"
 	"github.com/labbersanon/sakms/internal/prowlarr"
-	"github.com/labbersanon/sakms/internal/qbittorrent"
 	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/servarr"
 	"github.com/labbersanon/sakms/internal/serviceconn"
@@ -227,15 +225,6 @@ type Session struct {
 	// isn't configured. Consumers must nil-check before use, same as Identify.
 	Prowlarr *prowlarr.Client
 
-	// QBittorrent and NZBGet remain as generic, still-valid capability (same
-	// precedent as internal/servarr keeping Radarr/Sonarr/Whisparr after
-	// their eliminations) — but Build no longer constructs them: the unified
-	// downloader (Downloader below) owns the actual download now, so these
-	// stay nil for every session. Kept because callers must not assume they
-	// disappeared, and a future usenet backend could reuse NZBGet.
-	QBittorrent *qbittorrent.Client
-	NZBGet      *nzbget.Client
-
 	// Downloader is the process-lifetime unified download engine
 	// (anacrolix/torrent in-process BitTorrent — internal/downloader),
 	// injected as the same singleton into every session, not built per-request
@@ -244,7 +233,7 @@ type Session struct {
 	Downloader *downloader.Manager
 
 	// TMDB backs the Discover browse view — same "global, tolerant" rule as
-	// Prowlarr/QBittorrent/NZBGet above.
+	// Prowlarr above.
 	TMDB *tmdb.Client
 
 	// TVDB is TheTVDB's v4 client, used as a search fallback in Movies/Series
@@ -475,25 +464,19 @@ func Build(ctx context.Context, store *connections.Store, scStore *serviceconn.S
 	return sess, nil
 }
 
-// buildSearchPipeline populates sess.Prowlarr/QBittorrent/NZBGet/TMDB from
-// whatever of those four connections exist — every one tolerant, since a
-// usenet-only or torrent-only install won't have all three download-side
-// connections, and TMDB's Discover browse view is a separate concern again
-// (usable even before any indexer/download client is set up; search itself
-// can still list results even before any download client is set up — grab
-// just isn't possible yet). A real store error still propagates.
+// buildSearchPipeline populates sess.Prowlarr/TMDB/TVDB from whatever of
+// those three connections exist — every one tolerant, since an install that
+// has not set up an indexer yet still needs the rest, and TMDB's Discover
+// browse view is a separate concern again (usable even before any indexer is
+// set up; search itself can still list results even before Prowlarr is
+// configured — grab just isn't possible yet). A real store error still
+// propagates.
 func buildSearchPipeline(ctx context.Context, store *connections.Store, httpClient *http.Client, sess *Session) error {
 	if conn, err := optionalConn(ctx, store, "prowlarr"); err != nil {
 		return err
 	} else if conn != nil {
 		sess.Prowlarr = prowlarr.New(prowlarr.Config{BaseURL: conn.URL, APIKey: conn.APIKey}, httpClient)
 	}
-
-	// qBittorrent/NZBGet are no longer constructed here — the unified aria2c
-	// downloader (sess.Downloader, injected above) owns the actual download
-	// now. The clients (and their packages) are retained as generic
-	// capability but have no live caller, exactly the internal/servarr
-	// precedent.
 
 	if conn, err := optionalConn(ctx, store, "tmdb"); err != nil {
 		return err

@@ -536,7 +536,7 @@ func TestPreReleaseRequest_ReClickResurrectsATerminallyFailedRequest(t *testing.
 	// Step 1 — it promotes and dispatches. Exactly what releaseDueGrabs does on a
 	// successful promotion.
 	if err := grabsStore.Relaunch(ctx, first.GrabID, grabs.Dispatch{
-		Indexer: "I", Protocol: "usenet", DownloadClient: "nzbget",
+		Indexer: "I", Protocol: "usenet", DownloadClient: "nntp",
 		RootFolderPath: "/movies", DownloadURL: "https://x/1.nzb", GID: "gid-42",
 	}); err != nil {
 		t.Fatalf("promoting/dispatching: %v", err)

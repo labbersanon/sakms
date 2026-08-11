@@ -28,8 +28,8 @@ import (
 // Reason: it used to also seed the usenet Manager's connection count
 // (cmd/sakms/main.go's old buildUsenetManager), which collided with the new
 // per-subscription MaxConns field once multiple Usenet subscriptions were
-// possible. Usenet connection counts are now configured per-subscription in
-// the Usenet settings page, with internal/usenet's defaultMaxConnsPerServer
+// possible. Usenet connection counts are now configured per-subscription on
+// the Settings → Download → Usenet page, with internal/usenet's defaultMaxConnsPerServer
 // covering an unset value — this setting no longer has any effect on Usenet.
 // Troubleshooting: a Usenet connection-count change here doing nothing.
 // Review if: this comment predates a future Downloader settings UI, which

@@ -7150,3 +7150,138 @@ the scheduler count is unchanged). The two decisions a future session must
 not reverse — the forbidden route shape and the unmuted divergence — are
 recorded in the code they govern instead, where someone about to break them
 will actually be reading.
+
+
+---
+
+## 2026-08-10 — Settings > Download tab consolidation + qBittorrent/NZBGet removal
+
+Two outcomes, one feature. Spec `.omc/specs/deep-interview-download-settings-consolidation.md`,
+plan `.omc/plans/autopilot-impl-download-settings-consolidation.md`.
+
+### 1. Settings > Download tab
+
+The standalone **Usenet** and **Torrent** top-level Settings tabs are folded into one
+**Download** tab, with Usenet (first/default) and Torrent as sub-tabs. `SECTION_TABS` goes
+11 entries -> 10: `{ id: "download" }` takes the slot `usenet` held, and `torrent` is removed
+outright rather than repositioned. `library` is still the default tab.
+
+`UsenetSection` and `TorrentSection` are reused **unmodified** — this is a re-parenting, not a
+rewrite. Both files' diffs are their opening header sentence and nothing else; every "this page
+must never grow" invariant below those headers is untouched.
+
+**The sub-tab bar is a plain `ScreenTabBar`, never `ScreenTabs`/`useScreenTabs`.** The app shell
+has ONE global tab-bar slot, already held by Settings' own `SECTION_TABS`; a second-level
+`ScreenTabs` would overwrite the section tabs the moment Download mounts. This is the same rule,
+for the same reason, as `UI.tsx`'s Mainstream/Adult switch — Settings now has TWO second-level
+tab bars, and `Settings.test.tsx`'s shell-slot suite was extended with a Download-specific
+regression case (the only thing that would catch a future swap to `ScreenTabs`).
+
+**`DownloadSection` adds NO `SectionSave`**, deliberately: `UsenetSection` and `TorrentSection`
+each provide their own, and a wrapper would nest a second `SectionSaveContext` and half-batch
+both panels. Relatedly, the sub-tabs are a `<Switch>` (one panel mounted at a time), NOT a
+CSS-hidden `<Show>` — `SectionSave` renders its "Save" button unconditionally, so keeping both
+panels mounted would put **two** buttons named "Save" on the tab, which
+`Settings.test.tsx`'s unscoped `clickSectionSave` throws on.
+
+### 2. qBittorrent/NZBGet removed — REVERSING a documented 2026-07-18 decision
+
+`internal/qbittorrent/` and `internal/nzbget/` are **deleted outright**. This is **not**
+"consistent with the existing convention" — it is a deliberate reversal of two documented
+keep-for-precedent decisions, made on Wade's explicit instruction that they "should be removed
+from codebase." Both superseded comments are quoted here verbatim, because they are being
+deleted from the tree and this entry becomes the only surviving record:
+
+> `internal/mode/mode.go:230-235`: *"QBittorrent and NZBGet remain as generic, still-valid
+> capability (same precedent as internal/servarr keeping Radarr/Sonarr/Whisparr after their
+> eliminations) — but Build no longer constructs them: the unified downloader (Downloader below)
+> owns the actual download now, so these stay nil for every session. Kept because callers must
+> not assume they disappeared, and a future usenet backend could reuse NZBGet."*
+
+> `internal/api/connections.go:105-108`: *"internal/qbittorrent and internal/nzbget are kept as
+> generic capability (their testQBittorrent/testNZBGet helpers stay for potential reuse) but no
+> live connection type reaches them."*
+
+**`internal/servarr` is NOT affected and must not be swept up in a future pass.** The distinction
+is real: `internal/servarr` is a *multi-service client library* whose Radarr/Sonarr/Whisparr
+support is a coherent, reusable API surface against products that still exist and that SAK could
+re-integrate. `internal/qbittorrent`/`internal/nzbget` were *single-purpose download-client
+adapters* for a dispatch path that is structurally gone — `dispatchToDownloadClient`
+(`internal/api/search.go`) has exactly two branches, `anacrolix` (torrent) and `nntp` (usenet),
+and there is no third. Re-adding one would need new wiring, not an un-deleted package.
+
+**Deleting rows is not enough, so the write path was closed too.** `upsertConnectionHandler`
+takes an arbitrary `PathValue("service")` and `connections.Store` accepts any key generically, so
+`PUT /api/connections/qbittorrent` would still have written a row nothing reads. New
+`removedConnectionServices` + `rejectRemovedConnectionService` (`internal/api/handler.go`) close
+it — a deliberate SIBLING of `movedConnectionServices` rather than a reuse, because that one's
+message names a replacement endpoint, which would be actively false here. `deleteConnectionHandler`
+is deliberately left OPEN (DELETE is the operator's cleanup escape hatch for a legacy row).
+
+### 3. Three spec corrections, recorded because the spec alone would make this look wrong
+
+The spec's Constraint 5 / AC 7 said *"any existing `service_connections` row with
+`kind IN ('qbittorrent', 'nzb')` must be deleted via a new DB migration."* That is wrong on all
+three of table, value, and migration number. The implementation follows the corrected form:
+
+1. **Wrong table.** `service_connections.kind` has only ever accepted `'usenet'`/`'player'` —
+   `internal/serviceconn.ErrInvalidKind` enforces it on every write, so that table has never held
+   such a row. qBittorrent/NZBGet rows lived in the singleton **`connections`** table
+   (`service TEXT PRIMARY KEY`). Corrected target:
+   `DELETE FROM connections WHERE service IN ('qbittorrent', 'nzbget');`
+2. **Wrong value.** `'nzb'` appears nowhere in the repo as a service or kind. The string is
+   `nzbget`. (`nzb-` is an unrelated download-GID prefix and was not touched.)
+3. **Wrong migration number.** The repo went Postgres-only on 2026-08-04; the live embedded chain
+   is `0001`-`0006`, so the new file is **`0007_drop_qbittorrent_nzbget_connections.sql`** in
+   `internal/db/migrations/`, Postgres dialect. Nothing was added to
+   `migrations_sqlite_archive/` (frozen, not embedded).
+
+### 4. Fixture values corrected to what the code actually returns
+
+`DownloadClient` fixtures across the suite said `"qbittorrent"`/`"nzbget"` — values
+`dispatchToDownloadClient` has not returned since 2026-07-18. They are now `"anacrolix"` (torrent)
+and `"nntp"` (usenet). These are inert display/round-trip fixtures (nothing branches on the
+value), so every one of them compiled and passed before — nothing would have caught a missed site.
+
+### 5. Live user-facing strings that named the old nav path
+
+Two were **live 400 response bodies with zero test coverage**: `internal/api/search.go`'s
+"add a Usenet subscription on the Settings → Usenet page…" and `movedConnectionServices`'
+`"nntp"` value, which is interpolated into `rejectMovedConnectionService`'s 400 body. Both now
+say **Settings → Download → Usenet**. `Library.tsx`'s season-monitoring copy and
+`Library.test.tsx`'s assertion of it were updated in lockstep.
+
+### Tests
+
+`internal/mode/mode_test.go`: **three tests NARROWED, none deleted.**
+`TestBuild_SearchPipeline_PopulatedWhenConfigured` was renamed to
+`..._ProwlarrPopulatedWhenConfigured` and narrowed rather than removed, because its
+`sess.Prowlarr == nil` check is the **only positive "Build constructs a Prowlarr client"**
+assertion in the repo — the two sibling tests that look like coverage both assert Prowlarr is
+NIL. Deleting it would have left `go test ./...` green while silently dropping that coverage.
+
+`Discover.grab.test.tsx`: **both** qbittorrent and nzbget `it` blocks deleted (there were two,
+not one), each with its own `stubFetch`/netscan stub; the Prowlarr tests' stubs are untouched.
+`Settings.test.tsx`: new `goToDownloadSubTab` helper + 12 retargeted call sites, the tab-structure
+test rewritten, and a new `/api/downloader/config` branch in `defaultGet` — without which the
+Torrent sub-tab assertion would render "Loading torrent settings…" forever and pass hollow.
+
+### Deliberately NOT touched
+
+- **`internal/netscan/`** — it imports neither deleted package; it holds only service-name strings
+  and hand-rolled HTTP probes, i.e. the generic-capability precedent, and
+  `WEBHOOK_DISCOVERY_SERVICES` must mirror `knownServices` exactly.
+- **`internal/apidto`** — no DTO type or field is qbittorrent/nzbget-specific; the only mention is
+  `NetscanFinding`'s doc comment mirroring unchanged netscan. No `gendto` run needed.
+- **`docs/ROADMAP.md`** — verified: its Unified-downloader entry already reads "fully shipped."
+- **`internal/grabs/grabs.go`'s `ClientRef`/`DownloadGID` docs** and
+  **`internal/downloader/downloader.go`'s "qBittorrent-class clients"** comparative note —
+  historical explanations of why fields exist / how a ratio is computed, not dependencies.
+- **`docs/research-nzb-implementation.md`** — a dated research document; historical, never
+  retro-edited.
+
+### Open follow-up
+
+**`README.md:127, 134, 210`** still describe the pre-2026-07-18 architecture (and still describe
+Whisparr as live). Left out of scope deliberately: fixing three sentences inside a section that is
+wrong for several unrelated reasons produces a half-true README and hides the real staleness.

@@ -34,9 +34,9 @@ func fakeTMDBMovieRuntime(t *testing.T, runtimeMinutes int) *httptest.Server {
 }
 
 // TestAutoGrabHandler_Movies_QualifiedGrabsExactlyOne is the qualified path:
-// a healthy, high-bitrate release clears the floor, so auto-grab sends it to
-// qBittorrent (exactly once — the backend no-bulk proof) and records exactly
-// one grab. No manual release-pick happens; that is the whole point.
+// a healthy, high-bitrate release clears the floor, so auto-grab dispatches it
+// to the download engine (exactly once — the backend no-bulk proof) and records
+// exactly one grab. No manual release-pick happens; that is the whole point.
 func TestAutoGrabHandler_Movies_QualifiedGrabsExactlyOne(t *testing.T) {
 	dl := newTestDownloader("gid-auto", t.TempDir())
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100) // 100 min = 6000 s

@@ -91,9 +91,11 @@ export const ConnectionRow: Component<{
   // needsUsername is always false here: no SINGLETON service authenticates with
   // username+password any more. nntp, the only one that ever did, moved to the
   // multi-connection registry with migration 0053 and has its own richer form on
-  // the Usenet settings page. buildConnectionUpsertBody still TAKES the flag —
-  // Discover's GrabDialog passes true for qbittorrent/nzbget — so only this
-  // row's answer to it is fixed, not the helper's contract.
+  // the Settings → Download → Usenet page. buildConnectionUpsertBody still TAKES
+  // the flag — no application caller passes true as of 2026-08-10 (Discover's
+  // GrabDialog was the last, for qbittorrent/nzbget, both since removed), but
+  // the helper's own contract test covers the true branch — so only this row's
+  // answer to it is fixed, not the helper's contract.
   const body = () =>
     buildConnectionUpsertBody({
       url: url(),

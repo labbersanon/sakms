@@ -857,9 +857,9 @@ func TestBuild_KidsRootPath_NotApplicableToAdult(t *testing.T) {
 	}
 }
 
-// TestBuild_DownloadPipeline_NilWhenUnconfigured confirms all four of
-// Prowlarr/QBittorrent/NZBGet/TMDB stay nil when none of their connections
-// are set up — search/grab/discover simply aren't possible yet, not an error.
+// TestBuild_DownloadPipeline_NilWhenUnconfigured confirms both of
+// Prowlarr/TMDB stay nil when neither of their connections is set up —
+// search/grab/discover simply aren't possible yet, not an error.
 func TestBuild_DownloadPipeline_NilWhenUnconfigured(t *testing.T) {
 	store, settingsStore := newTestStores(t)
 	ctx := context.Background()
@@ -871,25 +871,26 @@ func TestBuild_DownloadPipeline_NilWhenUnconfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sess.Prowlarr != nil || sess.QBittorrent != nil || sess.NZBGet != nil || sess.TMDB != nil {
-		t.Errorf("expected all four search-pipeline clients to be nil, got Prowlarr=%v QBittorrent=%v NZBGet=%v TMDB=%v",
-			sess.Prowlarr, sess.QBittorrent, sess.NZBGet, sess.TMDB)
+	if sess.Prowlarr != nil || sess.TMDB != nil {
+		t.Errorf("expected both search-pipeline clients to be nil, got Prowlarr=%v TMDB=%v",
+			sess.Prowlarr, sess.TMDB)
 	}
 }
 
-// TestBuild_SearchPipeline_PopulatedWhenConfigured confirms Prowlarr is
-// populated when configured, and — post unified-downloader — that
-// QBittorrent/NZBGet stay nil even when a qbittorrent connection exists,
-// because Build no longer constructs them (the aria2c Downloader replaced
-// them; the fields are retained only as generic capability). The injected
-// Downloader pointer is passed straight through.
-func TestBuild_SearchPipeline_PopulatedWhenConfigured(t *testing.T) {
+// TestBuild_SearchPipeline_ProwlarrPopulatedWhenConfigured confirms Prowlarr
+// is populated when its connection is configured, and that TMDB stays nil
+// when its own is not — the two halves of buildSearchPipeline's per-connection
+// tolerance.
+//
+// This is the ONLY positive "Build actually constructs a Prowlarr client"
+// assertion in the repo: every other Prowlarr check in this file
+// (TestBuild_DownloadPipeline_NilWhenUnconfigured,
+// TestBuild_TMDB_PopulatedWhenConfigured) asserts the client is NIL. Deleting
+// this test would silently drop that coverage and leave go test green.
+func TestBuild_SearchPipeline_ProwlarrPopulatedWhenConfigured(t *testing.T) {
 	store, settingsStore := newTestStores(t)
 	ctx := context.Background()
 	if err := store.Upsert(ctx, "prowlarr", "http://prowlarr.local:9696", "prowlarr-key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := store.UpsertWithUsername(ctx, "qbittorrent", "http://qbt.local:8080", "wade", "hunter2"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -899,12 +900,6 @@ func TestBuild_SearchPipeline_PopulatedWhenConfigured(t *testing.T) {
 	}
 	if sess.Prowlarr == nil {
 		t.Error("expected Prowlarr to be populated")
-	}
-	if sess.QBittorrent != nil {
-		t.Error("expected QBittorrent to stay nil — Build no longer constructs it (aria2 replaced it)")
-	}
-	if sess.NZBGet != nil {
-		t.Error("expected NZBGet to stay nil — Build no longer constructs it (aria2 replaced it)")
 	}
 	if sess.TMDB != nil {
 		t.Error("expected TMDB to stay nil — not configured in this test")
@@ -931,7 +926,7 @@ func TestBuild_TMDB_PopulatedWhenConfigured(t *testing.T) {
 	if sess.TMDB == nil {
 		t.Error("expected TMDB to be populated")
 	}
-	if sess.Prowlarr != nil || sess.QBittorrent != nil || sess.NZBGet != nil {
+	if sess.Prowlarr != nil {
 		t.Error("expected the download-side clients to stay nil — not configured in this test")
 	}
 }

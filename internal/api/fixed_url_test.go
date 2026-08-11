@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -40,7 +41,7 @@ func TestUpsertConnection_NonFixedURLServiceRequiresURL(t *testing.T) {
 	defer srv.Close()
 
 	key := "some-api-key"
-	for _, service := range []string{"prowlarr", "qbittorrent", "jellyfin", "stash", "ollama"} {
+	for _, service := range []string{"prowlarr", "jellyfin", "stash", "ollama"} {
 		body, _ := json.Marshal(upsertConnectionRequest{APIKey: &key})
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/connections/"+service, bytes.NewReader(body))
 		resp, err := http.DefaultClient.Do(req)
@@ -51,6 +52,51 @@ func TestUpsertConnection_NonFixedURLServiceRequiresURL(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("expected 400 saving %s without a url, got %d", service, resp.StatusCode)
 		}
+	}
+}
+
+// TestUpsertConnection_RejectsRemovedDownloadClientServices confirms
+// PUT /api/connections/{qbittorrent,nzbget} is refused with 400, naming the
+// removed clients — the write-path half of the 2026-08-10 removal
+// (removedConnectionServices/rejectRemovedConnectionService, handler.go).
+// Deleting the connections table's existing rows (migration 0007) isn't
+// enough on its own: connections.Store accepts any service key generically,
+// so without this guard a stale frontend or a saved curl one-liner could
+// still write a row nothing reads. Mirrors TestConnectionsRoutes_RejectMovedServices'
+// coverage of the sibling movedConnectionServices guard.
+func TestUpsertConnection_RejectsRemovedDownloadClientServices(t *testing.T) {
+	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	key := "some-api-key"
+	for _, service := range []string{"qbittorrent", "nzbget"} {
+		body, _ := json.Marshal(upsertConnectionRequest{URL: "http://moved:1234", APIKey: &key})
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/connections/"+service, bytes.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT %s failed: %v", service, err)
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 for removed service %s, got %d: %s", service, resp.StatusCode, respBody)
+		}
+		if !bytes.Contains(respBody, []byte("no longer supported")) {
+			t.Errorf("expected rejection to explain %s is no longer supported, got %q", service, respBody)
+		}
+	}
+
+	// A surviving singleton service is unaffected by the guard.
+	body, _ := json.Marshal(upsertConnectionRequest{URL: "http://prowlarr:9696", APIKey: &key})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/connections/prowlarr", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT prowlarr failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("expected the guard to leave prowlarr alone, got %d", resp.StatusCode)
 	}
 }
 

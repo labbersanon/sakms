@@ -152,11 +152,12 @@ export const LIBRARY_MODE_SERVICES: Record<Mode, string[]> = {
 // internal/library's package doc). qbittorrent/nzbget were also removed
 // (2026-07-18): the unified aria2c downloader replaced them as SAK's download
 // engine, so there's no external download-client connection to configure — the
-// engine's tunables live in the Downloader settings section instead.
+// engine's tunables live in the Settings → Download section instead.
 // nntp and jellyfin are gone too (migration 0053): Usenet subscriptions and
 // media players are the two classes an operator can have MORE THAN ONE of, so
 // they moved to the `service_connections` registry and are configured on the
-// Usenet page / the API Connections player list rather than as a singleton row.
+// Settings → Download → Usenet page / the API Connections player list rather
+// than as a singleton row.
 // The AI providers (ollama/openai/gemini/anthropic) and Brave web-search
 // grounding are deliberately NOT here — they live in the AI tab instead
 // (rendered via the same ConnectionRow so their save path stays identical),

@@ -1,5 +1,5 @@
 // Usenet auto-grab toggle data access — the one global setting behind the
-// Usenet settings page's "Enable auto-grab" switch.
+// Settings -> Download -> Usenet page's "Enable auto-grab" switch.
 //
 // Kept out of api/settings.ts deliberately: that module is the singleton
 // `connections` + per-mode settings surface, and this key belongs to the Usenet
@@ -20,7 +20,8 @@
 // A GET/PUT /api/settings/usenet-retry-interval pair also exists, for
 // parity/diagnostics only. It is deliberately NOT wrapped here: there is no
 // user-facing interval control (the toggle owns the cadence), and the 24-hour
-// figure the Usenet page states is fixed copy, not a fetched value. Adding a
+// figure the Settings -> Download -> Usenet page states is fixed copy, not a
+// fetched value. Adding a
 // client for it would be an unused export, and a writable one would break the
 // single-source-of-truth coupling above.
 

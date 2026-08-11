@@ -196,7 +196,7 @@ func TestBackfillGrabRecordDoesNotResolveTier(t *testing.T) {
 
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO grabs (mode, title, tmdb_id, quality_profile_id, indexer, protocol, download_client, root_folder_path)
-		VALUES ('movies', 'The Movie', 99, 0, 'someindexer', 'torrent', 'qbittorrent', ?)
+		VALUES ('movies', 'The Movie', 99, 0, 'someindexer', 'torrent', 'anacrolix', ?)
 	`, root); err != nil {
 		t.Fatalf("seeding grab: %v", err)
 	}

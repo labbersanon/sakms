@@ -70,7 +70,7 @@ function defaultGet(url: string): Response | undefined {
   // The auto-grab toggle's own setting. Answered as OFF here because off IS the
   // default and the whole point (a staged-for-approval exception must never be
   // on unless an operator turned it on). Before this line existed, a GET here
-  // fell through to the 204 default -> api() returns null -> the Usenet page's
+  // fell through to the 204 default -> api() returns null -> the Usenet sub-tab's
   // fetchUsenetAutoGrabEnabled threw on null.enabled and every test rendered the
   // toggle in its load-error state; the load-error tests below now opt INTO
   // that with an explicit error override instead.
@@ -182,6 +182,26 @@ function defaultGet(url: string): Response | undefined {
     url.includes("/api/settings/dedup-scan-interval")
   )
     return jsonResponse({ intervalSeconds: 86400 });
+  // Claude 2026-08-10: TorrentSettingsCard's onMount GET, needed once Torrent
+  // became a sub-tab of Download (plan §3.3). Without it config() stays null
+  // and the Torrent panel renders "Loading torrent settings…" forever — so any
+  // assertion on that panel would pass while exercising nothing. Field set
+  // mirrors settings/Torrent.test.tsx's FIXTURE (all distinctive non-defaults).
+  if (url.includes("/api/downloader/config"))
+    return jsonResponse({
+      stagingDir: "/data/staging",
+      maxConcurrent: 7,
+      maxConnections: 11,
+      downloadRateLimitBytes: 5 * 1024 * 1024,
+      dhtEnabled: false,
+      pexEnabled: false,
+      listenPort: 51413,
+      obfuscationMode: "require",
+      seedingEnabled: true,
+      seedRatioLimit: 2.5,
+      seedDurationMinutes: 2880,
+      staleThresholdMinutes: 240,
+    });
   // FolderPicker's as-you-type fetch; the empty-path case returns the fixed
   // browsable roots, matching the real backend.
   if (url.includes("/api/browse"))
@@ -269,19 +289,35 @@ const goToSection = (
     | "Auth"
     | "AI"
     | "Library"
-    | "Usenet"
+    | "Download"
     | "Advanced"
     | "UI"
     | "Pruning"
     | "Organize",
 ) => fireEvent.click(sectionTabBar().getByRole("button", { name }));
 
+// goToDownloadSubTab navigates to the Download section tab and then clicks one
+// of its inner Usenet/Torrent sub-tabs. The sub-tab bar is a plain ScreenTabBar
+// rendered in the BODY (see settings/Download.tsx), so it is deliberately NOT
+// scoped to sectionTabBar() — that scope holds only the shell-registered
+// section tabs. Usenet is the default sub-tab, so the click is a no-op for it
+// and is issued anyway, to keep every call site honest about which panel it
+// expects. Safe despite the "Usenet" collision the comment above warns about
+// (it is also a quality-prefs protocol pill): that pill is on the Library tab,
+// which is unmounted once Download is active.
+const goToDownloadSubTab = (name: "Usenet" | "Torrent") => {
+  goToSection("Download");
+  fireEvent.click(screen.getByRole("button", { name }));
+};
+
 // clickSectionSave clicks the one section-level Save button per tab. The batched-
 // save refactor consolidated the former per-row / per-card Save buttons into it.
 // Only usable on a tab that renders exactly ONE Save button (AI, Library, and
-// Usenet — UsenetSection wraps BOTH its cards in one SectionSave, and every child
-// there is batched, so neither the subscription rows nor the auto-grab toggle
-// renders a Save of its own). The Advanced tab has several, so its connection
+// Download — UsenetSection wraps BOTH its cards in one SectionSave, and every
+// child there is batched, so neither the subscription rows nor the auto-grab
+// toggle renders a Save of its own. Download shows exactly one because its
+// Usenet/Torrent sub-tabs are a <Switch>: only the active panel, hence only its
+// own SectionSave, is ever mounted). The Advanced tab has several, so its connection
 // rows use clickAPISectionSave / clickMediaPlayersSave below.
 const clickSectionSave = () =>
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -2592,14 +2628,31 @@ describe("Section tabs", () => {
     expect(screen.queryByRole("button", { name: "Connections" })).toBeNull();
   });
 
-  it("Usenet is its own top-level tab", async () => {
+  it("Download is its own top-level tab, with Usenet and Torrent as sub-tabs", async () => {
     stubFetch();
     renderSettings();
-    goToSection("Usenet");
+    // Usenet and Torrent are no longer top-level section tabs; Download took
+    // the slot Usenet held and Torrent's slot is gone entirely.
+    expect(sectionTabBar().queryByRole("button", { name: "Usenet" })).toBeNull();
+    expect(sectionTabBar().queryByRole("button", { name: "Torrent" })).toBeNull();
+    expect(sectionTabBar().getByRole("button", { name: "Download" })).toBeInTheDocument();
+
+    // Usenet is the default sub-tab, so clicking Download alone renders it.
+    goToSection("Download");
     expect(await screen.findByText("Subscriptions")).toBeInTheDocument();
     expect(screen.getByText("Auto-grab")).toBeInTheDocument();
     // Library is no longer mounted.
     expect(screen.queryByLabelText("Library root folder")).toBeNull();
+
+    // The Torrent sub-tab swaps the panel. Asserted on a REAL rendered control
+    // rather than the "Torrent behavior" Card title: the title would render even
+    // while the config fetch is unresolved and the body says "Loading torrent
+    // settings…", making the assertion hollow (defaultGet answers
+    // /api/downloader/config for exactly this reason).
+    fireEvent.click(screen.getByRole("button", { name: "Torrent" }));
+    expect(await screen.findByLabelText("Staging directory")).toBeInTheDocument();
+    // <Switch> unmounts the inactive sub-tab, so Usenet's content is gone.
+    expect(screen.queryByText("Subscriptions")).toBeNull();
   });
 
   it("UI tab shows the Discover subsection with Mainstream/Adult sub-tabs, plus Trakt, hiding Library", async () => {
@@ -2708,11 +2761,13 @@ describe("Section tabs", () => {
   });
 });
 
-// --- UI tab's inner tab bar must not steal the shell's tab slot ------------
+// --- inner tab bars must not steal the shell's tab slot --------------------
 //
 // The regression this guards: Settings' own SECTION_TABS register with the app
-// shell's single global tab slot (ScreenTabsContext). The UI tab's inner
-// Mainstream/Adult switch is deliberately a plain ScreenTabBar, NOT ScreenTabs —
+// shell's single global tab slot (ScreenTabsContext). Settings has TWO
+// second-level tab bars — the UI tab's Mainstream/Adult switch and (since
+// 2026-08-10) the Download tab's Usenet/Torrent switch. Both are deliberately a
+// plain ScreenTabBar, NOT ScreenTabs —
 // if it were ScreenTabs it would call the shell's registration setter and
 // REPLACE the section tabs with Mainstream/Adult, wiping Settings' top-level nav.
 // A bare render() can't catch this (with no shell context ScreenTabs falls back
@@ -2721,7 +2776,7 @@ describe("Section tabs", () => {
 // registered tab set in the shell's slot — and asserts that slot keeps holding
 // the section tabs even after the inner sub-tab is clicked.
 
-describe("UI tab — inner Discover sub-tabs do not hijack the shell tab slot", () => {
+describe("second-level sub-tabs do not hijack the shell tab slot", () => {
   // renderSettingsInShell mirrors AppShell's ShellRoot: it provides the
   // ScreenTabsContext setter and renders whatever tab set is registered inside a
   // testid'd container (the shell's one slot). Assertions scoped to that
@@ -2761,7 +2816,7 @@ describe("UI tab — inner Discover sub-tabs do not hijack the shell tab slot", 
     // own (the UI tab's Mainstream/Adult bar, the Library/Advanced mode
     // selector) whose buttons an unscoped query could pick up.
     expect(
-      await shellSlot().findByRole("button", { name: "Usenet" }),
+      await shellSlot().findByRole("button", { name: "Download" }),
     ).toBeInTheDocument();
     expect(shellSlot().getByText("UI")).toBeInTheDocument();
     expect(shellSlot().getByText("Library")).toBeInTheDocument();
@@ -2787,15 +2842,55 @@ describe("UI tab — inner Discover sub-tabs do not hijack the shell tab slot", 
     // Shell slot still holds the section tabs, unchanged...
     expect(shellSlot().getByText("UI")).toBeInTheDocument();
     expect(shellSlot().getByText("Library")).toBeInTheDocument();
-    expect(shellSlot().getByText("Usenet")).toBeInTheDocument();
+    expect(shellSlot().getByText("Download")).toBeInTheDocument();
     // ...and never adopted the inner sub-tab labels.
     expect(shellSlot().queryByText("Mainstream")).toBeNull();
+  });
+
+  // The Download tab's Usenet/Torrent switch is the SECOND second-level tab bar
+  // in Settings, added 2026-08-10 when the standalone Usenet and Torrent tabs
+  // were folded into one Download tab. It is a plain ScreenTabBar for exactly
+  // the same reason UISection's is, so it needs exactly the same guard: this is
+  // the only test that would catch a future refactor swapping it for
+  // ScreenTabs, which would wipe Settings' top-level nav the moment Download
+  // mounts.
+  it("keeps the section tabs in the shell slot when the inner Usenet/Torrent sub-tab changes", async () => {
+    stubFetch();
+    const { getByTestId } = renderSettingsInShell();
+    const shellSlot = () => within(getByTestId("shell-slot"));
+
+    // The shell slot holds Download, and never the inner sub-tab labels.
+    expect(
+      await shellSlot().findByRole("button", { name: "Download" }),
+    ).toBeInTheDocument();
+    expect(shellSlot().queryByText("Usenet")).toBeNull();
+    expect(shellSlot().queryByText("Torrent")).toBeNull();
+
+    // Navigate to Download via the shell-registered section tab. Its inner
+    // Usenet/Torrent bar mounts in the body, NOT the shell slot.
+    fireEvent.click(shellSlot().getByText("Download"));
+    await screen.findByText("Subscriptions");
+    expect(shellSlot().getByText("Library")).toBeInTheDocument();
+    expect(shellSlot().queryByText("Usenet")).toBeNull();
+
+    // The load-bearing click: switching the INNER sub-tab must not touch the
+    // shell registration. Asserted against a real rendered Torrent control, not
+    // the card title, so an unresolved config fetch can't make it pass hollow.
+    fireEvent.click(screen.getByRole("button", { name: "Torrent" }));
+    expect(await screen.findByLabelText("Staging directory")).toBeInTheDocument();
+    // Shell slot still holds the section tabs, unchanged...
+    expect(shellSlot().getByText("Library")).toBeInTheDocument();
+    expect(shellSlot().getByText("Download")).toBeInTheDocument();
+    expect(shellSlot().getByText("UI")).toBeInTheDocument();
+    // ...and still never adopted the inner sub-tab labels.
+    expect(shellSlot().queryByText("Usenet")).toBeNull();
+    expect(shellSlot().queryByText("Torrent")).toBeNull();
   });
 });
 
 // --- No bulk actions (Acceptance Criterion 6) ------------------------------
 
-// --- Usenet page: multi-subscription CRUD (AC 10) --------------------------
+// --- Download > Usenet sub-tab: multi-subscription CRUD (AC 10) ------------
 //
 // The Usenet subscriptions half of the `service_connections` registry
 // (migration 0053), which replaced the singleton `connections` PRIMARY
@@ -2824,7 +2919,7 @@ describe("Usenet subscriptions — multi-subscription CRUD", () => {
   it("renders every configured subscription, each seeded from its own row", async () => {
     stubFetch(registryFetch(twoSubscriptions));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     const host1 = (await screen.findByLabelText(
       "Subscription 1 host",
     )) as HTMLInputElement;
@@ -2864,7 +2959,7 @@ describe("Usenet subscriptions — multi-subscription CRUD", () => {
     // "fixing" the missing reorder buttons.
     stubFetch(registryFetch(twoSubscriptions));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     await screen.findByLabelText("Subscription 1 host");
     expect(screen.getByText(/there is no priority order/i)).toBeInTheDocument();
     // No priority/order form control anywhere on the page...
@@ -2885,7 +2980,7 @@ describe("Usenet subscriptions — multi-subscription CRUD", () => {
   it("Add subscription POSTs the whole NNTP field set with a plain secret", async () => {
     const calls = stubFetch(registryFetch([]));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     // The empty-state copy confirms the list resolved before the Add form opens.
     expect(
       await screen.findByText("No subscriptions configured yet."),
@@ -2931,7 +3026,7 @@ describe("Usenet subscriptions — multi-subscription CRUD", () => {
   it("the batched Save PUTs only the edited subscription, to its own id route", async () => {
     const calls = stubFetch(registryFetch(twoSubscriptions));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     const host1 = (await screen.findByLabelText(
       "Subscription 1 host",
     )) as HTMLInputElement;
@@ -2961,7 +3056,7 @@ describe("Usenet subscriptions — multi-subscription CRUD", () => {
   it("Delete removes exactly the row it was clicked in", async () => {
     const calls = stubFetch(registryFetch(twoSubscriptions));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     await screen.findByLabelText("Subscription 1 host");
     const host2 = screen.getByLabelText("Subscription 2 host");
     // Delete/Test render once PER ROW — the scoped lookup is the whole point.
@@ -2997,7 +3092,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
   it("saving after editing ONLY the host OMITS secret from the PUT body", async () => {
     const calls = stubFetch(registryFetch([usenetConn()]));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     const host = (await screen.findByLabelText(
       "Subscription 1 host",
     )) as HTMLInputElement;
@@ -3016,7 +3111,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
   it("typing a password sends it as the replacement secret", async () => {
     const calls = stubFetch(registryFetch([usenetConn()]));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     const secret = await screen.findByLabelText("Subscription 1 password");
     fireEvent.input(secret, { target: { value: "rotated-pass" } });
     clickSectionSave();
@@ -3029,7 +3124,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
   it("typing then clearing the password sends an explicit empty secret (the deliberate clear)", async () => {
     const calls = stubFetch(registryFetch([usenetConn()]));
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     const secret = await screen.findByLabelText("Subscription 1 password");
     fireEvent.input(secret, { target: { value: "x" } });
     fireEvent.input(secret, { target: { value: "" } });
@@ -3047,7 +3142,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
       registryFetch([usenetConn({ hasSecret: false, secretSuffix: "" })]),
     );
     renderSettings();
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     const host = (await screen.findByLabelText(
       "Subscription 1 host",
     )) as HTMLInputElement;
@@ -3060,7 +3155,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
   });
 });
 
-// --- Usenet page: the auto-grab toggle (AC 12) -----------------------------
+// --- Download > Usenet sub-tab: the auto-grab toggle (AC 12) ---------------
 //
 // The UI surface of a deliberate staged-for-approval exception, so the copy is
 // as load-bearing as the behaviour and gets asserted alongside it.
@@ -3071,7 +3166,7 @@ describe("Usenet auto-grab toggle", () => {
   // fetched value once onMount's promise settles — so every caller below waits
   // on the specific state it cares about rather than reading it immediately.
   const goToUsenet = async () => {
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     return (await screen.findByLabelText(
       "Enable auto-grab",
     )) as HTMLInputElement;
@@ -3570,7 +3665,7 @@ describe("Trakt lives in UI -> Discover, not in any connections table", () => {
     expect(screen.queryByLabelText("Trakt client ID")).toBeNull();
     expect(screen.queryByText("Trakt (Watchlist)")).toBeNull();
 
-    goToSection("Usenet");
+    goToDownloadSubTab("Usenet");
     await screen.findByText("Subscriptions");
     expect(screen.queryByLabelText("Trakt client ID")).toBeNull();
 

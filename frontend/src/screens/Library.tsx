@@ -174,7 +174,7 @@ const PosterCard: Component<{
 const SEASON_UNMONITORED_COPY =
   "An unmonitored season is never searched automatically, no matter how long ago it aired.";
 const SEASON_AUTOGRAB_COPY =
-  "Monitoring a season does nothing until Settings → Usenet → Enable auto-grab is on, and that takes effect on restart.";
+  "Monitoring a season does nothing until Settings → Download → Usenet → Enable auto-grab is on, and that takes effect on restart.";
 
 // seasonLabel names season 0 "Specials". Season 0 is LISTED, not filtered out:
 // the backend's season set includes it, so hiding it would let "All seasons"

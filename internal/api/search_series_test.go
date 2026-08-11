@@ -16,7 +16,7 @@ import (
 )
 
 // TestCheckImportHandler_Series_SingleEpisode_PerformsImport mirrors
-// TestCheckImportHandler_QBittorrentCompleted_PerformsImport but for a
+// TestCheckImportHandler_TorrentCompleted_PerformsImport but for a
 // single-episode Series grab — no Sonarr involved anywhere.
 func TestCheckImportHandler_Series_SingleEpisode_PerformsImport(t *testing.T) {
 	dir := t.TempDir()

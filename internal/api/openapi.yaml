@@ -286,7 +286,7 @@ paths:
         required: true
         schema:
           type: string
-          enum: [prowlarr, qbittorrent, nzbget, jellyfin, stash, ollama, tpdb, stashdb, fansdb]
+          enum: [prowlarr, jellyfin, stash, ollama, tpdb, stashdb, fansdb]
     put:
       summary: Create or update a connection
       operationId: upsertConnection
@@ -633,7 +633,8 @@ paths:
       operationId: grab
       tags: [Search]
       description: |
-        Dispatches the release to qBittorrent (torrent) or NZBGet (usenet),
+        Dispatches the release to SAK's native torrent engine (torrent) or its
+        native NNTP client (usenet),
         records the grab, and fires the `grab.completed` webhook event.
       requestBody:
         required: true
@@ -698,7 +699,7 @@ tags:
   - name: Webhooks
     description: Outbound webhook subscription management. SAK fires a signed HTTP POST to subscribed endpoints after Rename/Purge/Dedup apply events and successful grabs.
   - name: Connections
-    description: External service connections (Prowlarr, qBittorrent, NZBGet, Jellyfin, Stash, Ollama, TPDB, StashDB, FansDB).
+    description: External service connections (Prowlarr, Jellyfin, Stash, Ollama, TPDB, StashDB, FansDB).
   - name: Rename
     description: Rename workflow — scan the library root folder for files that need renaming, review proposals, apply.
   - name: Purge

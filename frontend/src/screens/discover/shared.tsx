@@ -88,7 +88,7 @@ export const Modal: Component<{
 // Settings first", see internal/api/discover.go and adultdiscover.go) to
 // their fixed base URL (both are external APIs with one canonical endpoint,
 // not self-hosted — the operator only ever needs to supply a key, unlike
-// Prowlarr/qBittorrent/etc.) and the external page to obtain a key. TMDB's
+// Prowlarr/Stash/etc.) and the external page to obtain a key. TMDB's
 // is well-known and stable; TPDB's was confirmed directly by Wade
 // (2026-07-13) rather than guessed, since it isn't discoverable from a
 // plain page fetch (the site is JS-rendered).
@@ -393,20 +393,20 @@ export const SearchReleasePicker: Component<{
 };
 
 // MISSING_GRAB_SERVICE maps each backend "X isn't configured yet" error
-// auto-grab can hit to its setup form's shape — Prowlarr fails first
-// (autoGrabHandler's own check, internal/api/autograb.go) needing releases
-// to search for; qBittorrent/NZBGet fail later (dispatchToDownloadClient,
-// internal/api/search.go) once a release is picked and needs to actually be
-// sent somewhere. Prowlarr is a self-hosted single-key service (URL +
-// optional API key, like NOT_CONFIGURED_SERVICES above, just not a fixed
-// URL); qBittorrent/NZBGet authenticate with username+password instead, which
-// is why buildConnectionUpsertBody still takes a needsUsername flag even though
-// Settings' own ConnectionRow now always passes false — nntp, the last singleton
-// service that used a username, moved to the multi-connection registry with
-// migration 0053, and the SERVICES_WITH_USERNAME constant that named it was
-// deleted rather than left as an empty array.
+// auto-grab can hit to its setup form's shape. Prowlarr is the only one left:
+// it fails first (autoGrabHandler's own check, internal/api/autograb.go),
+// needing releases to search for, and is a self-hosted single-key service
+// (URL + optional API key, like NOT_CONFIGURED_SERVICES above, just not a
+// fixed URL).
+//
+// Claude 2026-08-10: the qbittorrent/nzbget entries were deleted with the
+// internal/qbittorrent and internal/nzbget packages — SAK owns downloads
+// natively, so there is no external download client left to prompt for. The
+// map is deliberately kept as a Record rather than collapsed into a bare
+// constant: GrabError is already generic over it, and a second entry would
+// return if another optional grab-time dependency is ever added.
 const MISSING_GRAB_SERVICE: Record<
-  "prowlarr" | "qbittorrent" | "nzbget",
+  "prowlarr",
   { label: string; needsUsername: boolean; wikiUrl?: string }
 > = {
   prowlarr: {
@@ -414,12 +414,10 @@ const MISSING_GRAB_SERVICE: Record<
     needsUsername: false,
     wikiUrl: "https://wiki.servarr.com/en/prowlarr",
   },
-  qbittorrent: { label: "qBittorrent", needsUsername: true },
-  nzbget: { label: "NZBGet", needsUsername: true },
 };
 
-// missingGrabService detects which (if any) of auto-grab's three optional
-// dependencies a failure is reporting missing, by matching the backend's
+// missingGrabService detects whether auto-grab's one optional dependency is
+// what a failure is reporting missing, by matching the backend's
 // fixed error string — returns undefined for any other error (a real
 // network/indexer failure, a 500, etc.), which GrabError falls back to a
 // bare ErrorText for instead of assuming it's a "go configure this" case.
@@ -429,8 +427,6 @@ function missingGrabService(
   const msg = (err as Error)?.message ?? "";
   if (!/isn't configured yet/i.test(msg)) return undefined;
   if (/\bprowlarr\b/i.test(msg)) return "prowlarr";
-  if (/\bqbittorrent\b/i.test(msg)) return "qbittorrent";
-  if (/\bnzbget\b/i.test(msg)) return "nzbget";
   return undefined;
 }
 

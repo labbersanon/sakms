@@ -814,7 +814,7 @@ func listConnectionsHandler(store *connections.Store) http.HandlerFunc {
 
 type upsertConnectionRequest struct {
 	URL      string `json:"url"`
-	Username string `json:"username,omitempty"` // only qbittorrent/nzbget use this
+	Username string `json:"username,omitempty"` // only nntp uses this (testNNTP)
 	// APIKey is a pointer so the handler can distinguish three states the UI
 	// needs to express (json.Decode sets it accordingly; omitempty only affects
 	// marshaling, not decoding): nil = field absent from the JSON entirely →
@@ -886,7 +886,7 @@ var fixedURLValues = map[string]string{
 // that has zero effect. Rejecting loudly, with the replacement endpoint named,
 // is the whole point.
 var movedConnectionServices = map[string]string{
-	"nntp":     "the Usenet settings page",
+	"nntp":     "the Settings → Download → Usenet page",
 	"jellyfin": "the Media Players settings page",
 }
 
@@ -902,6 +902,29 @@ func rejectMovedConnectionService(w http.ResponseWriter, service string) bool {
 	return true
 }
 
+// removedConnectionServices names the download-client services deleted on
+// 2026-08-10, when internal/qbittorrent and internal/nzbget were removed.
+// Same load-bearing reason as movedConnectionServices directly above: this
+// handler takes an arbitrary PathValue("service") and connections.Store
+// accepts any key generically, so without this a curl one-liner could still
+// PUT /api/connections/qbittorrent and write a row nothing reads.
+var removedConnectionServices = map[string]bool{"qbittorrent": true, "nzbget": true}
+
+// rejectRemovedConnectionService writes a 400 and reports true when service is
+// one of the removed download clients. Deliberately a sibling of
+// rejectMovedConnectionService rather than a reuse of it: that one's message
+// names a replacement endpoint ("use /api/service-connections"), which would be
+// actively false here — these were removed outright, not relocated.
+func rejectRemovedConnectionService(w http.ResponseWriter, service string) bool {
+	if !removedConnectionServices[service] {
+		return false
+	}
+	http.Error(w, service+" is no longer supported: SAK owns downloads natively "+
+		"(Settings > Download). There is no external download-client connection to configure.",
+		http.StatusBadRequest)
+	return true
+}
+
 // Claude 2026-08-03: added the discoverCache param + post-upsert
 // invalidation (BE-16, discover-scheduled-refresh plan §5.3's fourth
 // lifecycle gap).
@@ -914,6 +937,9 @@ func upsertConnectionHandler(store *connections.Store, discoverCache *discoverre
 	return func(w http.ResponseWriter, r *http.Request) {
 		service := r.PathValue("service")
 		if rejectMovedConnectionService(w, service) {
+			return
+		}
+		if rejectRemovedConnectionService(w, service) {
 			return
 		}
 		var req upsertConnectionRequest

@@ -1126,6 +1126,19 @@ above, so don't drop them for convenience:
   settings. Search/grab (Prowlarr + qBittorrent/NZBGet) and Discover
   (TMDB) are shared infrastructure, already live for both Movies and
   Series.
+  - **CORRECTED 2026-08-10 — the parenthetical above is doubly false, and both
+    halves were false for different reasons at different times.** The
+    superseded clause, quoted verbatim so a future session can find it:
+    *"Search/grab (Prowlarr + qBittorrent/NZBGet)"*. qBittorrent and NZBGet
+    stopped being SAK's download engine on **2026-07-18**, when the unified
+    native downloader (`internal/downloader`'s anacrolix torrent engine +
+    `internal/usenet`'s NNTP client) replaced them — that half was already
+    stale when written. As of **2026-08-10** the `internal/qbittorrent` and
+    `internal/nzbget` packages are **deleted outright**, so the names no longer
+    refer to anything in the tree at all. Corrected: **Search/grab (Prowlarr
+    for the search + SAK's own native torrent/NNTP downloader for the grab)**.
+    `dispatchToDownloadClient` (`internal/api/search.go`) has exactly two
+    branches, `anacrolix` and `nntp`, and there is no third.
 - **Series**: fully off Sonarr. Owns its own episode-aware library
   (`internal/library`'s `Series`/`Episode` types — genuinely different
   tables from Movies' `Item`, since Series needs rows for episodes TMDB
@@ -1770,7 +1783,8 @@ above, so don't drop them for convenience:
     setup prompt** instead of a bare error (or, before a same-day fix,
     getting permanently stuck — see below): `GrabError` in Discover.tsx
     detects a missing Prowlarr/qBittorrent/NZBGet from the backend's fixed
-    error strings and renders a URL(+username/password or +API key) form
+    error strings [CORRECTED 2026-08-10: Prowlarr ONLY — see the note at the
+    end of this bullet group] and renders a URL(+username/password or +API key) form
     reusing the same `upsertConnection`/`buildConnectionUpsertBody` Settings'
     own form calls, plus a LAN-discovery hint (`fetchNetscanKnown`,
     confirm-first — never silently auto-fills, same convention as Settings'
@@ -1790,6 +1804,58 @@ above, so don't drop them for convenience:
     work's two-separate-external-apps friction (Prowlarr for search, then
     qBittorrent *or* NZBGet for the actual download) is the concrete driver
     for that idea, not yet started.
+  - **CORRECTED 2026-08-10 — two claims in the two bullets above are now false
+    (see `.omc/plans/autopilot-impl-download-settings-consolidation.md` and
+    `CHANGELOG.md`).** Appended rather than edited in place, per this file's
+    convention. Quoted verbatim so a future session can find them:
+    1. *"`GrabError` in Discover.tsx detects a missing
+       Prowlarr/qBittorrent/NZBGet from the backend's fixed error strings"*
+       and *"Prowlarr/qBittorrent/NZBGet are global connections, not
+       per-mode"*. **Corrected: Prowlarr is the ONLY detectable missing
+       service.** `MISSING_GRAB_SERVICE`
+       (`frontend/src/screens/discover/shared.tsx`) is narrowed to a
+       one-member key union and `missingGrabService()`'s qbittorrent/nzbget
+       branches are gone, because there is no external download client left to
+       prompt for. `GrabError` itself needed no structural change — it was
+       already generic over the map. `buildConnectionUpsertBody`'s
+       `needsUsername` flag **survives** (it now has zero `true` callers in
+       application code, but its own contract test covers the true branch);
+       do not delete it as dead code.
+    2. *"not yet started"*, said of the Unified downloader ROADMAP entry.
+       **`docs/ROADMAP.md` has read "fully shipped (torrent engine + Usenet
+       native support)" for some time**, with three dated shipped
+       sub-entries. That file is correct; this line was the stale one, which
+       is why the 2026-08-10 work deliberately left `docs/ROADMAP.md`
+       untouched and corrected the claim here instead.
+  - **AMENDED 2026-08-10 — Settings' Usenet and Torrent tabs are now sub-tabs
+    of ONE Download tab, and `internal/qbittorrent`/`internal/nzbget` are
+    DELETED — the latter reversing a documented decision.** `SECTION_TABS` goes
+    11 -> 10 (`download` takes the `usenet` slot; `torrent` is removed).
+    `UsenetSection`/`TorrentSection` are reused unmodified; the sub-tab bar is a
+    plain `ScreenTabBar` (NEVER `ScreenTabs` — it would overwrite Settings' own
+    section tabs in the shell's single tab slot, exactly as `UI.tsx`'s header
+    warns), and `DownloadSection` adds no `SectionSave` because both panels
+    already provide their own.
+
+    **The package deletion is a REVERSAL, not an application of the
+    "no dead code left behind" convention — record it as one.** Two comments in
+    the tree (`internal/mode/mode.go`'s Session fields and
+    `internal/api/connections.go`'s switch note) explicitly decided on
+    2026-07-18 to KEEP both packages "as generic, still-valid capability (same
+    precedent as internal/servarr keeping Radarr/Sonarr/Whisparr)". Wade's
+    explicit instruction on 2026-08-10 that they "should be removed from
+    codebase" supersedes that. Both superseded comments are quoted verbatim in
+    `CHANGELOG.md`, which is now their only surviving record.
+
+    **`internal/servarr` is NOT affected and must not be swept up next.** The
+    distinction is load-bearing: `internal/servarr` is a *multi-service client
+    library* whose Radarr/Sonarr/Whisparr support is a coherent, reusable API
+    surface against products that still exist and that SAK could re-integrate.
+    `internal/qbittorrent`/`internal/nzbget` were *single-purpose
+    download-client adapters* for a dispatch path that is structurally gone.
+    A future session reading "we deleted the packages the servarr precedent was
+    protecting" has a live-looking argument for deleting `internal/servarr`
+    too — it is wrong, and this sentence is why.
   - **Season/episode picker is a poster grid (2026-08-02)** — the two
     free-text `S`/`E` number inputs are replaced by a two-level grid: a season
     grid (proxied season poster, name, episode count, air year) that drills

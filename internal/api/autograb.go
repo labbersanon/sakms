@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"regexp"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/connections"
@@ -81,6 +81,17 @@ func minSeedersFor(m mode.Mode) int {
 	return autograb.DefaultMinSeeders
 }
 
+// indexerOrFeed returns indexer when non-empty, otherwise "feed". Used by
+// grabDirectEnclosure to record the real Prowlarr indexer for cache-sourced
+// Adult grabs (where req.Indexer carries the cached release's indexer) while
+// keeping "feed" for plain RSS/enclosure items that bypass any indexer search.
+func indexerOrFeed(indexer string) string {
+	if indexer != "" {
+		return indexer
+	}
+	return "feed"
+}
+
 // autoGrabHandler is Discover's one-click unattended auto-grab (Stage 2). It
 // searches Prowlarr for the requested title/scene, grades every release with
 // internal/autograb's bitrate-quality-floor scorer, and either
@@ -106,7 +117,7 @@ func minSeedersFor(m mode.Mode) int {
 // mechanism, called with TriggerOperator — the one UNGATED trigger. The
 // usenet_autograb_enabled toggle must never apply here: this feature already
 // ships, and the operator's click is the approval.
-func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
+func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, store *adultnewest.ReleaseStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -127,13 +138,66 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			return
 		}
 
+		// Adult persistence feeder (§6.1/A2): for Adult items without their own
+		// enclosure URL, try the release cache before any Prowlarr search. A cache
+		// hit with strong identity dispatches straight to the download client and
+		// records the real indexer (not "feed"). A weak-identity hit passes the
+		// cached release through RunAutoGrab's weak-identity staging block (A6)
+		// below. A cache miss falls through to the normal search path.
+		//
+		// Fires ONLY when req.DownloadURL is empty so that plain RSS/feed items
+		// carrying their own enclosure URL bypass the cache entirely (card
+		// enclosure wins over cache — §7.3).
+		if m == mode.Adult && strings.TrimSpace(req.DownloadURL) == "" {
+			if cached, ok := pickPersistedAdultEnclosure(ctx, store, settingsStore, req); ok {
+				if adultIdentityWeak(req.Studio, req.Performers, cached.Title) {
+					// Weak identity: route through RunAutoGrab so the A6 staging
+					// block parks the pending_retry row. Pass the cached release as
+					// Releases so RunAutoGrab skips its internal autoGrabSearch.
+					out, err := RunAutoGrab(ctx, AutoGrabDeps{
+						SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, ReleaseStore: store,
+					}, sess, AutoGrabRequest{
+						Mode: m, Title: req.Title, Studio: req.Studio,
+						DurationSeconds: req.DurationSeconds,
+						Box: req.Box, SceneID: req.SceneID, Performers: req.Performers,
+						Trigger:        TriggerOperator,
+						Releases:       []prowlarr.Release{cached},
+						RuntimeSeconds: float64(req.DurationSeconds),
+					})
+					if err != nil {
+						http.Error(w, err.Error(), out.Status)
+					} else if out.NoMatch {
+						writeAutoGrabJSON(w, apidto.AutoGrabResponse{
+							Fallback:   true,
+							Message:    "identity signals too thin for unattended dispatch — review in Requests",
+							Candidates: rankedAutoGrabCandidates(out.Selection, out.Releases),
+						})
+					} else if out.AlreadyGrabbing {
+						writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: false, Message: "already grabbing this release", Grab: out.Grab})
+					} else if out.Grabbed {
+						writeAutoGrabJSON(w, apidto.AutoGrabResponse{Grabbed: true, Message: "auto-grabbed " + out.Releases[out.Selection.PickIndex].Title, Grab: out.Grab})
+					}
+					return
+				}
+				// Strong identity: populate enclosure fields and fall through to
+				// grabDirectEnclosure below. indexerOrFeed(req.Indexer) records the
+				// real indexer (not "feed") when the cache carries one (§7.3/A2).
+				req.DownloadURL = cached.DownloadURL
+				req.DownloadProtocol = string(cached.Protocol)
+				if req.Indexer == "" {
+					req.Indexer = cached.Indexer
+				}
+			}
+		}
+
 		// Direct-grab path (C1/D4): a request carrying its own enclosure URL (an
-		// Adult feed item) is dispatched straight to the download client — no
-		// Prowlarr search, no candidate scoring, and crucially no Prowlarr/TMDB
-		// dependency, so it works on a Prowlarr-less install. Returning here is
-		// what relaxes the sess.Prowlarr==nil guard below for this case (the guard
-		// stays as-is and only ever runs for the search path). The same enclosure
-		// rides the bulk path identically via grabOneBatchItem — one code path.
+		// Adult feed item, or a cache-sourced item populated by the feeder above)
+		// is dispatched straight to the download client — no Prowlarr search, no
+		// candidate scoring, and crucially no Prowlarr/TMDB dependency, so it
+		// works on a Prowlarr-less install. Returning here is what relaxes the
+		// sess.Prowlarr==nil guard below for this case (the guard stays as-is and
+		// only ever runs for the search path). The same enclosure rides the bulk
+		// path identically via grabOneBatchItem — one code path.
 		if strings.TrimSpace(req.DownloadURL) != "" {
 			dto, alreadyGrabbing, status, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
 			if err != nil {
@@ -158,10 +222,11 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			return
 		}
 
-		out, err := RunAutoGrab(ctx, AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore}, sess, AutoGrabRequest{
+		out, err := RunAutoGrab(ctx, AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, ReleaseStore: store}, sess, AutoGrabRequest{
 			Mode: m, Title: req.Title, TMDBID: req.TMDBID,
 			Season: req.SeasonNumber, Episode: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
 			Studio: req.Studio, ReleaseTitle: req.ReleaseTitle, DurationSeconds: req.DurationSeconds,
+			Box: req.Box, SceneID: req.SceneID, Performers: req.Performers,
 			Trigger: TriggerOperator,
 		})
 		if err != nil {
@@ -200,9 +265,12 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 // (autoGrabHandler) and bulk (grabOneBatchItem) direct-grab paths, so a card
 // grabbed singly or in bulk takes the identical Prowlarr-free path (C1/D4). No
 // Prowlarr search, no candidate scoring; the root folder is resolved
-// server-side (a true one-click grab supplies only the enclosure + title), and
-// Indexer is stamped "feed" (there is no indexer search to name). Returns the
-// recorded grab DTO plus the HTTP status a caller should surface on error.
+// server-side (a true one-click grab supplies only the enclosure + title).
+// Indexer is indexerOrFeed(req.Indexer): "feed" for plain RSS/enclosure items
+// that never touch an indexer search; the real indexer name for cache-sourced
+// Adult grabs where the persistence feeder sets req.Indexer from the cached
+// release (§6.1/A2). Returns the recorded grab DTO plus the HTTP status a
+// caller should surface on error.
 func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (dto *apidto.Grab, alreadyGrabbing bool, status int, err error) {
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
 	if err != nil {
@@ -218,7 +286,7 @@ func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, s
 	created, err := grabsStore.Create(ctx, grabs.Grab{
 		Mode: m, Title: req.Title, TMDBID: req.TMDBID,
 		SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
-		Indexer: "feed", Protocol: req.DownloadProtocol,
+		Indexer: indexerOrFeed(req.Indexer), Protocol: req.DownloadProtocol,
 		DownloadClient: downloadClient, RootFolderPath: rootFolder,
 		// DownloadURL: a feed item has no TMDB/Prowlarr identity to re-search
 		// from — its enclosure URL is its ONLY provenance (see grabs.Grab.
@@ -266,9 +334,10 @@ func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode,
 
 // autoGrabSearch runs the per-mode Prowlarr search and resolves the known
 // pre-grab runtime (seconds) the bitrate scorer needs. Movies/Series probe
-// id-scoped (mirroring availability.CheckMovie/CheckSeries); Adult uses a
-// single free-text, TITLE-ONLY query over the XXX category, then a mandatory
-// AI confidence gate (aiConfirmAdultReleases) before returning.
+// id-scoped (mirroring availability.CheckMovie/CheckSeries); Adult delegates
+// to resolveAdultReleases (adultreleases.go), which is cache-first: it returns
+// persisted candidates when fresh, falling back to one live Prowlarr
+// title-only search only on a cache miss.
 //
 // Adult's query construction has a real revision history worth knowing
 // before touching it again — three attempts, each replacing the last after
@@ -289,16 +358,9 @@ func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode,
 //     instead of up to three sequential ones.
 //
 // Dropping the studio from the query loses the precision Studio+Title used
-// to provide at the SOURCE — a title-only query can legitimately return a
-// same-titled scene from an unrelated studio. aiConfirmAdultReleases is what
-// replaces that precision, as a post-hoc confidence check instead of a
-// pre-hoc query constraint: it requires both studio AND title to
-// independently clear a high-confidence floor before a release survives,
-// dropping anything it can't confirm rather than guessing. This runs inside
-// autoGrabSearch itself — the single funnel every Adult caller shares
-// (discoverAvailabilityHandler's preview, autoGrabBatchHandler, and
-// RunAutoGrab's real dispatch for every trigger) — specifically so the real
-// auto-grab path gets this safety net too, not just the preview popup.
+// to provide at the SOURCE. resolveAdultReleases restores the safety net
+// on the unattended path with a deterministic title match (amendment A1,
+// critique C-1) — no AI, no new algorithm.
 //
 // req.ReleaseTitle is intentionally UNUSED here now — see the revision
 // history above. The field itself is left in AutoGrabRequest (still
@@ -312,17 +374,23 @@ func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode,
 // manual pick list) for a whole-season grab, whose runtime is ambiguous (see
 // seriesEpisodeRuntimeSeconds). Callers must have already confirmed
 // sess.TMDB != nil for Movies/Series.
-func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
+//
+// Claude 2026-08-11: store parameter added (A3 / M-2 fix) so internal/api
+// compiles after autoGrabSearch's signature change — all three call sites
+// must pass their available store (or nil for callers not yet wired).
+func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
 	switch m {
 	case mode.Adult:
-		query := normalizeAdultQuery(strings.TrimSpace(req.Title))
-		log.Printf("autoGrabSearch: mode=adult query=%q category=%d studio=%q title=%q", query, adultAutoGrabCategory, req.Studio, req.Title)
-		releases, err := sess.Prowlarr.Search(ctx, query, []int{adultAutoGrabCategory})
+		// adultConsumerUnattended: title-filter applied before return so
+		// RunAutoGrab/grabOneBatchItem (the unattended callers of autoGrabSearch)
+		// never score title-mismatching releases. The picker path (discoverAvailabilityHandler)
+		// calls resolveAdultReleases with adultConsumerPicker directly — it gets
+		// the raw list so FilterReleases' AI escalation path can still run.
+		res, err := resolveAdultReleases(ctx, sess, store, adultConsumerUnattended, req)
 		if err != nil {
 			return nil, float64(req.DurationSeconds), err
 		}
-		releases = aiConfirmAdultReleases(ctx, releases, req.Studio, req.Title, sess.MainstreamAI)
-		return releases, float64(req.DurationSeconds), nil
+		return res.Releases, float64(req.DurationSeconds), nil
 	case mode.Series:
 		tvdbID, err := sess.TMDB.ExternalIDs(ctx, req.TMDBID)
 		if err != nil {

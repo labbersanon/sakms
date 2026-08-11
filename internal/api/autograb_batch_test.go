@@ -294,7 +294,13 @@ func TestAutoGrabBatchHandler_CrossModeSessionIsolation(t *testing.T) {
 	// configured here that degrades to a deterministic title-only
 	// similarity check the release title must actually clear. Movies'
 	// grading is untouched by this and doesn't care about title text at all.
-	release := `[{"guid":"1","title":"Some.Scene.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":3,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`
+	//
+	// Claude 2026-08-11: release title prefixed with "SomeStudio" so that
+	// adultIdentityWeak("SomeStudio", …) returns false (singleWordTitleMatches
+	// fires) — A6's weak-identity check now fires before dispatch for Adult,
+	// and a weak grab would stage instead of dispatch, breaking the isolation
+	// assertion. Studio in the adult item's request updated to match.
+	release := `[{"guid":"1","title":"SomeStudio.Some.Scene.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":3,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`
 	prowlarr, stats := fakeProwlarrTracking(t, 0, func(url.Values) (int, string) {
 		return http.StatusOK, release
 	})
@@ -328,7 +334,7 @@ func TestAutoGrabBatchHandler_CrossModeSessionIsolation(t *testing.T) {
 
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
 		{Mode: "movies", Request: apidto.AutoGrabRequest{Title: "Some Movie", TMDBID: 42}},
-		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Some Scene", Studio: "Some Studio", DurationSeconds: 6000}},
+		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Some Scene", Studio: "SomeStudio", DurationSeconds: 6000}},
 	}}
 	resp, out := postBatch(t, srv.URL, req)
 	defer resp.Body.Close()

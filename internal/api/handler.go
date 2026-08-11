@@ -313,7 +313,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// per-card probe; see CLAUDE.md's "Discover never queries Prowlarr"
 	// note). Graded 32 ways (4 resolutions x 4 tiers x 2 protocols) via
 	// internal/autograb — see discover_availability.go.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/availability", discoverAvailabilityHandler(httpClient, connStore, scStore, settingsStore))
+	// Claude 2026-08-11: adultNewestReleaseStore threaded in (A3/§4.2) — Adult
+	// availability now resolves cache-first via resolveAdultReleases.
+	mux.HandleFunc("GET /api/modes/{mode}/discover/availability", discoverAvailabilityHandler(httpClient, connStore, scStore, settingsStore, adultNewestReleaseStore))
 	// Discover detail popup's "Watch Trailer" link — one-shot per popup open,
 	// Movies/Series only. See discover_trailer.go.
 	mux.HandleFunc("GET /api/modes/{mode}/discover/trailer", discoverTrailerHandler(httpClient, connStore, scStore, settingsStore))
@@ -473,13 +475,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +
 	// bitrate-quality-floor scoring, then either grab the top qualifier or
 	// return the ranked manual pick list. Exactly one release per call.
-	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore))
+	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore))
 	// Bulk auto-grab: a bounded, user-approved multi-select exception to the
 	// single route's "one release per call". Cross-mode (each item carries its
 	// own mode, so NOT under /modes/{mode}); items are grabbed SEQUENTIALLY (max
 	// one Prowlarr search in flight), capped at MaxBatchGrabItems, skip-and-
 	// continue per item. See autoGrabBatchHandler in autograb_batch.go.
-	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore))
+	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore))
 	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
 	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober))
 	// Request-status worklist + its excluded-titles endpoints live on their own

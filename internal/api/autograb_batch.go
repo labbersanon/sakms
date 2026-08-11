@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -71,7 +73,7 @@ const MaxBatchGrabItems = 20
 // /downloads; only the client's in-progress view of the run is lost. No rollback
 // of a partially-completed batch is attempted or wanted — consistent with
 // apply-batch's per-item commit model.
-func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
+func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, store *adultnewest.ReleaseStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -143,7 +145,18 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 			// SEARCH item without the first guard would still panic — but
 			// grabOneBatchItem takes the direct path before autoGrabSearch for a
 			// DownloadURL-bearing item.
+			//
+			// Adult cache pre-check (§6.1/batch): if the release cache holds a
+			// fresh candidate for this Adult item, treat it as directGrab here so
+			// the Prowlarr guard is relaxed — grabOneBatchItem's feeder will use
+			// the same cached release. The extra DB read is the cost of doing the
+			// guard before the feeder; a cache miss is a no-op.
 			directGrab := strings.TrimSpace(item.Request.DownloadURL) != ""
+			if !directGrab && m == mode.Adult {
+				if _, ok := pickPersistedAdultEnclosure(ctx, store, settingsStore, item.Request); ok {
+					directGrab = true
+				}
+			}
 			if sess.Prowlarr == nil && !directGrab {
 				fail("prowlarr isn't configured yet — add it in Settings first")
 				continue
@@ -153,7 +166,7 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 				continue
 			}
 
-			grab, fallback, itemAlreadyGrabbing, candidates, message, err := grabOneBatchItem(ctx, sess, m, settingsStore, nzb, grabsStore, item.Request)
+			grab, fallback, itemAlreadyGrabbing, candidates, message, err := grabOneBatchItem(ctx, sess, m, store, settingsStore, nzb, grabsStore, item.Request)
 			switch {
 			case err != nil:
 				fail(err.Error())
@@ -261,15 +274,42 @@ func rejectSeasonEpisodeOverlap(items []apidto.AutoGrabBatchItem) error {
 // per successful item: this is still a one-release grab, run once per selected
 // item.
 //
-// A DownloadURL-bearing item (an Adult feed enclosure) takes the direct-grab
-// path first — shared with the single handler via grabDirectEnclosure — before
-// autoGrabSearch (which dereferences sess.Prowlarr), so it neither searches nor
-// requires Prowlarr (C1/D4). For every OTHER item the precondition still holds:
-// callers must have confirmed sess.Prowlarr (and, for non-Adult, sess.TMDB) is
-// non-nil.
-func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, alreadyGrabbing bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
+// A DownloadURL-bearing item (an Adult feed enclosure, or a cache-sourced item
+// whose enclosure was populated by the persistence feeder below) takes the
+// direct-grab path first — shared with the single handler via grabDirectEnclosure
+// — before autoGrabSearch (which dereferences sess.Prowlarr), so it neither
+// searches nor requires Prowlarr (C1/D4). For every OTHER item the precondition
+// still holds: callers must have confirmed sess.Prowlarr (and, for non-Adult,
+// sess.TMDB) is non-nil.
+//
+// Claude 2026-08-11: store parameter added (A3/§6.1) for Adult release cache;
+// nil degrades to a live Prowlarr search.
+func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, alreadyGrabbing bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
+	// Adult persistence feeder (§6.1/batch): for Adult items without their own
+	// enclosure URL, try the release cache before any Prowlarr search. Strong
+	// identity → populate enclosure fields and fall through to grabDirectEnclosure.
+	// Weak identity → return a fallback pick list immediately (three-state
+	// honesty: never silently grab a release with thin identity signals).
+	// Cache miss → fall through to autoGrabSearch below.
+	if m == mode.Adult && strings.TrimSpace(req.DownloadURL) == "" {
+		if cached, ok := pickPersistedAdultEnclosure(ctx, store, settingsStore, req); ok {
+			if adultIdentityWeak(req.Studio, req.Performers, cached.Title) {
+				cands := buildAutoGrabCandidates([]prowlarr.Release{cached}, float64(req.DurationSeconds), false)
+				sel := autograb.Select(cands, autoGrabTier(ctx, settingsStore, m), minSeedersFor(m))
+				return nil, true, false, rankedAutoGrabCandidates(sel, []prowlarr.Release{cached}), "identity signals too thin for unattended dispatch — pick one below", nil
+			}
+			// Strong identity: use the cached enclosure for grabDirectEnclosure.
+			req.DownloadURL = cached.DownloadURL
+			req.DownloadProtocol = string(cached.Protocol)
+			if req.Indexer == "" {
+				req.Indexer = cached.Indexer
+			}
+		}
+	}
+
 	// Direct-grab (C1/D4): dispatch the item's own enclosure straight to the
 	// download client, identical to the single handler's path — no Prowlarr.
+	// Also handles cache-sourced items whose enclosure was set by the feeder above.
 	if strings.TrimSpace(req.DownloadURL) != "" {
 		dto, already, _, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
 		if err != nil {
@@ -281,7 +321,9 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, sett
 		return dto, false, false, nil, "grabbed " + req.Title, nil
 	}
 
-	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, req)
+	// Claude 2026-08-11: store wired (A3/§6.1) — Adult uses cache-first via
+	// resolveAdultReleases inside autoGrabSearch.
+	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, store, req)
 	if err != nil {
 		return nil, false, false, nil, "", err
 	}
@@ -308,6 +350,20 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, sett
 	// grab attempted (never "grab the least-bad option").
 	if sel.Fallback {
 		return nil, true, false, rankedAutoGrabCandidates(sel, releases), "nothing cleared the quality floor automatically — pick one below", nil
+	}
+
+	// A6: Weak-identity check for Adult (batch path). A scorer pick does not mean
+	// safe silent dispatch when studio/performer signals are thin. Return a
+	// fallback pick list rather than a pending_retry row: the operator sees the
+	// candidate and picks explicitly — consistent with how the batch surfaces
+	// quality-floor misses (three-state honesty).
+	//
+	// A4: TriggerRetry calls Run AutoGrab, not grabOneBatchItem, so TriggerRetry
+	// Adult always-weak is handled there (weakIdentityReason in RunAutoGrab).
+	if m == mode.Adult {
+		if adultIdentityWeak(req.Studio, req.Performers, releases[sel.PickIndex].Title) {
+			return nil, true, false, rankedAutoGrabCandidates(sel, releases), "identity signals too thin for unattended dispatch — pick one below", nil
+		}
 	}
 
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)

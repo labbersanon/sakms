@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
@@ -83,6 +84,17 @@ const (
 	// articlesUnavailableReason is the retry_reason for a retrieval failure
 	// where every configured subscription answered 430.
 	articlesUnavailableReason = "no configured usenet subscription holds this release's articles"
+	// weakIdentityReason is the retry_reason when Adult identity signals are
+	// too thin for silent unattended dispatch (adultIdentityWeak returned true).
+	//
+	// A4: TriggerRetry ALWAYS produces this reason for Adult — the grabs row
+	// stores neither studio nor performers (the grab-at-dispatch origin), so
+	// adultIdentityWeak returns true unconditionally for every retry attempt.
+	// A5: TriggerOperator also parks a pending_retry (no approve-and-dispatch
+	// button on the Requests view for weak rows; the operator re-grabs manually
+	// from Requests or Discover). Do NOT branch on this string: it is
+	// operator-facing copy only — use grabs row fields for logic.
+	weakIdentityReason = "identity signals too thin for unattended dispatch"
 	// heldRequestReason is the retry_reason a Calendar pre-release request
 	// carries while it waits for its release date.
 	//
@@ -111,6 +123,10 @@ type AutoGrabDeps struct {
 	NZB           *usenet.Manager
 	GrabsStore    *grabs.Store
 	Webhooks      *webhooks.Store
+	// ReleaseStore is the Adult release cache store. nil degrades to a live
+	// Prowlarr search on every call — T7 wires the real store from handler.go.
+	// Claude 2026-08-11: added for A3 / M-2 — autoGrabSearch now takes a store.
+	ReleaseStore *adultnewest.ReleaseStore
 }
 
 // AutoGrabRequest is the mode-agnostic description of what to auto-grab.
@@ -133,11 +149,24 @@ type AutoGrabRequest struct {
 	RootFolderPath string
 	Trigger        AutoGrabTrigger
 
-	// Studio/ReleaseTitle/DurationSeconds are Adult-only inputs to the internal
-	// search; ignored when Releases is supplied.
+	// Studio/ReleaseTitle/DurationSeconds/Box/SceneID/Performers are Adult-only
+	// inputs to the internal search; ignored when Releases is supplied.
+	//
+	// Box/SceneID carry the catalog scene identity for cache-key derivation
+	// (resolveAdultReleases builds box:sceneId key when both are present).
+	// Populated by autoGrabHandler (T6) from the wire request; retryDueGrabs
+	// cannot supply them because the grabs table stores neither — see A4/§7.5.
+	//
+	// Performers is a SOFT identity signal — adultIdentityWeak uses it to
+	// decide whether to stage for approval. NEVER a hard-reject predicate
+	// (the discarded OR-gate version was; this is deliberately not that).
+	// Claude 2026-08-11: Box/SceneID/Performers added (A2/A3).
 	Studio          string
 	ReleaseTitle    string
 	DurationSeconds int
+	Box             string
+	SceneID         string
+	Performers      []string
 
 	// Releases, when non-nil, is an already-fetched, already-deduped candidate
 	// list; RunAutoGrab then SKIPS its internal autoGrabSearch and scores these.
@@ -236,11 +265,14 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	releases, runtimeSeconds := req.Releases, req.RuntimeSeconds
 	if releases == nil {
 		var err error
-		releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, req.Mode, apidto.AutoGrabRequest{
+		// Claude 2026-08-11: deps.ReleaseStore passed (A3) so Adult uses cache-first.
+		// nil store degrades to live search until T7 wires the real store.
+		releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, req.Mode, deps.ReleaseStore, apidto.AutoGrabRequest{
 			Title: req.Title, TMDBID: req.TMDBID, Studio: req.Studio,
 			SeasonNumber: req.Season, EpisodeNumber: req.Episode,
 			SeasonSpecified: req.SeasonSpecified, DurationSeconds: req.DurationSeconds,
 			ReleaseTitle: req.ReleaseTitle,
+			Box: req.Box, SceneID: req.SceneID, Performers: req.Performers,
 		})
 		if err != nil {
 			return AutoGrabOutcome{Status: http.StatusBadGateway, Err: err}, err
@@ -287,6 +319,33 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		}
 		out.GrabID, out.RetryStatus, out.RetryReason = g.ID, g.Status, g.RetryReason
 		return out, nil
+	}
+
+	// A6: Weak-identity staging for Adult. A scorer pick (sel.PickIndex >= 0,
+	// guaranteed here because sel.Fallback is false) does not mean dispatch is
+	// safe when studio/performer identity signals are thin.
+	//
+	// Do NOT set sel.Fallback = true: Fallback means "no candidate cleared the
+	// quality floor"; here a candidate DID score. Using a separate weakIdentity
+	// bool keeps the two failure modes distinguishable at call sites.
+	//
+	// A4: TriggerRetry is ALWAYS weak for Adult — the grabs row stores no
+	// studio or performers (neither was available at dispatch time), so
+	// adultIdentityWeak returns true unconditionally for every retry attempt.
+	// A5: TriggerOperator also parks (no approve-and-dispatch on Requests view
+	// for an identity-weak row — operator re-grabs manually from Requests or
+	// Discover). Both triggers park via parkPendingRetry; no dispatch fires.
+	if req.Mode == mode.Adult {
+		if weakIdentity := adultIdentityWeak(req.Studio, req.Performers, releases[sel.PickIndex].Title); weakIdentity {
+			out.NoMatch = true
+			g, err := parkPendingRetry(ctx, deps, req, weakIdentityReason)
+			if err != nil {
+				out.Status, out.Err = http.StatusInternalServerError, err
+				return out, err
+			}
+			out.GrabID, out.RetryStatus, out.RetryReason = g.ID, g.Status, g.RetryReason
+			return out, nil
+		}
 	}
 
 	rootFolder := req.RootFolderPath

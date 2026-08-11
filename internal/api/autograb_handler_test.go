@@ -277,7 +277,11 @@ func TestAutoGrabHandler_Adult_LowerSeederFloorQualifies(t *testing.T) {
 	// its bitrate clears every Low-tier floor — but only 3 seeders. Below
 	// Movies/Series' shared floor of 5, but AT Adult's own floor of 3
 	// (Seeders < minSeeders is the check, so 3 < 3 is false — qualifies).
-	prowlarr := fakeProwlarr(t, `[{"guid":"1","title":"Some.Scene.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":3,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`)
+	// Claude 2026-08-11: release title prefixed with "SomeStudio" so that
+	// adultIdentityWeak("SomeStudio", …) returns false (singleWordTitleMatches
+	// finds "SomeStudio" in the title) — A6 stages releases with no matching
+	// studio/performer, so the seeder-floor test needs a strong-identity release.
+	prowlarr := fakeProwlarr(t, `[{"guid":"1","title":"SomeStudio.Some.Scene.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":3,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`)
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
@@ -297,7 +301,9 @@ func TestAutoGrabHandler_Adult_LowerSeederFloorQualifies(t *testing.T) {
 
 	// 6000s (100 min) via DurationSeconds — Adult's runtime source, matching
 	// the Movies tests' TMDB-sourced 100 min for the identical bitrate math.
-	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: "Some Scene", Studio: "Some Studio", DurationSeconds: 6000})
+	// Claude 2026-08-11: Studio updated to "SomeStudio" (matches the release
+	// title prefix) so A6's identity check passes and the release dispatches.
+	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: "Some Scene", Studio: "SomeStudio", DurationSeconds: 6000})
 	resp, err := http.Post(srv.URL+"/api/modes/adult/autograb", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)

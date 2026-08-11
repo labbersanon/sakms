@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/autograb"
 )
 
 // fakeProwlarrRecording is fakeProwlarr's sibling: serves a static body but
@@ -324,6 +326,96 @@ func TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned(t *testing.T
 	}
 }
 
+// fakeProwlarrPerQuery is fakeProwlarrRecording's two-query sibling: it answers
+// each request from bodies keyed by the exact `query` param and appends every
+// query it saw to an ordered slice. fakeProwlarrRecording can't express this —
+// it serves one static body and OVERWRITES its recorded query — and both
+// properties are needed to prove a fallback: a first query that finds nothing,
+// a second that finds something, and the order they went out in.
+func fakeProwlarrPerQuery(t *testing.T, bodyByQuery map[string]string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		queries = append(queries, q)
+		w.Header().Set("Content-Type", "application/json")
+		body, ok := bodyByQuery[q]
+		if !ok {
+			body = `[]`
+		}
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &queries
+}
+
+// TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle is the
+// regression test for the 2026-08-11 live bug: the availability grid came back
+// empty for a scene whose pooled releaseTitle was ALREADY truncated mid-word
+// ("...Teasing Cheerlea") with a space-separated date and no trailing tech
+// marker. CleanReleaseTitleForSearch recognizes none of that (dateTokenPattern
+// is literal-dot only, sceneTechMarkerRe finds nothing), so the fragment
+// reached Prowlarr verbatim and matched nothing — even though properly-named
+// releases of the scene existed.
+//
+// Asserts BOTH halves: releaseTitle is still the query tried FIRST (the
+// property TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle
+// pins for the well-formed case, which structurally cannot cover ordering — it
+// only ever sees one query), and the Studio+Title query — the same one this
+// branch already used when releaseTitle is absent — is retried second, with its
+// results reaching the grid.
+func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *testing.T) {
+	const truncatedReleaseTitle = "CathysCraving 26 02 08 Scene 1000 Pixie Smalls Teasing Cheerlea"
+	const studioTitleQuery = "Cathys Craving Pixie Smalls Teasing Cheerleader"
+	// 900 MB / 3480 s x265 1080p — the same fixture this file already
+	// documents as clearing the Low 1080p floor.
+	const fallbackBody = `[{"guid":"9","title":"CathysCraving.Pixie.Smalls.Teasing.Cheerleader.XXX.1080p.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:DDDDDD1234567890abcdef1234567890abcdef12"}]`
+
+	// The truncated title survives cleaning byte-for-byte, so the first query
+	// IS the raw fragment; only the studio+title retry gets a result.
+	prowlarr, queries := fakeProwlarrPerQuery(t, map[string]string{studioTitleQuery: fallbackBody})
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarr.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	reqURL := srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Cathys Craving") +
+		"&title=" + urlQueryEscape("Pixie Smalls Teasing Cheerleader") +
+		"&releaseTitle=" + urlQueryEscape(truncatedReleaseTitle) +
+		"&durationSeconds=3480"
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if len(*queries) != 2 {
+		t.Fatalf("expected exactly 2 Prowlarr searches (releaseTitle, then studio+title fallback), got %d: %q", len(*queries), *queries)
+	}
+	if (*queries)[0] != truncatedReleaseTitle {
+		t.Errorf("first query = %q, want the releaseTitle-derived query %q (releaseTitle must still be tried FIRST)", (*queries)[0], truncatedReleaseTitle)
+	}
+	if (*queries)[1] != studioTitleQuery {
+		t.Errorf("fallback query = %q, want the studio+title query %q", (*queries)[1], studioTitleQuery)
+	}
+
+	var out apidto.AvailabilityPreview
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if out.Res1080.Low.Torrent == nil || out.Res1080.Low.Torrent.GUID != "9" {
+		t.Fatalf("expected the fallback query's release to populate res1080/low/torrent, got %+v", out.Res1080)
+	}
+}
+
 // urlQueryEscape is a tiny local alias so the test bodies above read cleanly
 // without repeating the net/url import qualifier inline.
 func urlQueryEscape(s string) string { return url.QueryEscape(s) }
@@ -481,5 +573,83 @@ func TestDiscoverAvailabilityHandler_ResolutionAndTierAxesDistinguished(t *testi
 	// every cell there must be empty.
 	if out.Res720.Low.Torrent != nil || out.Res1080.Low.Torrent != nil {
 		t.Errorf("expected res720/res1080 to have no candidates at all, got res720=%+v res1080=%+v", out.Res720, out.Res1080)
+	}
+}
+
+// TestDiscoverAvailabilityHandler_DiagnosticsDistinguishEmptyGridCauses pins
+// the response field the popup needs to tell an empty grid's two causes
+// apart. Before it existed, "Prowlarr found nothing" and "Prowlarr found
+// releases and every one was rejected" both arrived as an identical all-nil
+// grid, so the popup could only render silently-disabled selectors with no
+// explanation at all (a real operator report). Both cases go through the
+// Adult path deliberately: Adult's own lower seeder floor (adultMinSeeders,
+// autograb.go) is the single most common real-world rejection cause here.
+func TestDiscoverAvailabilityHandler_DiagnosticsDistinguishEmptyGridCauses(t *testing.T) {
+	// 8 GB / 3480 s at 1080p clears every tier's bitrate floor comfortably,
+	// so seeders=1 (under adultMinSeeders' 3) is the ONLY thing rejecting it
+	// — GradeCandidate checks the seeder floor before the bitrate floor, so
+	// the status is unambiguous.
+	const rejectedBody = `[{"guid":"9","title":"Some Studio - Wild Scene Title 1080p","indexer":"I","protocol":"torrent","size":8000000000,"seeders":1,"downloadUrl":"magnet:?xt=urn:btih:EEEEEE1234567890abcdef1234567890abcdef12"}]`
+
+	tests := []struct {
+		name        string
+		body        string
+		wantRaw     int
+		wantMatched int
+		wantReason  string // "" = expect no reasons at all
+	}{
+		{name: "no releases found at all", body: `[]`, wantRaw: 0, wantMatched: 0},
+		{name: "found but rejected on the seeder floor", body: rejectedBody, wantRaw: 1, wantMatched: 1, wantReason: string(autograb.StatusLowSeeders)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prowlarr, _ := fakeProwlarrRecording(t, tc.body)
+
+			connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+			if err := connStore.Upsert(context.Background(), "prowlarr", prowlarr.URL, "key"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+			defer srv.Close()
+
+			// No releaseTitle param — this exercises the plain studio+title
+			// query, so US-001's zero-result fallback never fires and the raw
+			// count reflects exactly one search.
+			resp, err := http.Get(srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Some Studio") +
+				"&title=" + urlQueryEscape("Wild Scene Title") + "&durationSeconds=3480")
+			if err != nil {
+				t.Fatalf("GET failed: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("expected 200, got %d", resp.StatusCode)
+			}
+
+			var out apidto.AvailabilityPreview
+			if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+				t.Fatalf("decoding response: %v", err)
+			}
+
+			if got := countPopulatedCells(out); got != 0 {
+				t.Fatalf("expected an empty grid for this fixture, got %d populated cells", got)
+			}
+			if out.Diagnostics.RawReleaseCount != tc.wantRaw {
+				t.Errorf("rawReleaseCount = %d, want %d", out.Diagnostics.RawReleaseCount, tc.wantRaw)
+			}
+			if out.Diagnostics.MatchedReleaseCount != tc.wantMatched {
+				t.Errorf("matchedReleaseCount = %d, want %d", out.Diagnostics.MatchedReleaseCount, tc.wantMatched)
+			}
+			if tc.wantReason == "" {
+				if len(out.Diagnostics.RejectionReasons) != 0 {
+					t.Errorf("expected no rejection reasons when nothing reached grading, got %v", out.Diagnostics.RejectionReasons)
+				}
+				return
+			}
+			if !slices.Contains(out.Diagnostics.RejectionReasons, tc.wantReason) {
+				t.Errorf("expected rejection reasons to name %q, got %v", tc.wantReason, out.Diagnostics.RejectionReasons)
+			}
+		})
 	}
 }

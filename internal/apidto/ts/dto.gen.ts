@@ -849,6 +849,45 @@ export interface AvailabilityPreview {
   res1080: ResolutionAvailability;
   res720: ResolutionAvailability;
   res480: ResolutionAvailability;
+  /**
+   * Diagnostics explains an EMPTY grid. Always populated; only ever read
+   * by the popup when no cell anywhere carries a candidate.
+   */
+  diagnostics: AvailabilityDiagnostics;
+}
+/**
+ * AvailabilityDiagnostics carries the counts and rejection statuses the
+ * availability handler already computes for its own logging, so the popup can
+ * tell an empty grid's two genuinely different causes apart: no release was
+ * found at all, versus releases were found and every one of them was rejected
+ * during grading. Before this existed both cases arrived as an identical
+ * all-nil grid and the popup could only render silently-disabled selectors
+ * with no explanation (a real operator report — see
+ * internal/api/discover_availability.go).
+ */
+export interface AvailabilityDiagnostics {
+  /**
+   * RawReleaseCount is how many releases Prowlarr returned for the search,
+   * before any title/language filtering or grading. 0 means "nothing found"
+   * — a search problem, not a quality one.
+   */
+  rawReleaseCount: number /* int */;
+  /**
+   * MatchedReleaseCount is how many of those survived releasematch's
+   * title/language filter and were actually graded. Strictly informational:
+   * RawReleaseCount > 0 with MatchedReleaseCount == 0 means everything found
+   * was for something else, which yields no rejection statuses at all.
+   */
+  matchedReleaseCount: number /* int */;
+  /**
+   * RejectionReasons is the distinct, sorted set of autograb.Status values
+   * (e.g. "low-seeders", "below-floor", "unknown-resolution") observed while
+   * grading — raw status codes, not display strings, mapped to operator-
+   * facing wording in the frontend the same way tier/protocol labels are.
+   * Empty (omitted) whenever nothing reached grading, so a consumer must
+   * never present a rejection cause it wasn't given.
+   */
+  rejectionReasons?: string[];
 }
 /**
  * ResolutionAvailability is one resolution bucket's 4-tier grid.

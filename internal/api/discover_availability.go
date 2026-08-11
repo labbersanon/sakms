@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -184,7 +185,21 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 				m, title, len(candidates), unrecognizedResolution, unknownBitrate)
 		}
 
-		preview := buildAvailabilityPreview(candidates, filtered, minSeedersFor(m))
+		rejections := &rejectionSet{}
+		preview := buildAvailabilityPreview(candidates, filtered, minSeedersFor(m), rejections)
+		// A candidate whose resolution isn't one of the 4 buckets never
+		// reaches any autograb.Select call at all, so it can't contribute a
+		// grade — record it under the SAME status code Select would have used
+		// (autograb.StatusUnknownResolution) so the set dedupes to one reason
+		// rather than two phrasings of it.
+		if unrecognizedResolution > 0 {
+			rejections.add(autograb.StatusUnknownResolution)
+		}
+		preview.Diagnostics = apidto.AvailabilityDiagnostics{
+			RawReleaseCount:     len(releases),
+			MatchedReleaseCount: len(candidates),
+			RejectionReasons:    rejections.sorted(),
+		}
 		log.Printf("discover availability: mode=%s title=%q — final grid has %d/32 populated cells", m, title, countPopulatedCells(preview))
 
 		w.Header().Set("Content-Type", "application/json")
@@ -270,26 +285,65 @@ func queryInt(q url.Values, key string, def int) int {
 // the same length and index-paired (see buildAutoGrabCandidates's existing
 // convention, which this function's caller already produces). minSeeders is
 // the per-mode floor (see minSeedersFor, autograb.go) — threaded all the way
-// down to selectAvailabilityCandidate's autograb.Select call.
-func buildAvailabilityPreview(candidates []autograb.Candidate, releases []prowlarr.Release, minSeeders int) apidto.AvailabilityPreview {
+// down to selectAvailabilityCandidate's autograb.Select call. rejections
+// collects why cells came up empty (see rejectionSet) — nil-tolerant, so a
+// caller that only wants the grid can pass nil.
+func buildAvailabilityPreview(candidates []autograb.Candidate, releases []prowlarr.Release, minSeeders int, rejections *rejectionSet) apidto.AvailabilityPreview {
 	return apidto.AvailabilityPreview{
-		Res2160: buildResolutionAvailability(candidates, releases, 2160, minSeeders),
-		Res1080: buildResolutionAvailability(candidates, releases, 1080, minSeeders),
-		Res720:  buildResolutionAvailability(candidates, releases, 720, minSeeders),
-		Res480:  buildResolutionAvailability(candidates, releases, 480, minSeeders),
+		Res2160: buildResolutionAvailability(candidates, releases, 2160, minSeeders, rejections),
+		Res1080: buildResolutionAvailability(candidates, releases, 1080, minSeeders, rejections),
+		Res720:  buildResolutionAvailability(candidates, releases, 720, minSeeders, rejections),
+		Res480:  buildResolutionAvailability(candidates, releases, 480, minSeeders, rejections),
 	}
+}
+
+// rejectionSet accumulates the DISTINCT autograb.Status values seen across
+// every (resolution, tier, protocol) cell that had candidates but qualified
+// none — the same grade data logAvailabilityRejections already writes to the
+// log, kept so the response can carry it too (see
+// apidto.AvailabilityDiagnostics). Deliberately a set of status codes rather
+// than a per-candidate list: the popup only needs to name WHY nothing
+// qualified, and one release is graded up to 16 times across the grid.
+type rejectionSet struct {
+	seen map[string]struct{}
+}
+
+// add records one rejection status. A nil receiver is a no-op so callers that
+// don't want diagnostics can pass nil.
+func (r *rejectionSet) add(s autograb.Status) {
+	if r == nil || s == "" {
+		return
+	}
+	if r.seen == nil {
+		r.seen = map[string]struct{}{}
+	}
+	r.seen[string(s)] = struct{}{}
+}
+
+// sorted returns the distinct statuses in a stable order (nil when none were
+// recorded, which marshals the omitempty field away entirely).
+func (r *rejectionSet) sorted() []string {
+	if r == nil || len(r.seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(r.seen))
+	for s := range r.seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // buildResolutionAvailability filters candidates/releases (index-paired,
 // see buildAvailabilityPreview) down to exactly resolution, then grades that
 // subset against every tier.
-func buildResolutionAvailability(candidates []autograb.Candidate, releases []prowlarr.Release, resolution, minSeeders int) apidto.ResolutionAvailability {
+func buildResolutionAvailability(candidates []autograb.Candidate, releases []prowlarr.Release, resolution, minSeeders int, rejections *rejectionSet) apidto.ResolutionAvailability {
 	resCandidates, resReleases := partitionByResolution(candidates, releases, resolution)
 	return apidto.ResolutionAvailability{
-		Low:      buildTierAvailability(resCandidates, resReleases, quality.Low, minSeeders),
-		Medium:   buildTierAvailability(resCandidates, resReleases, quality.Medium, minSeeders),
-		High:     buildTierAvailability(resCandidates, resReleases, quality.High, minSeeders),
-		Lossless: buildTierAvailability(resCandidates, resReleases, quality.Lossless, minSeeders),
+		Low:      buildTierAvailability(resCandidates, resReleases, quality.Low, minSeeders, rejections),
+		Medium:   buildTierAvailability(resCandidates, resReleases, quality.Medium, minSeeders, rejections),
+		High:     buildTierAvailability(resCandidates, resReleases, quality.High, minSeeders, rejections),
+		Lossless: buildTierAvailability(resCandidates, resReleases, quality.Lossless, minSeeders, rejections),
 	}
 }
 
@@ -307,10 +361,10 @@ func partitionByResolution(candidates []autograb.Candidate, releases []prowlarr.
 
 // buildTierAvailability grades one resolution bucket's candidates (already
 // index-paired with releases) against tier, once per protocol.
-func buildTierAvailability(candidates []autograb.Candidate, releases []prowlarr.Release, tier quality.Tier, minSeeders int) apidto.TierAvailability {
+func buildTierAvailability(candidates []autograb.Candidate, releases []prowlarr.Release, tier quality.Tier, minSeeders int, rejections *rejectionSet) apidto.TierAvailability {
 	return apidto.TierAvailability{
-		Usenet:  selectAvailabilityCandidate(candidates, releases, tier, string(prowlarr.Usenet), minSeeders),
-		Torrent: selectAvailabilityCandidate(candidates, releases, tier, string(prowlarr.Torrent), minSeeders),
+		Usenet:  selectAvailabilityCandidate(candidates, releases, tier, string(prowlarr.Usenet), minSeeders, rejections),
+		Torrent: selectAvailabilityCandidate(candidates, releases, tier, string(prowlarr.Torrent), minSeeders, rejections),
 	}
 }
 
@@ -323,7 +377,7 @@ func buildTierAvailability(candidates []autograb.Candidate, releases []prowlarr.
 // index (mirrors internal/api/autograb.go's existing
 // buildAutoGrabCandidates/rankedAutoGrabCandidates index-pairing pattern,
 // applied per-bucket here instead of once globally).
-func selectAvailabilityCandidate(candidates []autograb.Candidate, releases []prowlarr.Release, tier quality.Tier, protocol string, minSeeders int) *apidto.AvailabilityCandidate {
+func selectAvailabilityCandidate(candidates []autograb.Candidate, releases []prowlarr.Release, tier quality.Tier, protocol string, minSeeders int, rejections *rejectionSet) *apidto.AvailabilityCandidate {
 	var subCandidates []autograb.Candidate
 	var subReleases []prowlarr.Release
 	for i, c := range candidates {
@@ -339,6 +393,9 @@ func selectAvailabilityCandidate(candidates []autograb.Candidate, releases []pro
 	sel := autograb.Select(subCandidates, tier, minSeeders)
 	if sel.Fallback {
 		logAvailabilityRejections(tier, protocol, subReleases, sel.Grades)
+		for _, g := range sel.Grades {
+			rejections.add(g.Status)
+		}
 		return nil
 	}
 

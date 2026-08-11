@@ -124,12 +124,17 @@ const PROTOCOL_LABELS: Record<ProtocolKey, string> = {
   torrent: "Torrent",
 };
 
+// ResolutionKey is the grid-bearing subset of AvailabilityPreview's fields —
+// NOT `keyof AvailabilityPreview`, which also includes the sibling
+// `diagnostics` block (a counts/reasons struct with no tier axis at all).
+type ResolutionKey = Extract<keyof AvailabilityPreview, `res${number}`>;
+
 // RES_KEYS maps a numeric resolution to its AvailabilityPreview field —
 // the DTO models the 4-resolution axis as four named fields (res2160/
 // res1080/res720/res480), not a map (see internal/apidto/dto.go's doc
 // comment on why: flat structs, codegen risk with map types), so every
 // numeric-resolution lookup goes through this table.
-const RES_KEYS: Record<number, keyof AvailabilityPreview> = {
+const RES_KEYS: Record<number, ResolutionKey> = {
   2160: "res2160",
   1080: "res1080",
   720: "res720",
@@ -140,9 +145,9 @@ const RES_KEYS: Record<number, keyof AvailabilityPreview> = {
 // falling back to res480 for anything outside the fixed 4-resolution axis —
 // unreachable in practice (every call site only ever passes a value drawn
 // from RESOLUTION_DISPLAY/RESOLUTIONS_DESC), but RES_KEYS' lookup type is
-// `keyof AvailabilityPreview | undefined` under this project's
+// `ResolutionKey | undefined` under this project's
 // noUncheckedIndexedAccess, so a safe default keeps candidateAt total.
-function resKey(r: number): keyof AvailabilityPreview {
+function resKey(r: number): ResolutionKey {
   return RES_KEYS[r] ?? "res480";
 }
 
@@ -157,6 +162,59 @@ export function candidateAt(
   protocol: ProtocolKey,
 ): AvailabilityCandidate | undefined {
   return preview[resKey(resolution)][tier][protocol];
+}
+
+// REJECTION_LABELS maps the raw autograb.Status codes the backend puts in
+// AvailabilityDiagnostics.rejectionReasons to operator-facing wording — the
+// same split every other display string in this file uses (TIER_LABELS,
+// PROTOCOL_LABELS). An unrecognized code falls through to the raw status
+// rather than being dropped: a status added backend-side must never silently
+// shrink the explanation an operator sees.
+const REJECTION_LABELS: Record<string, string> = {
+  "low-seeders": "too few seeders",
+  "below-floor": "bitrate below the quality-tier floor",
+  mislabeled: "size inconsistent with the claimed resolution",
+  "unknown-bitrate": "unknown size or runtime",
+  "unknown-resolution": "unrecognized resolution",
+};
+
+// gridHasCandidate reports whether ANY of the 32 (resolution, tier, protocol)
+// cells carries a qualifying release. False is the silently-disabled-pills
+// case emptyGridMessage exists to explain.
+export function gridHasCandidate(preview: AvailabilityPreview): boolean {
+  for (const r of RESOLUTIONS_DESC) {
+    for (const t of TIERS) {
+      for (const p of PROTOCOLS) {
+        if (candidateAt(preview, r, t, p)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// emptyGridMessage explains an empty availability grid, or returns undefined
+// when the grid has anything at all (the populated path renders exactly as it
+// always has — no message). Two distinguishable causes, which the response's
+// diagnostics block exists to separate:
+//
+//   (a) Prowlarr returned nothing → a SEARCH problem, not a quality one.
+//   (b) releases were found but none survived filtering/grading.
+//
+// Case (b)'s base sentence is deliberately cause-NEUTRAL ("none qualified"),
+// because a third shape hides inside it: everything found can be dropped by
+// releasematch's title/language filter before grading runs at all, in which
+// case no rejection status exists and claiming a quality/seeder cause would
+// be a lie. The reasons clause is appended only when the backend actually
+// reported reasons.
+export function emptyGridMessage(preview: AvailabilityPreview): string | undefined {
+  if (gridHasCandidate(preview)) return undefined;
+  const raw = preview.diagnostics?.rawReleaseCount ?? 0;
+  if (raw === 0) return "No matching releases found for this search.";
+  const base = `${raw} release${raw === 1 ? "" : "s"} found, but none qualified.`;
+  const reasons = (preview.diagnostics?.rejectionReasons ?? []).map(
+    (r) => REJECTION_LABELS[r] ?? r,
+  );
+  return reasons.length ? `${base} Rejected for: ${reasons.join(", ")}.` : base;
 }
 
 // pickProtocol picks whichever protocol has a candidate at (resolution,
@@ -551,6 +609,12 @@ export const DetailPopup: Component<{
     if (!p || !r || !t) return false;
     return !!candidateAt(p, r, t, pr);
   };
+  // emptyMessage is the explanation for a grid with nothing in it — undefined
+  // whenever anything qualified, so the populated path is untouched.
+  const emptyMessage = (): string | undefined => {
+    const p = preview();
+    return p ? emptyGridMessage(p) : undefined;
+  };
   const selectedCandidate = (): AvailabilityCandidate | undefined => {
     const p = preview();
     const r = resolution();
@@ -775,6 +839,16 @@ export const DetailPopup: Component<{
                 protocolEnabled/selectedCandidate all independently
                 null-guard against a transient unsettled read anyway. */}
             <div class="mt-3">
+              {/* An empty grid used to render as three rows of
+                  silently-disabled pills with no explanation at all, and the
+                  two reasons a grid can be empty (nothing found vs. found and
+                  all rejected) were indistinguishable. The message is ADDITIVE
+                  — the selectors and Grab button below render exactly as they
+                  always have, in every case. */}
+              <Show when={emptyMessage()}>
+                <Muted class="mb-2">{emptyMessage()}</Muted>
+              </Show>
+
               <PillSelector
                 label="Resolution"
                 options={RESOLUTION_DISPLAY_STR}

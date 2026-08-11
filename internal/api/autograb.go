@@ -270,7 +270,10 @@ func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode,
 // id-scoped (mirroring availability.CheckMovie/CheckSeries); Adult uses a
 // free-text query over the XXX category — the raw first-matched release
 // title when available (req.ReleaseTitle), else a studio+title
-// reconstruction (mirroring availability.CheckAdultScene). Runtime: Movies
+// reconstruction (mirroring availability.CheckAdultScene); that same
+// studio+title query is also retried when a releaseTitle with no recognizable
+// scene structure returns 0 releases (see the inline note at that branch).
+// Runtime: Movies
 // from TMDB MovieDetails;
 // Adult from the request's DurationSeconds; Series from the picked episode's
 // TMDB runtime (seriesEpisodeRuntimeSeconds) for a single-episode grab, or 0
@@ -303,15 +306,49 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req ap
 		// what left the Discover availability grid empty. CleanReleaseTitleForSearch
 		// strips that noise (see its doc); the Studio+Title fallback is already
 		// clean metadata, so it keeps its existing construction untouched.
+		studioTitle := strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
 		var rawQuery string
+		unverifiableReleaseTitle := false
 		if rt := strings.TrimSpace(req.ReleaseTitle); rt != "" {
 			rawQuery = identify.CleanReleaseTitleForSearch(rt)
+			unverifiableReleaseTitle = identify.ReleaseTitleLacksSceneStructure(rt)
 		} else {
-			rawQuery = strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
+			rawQuery = studioTitle
 		}
 		query := normalizeAdultQuery(rawQuery)
 		log.Printf("autoGrabSearch: mode=adult rawQuery=%q query=%q category=%d studio=%q title=%q releaseTitle=%q", rawQuery, query, adultAutoGrabCategory, req.Studio, req.Title, req.ReleaseTitle)
 		releases, err := sess.Prowlarr.Search(ctx, query, []int{adultAutoGrabCategory})
+		// Claude 2026-08-11: retry a 0-result releaseTitle query with the
+		// Studio+Title query this branch already falls back to when
+		// releaseTitle is absent — but ONLY when the stored releaseTitle
+		// carried no recognizable scene structure to clean.
+		// Reason: the gate is not optional and is not conservatism. The two
+		// pinned regression tests above this behaviour
+		// (TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned and
+		// ..._ReleaseTitlePreferredOverStudioTitle) both serve an EMPTY
+		// Prowlarr result set and then assert the query that went out was the
+		// cleaned releaseTitle — an ungated 0-result fallback fires a second
+		// search in both and breaks them. Restricting the retry to titles
+		// identify.ReleaseTitleLacksSceneStructure flags keeps a well-formed
+		// title's honest "no releases" answer honest, and only re-asks when
+		// the first query was built from something unverifiable.
+		// Troubleshooting: Adult Discover's availability grid came back empty
+		// for a scene whose pooled releaseTitle was already truncated mid-word
+		// with a space-separated date ("CathysCraving 26 02 08 Scene 1000
+		// Pixie Smalls Teasing Cheerlea") — nothing in it is a truncation or
+		// removal point, so it reached Prowlarr verbatim and matched nothing,
+		// while properly-named releases of that scene existed in the indexer.
+		// Review if: CleanReleaseTitleForSearch learns to recognize
+		// space-separated dates or mid-word truncation directly, or the
+		// adultnewest scan pipeline starts storing a non-truncated title
+		// (prd.json's out-of-scope item 2) — either makes this gate's
+		// population shrink toward empty.
+		if err == nil && len(releases) == 0 && unverifiableReleaseTitle {
+			if fallback := normalizeAdultQuery(studioTitle); fallback != "" && fallback != query {
+				log.Printf("autoGrabSearch: mode=adult releaseTitle query %q returned 0 releases and carries no scene structure — retrying with studio+title query %q", query, fallback)
+				releases, err = sess.Prowlarr.Search(ctx, fallback, []int{adultAutoGrabCategory})
+			}
+		}
 		return releases, float64(req.DurationSeconds), err
 	case mode.Series:
 		tvdbID, err := sess.TMDB.ExternalIDs(ctx, req.TMDBID)

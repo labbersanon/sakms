@@ -73,3 +73,28 @@ func CleanReleaseTitleForSearch(title string) string {
 	s = multiSpaceRe2.ReplaceAllString(s, " ")
 	return strings.TrimSpace(s)
 }
+
+// ReleaseTitleLacksSceneStructure reports whether title carries NONE of the
+// scene-release structure CleanReleaseTitleForSearch knows how to recognize:
+// no bracketed group, no DOTTED date token (dateTokenPattern is literal-dot
+// only — a space-separated "26 02 08" is invisible to it), no technical
+// marker, no media tag. It answers that question the only honest way
+// available — by running the cleaner and checking it changed nothing beyond
+// separator/whitespace normalization — so it can never drift out of sync with
+// what the cleaner actually strips.
+//
+// A true answer means the stored title is UNVERIFIABLE as a well-formed
+// release name, not that it is clean: the two look identical from here. That
+// is exactly the shape of the 2026-08-11 bug — a title already truncated
+// mid-word by whatever recorded it ("...Teasing Cheerlea"), with a
+// space-separated date and no trailing tech marker, survives the cleaner
+// completely unmodified and goes to Prowlarr as a query that cannot match.
+// autoGrabSearch's Adult branch uses this as the gate on its 0-result
+// Studio+Title fallback: a query built from a title with recognizable scene
+// structure that legitimately returns nothing is believed, while a query built
+// from an unverifiable one is retried more broadly.
+func ReleaseTitleLacksSceneStructure(title string) bool {
+	s := pathSepCharRe.ReplaceAllString(title, " ")
+	s = multiSpaceRe2.ReplaceAllString(s, " ")
+	return CleanReleaseTitleForSearch(title) == strings.TrimSpace(s)
+}

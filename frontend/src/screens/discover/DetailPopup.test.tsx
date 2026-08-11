@@ -11,6 +11,7 @@ import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import type {
   AdultDiscoverItem,
   AvailabilityCandidate,
+  AvailabilityDiagnostics,
   AvailabilityPreview,
   DiscoverItem,
   EpisodeSummary,
@@ -55,11 +56,17 @@ const emptyRes = () => ({
   high: emptyTier(),
   lossless: emptyTier(),
 });
-const emptyPreview = (): AvailabilityPreview => ({
+// diagnostics defaults to the "Prowlarr found nothing" shape, which is what
+// an all-nil grid genuinely means unless a test says otherwise. Tests that
+// place a candidate are the populated case and never read it.
+const emptyPreview = (
+  diagnostics: Partial<AvailabilityDiagnostics> = {},
+): AvailabilityPreview => ({
   res2160: emptyRes(),
   res1080: emptyRes(),
   res720: emptyRes(),
   res480: emptyRes(),
+  diagnostics: { rawReleaseCount: 0, matchedReleaseCount: 0, ...diagnostics },
 });
 
 const movie = (over: Partial<DiscoverItem> = {}): DiscoverItem => ({
@@ -523,6 +530,108 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     expect(availCall?.url).toContain("studio=Vixen");
     expect(availCall?.url).toContain("durationSeconds=1800");
     expect(availCall?.url).not.toContain("tmdbId");
+  });
+});
+
+describe("DetailPopup — empty availability grid explanation", () => {
+  const stubWithPreview = (preview: AvailabilityPreview) =>
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(preview);
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+  const renderMovie = () => {
+    const target: DetailTarget = { mode: "movies", item: movie() };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+  };
+
+  it("explains an empty grid as a SEARCH miss when Prowlarr returned zero raw releases", async () => {
+    stubWithPreview(emptyPreview({ rawReleaseCount: 0, matchedReleaseCount: 0 }));
+    renderMovie();
+
+    expect(
+      await screen.findByText("No matching releases found for this search."),
+    ).toBeInTheDocument();
+    // Never claims a quality/seeder cause it has no evidence for.
+    expect(screen.queryByText(/none qualified/)).not.toBeInTheDocument();
+
+    // The message is ADDITIVE — the selectors and Grab button still render
+    // exactly as before, disabled because nothing qualified.
+    expect(screen.getByRole("button", { name: "Grab" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "1080p" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Torrent" })).toBeDisabled();
+  });
+
+  it("explains an empty grid as a GRADING rejection, naming every reported reason, when releases were found", async () => {
+    stubWithPreview(
+      emptyPreview({
+        rawReleaseCount: 4,
+        matchedReleaseCount: 4,
+        rejectionReasons: ["below-floor", "low-seeders"],
+      }),
+    );
+    renderMovie();
+
+    expect(
+      await screen.findByText(
+        "4 releases found, but none qualified. Rejected for: bitrate below the quality-tier floor, too few seeders.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("No matching releases found for this search."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Grab" })).toBeDisabled();
+  });
+
+  it("shows an UNMAPPED rejection status verbatim rather than dropping it", async () => {
+    // REJECTION_LABELS' fallback-to-raw-code branch: a status added
+    // backend-side that the frontend has no wording for must still reach the
+    // operator. Pinned so a future session doesn't read the fallback as dead
+    // code and delete it.
+    stubWithPreview(
+      emptyPreview({
+        rawReleaseCount: 2,
+        matchedReleaseCount: 2,
+        rejectionReasons: ["brand-new-backend-status"],
+      }),
+    );
+    renderMovie();
+
+    expect(
+      await screen.findByText(
+        "2 releases found, but none qualified. Rejected for: brand-new-backend-status.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("stays cause-neutral (and singular) when releases were found but no rejection reason was reported", async () => {
+    // Everything Prowlarr returned was dropped by the title/language filter
+    // before grading ran, so there is no status to name — asserting a
+    // seeder/quality cause here would be a lie.
+    stubWithPreview(emptyPreview({ rawReleaseCount: 1, matchedReleaseCount: 0 }));
+    renderMovie();
+
+    expect(
+      await screen.findByText("1 release found, but none qualified."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Rejected for:/)).not.toBeInTheDocument();
+  });
+
+  it("renders NO explanation at all when the grid is populated", async () => {
+    const preview = emptyPreview({ rawReleaseCount: 3, matchedReleaseCount: 3 });
+    preview.res1080.high.torrent = candidate({ title: "Good.Release" });
+    stubWithPreview(preview);
+    renderMovie();
+
+    expect(await screen.findByRole("button", { name: "Grab" })).not.toBeDisabled();
+    expect(screen.queryByText(/none qualified/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No matching releases found for this search."),
+    ).not.toBeInTheDocument();
   });
 });
 

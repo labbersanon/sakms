@@ -108,8 +108,20 @@ func resolveAdultReleases(ctx context.Context, sess *mode.Session, store *adultn
 			log.Printf("adult release cache: store error for scene=%q — falling back to live search: %v", key, err)
 		} else if len(fresh) > 0 {
 			out := filterForConsumer(fresh, consumer, req.Title)
-			log.Printf("adult release cache: HIT scene=%q candidates=%d (after consumer filter: %d) — no Prowlarr search", key, len(fresh), len(out))
-			return adultResolution{Releases: out, FromCache: true}, nil
+			// Claude 2026-08-11: empty-after-filter is a MISS, not a HIT.
+			// Reason: a Show More page can leave only title-mismatched links, or
+			// the unattended title gate can empty the set — returning FromCache
+			// with zero candidates would freeze an empty grid/dispatch for the
+			// whole protocol window with no force-refresh (code-review HIGH/MEDIUM).
+			// Troubleshooting: HIT with candidates=0 after filter means a bug; we
+			// fall through to live search instead.
+			// Review if: DetailPopup gains an explicit force-refresh that can
+			// invalidate links without a live miss path.
+			if len(out) > 0 {
+				log.Printf("adult release cache: HIT scene=%q candidates=%d (after consumer filter: %d) — no Prowlarr search", key, len(fresh), len(out))
+				return adultResolution{Releases: out, FromCache: true}, nil
+			}
+			log.Printf("adult release cache: STALE-HIT scene=%q raw=%d usable=0 — falling through to live search", key, len(fresh))
 		}
 	}
 

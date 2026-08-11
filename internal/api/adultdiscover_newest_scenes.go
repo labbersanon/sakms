@@ -266,7 +266,17 @@ func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, re
 			// key can be formed here — the primary box:sceneId link was already
 			// written during the original enrichment pass.
 			if releaseStore != nil && items[i].Title != "" {
-				linkSceneKey(ctx, releaseStore, adultSceneKey("", "", items[i].Title), items[i].DownloadURL, "cache-hit title key")
+				// Cache-hit path has no SceneID; link the full page under the
+				// title:normalized key so a later DetailPopup open sees every
+				// raw candidate from this Show More response (same HIGH fix as
+				// the fresh-match branch), not only the single hit URL.
+				titleKey := adultSceneKey("", "", items[i].Title)
+				for _, it := range items {
+					if it.DownloadURL == "" {
+						continue
+					}
+					linkSceneKey(ctx, releaseStore, titleKey, it.DownloadURL, "cache-hit title key full-page")
+				}
 			}
 			continue
 		}
@@ -305,15 +315,23 @@ func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, re
 					if err := releaseStore.UpsertSceneMatch(ctx, sceneMatchFromItem(items[pos], mr.Box)); err != nil {
 						log.Printf("adult newest entity-scenes: caching scene match failed (non-fatal): %v", err)
 					}
-					// A2(b): link under BOTH the box:sceneId key (primary, when
-					// available) and the title:normalized key (always — so
-					// resolveAdultReleases finds this release regardless of how
-					// the caller derives their own key). PK dedupes duplicate
-					// link rows.
+					// A2(b) + code-review HIGH fix: link EVERY release from this
+					// Show More page to the matched scene's keys — not only the
+					// enrichment-matched URL. Linking only the match left
+					// DetailPopup serving a permanently truncated candidate grid
+					// on cache HIT (up to 2 years for NZB). Display still drops
+					// unmatched items below; persistence association is the full
+					// raw page. PK dedupes duplicate link rows.
 					primaryKey := adultSceneKey(mr.Box, mr.SceneID, items[pos].Title)
-					linkSceneKey(ctx, releaseStore, primaryKey, items[pos].DownloadURL, "primary key")
-					if titleKey := adultSceneKey("", "", items[pos].Title); items[pos].Title != "" && titleKey != primaryKey {
-						linkSceneKey(ctx, releaseStore, titleKey, items[pos].DownloadURL, "title key")
+					titleKey := adultSceneKey("", "", items[pos].Title)
+					for _, it := range items {
+						if it.DownloadURL == "" {
+							continue
+						}
+						linkSceneKey(ctx, releaseStore, primaryKey, it.DownloadURL, "primary key full-page")
+						if items[pos].Title != "" && titleKey != primaryKey {
+							linkSceneKey(ctx, releaseStore, titleKey, it.DownloadURL, "title key full-page")
+						}
 					}
 				}
 			}

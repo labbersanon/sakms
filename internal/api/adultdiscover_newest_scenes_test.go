@@ -732,9 +732,9 @@ func TestAdultNewestPool_DistinctEntitiesSameTitleNotCollapsed(t *testing.T) {
 // TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease is §4.3 edit 1: every
 // raw Prowlarr release is written to adult_release_cache immediately after the
 // search, regardless of whether enrichment later matches it. 4 releases, 2
-// matched → response 2 items, 4 cache rows (all raw), links only for the 2
-// matched items (both primary box:sceneId and title:normalized keys per
-// amendment A2(b)).
+// matched → response 2 items, 4 cache rows (all raw). Each matched scene is
+// linked to the FULL page of releases (code-review HIGH fix) under both the
+// primary box:sceneId key and the title:normalized key (amendment A2(b)).
 func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
 	origTPDB := tpdbrest.DefaultBaseURL
 	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
@@ -796,15 +796,15 @@ func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
 		t.Errorf("expected 4 cache rows (all raw releases persisted), got %d", cacheCount)
 	}
 
-	// §4.3 edit 2 (A2(b)): matched releases are linked under both the
-	// primary box:sceneId key and the title:normalized key.
+	// §4.3 edit 2 (A2(b) + HIGH fix): each matched scene is linked to ALL 4
+	// raw releases from the page under both primary and title keys.
 	primaryCrimson := adultSceneKey("tpdb", "tsc-crimson", "Crimson Autumn")
 	gotBPrimary, err := releaseStore.FreshReleasesForScene(ctx, primaryCrimson, time.Now())
 	if err != nil {
 		t.Fatalf("FreshReleasesForScene(%q): %v", primaryCrimson, err)
 	}
-	if len(gotBPrimary) != 1 || gotBPrimary[0].DownloadURL != "magnet:r1" {
-		t.Errorf("expected r1 linked under primary key %q, got %+v", primaryCrimson, gotBPrimary)
+	if len(gotBPrimary) != 4 {
+		t.Errorf("expected all 4 page releases linked under primary key %q, got %d (%+v)", primaryCrimson, len(gotBPrimary), gotBPrimary)
 	}
 
 	titleCrimson := adultSceneKey("", "", "Crimson Autumn")
@@ -812,8 +812,8 @@ func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FreshReleasesForScene(%q): %v", titleCrimson, err)
 	}
-	if len(gotByTitle) != 1 || gotByTitle[0].DownloadURL != "magnet:r1" {
-		t.Errorf("expected r1 linked under title key %q, got %+v", titleCrimson, gotByTitle)
+	if len(gotByTitle) != 4 {
+		t.Errorf("expected all 4 page releases linked under title key %q, got %d (%+v)", titleCrimson, len(gotByTitle), gotByTitle)
 	}
 
 	titleSilver := adultSceneKey("", "", "Silver Lake")
@@ -821,19 +821,21 @@ func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FreshReleasesForScene(%q): %v", titleSilver, err)
 	}
-	if len(gotSilver) != 1 || gotSilver[0].DownloadURL != "magnet:r2" {
-		t.Errorf("expected r2 linked under title key %q, got %+v", titleSilver, gotSilver)
+	if len(gotSilver) != 4 {
+		t.Errorf("expected all 4 page releases linked under title key %q, got %d (%+v)", titleSilver, len(gotSilver), gotSilver)
 	}
 
-	// Unmatched releases must have zero scene links — persisted but not linked.
-	var linkCount int
+	// Unmatched-as-display releases (r3/r4) are still linked to matched scenes so
+	// DetailPopup can serve the full raw page — they remain in adult_release_cache
+	// and appear under the scene keys above. Display drop-unmatched is unchanged.
+	var orphanLinks int
 	if err := db.QueryRowContext(ctx,
 		`SELECT count(*) FROM adult_release_scene_links WHERE download_url IN ('magnet:r3','magnet:r4')`,
-	).Scan(&linkCount); err != nil {
-		t.Fatalf("counting links for unmatched releases: %v", err)
+	).Scan(&orphanLinks); err != nil {
+		t.Fatalf("counting links for display-unmatched releases: %v", err)
 	}
-	if linkCount != 0 {
-		t.Errorf("expected 0 links for unmatched releases (persisted but not linked), got %d", linkCount)
+	if orphanLinks == 0 {
+		t.Errorf("expected display-unmatched releases to be linked to matched scenes (full-page link fix), got 0")
 	}
 }
 

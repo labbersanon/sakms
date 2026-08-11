@@ -497,7 +497,7 @@ func TestDiscoverAvailability_Adult_SecondOpenMakesZeroProwlarrCalls(t *testing.
 		t.Fatalf("checking cache: %v", err)
 	}
 	if len(fresh) == 0 {
-		t.Skip("no fresh rows in cache — DB not available or schema mismatch")
+		t.Fatalf("expected fresh cache rows after first open; PersistReleases/link path is broken")
 	}
 
 	// Second open — must NOT add a Prowlarr call.

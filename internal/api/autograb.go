@@ -351,40 +351,44 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req ap
 				usedStudioTitleQuery = true
 			}
 		}
-		// Claude 2026-08-11: when the effective query came from Studio+Title
+		// Claude 2026-08-11 (revised — see CHANGELOG.md for the superseded
+		// first attempt): when the effective query came from Studio+Title
 		// (directly, or via the 0-result retry above), also search with the
-		// studio name's internal whitespace stripped, and merge any
+		// studio name DROPPED ENTIRELY (title only), and merge any
 		// additional releases found into the result set.
 		// Reason: confirmed live against NZBGeek (a real configured Usenet
-		// indexer) — a scene from studio "Cathy's Craving" has NZBGeek
-		// releases titled "CathysCraving.26.02.08...", one unbroken token
-		// with no delimiter between the two studio words. A query built from
-		// the spaced Studio+Title form ("Cathys Craving ...") returned 2
-		// torrent releases from other indexers but ZERO from NZBGeek, even
-		// though NZBGeek had 3 matching NZB releases the whole time — Discover
-		// then showed only the 2 torrents, both under Adult's seeder floor,
-		// and reported "too few seeders" as if that were the whole story.
-		// Skipped when the studio name has no internal space to strip
-		// (nothing to gain, no extra Prowlarr call for the common
-		// single-word-studio case) or when err != nil (nothing to merge
-		// into). Reuses dedupeReleases (searchdedup.go), the same
-		// downloadURL/normalizedTitle merge already used to collapse
-		// cross-indexer duplicates elsewhere in this file.
+		// indexer) for a "Cathy's Craving" scene. The first fix attempted
+		// here stripped only the studio name's internal whitespace
+		// ("Cathys Craving" -> "CathysCraving Scene 1000 ..."), deployed,
+		// then re-verified against production logs — it found nothing new:
+		// NZBGeek didn't match that query either, only the SAME 2 torrent
+		// releases a different, more lenient tracker matched for both the
+		// spaced and no-space-studio forms. NZBGeek only matched a query
+		// with NO studio token at all ("Scene 1000: teasing cheerleader",
+		// confirmed directly in Prowlarr's own search UI) — title-only is
+		// the query that actually reproduces that live result. This is
+		// ADDITIVE, never a replacement: dropping the studio loses the
+		// precision Studio+Title exists for in the first place, so a
+		// same-titled release from an unrelated studio can appear in the
+		// merged set — but it still has to clear FilterReleases' own
+		// title-similarity match downstream before it can reach the grid or
+		// a grab, the same safety net every other broad query on this path
+		// already relies on. Skipped when title-only is empty or identical
+		// to a query already sent (nothing to gain) or when err != nil
+		// (nothing to merge into). Reuses dedupeReleases (searchdedup.go),
+		// the same downloadURL/normalizedTitle merge already used to
+		// collapse cross-indexer duplicates elsewhere in this file.
 		if err == nil && usedStudioTitleQuery {
-			trimmedStudio := strings.TrimSpace(req.Studio)
-			noSpaceStudio := strings.ReplaceAll(trimmedStudio, " ", "")
-			if noSpaceStudio != "" && noSpaceStudio != trimmedStudio {
-				altQuery := normalizeAdultQuery(noSpaceStudio + " " + strings.TrimSpace(req.Title))
-				if altQuery != "" && altQuery != normalizeAdultQuery(studioTitle) {
-					extra, extraErr := sess.Prowlarr.Search(ctx, altQuery, []int{adultAutoGrabCategory})
-					if extraErr != nil {
-						log.Printf("autoGrabSearch: mode=adult no-space-studio variant query %q failed: %v", altQuery, extraErr)
-					} else {
-						log.Printf("autoGrabSearch: mode=adult no-space-studio variant query %q returned %d releases (base query returned %d)", altQuery, len(extra), len(releases))
-						releases = dedupeReleases(append(releases, extra...), func(rel prowlarr.Release) releaseDedupKey {
-							return releaseDedupKey{downloadURL: rel.DownloadURL, normalizedTitle: normalizeAdultQuery(rel.Title), seeders: rel.Seeders}
-						})
-					}
+			titleOnlyQuery := normalizeAdultQuery(strings.TrimSpace(req.Title))
+			if titleOnlyQuery != "" && titleOnlyQuery != normalizeAdultQuery(studioTitle) && titleOnlyQuery != query {
+				extra, extraErr := sess.Prowlarr.Search(ctx, titleOnlyQuery, []int{adultAutoGrabCategory})
+				if extraErr != nil {
+					log.Printf("autoGrabSearch: mode=adult title-only variant query %q failed: %v", titleOnlyQuery, extraErr)
+				} else {
+					log.Printf("autoGrabSearch: mode=adult title-only variant query %q returned %d releases (base query returned %d)", titleOnlyQuery, len(extra), len(releases))
+					releases = dedupeReleases(append(releases, extra...), func(rel prowlarr.Release) releaseDedupKey {
+						return releaseDedupKey{downloadURL: rel.DownloadURL, normalizedTitle: normalizeAdultQuery(rel.Title), seeders: rel.Seeders}
+					})
 				}
 			}
 		}

@@ -448,6 +448,12 @@ export function fetchAdultDescription(
 // — the raw Prowlarr release title the backend prefers as its search query
 // when present, since it's real indexer vocabulary that already matched once,
 // unlike a query reconstructed from title/studio).
+//
+// box/sceneId carry the catalog scene identity, sent only for catalog-sourced
+// items with a non-empty id (A2(c) guard — never for prowlarr-sourced Show More
+// items). The backend keys its persisted-release cache on box:sceneId so a
+// re-open can be served without a Prowlarr search. performers is a soft identity
+// signal server-side; it never hard-rejects a release.
 interface AvailabilityPreviewParams {
   title: string;
   tmdbId?: number;
@@ -456,6 +462,9 @@ interface AvailabilityPreviewParams {
   studio?: string;
   releaseTitle?: string;
   durationSeconds?: number;
+  box?: string;
+  sceneId?: string;
+  performers?: string[];
 }
 
 // fetchAvailabilityPreview runs DetailPopup's one upfront, user-click-
@@ -478,6 +487,11 @@ export function fetchAvailabilityPreview(
     if (params.releaseTitle) q.set("releaseTitle", params.releaseTitle);
     if (params.durationSeconds != null) {
       q.set("durationSeconds", String(params.durationSeconds));
+    }
+    if (params.box) q.set("box", params.box);
+    if (params.sceneId) q.set("sceneId", params.sceneId);
+    if (params.performers && params.performers.length > 0) {
+      q.set("performers", params.performers.join(","));
     }
   } else {
     if (params.tmdbId != null) q.set("tmdbId", String(params.tmdbId));

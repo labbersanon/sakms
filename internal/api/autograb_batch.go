@@ -358,12 +358,10 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	// candidate and picks explicitly — consistent with how the batch surfaces
 	// quality-floor misses (three-state honesty).
 	//
-	// A4: TriggerRetry calls Run AutoGrab, not grabOneBatchItem, so TriggerRetry
+	// A4: TriggerRetry calls RunAutoGrab, not grabOneBatchItem, so TriggerRetry
 	// Adult always-weak is handled there (weakIdentityReason in RunAutoGrab).
-	if m == mode.Adult {
-		if adultIdentityWeak(req.Studio, req.Performers, releases[sel.PickIndex].Title) {
-			return nil, true, false, rankedAutoGrabCandidates(sel, releases), "identity signals too thin for unattended dispatch — pick one below", nil
-		}
+	if m == mode.Adult && adultIdentityWeak(req.Studio, req.Performers, releases[sel.PickIndex].Title) {
+		return nil, true, false, rankedAutoGrabCandidates(sel, releases), "identity signals too thin for unattended dispatch — pick one below", nil
 	}
 
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)

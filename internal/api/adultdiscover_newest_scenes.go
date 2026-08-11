@@ -166,6 +166,16 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, scStore *servi
 		}
 		log.Printf("adult newest entity-scenes: kind=%q name=%q page=%d — Prowlarr returned %d releases", kind, name, page, len(releases))
 
+		// Persist the raw list immediately so the cache is populated regardless
+		// of whether enrichment matches anything. nil sceneKeys = "no links yet";
+		// links are written per-matched-release inside enrichNewestScenesShowMore.
+		// Best-effort: a cache failure must never block the Show More response.
+		if releaseStore != nil {
+			if perr := releaseStore.PersistReleases(tctx, query, releases, nil); perr != nil {
+				log.Printf("adult newest entity-scenes: persisting raw releases (non-fatal): %v", perr)
+			}
+		}
+
 		items := make([]apidto.AdultDiscoverItem, 0, len(releases))
 		for _, rel := range releases {
 			items = append(items, apidto.AdultDiscoverItem{
@@ -196,6 +206,15 @@ func parseNewestPage(s string) int {
 		return 1
 	}
 	return n
+}
+
+// linkSceneKey records one release-to-scene link, logging rather than returning
+// a failure: a link is a cache optimisation and must never fail Show More. label
+// names the key kind in the log line so the three call sites stay distinguishable.
+func linkSceneKey(ctx context.Context, releaseStore *adultnewest.ReleaseStore, sceneKey, downloadURL, label string) {
+	if err := releaseStore.LinkReleaseToScene(ctx, sceneKey, downloadURL); err != nil {
+		log.Printf("adult newest entity-scenes: linking %s (non-fatal): %v", label, err)
+	}
 }
 
 // enrichNewestScenesShowMore is the page>1 enrichment pass over the raw Prowlarr
@@ -243,6 +262,12 @@ func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, re
 		if m, ok := cache[items[i].DownloadURL]; ok && items[i].DownloadURL != "" {
 			applyCachedSceneMatch(&items[i], m)
 			keep[i] = true
+			// A2(b): SceneMatch stores no SceneID, so only the title:normalized
+			// key can be formed here — the primary box:sceneId link was already
+			// written during the original enrichment pass.
+			if releaseStore != nil && items[i].Title != "" {
+				linkSceneKey(ctx, releaseStore, adultSceneKey("", "", items[i].Title), items[i].DownloadURL, "cache-hit title key")
+			}
 			continue
 		}
 		missIdx = append(missIdx, i)
@@ -271,13 +296,24 @@ func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, re
 					pos := missIdx[mi]
 					applyCatalogEnrichment(&items[pos], mr)
 					keep[pos] = true
+					if items[pos].DownloadURL == "" {
+						continue
+					}
 					// Write-through cache under the outer ctx (not the enrich
 					// sub-timeout) so a slow box that still returned a match
 					// doesn't lose the cache write to cancellation.
-					if items[pos].DownloadURL != "" {
-						if err := releaseStore.UpsertSceneMatch(ctx, sceneMatchFromItem(items[pos], mr.Box)); err != nil {
-							log.Printf("adult newest entity-scenes: caching scene match failed (non-fatal): %v", err)
-						}
+					if err := releaseStore.UpsertSceneMatch(ctx, sceneMatchFromItem(items[pos], mr.Box)); err != nil {
+						log.Printf("adult newest entity-scenes: caching scene match failed (non-fatal): %v", err)
+					}
+					// A2(b): link under BOTH the box:sceneId key (primary, when
+					// available) and the title:normalized key (always — so
+					// resolveAdultReleases finds this release regardless of how
+					// the caller derives their own key). PK dedupes duplicate
+					// link rows.
+					primaryKey := adultSceneKey(mr.Box, mr.SceneID, items[pos].Title)
+					linkSceneKey(ctx, releaseStore, primaryKey, items[pos].DownloadURL, "primary key")
+					if titleKey := adultSceneKey("", "", items[pos].Title); items[pos].Title != "" && titleKey != primaryKey {
+						linkSceneKey(ctx, releaseStore, titleKey, items[pos].DownloadURL, "title key")
 					}
 				}
 			}
@@ -398,7 +434,7 @@ func poolReleaseToDiscoverItem(m adultnewest.MatchedRelease, feedHealth *adultne
 		Performers:      m.Performers,
 		ReleaseTitle:    m.FirstSeenReleaseTitle,
 	}
-	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
+	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.DownloadProtocol, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
 		it.DownloadURL = url
 		it.Protocol = m.DownloadProtocol
 		it.SizeBytes = m.SizeBytes

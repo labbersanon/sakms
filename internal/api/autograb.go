@@ -81,10 +81,9 @@ func minSeedersFor(m mode.Mode) int {
 	return autograb.DefaultMinSeeders
 }
 
-// indexerOrFeed returns indexer when non-empty, otherwise "feed". Used by
-// grabDirectEnclosure to record the real Prowlarr indexer for cache-sourced
-// Adult grabs (where req.Indexer carries the cached release's indexer) while
-// keeping "feed" for plain RSS/enclosure items that bypass any indexer search.
+// indexerOrFeed names the indexer a direct-enclosure grab is recorded under:
+// the cached release's real Prowlarr indexer when the persistence feeder
+// supplied one, else "feed" for plain RSS items that bypass any indexer search.
 func indexerOrFeed(indexer string) string {
 	if indexer != "" {
 		return indexer
@@ -138,28 +137,23 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			return
 		}
 
-		// Adult persistence feeder (§6.1/A2): for Adult items without their own
-		// enclosure URL, try the release cache before any Prowlarr search. A cache
-		// hit with strong identity dispatches straight to the download client and
-		// records the real indexer (not "feed"). A weak-identity hit passes the
-		// cached release through RunAutoGrab's weak-identity staging block (A6)
-		// below. A cache miss falls through to the normal search path.
-		//
-		// Fires ONLY when req.DownloadURL is empty so that plain RSS/feed items
-		// carrying their own enclosure URL bypass the cache entirely (card
-		// enclosure wins over cache — §7.3).
+		// Adult persistence feeder (§6.1/A2): try the release cache before any
+		// Prowlarr search. Fires ONLY when req.DownloadURL is empty, so a plain
+		// RSS/feed item carrying its own enclosure bypasses the cache entirely
+		// (card enclosure wins over cache — §7.3); a cache miss falls through to
+		// the normal search path.
 		if m == mode.Adult && strings.TrimSpace(req.DownloadURL) == "" {
 			if cached, ok := pickPersistedAdultEnclosure(ctx, store, settingsStore, req); ok {
 				if adultIdentityWeak(req.Studio, req.Performers, cached.Title) {
-					// Weak identity: route through RunAutoGrab so the A6 staging
-					// block parks the pending_retry row. Pass the cached release as
-					// Releases so RunAutoGrab skips its internal autoGrabSearch.
+					// Route through RunAutoGrab so its A6 staging block parks the
+					// pending_retry row. Passing the cached release as Releases is
+					// what makes RunAutoGrab skip its internal autoGrabSearch.
 					out, err := RunAutoGrab(ctx, AutoGrabDeps{
 						SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, ReleaseStore: store,
 					}, sess, AutoGrabRequest{
 						Mode: m, Title: req.Title, Studio: req.Studio,
 						DurationSeconds: req.DurationSeconds,
-						Box: req.Box, SceneID: req.SceneID, Performers: req.Performers,
+						Box:             req.Box, SceneID: req.SceneID, Performers: req.Performers,
 						Trigger:        TriggerOperator,
 						Releases:       []prowlarr.Release{cached},
 						RuntimeSeconds: float64(req.DurationSeconds),
@@ -179,9 +173,9 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 					}
 					return
 				}
-				// Strong identity: populate enclosure fields and fall through to
-				// grabDirectEnclosure below. indexerOrFeed(req.Indexer) records the
-				// real indexer (not "feed") when the cache carries one (§7.3/A2).
+				// Strong identity: populate the enclosure fields and fall through
+				// to grabDirectEnclosure below, which stamps the cached release's
+				// real indexer rather than "feed" (§7.3/A2).
 				req.DownloadURL = cached.DownloadURL
 				req.DownloadProtocol = string(cached.Protocol)
 				if req.Indexer == "" {
@@ -265,12 +259,9 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 // (autoGrabHandler) and bulk (grabOneBatchItem) direct-grab paths, so a card
 // grabbed singly or in bulk takes the identical Prowlarr-free path (C1/D4). No
 // Prowlarr search, no candidate scoring; the root folder is resolved
-// server-side (a true one-click grab supplies only the enclosure + title).
-// Indexer is indexerOrFeed(req.Indexer): "feed" for plain RSS/enclosure items
-// that never touch an indexer search; the real indexer name for cache-sourced
-// Adult grabs where the persistence feeder sets req.Indexer from the cached
-// release (§6.1/A2). Returns the recorded grab DTO plus the HTTP status a
-// caller should surface on error.
+// server-side (a true one-click grab supplies only the enclosure + title), and
+// the indexer is named by indexerOrFeed. Returns the recorded grab DTO plus the
+// HTTP status a caller should surface on error.
 func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (dto *apidto.Grab, alreadyGrabbing bool, status int, err error) {
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
 	if err != nil {

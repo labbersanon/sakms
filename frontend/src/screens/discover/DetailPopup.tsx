@@ -321,8 +321,9 @@ const ADULT_SOURCE_LABEL: Record<string, string> = {
 // firing the request for it. Module scope like every other fixed-set
 // constant in this file (RESOLUTIONS_DESC/TIERS/PROTOCOLS above): it was
 // previously declared inside the component body, re-allocating it on every
-// popup mount for no reason.
-const CATALOG_SOURCES = ["tpdb", "stashdb", "fansdb"];
+// popup mount for no reason. Exported because Adult.tsx's bulk-grab target
+// builder needs the identical set to decide whether to send box/sceneId.
+export const CATALOG_SOURCES = ["tpdb", "stashdb", "fansdb"];
 
 // externalDetailURL builds the link to this title's page on its source
 // database — TMDB for Movies/Series (DiscoverItem.id is TMDB's own numeric
@@ -551,11 +552,22 @@ export const DetailPopup: Component<{
     ({ m, i, se }) => {
       if (m === "adult") {
         const scene = i as AdultDiscoverItem;
+        // Claude 2026-08-11: box/sceneId let the backend resolver build a stable
+        // box:sceneId cache key for the persisted-release cache.
+        // Reason: A2(c) — they are sent ONLY for catalog-sourced items with a
+        // non-empty id. Show More items arrive as source="prowlarr" with no id,
+        // so those popups must never send box="prowlarr".
+        // Review if: a Show More item ever carries a real catalog id (currently
+        // internal/api/adultdiscover_newest_scenes.go emits source="prowlarr", no id).
+        const isCatalog = CATALOG_SOURCES.includes(scene.source) && !!scene.id;
         return fetchAvailabilityPreview("adult", {
           title: scene.title,
           studio: scene.studio,
           releaseTitle: scene.releaseTitle,
           durationSeconds: scene.durationSeconds,
+          box: isCatalog ? scene.source : undefined,
+          sceneId: isCatalog ? scene.id : undefined,
+          performers: scene.performers?.length ? scene.performers : undefined,
         });
       }
       const title = i as DiscoverItem;

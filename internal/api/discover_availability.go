@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/connections"
@@ -61,7 +62,10 @@ var discoverAvailabilityTiers = []quality.Tier{quality.Low, quality.Medium, qual
 // card). This handler therefore requires a `title` query param for every
 // mode (Adult already needed one per the plan) rather than issuing a second
 // TMDB call purely to recover a title the frontend already has in hand.
-func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
+//
+// releaseStore backs Adult's cache-first resolution; nil degrades to a live
+// search, which is why non-Adult tests can pass nil.
+func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -94,8 +98,13 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		req := apidto.AutoGrabRequest{Title: title}
 		switch m {
 		case mode.Adult:
+			// box/sceneId feed resolveAdultReleases' cache key; performers is a
+			// SOFT signal only — it never hard-rejects a candidate here.
 			req.Studio = q.Get("studio")
 			req.ReleaseTitle = q.Get("releaseTitle")
+			req.Performers = splitCommaTrim(q.Get("performers"))
+			req.Box = q.Get("box")
+			req.SceneID = q.Get("sceneId")
 			req.DurationSeconds = queryInt(q, "durationSeconds", 0)
 		case mode.Series:
 			req.TMDBID = queryInt(q, "tmdbId", 0)
@@ -121,10 +130,34 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			req.TMDBID = queryInt(q, "tmdbId", 0)
 		}
 
-		releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, req)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+		// Claude 2026-08-11: Adult resolves cache-first via resolveAdultReleases
+		// with adultConsumerPicker; Movies/Series still go through autoGrabSearch.
+		// Reason: "search once, persist, reuse" — DetailPopup must not re-query
+		// Prowlarr on every re-open of the same scene. The picker consumer gets
+		// the RAW list so FilterReleases below can still run its AI escalation
+		// path over the full set.
+		// Troubleshooting: empty grid despite a fresh cache → check HIT/MISS log
+		// lines via o2cli; the grid filters via FilterReleases, not the resolver,
+		// so a cache hit with 0 title-matching candidates is expected.
+		// Review if: a non-Adult mode ever needs release persistence.
+		var releases []prowlarr.Release
+		var runtimeSeconds float64
+		if m == mode.Adult {
+			res, err := resolveAdultReleases(ctx, sess, releaseStore, adultConsumerPicker, req)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			releases = res.Releases
+			runtimeSeconds = float64(req.DurationSeconds)
+			log.Printf("discover availability: mode=adult title=%q servedFromCache=%v", title, res.FromCache)
+		} else {
+			var err error
+			releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, m, releaseStore, req)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
 		}
 		log.Printf("discover availability: mode=%s title=%q tmdbId=%d — Prowlarr returned %d raw releases, runtimeSeconds=%.0f",
 			m, title, req.TMDBID, len(releases), runtimeSeconds)

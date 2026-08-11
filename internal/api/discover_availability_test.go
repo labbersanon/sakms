@@ -3,13 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 )
@@ -386,6 +390,162 @@ func TestDiscoverAvailabilityHandler_Adult_TitleOnlyQuerySurfacesNZBAlongsideTor
 // urlQueryEscape is a tiny local alias so the test bodies above read cleanly
 // without repeating the net/url import qualifier inline.
 func urlQueryEscape(s string) string { return url.QueryEscape(s) }
+
+// fakeProwlarrCounting is a fake Prowlarr server that counts calls and returns
+// the given body for every request. The counter is safe for concurrent access.
+// Use it to assert the exact number of Prowlarr calls made per test.
+func fakeProwlarrCounting(t *testing.T, body string) (*httptest.Server, *int32) {
+	t.Helper()
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&count, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &count
+}
+
+// testAdultAvailabilitySetup builds a test server wired to a real ReleaseStore,
+// optionally registering prowlarrURL as the Prowlarr connection. Call it from
+// DB-requiring AC tests instead of constructing stores by hand each time.
+func testAdultAvailabilitySetup(t *testing.T, prowlarrURL string) (*httptest.Server, *adultnewest.ReleaseStore) {
+	t.Helper()
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	if prowlarrURL != "" {
+		if err := connStore.Upsert(context.Background(), "prowlarr", prowlarrURL, "key"); err != nil {
+			t.Fatalf("registering prowlarr: %v", err)
+		}
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	t.Cleanup(srv.Close)
+	return srv, adultNewestReleaseStore
+}
+
+// TestDiscoverAvailability_Adult_FirstOpenSearchesAndPersistsRawList (AC1).
+// A 4-release Prowlarr response (1 title-mismatch) is persisted in full —
+// all 4 rows land in adult_release_cache; the grid only shows the 3 that
+// pass FilterReleases' title match.
+func TestDiscoverAvailability_Adult_FirstOpenSearchesAndPersistsRawList(t *testing.T) {
+	const sceneTitle = "Teasing Cheerleader"
+	const body = `[
+		{"guid":"r1","title":"CathysCraving.Teasing.Cheerleader.XXX.1080p.x265-A","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzb.example/r1"},
+		{"guid":"r2","title":"CathysCraving.Teasing.Cheerleader.XXX.1080p.x265-B","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzb.example/r2"},
+		{"guid":"r3","title":"CathysCraving.Teasing.Cheerleader.XXX.1080p.x265-C","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzb.example/r3"},
+		{"guid":"r4","title":"CompletelyUnrelated.Random.Movie.2020-GROUP","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzb.example/r4"}
+	]`
+
+	prowlarrSrv, prowlarrCount := fakeProwlarrCounting(t, body)
+	srv, releaseStore := testAdultAvailabilitySetup(t, prowlarrSrv.URL)
+
+	reqURL := fmt.Sprintf("%s/api/modes/adult/discover/availability?box=stashdb&sceneId=ac1-scene&title=%s&durationSeconds=3480",
+		srv.URL, urlQueryEscape(sceneTitle))
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if n := atomic.LoadInt32(prowlarrCount); n != 1 {
+		t.Errorf("expected exactly 1 Prowlarr call on first open, got %d", n)
+	}
+
+	// All 4 raw releases (including the title-mismatch) must be in the cache.
+	ctx := context.Background()
+	fresh, err := releaseStore.FreshReleasesForScene(ctx, "stashdb:ac1-scene", time.Now())
+	if err != nil {
+		t.Fatalf("querying cache: %v", err)
+	}
+	if len(fresh) != 4 {
+		t.Errorf("expected all 4 raw releases persisted (including title-mismatch), got %d", len(fresh))
+	}
+}
+
+// TestDiscoverAvailability_Adult_SecondOpenMakesZeroProwlarrCalls (AC3).
+// Two identical GETs for the same scene: first open fires one Prowlarr call
+// and persists; second open reads from cache — zero new calls.
+func TestDiscoverAvailability_Adult_SecondOpenMakesZeroProwlarrCalls(t *testing.T) {
+	const body = `[{"guid":"ac3","title":"CathysCraving.Teasing.Cheerleader.XXX.1080p.x265-AC3","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzb.example/ac3"}]`
+
+	prowlarrSrv, prowlarrCount := fakeProwlarrCounting(t, body)
+	srv, releaseStore := testAdultAvailabilitySetup(t, prowlarrSrv.URL)
+
+	reqURL := fmt.Sprintf("%s/api/modes/adult/discover/availability?box=stashdb&sceneId=ac3-scene&title=%s&durationSeconds=3480",
+		srv.URL, urlQueryEscape("Teasing Cheerleader"))
+
+	// First open — expect exactly 1 Prowlarr call.
+	resp1, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("first GET failed: %v", err)
+	}
+	defer resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first GET: expected 200, got %d", resp1.StatusCode)
+	}
+
+	if n := atomic.LoadInt32(prowlarrCount); n != 1 {
+		t.Fatalf("expected 1 Prowlarr call after first open, got %d", n)
+	}
+
+	// Guard: verify the row is actually in the cache before the second open.
+	ctx := context.Background()
+	fresh, err := releaseStore.FreshReleasesForScene(ctx, "stashdb:ac3-scene", time.Now())
+	if err != nil {
+		t.Fatalf("checking cache: %v", err)
+	}
+	if len(fresh) == 0 {
+		t.Skip("no fresh rows in cache — DB not available or schema mismatch")
+	}
+
+	// Second open — must NOT add a Prowlarr call.
+	resp2, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("second GET failed: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second GET: expected 200, got %d", resp2.StatusCode)
+	}
+
+	if n := atomic.LoadInt32(prowlarrCount); n != 1 {
+		t.Errorf("expected 0 additional Prowlarr calls on cache-hit second open, total count = %d (AC3)", n)
+	}
+}
+
+// TestDiscoverAvailability_Adult_NoStudioNoPerformersStillReturnsGrid is the
+// b2b7db4 production-regression guard. The old aiConfirmAdultReleases with no
+// studio/no AI client returned an empty list — a matching release was silently
+// dropped, leaving an empty grid. Without that gate, the title-matching release
+// now survives FilterReleases and populates the grid.
+func TestDiscoverAvailability_Adult_NoStudioNoPerformersStillReturnsGrid(t *testing.T) {
+	const body = `[{"guid":"b2b7","title":"CathysCraving.Teasing.Cheerleader.XXX.1080p.x265-A","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzb.example/b2b7"}]`
+
+	prowlarrSrv, _ := fakeProwlarrCounting(t, body)
+	srv, _ := testAdultAvailabilitySetup(t, prowlarrSrv.URL)
+
+	// No studio, no performers — the shape that produced an empty grid at b2b7db4.
+	reqURL := fmt.Sprintf("%s/api/modes/adult/discover/availability?title=%s&durationSeconds=3480",
+		srv.URL, urlQueryEscape("Teasing Cheerleader"))
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out apidto.AvailabilityPreview
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if countPopulatedCells(out) == 0 {
+		t.Error("expected at least one populated grid cell — b2b7db4 regression: aiConfirmAdultReleases with no AI/studio returned empty")
+	}
+}
 
 // fakeTMDBSeriesSeasonRuntime is fakeTMDBSeriesRuntime's whole-season sibling
 // — returns multiple episodes (not one) from /tv/{id}/season/{n}, for

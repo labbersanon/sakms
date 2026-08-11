@@ -264,4 +264,80 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
     expect("downloadUrl" in request).toBe(false);
     expect("downloadProtocol" in request).toBe(false);
   });
+
+  // §9.5 — Adult release-persistence: sceneTarget box/sceneId wiring (A2(c)).
+  it("carries box+sceneId into the batch request for catalog-sourced cards (A2(c))", async () => {
+    const calls = stubFetch(
+      oneSceneRow({
+        id: "scene-uuid-xyz",
+        title: "Catalog Scene",
+        studio: "AdultTime",
+        date: "2026-02-01",
+        image: "https://cdn.theporndb.net/scenes/catalog.jpg",
+        source: "stashdb",
+        rowType: "scene",
+        durationSeconds: 2400,
+        performers: ["Performer A"],
+        // No downloadUrl — browse-only catalog card; the point here is box/sceneId.
+      }),
+    );
+
+    renderInSelectMode();
+    const card = (await screen.findByText("Catalog Scene")).closest(
+      ".w-\\[240px\\]",
+    ) as HTMLElement;
+
+    fireEvent.click(within(card).getByText("Catalog Scene"));
+    fireEvent.click(await screen.findByText("Grab all"));
+    expect(await screen.findByText("✓ Grabbed")).toBeInTheDocument();
+
+    const items = batchItems(calls);
+    expect(items).toHaveLength(1);
+    // box+sceneId must survive into the batch payload so the backend resolver
+    // can use the stable box:sceneId cache key rather than the title-fallback key.
+    expect(items[0]).toMatchObject({
+      mode: "adult",
+      request: {
+        title: "Catalog Scene",
+        studio: "AdultTime",
+        box: "stashdb",
+        sceneId: "scene-uuid-xyz",
+      },
+    });
+  });
+
+  it("omits box/sceneId for prowlarr-sourced (Show More) cards", async () => {
+    const calls = stubFetch(
+      oneSceneRow({
+        id: "",
+        title: "ShowMore Scene",
+        studio: "Brazzers",
+        date: "2026-02-02",
+        image: "https://cdn.theporndb.net/scenes/showmore.jpg",
+        // source="prowlarr" + empty id — the Show More item shape.
+        source: "prowlarr",
+        rowType: "scene",
+        durationSeconds: 1200,
+      }),
+    );
+
+    renderInSelectMode();
+    const card = (await screen.findByText("ShowMore Scene")).closest(
+      ".w-\\[240px\\]",
+    ) as HTMLElement;
+
+    fireEvent.click(within(card).getByText("ShowMore Scene"));
+    fireEvent.click(await screen.findByText("Grab all"));
+    expect(await screen.findByText("✓ Grabbed")).toBeInTheDocument();
+
+    const request = batchItems(calls)[0]!.request as unknown as Record<
+      string,
+      unknown
+    >;
+    // Pin the fields that ARE present so this can't go vacuously green.
+    expect(request).toMatchObject({ title: "ShowMore Scene", studio: "Brazzers" });
+    // A2(c): prowlarr-sourced cards must never send box or sceneId.
+    expect("box" in request).toBe(false);
+    expect("sceneId" in request).toBe(false);
+  });
 });

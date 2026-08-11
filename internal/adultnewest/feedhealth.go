@@ -5,22 +5,24 @@ import (
 	"time"
 )
 
-// feedAvailabilityTTL is how long a feed-sourced cache row stays "fresh" after
-// the last successful poll that confirmed its enclosure present. It is the
-// absence-based safety net, deliberately sized between two other clocks:
+// Claude 2026-08-11: replaced the flat feedAvailabilityTTL with protocol-aware
+// ReleaseFresh — the single freshness predicate now shared by the feed mechanism
+// and the persisted-release cache, so the two can never drift apart.
+// Reason: A8 mandates torrent narrowing (14d→7d) and a correct NZB window (2yr),
+// neither of which a single flat constant could express.
+// Troubleshooting: the 2yr usenet window does NOT override PurgeStale's 6-month
+// entity ceiling — PurgeStale deletes by adult_newest_releases.first_seen_at, not
+// by feed activity, so a usenet feed-only row is still capped at ~6 months in
+// practice (a still-listed enclosure is recreated by the next poll with a fresh
+// first_seen_at, resetting the entity clock).
+// Review if: a third protocol is ever added to Prowlarr feeds.
+// Related files: protocolttl.go (ReleaseFresh/ProtocolTTL source of truth),
+// feedhealth_test.go (ProtocolTTL test suite).
 //
-//   - ≫ the feed poll interval (default 30 min, D7) so a continuously-present
-//     item — whose last_confirmed_seen is refreshed every poll — never
-//     accidentally TTL-expires; and
-//   - ≪ PurgeStale's 6-month cutoff so a genuinely-gone feed-only item (dropped
-//     from every poll) disappears from Discover long before it is purged.
+// The replaced constant, kept commented out rather than deleted so the old
+// sizing stays visible; do not re-introduce it:
 //
-// 14 days (≈672× the interval, ≈13× shorter than PurgeStale) gives an item that
-// rotates off a feed's recent-N RSS window a two-week grace period in which its
-// still-valid enclosure remains direct-grabbable — matching the observed reality
-// that indexer download retention far outlives the RSS listing window. A runtime
-// settings key is a trivial later upgrade; a constant suffices now.
-const feedAvailabilityTTL = 14 * 24 * time.Hour
+//	const feedAvailabilityTTL = 14 * 24 * time.Hour
 
 // feedHealthEntry is one feed's in-memory liveness. lastPollAt exists for
 // observability/debugging; freshness is gated on healthy + the row's persisted
@@ -101,9 +103,12 @@ func (h *FeedHealth) Healthy(feedID int64) bool {
 // feedFresh is the single freshness predicate backing BOTH the visibility gate
 // and the direct-grab exposure decision, so they can never drift apart: a feed
 // source is fresh iff it exists (feedID != 0), its feed's last poll succeeded,
-// and it was confirmed present within feedAvailabilityTTL.
-func (h *FeedHealth) feedFresh(feedID int64, lastConfirmedSeen, now time.Time) bool {
-	return feedID != 0 && h.Healthy(feedID) && now.Sub(lastConfirmedSeen) < feedAvailabilityTTL
+// and ReleaseFresh confirms the row is within its protocol-specific window.
+// Protocol is the Prowlarr feed protocol ("usenet" | "torrent"); unknown or
+// empty values receive the short (torrent) window — fail-short policy, never
+// fail-long (see ProtocolTTL's doc comment).
+func (h *FeedHealth) feedFresh(protocol string, feedID int64, lastConfirmedSeen, now time.Time) bool {
+	return feedID != 0 && h.Healthy(feedID) && ReleaseFresh(protocol, lastConfirmedSeen, now)
 }
 
 // Available is the request-time VISIBILITY gate every adult_newest_releases read
@@ -113,21 +118,26 @@ func (h *FeedHealth) feedFresh(feedID int64, lastConfirmedSeen, now time.Time) b
 // — which is what makes "augment = zero regression" literally true: deleting or
 // downing a feed can only ever drop a both-sourced row back to Prowlarr-grabbable
 // (see DirectGrabURL), never hide it.
-func (h *FeedHealth) Available(browseConfirmed bool, feedID int64, lastConfirmedSeen, now time.Time) bool {
-	return browseConfirmed || h.feedFresh(feedID, lastConfirmedSeen, now)
+//
+// A browse-only row (feedID == 0) never reaches the protocol predicate, so its
+// protocol value is irrelevant.
+func (h *FeedHealth) Available(browseConfirmed bool, protocol string, feedID int64, lastConfirmedSeen, now time.Time) bool {
+	return browseConfirmed || h.feedFresh(protocol, feedID, lastConfirmedSeen, now)
 }
 
 // DirectGrabURL is the request-time GRAB-PATH exposure decision every
 // card-building path applies: it returns downloadURL iff the enclosure exists
-// and its feed source is currently fresh, else "". A card's DTO downloadUrl is
-// populated ONLY from this helper, never from the raw row.download_url — so a
-// both-sourced row whose feed is unhealthy/pruned/beyond-TTL is still shown (via
-// browse_confirmed) but carries an empty enclosure, falling back to the
-// pre-existing Prowlarr GrabDialog path rather than offering a stale enclosure.
-// The enclosure is kept stored on the row throughout, so recovery (a later
-// successful poll) re-exposes it for free.
-func (h *FeedHealth) DirectGrabURL(downloadURL string, feedID int64, lastConfirmedSeen, now time.Time) string {
-	if downloadURL != "" && h.feedFresh(feedID, lastConfirmedSeen, now) {
+// and its feed source is currently fresh (protocol-aware via ReleaseFresh), else "".
+// A card's DTO downloadUrl is populated ONLY from this helper, never from the raw
+// row.download_url — so a both-sourced row whose feed is unhealthy/pruned/beyond its
+// protocol window is still shown (via browse_confirmed) but carries an empty
+// enclosure, falling back to the pre-existing Prowlarr GrabDialog path rather than
+// offering a stale enclosure. The enclosure is kept stored on the row throughout,
+// so recovery (a later successful poll) re-exposes it for free. Protocol drives
+// the window: a 60-day-old NZB enclosure is still exposed, a 60-day-old torrent
+// enclosure is not.
+func (h *FeedHealth) DirectGrabURL(downloadURL, protocol string, feedID int64, lastConfirmedSeen, now time.Time) string {
+	if downloadURL != "" && h.feedFresh(protocol, feedID, lastConfirmedSeen, now) {
 		return downloadURL
 	}
 	return ""

@@ -66,7 +66,7 @@ import {
   notConfiguredService,
 } from "./shared";
 import { useSelection } from "./selection";
-import { type DetailTarget, DetailPopup } from "./DetailPopup";
+import { type DetailTarget, CATALOG_SOURCES, DetailPopup } from "./DetailPopup";
 import { type RssFeed, fetchRssFeeds } from "../../api/rssFeeds";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
@@ -147,37 +147,51 @@ const AdultCard: Component<{
       .join(" · ");
   // A scene is one selectable item, keyed on its stash-box/TPDB scene id.
   const sceneKey = () => `adult:${props.item.id}`;
-  const sceneTarget = (): GrabTarget => ({
-    mode: "adult",
-    label: props.item.title,
-    request: {
-      title: props.item.title,
-      studio: props.item.studio,
-      releaseTitle: props.item.releaseTitle,
-      durationSeconds: props.item.durationSeconds,
-      // Direct-enclosure grab (D4/C1): when the card's feed is currently fresh
-      // it carries a downloadUrl+protocol, so the bulk batch dispatches straight
-      // to the download client and skips Prowlarr. Absent (browse-only / stale
-      // feed) → undefined, dropped by JSON.stringify → the Prowlarr search path
-      // runs unchanged. protocol maps to downloadProtocol.
-      //
-      // Claude 2026-08-02: this used to read "both the single Grab and the bulk
-      // batch"; the single-Grab half is gone with the inline Grab button.
-      // Reason: SELECT-MODE BULK GRAB IS NOW THE ONLY WAY TO REACH THE
-      // Prowlarr-skipping path for a fresh-feed scene — DetailPopup's Adult
-      // grab always searches Prowlarr and cannot carry these two fields. This
-      // is the one real capability loss in the card cleanup, accepted and
-      // recorded in .omc/plans/autopilot-impl-discover-card-cleanup.md §0.2
-      // (GATE-A).
-      // Troubleshooting: keeps the loss traceable so a future session does not
-      // read the survival of these two fields as "nothing changed".
-      // Review if: DetailPopup ever learns to thread downloadUrl through its
-      // Adult grab, at which point the one-click path is restored and §0.2's
-      // GATE-A is moot.
-      downloadUrl: props.item.downloadUrl,
-      downloadProtocol: props.item.protocol,
-    },
-  });
+  const sceneTarget = (): GrabTarget => {
+    // Claude 2026-08-11: A2(c) guard — box/sceneId are sent only for catalog
+    // sources with a non-empty id. Do NOT send box="prowlarr" (Show More items).
+    // Reason: the backend resolver uses box:sceneId as its persisted-release
+    // cache key.
+    // Troubleshooting: sending box="prowlarr" makes the cache key fall back to
+    // "title:<normalized>" — harmless for a single studio, actively wrong for a
+    // multi-studio title collision.
+    // Review if: Show More items ever carry a real catalog id.
+    const isCatalog = CATALOG_SOURCES.includes(props.item.source) && !!props.item.id;
+    return {
+      mode: "adult",
+      label: props.item.title,
+      request: {
+        title: props.item.title,
+        studio: props.item.studio,
+        releaseTitle: props.item.releaseTitle,
+        durationSeconds: props.item.durationSeconds,
+        // Direct-enclosure grab (D4/C1): when the card's feed is currently fresh
+        // it carries a downloadUrl+protocol, so the bulk batch dispatches straight
+        // to the download client and skips Prowlarr. Absent (browse-only / stale
+        // feed) → undefined, dropped by JSON.stringify → the Prowlarr search path
+        // runs unchanged. protocol maps to downloadProtocol.
+        //
+        // Claude 2026-08-02: this used to read "both the single Grab and the bulk
+        // batch"; the single-Grab half is gone with the inline Grab button.
+        // Reason: SELECT-MODE BULK GRAB IS NOW THE ONLY WAY TO REACH THE
+        // Prowlarr-skipping path for a fresh-feed scene — DetailPopup's Adult
+        // grab always searches Prowlarr and cannot carry these two fields. This
+        // is the one real capability loss in the card cleanup, accepted and
+        // recorded in .omc/plans/autopilot-impl-discover-card-cleanup.md §0.2
+        // (GATE-A).
+        // Troubleshooting: keeps the loss traceable so a future session does not
+        // read the survival of these two fields as "nothing changed".
+        // Review if: DetailPopup ever learns to thread downloadUrl through its
+        // Adult grab, at which point the one-click path is restored and §0.2's
+        // GATE-A is moot.
+        downloadUrl: props.item.downloadUrl,
+        downloadProtocol: props.item.protocol,
+        box: isCatalog ? props.item.source : undefined,
+        sceneId: isCatalog ? props.item.id : undefined,
+        performers: props.item.performers?.length ? props.item.performers : undefined,
+      },
+    };
+  };
   createEffect(() => {
     if (!selection || !inSelect()) return;
     const cleanup = selection.register(sceneKey(), sceneTarget());

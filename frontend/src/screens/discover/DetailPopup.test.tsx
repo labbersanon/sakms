@@ -531,6 +531,64 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     expect(availCall?.url).toContain("durationSeconds=1800");
     expect(availCall?.url).not.toContain("tmdbId");
   });
+
+  // §9.5 — Adult release-persistence param wiring (A2(c) guard).
+  // Catalog-sourced scenes (tpdb/stashdb/fansdb) with a non-empty id send
+  // box+sceneId+performers; Show-More-sourced scenes (source="prowlarr", no id)
+  // must NOT send box/sceneId (the backend would miskey the cache).
+  it("Adult availability fetch sends box+sceneId+performers for catalog-sourced scenes", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description")) return emptyDescription();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "adult",
+      item: adultScene({
+        id: "abc-123",
+        source: "stashdb",
+        performers: ["Alice Performer", "Bob Performer"],
+      }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await screen.findByRole("button", { name: "Grab" });
+
+    const availCall = calls.find((c) => c.url.includes("/discover/availability"));
+    expect(availCall?.url).toContain("box=stashdb");
+    expect(availCall?.url).toContain("sceneId=abc-123");
+    expect(availCall?.url).toContain("performers=Alice+Performer%2CBob+Performer");
+  });
+
+  it("Adult availability fetch omits box/sceneId for Show-More-sourced scenes (prowlarr, no id)", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      // Show-More items have source="prowlarr" and no id — the description resource
+      // short-circuits and never fires, so no stub needed for it here.
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "adult",
+      // source="prowlarr" + empty id is the Show More item shape
+      // (internal/api/adultdiscover_newest_scenes.go:171-179).
+      item: adultScene({ id: "", source: "prowlarr" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await screen.findByRole("button", { name: "Grab" });
+
+    const availCall = calls.find((c) => c.url.includes("/discover/availability"));
+    expect(availCall?.url).not.toContain("box=");
+    expect(availCall?.url).not.toContain("sceneId=");
+    // studio is still sent — it's not gated by catalog status.
+    expect(availCall?.url).toContain("studio=Vixen");
+  });
 });
 
 describe("DetailPopup — empty availability grid explanation", () => {

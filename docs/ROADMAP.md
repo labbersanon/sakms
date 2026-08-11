@@ -436,6 +436,28 @@ unchanged — unit tests are unaffected. Commit `29a56f3`.
 
 ## Recently shipped (outside this backlog)
 
+### Adult release persistence — shipped 2026-08-11
+Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).
+"Search once, persist, reuse" cache for Adult Discover and auto-grab:
+`adult_release_cache` + `adult_release_scene_links` (migration
+`0009_adult_release_cache.sql`), per-protocol TTL (NZB 2 years / torrent 7 days,
+replacing the flat 14-day `feedAvailabilityTTL`), `resolveAdultReleases` as the
+unified cache-first funnel (`internal/api/adultreleases.go`). Key design
+decisions:
+
+- `aiConfirmAdultReleases` removed — its unattended safety net is replaced by
+  deterministic title-match filtering in `filterForConsumer` (amendment A1).
+- Unattended weak-identity → `pending_retry` with no approve-and-dispatch on
+  the Requests view (amendment A5); operator re-grabs manually.
+- Adult `TriggerRetry` always-weak (amendment A4): the `grabs` table stores no
+  studio/performers, so `adultIdentityWeak` returns true unconditionally on
+  every retry — Adult auto-retry never dispatches unattended.
+- `PurgeExpiredReleases` added alongside `PurgeStale` in the scan cycle (A8):
+  TTL-based purge for the new cache table; the 6-month `PurgeStale` entity
+  ceiling applies only to `adult_newest_releases`, not to this cache.
+
+See the 2026-08-11 CHANGELOG entry for the full technical record.
+
 ### Rename source-file video preview — shipped 2026-08-09
 `.omc/specs/deep-interview-rename-preview.md`, built per
 `.omc/plans/autopilot-impl-rename-preview.md` (3 critic rounds — REVISE,

@@ -123,9 +123,8 @@ type AutoGrabDeps struct {
 	NZB           *usenet.Manager
 	GrabsStore    *grabs.Store
 	Webhooks      *webhooks.Store
-	// ReleaseStore is the Adult release cache store. nil degrades to a live
-	// Prowlarr search on every call — T7 wires the real store from handler.go.
-	// Claude 2026-08-11: added for A3 / M-2 — autoGrabSearch now takes a store.
+	// ReleaseStore is the Adult release cache store; nil degrades to a live
+	// Prowlarr search on every call.
 	ReleaseStore *adultnewest.ReleaseStore
 }
 
@@ -152,15 +151,12 @@ type AutoGrabRequest struct {
 	// Studio/ReleaseTitle/DurationSeconds/Box/SceneID/Performers are Adult-only
 	// inputs to the internal search; ignored when Releases is supplied.
 	//
-	// Box/SceneID carry the catalog scene identity for cache-key derivation
-	// (resolveAdultReleases builds box:sceneId key when both are present).
-	// Populated by autoGrabHandler (T6) from the wire request; retryDueGrabs
-	// cannot supply them because the grabs table stores neither — see A4/§7.5.
+	// Box/SceneID carry the catalog scene identity for cache-key derivation.
+	// Populated by autoGrabHandler from the wire request; retryDueGrabs cannot
+	// supply them because the grabs table stores neither — see A4/§7.5.
 	//
 	// Performers is a SOFT identity signal — adultIdentityWeak uses it to
-	// decide whether to stage for approval. NEVER a hard-reject predicate
-	// (the discarded OR-gate version was; this is deliberately not that).
-	// Claude 2026-08-11: Box/SceneID/Performers added (A2/A3).
+	// decide whether to stage for approval. NEVER a hard-reject predicate.
 	Studio          string
 	ReleaseTitle    string
 	DurationSeconds int
@@ -265,14 +261,12 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	releases, runtimeSeconds := req.Releases, req.RuntimeSeconds
 	if releases == nil {
 		var err error
-		// Claude 2026-08-11: deps.ReleaseStore passed (A3) so Adult uses cache-first.
-		// nil store degrades to live search until T7 wires the real store.
 		releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, req.Mode, deps.ReleaseStore, apidto.AutoGrabRequest{
 			Title: req.Title, TMDBID: req.TMDBID, Studio: req.Studio,
 			SeasonNumber: req.Season, EpisodeNumber: req.Episode,
 			SeasonSpecified: req.SeasonSpecified, DurationSeconds: req.DurationSeconds,
 			ReleaseTitle: req.ReleaseTitle,
-			Box: req.Box, SceneID: req.SceneID, Performers: req.Performers,
+			Box:          req.Box, SceneID: req.SceneID, Performers: req.Performers,
 		})
 		if err != nil {
 			return AutoGrabOutcome{Status: http.StatusBadGateway, Err: err}, err
@@ -326,8 +320,8 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	// safe when studio/performer identity signals are thin.
 	//
 	// Do NOT set sel.Fallback = true: Fallback means "no candidate cleared the
-	// quality floor"; here a candidate DID score. Using a separate weakIdentity
-	// bool keeps the two failure modes distinguishable at call sites.
+	// quality floor"; here a candidate DID score. Keeping the two failure modes
+	// distinguishable is what lets call sites tell them apart.
 	//
 	// A4: TriggerRetry is ALWAYS weak for Adult — the grabs row stores no
 	// studio or performers (neither was available at dispatch time), so
@@ -335,17 +329,15 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	// A5: TriggerOperator also parks (no approve-and-dispatch on Requests view
 	// for an identity-weak row — operator re-grabs manually from Requests or
 	// Discover). Both triggers park via parkPendingRetry; no dispatch fires.
-	if req.Mode == mode.Adult {
-		if weakIdentity := adultIdentityWeak(req.Studio, req.Performers, releases[sel.PickIndex].Title); weakIdentity {
-			out.NoMatch = true
-			g, err := parkPendingRetry(ctx, deps, req, weakIdentityReason)
-			if err != nil {
-				out.Status, out.Err = http.StatusInternalServerError, err
-				return out, err
-			}
-			out.GrabID, out.RetryStatus, out.RetryReason = g.ID, g.Status, g.RetryReason
-			return out, nil
+	if req.Mode == mode.Adult && adultIdentityWeak(req.Studio, req.Performers, releases[sel.PickIndex].Title) {
+		out.NoMatch = true
+		g, err := parkPendingRetry(ctx, deps, req, weakIdentityReason)
+		if err != nil {
+			out.Status, out.Err = http.StatusInternalServerError, err
+			return out, err
 		}
+		out.GrabID, out.RetryStatus, out.RetryReason = g.ID, g.Status, g.RetryReason
+		return out, nil
 	}
 
 	rootFolder := req.RootFolderPath

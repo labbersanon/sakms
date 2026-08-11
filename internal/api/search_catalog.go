@@ -195,7 +195,7 @@ func adultSearchHandler(connStore *connections.Store, scStore *serviceconn.Store
 func poolMatchesToSearchScenes(matches []adultnewest.MatchedRelease, feedHealth *adultnewest.FeedHealth, now time.Time) []apidto.AdultSearchScene {
 	out := make([]apidto.AdultSearchScene, 0, len(matches))
 	for _, m := range matches {
-		if !feedHealth.Available(m.BrowseConfirmed, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
+		if !feedHealth.Available(m.BrowseConfirmed, m.DownloadProtocol, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
 			continue
 		}
 		scene := poolReleaseToDiscoverItem(m, feedHealth, now)

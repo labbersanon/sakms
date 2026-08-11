@@ -984,6 +984,24 @@ above, so don't drop them for convenience:
     (`Rename.delete.test.tsx`, "a mixed confirm issues apply-batch, per-id
     dismiss, and ONE delete-batch") and the Go suite covers delete-only
     skip-and-continue. See `.omc/plans/autopilot-impl.md` §9.
+  - **Clarification, not a new exception (2026-08-11) — Adult weak-identity
+    `pending_retry` parking is a USE of the 2026-08-01 exception, not a sixth
+    one.** When `adultIdentityWeak` returns true (studio AND performers both
+    absent from the release title), `RunAutoGrab` calls `parkPendingRetry` —
+    the same Pattern A mechanism the stale-torrent auto-cancel and the usenet
+    retry loop already use. Nothing new about the dispatch gate or the retry
+    infrastructure fires; the row lands in the existing `pending_retry` pool
+    that the 2026-08-01 exception already covers. No new `AutoGrabTrigger`
+    const, no new scheduler, no new dispatch authority. **The trigger
+    enumeration (`TriggerOperator` / `TriggerRequest` / `TriggerRetry` /
+    `TriggerAirDate` / `TriggerPreRelease`) is unchanged at five** — Adult
+    weak-identity parking does not add a sixth. The practical effect is that
+    an Adult scene with thin identity signals always parks rather than
+    dispatching unattended (amendment A4: `TriggerRetry` is always-weak
+    because the `grabs` table stores no studio/performers; amendment A5:
+    `TriggerOperator` parks too, no approve-and-dispatch affordance on
+    Requests). Both properties are covered by `TestRunAutoGrab_Adult_WeakIdentityStages`
+    and `TestRetryDueGrabs_Adult_AlwaysStagesNeverDispatches`.
 
 - **Secrets encrypted at rest** (`internal/secrets`, a locally generated
   key file, not an OS keychain — the primary deployment target is a
@@ -1656,6 +1674,18 @@ above, so don't drop them for convenience:
     failure Option A was chosen to avoid, just reached from the surviving
     half of the surface. **The call budget is completely unchanged**: zero
     Prowlarr, one upstream call for a scene, two for an entity.
+  - **Clarification, not a reversal (2026-08-11):** `resolveAdultReleases`
+    (`internal/api/adultreleases.go`) is cache-first — on a cache HIT it makes
+    **zero** Prowlarr calls for an Adult scene. On a MISS it makes exactly one
+    title-only search (the same single-call shape this day's earlier entry
+    established) and persists the raw result so the next trigger for the same
+    scene is a HIT. The availability budget across the Adult grab surface is
+    therefore: **zero Prowlarr calls when cached, never more than one per
+    explicit trigger when not**. This is not a new rule — it is the existing
+    one-call-per-explicit-action constraint satisfied at a lower average
+    frequency. Cache-first applies to both DetailPopup (picker grid) and every
+    `RunAutoGrab`-driven path; a nil store (no persistence configured) degrades
+    to one live search per call, same as before, never more.
   - **Library sidebar tab added (2026-08-01)** — a new `frontend/src/screens/Library.tsx`
     (own sidebar entry, `/library` route) is now the tracked-catalog browsing
     screen for Movies/Series (title search, genre filter, added-date sort via

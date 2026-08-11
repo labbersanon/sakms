@@ -692,6 +692,29 @@ export interface AutoGrabRequest {
    */
   downloadUrl?: string;
   downloadProtocol?: string;
+  /**
+   * Box/SceneID carry the catalog scene identity (stash-box source name + UUID)
+   * for Adult requests. The resolver uses them to build a stable cache key
+   * (box:sceneId) so the persisted-release cache can serve without a Prowlarr
+   * re-search. Only sent when the item's source is a catalog source with a
+   * non-empty id — never for prowlarr-sourced Show More items (see A2(c) in
+   * .omc/plans/autopilot-impl-adult-release-persistence.md §0).
+   */
+  box?: string;
+  sceneId?: string;
+  /**
+   * Performers is a SOFT identity signal for Adult unattended grabs — used by
+   * adultIdentityWeak to decide whether to stage for approval rather than
+   * dispatch silently. Never hard-rejects a release (see §7.1). omitempty.
+   */
+  performers?: string[];
+  /**
+   * Indexer names the real Prowlarr indexer for a cache-sourced grab. Empty on
+   * the existing RSS-feed path (grabDirectEnclosure stamps "feed" when blank —
+   * see §6.3 of the adult-release-persistence plan). omitempty so RSS grabs
+   * never send the key at all.
+   */
+  indexer?: string;
 }
 /**
  * AutoGrabCandidate is one graded release in an auto-grab manual-fallback list

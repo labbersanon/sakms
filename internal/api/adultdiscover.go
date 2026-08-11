@@ -107,7 +107,7 @@ func poolReleaseToAdultScene(m adultnewest.MatchedRelease, feedHealth *adultnewe
 		Performers:      m.Performers,
 		ReleaseTitle:    m.FirstSeenReleaseTitle,
 	}
-	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
+	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.DownloadProtocol, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
 		s.DownloadURL = url
 		s.Protocol = m.DownloadProtocol
 		s.SizeBytes = m.SizeBytes
@@ -122,7 +122,7 @@ func writePooledScenes(w http.ResponseWriter, matches []adultnewest.MatchedRelea
 	now := time.Now()
 	out := make([]adultScene, 0, len(matches))
 	for _, m := range matches {
-		if !feedHealth.Available(m.BrowseConfirmed, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
+		if !feedHealth.Available(m.BrowseConfirmed, m.DownloadProtocol, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
 			continue
 		}
 		out = append(out, poolReleaseToAdultScene(m, feedHealth, now))

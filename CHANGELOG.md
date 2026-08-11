@@ -7540,3 +7540,86 @@ release fixture needed a title change (its adult item's title never had to
 match the release title before this feature — there was no gate to match
 against). Added `TestAIConfirmAdultReleases` (6 subtests) as direct,
 isolated coverage of the new gate.
+
+## 2026-08-11 (later, same day) — Adult release persistence: search once, persist, reuse
+
+"Search twice" eliminated for Adult Discover and auto-grab. Every caller of the
+Adult auto-grab path now goes through a single funnel, `resolveAdultReleases`
+(`internal/api/adultreleases.go`), which is **cache-first**: if the scene has at
+least one persisted release still inside its protocol window, those are returned
+and Prowlarr is **not** called. On a cache miss, one live title-only search runs
+(the same single-call shape established earlier this day), its raw result is
+persisted to `adult_release_cache` and linked to the scene via
+`adult_release_scene_links`, and the raw list is returned.
+
+**Protocol TTL replacing flat `feedAvailabilityTTL`**
+(`internal/adultnewest/protocolttl.go`, migration
+`0009_adult_release_cache.sql`): the old flat 14-day TTL is replaced by
+per-protocol freshness windows:
+
+- **NZB (usenet): 2 years** — usenet retention outlives indexer listings by orders
+  of magnitude; a 2-year window covers the full practical life of an article.
+- **Torrent: 7 days** — seeders evaporate quickly; a weekly re-verify prevents
+  stale peers from being dispatched.
+
+The torrent window is a **narrowing from 14 → 7 days** (amendment A8); the
+usenet window **widens from 14 days to 2 years**. An unknown or empty protocol
+falls to the short (torrent) window deliberately — fail-short, never fail-long.
+
+**Two new sibling tables** (migration `0009_adult_release_cache.sql`):
+`adult_release_cache` (raw release rows, keyed by `download_url`, carrying
+`persisted_at` and `protocol` for TTL) and `adult_release_scene_links`
+(many-to-many linking scene keys to cached release rows, with a CASCADE delete
+on the release). These are siblings to the existing
+`adult_newest_scene_matches` / `adult_newest_releases` — they do not reverse or
+replace those tables. A release can be linked to multiple scene keys
+simultaneously (both a catalog-sourced and a title-fallback key may resolve to
+the same scene; the link table captures both).
+
+**`aiConfirmAdultReleases` removed** (`internal/api/releasematch.go`): the AI
+confidence gate added earlier this day to compensate for the title-only query
+switch is no longer needed. Its unattended-path safety net is replaced by a
+deterministic title-match filter inside `resolveAdultReleases`
+(`filterForConsumer`, applying the same `TitleSimilarity >= titleSimilarityFloor
+|| singleWordTitleMatches` predicate `FilterReleases` already uses) — without
+AI, without a new algorithm, and without dropping any release from the picker
+grid (amendment A1 / critique C-1). The b2b7db4 production-regression guard in
+`discover_availability_test.go` is updated to confirm the grid still populates
+without AI configured.
+
+**Unattended weak-identity → `pending_retry`, no approve-and-dispatch on
+Requests (amendment A5):** when `adultIdentityWeak` returns true (studio empty
+AND performers empty, OR neither appears in the release title at
+`titleSimilarityFloor`), the grab is parked to `pending_retry` via
+`parkPendingRetry` regardless of trigger. Specifically, `TriggerOperator` (the
+Discover one-click path) parks rather than dispatching or offering a candidate to
+an Approve button on the Requests view — there is **no approve-and-dispatch
+affordance** for identity-weak rows; the operator re-grabs manually from Requests
+or Discover. Parking uses the existing `parkPendingRetry` / Pattern A mechanism
+(the same path stale-torrent auto-cancel already uses) — this is a use of the
+existing retry infrastructure, not a new exception category.
+
+**Adult `TriggerRetry` always-weak (amendment A4):** the `grabs` table stores
+neither `studio` nor `performers` at dispatch time, so `adultIdentityWeak`
+returns true unconditionally for every retry attempt. This is intentional:
+operators who want a specific Adult scene picked up by the retry cycle must
+trigger a new operator grab from Discover or Requests after the scene has
+sufficient metadata; auto-retry for Adult never dispatches unattended under this
+design. `TestRetryDueGrabs_Adult_AlwaysStagesNeverDispatches` asserts this
+characterisation directly.
+
+**`PurgeExpiredReleases` for `adult_release_cache`**
+(`internal/adultnewest/releasecache.go`): a new purge call beside `PurgeStale`
+in `scan.go`'s `runCycle` bounds the cache table's growth via TTL + protocol.
+The 6-month entity ceiling from `PurgeStale` (`adult_newest_releases.first_seen_at`)
+does **not** apply to this table — feed-only NZB rows here can survive up to 2
+years, torrent rows up to 1 week. `PurgeStale`'s own ceiling is unchanged and
+applies only to matched entity rows in `adult_newest_releases`.
+
+New files: `internal/adultnewest/protocolttl.go`,
+`internal/adultnewest/protocolttl_test.go`,
+`internal/adultnewest/releasecache.go`,
+`internal/adultnewest/releasecache_test.go`, `internal/api/adultreleases.go`,
+`internal/api/adultreleases_test.go`,
+`internal/db/migration_adult_release_cache_test.go`,
+`internal/db/migrations/0009_adult_release_cache.sql`.

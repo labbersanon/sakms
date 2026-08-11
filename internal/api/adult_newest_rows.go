@@ -190,7 +190,7 @@ func toDTOReleaseItem(m adultnewest.MatchedRelease, feedHealth *adultnewest.Feed
 		Performers:      m.Performers,
 		Gender:          m.Gender,
 	}
-	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
+	if url := feedHealth.DirectGrabURL(m.DownloadURL, m.DownloadProtocol, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now); url != "" {
 		item.DownloadURL = url
 		item.Protocol = m.DownloadProtocol
 		item.SizeBytes = m.SizeBytes
@@ -249,7 +249,7 @@ func resolveAdultNewestRowHandler(rowStore *adultnewest.Store, releaseStore *adu
 		now := time.Now()
 		items := make([]apidto.AdultNewestReleaseItem, 0, len(matches))
 		for _, m := range matches {
-			if !feedHealth.Available(m.BrowseConfirmed, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
+			if !feedHealth.Available(m.BrowseConfirmed, m.DownloadProtocol, m.FeedID, time.Unix(m.LastConfirmedSeen, 0), now) {
 				continue
 			}
 			items = append(items, toDTOReleaseItem(m, feedHealth, now))

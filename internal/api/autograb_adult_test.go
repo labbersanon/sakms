@@ -159,9 +159,7 @@ func TestAutoGrabHandler_Adult_CacheGrabRecordsRealIndexer(t *testing.T) {
 	if !out.Grabbed || out.Grab == nil {
 		t.Fatalf("expected a cache-sourced grab, got %+v", out)
 	}
-	if out.Grab.Indexer == "feed" {
-		t.Errorf("cache-sourced grab must record the real indexer (%q), not %q", adultCacheTestIndexer, out.Grab.Indexer)
-	}
+	// Must be the cached release's own indexer, never the plain-RSS "feed" stamp.
 	if out.Grab.Indexer != adultCacheTestIndexer {
 		t.Errorf("expected indexer %q, got %q", adultCacheTestIndexer, out.Grab.Indexer)
 	}
@@ -430,7 +428,6 @@ func TestRetryDueGrabs_Adult_AlwaysStagesNeverDispatches(t *testing.T) {
 // and no grabs row is created — consistent with the "operator picks explicitly"
 // three-state honesty convention.
 func TestAutoGrabBatch_Adult_WeakIdentityReturnsFallback(t *testing.T) {
-	const n = 1
 	// A healthy release that qualifies on quality but not on identity.
 	releasesJSON := `[{"guid":"1","title":"Some.Adult.Scene.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:ADULTWEAK1234567890abcdef1234567890abcdef"}]`
 
@@ -454,8 +451,8 @@ func TestAutoGrabBatch_Adult_WeakIdentityReturnsFallback(t *testing.T) {
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
 		{Mode: "adult", Request: apidto.AutoGrabRequest{
 			Title:           "Some Adult Scene",
-			Studio:          "",   // empty → weak identity
-			Performers:      nil,  // empty → weak identity
+			Studio:          "",  // empty → weak identity
+			Performers:      nil, // empty → weak identity
 			DurationSeconds: 6000,
 		}},
 	}}
@@ -464,8 +461,8 @@ func TestAutoGrabBatch_Adult_WeakIdentityReturnsFallback(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if len(out.Results) != n {
-		t.Fatalf("expected %d result, got %d", n, len(out.Results))
+	if len(out.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(out.Results))
 	}
 	r := out.Results[0]
 	if r.Grabbed || r.Error != "" {
@@ -550,22 +547,9 @@ func TestAutoGrabBatch_Adult_StrongIdentityGrabs(t *testing.T) {
 func TestAutoGrabBatch_Adult_CacheHitDispatchesWithoutProwlarr(t *testing.T) {
 	const sceneTitle = "Some Scene"
 	sceneKey := adultSceneKey("stashdb", "batch-cache-001", sceneTitle)
-
-	dl := newTestDownloader("gid-bcache", t.TempDir())
-	dl.EnableTestAutoGID()
-	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, releaseStore, rssFeedsStore := testStores(t)
+	// newAdultCacheServer configures no Prowlarr — a search-path grab would fail.
+	srv, grabsStore, _, _ := newAdultCacheServer(t, sceneTitle, sceneKey)
 	ctx := context.Background()
-	// No Prowlarr — a search-path grab would fail.
-	if err := settingsStore.Set(ctx, adultLibraryRootFolderKey, "/adult"); err != nil {
-		t.Fatalf("setting root folder: %v", err)
-	}
-	if err := settingsStore.Set(ctx, qualityTierKey(mode.Adult), string(quality.Low)); err != nil {
-		t.Fatalf("setting quality tier: %v", err)
-	}
-	seedAdultCacheRelease(t, releaseStore, sceneTitle, sceneKey)
-
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
-	t.Cleanup(srv.Close)
 
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
 		{Mode: "adult", Request: apidto.AutoGrabRequest{
@@ -588,13 +572,11 @@ func TestAutoGrabBatch_Adult_CacheHitDispatchesWithoutProwlarr(t *testing.T) {
 	if !r.Grabbed || r.Fallback || r.Error != "" {
 		t.Fatalf("cache-sourced batch item should dispatch without Prowlarr, got %+v", r)
 	}
-	if r.Grab == nil || r.Grab.Indexer != adultCacheTestIndexer {
-		t.Errorf("cache-sourced batch grab must record indexer %q, got %q", adultCacheTestIndexer, func() string {
-			if r.Grab == nil {
-				return "<nil>"
-			}
-			return r.Grab.Indexer
-		}())
+	if r.Grab == nil {
+		t.Fatalf("cache-sourced batch grab must record indexer %q, got no grab", adultCacheTestIndexer)
+	}
+	if r.Grab.Indexer != adultCacheTestIndexer {
+		t.Errorf("cache-sourced batch grab must record indexer %q, got %q", adultCacheTestIndexer, r.Grab.Indexer)
 	}
 
 	list, err := grabsStore.List(ctx, mode.Adult)

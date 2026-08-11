@@ -727,6 +727,170 @@ func TestAdultNewestPool_DistinctEntitiesSameTitleNotCollapsed(t *testing.T) {
 	}
 }
 
+// --- §4.3 release-persistence tests ----------------------------------------
+
+// TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease is §4.3 edit 1: every
+// raw Prowlarr release is written to adult_release_cache immediately after the
+// search, regardless of whether enrichment later matches it. 4 releases, 2
+// matched → response 2 items, 4 cache rows (all raw), links only for the 2
+// matched items (both primary box:sceneId and title:normalized keys per
+// amendment A2(b)).
+func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
+	origTPDB := tpdbrest.DefaultBaseURL
+	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
+
+	// Two-scene catalog so both matched releases survive dedup (they enrich to
+	// distinct scene titles → distinct normalised-Title dedup keys).
+	tpdb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(p, "/sites/") && strings.HasSuffix(p, "/scenes"):
+			w.Write([]byte(`{"data":[
+				{"_id":"tsc-crimson","title":"Crimson Autumn","date":"2024-01-01","site":{"name":"Brazzers"},"image":"","duration":1000},
+				{"_id":"tsc-silver","title":"Silver Lake","date":"2024-02-01","site":{"name":"Brazzers"},"image":"","duration":1200}
+			]}`))
+		case p == "/sites":
+			w.Write([]byte(`{"data":[{"uuid":"site1","name":"Brazzers"}]}`))
+		default:
+			w.Write([]byte(`{"data":[]}`))
+		}
+	}))
+	defer tpdb.Close()
+	tpdbrest.DefaultBaseURL = tpdb.URL
+
+	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// r1/r2 match catalog scenes; r3/r4 share no tokens with the catalog.
+		w.Write([]byte(`[
+			{"guid":"r1","title":"Brazzers.Crimson.Autumn.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:r1"},
+			{"guid":"r2","title":"Brazzers.Silver.Lake.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:r2"},
+			{"guid":"r3","title":"Totally.Different.Content.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:r3"},
+			{"guid":"r4","title":"Another.Random.Title.XXX-GRP","protocol":"torrent","size":100,"downloadUrl":"magnet:r4"}
+		]`))
+	}))
+	defer prowlarr.Close()
+
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
+	seed.setProwlarr(t, prowlarr.URL)
+	seed.setTPDB(t)
+	seedStudioPoolBox(t, releaseStore, "Brazzers", "tpdb")
+
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected 2 matched items in response, got %d (%+v)", len(page.Items), page.Items)
+	}
+
+	// §4.3 edit 1: all 4 raw releases must be in adult_release_cache, even the
+	// 2 unmatched ones that enrichment dropped from the response.
+	ctx := context.Background()
+	db := seed.connStore.DB()
+	var cacheCount int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM adult_release_cache`).Scan(&cacheCount); err != nil {
+		t.Fatalf("counting cache rows: %v", err)
+	}
+	if cacheCount != 4 {
+		t.Errorf("expected 4 cache rows (all raw releases persisted), got %d", cacheCount)
+	}
+
+	// §4.3 edit 2 (A2(b)): matched releases are linked under both the
+	// primary box:sceneId key and the title:normalized key.
+	primaryCrimson := adultSceneKey("tpdb", "tsc-crimson", "Crimson Autumn")
+	gotBPrimary, err := releaseStore.FreshReleasesForScene(ctx, primaryCrimson, time.Now())
+	if err != nil {
+		t.Fatalf("FreshReleasesForScene(%q): %v", primaryCrimson, err)
+	}
+	if len(gotBPrimary) != 1 || gotBPrimary[0].DownloadURL != "magnet:r1" {
+		t.Errorf("expected r1 linked under primary key %q, got %+v", primaryCrimson, gotBPrimary)
+	}
+
+	titleCrimson := adultSceneKey("", "", "Crimson Autumn")
+	gotByTitle, err := releaseStore.FreshReleasesForScene(ctx, titleCrimson, time.Now())
+	if err != nil {
+		t.Fatalf("FreshReleasesForScene(%q): %v", titleCrimson, err)
+	}
+	if len(gotByTitle) != 1 || gotByTitle[0].DownloadURL != "magnet:r1" {
+		t.Errorf("expected r1 linked under title key %q, got %+v", titleCrimson, gotByTitle)
+	}
+
+	titleSilver := adultSceneKey("", "", "Silver Lake")
+	gotSilver, err := releaseStore.FreshReleasesForScene(ctx, titleSilver, time.Now())
+	if err != nil {
+		t.Fatalf("FreshReleasesForScene(%q): %v", titleSilver, err)
+	}
+	if len(gotSilver) != 1 || gotSilver[0].DownloadURL != "magnet:r2" {
+		t.Errorf("expected r2 linked under title key %q, got %+v", titleSilver, gotSilver)
+	}
+
+	// Unmatched releases must have zero scene links — persisted but not linked.
+	var linkCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM adult_release_scene_links WHERE download_url IN ('magnet:r3','magnet:r4')`,
+	).Scan(&linkCount); err != nil {
+		t.Fatalf("counting links for unmatched releases: %v", err)
+	}
+	if linkCount != 0 {
+		t.Errorf("expected 0 links for unmatched releases (persisted but not linked), got %d", linkCount)
+	}
+}
+
+// TestAdultNewestEntityScenes_Page2CacheHitStillLinks is §4.3 edit 3: a cache
+// hit on the adult_newest_scene_matches table must still write a title:normalized
+// link into adult_release_scene_links so resolveAdultReleases can find the
+// release on a subsequent unattended grab. No box calls are made (cache bypass);
+// the SceneID is absent in SceneMatch so only the title key is written here (the
+// primary box:sceneId link was written during the original enrichment pass).
+func TestAdultNewestEntityScenes_Page2CacheHitStillLinks(t *testing.T) {
+	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"guid":"g1","title":"Brazzers.Cached.Scene.Title.XXX-GRP","protocol":"torrent","size":500,"downloadUrl":"magnet:cached-url"}]`))
+	}))
+	defer prowlarr.Close()
+
+	srv, seed, releaseStore := newestScenesMuxWithReleaseStore(t)
+	seed.setProwlarr(t, prowlarr.URL)
+
+	// Pre-seed the scene-match cache as if a prior enrichment pass already ran.
+	// The Title here is what applyCachedSceneMatch copies into items[i].Title,
+	// and therefore what the cache-hit link path uses to form the titleKey.
+	ctx := context.Background()
+	if err := releaseStore.UpsertSceneMatch(ctx, adultnewest.SceneMatch{
+		DownloadURL: "magnet:cached-url",
+		Title:       "Cached Scene Title",
+		Studio:      "Brazzers",
+		Box:         "tpdb",
+	}); err != nil {
+		t.Fatalf("seeding scene match: %v", err)
+	}
+
+	resp, page := getNewestScenes(t, srv.URL, "studio", "Brazzers", 2)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("expected 1 item from cache hit, got %d (%+v)", len(page.Items), page.Items)
+	}
+	if page.Items[0].Title != "Cached Scene Title" {
+		t.Errorf("expected enriched title from cache, got %q", page.Items[0].Title)
+	}
+
+	// §4.3 edit 3: the cache-hit path must create a title:normalized link so
+	// the release is discoverable by resolveAdultReleases without re-enriching.
+	// PersistReleases (edit 1) already wrote the row to adult_release_cache;
+	// LinkReleaseToScene (edit 3) connects it to the derived title key.
+	titleKey := adultSceneKey("", "", "Cached Scene Title")
+	got, err := releaseStore.FreshReleasesForScene(ctx, titleKey, time.Now())
+	if err != nil {
+		t.Fatalf("FreshReleasesForScene(%q): %v", titleKey, err)
+	}
+	if len(got) != 1 || got[0].DownloadURL != "magnet:cached-url" {
+		t.Errorf("expected cached release linked under title key after cache hit, got %+v", got)
+	}
+}
+
 // TestAdultNewestEntityScenesHandler_Page2TimeoutNeverFails proves the
 // enrichment sub-timeout never hangs or fails the handler: against a box that
 // never responds, with newestScenesEnrichTimeout shrunk, the handler still 200s

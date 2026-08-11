@@ -264,6 +264,16 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 	} else if n > 0 {
 		log.Printf("adultnewest: purged %d stale matched entities (older than %d months)", n, staleAfterMonths)
 	}
+	// Claude 2026-08-11: purge adult_release_cache rows past their protocol TTL.
+	// Reason: bounds the new cache table's growth, mirroring PurgeStale's role for
+	// adult_newest_releases. A8 nuance: PurgeStale uses entity first_seen_at + 6-month
+	// ceiling; this purge is TTL-based (usenet 2y, torrent 1w) on persisted_at + protocol.
+	// Review if: PurgeExpiredReleases is called from elsewhere (currently scan.go only).
+	if n, err := releaseStore.PurgeExpiredReleases(ctx, time.Now()); err != nil {
+		log.Printf("adultnewest: purging expired release cache entries: %v", err)
+	} else if n > 0 {
+		log.Printf("adultnewest: purged %d expired release cache entries", n)
+	}
 
 	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult)
 	if err != nil {

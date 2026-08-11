@@ -262,6 +262,123 @@ func aiEscalateTitleMatch(ctx context.Context, releases []prowlarr.Release, targ
 	return out
 }
 
+// adultConfidenceFloor gates aiConfirmAdultReleases — deliberately stricter
+// than titleSimilarityFloor (0.2), which is tuned as a lenient LAST-RESORT
+// rescue floor for when the deterministic fast path already found nothing.
+// This floor guards the opposite situation: it is the PRIMARY safety check
+// for Adult's title-only Prowlarr query (2026-08-11, see autoGrabSearch's
+// doc comment), which can legitimately return a same-titled scene from an
+// unrelated studio, and this filter runs upstream of the real auto-grab
+// dispatch path (RunAutoGrab/autoGrabBatchHandler), not just the preview
+// popup. Reuses identify.TitleSimilarity — the same already-tuned scorer,
+// not a new algorithm — just held to a higher bar since a false ACCEPT here
+// costs a wrong scene auto-downloaded, while a false REJECT only costs a
+// trip to the manual pick list (autograb.Select's existing Fallback
+// behavior). 0.6 is a deliberately conservative starting point pending real
+// usage, not an empirically-derived value — review if false-rejects turn out
+// to be common enough to annoy operators.
+const adultConfidenceFloor = 0.6
+
+// aiConfirmAdultReleases is the mandatory confidence gate for Adult's
+// title-only autoGrabSearch query — unlike aiEscalateTitleMatch (which only
+// ever runs when the deterministic fast path found ZERO matches), this
+// always runs for every candidate a title-only query returns, and requires
+// BOTH the studio AND the title to independently clear adultConfidenceFloor,
+// not title alone. Studio matching is what a title-only query gave up by
+// dropping the Studio+Title precision the old query cascade provided —
+// putting it back here, as a post-hoc AI check instead of a pre-hoc query
+// constraint, is what makes the single-query simplification safe. A release
+// AI can't confidently confirm (an error, a declined guess, or either
+// similarity below floor) is DROPPED, never guessed at.
+//
+// Degrades to a TITLE-ONLY deterministic check (identify.TitleSimilarity,
+// no AI call, no studio) when aiClient is nil — AI not configured is not a
+// license to skip the safety check entirely, but it also can't compare a
+// studio AI never extracted. An earlier version of this function compared
+// the combined "studio title" string against the raw release title instead;
+// that was wrong and never shipped past code review — a torrent tracker's
+// release title routinely omits the studio name entirely (see
+// autoGrabSearch's revision history for the exact reason this whole query
+// simplification exists), so requiring the studio's tokens to appear in the
+// comparison text punishes the release for the same missing-studio shape
+// this fix is built around. Title-only, at the SAME lenient
+// titleSimilarityFloor the old fast path already used (not
+// adultConfidenceFloor — there is no studio signal to hold to a stricter
+// bar without AI), is the closest honest equivalent: it degrades to
+// roughly what FilterReleases' fast path already did before this feature,
+// rather than inventing a new, untested bar.
+//
+// Bounded the same way aiEscalateTitleMatch already is (see that function's
+// doc comment for why): at most maxAIEscalationCandidates are ever checked,
+// at most aiEscalationConcurrency run at a time, the whole phase is cut off
+// at aiEscalationTimeout.
+func aiConfirmAdultReleases(ctx context.Context, releases []prowlarr.Release, studio, title string, aiClient identify.AIClient) []prowlarr.Release {
+	if aiClient == nil {
+		out := make([]prowlarr.Release, 0, len(releases))
+		for _, rel := range releases {
+			sim := identify.TitleSimilarity(title, rel.Title)
+			confident := sim >= titleSimilarityFloor
+			log.Printf("discover availability: adult confidence check (no AI configured, title-only) for release %q — similarity to %q = %.3f (floor %.2f), confident=%v",
+				rel.Title, title, sim, titleSimilarityFloor, confident)
+			if confident {
+				out = append(out, rel)
+			}
+		}
+		return out
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, aiEscalationTimeout)
+	defer cancel()
+
+	candidates := releases
+	if len(candidates) > maxAIEscalationCandidates {
+		candidates = candidates[:maxAIEscalationCandidates]
+	}
+
+	confident := make([]bool, len(candidates))
+	sem := make(chan struct{}, aiEscalationConcurrency)
+	var wg sync.WaitGroup
+	for i, rel := range candidates {
+		wg.Add(1)
+		go func(i int, rel prowlarr.Release) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+
+			parsed, err := identify.ParseFilename(ctx, aiClient, rel.Title, "")
+			if err != nil {
+				log.Printf("discover availability: adult confidence check error for release %q: %v", rel.Title, err)
+				return
+			}
+			if parsed.Title == "" {
+				log.Printf("discover availability: AI declined to guess a title for release %q", rel.Title)
+				return
+			}
+			titleSim := identify.TitleSimilarity(title, parsed.Title)
+			studioSim := identify.TitleSimilarity(studio, parsed.Studio)
+			ok := titleSim >= adultConfidenceFloor && studioSim >= adultConfidenceFloor
+			confident[i] = ok
+			log.Printf("discover availability: adult confidence check for release %q — parsed studio=%q title=%q, studioSim=%.3f titleSim=%.3f (floor %.2f), confident=%v",
+				rel.Title, parsed.Studio, parsed.Title, studioSim, titleSim, adultConfidenceFloor, ok)
+		}(i, rel)
+	}
+	wg.Wait()
+
+	out := make([]prowlarr.Release, 0, len(candidates))
+	for i, rel := range candidates {
+		if confident[i] {
+			out = append(out, rel)
+		}
+	}
+	log.Printf("discover availability: adult confidence check for studio=%q title=%q checked %d candidates (of %d raw releases), confirmed %d",
+		studio, title, len(candidates), len(releases), len(out))
+	return out
+}
+
 // cleanReleaseTitle asks AI to extract a cleaned title from a raw release
 // title — GuessTitle for Movies/Series (the mainstream title-guess prompt),
 // ParseFilename for Adult (the scene-filename parse prompt; releaseTitle

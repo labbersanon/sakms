@@ -7470,3 +7470,73 @@ which exists for exactly this class of miss.
 correcting it is a separate pre-existing issue, and expanding this edit to
 cover it would hide that. Same treatment as the 2026-08-10 entry's own README
 follow-up above.
+
+## 2026-08-11 (later, same day) — Adult auto-grab search: three attempts to fix missing NZB results, ending in a single title-only query + mandatory AI confidence gate
+
+Live report: Discover's "Teasing Cheerleader" (Cathy's Craving) scene showed
+2 torrent results, both correctly rejected under Adult's own lowered
+3-seeder floor ("too few seeders"), while 3 real NZB releases sat in
+Prowlarr (confirmed directly in Prowlarr's own search UI) the entire time,
+invisible to the app. Three commits, each superseding the last after live
+re-verification against production logs rather than assumption:
+
+1. **`49f7317`** — added a parallel query with the studio name's internal
+   whitespace stripped ("Cathys Craving" → "CathysCraving Scene 1000 ...").
+   Deployed, then re-checked against fresh production logs for the exact
+   scene: found NOTHING new. NZBGeek (the real Usenet indexer involved)
+   never matched that query either — only the same 2 torrent releases a
+   different, more lenient tracker matched for both the spaced and
+   no-space-studio forms.
+2. **`24e0a0e`** — replaced it with a title-only variant (studio dropped
+   entirely), additive to the existing releaseTitle/Studio+Title cascade.
+   Confirmed live: this query is what NZBGeek actually matched. Re-verified
+   against production logs — the grid went from 0/32 to 8/32 populated
+   cells, all 3 NZB releases now graded (correctly, by bitrate floor, not
+   the bogus seeder check).
+3. **This entry's commit** — Wade's own follow-up: the 3-sequential-query
+   cascade (releaseTitle attempt → 0 results → Studio+Title retry → 0/nonzero
+   → title-only merge) made this one scene's popup take ~28 seconds to
+   resolve, all sequential Prowlarr round-trips. Simplified to a single
+   title-only `sess.Prowlarr.Search` call in `autoGrabSearch`'s `mode.Adult`
+   branch — one round trip instead of up to three.
+
+**Dropping the studio from the query needed something to replace the
+precision it provided.** A title-only query can legitimately return a
+same-titled scene from an unrelated studio, and — a fact this investigation
+surfaced along the way — `RunAutoGrab`/`autoGrabBatchHandler` (the REAL
+grab-dispatch path, not just the Discover preview) had never run any
+title-matching filter at all; `FilterReleases` was only ever wired into
+`discoverAvailabilityHandler`. A title-only query without a safety net would
+have widened an existing gap, not just closed one. Added
+`aiConfirmAdultReleases` (`internal/api/releasematch.go`) as a MANDATORY gate
+inside `autoGrabSearch` itself — the one funnel every Adult caller shares —
+requiring both studio AND title to independently clear a floor
+(`adultConfidenceFloor = 0.6`, deliberately stricter than
+`titleSimilarityFloor`'s 0.2, since a false accept here downloads the wrong
+scene while a false reject only costs a trip to the manual pick list).
+Unlike `FilterReleases`' existing `aiEscalateTitleMatch` (a zero-match-only
+rescue), this always runs. AI-configured: `identify.ParseFilename` extracts
+studio+title per candidate, compared independently via
+`identify.TitleSimilarity`. No AI configured: degrades to a TITLE-ONLY
+check at the original lenient `titleSimilarityFloor` — an earlier draft of
+this compared a combined "studio title" string against the raw release
+title instead, and was wrong: a torrent tracker's release title routinely
+omits the studio entirely, so that comparison punished exactly the shape
+this whole fix exists to accept. Caught by the batch-grab isolation test's
+shared fixture before it shipped.
+
+`req.ReleaseTitle` is now unused by this query construction (the field stays
+on `AutoGrabRequest`, still populated by callers). `identify.CleanReleaseTitleForSearch`/`ReleaseTitleLacksSceneStructure` are unaffected — `internal/adultnewest/scan.go` is still a live caller of both.
+
+Three `internal/api` tests were retired outright (their premise — a
+releaseTitle-preferred, Studio+Title-fallback query cascade — no longer
+exists): `TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle`
+and `_ReleaseTitleQueryCleaned` were consolidated into one new
+`_QueryIsTitleOnly` test proving both studio and releaseTitle are now
+ignored; `_ZeroResultsFallsBackToStudioTitle` was replaced by
+`_TitleOnlyQuerySurfacesNZBAlongsideTorrent`, the real regression test for
+the live bug. `TestAutoGrabBatchHandler_CrossModeSessionIsolation`'s shared
+release fixture needed a title change (its adult item's title never had to
+match the release title before this feature — there was no gate to match
+against). Added `TestAIConfirmAdultReleases` (6 subtests) as direct,
+isolated coverage of the new gate.

@@ -15,7 +15,6 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
-	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
@@ -268,131 +267,62 @@ func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode,
 // autoGrabSearch runs the per-mode Prowlarr search and resolves the known
 // pre-grab runtime (seconds) the bitrate scorer needs. Movies/Series probe
 // id-scoped (mirroring availability.CheckMovie/CheckSeries); Adult uses a
-// free-text query over the XXX category — the raw first-matched release
-// title when available (req.ReleaseTitle), else a studio+title
-// reconstruction (mirroring availability.CheckAdultScene); that same
-// studio+title query is also retried when a releaseTitle with no recognizable
-// scene structure returns 0 releases (see the inline note at that branch).
-// Runtime: Movies
-// from TMDB MovieDetails;
-// Adult from the request's DurationSeconds; Series from the picked episode's
-// TMDB runtime (seriesEpisodeRuntimeSeconds) for a single-episode grab, or 0
-// (unknown → manual pick list) for a whole-season grab, whose runtime is
-// ambiguous (see seriesEpisodeRuntimeSeconds). Callers must have already
-// confirmed sess.TMDB != nil for Movies/Series.
+// single free-text, TITLE-ONLY query over the XXX category, then a mandatory
+// AI confidence gate (aiConfirmAdultReleases) before returning.
+//
+// Adult's query construction has a real revision history worth knowing
+// before touching it again — three attempts, each replacing the last after
+// live re-verification, not speculation:
+//  1. releaseTitle-preferred, Studio+Title fallback (through 2026-08-11
+//     morning): precise when releaseTitle was well-formed, but a malformed
+//     pooled title (truncated mid-word, "CathysCraving 26 02 08 Scene 1000
+//     Pixie Smalls Teasing Cheerlea") reached Prowlarr verbatim and matched
+//     nothing.
+//  2. + a no-space-studio parallel query (2026-08-11, first fix): deployed,
+//     then re-verified against live production logs for the exact scene that
+//     motivated it — found NOTHING new. NZBGeek (a real configured Usenet
+//     indexer) never matched ANY studio-prefixed query, spaced or squashed.
+//  3. Single title-only query (2026-08-11, THIS version, Wade's explicit
+//     instruction after (2) was disproven): confirmed directly against
+//     Prowlarr's own search UI — NZBGeek only matched a query with the
+//     studio dropped ENTIRELY. This is faster too — one Prowlarr round trip
+//     instead of up to three sequential ones.
+//
+// Dropping the studio from the query loses the precision Studio+Title used
+// to provide at the SOURCE — a title-only query can legitimately return a
+// same-titled scene from an unrelated studio. aiConfirmAdultReleases is what
+// replaces that precision, as a post-hoc confidence check instead of a
+// pre-hoc query constraint: it requires both studio AND title to
+// independently clear a high-confidence floor before a release survives,
+// dropping anything it can't confirm rather than guessing. This runs inside
+// autoGrabSearch itself — the single funnel every Adult caller shares
+// (discoverAvailabilityHandler's preview, autoGrabBatchHandler, and
+// RunAutoGrab's real dispatch for every trigger) — specifically so the real
+// auto-grab path gets this safety net too, not just the preview popup.
+//
+// req.ReleaseTitle is intentionally UNUSED here now — see the revision
+// history above. The field itself is left in AutoGrabRequest (still
+// populated by callers, e.g. adultnewest's pooled first-matched release
+// title) since other future consumers may still want it; only this query's
+// construction stopped reading it.
+//
+// Runtime: Movies from TMDB MovieDetails; Adult from the request's
+// DurationSeconds; Series from the picked episode's TMDB runtime
+// (seriesEpisodeRuntimeSeconds) for a single-episode grab, or 0 (unknown →
+// manual pick list) for a whole-season grab, whose runtime is ambiguous (see
+// seriesEpisodeRuntimeSeconds). Callers must have already confirmed
+// sess.TMDB != nil for Movies/Series.
 func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
 	switch m {
 	case mode.Adult:
-		// Prefer the raw Prowlarr release title that first matched this
-		// entity (req.ReleaseTitle, see adultnewest.MatchedRelease.
-		// FirstSeenReleaseTitle's doc comment) — it's real indexer
-		// vocabulary that already matched once, unlike a query reconstructed
-		// from TPDB's own Studio+Title metadata, which includes tokens (e.g.
-		// TPDB's "S6:E10" episode notation) real release filenames never
-		// contain. Found live, 2026-07-15: a "Adult downloads never
-		// resolve" report traced to Prowlarr returning 0 raw releases for
-		// nearly every scene tried, with adult indexers confirmed
-		// configured — the studio+title query (colons, commas, asterisks,
-		// apostrophes and all — e.g. "Private Classics Franky Knight: Curvy
-		// And Horny, Looking For A Stallion") almost never appears verbatim
-		// in how trackers actually name Adult releases. Falls back to
-		// Studio+Title when ReleaseTitle is empty — entities matched before
-		// this field existed, or a plain TPDB/StashDB/FansDB catalog browse
-		// item with no associated Prowlarr release to remember.
-		// The pooled ReleaseTitle is a raw scene-release title (studio glued,
-		// embedded release date, trailing quality/codec/group suffix) — used
-		// verbatim it made Prowlarr return 18 unrelated Cory Chase/Taboo Heat
-		// scenes and never the target (confirmed live 2026-07-31), which is
-		// what left the Discover availability grid empty. CleanReleaseTitleForSearch
-		// strips that noise (see its doc); the Studio+Title fallback is already
-		// clean metadata, so it keeps its existing construction untouched.
-		studioTitle := strings.TrimSpace(strings.TrimSpace(req.Studio) + " " + strings.TrimSpace(req.Title))
-		var rawQuery string
-		unverifiableReleaseTitle := false
-		if rt := strings.TrimSpace(req.ReleaseTitle); rt != "" {
-			rawQuery = identify.CleanReleaseTitleForSearch(rt)
-			unverifiableReleaseTitle = identify.ReleaseTitleLacksSceneStructure(rt)
-		} else {
-			rawQuery = studioTitle
-		}
-		query := normalizeAdultQuery(rawQuery)
-		log.Printf("autoGrabSearch: mode=adult rawQuery=%q query=%q category=%d studio=%q title=%q releaseTitle=%q", rawQuery, query, adultAutoGrabCategory, req.Studio, req.Title, req.ReleaseTitle)
+		query := normalizeAdultQuery(strings.TrimSpace(req.Title))
+		log.Printf("autoGrabSearch: mode=adult query=%q category=%d studio=%q title=%q", query, adultAutoGrabCategory, req.Studio, req.Title)
 		releases, err := sess.Prowlarr.Search(ctx, query, []int{adultAutoGrabCategory})
-		usedStudioTitleQuery := rawQuery == studioTitle
-		// Claude 2026-08-11: retry a 0-result releaseTitle query with the
-		// Studio+Title query this branch already falls back to when
-		// releaseTitle is absent — but ONLY when the stored releaseTitle
-		// carried no recognizable scene structure to clean.
-		// Reason: the gate is not optional and is not conservatism. The two
-		// pinned regression tests above this behaviour
-		// (TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned and
-		// ..._ReleaseTitlePreferredOverStudioTitle) both serve an EMPTY
-		// Prowlarr result set and then assert the query that went out was the
-		// cleaned releaseTitle — an ungated 0-result fallback fires a second
-		// search in both and breaks them. Restricting the retry to titles
-		// identify.ReleaseTitleLacksSceneStructure flags keeps a well-formed
-		// title's honest "no releases" answer honest, and only re-asks when
-		// the first query was built from something unverifiable.
-		// Troubleshooting: Adult Discover's availability grid came back empty
-		// for a scene whose pooled releaseTitle was already truncated mid-word
-		// with a space-separated date ("CathysCraving 26 02 08 Scene 1000
-		// Pixie Smalls Teasing Cheerlea") — nothing in it is a truncation or
-		// removal point, so it reached Prowlarr verbatim and matched nothing,
-		// while properly-named releases of that scene existed in the indexer.
-		// Review if: CleanReleaseTitleForSearch learns to recognize
-		// space-separated dates or mid-word truncation directly, or the
-		// adultnewest scan pipeline starts storing a non-truncated title
-		// (prd.json's out-of-scope item 2) — either makes this gate's
-		// population shrink toward empty.
-		if err == nil && len(releases) == 0 && unverifiableReleaseTitle {
-			if fallback := normalizeAdultQuery(studioTitle); fallback != "" && fallback != query {
-				log.Printf("autoGrabSearch: mode=adult releaseTitle query %q returned 0 releases and carries no scene structure — retrying with studio+title query %q", query, fallback)
-				releases, err = sess.Prowlarr.Search(ctx, fallback, []int{adultAutoGrabCategory})
-				usedStudioTitleQuery = true
-			}
+		if err != nil {
+			return nil, float64(req.DurationSeconds), err
 		}
-		// Claude 2026-08-11 (revised — see CHANGELOG.md for the superseded
-		// first attempt): when the effective query came from Studio+Title
-		// (directly, or via the 0-result retry above), also search with the
-		// studio name DROPPED ENTIRELY (title only), and merge any
-		// additional releases found into the result set.
-		// Reason: confirmed live against NZBGeek (a real configured Usenet
-		// indexer) for a "Cathy's Craving" scene. The first fix attempted
-		// here stripped only the studio name's internal whitespace
-		// ("Cathys Craving" -> "CathysCraving Scene 1000 ..."), deployed,
-		// then re-verified against production logs — it found nothing new:
-		// NZBGeek didn't match that query either, only the SAME 2 torrent
-		// releases a different, more lenient tracker matched for both the
-		// spaced and no-space-studio forms. NZBGeek only matched a query
-		// with NO studio token at all ("Scene 1000: teasing cheerleader",
-		// confirmed directly in Prowlarr's own search UI) — title-only is
-		// the query that actually reproduces that live result. This is
-		// ADDITIVE, never a replacement: dropping the studio loses the
-		// precision Studio+Title exists for in the first place, so a
-		// same-titled release from an unrelated studio can appear in the
-		// merged set — but it still has to clear FilterReleases' own
-		// title-similarity match downstream before it can reach the grid or
-		// a grab, the same safety net every other broad query on this path
-		// already relies on. Skipped when title-only is empty or identical
-		// to a query already sent (nothing to gain) or when err != nil
-		// (nothing to merge into). Reuses dedupeReleases (searchdedup.go),
-		// the same downloadURL/normalizedTitle merge already used to
-		// collapse cross-indexer duplicates elsewhere in this file.
-		if err == nil && usedStudioTitleQuery {
-			titleOnlyQuery := normalizeAdultQuery(strings.TrimSpace(req.Title))
-			if titleOnlyQuery != "" && titleOnlyQuery != normalizeAdultQuery(studioTitle) && titleOnlyQuery != query {
-				extra, extraErr := sess.Prowlarr.Search(ctx, titleOnlyQuery, []int{adultAutoGrabCategory})
-				if extraErr != nil {
-					log.Printf("autoGrabSearch: mode=adult title-only variant query %q failed: %v", titleOnlyQuery, extraErr)
-				} else {
-					log.Printf("autoGrabSearch: mode=adult title-only variant query %q returned %d releases (base query returned %d)", titleOnlyQuery, len(extra), len(releases))
-					releases = dedupeReleases(append(releases, extra...), func(rel prowlarr.Release) releaseDedupKey {
-						return releaseDedupKey{downloadURL: rel.DownloadURL, normalizedTitle: normalizeAdultQuery(rel.Title), seeders: rel.Seeders}
-					})
-				}
-			}
-		}
-		return releases, float64(req.DurationSeconds), err
+		releases = aiConfirmAdultReleases(ctx, releases, req.Studio, req.Title, sess.MainstreamAI)
+		return releases, float64(req.DurationSeconds), nil
 	case mode.Series:
 		tvdbID, err := sess.TMDB.ExternalIDs(ctx, req.TMDBID)
 		if err != nil {

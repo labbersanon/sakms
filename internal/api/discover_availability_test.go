@@ -205,17 +205,11 @@ func TestDiscoverAvailabilityHandler_Adult_StudioTitleDuration_NoTMDBCall(t *tes
 // the punctuation-stripping fix (normalizeAdultQuery) reaches the actual
 // Prowlarr request end-to-end through this handler, not just the unit-level
 // TestNormalizeAdultQuery — a real "Adult downloads never resolve" report
-// found the raw, unnormalized studio+title text almost never matching how
-// trackers name Adult releases.
-// Also covers the 2026-08-11 title-only variant (see
-// TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle's
-// doc comment for the full bug this variant fixes, and its own revision
-// history for why an earlier no-space-studio attempt was replaced): the
-// studio+title query fires TWICE — the punctuation-normalized Studio+Title
-// form first, then a title-only form (studio dropped entirely) second — and
-// this test asserts both, in order, via fakeProwlarrPerQuery rather than
-// fakeProwlarrRecording (which only captures the LAST query and would
-// silently only see the second one).
+// found the raw, unnormalized text almost never matching how trackers name
+// Adult releases. Also proves exactly ONE Prowlarr search fires (via
+// fakeProwlarrPerQuery's ordered-query list, not fakeProwlarrRecording,
+// which would silently hide a second call if one crept back in) — a
+// regression guard for the query-cascade simplification below.
 func TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized(t *testing.T) {
 	prowlarr, queries := fakeProwlarrPerQuery(t, nil)
 
@@ -239,80 +233,30 @@ func TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized(t *testi
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	wantSpaced := "Private Classics Franky Knight Curvy And Horny Looking For A Stallion"
-	wantTitleOnly := "Franky Knight Curvy And Horny Looking For A Stallion"
-	if len(*queries) != 2 {
-		t.Fatalf("expected exactly 2 Prowlarr searches (studio+title, then title-only variant), got %d: %q", len(*queries), *queries)
+	want := "Franky Knight Curvy And Horny Looking For A Stallion"
+	if len(*queries) != 1 {
+		t.Fatalf("expected exactly 1 Prowlarr search (title-only), got %d: %q", len(*queries), *queries)
 	}
-	if (*queries)[0] != wantSpaced {
-		t.Errorf("first query = %q, want punctuation-stripped %q", (*queries)[0], wantSpaced)
-	}
-	if (*queries)[1] != wantTitleOnly {
-		t.Errorf("second query = %q, want the title-only variant %q", (*queries)[1], wantTitleOnly)
+	if (*queries)[0] != want {
+		t.Errorf("query = %q, want punctuation-stripped, title-only %q", (*queries)[0], want)
 	}
 }
 
-// TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle
-// is the regression test for the "still no downloads after the duration
-// fix" report (2026-07-15): a query reconstructed from TPDB's own
-// studio+title metadata includes tokens (e.g. TPDB's "S6:E10" episode
-// notation) real indexer release filenames never contain, so it can find
-// zero raw releases even when the exact release that matched the entity is
-// still available. When releaseTitle is present, it must be the source of the
-// query instead of studio+title — but now cleaned via
-// identify.CleanReleaseTitleForSearch (embedded date, XXX tag, resolution, and
-// trailing release group stripped) rather than passed verbatim, since a
-// verbatim noisy release title also fails to match (the 2026-07-31 Cory Chase
-// bug — see TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned).
-func TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle(t *testing.T) {
-	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
-
-	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	ctx := context.Background()
-	if err := connStore.Upsert(ctx, "prowlarr", prowlarr.URL, "key"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
-	defer srv.Close()
-
-	reqURL := srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Step Siblings Caught") +
-		"&title=" + urlQueryEscape("June 2026 Flavor Of The Month Poppy Applegate - S6:E10") +
-		"&releaseTitle=" + urlQueryEscape("Step.Siblings.Caught.26.06.01.Poppy.Applegate.XXX.1080p-GROUP") +
-		"&durationSeconds=1863"
-	resp, err := http.Get(reqURL)
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	// Cleaned: date (26.06.01), the XXX tag, the 1080p resolution, and the
-	// trailing -GROUP are all stripped; the studio+title's "S6:E10"/"June 2026"
-	// tokens are absent, proving releaseTitle (not studio+title) is still the
-	// source.
-	want := "Step Siblings Caught Poppy Applegate"
-	if got := lastQuery.Get("query"); got != want {
-		t.Errorf("query sent to Prowlarr = %q, want the cleaned releaseTitle %q (studio+title must not be used when releaseTitle is present)", got, want)
-	}
-}
-
-// TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned is the
-// regression test for the 2026-07-31 live bug: the Adult Discover detail popup
-// for "Cory Chase in Step Mom has One Wish - BBC Gangbang" (Taboo Heat) showed
-// every pill disabled because the pooled scene releaseTitle
-// ("TabooHeat.26.07.18.Cory.Chase.In.Step.Mom.Has.One.Wish.BBC.Gangbang.XXX.720p.HEVC.x265.PRT")
-// was used as the Prowlarr query verbatim. Confirmed live against the real
-// Prowlarr instance: that noisy query returned 18 OTHER Cory Chase/Taboo Heat
-// scenes and never the target, while the cleaned query below surfaced it. This
-// asserts the handler now sends the cleaned query (embedded date, XXX tag,
-// resolution/codec, and trailing release group all stripped; the glued studio
-// "TabooHeat" left intact — splitting it into "Taboo Heat" was verified to
-// match a different, wrong result set).
-func TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned(t *testing.T) {
-	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
+// TestDiscoverAvailabilityHandler_Adult_QueryIsTitleOnly is the current-
+// behavior test for what were previously two separate cascade-order tests —
+// ReleaseTitlePreferredOverStudioTitle (2026-07-15) and
+// ReleaseTitleQueryCleaned (2026-07-31), both retired 2026-08-11 when the
+// releaseTitle-preferred / Studio+Title-fallback query cascade they pinned
+// was replaced outright by a single title-only query (see autoGrabSearch's
+// doc comment for the full three-attempt revision history and why). Both
+// old tests asserted the QUERY SENT differed depending on whether/how
+// releaseTitle was cleaned; that distinction no longer exists, since
+// releaseTitle is not read for query construction at all any more. This
+// test proves exactly that: studio AND releaseTitle are BOTH present in the
+// request (using each old test's own fixture values, concatenated) and
+// BOTH are ignored — only title reaches Prowlarr, normalized.
+func TestDiscoverAvailabilityHandler_Adult_QueryIsTitleOnly(t *testing.T) {
+	prowlarr, queries := fakeProwlarrPerQuery(t, nil)
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
@@ -324,7 +268,7 @@ func TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned(t *testing.T
 	defer srv.Close()
 
 	reqURL := srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Taboo Heat") +
-		"&title=" + urlQueryEscape("Cory Chase in Step Mom has One Wish - BBC Gangbang") +
+		"&title=" + urlQueryEscape("June 2026 Flavor Of The Month Poppy Applegate - S6:E10") +
 		"&releaseTitle=" + urlQueryEscape("TabooHeat.26.07.18.Cory.Chase.In.Step.Mom.Has.One.Wish.BBC.Gangbang.XXX.720p.HEVC.x265.PRT") +
 		"&durationSeconds=1800"
 	resp, err := http.Get(reqURL)
@@ -336,9 +280,15 @@ func TestDiscoverAvailabilityHandler_Adult_ReleaseTitleQueryCleaned(t *testing.T
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	want := "TabooHeat Cory Chase In Step Mom Has One Wish BBC Gangbang"
-	if got := lastQuery.Get("query"); got != want {
-		t.Errorf("query sent to Prowlarr = %q, want cleaned %q", got, want)
+	// The dash and colon in "... Applegate - S6:E10" are non-alnum and
+	// normalize to spaces; neither "Taboo Heat" (studio) nor any token from
+	// releaseTitle ("TabooHeat", "Cory", "Chase", "Gangbang", ...) appears.
+	want := "June 2026 Flavor Of The Month Poppy Applegate S6 E10"
+	if len(*queries) != 1 {
+		t.Fatalf("expected exactly 1 Prowlarr search (title-only, studio and releaseTitle both ignored), got %d: %q", len(*queries), *queries)
+	}
+	if (*queries)[0] != want {
+		t.Errorf("query = %q, want title-only %q", (*queries)[0], want)
 	}
 }
 
@@ -365,54 +315,31 @@ func fakeProwlarrPerQuery(t *testing.T, bodyByQuery map[string]string) (*httptes
 	return srv, &queries
 }
 
-// TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle is the
-// regression test for the 2026-08-11 live bug: the availability grid came back
-// empty for a scene whose pooled releaseTitle was ALREADY truncated mid-word
-// ("...Teasing Cheerlea") with a space-separated date and no trailing tech
-// marker. CleanReleaseTitleForSearch recognizes none of that (dateTokenPattern
-// is literal-dot only, sceneTechMarkerRe finds nothing), so the fragment
-// reached Prowlarr verbatim and matched nothing — even though properly-named
-// releases of the scene existed.
-//
-// Asserts all three query legs: releaseTitle is still tried FIRST (the
-// property TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle
-// pins for the well-formed case, which structurally cannot cover ordering — it
-// only ever sees one query), the spaced Studio+Title query is retried second,
-// and — this is the SAME scene, same studio, that surfaced a second, distinct
-// real bug live the same day — a THIRD, title-only query
-// ("Pixie Smalls Teasing Cheerleader", studio dropped entirely) is tried too.
-// An earlier attempt at this third leg tried a no-space-studio variant
-// instead ("CathysCraving Pixie Smalls Teasing Cheerleader") — deployed, then
-// re-verified against live production logs, where it demonstrably found
-// nothing new (see CHANGELOG.md and autoGrabSearch's doc comment above this
-// block). NZBGeek (a real configured Usenet indexer) never matched ANY
-// studio-prefixed query for this scene, spaced or squashed — only a query
-// with the studio dropped entirely, confirmed directly against Prowlarr's own
-// search UI. Discover showed 2 torrent results, both correctly rejected for
-// too few seeders, and reported that as the whole story — while 3 real NZB
-// releases sat in Prowlarr the entire time, invisible because no query that
-// omitted the studio name ever ran. This test's fixture gives the spaced
-// query one torrent (as before) and the title-only query one NZB release,
-// then asserts BOTH independently populate the grid — proving the merge, not
-// just the extra call.
-func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *testing.T) {
-	const truncatedReleaseTitle = "CathysCraving 26 02 08 Scene 1000 Pixie Smalls Teasing Cheerlea"
-	const studioTitleQuery = "Cathys Craving Pixie Smalls Teasing Cheerleader"
-	const titleOnlyQuery = "Pixie Smalls Teasing Cheerleader"
+// TestDiscoverAvailabilityHandler_Adult_TitleOnlyQuerySurfacesNZBAlongsideTorrent
+// is the regression test for the real 2026-08-11 live bug (Discover's
+// "Teasing Cheerleader" scene) that motivated dropping the whole
+// releaseTitle/Studio+Title query cascade for a single title-only query —
+// see autoGrabSearch's doc comment for the full three-attempt revision
+// history (a truncated pooled releaseTitle, then a disproven
+// no-space-studio variant, then this). Confirmed live: NZBGeek (a real
+// configured Usenet indexer) only ever matched a query with the studio
+// dropped entirely; the old cascade never sent one. Discover showed 2
+// torrent results, both correctly rejected for too few seeders, and
+// reported that as the whole story, while 3 real NZB releases sat in
+// Prowlarr the entire time. This test's single-query fixture returns BOTH a
+// torrent and an NZB release for the one title-only query, and asserts both
+// independently populate the grid (one per protocol) — proving the real
+// fix, not just that a query fired.
+func TestDiscoverAvailabilityHandler_Adult_TitleOnlyQuerySurfacesNZBAlongsideTorrent(t *testing.T) {
 	// 900 MB / 3480 s x265 1080p — the same fixture this file already
-	// documents as clearing the Low 1080p floor. The NZB fixture reuses the
-	// identical size/runtime so both land in the same (res1080, low) cell,
-	// one per protocol — the real-world shape (torrent AND nzb both existing
-	// for one scene).
-	const fallbackBody = `[{"guid":"9","title":"CathysCraving.Pixie.Smalls.Teasing.Cheerleader.XXX.1080p.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:DDDDDD1234567890abcdef1234567890abcdef12"}]`
-	const titleOnlyBody = `[{"guid":"10","title":"CathysCraving.Pixie.Smalls.Teasing.Cheerleader.XXX.1080p.x265-NZBGRP","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzbgeek.example/dl/10"}]`
+	// documents as clearing the Low 1080p floor, for both protocols.
+	const body = `[` +
+		`{"guid":"9","title":"CathysCraving.Pixie.Smalls.Teasing.Cheerleader.XXX.1080p.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:DDDDDD1234567890abcdef1234567890abcdef12"},` +
+		`{"guid":"10","title":"CathysCraving.Pixie.Smalls.Teasing.Cheerleader.XXX.1080p.x265-NZBGRP","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzbgeek.example/dl/10"}` +
+		`]`
 
-	// The truncated title survives cleaning byte-for-byte, so the first query
-	// IS the raw fragment; the studio+title retry gets the torrent, and the
-	// title-only variant gets the NZB release.
 	prowlarr, queries := fakeProwlarrPerQuery(t, map[string]string{
-		studioTitleQuery: fallbackBody,
-		titleOnlyQuery:   titleOnlyBody,
+		"Pixie Smalls Teasing Cheerleader": body,
 	})
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
@@ -426,7 +353,7 @@ func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *
 
 	reqURL := srv.URL + "/api/modes/adult/discover/availability?studio=" + urlQueryEscape("Cathys Craving") +
 		"&title=" + urlQueryEscape("Pixie Smalls Teasing Cheerleader") +
-		"&releaseTitle=" + urlQueryEscape(truncatedReleaseTitle) +
+		"&releaseTitle=" + urlQueryEscape("CathysCraving 26 02 08 Scene 1000 Pixie Smalls Teasing Cheerlea") +
 		"&durationSeconds=3480"
 	resp, err := http.Get(reqURL)
 	if err != nil {
@@ -437,17 +364,11 @@ func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	if len(*queries) != 3 {
-		t.Fatalf("expected exactly 3 Prowlarr searches (releaseTitle, studio+title fallback, title-only variant), got %d: %q", len(*queries), *queries)
+	if len(*queries) != 1 {
+		t.Fatalf("expected exactly 1 Prowlarr search (title-only), got %d: %q", len(*queries), *queries)
 	}
-	if (*queries)[0] != truncatedReleaseTitle {
-		t.Errorf("first query = %q, want the releaseTitle-derived query %q (releaseTitle must still be tried FIRST)", (*queries)[0], truncatedReleaseTitle)
-	}
-	if (*queries)[1] != studioTitleQuery {
-		t.Errorf("second query = %q, want the studio+title fallback %q", (*queries)[1], studioTitleQuery)
-	}
-	if (*queries)[2] != titleOnlyQuery {
-		t.Errorf("third query = %q, want the title-only variant %q", (*queries)[2], titleOnlyQuery)
+	if want := "Pixie Smalls Teasing Cheerleader"; (*queries)[0] != want {
+		t.Errorf("query = %q, want title-only %q (studio and releaseTitle both ignored)", (*queries)[0], want)
 	}
 
 	var out apidto.AvailabilityPreview
@@ -455,10 +376,10 @@ func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *
 		t.Fatalf("decoding response: %v", err)
 	}
 	if out.Res1080.Low.Torrent == nil || out.Res1080.Low.Torrent.GUID != "9" {
-		t.Fatalf("expected the studio+title fallback's torrent release to populate res1080/low/torrent, got %+v", out.Res1080)
+		t.Fatalf("expected the torrent release to populate res1080/low/torrent, got %+v", out.Res1080)
 	}
 	if out.Res1080.Low.Usenet == nil || out.Res1080.Low.Usenet.GUID != "10" {
-		t.Fatalf("expected the no-space-studio variant's NZB release to populate res1080/low/usenet — this is the exact bug fixed 2026-08-11, got %+v", out.Res1080)
+		t.Fatalf("expected the NZB release to populate res1080/low/usenet — this is the exact bug fixed 2026-08-11, got %+v", out.Res1080)
 	}
 }
 

@@ -288,7 +288,13 @@ func TestAutoGrabBatchHandler_CrossModeSessionIsolation(t *testing.T) {
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100) // 100 min runtime for the movies item
 	// Every request gets the identical release: healthy bitrate, exactly 3
 	// seeders — below Movies' floor (5), at-or-above Adult's floor (3).
-	release := `[{"guid":"1","title":"Cross.Mode.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":3,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`
+	// Titled to match the adult item's title ("Some Scene") — Adult's
+	// title-only query (2026-08-11) now runs every candidate through
+	// aiConfirmAdultReleases before grading, and with no AI client
+	// configured here that degrades to a deterministic title-only
+	// similarity check the release title must actually clear. Movies'
+	// grading is untouched by this and doesn't care about title text at all.
+	release := `[{"guid":"1","title":"Some.Scene.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":3,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`
 	prowlarr, stats := fakeProwlarrTracking(t, 0, func(url.Values) (int, string) {
 		return http.StatusOK, release
 	})
@@ -350,16 +356,11 @@ func TestAutoGrabBatchHandler_CrossModeSessionIsolation(t *testing.T) {
 	}
 
 	total, _ := stats.snapshot()
-	// Movies contributes 1 search. Adult contributes 2 — the base
-	// Studio+Title query plus the 2026-08-11 title-only variant
-	// (autograb.go's autoGrabSearch, mode.Adult branch) that also tries
-	// "Some Scene" with the studio dropped entirely. Both queries hit the
-	// same fakeProwlarrTracking stub and return the identical release, which
-	// dedupeReleases collapses back to one before grading — so this extra
-	// call changes the count here but not the grab/fallback assertions
-	// above.
-	if total != 3 {
-		t.Errorf("expected exactly 3 Prowlarr searches (1 for movies, 2 for adult's studio+title base + title-only variant), got %d", total)
+	// 1 search each: Movies' id-scoped search, and Adult's single title-only
+	// query (2026-08-11 — autograb.go's autoGrabSearch, mode.Adult branch no
+	// longer sends a Studio+Title query at all, just "Some Scene").
+	if total != 2 {
+		t.Errorf("expected exactly 2 Prowlarr searches (1 for movies, 1 for adult's title-only query), got %d", total)
 	}
 }
 

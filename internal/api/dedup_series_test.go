@@ -59,7 +59,7 @@ func TestDedupWorkflow_Series_ScanThenApply_EndToEnd(t *testing.T) {
 	fakeTMDB := httptest.NewServer(fakeTMDBTVSearchHandler(t, 555, "Some Show"))
 	defer fakeTMDB.Close()
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", fakeTMDB.URL)
 	if err := connStore.Upsert(ctx, "tmdb", fakeTMDB.URL, "test-key"); err != nil {
@@ -83,7 +83,7 @@ func TestDedupWorkflow_Series_ScanThenApply_EndToEnd(t *testing.T) {
 		trackedFile: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
 		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, prober, testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, prober, testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil))
 	defer srv.Close()
 
 	// Async scan: 202 + background work, staged list fetched via GET once idle.
@@ -160,7 +160,7 @@ func TestDedupWorkflow_Series_SeasonPack_ScanFindsGroupedDuplicate(t *testing.T)
 	fakeTMDB := httptest.NewServer(fakeTMDBTVSearchHandler(t, 555, "Some Show"))
 	defer fakeTMDB.Close()
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", fakeTMDB.URL)
 	if err := connStore.Upsert(ctx, "tmdb", fakeTMDB.URL, "test-key"); err != nil {
@@ -189,7 +189,7 @@ func TestDedupWorkflow_Series_SeasonPack_ScanFindsGroupedDuplicate(t *testing.T)
 	phasher := perPathPHasher{hashes: map[string]string{
 		packEp2: "pdq256/5f:" + strings.Repeat("f", 320),
 	}}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, prober, phasher, testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, prober, phasher, testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil))
 	defer srv.Close()
 
 	scanResp, err := http.Post(srv.URL+"/api/modes/series/dedup/scan", "application/json", nil)

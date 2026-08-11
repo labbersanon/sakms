@@ -73,7 +73,7 @@ func TestSweepUsenetFailuresClassifiesRetrievalErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+			_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 			g := dispatchedUsenetGrab(t, grabsStore, "nzb-1")
 			deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
 
@@ -149,7 +149,7 @@ func TestSweepUsenetFailuresLeavesHealthyAndUnknownDownloadsAlone(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+			_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 			g := dispatchedUsenetGrab(t, grabsStore, tc.gid)
 
 			sweepUsenetFailures(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}, tc.lookup(tc.gid))
@@ -190,7 +190,7 @@ func dueRetryRow(t *testing.T, grabsStore *grabs.Store, m mode.Mode, title strin
 // duplicate. DueForRetry's own doc comment states the contract this asserts.
 func TestRetryDueGrabsRelaunchesTheSameRow(t *testing.T) {
 	ctx := context.Background()
-	connStore, _, _, settingsStore, grabsStore, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, _, settingsStore, grabsStore, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	dl := newTestDownloader("gid-retry", t.TempDir())
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100) // 6000 s runtime → the release grades
 	prowlarrSrv := fakeProwlarr(t, `[{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`)
@@ -255,7 +255,7 @@ func TestRetryDueGrabsRelaunchesTheSameRow(t *testing.T) {
 // the hot loop, not a give-up threshold.
 func TestRetryDueGrabsCountsAFailedAttempt(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	setAutoGrabToggle(t, settingsStore, true)
 	g := dueRetryRow(t, grabsStore, mode.Movies, "Some Movie", 0)
 
@@ -309,7 +309,7 @@ func TestRetryDueGrabsCountsAFailedAttempt(t *testing.T) {
 // at the same instant would pass while proving nothing.
 func TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	setAutoGrabToggle(t, settingsStore, true)
 	g := dueRetryRow(t, grabsStore, mode.Movies, "Some Movie", 0)
 
@@ -352,7 +352,7 @@ func TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 // exclusion is reversible.
 func TestRetryDueGrabsSkipsExcludedTitles(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	setAutoGrabToggle(t, settingsStore, true)
 	g := dueRetryRow(t, grabsStore, mode.Movies, "Some Movie", 42)
 
@@ -378,7 +378,7 @@ func TestRetryDueGrabsSkipsExcludedTitles(t *testing.T) {
 // freshly parked row isn't due the instant it is written.
 func TestLoadUsenetRetryIntervalIsOffByDefault(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
 
 	if got := LoadUsenetRetryInterval(ctx, settingsStore); got != 0 {
 		t.Fatalf("interval = %s on a blank install, want 0 (off)", got)
@@ -405,7 +405,7 @@ func TestLoadUsenetRetryIntervalIsOffByDefault(t *testing.T) {
 // dead — stranding every pending_retry row forever.
 func TestPutUsenetAutoGrabEnabledCouplesTheInterval(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
 
 	put := func(enabled bool) {
 		t.Helper()

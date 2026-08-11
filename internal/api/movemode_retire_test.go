@@ -95,7 +95,7 @@ func TestMoveMode_RetiresSourceLibraryRows(t *testing.T) {
 	}
 
 	t.Run("AdultSource_KeepTheRetiredCandidateAsWinner", func(t *testing.T) {
-		connStore, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		connStore, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -137,7 +137,7 @@ func TestMoveMode_RetiresSourceLibraryRows(t *testing.T) {
 	})
 
 	t.Run("AdultSource_KeepTheOtherCandidateAsWinner", func(t *testing.T) {
-		connStore, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		connStore, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -182,7 +182,7 @@ func TestMoveMode_RetiresSourceLibraryRows(t *testing.T) {
 	// other test in this package still passes. Verified by a branch-scoped
 	// mutation, not assumed.
 	t.Run("MoviesSource_RetiresTheLibraryItemRow", func(t *testing.T) {
-		connStore, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		connStore, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -235,7 +235,7 @@ func TestMoveMode_RetiresSourceLibraryRows(t *testing.T) {
 	// the trap live: the episode's id equals the parent series' id, so a
 	// DeleteSeries(episodeID) would wipe the whole series and its siblings.
 	t.Run("SeriesSource_RetiresOneEpisodeNotTheSeries", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -303,7 +303,7 @@ func TestMoveMode_RetiresSourceLibraryRows(t *testing.T) {
 	// AddSceneTag below, this test ships green against a broken
 	// implementation.
 	t.Run("AdultSource_TaggedSceneRetiresWithoutA500", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -408,7 +408,7 @@ func TestMoveMode_ConflictRollsBackRetirement(t *testing.T) {
 	}
 
 	t.Run("Conflict409LeavesTheSourceRowsIntact", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -452,7 +452,7 @@ func TestMoveMode_ConflictRollsBackRetirement(t *testing.T) {
 	})
 
 	t.Run("SameFixtureWithoutTheConflictDoesRetire", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 

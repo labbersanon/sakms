@@ -11,7 +11,7 @@ export const ORGANIZE_NAV_EXPANDED_KEY = "sakms.organize.navExpanded";
 
 export const ORGANIZE_WORKFLOWS = [
   { id: "rename", label: "Rename" },
-  { id: "purge", label: "Purge" },
+  { id: "purge", label: "Clean-up" },
   { id: "dedup", label: "Dedup" },
 ] as const;
 

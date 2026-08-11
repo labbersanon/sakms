@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
-	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/api"
 	"github.com/labbersanon/sakms/internal/auth"
 	"github.com/labbersanon/sakms/internal/config"
@@ -115,7 +114,6 @@ func run() error {
 	propStore := proposals.New(sqlDB)
 	organizeEventsStore := organizeevents.New(sqlDB)
 	organizeevents.SetDefault(organizeEventsStore)
-	allowStore := allowlist.New(sqlDB)
 	prober := mediainfo.New()
 	hasher := phash.New()
 	// videoHasher is SAK's StashDB-compatible video perceptual hasher for Adult
@@ -358,7 +356,7 @@ func run() error {
 	// deliberately (see BE-10's own note there) — only this one needed to
 	// change.
 	// Troubleshooting: N/A — the cache is live from here on.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, allowStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy, discoverCache, pruningStore)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy, discoverCache, pruningStore)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux, sectionGate...)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -648,7 +646,7 @@ func run() error {
 	// so turning one ON needs a restart. Dedup cycles share the same dedupHub
 	// concurrency guard as manual Dedup scans. To remove entirely: delete
 	// internal/scanschedule, scanadapter.go, and this block.
-	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, allowStore, libStore, pruningStore, prober, phashDispatcher, videoDispatcher, entityStore)
+	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, libStore, pruningStore, prober, phashDispatcher, videoDispatcher, entityStore)
 	scanschedule.Run(ctx, scanScheduler, settingsStore, dedupHub)
 
 	// Claude 2026-08-03: corrected the ordinal below from "seventh" to

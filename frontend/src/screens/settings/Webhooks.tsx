@@ -566,7 +566,7 @@ const BrowserNotificationsToggle: Component = () => {
         Enable browser notifications
       </label>
       <p class="mt-1 text-sm text-muted">
-        Pop a desktop notification when SAK finishes a Rename, Purge, or Dedup,
+        Pop a desktop notification when SAK finishes a Rename, Clean-up, or Dedup,
         or completes a grab — as long as at least one SAK tab is open. Works
         alongside any webhooks below.
       </p>
@@ -598,7 +598,7 @@ export const WebhooksSection: Component = () => {
 
       <p class="mb-3 text-sm text-muted">
         Get pinged in other apps — Discord, Home Assistant, anything that can
-        receive a webhook — whenever SAK finishes a Rename, Purge, or Dedup,
+        receive a webhook — whenever SAK finishes a Rename, Clean-up, or Dedup,
         or completes a grab. If you set a signing secret below, each
         notification includes an{" "}
         <code class="rounded bg-surface-2 px-1 py-0.5 text-xs">

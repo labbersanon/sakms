@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dbtest"
@@ -55,7 +54,7 @@ func newStashBoxEnv(t *testing.T) *stashBoxEnv {
 	}
 	connStore := connections.New(sqlDB, enc)
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, proposals.New(sqlDB), allowlist.New(sqlDB),
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, proposals.New(sqlDB),
 		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB), nil, library.New(sqlDB),
 		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
@@ -474,7 +473,7 @@ func TestStashBoxDatabases_TestStoredHidesDetail(t *testing.T) {
 // of this package's other tests) has no registry to serve.
 func TestStashBoxDatabases_Unavailable(t *testing.T) {
 	sqlDB := dbtest.New(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), nil, nil, proposals.New(sqlDB), allowlist.New(sqlDB),
+	srv := httptest.NewServer(NewMux(testHTTPClient(), nil, nil, proposals.New(sqlDB),
 		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB), nil, library.New(sqlDB),
 		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)

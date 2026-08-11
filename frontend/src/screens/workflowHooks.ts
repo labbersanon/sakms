@@ -15,8 +15,8 @@
 //   keys with toggle/select-all/clear), which is why it belongs here rather than
 //   copied inline. Tag has no bulk-apply surface and does not use it.
 //
-// Only these three patterns are here. Screen-specific logic (Purge allowlist
-// mutations, Dedup keepSel indexing, Rename re-pick panel, Tag draft map) is
+// Only these three patterns are here. Screen-specific logic (Clean-up's rules
+// card, Dedup keepSel indexing, Rename re-pick panel, Tag draft map) is
 // NOT here — it only qualifies if it is genuinely identical or trivially
 // parameterizable across all four screens.
 

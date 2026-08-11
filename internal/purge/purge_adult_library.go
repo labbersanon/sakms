@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -16,16 +17,16 @@ import (
 // once Adult stops requiring Whisparr (see the plan this was built from,
 // Stage 2). A scene is a flat one-file-done-once thing like a Movie Item, so
 // tags live at the scene level and Purge proposes one row per matched SCENE,
-// the direct analogue of ScanLibrary's Movies path. Matches each scene's own
-// local tags against allowlist with the exact same MatchedEntries rule.
+// the direct analogue of ScanLibrary's Movies path. A rule's tags condition is
+// matched against each scene's own local tags.
 //
 // SourcePath is set to the scene's on-disk file: ApplyLibraryAdult trusts it
 // for the file removal (there is no GetScene-by-id to re-fetch through, unlike
 // Movies' ApplyLibrary), so it is load-bearing, not merely informational.
-// rules are evaluated in the same per-scene loop as the tag match (one
-// proposal per scene, combined Reason — see joinReasons); a Scene carries
+// rules are evaluated in one per-scene loop (one proposal per scene, with
+// every matched rule's fragment joined into its Reason); a Scene carries
 // Size/QualityTier/CreatedAt directly, so no aggregation is needed.
-func ScanLibraryAdult(ctx context.Context, libStore *library.Store, allowlist []string, rules []pruning.Rule) ([]proposals.Proposal, error) {
+func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []pruning.Rule) ([]proposals.Proposal, error) {
 	scenes, err := libStore.ListScenes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading scenes: %w", err)
@@ -39,21 +40,17 @@ func ScanLibraryAdult(ctx context.Context, libStore *library.Store, allowlist []
 		if err != nil {
 			return nil, fmt.Errorf("loading tags for %q: %w", sc.Title, err)
 		}
-		var matched []string
-		for _, tag := range tags {
-			matched = append(matched, MatchedEntries(tag, allowlist)...)
-		}
 		ruleReasons := pruning.MatchAny(rules, pruning.Subject{
-			CreatedAt: sc.CreatedAt, SizeBytes: sc.Size, QualityTier: sc.QualityTier,
+			CreatedAt: sc.CreatedAt, SizeBytes: sc.Size, QualityTier: sc.QualityTier, Tags: tags,
 		}, now)
-		if len(matched) == 0 && len(ruleReasons) == 0 {
+		if len(ruleReasons) == 0 {
 			continue
 		}
 		out = append(out, proposals.Proposal{
 			Mode: mode.Adult, Workflow: proposals.Purge, Status: proposals.Pending,
 			SourceName: sc.Title, SourcePath: sc.FilePath, RootFolderPath: sc.RootFolderPath,
 			Title: sc.Title, Studio: sc.Studio, Date: sc.Date, TrackedID: int(sc.ID),
-			Reason: joinReasons(matched, ruleReasons),
+			Reason: strings.Join(ruleReasons, "; "),
 		})
 	}
 	return out, nil

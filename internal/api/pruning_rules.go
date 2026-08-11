@@ -34,6 +34,7 @@ func toDTOPruningRule(r pruning.Rule) apidto.PruningRule {
 		AgeDays:          r.AgeDays,
 		SizeBytes:        r.SizeBytes,
 		QualityTierFloor: r.QualityTierFloor,
+		Tags:             r.Tags,
 		Enabled:          r.Enabled,
 		CreatedAt:        r.CreatedAt,
 		UpdatedAt:        r.UpdatedAt,
@@ -58,6 +59,7 @@ func ruleFromUpsert(id int64, req apidto.PruningRuleUpsertRequest) pruning.Rule 
 		AgeDays:          req.AgeDays,
 		SizeBytes:        req.SizeBytes,
 		QualityTierFloor: req.QualityTierFloor,
+		Tags:             req.Tags,
 		Enabled:          req.Enabled,
 	}
 }
@@ -76,7 +78,8 @@ func pruningRuleStoreError(w http.ResponseWriter, err error) {
 		errors.Is(err, pruning.ErrInvalidMode),
 		errors.Is(err, pruning.ErrNoConditions),
 		errors.Is(err, pruning.ErrInvalidTierFloor),
-		errors.Is(err, pruning.ErrNegativeThreshold):
+		errors.Is(err, pruning.ErrNegativeThreshold),
+		errors.Is(err, pruning.ErrBlankTag):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -186,16 +189,19 @@ func deletePruningRuleHandler(store *pruning.Store) http.HandlerFunc {
 // now?" for a draft that need not exist yet, and the UI shows the number
 // without ever blocking a save.
 //
-// It counts by running the mode's real purge.Scan* propose function with an
-// EMPTY tag allowlist and this one rule, then returning how many proposals
-// came back. That is deliberate rather than lazy: it guarantees the count uses
-// the identical Subject projection and Series episode aggregation the actual
-// Scan uses (plan §2.4), which a second hand-written projection here would
-// drift from the first time either changed. The Scan functions are pure — they
-// return proposals, they never persist — so nothing is staged and no Apply
-// becomes possible from this endpoint. The extra per-item tag read an empty
-// allowlist makes pointless is the price, and it is paid once per operator
-// keystroke-debounced preview, not on any hot path.
+// It counts by running the mode's real purge.Scan* propose function with this
+// one rule, then returning how many proposals came back. That is deliberate
+// rather than lazy, and MORE load-bearing now than when it was written: it
+// guarantees the count uses the identical Subject projection and Series
+// episode aggregation the actual Scan uses (plan §2.4), which a second
+// hand-written projection here would drift from the first time either changed.
+// The Scan functions are pure — they return proposals, they never persist — so
+// nothing is staged and no Apply becomes possible from this endpoint.
+//
+// Claude 2026-08-11: the `nil` allowlist argument these three calls used to
+// carry is gone with the mechanism, and the per-item tag read it made pointless
+// is no longer pointless — it feeds the tags condition. So preview now genuinely
+// previews TAG matches too, a capability the old Settings tab could not offer.
 //
 // Enabled is forced true regardless of the body: the operator is asking what
 // the conditions match, and a draft still toggled off would otherwise always
@@ -233,13 +239,13 @@ func previewPruningRuleHandler(store *pruning.Store, libStore *library.Store) ht
 		)
 		switch mode.Mode(draft.Mode) {
 		case mode.Movies:
-			list, scanErr := purge.ScanLibrary(ctx, libStore, nil, rules)
+			list, scanErr := purge.ScanLibrary(ctx, libStore, rules)
 			matched, err = len(list), scanErr
 		case mode.Series:
-			list, scanErr := purge.ScanLibrarySeries(ctx, libStore, nil, rules)
+			list, scanErr := purge.ScanLibrarySeries(ctx, libStore, rules)
 			matched, err = len(list), scanErr
 		case mode.Adult:
-			list, scanErr := purge.ScanLibraryAdult(ctx, libStore, nil, rules)
+			list, scanErr := purge.ScanLibraryAdult(ctx, libStore, rules)
 			matched, err = len(list), scanErr
 		}
 		if err != nil {

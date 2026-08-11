@@ -83,7 +83,7 @@ func detailMux(t *testing.T, tmdbURL string) *http.ServeMux {
 	// overrideFixedURL's "tmdb" case (called below), so every internal/api test
 	// gets it rather than only this file's. Do NOT re-add a local reset — one
 	// mechanism, in one place. See that case's comment for the hazard.
-	connStore, _, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", tmdbURL)
 	if err := connStore.Upsert(ctx, "tmdb", tmdbURL, "key"); err != nil {

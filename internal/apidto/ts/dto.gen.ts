@@ -172,7 +172,6 @@ export interface ModeStatus {
   mode: string;
   available: boolean;
   arrConfigured: boolean;
-  allowlistCount: number /* int */;
 }
 /**
  * SetupStatusResponse is GET /api/setup/status's response — a pure read
@@ -1147,15 +1146,6 @@ export interface Proposal {
    */
   genres?: string[];
   cast?: string[];
-}
-/**
- * AllowlistAddRequest is the body of POST /api/modes/{mode}/purge/allowlist —
- * adds one tag rule to a mode's Purge allowlist. Mirrors internal/api's
- * unexported addAllowlistTagRequest exactly. Adding a tag already present is
- * not an error (see allowlist.Store.Add).
- */
-export interface AllowlistAddRequest {
-  tag: string;
 }
 /**
  * RepickRequest is the body of POST /api/proposals/{id}/repick — Rename's
@@ -2832,6 +2822,7 @@ export interface PruningRule {
   ageDays?: number /* int */;
   sizeBytes?: number /* int64 */;
   qualityTierFloor?: string;
+  tags?: string[];
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -2849,6 +2840,7 @@ export interface PruningRuleUpsertRequest {
   ageDays: number /* int */;
   sizeBytes: number /* int64 */;
   qualityTierFloor: string;
+  tags: string[];
   enabled: boolean;
 }
 /**

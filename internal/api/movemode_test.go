@@ -27,7 +27,7 @@ import (
 // Movies Rename proposal moved to Series, ungated (D-1), writes the target
 // mode and metadata and returns no body.
 func TestMoveMode_MoviesToSeriesSucceeds(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/media/series"); err != nil {
@@ -79,7 +79,7 @@ func TestMoveMode_MoviesToSeriesSucceeds(t *testing.T) {
 // with adult-content locked, a move whose SOURCE mode is Adult is refused —
 // even though the target (Movies) is not itself gated by anything else.
 func TestMoveMode_AdultLockedMoveOutOfAdultReturns403(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/media/movies"); err != nil {
@@ -143,7 +143,7 @@ func TestMoveMode_AdultLockedMoveOutOfAdultReturns403(t *testing.T) {
 // else. Together with TestMoveMode_AdultLockedMoveOutOfAdultReturns403 this
 // proves the gate fires in BOTH directions.
 func TestMoveMode_AdultLockedMoveIntoAdultReturns403(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	if err := settingsStore.Set(ctx, adultLibraryRootFolderKey, "/media/adult"); err != nil {
@@ -201,7 +201,7 @@ func TestMoveMode_AdultLockedMoveIntoAdultReturns403(t *testing.T) {
 // a move that touches neither the source NOR the target Adult mode must
 // stay fully ungated even while adult-content is locked.
 func TestMoveMode_AdultLockedMoviesToSeriesSucceeds(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/media/series"); err != nil {

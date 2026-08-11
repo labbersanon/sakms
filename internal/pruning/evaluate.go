@@ -13,9 +13,37 @@ import (
 // fields directly), which keeps this engine free of any library-type
 // import fan-out.
 type Subject struct {
-	CreatedAt   string // RFC3339 from the library row; "" if never captured.
-	SizeBytes   int64  // 0 == not captured (backfill has not reached it).
-	QualityTier string // "" == not captured; "unknown" == backfill could not infer.
+	CreatedAt   string   // RFC3339 from the library row; "" if never captured.
+	SizeBytes   int64    // 0 == not captured (backfill has not reached it).
+	QualityTier string   // "" == not captured; "unknown" == backfill could not infer.
+	Tags        []string // The item's own tags, verbatim from libStore; nil == none.
+}
+
+// matchedTags returns which of ruleTags exactly match (case-insensitive) any
+// entry in itemTags, in ruleTags order.
+//
+// EXACT matching, deliberately not substring or word-boundary: a tag like
+// "Transgender" and one like "Transformation" must be distinguishable with
+// zero false positives.
+//
+// Ported from internal/purge's MatchesAny/MatchedEntries (themselves ported
+// unchanged from stash-whisparr-sort), which this replaces. The primitive had
+// to MOVE rather than be called: internal/purge imports internal/pruning, so
+// the dependency cannot run the other way. Keeping a copy behind in
+// internal/purge would put the exact-match semantic in two files at once,
+// which is precisely the drift this consolidation exists to prevent — there
+// is deliberately no compatibility shim there.
+func matchedTags(ruleTags, itemTags []string) []string {
+	var out []string
+	for _, rt := range ruleTags {
+		for _, it := range itemTags {
+			if strings.EqualFold(rt, it) {
+				out = append(out, rt)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // tierRank orders the four real quality tiers low -> lossless for the
@@ -28,14 +56,17 @@ var tierRank = map[string]int{"low": 0, "medium": 1, "high": 2, "lossless": 3}
 
 // Match reports whether subj satisfies EVERY configured condition on r
 // (AND-within-rule), and returns the human-readable Reason fragment for a
-// match. A rule with no configured conditions can never reach here in
+// match. Reason fragments are emitted in a fixed order — age, size, tier,
+// tags — which the rule form's own field order mirrors. A rule with no
+// configured conditions can never reach here in
 // practice (the store rejects it at Create/Update), but Match returns
 // false for one anyway rather than vacuously matching everything.
 func Match(r Rule, subj Subject, now time.Time) (bool, string) {
 	hasAge := r.AgeDays != 0
 	hasSize := r.SizeBytes != 0
 	hasTier := r.QualityTierFloor != ""
-	if !hasAge && !hasSize && !hasTier {
+	hasTags := len(r.Tags) > 0
+	if !hasAge && !hasSize && !hasTier && !hasTags {
 		return false, ""
 	}
 
@@ -67,6 +98,22 @@ func Match(r Rule, subj Subject, now time.Time) (bool, string) {
 			return false, ""
 		}
 		parts = append(parts, fmt.Sprintf("tier: %s", subj.QualityTier))
+	}
+
+	if hasTags {
+		// Fail-closed, the same direction as matchesTier (see its doc for why
+		// the opposite direction is a data-loss bug): an item with no tags, or
+		// with no tag matching this rule's, does NOT match. An empty subj.Tags
+		// can never satisfy a configured tags condition.
+		//
+		// The fragment reports the tags that ACTUALLY fired, not the rule's
+		// configured list — the same "actual item values, not rule thresholds"
+		// convention the other three fragments follow.
+		hits := matchedTags(r.Tags, subj.Tags)
+		if len(hits) == 0 {
+			return false, ""
+		}
+		parts = append(parts, fmt.Sprintf("tags: %s", strings.Join(hits, ", ")))
 	}
 
 	return true, fmt.Sprintf("Matched rule '%s': %s", r.Name, strings.Join(parts, ", "))

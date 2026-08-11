@@ -38,7 +38,7 @@ const jsonResponse = (obj: unknown): Response =>
 const stubFetch = () => {
   const fn = vi.fn(async (input: RequestInfo | URL) => {
     void input;
-    // Proposal pages are {items,total,...}; allowlist/events are arrays.
+    // Proposal pages are {items,total,...}; pruning-rules/events are arrays.
     const url = String(input);
     if (url.includes("/proposals")) {
       return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
@@ -77,16 +77,20 @@ describe("Organize — query tab", () => {
     expect(
       await screen.findByText("No proposals yet — click Scan."),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Allowlist")).toBeNull();
+    expect(screen.queryByText("Rules")).toBeNull();
     await waitFor(() =>
       expect(localStorage.getItem(ORGANIZE_TAB_KEY)).toBe("rename"),
     );
   });
 
-  it("?tab=purge shows Purge (Allowlist)", async () => {
+  // Claude 2026-08-11: re-targeted from the retired "Allowlist" section onto
+  // the Rules card's <summary>, which now occupies that slot on the Clean-up
+  // screen. Asserting a landmark unique to this tab is the point — the shared
+  // "No proposals yet" empty state would pass on any of the three.
+  it("?tab=purge shows Clean-up (its Rules card)", async () => {
     stubFetch();
     renderOrganize("/organize?tab=purge");
-    expect(await screen.findByText("Allowlist")).toBeInTheDocument();
+    expect(await screen.findByText("Rules")).toBeInTheDocument();
   });
 
   it("?tab=dedup shows Dedup empty state", async () => {
@@ -113,7 +117,7 @@ describe("Organize — query tab", () => {
     expect(
       await screen.findByText("No proposals yet — click Scan."),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Allowlist")).toBeNull();
+    expect(screen.queryByText("Rules")).toBeNull();
   });
 
   it("does not render workflow ScreenTabs buttons", async () => {
@@ -121,7 +125,7 @@ describe("Organize — query tab", () => {
     renderOrganize("/organize?tab=rename");
     await screen.findByText("No proposals yet — click Scan.");
     // Mode tabs still exist (Movies/…); workflow pills must not.
-    expect(screen.queryByRole("button", { name: "Purge" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Clean-up" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Dedup" })).toBeNull();
   });
 });

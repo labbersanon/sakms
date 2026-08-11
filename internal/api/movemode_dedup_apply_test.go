@@ -84,7 +84,7 @@ func requireFileGone(t *testing.T, path, why string) {
 // moveProposalModeHandler itself builds the zeroed copy (step 10.6) — while
 // every other candidate field and the ordering survive byte-identically.
 func TestMoveMode_ZeroesCandidateTrackedIDs(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Dedup, []proposals.Proposal{
@@ -154,7 +154,7 @@ func TestMoveMode_ZeroesCandidateTrackedIDs(t *testing.T) {
 //     the discriminator in that direction.
 func TestMoveMode_DedupGroupMoveThenApply_DeletesOnlyItsOwnFiles(t *testing.T) {
 	t.Run("AdultToMovies", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -234,7 +234,7 @@ func TestMoveMode_DedupGroupMoveThenApply_DeletesOnlyItsOwnFiles(t *testing.T) {
 	})
 
 	t.Run("MoviesToAdult", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -321,7 +321,7 @@ func TestMoveMode_DedupGroupMoveThenApply_DeletesOnlyItsOwnFiles(t *testing.T) {
 // "a NEW tracked id" would be unfalsifiable.
 func TestMoveMode_DedupWinnerRegisteredInTargetTable(t *testing.T) {
 	t.Run("AdultToMovies", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -392,7 +392,7 @@ func TestMoveMode_DedupWinnerRegisteredInTargetTable(t *testing.T) {
 	})
 
 	t.Run("MoviesToAdult", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 
@@ -537,7 +537,7 @@ func TestMoveMode_DedupMoveToSeries_WinnerRegistered(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+			_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 			ctx := context.Background()
 			root := t.TempDir()
 

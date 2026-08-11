@@ -74,7 +74,7 @@ func TestApplyBatch_PartialFailure_SkipsAndContinues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 
 	item1, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 1, Title: "One", FilePath: file1, RootFolderPath: dir})
@@ -98,7 +98,7 @@ func TestApplyBatch_PartialFailure_SkipsAndContinues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyBatchRequest{Items: []applyBatchItem{
@@ -176,7 +176,7 @@ func TestApplyBatch_CombinedNotify_OneCallBothItemsChanges(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
 	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")
@@ -189,7 +189,7 @@ func TestApplyBatch_CombinedNotify_OneCallBothItemsChanges(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(applyBatchRequest{Items: []applyBatchItem{
@@ -264,7 +264,7 @@ func TestApplyBatch_CommittedItemErrors_ChangesStillInCombinedNotify(t *testing.
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	connStore, propStore, _, settingsStore, _, libStore, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, libStore, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
 	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies", "series")

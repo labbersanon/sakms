@@ -160,10 +160,9 @@ type APIKeyRegenerateResponse struct {
 // "movies", "series", "adult") — enough for the setup wizard to know which
 // steps are already done and skip past them.
 type ModeStatus struct {
-	Mode           string `json:"mode"`
-	Available      bool   `json:"available"`
-	ArrConfigured  bool   `json:"arrConfigured"`
-	AllowlistCount int    `json:"allowlistCount"`
+	Mode          string `json:"mode"`
+	Available     bool   `json:"available"`
+	ArrConfigured bool   `json:"arrConfigured"`
 }
 
 // SetupStatusResponse is GET /api/setup/status's response — a pure read
@@ -1186,28 +1185,19 @@ type Proposal struct {
 	Cast   []string `json:"cast,omitempty"`
 }
 
-// --- Purge allowlist (Stage 3) --------------------------------------------
+// --- Purge (no dedicated DTOs) ---------------------------------------------
 //
-// Purge's allowlist is an editable set of tag NAMES; any tracked item whose
-// tags match one becomes a delete proposal (see internal/purge's package doc).
-// The list itself crosses the wire as a bare JSON array of strings
-// (GET /api/modes/{mode}/purge/allowlist → []string), so it needs no named
-// response DTO — the client types it as string[] directly. Only the add-body
-// warrants a DTO, below. Removal is path-only
-// (DELETE /api/modes/{mode}/purge/allowlist/{tag}), no body.
+// Claude 2026-08-11: the per-mode tag allowlist that used to be documented
+// here (AllowlistAddRequest + its bare-[]string list response) is retired —
+// see PruningRule below.
+// Reason: Purge matches every tracked item against that mode's enabled
+// pruning rules; it has no mechanism, and so no DTO, of its own beyond the
+// scan/apply routes.
 //
 // Purge reuses the shared Proposal type above unchanged — its queue rows read
 // only Title/Status/RootFolderPath/Reason, all already present. No
 // Purge-specific proposal fields exist (no re-pick / give-back / draft), so
 // none are added here.
-
-// AllowlistAddRequest is the body of POST /api/modes/{mode}/purge/allowlist —
-// adds one tag rule to a mode's Purge allowlist. Mirrors internal/api's
-// unexported addAllowlistTagRequest exactly. Adding a tag already present is
-// not an error (see allowlist.Store.Add).
-type AllowlistAddRequest struct {
-	Tag string `json:"tag"`
-}
 
 // RepickRequest is the body of POST /api/proposals/{id}/repick — Rename's
 // manual-override path when Scan's automatic TMDB match was wrong or scored too
@@ -1538,17 +1528,17 @@ type TagEntry struct {
 // Adult scenes — Adult has no Library grid to sort, and omitting it keeps
 // Adult's wire response byte-identical to before this field existed.
 type TrackedItem struct {
-	ID             int64              `json:"id"`
-	Title          string             `json:"title"`
-	Tags           []string           `json:"tags"`
-	TmdbId         int                `json:"tmdbId,omitempty"`
-	Year           int                `json:"year,omitempty"`
-	CollectionName string             `json:"collectionName,omitempty"`
-	Genres         []string           `json:"genres,omitempty"`
-	Cast           []string           `json:"cast,omitempty"`
-	CreatedAt      string             `json:"createdAt,omitempty"`
-	QualityTiers   []string           `json:"qualityTiers,omitempty"`
-	Files          []TrackedItemFile  `json:"files,omitempty"`
+	ID             int64             `json:"id"`
+	Title          string            `json:"title"`
+	Tags           []string          `json:"tags"`
+	TmdbId         int               `json:"tmdbId,omitempty"`
+	Year           int               `json:"year,omitempty"`
+	CollectionName string            `json:"collectionName,omitempty"`
+	Genres         []string          `json:"genres,omitempty"`
+	Cast           []string          `json:"cast,omitempty"`
+	CreatedAt      string            `json:"createdAt,omitempty"`
+	QualityTiers   []string          `json:"qualityTiers,omitempty"`
+	Files          []TrackedItemFile `json:"files,omitempty"`
 }
 
 // TrackedItemFile is one primary or alternate video under a Movies tracked
@@ -2899,23 +2889,24 @@ type SectionLockSectionsRequest struct {
 // --- Pruning rules (internal/pruning) — propose-only Purge safety rules ----
 //
 // Mirrors pruning.Rule's wire shape (see .omc/plans/autopilot-impl-pruning-rules.md
-// §2.1). AgeDays/SizeBytes/QualityTierFloor use the same NOT NULL DEFAULT
-// sentinel convention as the migration (0/0/"" means "condition not
+// §2.1). AgeDays/SizeBytes/QualityTierFloor/Tags use the same NOT NULL DEFAULT
+// sentinel convention as the migrations (0/0/""/[] means "condition not
 // configured"), so unlike ConnectionUpsertRequest.APIKey these are plain
 // values, never *T.
 
 // PruningRule is the full read shape for GET /api/pruning-rules and its
 // per-id counterpart — one operator-authored rule for the Purge workflow.
 type PruningRule struct {
-	ID               int64  `json:"id"`
-	Name             string `json:"name"`
-	Mode             string `json:"mode"`
-	AgeDays          int    `json:"ageDays,omitempty"`
-	SizeBytes        int64  `json:"sizeBytes,omitempty"`
-	QualityTierFloor string `json:"qualityTierFloor,omitempty"`
-	Enabled          bool   `json:"enabled"`
-	CreatedAt        string `json:"createdAt"`
-	UpdatedAt        string `json:"updatedAt"`
+	ID               int64    `json:"id"`
+	Name             string   `json:"name"`
+	Mode             string   `json:"mode"`
+	AgeDays          int      `json:"ageDays,omitempty"`
+	SizeBytes        int64    `json:"sizeBytes,omitempty"`
+	QualityTierFloor string   `json:"qualityTierFloor,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Enabled          bool     `json:"enabled"`
+	CreatedAt        string   `json:"createdAt"`
+	UpdatedAt        string   `json:"updatedAt"`
 }
 
 // PruningRuleUpsertRequest is the body of POST /api/pruning-rules (create)
@@ -2924,12 +2915,13 @@ type PruningRule struct {
 // a save always sends the full rule rather than a partial "preserve
 // unchanged" update.
 type PruningRuleUpsertRequest struct {
-	Name             string `json:"name"`
-	Mode             string `json:"mode"`
-	AgeDays          int    `json:"ageDays"`
-	SizeBytes        int64  `json:"sizeBytes"`
-	QualityTierFloor string `json:"qualityTierFloor"`
-	Enabled          bool   `json:"enabled"`
+	Name             string   `json:"name"`
+	Mode             string   `json:"mode"`
+	AgeDays          int      `json:"ageDays"`
+	SizeBytes        int64    `json:"sizeBytes"`
+	QualityTierFloor string   `json:"qualityTierFloor"`
+	Tags             []string `json:"tags"`
+	Enabled          bool     `json:"enabled"`
 }
 
 // PruningRulePreviewResponse is POST .../pruning-rules/preview's response

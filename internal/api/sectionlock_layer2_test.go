@@ -56,7 +56,7 @@ func newLayer2Fixture(t *testing.T) *layer2Fixture {
 	}))
 	t.Cleanup(prowlarrSrv.Close)
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
 	if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
 		t.Fatalf("seeding prowlarr: %v", err)
 	}
@@ -75,7 +75,7 @@ func newLayer2Fixture(t *testing.T) *layer2Fixture {
 		t.Fatalf("SetSections: %v", err)
 	}
 
-	apiMux := NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
+	apiMux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
 	gated := auth.Middleware(secretStore, authStore, apiMux, auth.WithSectionGate(sectionlock.NewGate(lockStore, secretStore)))
 
 	srv := httptest.NewServer(gated)

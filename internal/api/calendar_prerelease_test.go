@@ -22,7 +22,7 @@ import (
 // a test can seed the outstanding-work inputs and read the row back.
 func preReleaseMux(t *testing.T) (*http.ServeMux, *grabs.Store, *library.Store) {
 	t.Helper()
-	_, _, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	_, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore))
 	return mux, grabsStore, libStore

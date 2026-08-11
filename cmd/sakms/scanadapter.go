@@ -26,7 +26,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/api"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
@@ -56,7 +55,6 @@ type scanAdapter struct {
 	scStore       *serviceconn.Store
 	settingsStore *settings.Store
 	propStore     *proposals.Store
-	allowStore    *allowlist.Store
 	libStore      *library.Store
 	// Claude 2026-08-03: added pruningStore (B4, plan §3.3).
 	// Reason: ScanPurge loads the mode's enabled pruning rules and passes them
@@ -76,14 +74,13 @@ type scanAdapter struct {
 
 // newScanAdapter wires the scheduler's Scanner from the same stores main.go
 // already constructed for NewMux.
-func newScanAdapter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, allowStore *allowlist.Store, libStore *library.Store, pruningStore *pruning.Store, prober *mediainfo.Prober, phashHasher, videoHasher *nodes.Dispatcher, entityStore parseentity.EntityStore) *scanAdapter {
+func newScanAdapter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, pruningStore *pruning.Store, prober *mediainfo.Prober, phashHasher, videoHasher *nodes.Dispatcher, entityStore parseentity.EntityStore) *scanAdapter {
 	return &scanAdapter{
 		httpClient:    httpClient,
 		connStore:     connStore,
 		scStore:       scStore,
 		settingsStore: settingsStore,
 		propStore:     propStore,
-		allowStore:    allowStore,
 		libStore:      libStore,
 		pruningStore:  pruningStore,
 		prober:        prober,
@@ -173,12 +170,13 @@ func (a *scanAdapter) ScanRename(ctx context.Context, m mode.Mode) error {
 // identical to purgeScanHandler, minus the HTTP shell. Purge needs no session,
 // root folder, or hasher: it reads the tracked library directly. Never Applies.
 func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
-	tags, err := a.allowStore.List(ctx, m)
-	if err != nil {
-		return err
-	}
-
 	var rules []pruning.Rule
+	// `var err error` at FUNCTION scope, deliberately OUTSIDE the if below.
+	// Writing `rules, err := ...` inside the block instead re-declares rules in
+	// the block's own scope, leaving the outer rules permanently nil — every
+	// scheduled Purge scan would then run with an empty rule set and propose
+	// nothing. It compiles, it is silent, and no test covers it.
+	var err error
 	if a.pruningStore != nil {
 		rules, err = a.pruningStore.ListEnabledForMode(ctx, m)
 		if err != nil {
@@ -189,11 +187,11 @@ func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
 	var found []proposals.Proposal
 	switch m {
 	case mode.Movies:
-		found, err = purge.ScanLibrary(ctx, a.libStore, tags, rules)
+		found, err = purge.ScanLibrary(ctx, a.libStore, rules)
 	case mode.Series:
-		found, err = purge.ScanLibrarySeries(ctx, a.libStore, tags, rules)
+		found, err = purge.ScanLibrarySeries(ctx, a.libStore, rules)
 	case mode.Adult:
-		found, err = purge.ScanLibraryAdult(ctx, a.libStore, tags, rules)
+		found, err = purge.ScanLibraryAdult(ctx, a.libStore, rules)
 	default:
 		return nil
 	}

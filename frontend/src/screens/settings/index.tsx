@@ -4,10 +4,7 @@
 // fallback when rendered standalone in a unit test): Library (per-mode metadata
 // source connections + root folder + quality prefs for all three modes; naming
 // preset and kids path for Movies/Series only — Adult has a fixed naming scheme
-// and no kids classification; new-season discovery for Series only); Pruning
-// (Claude 2026-08-03: operator-authored propose-only Purge rules — CRUD list +
-// per-rule age/size/quality-tier conditions with a soft match-count preview,
-// plus the Purge background-scan interval control, see PruningRules.tsx); Download (the two native
+// and no kids classification; new-season discovery for Series only); Download (the two native
 // download panels under one tab, as Usenet/Torrent sub-tabs drawn by a plain
 // inline ScreenTabBar — Usenet first and default, the multi-subscription page
 // + the auto-grab toggle, see Usenet.tsx; Torrent second, the torrent engine's
@@ -80,7 +77,6 @@ import { SectionSave } from "./shared";
 import { UISection } from "./UI";
 import { WebhooksSection } from "./Webhooks";
 import { NodesSection } from "./Nodes";
-import { PruningRulesSection } from "./PruningRules";
 import { OrganizeScanScheduleSection } from "./OrganizeScanSchedule";
 import { StashBoxDatabases } from "./StashBoxDatabases";
 
@@ -92,13 +88,15 @@ import { StashBoxDatabases } from "./StashBoxDatabases";
 // tab of its own. Library leads, so it is the default.
 const SECTION_TABS: TabDef[] = [
   { id: "library", label: "Library" },
-  // Claude 2026-08-10: Organize sits next to Pruning because Purge's
-  // scan-interval control moved out of the Pruning tab into it (plan
-  // .omc/plans/autopilot-impl-scanschedule-settings-ui.md §5). The name echoes
-  // the app's existing Organize sidebar grouping (Rename/Purge/Dedup, see
-  // screens/organizeTabs.ts) deliberately — it is the same three workflows.
+  // Claude 2026-08-11: Organize holds all three workflows' scan-interval
+  // controls (Rename/Clean-up/Dedup). Its name echoes the app's existing
+  // Organize sidebar grouping (see screens/organizeTabs.ts) deliberately — it
+  // is the same three workflows, and it sits second because scheduling is the
+  // setting an operator revisits most after Library.
+  // The former Pruning tab is GONE: its only remaining content, the rules
+  // CRUD, moved onto the Clean-up screen itself as a collapsible Rules card
+  // (screens/PurgeRulesCard.tsx), leaving nothing behind to show.
   { id: "organize", label: "Organize" },
-  { id: "pruning", label: "Pruning" },
   // Claude 2026-08-10: the standalone Usenet and Torrent tabs were folded
   // into one Download tab, with Usenet (default) and Torrent as sub-tabs
   // inside it (plan .omc/plans/autopilot-impl-download-settings-consolidation.md
@@ -219,10 +217,6 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
           them would half-batch the panel. */}
       <Show when={section() === "organize"}>
         <OrganizeScanScheduleSection />
-      </Show>
-
-      <Show when={section() === "pruning"}>
-        <PruningRulesSection />
       </Show>
 
       <Show when={section() === "download"}>

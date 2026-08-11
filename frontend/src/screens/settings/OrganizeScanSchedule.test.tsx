@@ -3,11 +3,18 @@
 // Reason: covers all three panels rendering, each toggle round-tripping
 // through its own enabled endpoint, each picker round-tripping through its own
 // interval endpoint, and the decoupling guarantee (a toggle PUT never touches
-// the interval endpoint). The Purge block is the one that MOVED here from
-// PruningRules.test.tsx along with the Card it exercises.
-// Troubleshooting: none yet.
-// Related files: src/screens/settings/PruningRules.test.tsx (now asserts the
-// control's ABSENCE from the Pruning tab).
+// the interval endpoint). The Clean-up block is the one that MOVED here from
+// the old Pruning tab's own test file along with the Card it exercises.
+// Claude 2026-08-11: that file (settings/PruningRules.test.tsx) no longer
+// exists — it became screens/PurgeRulesCard.test.tsx when the rules builder
+// relocated onto the Clean-up screen, and the Settings > Pruning tab was
+// removed outright.
+// Troubleshooting: "Clean-up" here is the operator-facing label only; the
+// settings key, endpoints and element id are all still `purge`
+// (purge-scan-interval, fetchPurgeScanEnabled, ...).
+// Related files: src/screens/PurgeRulesCard.test.tsx (the relocated rules
+// CRUD), src/screens/Settings.test.tsx ("Pruning is no longer a section tab",
+// the negative assertion that keeps the tab from silently returning).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
@@ -33,7 +40,7 @@ type Override = (
 const WORKFLOWS = [
   { slug: "rename", title: "Rename" },
   { slug: "dedup", title: "Dedup" },
-  { slug: "purge", title: "Purge" },
+  { slug: "purge", title: "Clean-up" },
 ] as const;
 
 const stubFetch = (override?: Override) => {
@@ -223,9 +230,10 @@ describe("OrganizeScanScheduleSection — interval pickers", () => {
   }
 });
 
-// This block MOVED here from PruningRules.test.tsx together with the Card it
-// exercises — kept rather than deleted, so the relocation loses no coverage.
-describe("OrganizeScanScheduleSection — Purge panel (relocated from the Pruning tab)", () => {
+// This block MOVED here from the old Pruning tab's test file together with the
+// Card it exercises — kept rather than deleted, so the relocation loses no
+// coverage.
+describe("OrganizeScanScheduleSection — Clean-up panel (relocated from the former Pruning tab)", () => {
   it("renders the purge scan interval and PUTs a new value", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/settings/purge-scan-interval"))
@@ -237,7 +245,7 @@ describe("OrganizeScanScheduleSection — Purge panel (relocated from the Prunin
     // AdultRowAdmin's scan-interval control); typing "1" there means 1 hour
     // = 3600 seconds.
     const input = (await screen.findByLabelText(
-      "Purge scan interval",
+      "Clean-up scan interval",
     )) as HTMLInputElement;
     fireEvent.input(input, { target: { value: "1" } });
     fireEvent.click(screen.getAllByText("Save")[2]!);

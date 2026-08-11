@@ -1,6 +1,6 @@
 // Package settings persists small, non-secret key/value preferences —
 // today, just the setup wizard's dismissed flag. Anything with real
-// structure (connections, proposals, the allowlist) gets its own table and
+// structure (connections, proposals, pruning rules) gets its own table and
 // package; this one is deliberately just a flat KV store for the handful of
 // one-off flags that don't warrant that.
 package settings

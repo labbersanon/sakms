@@ -1,20 +1,30 @@
-// Stage 3 Purge UI tests — the staged scan→propose→apply DELETE queue plus the
-// Purge-only tag allowlist, per mode. Purge has two mutating surfaces with
-// DIFFERENT bulk policies now, and the tests assert each:
-//   - PROPOSALS gained the bounded bulk-apply exception (a deliberate,
-//     documented reversal — see ROADMAP.md and the top-level CLAUDE.md): an
-//     opt-in multi-select of Pending delete rows applied in ONE apply-batch,
-//     behind the same window.confirm the single delete has, worded for the
-//     count. Single-item delete still works one row at a time.
-//   - The ALLOWLIST stays deliberately bulk-free — one × per chip, one Add per
-//     input, no clear-all/remove-all. That half's no-bulk test is unchanged.
+// Clean-up UI tests — the staged scan→propose→apply DELETE queue, per mode.
+// (The screen, its route and its component are all still named `Purge`
+// internally; only the operator-facing text says "Clean-up".)
+//
+// PROPOSALS carry the bounded bulk-apply exception (a deliberate, documented
+// reversal — see ROADMAP.md and the top-level CLAUDE.md): an opt-in
+// multi-select of Pending delete rows applied in ONE apply-batch, behind the
+// same window.confirm the single delete has, worded for the count.
+// Single-item delete still works one row at a time.
+//
+// Claude 2026-08-11: the per-mode tag ALLOWLIST this file used to exercise is
+// retired; its section is replaced by <PurgeRulesCard>.
+// Reason: tags became a fourth AND'd condition on a pruning rule. The
+// allowlist's own AC6 no-bulk invariant was NOT dropped — it moved with the
+// mechanism, to PurgeRulesCard.test.tsx's "offers no bulk affordance" block,
+// which asserts the same one-×-per-chip/one-Add/no-clear-all property on the
+// rule form's tag input.
+// Troubleshooting: PurgeRulesCard fetches GET /api/pruning-rules on MOUNT even
+// though its <details> is collapsed (createResource does not wait for the
+// disclosure), so every render here needs that stub or the fetch mock throws
+// on an unexpected URL.
+// Review if: Clean-up ever grows a second matching mechanism.
 //
 // Covered: Movies apply-one (behind the confirm guard) + the confirm CANCEL
 // branch (no apply fires), Dismiss, Scan→refetch, bulk apply on proposals
 // (checkbox gating, confirm guard incl. cancel, one apply-batch not N singles,
-// selection clears), the no-bulk invariant on the allowlist (one × per chip =
-// one DELETE, one Add acting on one tag, no clear-all / remove-all affordance),
-// and Series/Adult allowlist add/remove wiring.
+// selection clears), and the Rules card's per-mode scoping.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
@@ -43,7 +53,7 @@ const proposal = (over: Partial<Proposal>): Proposal => ({
   rootFolderPath: "/movies",
   title: "Some Movie",
   year: 2021,
-  reason: "matched allowlist tag(s): Trailer",
+  reason: "Matched rule 'Legacy allowlist': tags: Trailer",
   draftId: "",
   ...over,
 });
@@ -85,9 +95,10 @@ const singleApplyCalls = (calls: Call[]) =>
     (c) => c.url.includes("/apply") && !c.url.includes("/apply-batch"),
   );
 
-// Default allowlist stub so every render's GET .../purge/allowlist resolves.
-const emptyAllowlist = (url: string): Response | null =>
-  url.includes("/purge/allowlist") ? jsonResponse([]) : null;
+// Default rules stub so every render's GET /api/pruning-rules resolves —
+// PurgeRulesCard fetches on mount even while its <details> is collapsed.
+const emptyRules = (url: string): Response | null =>
+  url.includes("/api/pruning-rules") ? jsonResponse([]) : null;
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -98,8 +109,8 @@ describe("Purge — Movies (scan → propose → apply one, with confirm guard)"
   it("applies exactly one proposal when the delete confirm is accepted", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const calls = stubFetch((url, init) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (url.includes("/api/modes/movies/purge/proposals"))
         return jsonResponse([proposal({ id: 7, title: "Delete Me" })]);
       if (
@@ -123,8 +134,8 @@ describe("Purge — Movies (scan → propose → apply one, with confirm guard)"
   it("does NOT apply when the delete confirm is cancelled (guard branch)", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     const calls = stubFetch((url) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (url.includes("/api/modes/movies/purge/proposals"))
         return jsonResponse([proposal({ id: 7, title: "Keep Me" })]);
       throw new Error("unexpected fetch: " + url);
@@ -142,8 +153,8 @@ describe("Purge — Movies (scan → propose → apply one, with confirm guard)"
   it("triggers a scan then re-fetches the queue on the Scan button", async () => {
     let scanned = false;
     const calls = stubFetch((url, init) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (
         url.includes("/api/modes/movies/purge/scan") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -176,8 +187,8 @@ describe("Purge — Apply double-click guard (in-flight busy state)", () => {
       resolveApply = resolve;
     });
     const calls = stubFetch(async (url, init) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (url.includes("/api/modes/movies/purge/proposals"))
         return jsonResponse([proposal({ id: 7, title: "Delete Me" })]);
       if (
@@ -217,8 +228,8 @@ describe("Purge — Apply double-click guard (in-flight busy state)", () => {
 describe("Purge — Dismiss (single row)", () => {
   it("dismisses exactly one proposal", async () => {
     const calls = stubFetch((url, init) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (url.includes("/api/modes/movies/purge/proposals"))
         return jsonResponse([proposal({ id: 4, title: "Dismiss Me" })]);
       if (
@@ -243,8 +254,8 @@ describe("Purge — Dismiss (single row)", () => {
 describe("Purge — bulk apply on PROPOSALS (opt-in multi-select, confirm-guarded)", () => {
   it("renders a checkbox only for Pending rows, never for a non-pending one", async () => {
     stubFetch((url) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (url.includes("/api/modes/movies/purge/proposals"))
         return jsonResponse([
           proposal({ id: 1, title: "A", status: "pending" }),
@@ -267,8 +278,8 @@ describe("Purge — bulk apply on PROPOSALS (opt-in multi-select, confirm-guarde
   it("deletes several selected rows in ONE apply-batch behind a count-worded confirm, then clears the selection", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const calls = stubFetch((url, init) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (url.includes("/api/modes/movies/purge/proposals"))
         return jsonResponse([
           proposal({ id: 1, title: "A" }),
@@ -310,8 +321,8 @@ describe("Purge — bulk apply on PROPOSALS (opt-in multi-select, confirm-guarde
   it("does NOT fire an apply-batch when the bulk confirm is cancelled", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     const calls = stubFetch((url) => {
-      const al = emptyAllowlist(url);
-      if (al) return al;
+      const rules = emptyRules(url);
+      if (rules) return rules;
       if (url.includes("/api/modes/movies/purge/proposals"))
         return jsonResponse([
           proposal({ id: 1, title: "A" }),
@@ -332,112 +343,49 @@ describe("Purge — bulk apply on PROPOSALS (opt-in multi-select, confirm-guarde
   });
 });
 
-describe("Purge — no bulk actions on the ALLOWLIST (Acceptance Criterion 6)", () => {
-  it("removes exactly one tag per × click and offers no clear-all affordance", async () => {
-    const removeCalls: Call[] = [];
-    const calls = stubFetch((url, init) => {
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/purge/allowlist/") && method === "DELETE") {
-        removeCalls.push({ url, method, body: undefined });
-        return noContent();
-      }
-      if (url.includes("/purge/allowlist") && method === "GET")
-        return jsonResponse(["Trailer", "Sample", "Extras"]);
-      if (url.includes("/api/modes/movies/purge/proposals"))
-        return jsonResponse([]);
-      throw new Error("unexpected fetch: " + url);
-    });
+// Claude 2026-08-11: the two AC6 "no bulk actions on the ALLOWLIST" tests that
+// lived here MOVED to PurgeRulesCard.test.tsx ("offers no bulk affordance —
+// one × per chip, one Add, no clear-all") along with the chip input they
+// exercised, rather than being deleted.
+// Reason: the allowlist section is gone from this screen; the same invariant
+// now belongs to the rule form's tags condition, which is where the operator
+// types a tag now.
+// Review if: any bulk tag affordance is ever proposed for the rules card.
 
-    render(() => <Purge />);
-    await screen.findByText("Trailer");
-
-    // One × per chip, three chips — never a single bulk control.
-    const removeButtons = screen.getAllByText("×");
-    expect(removeButtons).toHaveLength(3);
-    expect(screen.queryByText(/clear all/i)).toBeNull();
-    expect(screen.queryByText(/remove all/i)).toBeNull();
-    // No selection checkboxes in the allowlist — only the Show history toggle.
-    expect(screen.getByText("Show history")).toBeInTheDocument();
-    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
-
-    // Removing one chip issues exactly one DELETE, for exactly that tag.
-    fireEvent.click(removeButtons[1]!);
-    await waitFor(() => expect(removeCalls).toHaveLength(1));
-    expect(removeCalls[0]!.url).toContain("/purge/allowlist/Sample");
-    expect(removeCalls[0]!.method).toBe("DELETE");
-    // No stray DELETE for any other tag.
-    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
-  });
-
-  it("adds exactly one tag from the single input (no multi-add path)", async () => {
-    let added = false;
-    const calls = stubFetch((url, init) => {
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/purge/allowlist") && method === "POST") {
-        added = true;
-        return noContent();
-      }
-      if (url.includes("/purge/allowlist") && method === "GET")
-        return jsonResponse(added ? ["Behindthescenes"] : []);
-      if (url.includes("/api/modes/movies/purge/proposals"))
-        return jsonResponse([]);
-      throw new Error("unexpected fetch: " + url);
-    });
-
-    render(() => <Purge />);
-    const input = await screen.findByLabelText("New allowlist tag");
-    fireEvent.input(input, { target: { value: "Behindthescenes" } });
-    fireEvent.click(screen.getByText("Add"));
-
-    await waitFor(() =>
-      expect(
-        calls.some(
-          (c) => c.url.includes("/purge/allowlist") && c.method === "POST",
-        ),
-      ).toBe(true),
-    );
-    const post = calls.find(
-      (c) => c.url.includes("/purge/allowlist") && c.method === "POST",
-    );
-    expect(post?.body).toMatchObject({ tag: "Behindthescenes" });
-    // Exactly one POST — the single input never fans out to multiple tags.
-    expect(
-      calls.filter(
-        (c) => c.url.includes("/purge/allowlist") && c.method === "POST",
-      ),
-    ).toHaveLength(1);
-    // The added chip shows after the allowlist refetch.
-    expect(await screen.findByText("Behindthescenes")).toBeInTheDocument();
-  });
-});
-
-describe("Purge — Adult allowlist (per-mode wiring)", () => {
-  it("targets the adult allowlist endpoints when the Adult tab is active", async () => {
-    const removeCalls: Call[] = [];
-    stubFetch((url, init) => {
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/api/modes/movies/purge/")) {
-        // Movies renders first; keep both resources empty/quiet.
-        return url.includes("proposals") ? jsonResponse([]) : jsonResponse([]);
-      }
-      if (url.includes("/api/modes/adult/purge/allowlist/") && method === "DELETE") {
-        removeCalls.push({ url, method, body: undefined });
-        return noContent();
-      }
-      if (url.includes("/api/modes/adult/purge/allowlist") && method === "GET")
-        return jsonResponse(["Compilation"]);
-      if (url.includes("/api/modes/adult/purge/proposals"))
-        return jsonResponse([]);
+describe("Clean-up — the Rules card (per-mode wiring)", () => {
+  it("renders the Adult mode's rules when the Adult tab is active", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/pruning-rules"))
+        return jsonResponse([
+          {
+            id: 1,
+            name: "Adult trailers",
+            mode: "adult",
+            tags: ["Trailer"],
+            enabled: true,
+            createdAt: "",
+            updatedAt: "",
+          },
+          {
+            id: 2,
+            name: "Movies trailers",
+            mode: "movies",
+            tags: ["Trailer"],
+            enabled: true,
+            createdAt: "",
+            updatedAt: "",
+          },
+        ]);
+      if (url.includes("/purge/proposals")) return jsonResponse([]);
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Purge />);
     fireEvent.click(await screen.findByText("Adult"));
-    await screen.findByText("Compilation");
-    fireEvent.click(screen.getByText("×"));
-    await waitFor(() => expect(removeCalls).toHaveLength(1));
-    expect(removeCalls[0]!.url).toContain(
-      "/api/modes/adult/purge/allowlist/Compilation",
-    );
+
+    // Scoped by the mode tab, not by a Mode dropdown — and it reads
+    // /api/pruning-rules, never a per-mode allowlist route.
+    expect(await screen.findByText(/Adult trailers/)).toBeInTheDocument();
+    expect(screen.queryByText(/Movies trailers/)).toBeNull();
   });
 });

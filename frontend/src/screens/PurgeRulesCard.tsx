@@ -1,12 +1,22 @@
-// Claude 2026-08-03: new file — the Settings "Pruning" tab (F1, plan
-// .omc/plans/autopilot-impl-pruning-rules.md §6.2 + §6.3 + §13.1).
-// Reason: a new top-level SECTION_TABS entry per §6.1 (rejected placements:
-// Library's SectionSave batch-save context doesn't fit a per-row CRUD list;
-// the UI tab is for Discover presentation, not a Purge safety control).
-// Follows SliderAdmin's inline-form create/edit pattern (one form, seeded
-// from an optional `rule` prop) rather than RowEditor — rules have no
+// Claude 2026-08-11: new file — the Clean-up screen's collapsible "Rules"
+// card, moved here from the deleted Settings "Pruning" tab
+// (settings/PruningRules.tsx), plan
+// .omc/plans/autopilot-impl-purge-rules-consolidation-cleanup-rename.md §8.
+// Reason: rules are now Clean-up's ONLY matching mechanism — the global
+// per-mode tag allowlist that used to sit in this slot on the Purge screen is
+// retired, its tags folded in as a fourth AND'd per-rule condition. Keeping
+// the builder on a separate Settings tab meant an operator configured matching
+// in one place and reviewed its results in another.
+// Troubleshooting: this is a native <details>/<summary>, class-for-class from
+// OrganizeChrome.tsx's ActivityLogPanel — NOT a <Card> and NOT a new
+// collapsible component. Note createResource fetches on mount even while the
+// <details> is collapsed, so any test rendering the Clean-up screen must stub
+// GET /api/pruning-rules.
+// Review if: the rules builder ever moves back into Settings.
+//
+// Still follows SliderAdmin's inline-form create/edit pattern (one form,
+// seeded from an optional `rule` prop) rather than RowEditor — rules have no
 // meaningful display order, so drag-and-drop reorder does not apply here.
-// Troubleshooting: none yet.
 
 import {
   type Component,
@@ -19,7 +29,7 @@ import {
   onCleanup,
 } from "solid-js";
 import Pencil from "lucide-solid/icons/pencil";
-import type { Mode } from "../../api/discover";
+import type { Mode } from "../api/discover";
 import {
   GB_BYTES,
   PRUNING_TIER_FLOORS,
@@ -32,23 +42,20 @@ import {
   type PruningRule,
   type PruningRuleUpsertRequest,
   type PruningTierFloor,
-} from "../../api/pruningRules";
+} from "../api/pruningRules";
 import {
   Button,
-  Card,
   ErrorText,
   Muted,
-  MODES,
   SaveStatus,
   inputClass,
   labelClass,
   useSaveStatus,
-} from "../../components/ui";
-import { MODE_LABELS } from "./shared";
+} from "../components/ui";
 
 // PREVIEW_DEBOUNCE_MS mirrors FolderPicker's as-you-type debounce
 // (components/FolderPicker.tsx) — a keystroke in an age/size field, or a
-// condition/tier toggle, doesn't fire a preview request until it settles.
+// condition/tier/tag change, doesn't fire a preview request until it settles.
 const PREVIEW_DEBOUNCE_MS = 300;
 
 // gbToBytes/bytesToGB are the size condition's GB<->bytes conversion, 1024
@@ -63,28 +70,34 @@ export function bytesToGB(bytes: number): number {
 
 // summarizeConditions renders a rule's configured conditions for the list
 // row — the client-side mirror of the (actual-value) Reason text the backend
-// generates at match time (plan §5), but here it echoes the rule's
-// THRESHOLDS, not an item's triggering values, since no item is in scope.
+// generates at match time, but here it echoes the rule's THRESHOLDS, not an
+// item's triggering values, since no item is in scope. Fragment order matches
+// pruning.Match's own: age, size, tier, tags.
 export function summarizeConditions(rule: PruningRule): string {
   const parts: string[] = [];
   if (rule.ageDays) parts.push(`${rule.ageDays}+ days old`);
   if (rule.sizeBytes) parts.push(`${bytesToGB(rule.sizeBytes)}+ GB`);
-  if (rule.qualityTierFloor) parts.push(`tier \u2264 ${rule.qualityTierFloor}`);
+  if (rule.qualityTierFloor) parts.push(`tier ≤ ${rule.qualityTierFloor}`);
+  if (rule.tags?.length) parts.push(`tags: ${rule.tags.join(", ")}`);
   return parts.length ? parts.join(", ") : "no conditions";
 }
 
 // RuleForm creates a new rule (rule prop undefined) or edits an existing one
 // (rule prop present) — the same form either way, following SliderForm's
 // seed-from-props-at-mount pattern (SliderAdmin.tsx).
+//
+// There is deliberately NO Mode select: the card is mounted per-mode from the
+// Clean-up screen's own mode tab, so the rule's mode comes from the prop. The
+// old Settings tab was mode-agnostic and needed the dropdown; keeping it here
+// would let an operator create a Series rule from the Movies tab and watch it
+// vanish from the list it was created in.
 const RuleForm: Component<{
+  mode: Mode;
   rule?: PruningRule;
   onSaved: () => void;
   onCancel: () => void;
 }> = (props) => {
   const [name, setName] = createSignal(props.rule?.name ?? "");
-  const [mode, setMode] = createSignal<Mode>(
-    (props.rule?.mode as Mode) ?? "movies",
-  );
   const [ageEnabled, setAgeEnabled] = createSignal(
     (props.rule?.ageDays ?? 0) > 0,
   );
@@ -101,25 +114,49 @@ const RuleForm: Component<{
   const [tier, setTier] = createSignal<PruningTierFloor>(
     (props.rule?.qualityTierFloor as PruningTierFloor) || "low",
   );
+  const [tagsEnabled, setTagsEnabled] = createSignal(
+    (props.rule?.tags ?? []).length > 0,
+  );
+  const [tags, setTags] = createSignal<string[]>(props.rule?.tags ?? []);
+  const [newTag, setNewTag] = createSignal("");
   const [enabled, setEnabled] = createSignal(props.rule?.enabled ?? true);
   const status = useSaveStatus();
 
+  // Add/remove are CLIENT-SIDE ONLY — they mutate the local signal and fire no
+  // request. This is a real behavior change from the retired allowlist, whose
+  // Add POSTed immediately: a tag is now part of the rule and is persisted by
+  // the form's own Save, so an abandoned edit changes nothing.
+  const addTag = () => {
+    const tag = newTag().trim();
+    if (!tag) return;
+    // Adding a tag already present is a no-op, not an error — preserving the
+    // retired allowlist.Store.Add's documented semantic. De-duped
+    // case-insensitively to match pruning.matchedTags' own comparison.
+    if (!tags().some((t) => t.toLowerCase() === tag.toLowerCase())) {
+      setTags([...tags(), tag]);
+    }
+    setNewTag("");
+  };
+  const removeTag = (tag: string) => setTags(tags().filter((t) => t !== tag));
+
   // hasCondition is AC1's "at least one condition configured" — mirrors
-  // internal/pruning.ErrNoConditions client-side (both the submit guard and
-  // the preview gate below share it, since the preview endpoint 400s on a
-  // conditionless draft too).
-  const hasCondition = () => ageEnabled() || sizeEnabled() || tierEnabled();
+  // internal/pruning.ErrNoConditions client-side, which went four-way in the
+  // same change (both the submit guard and the preview gate below share it,
+  // since the preview endpoint 400s on a conditionless draft too).
+  const hasCondition = () =>
+    ageEnabled() || sizeEnabled() || tierEnabled() || tags().length > 0;
 
   const buildBody = (): PruningRuleUpsertRequest => ({
     name: name().trim(),
-    mode: mode(),
+    mode: props.mode,
     ageDays: ageEnabled() ? Math.max(0, Math.round(ageDays())) : 0,
     sizeBytes: sizeEnabled() ? Math.max(0, gbToBytes(sizeGB())) : 0,
     qualityTierFloor: tierEnabled() ? tier() : "",
+    tags: tagsEnabled() ? tags() : [],
     enabled: enabled(),
   });
 
-  // --- §13.1 soft preview banner --------------------------------------
+  // --- soft preview banner ---------------------------------------------
   // Debounced re-fetch whenever a condition (or its value) changes. Skipped
   // entirely while no condition is enabled — a blank name is fine (the
   // backend previews unnamed drafts), but a conditionless draft is not, so
@@ -143,7 +180,20 @@ const RuleForm: Component<{
 
   createEffect(
     on(
-      [name, mode, ageEnabled, ageDays, sizeEnabled, sizeGB, tierEnabled, tier],
+      // tags/tagsEnabled are in the dependency list deliberately: without
+      // them, adding a tag would leave a stale match count on screen, which is
+      // worse than showing none.
+      [
+        name,
+        ageEnabled,
+        ageDays,
+        sizeEnabled,
+        sizeGB,
+        tierEnabled,
+        tier,
+        tagsEnabled,
+        tags,
+      ],
       () => {
         if (previewTimer !== undefined) clearTimeout(previewTimer);
         if (!hasCondition()) {
@@ -192,17 +242,6 @@ const RuleForm: Component<{
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
           />
-        </label>
-        <label class="mb-2 block">
-          <span class={labelClass}>Mode</span>
-          <select
-            class={`${inputClass} mt-1`}
-            aria-label="Rule mode"
-            value={mode()}
-            onChange={(e) => setMode(e.currentTarget.value as Mode)}
-          >
-            <For each={MODES}>{(m) => <option value={m.id}>{m.label}</option>}</For>
-          </select>
         </label>
 
         <div class="mb-2 rounded border border-border p-2">
@@ -274,6 +313,61 @@ const RuleForm: Component<{
           </Show>
         </div>
 
+        {/* Tags — the fourth condition, positioned last so the form order
+            matches pruning.Match's fragment order. Plain chip input, the
+            retired Allowlist's own markup: one × per chip, one Add per input,
+            no clear-all and no picker/autocomplete. */}
+        <div class="mb-2 rounded border border-border p-2">
+          <label class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label="Enable tags condition"
+              checked={tagsEnabled()}
+              onChange={(e) => setTagsEnabled(e.currentTarget.checked)}
+            />
+            <span class="text-sm text-fg">Tagged with any of</span>
+          </label>
+          <Show when={tagsEnabled()}>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <For each={tags()}>
+                {(tag) => (
+                  <span class="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-fg">
+                    {tag}
+                    <button
+                      type="button"
+                      class="text-muted hover:text-danger"
+                      aria-label={`Remove ${tag}`}
+                      onClick={() => removeTag(tag)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                )}
+              </For>
+              <div class="flex items-center gap-2">
+                <input
+                  class="w-40 rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg outline-none focus:border-accent"
+                  placeholder="tag name"
+                  value={newTag()}
+                  onInput={(e) => setNewTag(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    // Enter adds the tag rather than submitting the whole
+                    // form — the rule almost never wants saving mid-tag-entry.
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addTag();
+                    }
+                  }}
+                  aria-label="New tag"
+                />
+                <Button type="button" onClick={() => addTag()}>
+                  Add
+                </Button>
+              </div>
+            </div>
+          </Show>
+        </div>
+
         <label class="mb-2 flex items-center gap-2">
           <input
             type="checkbox"
@@ -284,7 +378,7 @@ const RuleForm: Component<{
           <span class="text-sm text-fg">Enabled</span>
         </label>
 
-        {/* §13.1 soft preview — a non-blocking count. Save/Update above stays
+        {/* Soft preview — a non-blocking count. Save/Update above stays
             enabled no matter what this shows, including a large N. */}
         <Show when={hasCondition()}>
           <div class="mb-2 text-sm text-muted" data-testid="pruning-preview">
@@ -310,22 +404,19 @@ const RuleForm: Component<{
   );
 };
 
-// PruningRulesSection is the Settings "Pruning" tab's whole panel: the rules
-// CRUD list/form (§6.2).
-//
-// Claude 2026-08-10: the purge scan-interval Card that used to sit below the
-// rules list moved to the new Settings -> Organize tab
-// (OrganizeScanSchedule.tsx), where it now sits beside Rename's and Dedup's and
-// has gained an enabled toggle. Only that Card moved — the rules CRUD below is
-// unchanged.
-// Reason: all three workflows' scan schedules are configured in one place now.
-// Review if: the Organize tab is ever folded back into Pruning.
-export const PruningRulesSection: Component = () => {
+// PurgeRulesCard is the Clean-up screen's collapsible rules panel: the rules
+// CRUD list/form, scoped to one mode.
+export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
   const [rules, { refetch }] = createResource(fetchPruningRules, {
     initialValue: [],
   });
   const [editing, setEditing] = createSignal<number | "new" | null>(null);
   const [listError, setListError] = createSignal("");
+
+  // The endpoint is deliberately not mode-scoped (a rule carries its own
+  // single mode in the BODY, and /api/pruning-rules has no mode segment), so
+  // the card filters client-side rather than growing a query param.
+  const modeRules = () => (rules() ?? []).filter((r) => r.mode === props.mode);
 
   const closeForm = () => setEditing(null);
   const afterSave = () => {
@@ -336,7 +427,7 @@ export const PruningRulesSection: Component = () => {
   const editingRule = (): PruningRule | undefined => {
     const e = editing();
     if (e === null || e === "new") return undefined;
-    return (rules() ?? []).find((r) => r.id === e);
+    return modeRules().find((r) => r.id === e);
   };
 
   // toggleEnabled is an immediate full update — the upsert body is
@@ -349,13 +440,16 @@ export const PruningRulesSection: Component = () => {
       await updatePruningRule(rule.id, {
         name: rule.name,
         mode: rule.mode,
-        // ageDays/sizeBytes/qualityTierFloor carry `omitempty` on the wire
-        // (@dto marks them optional), so a rule at its unset sentinel comes
-        // back as undefined rather than 0/"" — default it back to the
-        // sentinel the upsert body requires.
+        // ageDays/sizeBytes/qualityTierFloor/tags carry `omitempty` on the
+        // wire (@dto marks them optional), so a rule at its unset sentinel
+        // comes back as undefined rather than 0/""/[] — default it back to the
+        // sentinel the upsert body requires. `tags` is the dangerous one:
+        // omitting it here would silently CLEAR a rule's tags on every
+        // enable/disable toggle, since the body is whole-rule.
         ageDays: rule.ageDays ?? 0,
         sizeBytes: rule.sizeBytes ?? 0,
         qualityTierFloor: rule.qualityTierFloor ?? "",
+        tags: rule.tags ?? [],
         enabled: !rule.enabled,
       });
       await refetch();
@@ -377,12 +471,13 @@ export const PruningRulesSection: Component = () => {
   };
 
   return (
-    <Card title="Pruning rules">
-      <Muted class="mb-3">
-        Operator-authored rules that flag library items for Purge review by
-        age, size, and/or quality tier — AND'd within one rule, OR'd across
-        rules. A rule only ever PROPOSES: nothing is deleted until an
-        operator explicitly Applies it from the Purge review queue.
+    <details class="mt-6 rounded border border-border p-3">
+      <summary class="cursor-pointer text-sm font-medium">Rules</summary>
+      <Muted class="mb-3 mt-3 block">
+        Operator-authored rules that flag library items for Clean-up review by
+        age, size, quality tier and/or tags — AND'd within one rule, OR'd
+        across rules. A rule only ever PROPOSES: nothing is deleted until an
+        operator explicitly Applies it from the review queue below.
       </Muted>
       <Show when={rules.error}>
         <ErrorText>{(rules.error as Error)?.message}</ErrorText>
@@ -392,19 +487,16 @@ export const PruningRulesSection: Component = () => {
       </Show>
 
       <Show
-        when={(rules() ?? []).length > 0}
-        fallback={<Muted>No pruning rules yet.</Muted>}
+        when={modeRules().length > 0}
+        fallback={<Muted>No rules for this mode yet.</Muted>}
       >
         <ul>
-          <For each={rules()}>
+          <For each={modeRules()}>
             {(rule) => (
               <li class="flex items-center justify-between gap-2 border-b border-border py-2 last:border-b-0">
                 <div class="min-w-0 flex-1">
                   <div class="truncate text-sm font-medium text-fg">
-                    {rule.name}{" "}
-                    <span class="text-xs text-muted">
-                      ({MODE_LABELS[rule.mode as Mode] ?? rule.mode})
-                    </span>
+                    {rule.name}
                   </div>
                   <div class="text-xs text-muted">
                     {summarizeConditions(rule)}
@@ -442,8 +534,13 @@ export const PruningRulesSection: Component = () => {
           </div>
         }
       >
-        <RuleForm rule={editingRule()} onSaved={afterSave} onCancel={closeForm} />
+        <RuleForm
+          mode={props.mode}
+          rule={editingRule()}
+          onSaved={afterSave}
+          onCancel={closeForm}
+        />
       </Show>
-    </Card>
+    </details>
   );
 };

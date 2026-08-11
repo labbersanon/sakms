@@ -1856,6 +1856,58 @@ above, so don't drop them for convenience:
     A future session reading "we deleted the packages the servarr precedent was
     protecting" has a live-looking argument for deleting `internal/servarr`
     too — it is wrong, and this sentence is why.
+  - **AMENDED 2026-08-11 — the Settings tab count above is stale again, the
+    Pruning tab is GONE, and the operator-facing name of the Purge workflow is
+    now "Clean-up" while every internal identifier stays `purge`** (spec
+    `.omc/specs/deep-interview-purge-rules-consolidation-cleanup-rename.md`,
+    plan `.omc/plans/autopilot-impl-purge-rules-consolidation-cleanup-rename.md`,
+    and `CHANGELOG.md`). Two things, recorded together because one change did
+    both.
+
+    **1. The count.** The superseded clause, quoted verbatim from the AMENDED
+    2026-08-10 note directly above so a future session can find it:
+    *"`SECTION_TABS` goes 11 -> 10 (`download` takes the `usenet` slot;
+    `torrent` is removed)."* That was true when written. **It is now 10 -> 9**:
+    the **Pruning** tab is removed entirely. Its only remaining content was the
+    pruning-rules CRUD (its other control, the Purge scan interval, had already
+    moved to Organize on 2026-08-10), and that CRUD relocated onto the Clean-up
+    screen itself as a collapsible `<details>` "Rules" card
+    (`frontend/src/screens/PurgeRulesCard.tsx`, replacing the deleted
+    `settings/PruningRules.tsx`). Nothing was left to show, so the tab went too.
+
+    **2. "Clean-up" is a DISPLAY STRING ONLY — do not "finish" this rename.**
+    An operator sees "Clean-up"; the codebase still says `purge` everywhere,
+    deliberately, mirroring the prior "Re-pick → Search" visible-text-only
+    rename. Unchanged and staying unchanged: the route path `purge`, the Go
+    package `internal/purge`, `proposals.Purge`, the `workflow="purge"`
+    activity-log identifier, the localStorage keys `sakms.purge.pageSize` and
+    `sakms.purge.showHistory`, the `?tab=purge` query value,
+    `ORGANIZE_WORKFLOWS[1].id`, the settings keys
+    `purge_scan_interval_seconds`/`purge-scan-enabled`, the component names
+    `Purge`/`PurgeView`, and the `"purge.applied"` webhook/notification event-id
+    KEY (only its display string became "Clean-up applied"). A future session
+    that "completes" the rename by touching any of those breaks stored operator
+    state, live webhook subscriptions, or both.
+
+    **3. Purge/Clean-up now has ONE matching mechanism, not two.** The global
+    per-mode tag allowlist (`internal/allowlist`, the `purge_allowlist` table,
+    its three routes) is retired entirely; tags are a fourth AND'd condition on
+    `pruning.Rule`, alongside age/size/quality-tier. Migration `0008` converts
+    each mode's existing allowlist into an auto-created "Legacy allowlist" rule
+    before dropping the table, so nothing an operator configured stops matching.
+    **Tag-matching primitives had to MOVE packages** — `internal/purge` imports
+    `internal/pruning`, so `purge.MatchesAny`/`MatchedEntries` became
+    `pruning.matchedTags` (unexported) rather than being called across that
+    edge. There is deliberately **no compatibility shim** in `internal/purge`:
+    the exact-tag-match semantic must exist in exactly one file.
+
+    **4. `/api/pruning-rules` is now `{organize}`, not `{settings}` — a live
+    403 change.** See the section-lock amendment's own MIGRATION NOTE register:
+    an out-of-process script hitting those routes with `X-Section-Pin` because
+    *Settings* was locked will now get a 403 the first time an operator locks
+    *Organize* instead, and vice versa. No grandfathering path, by design.
+    `internal/sectionlock/routes_test.go` now pins the classification; nothing
+    ever asserted it before.
   - **Season/episode picker is a poster grid (2026-08-02)** — the two
     free-text `S`/`E` number inputs are replaced by a two-level grid: a season
     grid (proxied season poster, name, episode count, air year) that drills

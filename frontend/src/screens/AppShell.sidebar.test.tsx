@@ -24,7 +24,7 @@ const NAV_LABELS = [
   "Settings",
 ];
 
-const ORGANIZE_CHILDREN = ["Rename", "Purge", "Dedup"];
+const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router
 // context) with its collapsed state owned by the persisted-bool helper — the

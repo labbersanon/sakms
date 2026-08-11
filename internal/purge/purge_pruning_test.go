@@ -7,9 +7,13 @@ package purge
 // backward-compatibility signal (§3.2's byte-identical invariant); a diff to
 // them would mean the invariant broke, so the new behaviour is asserted here
 // instead of by editing them.
-// Troubleshooting: TestScanLibrary_TagAndRuleBothMatch_ProducesExactlyOneProposal
+// Troubleshooting: TestScanLibrary_TwoRulesBothMatch_ProducesExactlyOneProposal
 // is the important one — two proposals sharing a TrackedID would make the
 // second Apply fail confusingly after the first deleted the row.
+// Claude 2026-08-11: the global tag allowlist is retired, so the "two separate
+// signals" this file was written around are now two separate RULES rather than
+// a tag and a rule. The guarantee is unchanged and the tests are re-targeted,
+// not deleted.
 
 import (
 	"context"
@@ -53,11 +57,12 @@ func ageRule(name string, days int) pruning.Rule {
 	return pruning.Rule{Name: name, Mode: string(mode.Movies), AgeDays: days, Enabled: true}
 }
 
-// TestScanLibrary_NilRules_ReasonUnchanged is §3.2's byte-identical
-// backward-compatibility invariant: with no rules configured, the emitted
-// Reason is exactly the string this package produced before pruning rules
-// existed.
-func TestScanLibrary_NilRules_ReasonUnchanged(t *testing.T) {
+// TestScanLibrary_NilRules_ProposesNothing replaces the old
+// _NilRules_ReasonUnchanged: its premise (a tag-only Reason must stay
+// byte-identical to the pre-pruning-rules string) retired with joinReasons and
+// the allowlist. Rules are now the ONLY matching mechanism, so no rules means
+// no proposals at all — even for an item carrying tags.
+func TestScanLibrary_NilRules_ProposesNothing(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
 
@@ -70,15 +75,12 @@ func TestScanLibrary_NilRules_ReasonUnchanged(t *testing.T) {
 	}
 
 	for _, rules := range [][]pruning.Rule{nil, {}} {
-		got, err := ScanLibrary(ctx, libStore, []string{"junk"}, rules)
+		got, err := ScanLibrary(ctx, libStore, rules)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(got) != 1 {
-			t.Fatalf("expected exactly 1 proposal, got %d", len(got))
-		}
-		if got[0].Reason != "matched allowlist tag(s): junk" {
-			t.Errorf("Reason = %q, want the unchanged tag-only reason", got[0].Reason)
+		if len(got) != 0 {
+			t.Fatalf("expected no proposals with no rules configured, got %+v", got)
 		}
 	}
 }
@@ -96,7 +98,7 @@ func TestScanLibrary_RuleMatchOnly_ProducesProposalWithRuleReason(t *testing.T) 
 	}
 	setCreatedAt(t, sqlDB, "library_items", item.ID, ageDaysAgo(412))
 
-	got, err := ScanLibrary(ctx, libStore, nil, []pruning.Rule{{
+	got, err := ScanLibrary(ctx, libStore, []pruning.Rule{{
 		Name: "Old low-quality movies", Mode: string(mode.Movies),
 		AgeDays: 365, SizeBytes: 1 << 30, QualityTierFloor: "low", Enabled: true,
 	}})
@@ -117,10 +119,12 @@ func TestScanLibrary_RuleMatchOnly_ProducesProposalWithRuleReason(t *testing.T) 
 	}
 }
 
-// TestScanLibrary_TagAndRuleBothMatch_ProducesExactlyOneProposal is the
-// duplicate-TrackedID guard (§3.2): an item matching both signals is staged
-// ONCE with a combined Reason, never twice.
-func TestScanLibrary_TagAndRuleBothMatch_ProducesExactlyOneProposal(t *testing.T) {
+// TestScanLibrary_TwoRulesBothMatch_ProducesExactlyOneProposal is the
+// duplicate-TrackedID guard (§3.2): an item matching TWO enabled rules is
+// staged ONCE with a combined Reason, never twice. Applying the first of two
+// proposals sharing a TrackedID would make the second fail confusingly, the
+// library row having already been deleted.
+func TestScanLibrary_TwoRulesBothMatch_ProducesExactlyOneProposal(t *testing.T) {
 	libStore, sqlDB := newTestLibraryStoreDB(t)
 	ctx := context.Background()
 
@@ -133,15 +137,18 @@ func TestScanLibrary_TagAndRuleBothMatch_ProducesExactlyOneProposal(t *testing.T
 	}
 	setCreatedAt(t, sqlDB, "library_items", item.ID, ageDaysAgo(500))
 
-	got, err := ScanLibrary(ctx, libStore, []string{"junk"}, []pruning.Rule{ageRule("Stale", 365)})
+	got, err := ScanLibrary(ctx, libStore, []pruning.Rule{
+		{Name: "Junk tags", Mode: string(mode.Movies), Tags: []string{"junk"}, Enabled: true},
+		ageRule("Stale", 365),
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("expected exactly 1 proposal for an item matching BOTH a tag and a rule, got %d: %+v", len(got), got)
+		t.Fatalf("expected exactly 1 proposal for an item matching BOTH rules, got %d: %+v", len(got), got)
 	}
-	if !strings.HasPrefix(got[0].Reason, "matched allowlist tag(s): junk; Matched rule 'Stale': ") {
-		t.Errorf("Reason = %q, want the tag fragment first then the rule fragment", got[0].Reason)
+	if !strings.HasPrefix(got[0].Reason, "Matched rule 'Junk tags': tags: junk; Matched rule 'Stale': ") {
+		t.Errorf("Reason = %q, want both rules' fragments joined by \"; \"", got[0].Reason)
 	}
 }
 
@@ -158,7 +165,10 @@ func TestScanLibrary_ItemMatchingNeither_ProducesNoProposal(t *testing.T) {
 	}
 	setCreatedAt(t, sqlDB, "library_items", item.ID, ageDaysAgo(3))
 
-	got, err := ScanLibrary(ctx, libStore, []string{"junk"}, []pruning.Rule{ageRule("Stale", 365)})
+	got, err := ScanLibrary(ctx, libStore, []pruning.Rule{
+		{Name: "Junk tags", Mode: string(mode.Movies), Tags: []string{"junk"}, Enabled: true},
+		ageRule("Stale", 365),
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -180,7 +190,7 @@ func TestScanLibraryAdult_RuleMatch_ProducesProposalWithRuleReason(t *testing.T)
 	}
 	setCreatedAt(t, sqlDB, "library_scenes", scene.ID, ageDaysAgo(30))
 
-	got, err := ScanLibraryAdult(ctx, libStore, nil, []pruning.Rule{{
+	got, err := ScanLibraryAdult(ctx, libStore, []pruning.Rule{{
 		Name: "Big scenes", Mode: string(mode.Adult), SizeBytes: 1 << 30, Enabled: true,
 	}})
 	if err != nil {
@@ -227,7 +237,7 @@ func TestScanLibrarySeries_SizeIsSumOfEpisodeSizes(t *testing.T) {
 
 	// Threshold 1100 == the exact sum, so it matches only if the sizes were
 	// summed (either episode alone is short of it).
-	got, err := ScanLibrarySeries(context.Background(), libStore, nil, []pruning.Rule{{
+	got, err := ScanLibrarySeries(context.Background(), libStore, []pruning.Rule{{
 		Name: "Big shows", Mode: string(mode.Series), SizeBytes: 1100, Enabled: true,
 	}})
 	if err != nil {
@@ -249,7 +259,7 @@ func TestScanLibrarySeries_TierIsBestAcrossEpisodes(t *testing.T) {
 	seedSeries(t, libStore, 1, "Mostly Good Show", [][2]any{{100, "low"}, {100, "lossless"}})
 	allLow := seedSeries(t, libStore, 2, "All Low Show", [][2]any{{100, "low"}, {100, "low"}})
 
-	got, err := ScanLibrarySeries(context.Background(), libStore, nil, []pruning.Rule{{
+	got, err := ScanLibrarySeries(context.Background(), libStore, []pruning.Rule{{
 		Name: "Low quality shows", Mode: string(mode.Series), QualityTierFloor: "low", Enabled: true,
 	}})
 	if err != nil {
@@ -269,7 +279,7 @@ func TestScanLibrarySeries_AllEpisodeTiersUnknown_TierConditionNeverMatches(t *t
 
 	// "lossless" is the broadest possible floor — every real tier is at or
 	// below it. An un-backfilled series must still not match.
-	got, err := ScanLibrarySeries(context.Background(), libStore, nil, []pruning.Rule{{
+	got, err := ScanLibrarySeries(context.Background(), libStore, []pruning.Rule{{
 		Name: "Anything", Mode: string(mode.Series), QualityTierFloor: "lossless", Enabled: true,
 	}})
 	if err != nil {
@@ -285,7 +295,7 @@ func TestScanLibrarySeries_AgeOnlyRuleUsesSeriesCreatedAt(t *testing.T) {
 	series := seedSeries(t, libStore, 1, "Old Show", [][2]any{{100, "high"}})
 	setCreatedAt(t, sqlDB, "library_series", series.ID, ageDaysAgo(400))
 
-	got, err := ScanLibrarySeries(context.Background(), libStore, nil, []pruning.Rule{{
+	got, err := ScanLibrarySeries(context.Background(), libStore, []pruning.Rule{{
 		Name: "Stale shows", Mode: string(mode.Series), AgeDays: 365, Enabled: true,
 	}})
 	if err != nil {
@@ -310,12 +320,17 @@ func TestScanLibrarySeries_NoSizeOrTierRules_DoesNotQueryEpisodes(t *testing.T) 
 		t.Fatalf("hiding library_episodes: %v", err)
 	}
 
-	// No rules at all, and an age-only rule, both answer from the series row.
+	// No rules at all, an age-only rule, and a TAGS-only rule all answer from
+	// the series row. The tags case is the one worth stating: series tags are
+	// series-level (libStore.SeriesTags), so a tags condition needs no episode
+	// query — adding Tags to anyRuleNeedsEpisodeAggregation would reintroduce
+	// the N+1 that predicate exists to prevent, and this loop is what catches it.
 	for _, rules := range [][]pruning.Rule{
 		nil,
 		{{Name: "Stale shows", Mode: string(mode.Series), AgeDays: 365, Enabled: true}},
+		{{Name: "Junk shows", Mode: string(mode.Series), Tags: []string{"junk"}, Enabled: true}},
 	} {
-		if _, err := ScanLibrarySeries(ctx, libStore, []string{"junk"}, rules); err != nil {
+		if _, err := ScanLibrarySeries(ctx, libStore, rules); err != nil {
 			t.Fatalf("a scan needing no size/tier aggregation queried library_episodes: %v", err)
 		}
 	}
@@ -323,7 +338,7 @@ func TestScanLibrarySeries_NoSizeOrTierRules_DoesNotQueryEpisodes(t *testing.T) 
 	// The control: a size rule DOES need the aggregate, so it must reach the
 	// (now missing) table. Without this half, the assertions above would pass
 	// just as well against a store that never queries episodes at all.
-	if _, err := ScanLibrarySeries(ctx, libStore, nil, []pruning.Rule{{
+	if _, err := ScanLibrarySeries(ctx, libStore, []pruning.Rule{{
 		Name: "Big shows", Mode: string(mode.Series), SizeBytes: 1, Enabled: true,
 	}}); err == nil {
 		t.Fatal("expected a size rule to query library_episodes (the control half of this test is broken)")

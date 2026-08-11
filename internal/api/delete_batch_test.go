@@ -157,7 +157,7 @@ func TestDeleteBatch_HappyPath(t *testing.T) {
 		writeTempFile(t, p)
 	}
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -203,7 +203,7 @@ func TestDeleteBatch_ResultItemHasNoProposalField(t *testing.T) {
 	src := filepath.Join(dir, "only.mkv")
 	writeTempFile(t, src)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -278,7 +278,7 @@ func TestDeleteBatch_SkipAndContinue_MixedOutcomes(t *testing.T) {
 		writeTempFile(t, p)
 	}
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -351,7 +351,7 @@ func TestDeleteBatch_NotifyPlayersFiresOncePerMode(t *testing.T) {
 		writeTempFile(t, p)
 	}
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
 	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies")
@@ -411,7 +411,7 @@ func TestDeleteBatch_NotifyPlayersFiresForCommittedDeleteWhenRowDeleteFailed(t *
 	writeTempFile(t, okPath)
 	writeTempFile(t, failPath)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	jf := newFakeJellyfin(0)
 	seedJellyfinPlayer(t, scStore, jf.Server(t).URL, "jf-key", "movies")
@@ -490,7 +490,7 @@ func TestDeleteBatch_AdultLockedRefusedBeforeFileRemoved(t *testing.T) {
 	src := filepath.Join(dir, "Some Scene.mp4")
 	writeTempFile(t, src)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Rename, []proposals.Proposal{
@@ -527,7 +527,7 @@ func TestDeleteBatch_AdultUnlockedDeletes(t *testing.T) {
 	src := filepath.Join(dir, "Some Scene.mp4")
 	writeTempFile(t, src)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Adult, proposals.Rename, []proposals.Proposal{
@@ -556,7 +556,7 @@ func TestDeleteBatch_RejectsAppliedAndDismissedViaHandCraftedRequest(t *testing.
 	writeTempFile(t, appliedFile)
 	writeTempFile(t, dismissedFile)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -600,7 +600,7 @@ func TestDeleteBatch_RejectsDedupAndPurgeProposals(t *testing.T) {
 	writeTempFile(t, dedupFile)
 	writeTempFile(t, purgeFile)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	dedupSaved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Dedup, []proposals.Proposal{
@@ -662,7 +662,7 @@ func TestDeleteBatch_DuplicatePathInOneBatch(t *testing.T) {
 	shared := filepath.Join(dir, "shared.mkv")
 	writeTempFile(t, shared)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	moviesSaved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -701,7 +701,7 @@ func TestDeleteBatch_DuplicatePathInOneBatch(t *testing.T) {
 // --- 10/11. Request-level rejections -------------------------------------
 
 func TestDeleteBatch_EmptyItemsRejected(t *testing.T) {
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	srv := httptest.NewServer(deleteBatchMux(connStore, scStore, settingsStore, propStore))
 	defer srv.Close()
 
@@ -716,7 +716,7 @@ func TestDeleteBatch_EmptyItemsRejected(t *testing.T) {
 // rename. It rejects the whole request rather than skipping per item, and the
 // error names the cap so the operator knows to split the selection.
 func TestDeleteBatch_ItemCapEnforced(t *testing.T) {
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	srv := httptest.NewServer(deleteBatchMux(connStore, scStore, settingsStore, propStore))
 	defer srv.Close()
 
@@ -751,7 +751,7 @@ func TestDeleteBatch_IDMissResolvesBySourcePath(t *testing.T) {
 	writeTempFile(t, liveFile)
 	writeTempFile(t, rotatedFile)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -831,7 +831,7 @@ func TestDeleteBatch_LogsDeleteBatchOrganizeEvent(t *testing.T) {
 		writeTempFile(t, p)
 	}
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	evStore := installTestEventStore(t)
 
@@ -894,7 +894,7 @@ func TestDeleteBatch_LogsCorrectWorkflowWhenFirstItemFailsToResolve(t *testing.T
 	src := filepath.Join(dir, "second.mkv")
 	writeTempFile(t, src)
 
-	connStore, propStore, _, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 	evStore := installTestEventStore(t)
 
@@ -985,7 +985,7 @@ func TestDeleteBatch_FiresNoWebhook(t *testing.T) {
 	}))
 	defer recorder.Close()
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	ctx := context.Background()
 
 	secretStore, err := secrets.New(make([]byte, 32))
@@ -1014,7 +1014,7 @@ func TestDeleteBatch_FiresNoWebhook(t *testing.T) {
 		t.Fatalf("seeding the proposal: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, whStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, whStore, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	out := postDeleteBatch(t, srv, []deleteBatchItem{{ID: saved[0].ID}})

@@ -7285,3 +7285,188 @@ Torrent sub-tab assertion would render "Loading torrent settings…" forever and
 **`README.md:127, 134, 210`** still describe the pre-2026-07-18 architecture (and still describe
 Whisparr as live). Left out of scope deliberately: fixing three sentences inside a section that is
 wrong for several unrelated reasons produces a half-true README and hides the real staleness.
+
+## 2026-08-11 — Clean-up rules consolidation: tags become a 4th rule condition, the global allowlist is retired, and "Purge" reads as "Clean-up"
+
+Two changes shipped together (spec
+`.omc/specs/deep-interview-purge-rules-consolidation-cleanup-rename.md`, plan
+`.omc/plans/autopilot-impl-purge-rules-consolidation-cleanup-rename.md`).
+
+### 1. One matching mechanism instead of two
+
+Purge previously matched on TWO independent, OR'd mechanisms: a global per-mode
+tag **allowlist** (`internal/allowlist`, the `purge_allowlist` table, three HTTP
+routes) and operator-authored **pruning rules** (age / size / quality-tier
+conditions, AND'd within a rule). Tags are now a genuine **fourth AND'd
+condition on `pruning.Rule`**, and the allowlist mechanism is **retired
+entirely** — package, table, routes and all.
+
+- `pruning.Rule` gains `Tags []string`; `pruning.Match` evaluates it as the
+  fourth condition in a fixed fragment order (age → size → tier → tags), with
+  the same fail-closed direction `matchesTier` documents: an item with no tags
+  can never satisfy a configured tags condition.
+- `ErrNoConditions` goes four-way, and a new `ErrBlankTag` carries forward the
+  guard the retired `addAllowlistTagHandler` used to apply at the HTTP layer.
+- **Tag matching MOVED packages, and had to.** `internal/purge` imports
+  `internal/pruning`, so the dependency could not run the other way:
+  `purge.MatchesAny`/`purge.MatchedEntries` are deleted and replaced by one
+  unexported `pruning.matchedTags`. Their six tests moved with them
+  (`internal/purge/purge_test.go` deleted, rewritten into
+  `internal/pruning/evaluate_test.go`) — deliberately leaving **no
+  compatibility shim** behind, so the exact-tag-match semantic is never
+  implemented in two files at once.
+- `purge.joinReasons` is deleted with the second reason source. All three Scan
+  functions — Movies, Series, **and Adult** (`purge_adult_library.go`, easy to
+  miss) — lose their `allowlist []string` parameter.
+
+### 2. Migration 0008, and what it deliberately does NOT do
+
+`internal/db/migrations/0008_pruning_rule_tags.sql` adds
+`pruning_rules.tags` (JSON-encoded `text NOT NULL DEFAULT '[]'`, the same
+convention as `library_items.genres`/`"cast"` — **not** a Postgres `text[]` and
+not a join table), converts each mode's existing allowlist into one
+auto-created **"Legacy allowlist"** rule carrying those tags, and only then
+drops `purge_allowlist`. Conversion happens **before** the drop, in one
+migration, so a failure rolls the whole thing back.
+
+- A mode with **zero** allowlist tags gets **no rule at all** — an empty-tags
+  rule would be conditionless and would fail `Validate` on the operator's next
+  edit.
+- A whitespace-only tag is filtered (`btrim(tag) <> ''`) because the new
+  `ErrBlankTag` is *stricter* than the guard it replaces, which rejected only
+  exactly `""`.
+- The **Down discriminates structurally** (all three other conditions unset),
+  never by matching the name string `'Legacy allowlist'`. Inferring a row's
+  origin from a string is the exact anti-pattern this file records under
+  `grabs.hold_until`, where it destroyed an operator's own grab.
+- **Known, accepted Down lossiness:** a rule combining tags WITH age/size/tier
+  keeps its other conditions but loses its tags on rollback — `purge_allowlist`
+  has nowhere to put a tag that is only meaningful alongside another condition.
+  That is why the Down deletes only *tag-only* rows.
+
+`internal/db/migration_pruning_rule_tags_test.go` is a live Postgres
+round-trip proving all of the above. It exists because **no store test can**:
+`dbtest.New(t)` clones an already-fully-migrated template, so 0008's Up has
+always already run against an empty `purge_allowlist` by the time a store test
+starts, and nothing anywhere runs its Down.
+
+### 3. The rules builder moved from Settings onto the Clean-up screen
+
+`frontend/src/screens/settings/PruningRules.tsx` is deleted; its contents live
+in the new `frontend/src/screens/PurgeRulesCard.tsx`, rendered on the Clean-up
+screen as a native collapsible `<details>` "Rules" card
+(`OrganizeChrome.tsx`'s `ActivityLogPanel` pattern, class-for-class — not a
+`Card`, not a new component), in the exact position the standalone Allowlist
+section used to occupy. **Settings' `SECTION_TABS` goes 10 → 9**: the Pruning
+tab is removed entirely, since its only remaining content was the rules CRUD.
+
+**Documented spec deviation — the Mode dropdown is REMOVED.** The old Settings
+tab was mode-agnostic and listed all three modes' rules together, so it needed
+a Mode `<select>`. The Clean-up screen is already mode-tabbed, so the card is
+scoped to `props.mode` and filters client-side (no new endpoint, no query
+param). Keeping the dropdown would have let an operator create a Series rule
+from the Movies tab and watch it vanish from the list it was created in. The
+spec was silent on this; the plan prescribed removal and it is applied here
+rather than silently.
+
+The tag input is the retired Allowlist's own chip markup — one `×` per chip,
+one Add per input, no clear-all, no picker/autocomplete. **Add is now
+client-side only** (a real behavior change: the allowlist's Add POSTed
+immediately; a tag is now persisted by the rule's own Save). The AC6 "no bulk
+actions on the allowlist" invariant was not dropped — it moved to
+`PurgeRulesCard.test.tsx` and now guards the tag input.
+
+### 4. `/api/pruning-rules` reclassified `{settings}` → `{organize}` — MIGRATION NOTE
+
+`internal/sectionlock/routes.go`'s own `Review if: pruning rules ever move onto
+the Organize screen` fired, so the block was **replaced, not amended**, per the
+stale-comment rule. The 2026-08-03 classification turned on picking "the LESS
+restrictive of the two screens they touch"; there is now only ONE screen, so
+that tie-break no longer applies, and the sibling `/api/modes/{mode}/purge/*`
+routes are already `{organize}`.
+
+**This is a live behavior change.** Any out-of-process script hitting
+`/api/pruning-rules` with `X-Section-Pin` set because *Settings* was locked will
+now get a 403 the first time an operator locks *Organize* instead, and vice
+versa. No grandfathering path, by design. `internal/sectionlock/routes_test.go`
+gains the first test that has ever asserted this classification either way.
+
+### 5. "Purge" → "Clean-up", visible text only
+
+Every internal identifier is **unchanged**: the route `purge`, the Go package
+`internal/purge`, `proposals.Purge`, `workflow="purge"`, the localStorage keys
+`sakms.purge.pageSize`/`.showHistory`, the `?tab=purge` value, and the
+`"purge.applied"` event-id KEY (only its display string changed).
+
+Renamed: `Purge.tsx`'s `<h2>`, `organizeTabs.ts`'s tab label (`id: "purge"`
+untouched), the `"purge.applied"` display strings in `webhooks.ts` and
+`BrowserNotifications.tsx`, `OrganizeScanSchedule.tsx`'s panel title + interval
+label + both help strings, two help sentences in `Webhooks.tsx`, and
+`README.md`'s feature paragraph.
+
+**Two sites beyond the spec's own enumerated list were renamed, both flagged
+rather than assumed.** (a) `OrganizeScanSchedule.tsx`'s four Settings → Organize
+strings — the plan's §9.4 surfaced these as a scope discrepancy, and its `help`
+string was *semantically* stale regardless ("tag- and rule-matched items"
+describes the two mechanisms this change merges into one). (b) `Webhooks.tsx`'s
+two "finishes a Rename, Purge, or Dedup" sentences, which neither the spec nor
+the plan listed — found by the plan's own deliberately-broad residual grep,
+which exists for exactly this class of miss.
+
+### Also
+
+- `internal/api/setup.go`'s `AllowlistCount` read-model field is removed
+  outright rather than re-sourced from rules — it reports on a mechanism that no
+  longer exists, and no frontend code ever consumed it
+  (`SetupStatusResponse`'s only consumer, `auth/boot.ts`, reads
+  `dismissed`/`anyConfigured`).
+- `previewPruningRuleHandler` now genuinely previews **tag** matches too — a
+  capability the old Settings tab could not offer. It falls straight out of
+  running the real Scan, which is why that endpoint runs the real Scan.
+- Three surviving comments that cited `allowlist.Store.List` as the
+  `[]T{}`-not-`nil` precedent were **repointed to `pruning.scanRules`**, not
+  deleted — each documents a real convention.
+- `internal/api/purge_test.go`'s end-to-end test was **re-targeted, not
+  deleted**: it is the repo's only HTTP-level Scan→Apply→verify coverage for
+  this workflow, so only its "configure matching" head changed (allowlist POST →
+  `POST /api/pruning-rules` creating a tags-only rule).
+
+### Superseded comments, quoted so this entry is their only surviving record
+
+`internal/sectionlock/routes.go:103-113` (replaced by the `{organize}` block):
+
+> Claude 2026-08-03: added for the propose-only pruning rules feature.
+> Reason: the rules are authored on a Settings tab, so they follow the
+> shared-route attribution rule above and get {settings} — the LESS
+> restrictive of the two screens they touch. Attributing them to
+> {organize} instead would take the whole Pruning settings surface
+> away whenever the Organize tab alone was locked, while Organize is
+> already gated by its own /api/modes/{mode}/purge/* routes.
+> Note a rule's own mode lives in the request BODY, never the path, so
+> an adult-scoped rule is NOT gated by Layer 1's adult rule here.
+> Review if: pruning rules ever move onto the Organize screen.
+
+`internal/purge/purge.go:28-41` (replaced by the allowlist-retirement block):
+
+> Claude 2026-08-03: every Scan* function below takes an added `rules
+> []pruning.Rule` parameter (plan .omc/plans/autopilot-impl-pruning-rules.md
+> §3.1/§3.2).
+> Reason: rules are threaded as a PARAMETER rather than evaluated through a
+> new exported purge function on purpose — internal/scanschedule's static
+> allowlist test (allowlist_test.go) permits cmd/sakms/scanadapter.go to
+> reference only Scan*-prefixed purge symbols and ReplacePending, so a new
+> exported purge.EvaluatePruningRules would fail it even though it is
+> entirely read-only.
+> Troubleshooting: evaluation is folded into the EXISTING per-item loop, not
+> run as a second pass. A second pass would emit two proposals with the same
+> TrackedID for an item matching both a tag and a rule, and applying the
+> first would make the second fail confusingly in ApplyLibrary.
+> Review if: purge ever needs to propose more than one row per tracked item.
+
+### Left alone, deliberately
+
+`README.md`'s "Adult against Whisparr's native tag resource" clause is
+**already** stale (Whisparr was eliminated 2026-07-12) and stays as-is —
+correcting it is a separate pre-existing issue, and expanding this edit to
+cover it would hide that. Same treatment as the 2026-08-10 entry's own README
+follow-up above.

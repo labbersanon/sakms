@@ -197,3 +197,120 @@ func TestList_EmptyReturnsEmptySliceNotNil(t *testing.T) {
 		t.Errorf("expected no rules, got %+v", list)
 	}
 }
+
+// --- Tags, the 4th condition (Claude 2026-08-11) ---------------------------
+
+// TestTags_RoundTripThroughCreateListUpdate is the column-position guard:
+// tags sits between quality_tier_floor and enabled in all four statements, and
+// a SELECT-list / rows.Scan mismatch there is a RUNTIME error, not a compile
+// error. Nothing but a test that actually reads a row back catches it.
+func TestTags_RoundTripThroughCreateListUpdate(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, Rule{
+		Name: "Tagged", Mode: string(mode.Movies), Tags: []string{"BDSM", "Rope"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(created.Tags) != 2 || created.Tags[0] != "BDSM" || created.Tags[1] != "Rope" {
+		t.Fatalf("Create returned tags %v, want [BDSM Rope]", created.Tags)
+	}
+
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 || len(list[0].Tags) != 2 || list[0].Tags[0] != "BDSM" {
+		t.Fatalf("List returned %+v, want one rule tagged [BDSM Rope]", list)
+	}
+	// Every other field must still line up — the whole point of the guard.
+	if list[0].Name != "Tagged" || list[0].Mode != string(mode.Movies) || !list[0].Enabled {
+		t.Errorf("column positions drifted: %+v", list[0])
+	}
+
+	enabled, err := s.ListEnabledForMode(ctx, mode.Movies)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(enabled) != 1 || len(enabled[0].Tags) != 2 {
+		t.Fatalf("ListEnabledForMode returned %+v, want the tagged rule", enabled)
+	}
+
+	updated, err := s.Update(ctx, Rule{
+		ID: created.ID, Name: "Tagged", Mode: string(mode.Movies), Tags: []string{"Trailer"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(updated.Tags) != 1 || updated.Tags[0] != "Trailer" {
+		t.Fatalf("Update returned tags %v, want [Trailer]", updated.Tags)
+	}
+	after, _ := s.List(ctx)
+	if len(after) != 1 || len(after[0].Tags) != 1 || after[0].Tags[0] != "Trailer" {
+		t.Fatalf("after Update, List returned %+v, want tags [Trailer]", after)
+	}
+}
+
+// A tags-only rule satisfies the four-way ErrNoConditions check — this is what
+// migration 0008's "Legacy allowlist" rules are, so if this regressed every
+// migrated rule would fail on the operator's next edit.
+func TestCreate_TagsOnlyRuleIsValid(t *testing.T) {
+	s := newTestStore(t)
+	created, err := s.Create(context.Background(), Rule{
+		Name: "Legacy allowlist", Mode: string(mode.Movies), Tags: []string{"Trailer"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("a tags-only rule must be valid, got %v", err)
+	}
+	if created.AgeDays != 0 || created.SizeBytes != 0 || created.QualityTierFloor != "" {
+		t.Errorf("expected the other three conditions unset, got %+v", created)
+	}
+}
+
+func TestCreate_RejectsBlankTag(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	for name, tags := range map[string][]string{
+		"empty string":    {""},
+		"whitespace only": {"   "},
+		"blank alongside": {"BDSM", "\t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.Create(ctx, Rule{Name: "Bad", Mode: string(mode.Movies), Tags: tags, Enabled: true})
+			if !errors.Is(err, ErrBlankTag) {
+				t.Fatalf("expected ErrBlankTag, got %v", err)
+			}
+		})
+	}
+}
+
+// An empty Tags on Update CLEARS stored tags — the upsert body is deliberately
+// whole-rule, so an empty list must be expressible as "remove the condition",
+// exactly like qualityTierFloor: "".
+func TestUpdate_EmptyTagsClearsStoredTags(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, Rule{
+		Name: "Tagged", Mode: string(mode.Movies), AgeDays: 30, Tags: []string{"BDSM"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := s.Update(ctx, Rule{
+		ID: created.ID, Name: "Tagged", Mode: string(mode.Movies), AgeDays: 30, Tags: nil, Enabled: true,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after, _ := s.List(ctx)
+	if len(after) != 1 || len(after[0].Tags) != 0 {
+		t.Fatalf("expected tags cleared, got %+v", after)
+	}
+	if after[0].AgeDays != 30 {
+		t.Errorf("clearing tags must not disturb the other conditions, got %+v", after[0])
+	}
+}

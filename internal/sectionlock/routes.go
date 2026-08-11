@@ -100,17 +100,24 @@ func Classify(rawPath string) Set {
 		"netscan", "browse", "downloader", "ollama":
 		out.Add(SectionSettings)
 	case "pruning-rules":
-		// Claude 2026-08-03: added for the propose-only pruning rules feature.
-		// Reason: the rules are authored on a Settings tab, so they follow the
-		// shared-route attribution rule above and get {settings} — the LESS
-		// restrictive of the two screens they touch. Attributing them to
-		// {organize} instead would take the whole Pruning settings surface
-		// away whenever the Organize tab alone was locked, while Organize is
-		// already gated by its own /api/modes/{mode}/purge/* routes.
-		// Note a rule's own mode lives in the request BODY, never the path, so
-		// an adult-scoped rule is NOT gated by Layer 1's adult rule here.
-		// Review if: pruning rules ever move onto the Organize screen.
-		out.Add(SectionSettings)
+		// Claude 2026-08-11: RECLASSIFIED {settings} -> {organize}.
+		// Reason: the rules builder moved off Settings entirely onto the
+		// Organize screen's Clean-up tab (the Rules card), and the Settings >
+		// Pruning tab was removed. The 2026-08-03 classification turned on
+		// picking "the LESS restrictive of the two screens they touch" — there
+		// is now only ONE screen, so that tie-break no longer applies. Its
+		// sibling routes on that same screen, /api/modes/{mode}/purge/*, are
+		// already {organize}. Leaving it {settings} would produce two
+		// incoherent states: a locked-Settings install could not edit rules
+		// from an otherwise-unlocked Clean-up screen, and an unlocked-Settings
+		// + locked-Organize install could edit them through an API whose only
+		// UI is behind the lock.
+		// Troubleshooting: a rule's own mode lives in the request BODY, never
+		// the path, so an adult-scoped rule is NOT gated by Layer 1's adult
+		// rule here.
+		// Review if: the rules card ever moves back to Settings, or these
+		// routes gain a mode segment in their path.
+		out.Add(SectionOrganize)
 	case "stashbox-databases":
 		// Claude 2026-08-04: added for the configurable stash-box registry
 		// (Stage 5, plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md).

@@ -25,7 +25,7 @@ type NotifyPayload = {
 
 const EVENT_TITLES: Record<string, string> = {
   "rename.applied": "Rename applied",
-  "purge.applied": "Purge applied",
+  "purge.applied": "Clean-up applied",
   "dedup.applied": "Dedup applied",
   "grab.completed": "Grab completed",
 };

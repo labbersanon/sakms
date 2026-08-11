@@ -93,7 +93,7 @@ func batchTestServer(t *testing.T, dlGID string, hold time.Duration, respFor fun
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100) // 100 min = 6000 s
 	prowlarr, stats := fakeProwlarrTracking(t, hold, respFor)
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
 	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
@@ -109,7 +109,7 @@ func batchTestServer(t *testing.T, dlGID string, hold time.Duration, respFor fun
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv, stats
 }
@@ -293,7 +293,7 @@ func TestAutoGrabBatchHandler_CrossModeSessionIsolation(t *testing.T) {
 		return http.StatusOK, release
 	})
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
 	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
@@ -317,7 +317,7 @@ func TestAutoGrabBatchHandler_CrossModeSessionIsolation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
@@ -418,7 +418,7 @@ func seriesBatchTestServer(t *testing.T, dlGID string, episodeCount, episodeRunt
 	tmdbSrv := fakeTMDBSeriesSeasonRuntime(t, runtimes)
 	prowlarr, stats := fakeProwlarrTracking(t, hold, respFor)
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
 	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
@@ -434,7 +434,7 @@ func seriesBatchTestServer(t *testing.T, dlGID string, episodeCount, episodeRunt
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv, stats
 }

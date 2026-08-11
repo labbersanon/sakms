@@ -63,7 +63,7 @@ func TestRunAutoGrabTriggerOperatorIgnoresToggleOff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+			_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 			dl := newTestDownloader("gid-op", t.TempDir())
 			if tc.writeOff {
 				setAutoGrabToggle(t, settingsStore, false)
@@ -115,7 +115,7 @@ func TestRunAutoGrabGatedTriggersNoOpWhenToggleOff(t *testing.T) {
 	for _, trigger := range []AutoGrabTrigger{TriggerRequest, TriggerRetry} {
 		t.Run(string(trigger), func(t *testing.T) {
 			ctx := context.Background()
-			_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+			_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 			dl := newTestDownloader("gid-gated", t.TempDir())
 			setAutoGrabToggle(t, settingsStore, false)
 
@@ -155,7 +155,7 @@ func TestRunAutoGrabGatedTriggersNoOpWhenToggleOff(t *testing.T) {
 // and decided about.
 func TestRunAutoGrabOperatorFallbackWritesNoRetryRow(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	dl := newTestDownloader("gid-fb", t.TempDir())
 
 	out, err := RunAutoGrab(ctx,
@@ -205,7 +205,7 @@ func TestRunAutoGrabGatedFallbackParksOneRetryRow(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+			_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 			setAutoGrabToggle(t, settingsStore, true)
 
 			req := AutoGrabRequest{
@@ -279,7 +279,7 @@ func TestRunAutoGrabGatedFallbackParksOneRetryRow(t *testing.T) {
 // it would silently merge a deliberate Specials retry into a series-wide one.
 func TestRunAutoGrabRetryRowSeasonZeroIsNotNoSeason(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	setAutoGrabToggle(t, settingsStore, true)
 
 	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
@@ -320,13 +320,13 @@ func TestRunAutoGrabRetryRowSeasonZeroIsNotNoSeason(t *testing.T) {
 func TestSearchHandlerToggleOffIsUnchanged(t *testing.T) {
 	ctx := context.Background()
 	prowlarrSrv := fakeProwlarr(t, `[{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`)
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
 	if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	setAutoGrabToggle(t, settingsStore, false)
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/movies/search?q=some+movie")
@@ -358,13 +358,13 @@ func TestSearchHandlerToggleOffIsUnchanged(t *testing.T) {
 func TestAdultSearchHandlerToggleOffIsUnchanged(t *testing.T) {
 	ctx := context.Background()
 	prowlarrSrv := fakeProwlarr(t, `[]`)
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
 	if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	setAutoGrabToggle(t, settingsStore, false)
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/modes/adult/search?q=some+scene")
@@ -417,7 +417,7 @@ func TestSearchRoutesToggleOnReturnOutcomeShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			prowlarrSrv := fakeProwlarr(t, releasesJSON)
-			connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
+			connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
 			if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -426,7 +426,7 @@ func TestSearchRoutesToggleOnReturnOutcomeShape(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 			defer srv.Close()
 
 			resp, err := http.Get(srv.URL + tc.path)
@@ -469,7 +469,7 @@ func TestSearchRoutesToggleOnReturnOutcomeShape(t *testing.T) {
 // dispatchToDownloadClient with no staging/review step in between.
 func TestRunAutoGrabTriggerRequestGrabsWhenRuntimeKnown(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	dl := newTestDownloader("gid-req", t.TempDir())
 	setAutoGrabToggle(t, settingsStore, true)
 	if err := settingsStore.Set(ctx, qualityTierKey(mode.Movies), string(quality.Low)); err != nil {
@@ -510,7 +510,7 @@ func TestRunAutoGrabTriggerRequestGrabsWhenRuntimeKnown(t *testing.T) {
 // instead of parking the retry AC 15 wants observable.
 func TestRunAutoGrabEmptyReleasesParksRetryNotSearch(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	setAutoGrabToggle(t, settingsStore, true)
 
 	out, err := RunAutoGrab(ctx,
@@ -542,7 +542,7 @@ func TestRunAutoGrabEmptyReleasesParksRetryNotSearch(t *testing.T) {
 // protects, ActiveByDownloadGID's torrent re-grab false positive.)
 func TestParkGrabForRetryStaysVisibleToDueForRetry(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 
 	created, err := grabsStore.Create(ctx, grabs.Grab{
 		Mode: mode.Movies, Title: "Some Movie", TMDBID: 42,

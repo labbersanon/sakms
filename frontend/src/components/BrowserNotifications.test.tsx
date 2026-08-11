@@ -143,7 +143,7 @@ describe("BrowserNotifications", () => {
     expect(rename?.title).toBe("Rename applied");
     expect(rename?.options?.body).toContain("The Matrix");
 
-    expect(byTag("purge.applied")?.title).toBe("Purge applied");
+    expect(byTag("purge.applied")?.title).toBe("Clean-up applied");
     expect(byTag("dedup.applied")?.title).toBe("Dedup applied");
 
     const grab = byTag("grab.completed");

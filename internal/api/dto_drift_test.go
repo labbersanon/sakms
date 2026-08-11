@@ -54,7 +54,6 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"upsertConnectionRequest/ConnectionUpsertRequest", upsertConnectionRequest{}, apidto.ConnectionUpsertRequest{}},
 		{"ConnectionTestRequest", ConnectionTestRequest{}, apidto.ConnectionTestRequest{}},
 		{"ConnectionTestResult", ConnectionTestResult{}, apidto.ConnectionTestResult{}},
-		{"addAllowlistTagRequest/AllowlistAddRequest", addAllowlistTagRequest{}, apidto.AllowlistAddRequest{}},
 		{"dismissSetupRequest/DismissSetupRequest", dismissSetupRequest{}, apidto.DismissSetupRequest{}},
 		{"applyProposalRequest/DedupApplyRequest", applyProposalRequest{}, apidto.DedupApplyRequest{}},
 		// applyBatchRequest/ApplyBatchResultItem/ApplyBatchResponse are excluded:

@@ -122,7 +122,7 @@ func detailBody(id int, entries ...[2]string) string {
 // those stores so a test can seed the already-requested inputs.
 func upcomingMoviesMux(t *testing.T, tmdbURL string) (*http.ServeMux, *grabs.Store, *library.Store) {
 	t.Helper()
-	connStore, _, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	connStore, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 	// Resets the package-level TMDB response cache as a side effect — required,
 	// not optional: two tests in this process can otherwise land on the same
@@ -463,7 +463,7 @@ func upcomingSeriesMux(t *testing.T, tmdbURL string) (*http.ServeMux, *library.S
 	resetSeriesCatalogFreshness()
 	t.Cleanup(resetSeriesCatalogFreshness)
 
-	connStore, _, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	connStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	if tmdbURL != "" {
 		// Resets the package-level TMDB response cache as a side effect —
 		// required, not optional, for the same ephemeral-port-reuse reason the
@@ -716,7 +716,7 @@ func TestCalendarUpcomingMovies_NeverQueriesProwlarr(t *testing.T) {
 	digital := `{"results":[{"id":40,"title":"M","release_date":"2026-09-05"}]}`
 	_, tmdbURL := newUpcomingTMDB(t, digital, `{"results":[]}`, map[int]string{40: detailBody(40, [2]string{"4", "2026-09-05"})})
 
-	connStore, _, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	connStore, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", tmdbURL)
 	if err := connStore.Upsert(ctx, "tmdb", tmdbURL, "key"); err != nil {

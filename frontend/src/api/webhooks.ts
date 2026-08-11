@@ -25,7 +25,7 @@ export type WebhookEvent = (typeof ALL_WEBHOOK_EVENTS)[number];
 
 export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   "rename.applied": "Rename applied",
-  "purge.applied": "Purge applied",
+  "purge.applied": "Clean-up applied",
   "dedup.applied": "Dedup applied",
   "grab.completed": "Grab completed",
 };

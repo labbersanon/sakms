@@ -1865,7 +1865,7 @@ func TestSeasonRoutesAreRegisteredOnTheRealMux(t *testing.T) {
 	// the season GET now builds a Series session to reach TMDB, and mode.Build
 	// dereferences both stores. Passing them also makes this the one test that
 	// drives the TMDB merge all the way through the production mux.
-	srv := httptest.NewServer(NewMux(testHTTPClient(), env.conns, env.scConns, nil, nil, nil, testPHasher(t), testVideoHasher(t),
+	srv := httptest.NewServer(NewMux(testHTTPClient(), env.conns, env.scConns, nil, nil, testPHasher(t), testVideoHasher(t),
 		env.settings, env.grabs, env.lib, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 

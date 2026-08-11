@@ -34,7 +34,7 @@ type preReleaseEnv struct {
 func newPreReleaseEnv(t *testing.T, prowlarrBody string) *preReleaseEnv {
 	t.Helper()
 	ctx := context.Background()
-	connStore, _, _, settingsStore, grabsStore, libStore, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	connStore, _, settingsStore, grabsStore, libStore, _, _, _, _, _, scStore := testStoresWithRegistry(t)
 	dl := newTestDownloader("gid-prerelease", t.TempDir())
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100) // 6000 s runtime → a release can grade
 	prowlarrSrv, stats := fakeProwlarrTracking(t, 0, func(url.Values) (int, string) {

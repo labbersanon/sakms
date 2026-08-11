@@ -29,7 +29,6 @@ import (
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
-	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dbtest"
@@ -76,7 +75,7 @@ func newUndoAPIEnv(t *testing.T, depth rename.DepthFunc) *undoAPIEnv {
 	t.Cleanup(func() { rename.SetDefaultUndoStore(nil) })
 
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connections.New(sqlDB, secretStore), nil, propStore,
-		allowlist.New(sqlDB), testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB),
+		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB),
 		grabs.New(sqlDB, secretStore), libStore, discoversliders.New(sqlDB),
 		trakt.NewStore(sqlDB, secretStore), adultnewest.New(sqlDB), adultnewest.NewReleaseStore(sqlDB),
 		testFeedHealth(), rssfeeds.NewStore(sqlDB, secretStore),

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/serviceconn"
@@ -21,18 +20,18 @@ const setupWizardDismissedKey = "setup_wizard_dismissed"
 // modeStatus reports what's configured for one mode — enough for a wizard
 // to know which steps are already done and skip straight past them.
 type modeStatus struct {
-	Mode           mode.Mode `json:"mode"`
-	Available      bool      `json:"available"`
-	ArrConfigured  bool      `json:"arrConfigured"`
-	AllowlistCount int       `json:"allowlistCount"`
+	Mode          mode.Mode `json:"mode"`
+	Available     bool      `json:"available"`
+	ArrConfigured bool      `json:"arrConfigured"`
 }
 
 // setupStatus is GET /api/setup/status's response shape. It's a pure read
-// model over connections.Store/allowlist.Store/settings.Store — the wizard
+// model over connections.Store/serviceconn.Store/settings.Store — the wizard
 // (once a frontend exists) still saves everything through the exact same
-// endpoints Settings uses (PUT /api/connections/{service}, POST .../purge/
-// allowlist); this endpoint only answers "what's already true," so the
-// wizard knows what to show and whether to show itself at all.
+// endpoints Settings uses (PUT /api/connections/{service}, PUT
+// /api/modes/{mode}/library-root-folder); this endpoint only answers "what's
+// already true," so the wizard knows what to show and whether to show itself
+// at all.
 //
 // JellyfinConfigured reports whether AT LEAST ONE MEDIA PLAYER OF ANY
 // PROVIDER — Jellyfin, Emby or Plex — is registered in the multi-connection
@@ -64,10 +63,10 @@ type setupStatus struct {
 // the wizard's *arr-connection walk, so it stays out of this list.
 var wizardModes = []mode.Mode{mode.Movies, mode.Series}
 
-func setupStatusHandler(connStore *connections.Store, scStore *serviceconn.Store, allowStore *allowlist.Store, settingsStore *settings.Store) http.HandlerFunc {
+func setupStatusHandler(connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		status, err := buildSetupStatus(ctx, connStore, scStore, allowStore, settingsStore)
+		status, err := buildSetupStatus(ctx, connStore, scStore, settingsStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -77,11 +76,11 @@ func setupStatusHandler(connStore *connections.Store, scStore *serviceconn.Store
 	}
 }
 
-func buildSetupStatus(ctx context.Context, connStore *connections.Store, scStore *serviceconn.Store, allowStore *allowlist.Store, settingsStore *settings.Store) (setupStatus, error) {
+func buildSetupStatus(ctx context.Context, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) (setupStatus, error) {
 	var status setupStatus
 
 	for _, m := range append(append([]mode.Mode{}, wizardModes...), mode.Adult) {
-		ms, err := modeStatusFor(ctx, m, allowStore, settingsStore)
+		ms, err := modeStatusFor(ctx, m, settingsStore)
 		if err != nil {
 			return setupStatus{}, err
 		}
@@ -120,7 +119,7 @@ func buildSetupStatus(ctx context.Context, connStore *connections.Store, scStore
 // field stays named ArrConfigured across all three (the wizard's "is this
 // mode ready" signal), even though the check isn't really an *arr connection
 // anymore.
-func modeStatusFor(ctx context.Context, m mode.Mode, allowStore *allowlist.Store, settingsStore *settings.Store) (modeStatus, error) {
+func modeStatusFor(ctx context.Context, m mode.Mode, settingsStore *settings.Store) (modeStatus, error) {
 	var arrConfigured bool
 	switch m {
 	case mode.Movies, mode.Series, mode.Adult:
@@ -132,12 +131,7 @@ func modeStatusFor(ctx context.Context, m mode.Mode, allowStore *allowlist.Store
 		arrConfigured = rootPath != ""
 	}
 
-	tags, err := allowStore.List(ctx, m)
-	if err != nil {
-		return modeStatus{}, err
-	}
-
-	return modeStatus{Mode: m, Available: true, ArrConfigured: arrConfigured, AllowlistCount: len(tags)}, nil
+	return modeStatus{Mode: m, Available: true, ArrConfigured: arrConfigured}, nil
 }
 
 // connectionExists reports whether service has a stored connection —

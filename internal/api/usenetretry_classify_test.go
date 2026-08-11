@@ -76,7 +76,7 @@ func TestClassifyDownloadStateTransientFailureIsRetryable(t *testing.T) {
 // (with a retry_after, or DueForRetry never sees it) instead of failing it.
 func TestSweepUsenetFailuresParksATransientFailure(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	g := dispatchedUsenetGrab(t, grabsStore, "nzb-1")
 	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
 
@@ -107,7 +107,7 @@ func TestSweepUsenetFailuresParksATransientFailure(t *testing.T) {
 // is rendered verbatim in the browser, so it must carry no part of it.
 func TestReparkFailedRetryDoesNotLeakTheCause(t *testing.T) {
 	ctx := context.Background()
-	_, _, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	setAutoGrabToggle(t, settingsStore, true)
 	g := dueRetryRow(t, grabsStore, mode.Movies, "Some Movie", 0)
 

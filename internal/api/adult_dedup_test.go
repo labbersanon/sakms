@@ -41,7 +41,7 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 	}))
 	defer fakeOllama.Close()
 
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 	for _, c := range []struct{ service, url string }{
 		{"stashdb", fakeStashDB.URL},
@@ -64,7 +64,7 @@ func TestAdultDedupWorkflow_ScanThenApply_EndToEnd(t *testing.T) {
 		fileSD: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
 		fileHD: {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, prober, testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, prober, testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil))
 	defer srv.Close()
 
 	// Async scan: POST returns 202, the work runs in the background. Wait for it

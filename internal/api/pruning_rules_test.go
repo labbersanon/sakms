@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
@@ -49,7 +48,7 @@ func newPruningEnv(t *testing.T) *pruningEnv {
 	pruningStore := pruning.New(sqlDB)
 	propStore := proposals.New(sqlDB)
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), nil, nil, propStore, allowlist.New(sqlDB),
+	srv := httptest.NewServer(NewMux(testHTTPClient(), nil, nil, propStore,
 		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB), nil, libStore,
 		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, pruningStore))
 	t.Cleanup(srv.Close)
@@ -419,5 +418,114 @@ func TestPurgeScan_RuleForAnotherMode_StagesNothing(t *testing.T) {
 	json.Unmarshal(body, &staged)
 	if len(staged) != 0 {
 		t.Fatalf("a series-scoped rule staged %d movies proposals: %+v", len(staged), staged)
+	}
+}
+
+// --- Tags, the 4th condition (Claude 2026-08-11) ---------------------------
+
+// Tags survive the full HTTP CRUD round trip. Worth asserting at this layer
+// and not only in the store: toDTOPruningRule/ruleFromUpsert are two separate
+// hand-written field-by-field mappings, so a field can round-trip perfectly in
+// internal/pruning and still be silently dropped on the wire.
+func TestPruningRules_TagsSurviveTheCRUDRoundTrip(t *testing.T) {
+	env := newPruningEnv(t)
+
+	req := apidto.PruningRuleUpsertRequest{
+		Name: "Tagged", Mode: string(mode.Movies), Tags: []string{"BDSM", "Rope"}, Enabled: true,
+	}
+	status, body := env.do(t, http.MethodPost, "/api/pruning-rules", req)
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("POST = %d (%s), want 200/201", status, body)
+	}
+	var created apidto.PruningRule
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decoding create: %v", err)
+	}
+	if len(created.Tags) != 2 || created.Tags[0] != "BDSM" || created.Tags[1] != "Rope" {
+		t.Fatalf("POST returned tags %v, want [BDSM Rope]", created.Tags)
+	}
+
+	_, listBody := env.do(t, http.MethodGet, "/api/pruning-rules", nil)
+	var listed []apidto.PruningRule
+	json.Unmarshal(listBody, &listed)
+	if len(listed) != 1 || len(listed[0].Tags) != 2 {
+		t.Fatalf("GET returned %+v, want one rule carrying both tags", listed)
+	}
+
+	// An empty list on update clears the condition — the upsert body is
+	// whole-rule, so "no tags" must be expressible.
+	path := "/api/pruning-rules/" + strconv.FormatInt(created.ID, 10)
+	cleared := apidto.PruningRuleUpsertRequest{
+		Name: "Tagged", Mode: string(mode.Movies), AgeDays: 30, Tags: []string{}, Enabled: true,
+	}
+	if status, out := env.do(t, http.MethodPut, path, cleared); status != http.StatusOK {
+		t.Fatalf("PUT clearing tags = %d (%s), want 200", status, out)
+	}
+	_, afterBody := env.do(t, http.MethodGet, "/api/pruning-rules", nil)
+	var after []apidto.PruningRule
+	json.Unmarshal(afterBody, &after)
+	if len(after) != 1 || len(after[0].Tags) != 0 {
+		t.Fatalf("after clearing, GET returned %+v, want no tags", after)
+	}
+}
+
+// A tags-only rule is ACCEPTED: it satisfies the four-way at-least-one-
+// condition check. This is the positive counterpart to
+// TestPruningRules_RejectsRuleWithNoConditions_400, and it is exactly the
+// shape migration 0008 creates for every migrated allowlist.
+func TestPruningRules_TagsOnlyRuleIsAccepted(t *testing.T) {
+	env := newPruningEnv(t)
+	req := apidto.PruningRuleUpsertRequest{
+		Name: "Legacy allowlist", Mode: string(mode.Movies), Tags: []string{"Trailer"}, Enabled: true,
+	}
+	if status, body := env.do(t, http.MethodPost, "/api/pruning-rules", req); status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("POST of a tags-only rule = %d (%s), want 200/201", status, body)
+	}
+}
+
+func TestPruningRules_RejectsBlankTag_400(t *testing.T) {
+	env := newPruningEnv(t)
+	for _, tag := range []string{"", "   "} {
+		req := apidto.PruningRuleUpsertRequest{
+			Name: "Bad", Mode: string(mode.Movies), Tags: []string{tag}, Enabled: true,
+		}
+		if status, body := env.do(t, http.MethodPost, "/api/pruning-rules", req); status != http.StatusBadRequest {
+			t.Errorf("POST with tag %q = %d (%s), want 400", tag, status, body)
+		}
+	}
+}
+
+// Preview counts TAG matches too — a capability the old Settings tab could not
+// offer, and one that falls straight out of running the real Scan.
+func TestPruningRules_Preview_CountsTagsOnlyDraft(t *testing.T) {
+	env := newPruningEnv(t)
+	ctx := context.Background()
+
+	for i, tag := range []string{"Trailer", "Trailer", "Keep"} {
+		item, err := env.libStore.Upsert(ctx, library.Item{
+			Mode: mode.Movies, TMDBID: i + 1, Title: "Movie " + strconv.Itoa(i),
+			RootFolderPath: "/media/Movies",
+		})
+		if err != nil {
+			t.Fatalf("seeding item %d: %v", i, err)
+		}
+		if err := env.libStore.AddTag(ctx, item.ID, tag); err != nil {
+			t.Fatalf("tagging item %d: %v", i, err)
+		}
+	}
+
+	draft := apidto.PruningRuleUpsertRequest{
+		Name: "Trailers", Mode: string(mode.Movies), Tags: []string{"Trailer"}, Enabled: true,
+	}
+	status, body := env.do(t, http.MethodPost, "/api/pruning-rules/preview", draft)
+	if status != http.StatusOK {
+		t.Fatalf("preview = %d (%s), want 200", status, body)
+	}
+	var got apidto.PruningRulePreviewResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decoding preview: %v", err)
+	}
+	if got.MatchCount != 2 {
+		t.Errorf("matchCount = %d, want 2 (the two Trailer-tagged items)", got.MatchCount)
 	}
 }

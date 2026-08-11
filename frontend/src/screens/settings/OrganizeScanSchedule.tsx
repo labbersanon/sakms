@@ -1,16 +1,19 @@
 // Claude 2026-08-10: new file — the Settings "Organize" tab: one panel each for
-// Rename, Dedup and Purge scheduled scanning (plan
+// Rename, Dedup and Clean-up scheduled scanning (plan
 // .omc/plans/autopilot-impl-scanschedule-settings-ui.md §5).
 // Reason: a new top-level SECTION_TABS entry consolidating all three
 // scan-schedule controls in one place, echoing the app's existing Organize
-// sidebar grouping (screens/organizeTabs.ts's ORGANIZE_WORKFLOWS). Purge's
-// scan-interval Card moved here out of PruningRules.tsx; Rename and Dedup had
-// no frontend control at all before this.
-// Troubleshooting: none yet.
+// sidebar grouping (screens/organizeTabs.ts's ORGANIZE_WORKFLOWS). Clean-up's
+// scan-interval Card moved here out of the former Pruning tab; Rename and
+// Dedup had no frontend control at all before this.
+// Troubleshooting: "Clean-up" is the OPERATOR-FACING name only — the settings
+//   keys, endpoints and ids here are all still `purge` (purge-scan-interval,
+//   fetchPurgeScanEnabled, ...). Do not rename them.
 // Related files: src/api/scanSchedule.ts (all three enabled endpoints + the
-// Rename/Dedup interval endpoints), src/api/pruningRules.ts (Purge's interval
-// endpoints, deliberately left where they are), src/screens/settings/
-// PruningRules.tsx (the Card this tab took over).
+// Rename/Dedup interval endpoints), src/api/pruningRules.ts (Clean-up's
+// interval endpoints, deliberately left where they are),
+// src/screens/PurgeRulesCard.tsx (the rules builder that used to sit beside
+// this Card on the old Pruning tab, now on the Clean-up screen itself).
 
 import {
   type Component,
@@ -57,11 +60,11 @@ const RESTART_CAVEAT =
 // ScanSchedulePanel is the shared shape of all three panels — a file-local
 // component, not an exported abstraction: the three differ only in their copy
 // and their four endpoint functions, and there is no second consumer outside
-// this tab. Same register as PruningRules.tsx's own RuleForm.
+// this tab. Same register as PurgeRulesCard.tsx's own RuleForm.
 const ScanSchedulePanel: Component<{
   // title names the WORKFLOW ("Rename"), while intervalLabel names the field
   // ("Rename scan interval") — kept separate so the interval input's
-  // accessible name stays exactly what it was in the Pruning tab, and the
+  // accessible name stays exactly what it was on the old Pruning tab, and the
   // toggle gets a name of its own rather than "Rename scan interval enabled".
   title: string;
   intervalLabel: string;
@@ -164,11 +167,11 @@ export const OrganizeScanScheduleSection: Component = () => (
       putInterval={putDedupScanInterval}
     />
     <ScanSchedulePanel
-      title="Purge"
-      intervalLabel="Purge scan interval"
+      title="Clean-up"
+      intervalLabel="Clean-up scan interval"
       id="purge-scan-interval"
-      help="How often Purge automatically re-scans for tag- and rule-matched items to propose."
-      intervalHelp="How often a scheduled Purge Scan runs in the background."
+      help="How often Clean-up automatically re-scans for rule-matched items to propose."
+      intervalHelp="How often a scheduled Clean-up Scan runs in the background."
       fetchEnabled={fetchPurgeScanEnabled}
       putEnabled={putPurgeScanEnabled}
       fetchInterval={fetchPurgeScanInterval}

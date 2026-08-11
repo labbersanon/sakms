@@ -62,11 +62,11 @@ option preserving this project's original dash-separated Series
 convention so an already-renamed library's shape never silently changes
 after an upgrade. A file/folder that already matches the active preset is
 never re-proposed, even if it was never tracked (e.g. a library organized
-by hand). **Purge** (`POST
-/api/modes/{movies,series,adult}/purge/scan` matches a per-mode tag
-allowlist, managed via `/api/modes/{mode}/purge/allowlist`, against every
-tracked item's tags — Movies/Series against their own local library tags,
-Adult against Whisparr's native tag resource), and **Dedup** (`POST
+by hand). **Clean-up** (`POST
+/api/modes/{movies,series,adult}/purge/scan` stages every tracked item
+matching an enabled pruning rule — age / size / quality tier / tags, AND'd
+within a rule, OR'd across rules — Movies/Series against their own local
+library tags, Adult against Whisparr's native tag resource), and **Dedup** (`POST
 /api/modes/{movies,series,adult}/dedup/scan` groups unmapped files with any
 already-tracked item sharing the same identifier — TMDB ID for Movies,
 `(show TMDB id, season, episode)` for Series, the resolved scene's

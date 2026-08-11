@@ -1,17 +1,21 @@
-// PruningRules tests — the Settings "Pruning" tab (F1, plan
-// .omc/plans/autopilot-impl-pruning-rules.md §9.7 + §13.1). Conventions
-// mirror RssFeedAdmin.test.tsx/SliderAdmin.test.tsx (stubFetch/jsonResponse/
-// Call harness re-declared per test file, not shared). Covers the §9.7 list
-// (empty state, create with an age condition, GB->bytes conversion, edit,
-// delete, both AC1 client-side blocks, the immediate enabled-toggle update,
-// the purge scan interval, and a row-mutation error that doesn't clear the
-// list) plus the §13.1 soft preview banner, which §9.7 doesn't separately
-// enumerate but the plan's Critic safety amendment requires.
+// PurgeRulesCard tests — the Clean-up screen's collapsible Rules card.
+//
+// Claude 2026-08-11: MOVED here from settings/PruningRules.test.tsx when the
+// rules builder relocated off the (now deleted) Settings "Pruning" tab. Every
+// block below except the retired scan-interval one is carried forward, adapted
+// for the `mode` prop and the removed Mode <select>, and extended for the new
+// tags condition.
+// Reason: the card is the only rules UI now, so its coverage has to move with
+// it rather than be rewritten from scratch.
+// Review if: the rules builder ever moves back into Settings.
+//
+// Conventions mirror RssFeedAdmin.test.tsx/SliderAdmin.test.tsx
+// (stubFetch/jsonResponse/Call harness re-declared per test file, not shared).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { PruningRulesSection } from "./PruningRules";
-import type { PruningRule } from "../../api/pruningRules";
+import { PurgeRulesCard } from "./PurgeRulesCard";
+import type { PruningRule } from "../api/pruningRules";
 
 const jsonResponse = (obj: unknown, status = 200): Response =>
   new Response(JSON.stringify(obj), {
@@ -76,15 +80,17 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("PruningRulesSection — list", () => {
+describe("PurgeRulesCard — list", () => {
   it("shows the empty state with no rules", async () => {
     stubFetch();
-    render(() => <PruningRulesSection />);
-    expect(await screen.findByText("No pruning rules yet.")).toBeInTheDocument();
+    render(() => <PurgeRulesCard mode="movies" />);
+    expect(
+      await screen.findByText("No rules for this mode yet."),
+    ).toBeInTheDocument();
   });
 });
 
-describe("PruningRulesSection — create", () => {
+describe("PurgeRulesCard — create", () => {
   it("creates a rule with a single age condition", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
@@ -92,7 +98,7 @@ describe("PruningRulesSection — create", () => {
         return jsonResponse(rule({ id: 5, name: "Stale movies", ageDays: 400 }));
       return undefined;
     });
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
 
     fireEvent.input(screen.getByLabelText("Rule name"), {
@@ -116,6 +122,7 @@ describe("PruningRulesSection — create", () => {
       ageDays: 400,
       sizeBytes: 0,
       qualityTierFloor: "",
+      tags: [],
       enabled: true,
     });
   });
@@ -129,7 +136,7 @@ describe("PruningRulesSection — create", () => {
         );
       return undefined;
     });
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
 
     fireEvent.input(screen.getByLabelText("Rule name"), {
@@ -154,12 +161,13 @@ describe("PruningRulesSection — create", () => {
       ageDays: 0,
       sizeBytes: 2147483648,
       qualityTierFloor: "",
+      tags: [],
       enabled: true,
     });
   });
 });
 
-describe("PruningRulesSection — edit", () => {
+describe("PurgeRulesCard — edit", () => {
   it("edits an existing rule", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
@@ -169,7 +177,7 @@ describe("PruningRulesSection — edit", () => {
         return jsonResponse(rule({ id: 7, name: "Renamed", ageDays: 200 }));
       return undefined;
     });
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByLabelText("Edit Old"));
 
     const nameInput = (await screen.findByLabelText(
@@ -195,12 +203,13 @@ describe("PruningRulesSection — edit", () => {
       ageDays: 200,
       sizeBytes: 0,
       qualityTierFloor: "",
+      tags: [],
       enabled: true,
     });
   });
 });
 
-describe("PruningRulesSection — delete", () => {
+describe("PurgeRulesCard — delete", () => {
   it("deletes a rule after confirmation", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
@@ -208,7 +217,7 @@ describe("PruningRulesSection — delete", () => {
         return jsonResponse([rule({ id: 8, name: "Doomed", ageDays: 30 })]);
       return undefined;
     });
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     await screen.findByText(/Doomed/);
     fireEvent.click(screen.getByText("Delete"));
 
@@ -224,10 +233,10 @@ describe("PruningRulesSection — delete", () => {
 
 // --- AC1's client half ------------------------------------------------------
 
-describe("PruningRulesSection — client-side validation (AC1)", () => {
+describe("PurgeRulesCard — client-side validation (AC1)", () => {
   it("blocks submit when no condition is enabled", async () => {
     const calls = stubFetch();
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "Everything" },
@@ -242,7 +251,7 @@ describe("PruningRulesSection — client-side validation (AC1)", () => {
 
   it("blocks submit when the name is blank", async () => {
     const calls = stubFetch();
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
     fireEvent.click(screen.getByLabelText("Enable age condition"));
     fireEvent.input(screen.getByLabelText("Age in days"), {
@@ -257,7 +266,7 @@ describe("PruningRulesSection — client-side validation (AC1)", () => {
   });
 });
 
-describe("PruningRulesSection — enabled toggle", () => {
+describe("PurgeRulesCard — enabled toggle", () => {
   it("toggling enabled fires an immediate update", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
@@ -267,7 +276,7 @@ describe("PruningRulesSection — enabled toggle", () => {
         ]);
       return undefined;
     });
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     const toggle = (await screen.findByLabelText(
       "Toggle me enabled",
     )) as HTMLInputElement;
@@ -290,12 +299,13 @@ describe("PruningRulesSection — enabled toggle", () => {
       ageDays: 100,
       sizeBytes: 0,
       qualityTierFloor: "",
+      tags: [],
       enabled: false,
     });
   });
 });
 
-describe("PruningRulesSection — row mutation error", () => {
+describe("PurgeRulesCard — row mutation error", () => {
   it("surfaces a row-mutation error without clearing the list", async () => {
     stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
@@ -305,7 +315,7 @@ describe("PruningRulesSection — row mutation error", () => {
         return errorResponse(500, "database is locked");
       return undefined;
     });
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     const toggle = await screen.findByLabelText("Fragile enabled");
     fireEvent.click(toggle);
 
@@ -315,30 +325,9 @@ describe("PruningRulesSection — row mutation error", () => {
   });
 });
 
-// Claude 2026-08-10: the "purge scan interval (AC3's frontend gap)" describe
-// block that lived here MOVED to OrganizeScanSchedule.test.tsx along with the
-// Card it exercised, rather than being deleted — see that file's
-// "Purge panel (relocated from the Pruning tab)" block.
-// Reason: the control now lives in Settings -> Organize.
-// Review if: the Organize tab is ever folded back into Pruning.
-describe("PruningRulesSection — the relocated purge scan interval", () => {
-  it("no longer renders the purge scan-interval control or fetches its value", async () => {
-    const calls = stubFetch();
-    render(() => <PruningRulesSection />);
-    // Wait for the tab's own first paint before asserting an absence, so this
-    // can't pass merely by running before anything rendered.
-    await screen.findByText("Pruning rules");
-
-    expect(screen.queryByLabelText("Purge scan interval")).toBeNull();
-    expect(
-      calls.some((c) => c.url.includes("/api/settings/purge-scan-interval")),
-    ).toBe(false);
-  });
-});
-
 // --- §13.1 soft preview banner ----------------------------------------------
 
-describe("PruningRulesSection — soft preview banner (§13.1)", () => {
+describe("PurgeRulesCard — soft preview banner (§13.1)", () => {
   it("shows a debounced match-count banner once a condition is configured, and never blocks a large-count save", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const calls = stubFetch((url, init) => {
@@ -349,7 +338,7 @@ describe("PruningRulesSection — soft preview banner (§13.1)", () => {
         return jsonResponse(rule({ id: 11, name: "Stale", ageDays: 400 }));
       return undefined;
     });
-    render(() => <PruningRulesSection />);
+    render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
     fireEvent.click(screen.getByLabelText("Enable age condition"));
     fireEvent.input(screen.getByLabelText("Age in days"), {
@@ -379,5 +368,225 @@ describe("PruningRulesSection — soft preview banner (§13.1)", () => {
         true,
       ),
     );
+  });
+});
+
+// --- The card shell, mode scoping, and the tags condition (2026-08-11) ------
+
+describe("PurgeRulesCard — the card shell", () => {
+  it("is a collapsed <details> with a Rules summary", async () => {
+    stubFetch();
+    const { container } = render(() => <PurgeRulesCard mode="movies" />);
+    await screen.findByText("No rules for this mode yet.");
+
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    // Collapsed by default — same as OrganizeChrome's Activity log panel.
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect(details!.querySelector("summary")!.textContent).toBe("Rules");
+  });
+});
+
+describe("PurgeRulesCard — mode scoping", () => {
+  it("renders only rules whose mode matches the prop", async () => {
+    stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET" && isRuleList(url))
+        return jsonResponse([
+          rule({ id: 20, name: "Movies rule", mode: "movies", ageDays: 10 }),
+          rule({ id: 21, name: "Series rule", mode: "series", ageDays: 10 }),
+          rule({ id: 22, name: "Adult rule", mode: "adult", ageDays: 10 }),
+        ]);
+      return undefined;
+    });
+    render(() => <PurgeRulesCard mode="adult" />);
+
+    expect(await screen.findByText(/Adult rule/)).toBeInTheDocument();
+    expect(screen.queryByText(/Movies rule/)).toBeNull();
+    expect(screen.queryByText(/Series rule/)).toBeNull();
+  });
+
+  it("creates rules for the prop's mode, with no Mode select to get it wrong", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && isRuleList(url))
+        return jsonResponse(rule({ id: 23, name: "S", mode: "series" }));
+      return undefined;
+    });
+    render(() => <PurgeRulesCard mode="series" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+
+    // The dropdown is gone: the card is mounted per-mode, so a rule can no
+    // longer be created into a mode whose list is not on screen.
+    expect(screen.queryByLabelText("Rule mode")).toBeNull();
+
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "S" },
+    });
+    fireEvent.click(screen.getByLabelText("Enable age condition"));
+    fireEvent.input(screen.getByLabelText("Age in days"), {
+      target: { value: "5" },
+    });
+    fireEvent.click(screen.getByText("Create rule"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+        true,
+      ),
+    );
+    const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
+    expect((post.body as { mode: string }).mode).toBe("series");
+  });
+});
+
+describe("PurgeRulesCard — the tags condition", () => {
+  it("adds and removes tags one at a time, firing NO request until Save", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && isRuleList(url))
+        return jsonResponse(rule({ id: 30, name: "Tagged" }));
+      return undefined;
+    });
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    fireEvent.click(screen.getByLabelText("Enable tags condition"));
+
+    const addTag = (value: string) => {
+      fireEvent.input(screen.getByLabelText("New tag"), { target: { value } });
+      fireEvent.click(screen.getByText("Add"));
+    };
+    addTag("BDSM");
+    addTag("Rope");
+    // A duplicate is a no-op, not an error — and case-insensitively so, matching
+    // pruning.matchedTags' own comparison.
+    addTag("bdsm");
+
+    expect(await screen.findByText("BDSM")).toBeInTheDocument();
+    expect(screen.getByText("Rope")).toBeInTheDocument();
+    expect(screen.queryByText("bdsm")).toBeNull();
+
+    // Add is CLIENT-SIDE ONLY: unlike the retired allowlist's Add, nothing is
+    // persisted until the rule itself is saved.
+    expect(
+      calls.some((c) => c.method === "POST" && isRuleList(c.url)),
+    ).toBe(false);
+
+    fireEvent.click(screen.getByLabelText("Remove Rope"));
+    expect(screen.queryByText("Rope")).toBeNull();
+
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "Tagged" },
+    });
+    fireEvent.click(screen.getByText("Create rule"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+        true,
+      ),
+    );
+    const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
+    expect(post.body).toEqual({
+      name: "Tagged",
+      mode: "movies",
+      ageDays: 0,
+      sizeBytes: 0,
+      qualityTierFloor: "",
+      tags: ["BDSM"],
+      enabled: true,
+    });
+  });
+
+  // The tag chip input is the retired Allowlist's AC6 no-bulk invariant in its
+  // new home: one × per chip, one Add per input, no clear-all/remove-all.
+  it("offers no bulk affordance — one × per chip, one Add, no clear-all", async () => {
+    stubFetch();
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    fireEvent.click(screen.getByLabelText("Enable tags condition"));
+
+    for (const value of ["BDSM", "Rope"]) {
+      fireEvent.input(screen.getByLabelText("New tag"), { target: { value } });
+      fireEvent.click(screen.getByText("Add"));
+    }
+    await screen.findByText("BDSM");
+
+    expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
+    expect(screen.getAllByLabelText("New tag")).toHaveLength(1);
+    expect(screen.getAllByText("Add")).toHaveLength(1);
+    for (const bulk of [/clear all/i, /remove all/i, /select all/i]) {
+      expect(screen.queryByText(bulk)).toBeNull();
+    }
+  });
+});
+
+describe("PurgeRulesCard — client-side validation, tags-only", () => {
+  it("accepts a rule whose ONLY condition is tags (the four-way AC1 rule)", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && isRuleList(url))
+        return jsonResponse(rule({ id: 31, name: "Legacy allowlist" }));
+      return undefined;
+    });
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "Legacy allowlist" },
+    });
+    fireEvent.click(screen.getByLabelText("Enable tags condition"));
+    fireEvent.input(screen.getByLabelText("New tag"), {
+      target: { value: "Trailer" },
+    });
+    fireEvent.click(screen.getByText("Add"));
+    fireEvent.click(screen.getByText("Create rule"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+        true,
+      ),
+    );
+    expect(screen.queryByText("select at least one condition")).toBeNull();
+  });
+});
+
+describe("PurgeRulesCard — the enabled toggle preserves tags", () => {
+  // The single most likely silent data-loss bug in this feature: toggleEnabled
+  // builds a WHOLE-RULE upsert body, so omitting tags would clear a rule's tags
+  // every time an operator flipped its enabled checkbox.
+  it("carries tags through an enable/disable toggle", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET" && isRuleList(url))
+        return jsonResponse([
+          rule({
+            id: 32,
+            name: "Tagged toggle",
+            tags: ["BDSM", "Rope"],
+            enabled: true,
+          }),
+        ]);
+      return undefined;
+    });
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByLabelText("Tagged toggle enabled"));
+
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "PUT" && c.url.endsWith("/api/pruning-rules/32"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/api/pruning-rules/32"),
+    )!;
+    expect(put.body).toEqual({
+      name: "Tagged toggle",
+      mode: "movies",
+      ageDays: 0,
+      sizeBytes: 0,
+      qualityTierFloor: "",
+      tags: ["BDSM", "Rope"],
+      enabled: false,
+    });
   });
 });

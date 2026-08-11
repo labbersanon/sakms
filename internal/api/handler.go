@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
-	"github.com/labbersanon/sakms/internal/allowlist"
 	"github.com/labbersanon/sakms/internal/anthropic"
 	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/connections"
@@ -45,7 +44,7 @@ import (
 // connStore persists what's actually configured — Test and Save are
 // deliberately separate actions, matching Settings' own "Test connection"
 // then "Save" flow. propStore backs every workflow's review queue (Rename,
-// Purge, Dedup); allowStore backs Purge's per-mode tag allowlist; prober
+// Purge, Dedup); prober
 // backs Dedup's direct ffprobe reads (a real *mediainfo.Prober in
 // production, anything satisfying dedup.Prober in tests); hasher backs Movies
 // Dedup's perceptual-hash refinement the same way (a real *phash.Hasher in
@@ -103,7 +102,7 @@ import (
 // Troubleshooting: it MAY BE NIL, and nil means "no pruning rules" — a Purge
 // scan then behaves exactly as it did before this feature, and the CRUD routes
 // return 503. Every test call site that does not exercise rules passes nil.
-func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, allowStore *allowlist.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy, discoverCache *discoverrefresh.Store, pruningStore *pruning.Store) *http.ServeMux {
+func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy, discoverCache *discoverrefresh.Store, pruningStore *pruning.Store) *http.ServeMux {
 	// Claude 2026-08-03: added discoverRefreshDeps, built from params NewMux
 	// already carries (BE-16, discover-scheduled-refresh plan §5.2/§5.3).
 	// Reason: the slider create/update and Trakt device-poll lifecycle hooks
@@ -229,18 +228,15 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/{mode}/rename/kids-root-path", getKidsRootPathHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/rename/kids-root-path", putKidsRootPathHandler(settingsStore))
 
-	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, settingsStore, propStore, allowStore, libStore, pruningStore))
+	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, settingsStore, propStore, libStore, pruningStore))
 	mux.HandleFunc("GET /api/modes/{mode}/purge/proposals", listProposalsHandler(propStore, proposals.Purge))
-	mux.HandleFunc("GET /api/modes/{mode}/purge/allowlist", listAllowlistHandler(allowStore))
-	mux.HandleFunc("POST /api/modes/{mode}/purge/allowlist", addAllowlistTagHandler(allowStore))
-	mux.HandleFunc("DELETE /api/modes/{mode}/purge/allowlist/{tag}", removeAllowlistTagHandler(allowStore))
 
 	// Operator-authored propose-only pruning rules for the Purge workflow
 	// (internal/pruning) — CRUD plus a match-count preview. Flat, NOT
 	// mode-scoped under /api/modes/{mode}/: a rule carries its own single mode
 	// (plan §1.4), the same way a discover slider carries its own target, so
-	// these mirror /api/discover/sliders' shape rather than the per-mode
-	// allowlist routes above.
+	// these mirror /api/discover/sliders' shape rather than the mode-scoped
+	// purge routes above.
 	mux.HandleFunc("GET /api/pruning-rules", listPruningRulesHandler(pruningStore))
 	mux.HandleFunc("POST /api/pruning-rules", createPruningRuleHandler(pruningStore))
 	mux.HandleFunc("PUT /api/pruning-rules/{id}", updatePruningRuleHandler(pruningStore))
@@ -551,7 +547,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/modes/adult/scenes/{sceneId}/tags", addSceneTagHandler(libStore))
 	mux.HandleFunc("DELETE /api/modes/adult/scenes/{sceneId}/tags/{tagId}", removeSceneTagHandler(libStore))
 
-	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, scStore, allowStore, settingsStore))
+	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, scStore, settingsStore))
 	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))
 
 	// One shared AI provider+model pair for every AI-assisted feature (Adult

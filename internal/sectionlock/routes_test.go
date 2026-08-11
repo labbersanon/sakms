@@ -192,3 +192,29 @@ func TestClassifyOrganizeEvents(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// Claude 2026-08-11: NEW — pins /api/pruning-rules to {organize}.
+// Reason: these routes were {settings} until the rules builder moved off the
+// Settings > Pruning tab (removed) onto the Clean-up screen's Rules card. No
+// test asserted the OLD classification, so the reclassification could have
+// been made — or silently reverted — with nothing failing. This is that test.
+// Troubleshooting: the negative half matters as much as the positive one; a
+// classifier that added Organize while KEEPING Settings would pass a
+// positive-only assertion and still over-gate every one of these routes.
+// Review if: the rules card moves back to Settings, or these routes gain a
+// mode segment in their path (at which point Layer 1's adult rule would start
+// applying to them, which it deliberately does not today — a rule's own mode
+// lives in the request BODY, never the path).
+func TestClassify_PruningRulesAreOrganizeNotSettings(t *testing.T) {
+	for _, path := range []string{
+		"/api/pruning-rules",
+		"/api/pruning-rules/42",
+		"/api/pruning-rules/preview",
+	} {
+		got := Classify(path).Sorted()
+		want := []string{SectionOrganize}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Classify(%q) = %v, want %v", path, got, want)
+		}
+	}
+}

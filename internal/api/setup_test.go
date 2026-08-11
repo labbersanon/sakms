@@ -13,12 +13,11 @@ import (
 
 // TestSetupStatus_ReflectsRealConfiguredState exercises the real read model
 // a future wizard would poll: nothing configured, then Movies' library root
-// folder setting and a Purge allowlist entry for Movies, confirming the
-// endpoint's numbers track the actual settings/allowlist stores rather than
-// a cached snapshot.
+// folder setting, confirming the endpoint tracks the actual settings store
+// rather than a cached snapshot.
 func TestSetupStatus_ReflectsRealConfiguredState(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	// Before anything is configured.
@@ -51,11 +50,9 @@ func TestSetupStatus_ReflectsRealConfiguredState(t *testing.T) {
 		t.Errorf("expected Movies available but not yet configured, got %+v", movies)
 	}
 
-	// Configure Movies' library root folder and an allowlist entry.
+	// Configure Movies' library root folder — the only thing modeStatusFor
+	// reads now that the Purge allowlist mechanism is retired.
 	if err := settingsStore.Set(context.Background(), moviesLibraryRootFolderKey, "/media/Movies"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := allowStore.Add(context.Background(), mode.Movies, "BDSM"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -71,8 +68,8 @@ func TestSetupStatus_ReflectsRealConfiguredState(t *testing.T) {
 	}
 	for _, m := range status2.Modes {
 		if m.Mode == mode.Movies {
-			if !m.ArrConfigured || m.AllowlistCount != 1 {
-				t.Errorf("expected Movies to show arrConfigured=true, allowlistCount=1, got %+v", m)
+			if !m.ArrConfigured {
+				t.Errorf("expected Movies to show arrConfigured=true, got %+v", m)
 			}
 		}
 	}
@@ -88,13 +85,13 @@ func TestSetupStatus_ReflectsRealConfiguredState(t *testing.T) {
 // used to read, and a test seeding it kept passing against a source that no
 // longer exists. The companion test below locks the opposite direction.
 func TestSetupStatus_PlayerAndOllamaConnectionPresence(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	seedJellyfinPlayer(t, scStore, "http://192.168.1.20:8096", "", "movies", "series")
 	if err := connStore.Upsert(context.Background(), "ollama", "http://127.0.0.1:11434", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/setup/status")
@@ -118,14 +115,14 @@ func TestSetupStatus_PlayerAndOllamaConnectionPresence(t *testing.T) {
 // rejected-services guard were ever removed — is NOT a configured player. Only
 // the registry counts.
 func TestSetupStatus_ConnectionsOnlyJellyfinRowIsNotConfigured(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore, scStore := testStoresWithRegistry(t)
 	// Seeded through the store directly: PUT /api/connections/jellyfin is
 	// rejected outright now (see TestConnectionsRoutes_RejectMovedServices).
 	if err := connStore.Upsert(context.Background(), "jellyfin", "http://192.168.1.20:8096", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/setup/status")
@@ -144,8 +141,8 @@ func TestSetupStatus_ConnectionsOnlyJellyfinRowIsNotConfigured(t *testing.T) {
 }
 
 func TestDismissSetup_PersistsAndReflectsInStatus(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	body, _ := json.Marshal(dismissSetupRequest{Dismissed: true})
@@ -172,8 +169,8 @@ func TestDismissSetup_PersistsAndReflectsInStatus(t *testing.T) {
 }
 
 func TestDismissSetup_InvalidBody(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/setup/dismissed", bytes.NewReader([]byte("not json")))

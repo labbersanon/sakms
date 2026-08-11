@@ -33,7 +33,7 @@ import (
 // root_folder_path is preserved), and a Dedup fixture here would return 204
 // and prove nothing.
 func TestMoveMode_RejectsWhenTargetRootFolderUnset(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -88,7 +88,7 @@ func TestMoveMode_AdultRequiresBoxAndSceneID(t *testing.T) {
 		{"MissingSceneId", `{"targetMode":"adult","box":"stashdb","title":"A Scene"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+			_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 			ctx := context.Background()
 			if err := settingsStore.Set(ctx, adultLibraryRootFolderKey, "/media/adult"); err != nil {
 				t.Fatalf("seeding adult root folder: %v", err)
@@ -104,7 +104,7 @@ func TestMoveMode_AdultRequiresBoxAndSceneID(t *testing.T) {
 	}
 
 	t.Run("MovedRowActuallyApplies", func(t *testing.T) {
-		_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+		_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 		ctx := context.Background()
 		root := t.TempDir()
 		adultRoot := filepath.Join(root, "adult")
@@ -171,7 +171,7 @@ func TestMoveMode_AdultRequiresBoxAndSceneID(t *testing.T) {
 // live proposal already occupying (target mode, workflow, source_path) makes
 // the move a 409, and the proposal is left alone.
 func TestMoveMode_ConflictWithLiveTargetProposal(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/media/series"); err != nil {
@@ -217,7 +217,7 @@ func TestMoveMode_ConflictWithLiveTargetProposal(t *testing.T) {
 // caller-supplied (box, sceneId) into an Adult-library lookup oracle for a
 // PIN-locked session.
 func TestMoveMode_AdultAlreadyTrackedScene(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	if err := settingsStore.Set(ctx, adultLibraryRootFolderKey, "/media/adult"); err != nil {
@@ -255,7 +255,7 @@ func TestMoveMode_AdultAlreadyTrackedScene(t *testing.T) {
 // TestMoveMode_RejectsPurgeWorkflow — step 5. A Purge proposal has no
 // identification to move.
 func TestMoveMode_RejectsPurgeWorkflow(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/media/series"); err != nil {
 		t.Fatalf("seeding series root folder: %v", err)
@@ -280,7 +280,7 @@ func TestMoveMode_RejectsPurgeWorkflow(t *testing.T) {
 
 // TestMoveMode_RejectsSameMode — step 7.
 func TestMoveMode_RejectsSameMode(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 
 	saved, err := propStore.ReplacePending(ctx, mode.Movies, proposals.Rename, []proposals.Proposal{
@@ -319,7 +319,7 @@ func TestMoveMode_RejectsAppliedProposal(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+			_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 			ctx := context.Background()
 			if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/media/series"); err != nil {
 				t.Fatalf("seeding series root folder: %v", err)
@@ -358,7 +358,7 @@ func TestMoveMode_RejectsAppliedProposal(t *testing.T) {
 // loop: Unmatched -> moved -> Pending -> Applied, not just the move step in
 // isolation.
 func TestMoveMode_UnmatchedProposalMovesPromotesAndApplies(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 	root := t.TempDir()
 	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, filepath.Join(root, "series")); err != nil {
@@ -439,7 +439,7 @@ func TestMoveMode_SeriesHalfPairRejected(t *testing.T) {
 		{"EpisodeOnly", `{"targetMode":"series","tmdbId":42,"title":"A Show","episodeNumber":7}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+			_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 			ctx := context.Background()
 			if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/media/series"); err != nil {
 				t.Fatalf("seeding series root folder: %v", err)
@@ -468,7 +468,7 @@ func TestMoveMode_SeriesHalfPairRejected(t *testing.T) {
 // Go's zero value, so "the move wrote season 0" is indistinguishable from
 // "the move wrote nothing" unless the column held something else first.
 func TestMoveMode_SeasonZeroAccepted(t *testing.T) {
-	_, propStore, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	_, propStore, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
 	ctx := context.Background()
 	if err := settingsStore.Set(ctx, seriesLibraryRootFolderKey, "/media/series"); err != nil {
 		t.Fatalf("seeding series root folder: %v", err)
@@ -514,7 +514,7 @@ func TestMoveMode_SeasonZeroAccepted(t *testing.T) {
 // to any column (not just the ones a hand-written field list happens to name)
 // fails this test.
 func TestMoveMode_NoWriteWithoutCommit(t *testing.T) {
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 
 	// A local TMDB fake rather than fakeTMDBRepickServer: that one only
@@ -568,7 +568,7 @@ func TestMoveMode_NoWriteWithoutCommit(t *testing.T) {
 		t.Fatalf("snapshotting the proposal: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	// wantSubstring keeps each search honest: a 200 carrying an empty result

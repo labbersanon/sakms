@@ -168,12 +168,10 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/settings/adult-newest-scan-interval"))
     return jsonResponse({ intervalSeconds: 0 });
   if (url.includes("/api/modes/adult/newest-rows")) return jsonResponse([]);
-  // PruningRulesSection (Pruning tab) mount GETs — Claude 2026-08-03, F1.
-  if (url.includes("/api/pruning-rules")) return jsonResponse([]);
   // OrganizeScanScheduleSection (Organize tab) mount GETs — Claude 2026-08-10.
   // Six endpoints: one enabled + one interval per workflow. Two suffix matches
-  // cover all six; purge-scan-interval is among them (it moved here out of the
-  // Pruning tab with its Card).
+  // cover all six; purge-scan-interval is among them (the settings KEY is still
+  // `purge` even though the operator-facing label reads "Clean-up").
   if (url.includes("-scan-enabled") && !url.includes("dedup-vmaf-"))
     return jsonResponse({ enabled: true });
   if (
@@ -292,7 +290,6 @@ const goToSection = (
     | "Download"
     | "Advanced"
     | "UI"
-    | "Pruning"
     | "Organize",
 ) => fireEvent.click(sectionTabBar().getByRole("button", { name }));
 
@@ -3758,25 +3755,29 @@ describe("AI is its own top-level section tab", () => {
   });
 });
 
-// --- Pruning tab registration (F1, plan §6.1) -------------------------------
+// --- Pruning tab REMOVAL (Claude 2026-08-11) --------------------------------
+//
+// The "Pruning is its own top-level section tab" describe block that lived here
+// is deleted along with the tab itself: its only content, the rules CRUD, moved
+// onto the Clean-up screen as a collapsible Rules card
+// (screens/PurgeRulesCard.tsx), leaving the tab empty.
+// Reason: matching is configured on the screen that shows its results.
+// Troubleshooting: this replacement is a NEGATIVE assertion on purpose — it is
+//   the only thing that would fail if a future change re-added a "Pruning"
+//   entry to SECTION_TABS, since every other tab test asserts presence.
+// Review if: the rules builder ever moves back into Settings.
 
-describe("Pruning is its own top-level section tab", () => {
-  it("renders the Pruning rules panel when selected", async () => {
+describe("Pruning is no longer a section tab", () => {
+  it("renders no Pruning tab and no rules panel anywhere in Settings", async () => {
     stubFetch();
     renderSettings();
+    // Wait for Settings' own first paint before asserting an absence, so this
+    // cannot pass merely by running before anything rendered.
     await screen.findByLabelText("Library root folder");
-    expect(
-      sectionTabBar().getByRole("button", { name: "Pruning" }),
-    ).toBeInTheDocument();
-    goToSection("Pruning");
-    expect(await screen.findByText("Pruning rules")).toBeInTheDocument();
-    // Claude 2026-08-10: the "Purge scan interval" heading assertion that was
-    // here moved to the Organize-tab test below, along with the Card.
-    // Reason: only the scan-interval Card moved; the rules CRUD stayed.
-    // Review if: the Organize tab is ever folded back into Pruning.
-    expect(
-      screen.queryByRole("heading", { name: "Purge scan interval" }),
-    ).toBeNull();
+
+    expect(sectionTabBar().queryByRole("button", { name: "Pruning" })).toBeNull();
+    expect(screen.queryByText("Pruning rules")).toBeNull();
+    expect(screen.queryByText("+ New rule")).toBeNull();
   });
 });
 
@@ -3792,7 +3793,7 @@ describe("Organize is its own top-level section tab", () => {
 
     // One toggle + one interval picker per WORKFLOW (all three modes
     // together), never one per mode.
-    for (const wf of ["Rename", "Dedup", "Purge"]) {
+    for (const wf of ["Rename", "Dedup", "Clean-up"]) {
       expect(
         await screen.findByLabelText(`${wf} scheduled scanning enabled`),
       ).toBeInTheDocument();

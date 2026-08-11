@@ -114,13 +114,13 @@ func fakeStashBox(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 // and a controllable feed-health state.
 func newAdultPoolServer(t *testing.T, fh *adultnewest.FeedHealth, seed []adultnewest.MatchedRelease) *httptest.Server {
 	t.Helper()
-	connStore, propStore, allowStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	for _, m := range seed {
 		if err := adultNewestReleaseStore.Insert(context.Background(), m); err != nil {
 			t.Fatalf("seeding release %q: %v", m.EntityID, err)
 		}
 	}
-	mux := NewMux(testHTTPClient(), connStore, nil, propStore, allowStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
+	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, fh, rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv

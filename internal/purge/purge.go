@@ -1,15 +1,16 @@
-// Package purge implements SAK's Purge workflow: an editable allowlist
-// of tag names, and library-backed Scan/Apply pairs (ScanLibrary/ApplyLibrary
-// and their Series/Adult siblings) that surface every tracked item whose tags
-// match it as a proposal to permanently delete — the same staged-for-approval
-// shape internal/rename uses, just keyed off tags on already-tracked items
-// instead of unmapped folders.
+// Package purge implements SAK's Purge workflow: library-backed Scan/Apply
+// pairs (ScanLibrary/ApplyLibrary and their Series/Adult siblings) that
+// surface every tracked item matching an enabled pruning rule as a proposal to
+// permanently delete — the same staged-for-approval shape internal/rename
+// uses, just keyed off already-tracked items instead of unmapped folders.
 //
-// MatchesAny/MatchedEntries are ported unchanged from stash-whisparr-sort's
-// internal/purge: EXACT (case-insensitive) matching against tag names,
-// deliberately not substring or word-boundary matching — see their doc
-// comments for why a tag like "Transgender" and one like "Transformation"
-// need to be distinguishable with zero false positives.
+// This package owns NO matching logic of its own. Every condition — age, size,
+// quality tier and tags — is evaluated by internal/pruning, which this package
+// imports; the Scan functions only project a library row into a
+// pruning.Subject and forward it. Tag matching in particular used to live here
+// (MatchesAny/MatchedEntries) and now lives in internal/pruning's matchedTags:
+// the dependency runs purge -> pruning and cannot run the other way, so the
+// primitive had to move rather than be called.
 package purge
 
 import (
@@ -25,73 +26,29 @@ import (
 	"github.com/labbersanon/sakms/internal/pruning"
 )
 
-// Claude 2026-08-03: every Scan* function below takes an added `rules
-// []pruning.Rule` parameter (plan .omc/plans/autopilot-impl-pruning-rules.md
-// §3.1/§3.2).
-// Reason: rules are threaded as a PARAMETER rather than evaluated through a
-// new exported purge function on purpose — internal/scanschedule's static
+// Claude 2026-08-11: the global per-mode tag allowlist is retired; every Scan*
+// function below matches purely through `rules []pruning.Rule`, with tags now
+// a fourth AND'd per-rule condition (plan
+// .omc/plans/autopilot-impl-purge-rules-consolidation-cleanup-rename.md §3).
+// Reason: rules are still threaded as a PARAMETER rather than evaluated
+// through a new exported purge function — internal/scanschedule's static
 // allowlist test (allowlist_test.go) permits cmd/sakms/scanadapter.go to
 // reference only Scan*-prefixed purge symbols and ReplacePending, so a new
-// exported purge.EvaluatePruningRules would fail it even though it is
-// entirely read-only.
-// Troubleshooting: evaluation is folded into the EXISTING per-item loop, not
-// run as a second pass. A second pass would emit two proposals with the same
-// TrackedID for an item matching both a tag and a rule, and applying the
-// first would make the second fail confusingly in ApplyLibrary.
+// exported purge.EvaluateTags would fail it even though it is entirely
+// read-only.
+// Troubleshooting: evaluation stays folded into the EXISTING per-item loop,
+// not run as a second pass. A second pass would emit two proposals with the
+// same TrackedID for an item matching two rules, and applying the first would
+// make the second fail confusingly in ApplyLibrary.
 // Review if: purge ever needs to propose more than one row per tracked item.
-
-// joinReasons renders one proposal's Reason from its matched-tag fragment
-// (if any) followed by one fragment per matched pruning rule.
-//
-// The casing difference between the two fragment styles — lowercase "matched
-// allowlist tag(s): …" and capitalized "Matched rule '…': …" — is
-// spec-mandated (plan §5.2: AC5 quotes the capitalized form verbatim, while
-// the lowercase form is asserted by the pre-existing purge tests), not an
-// oversight. Do not normalize them.
-//
-// With no rules configured, or none matching, the result is byte-identical to
-// the tag-only Reason this package emitted before pruning rules existed —
-// the backward-compatibility invariant the existing purge tests pin (§3.2).
-func joinReasons(matchedTags, ruleReasons []string) string {
-	var reasons []string
-	if len(matchedTags) > 0 {
-		reasons = append(reasons, fmt.Sprintf("matched allowlist tag(s): %s", strings.Join(matchedTags, ", ")))
-	}
-	reasons = append(reasons, ruleReasons...)
-	return strings.Join(reasons, "; ")
-}
-
-// MatchesAny reports whether tagName exactly matches (case-insensitive) any
-// entry in allowlist.
-func MatchesAny(tagName string, allowlist []string) bool {
-	for _, a := range allowlist {
-		if strings.EqualFold(tagName, a) {
-			return true
-		}
-	}
-	return false
-}
-
-// MatchedEntries returns which allowlist entries exactly matched tagName (for
-// recording which rule fired) — in practice at most one, since tag names are
-// unique, but returns a slice in case that ever changes.
-func MatchedEntries(tagName string, allowlist []string) []string {
-	var out []string
-	for _, a := range allowlist {
-		if strings.EqualFold(tagName, a) {
-			out = append(out, a)
-		}
-	}
-	return out
-}
 
 // ScanLibrary is Purge's Movies-library scan — used only for Movies mode now
 // that Radarr no longer sits between SAK and this mode's item/tag data (see
-// internal/library's package doc). Matches libStore's own local tags against
-// allowlist using the exact same MatchesAny rule, and additionally stages any
-// item satisfying one of rules (an Item carries Size/QualityTier/CreatedAt
-// directly, so no aggregation is needed here — see ScanLibrarySeries).
-func ScanLibrary(ctx context.Context, libStore *library.Store, allowlist []string, rules []pruning.Rule) ([]proposals.Proposal, error) {
+// internal/library's package doc). Stages any item satisfying one of rules; an
+// Item carries Size/QualityTier/CreatedAt directly, and its tags come from
+// libStore's own local tag rows, so no aggregation is needed here (see
+// ScanLibrarySeries).
+func ScanLibrary(ctx context.Context, libStore *library.Store, rules []pruning.Rule) ([]proposals.Proposal, error) {
 	items, err := libStore.List(ctx, mode.Movies)
 	if err != nil {
 		return nil, fmt.Errorf("loading library items: %w", err)
@@ -107,21 +64,17 @@ func ScanLibrary(ctx context.Context, libStore *library.Store, allowlist []strin
 		if err != nil {
 			return nil, fmt.Errorf("loading tags for %q: %w", item.Title, err)
 		}
-		var matched []string
-		for _, tag := range tags {
-			matched = append(matched, MatchedEntries(tag, allowlist)...)
-		}
 		ruleReasons := pruning.MatchAny(rules, pruning.Subject{
-			CreatedAt: item.CreatedAt, SizeBytes: item.Size, QualityTier: item.QualityTier,
+			CreatedAt: item.CreatedAt, SizeBytes: item.Size, QualityTier: item.QualityTier, Tags: tags,
 		}, now)
-		if len(matched) == 0 && len(ruleReasons) == 0 {
+		if len(ruleReasons) == 0 {
 			continue
 		}
 		out = append(out, proposals.Proposal{
 			Mode: mode.Movies, Workflow: proposals.Purge, Status: proposals.Pending,
 			SourceName: item.Title, SourcePath: item.FilePath, RootFolderPath: item.RootFolderPath,
 			Title: item.Title, TMDBID: item.TMDBID, TrackedID: int(item.ID),
-			Reason: joinReasons(matched, ruleReasons),
+			Reason: strings.Join(ruleReasons, "; "),
 		})
 	}
 	return out, nil
@@ -165,13 +118,14 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 // from, Stage 2). Tags live at the series level, not per-episode (matching
 // Sonarr's own tag granularity, and the only sane unit for Purge to act on
 // anyway — see ApplyLibrarySeries), so one proposal per matched SERIES, not
-// per episode.
+// per episode — and a rule's tags condition is evaluated against those
+// series-level tags directly, with no aggregation.
 //
-// Pruning-rule evaluation therefore has to aggregate the size/tier a Series
+// Pruning-rule evaluation does have to aggregate the size/tier a Series
 // row does not itself carry (migration 0055 added size/quality_tier to
 // library_items/library_episodes/library_scenes, NOT library_series) — see
 // seriesSubject.
-func ScanLibrarySeries(ctx context.Context, libStore *library.Store, allowlist []string, rules []pruning.Rule) ([]proposals.Proposal, error) {
+func ScanLibrarySeries(ctx context.Context, libStore *library.Store, rules []pruning.Rule) ([]proposals.Proposal, error) {
 	series, err := libStore.ListSeries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading series: %w", err)
@@ -190,14 +144,9 @@ func ScanLibrarySeries(ctx context.Context, libStore *library.Store, allowlist [
 		if err != nil {
 			return nil, fmt.Errorf("loading tags for %q: %w", s.Title, err)
 		}
-		var matched []string
-		for _, tag := range tags {
-			matched = append(matched, MatchedEntries(tag, allowlist)...)
-		}
-
 		var ruleReasons []string
 		if len(rules) > 0 {
-			subj := pruning.Subject{CreatedAt: s.CreatedAt}
+			subj := pruning.Subject{CreatedAt: s.CreatedAt, Tags: tags}
 			if needEpisodes {
 				episodes, epErr := libStore.ListEpisodes(ctx, s.ID)
 				if epErr != nil {
@@ -207,14 +156,14 @@ func ScanLibrarySeries(ctx context.Context, libStore *library.Store, allowlist [
 			}
 			ruleReasons = pruning.MatchAny(rules, subj, now)
 		}
-		if len(matched) == 0 && len(ruleReasons) == 0 {
+		if len(ruleReasons) == 0 {
 			continue
 		}
 		out = append(out, proposals.Proposal{
 			Mode: mode.Series, Workflow: proposals.Purge, Status: proposals.Pending,
 			SourceName: s.Title, SourcePath: s.RootFolderPath, RootFolderPath: s.RootFolderPath,
 			Title: s.Title, TMDBID: s.TMDBID, TrackedID: int(s.ID),
-			Reason: joinReasons(matched, ruleReasons),
+			Reason: strings.Join(ruleReasons, "; "),
 		})
 	}
 	return out, nil

@@ -10,6 +10,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/pruning"
 )
 
 func newTestLibraryStore(t *testing.T) *library.Store {
@@ -18,7 +19,7 @@ func newTestLibraryStore(t *testing.T) *library.Store {
 	return library.New(sqlDB)
 }
 
-func TestScanLibrary_ProposesOnlyItemsMatchingAllowlist(t *testing.T) {
+func TestScanLibrary_ProposesOnlyItemsMatchingATagsRule(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
 
@@ -41,7 +42,9 @@ func TestScanLibrary_ProposesOnlyItemsMatchingAllowlist(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(ctx, libStore, []string{"BDSM"}, nil)
+	got, err := ScanLibrary(ctx, libStore, []pruning.Rule{
+		{Name: "Flagged", Mode: string(mode.Movies), Tags: []string{"BDSM"}, Enabled: true},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -52,12 +55,12 @@ func TestScanLibrary_ProposesOnlyItemsMatchingAllowlist(t *testing.T) {
 	if p.TrackedID != int(flagged.ID) || p.Title != "Flagged Movie" || p.Status != proposals.Pending {
 		t.Errorf("unexpected proposal: %+v", p)
 	}
-	if p.Reason == "" {
-		t.Error("expected a populated reason naming the matched tag")
+	if want := "Matched rule 'Flagged': tags: BDSM"; p.Reason != want {
+		t.Errorf("Reason = %q, want %q", p.Reason, want)
 	}
 }
 
-func TestScanLibrary_EmptyAllowlistMatchesNothing(t *testing.T) {
+func TestScanLibrary_NoRulesMatchNothing(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	ctx := context.Background()
 	item, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 1, Title: "X", RootFolderPath: "/media/Movies"})
@@ -68,12 +71,12 @@ func TestScanLibrary_EmptyAllowlistMatchesNothing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibrary(ctx, libStore, nil, nil)
+	got, err := ScanLibrary(ctx, libStore, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("expected no proposals against an empty allowlist, got %+v", got)
+		t.Fatalf("expected no proposals with no rules configured, got %+v", got)
 	}
 }
 

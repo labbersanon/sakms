@@ -310,3 +310,192 @@ func TestHumanBytes(t *testing.T) {
 		}
 	}
 }
+
+// --- Tags condition (the 4th AND'd condition) -----------------------------
+//
+// Claude 2026-08-11: the six matchedTags tests below MOVED here verbatim in
+// meaning from internal/purge/purge_test.go, which is deleted.
+// Reason: exact-tag-match semantics must be implemented in exactly ONE place.
+// The primitive moved from internal/purge (MatchesAny/MatchedEntries) into
+// this package because internal/purge imports internal/pruning, so the
+// dependency could not run the other way. Moving the tests WITH it is the
+// drift guard — there must never be a window where the semantic lives in two
+// files.
+// Review if: a second tag-matching implementation ever appears anywhere.
+
+// tagAllowlist is the full curated tag set these tests match against,
+// mirroring the list the retired global Purge allowlist shipped with. Kept as
+// a local literal (it was one in internal/purge too) so this test depends on
+// no config package.
+var tagAllowlist = []string{
+	"BDSM", "Bondage", "Bondage Blowjob", "Bondage Collar", "Bondage Sex",
+	"Dungeon", "Latina Trans", "Trans Fucked by Female", "Trans Fucked by Male",
+	"Trans Fucks Female", "Trans Fucks Male", "Trans Fucks Trans", "Transgender",
+	"Transgender (Female)", "Twosome (Trans)",
+	"Bound", "Bound Wrists", "Bound Arms", "Bound Legs", "Chained", "Rope",
+	"Crotch Rope", "Shibari", "Ribbon Bondage", "Breast Bondage", "Ball Gag",
+	"Bit Gag", "Tape Gag", "Improvised Gag", "Whip", "Slave", "Dominatrix",
+	"Spiked Collar", "Metal Collar", "Animal Collar",
+	"Shemale", "She-male", "Chicks with Dicks", "Trannies", "Tgirls", "T-Girl",
+	"Transmasculine", "Trans Women", "Trans Men", "Transgender Erotica",
+	"FTM Gay Porn", "Queer Porn", "Feminist Porn", "Nonbinary", "Genderqueer",
+	"Gender Variant Media",
+	"Futanari", "Futa with Female", "Futa with Male", "Implied Futanari",
+	"Crossdressing",
+}
+
+// tagMatches is the old purge.MatchesAny in matchedTags' terms: does this ONE
+// item tag hit any entry in the configured list?
+func tagMatches(itemTag string, ruleTags []string) bool {
+	return len(matchedTags(ruleTags, []string{itemTag})) > 0
+}
+
+func TestMatchedTags_AllKnownLiveTagsStillMatch(t *testing.T) {
+	known := []string{
+		"BDSM", "Bondage", "Bondage Blowjob", "Bondage Collar", "Bondage Sex",
+		"Dungeon", "Latina Trans", "Trans Fucked by Female", "Trans Fucked by Male",
+		"Trans Fucks Female", "Trans Fucks Male", "Trans Fucks Trans", "Transgender",
+		"Transgender (Female)", "Twosome (Trans)",
+	}
+	for _, tag := range known {
+		t.Run(tag, func(t *testing.T) {
+			if !tagMatches(tag, tagAllowlist) {
+				t.Errorf("expected %q to match (regression against live data)", tag)
+			}
+		})
+	}
+}
+
+// Transgender and Transformation are the case that breaks word-boundary
+// regex matching (see matchedTags' doc comment) — exact matching has no such
+// ambiguity.
+func TestMatchedTags_TransgenderVsTransformation(t *testing.T) {
+	if !tagMatches("Transgender", tagAllowlist) {
+		t.Fatal("Transgender must match — it's an explicit configured tag")
+	}
+	if tagMatches("Transformation", tagAllowlist) {
+		t.Fatal("Transformation must NOT match — not configured, and exact matching has no substring ambiguity")
+	}
+}
+
+func TestMatchedTags_UnrelatedTagsNeverMatch(t *testing.T) {
+	cases := []string{
+		"Transformation", "Transatlantic", "Translator", "Transcript",
+		"Bondage-Free", "Vanilla Romance", "Blonde", "Anal", "Threesome",
+		"Chainsaw", "Collarbone", "Sailor Collar",
+	}
+	for _, tag := range cases {
+		t.Run(tag, func(t *testing.T) {
+			if tagMatches(tag, tagAllowlist) {
+				t.Errorf("expected %q NOT to match — not a configured tag", tag)
+			}
+		})
+	}
+}
+
+func TestMatchedTags_CaseInsensitive(t *testing.T) {
+	if !tagMatches("bdsm", tagAllowlist) {
+		t.Fatal("expected case-insensitive match for lowercase 'bdsm'")
+	}
+	if !tagMatches("SHEMALE", tagAllowlist) {
+		t.Fatal("expected case-insensitive match for uppercase 'SHEMALE'")
+	}
+}
+
+func TestMatchedTags_ReportsWhichTagFired(t *testing.T) {
+	got := matchedTags(tagAllowlist, []string{"latina trans"}) // case-insensitive input
+	if len(got) != 1 || got[0] != "Latina Trans" {
+		t.Fatalf("expected [\"Latina Trans\"], got %v", got)
+	}
+}
+
+func TestMatchedTags_NoMatch(t *testing.T) {
+	got := matchedTags(tagAllowlist, []string{"Vanilla"})
+	if len(got) != 0 {
+		t.Fatalf("expected no matches, got %v", got)
+	}
+}
+
+func TestMatch_TagsConditionMatchesWhenATagHits(t *testing.T) {
+	r := Rule{Name: "Flagged", Tags: []string{"BDSM", "Rope"}}
+	ok, reason := Match(r, Subject{Tags: []string{"Drama", "rope"}}, fixedNow)
+	if !ok {
+		t.Fatal("expected a match: the item carries 'rope', which the rule configures")
+	}
+	if want := "Matched rule 'Flagged': tags: Rope"; reason != want {
+		t.Errorf("reason = %q, want %q (reports the tag that FIRED, not the whole configured list)", reason, want)
+	}
+}
+
+// Fail-closed, the same direction as matchesTier: an item with NO tags can
+// never satisfy a configured tags condition. The opposite direction would
+// stage every untagged item in the library for deletion.
+func TestMatch_TagsFailClosedOnItemWithNoTags(t *testing.T) {
+	r := Rule{Name: "Flagged", Tags: []string{"BDSM"}}
+	for name, subj := range map[string]Subject{
+		"nil tags":   {Tags: nil},
+		"empty tags": {Tags: []string{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if ok, _ := Match(r, subj, fixedNow); ok {
+				t.Error("expected NO match — an untagged item must never satisfy a tags condition")
+			}
+		})
+	}
+}
+
+func TestMatch_TagsConfiguredButNoneHit(t *testing.T) {
+	r := Rule{Name: "Flagged", Tags: []string{"BDSM"}}
+	if ok, _ := Match(r, Subject{Tags: []string{"Drama", "Comedy"}}, fixedNow); ok {
+		t.Error("expected NO match — none of the item's tags is configured")
+	}
+}
+
+func TestMatch_TagsAreANDedWithTheOtherThree(t *testing.T) {
+	r := Rule{Name: "R", AgeDays: 100, SizeBytes: 1_000_000, QualityTierFloor: "medium", Tags: []string{"BDSM"}}
+
+	all := Subject{CreatedAt: daysAgo(412), SizeBytes: 8_804_682_956, QualityTier: "low", Tags: []string{"BDSM"}}
+	if ok, _ := Match(r, all, fixedNow); !ok {
+		t.Fatal("expected a match when all four conditions are satisfied")
+	}
+
+	// Each single failure must sink the whole rule.
+	for name, subj := range map[string]Subject{
+		"age fails":  {CreatedAt: daysAgo(5), SizeBytes: 8_804_682_956, QualityTier: "low", Tags: []string{"BDSM"}},
+		"size fails": {CreatedAt: daysAgo(412), SizeBytes: 10, QualityTier: "low", Tags: []string{"BDSM"}},
+		"tier fails": {CreatedAt: daysAgo(412), SizeBytes: 8_804_682_956, QualityTier: "lossless", Tags: []string{"BDSM"}},
+		"tags fail":  {CreatedAt: daysAgo(412), SizeBytes: 8_804_682_956, QualityTier: "low", Tags: []string{"Drama"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if ok, _ := Match(r, subj, fixedNow); ok {
+				t.Error("expected NO match — every configured condition is AND'd")
+			}
+		})
+	}
+}
+
+// A tags-only rule ignores the other three entirely: an item with no
+// CreatedAt, no size and no tier still matches on its tags alone.
+func TestMatch_TagsOnlyRuleIgnoresTheOtherThree(t *testing.T) {
+	r := Rule{Name: "Legacy allowlist", Tags: []string{"Trailer"}}
+	ok, reason := Match(r, Subject{Tags: []string{"Trailer"}}, fixedNow)
+	if !ok {
+		t.Fatal("expected a tags-only rule to match on tags alone")
+	}
+	if want := "Matched rule 'Legacy allowlist': tags: Trailer"; reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+}
+
+func TestReason_FragmentOrderIsAgeSizeTierTags(t *testing.T) {
+	// All four configured, declared out of "order" in the struct literal —
+	// the Reason's fragment order must still be age, size, tier, tags.
+	r := Rule{Name: "R", Tags: []string{"BDSM"}, QualityTierFloor: "low", SizeBytes: 1, AgeDays: 1}
+	subj := Subject{CreatedAt: daysAgo(5), SizeBytes: 2048, QualityTier: "low", Tags: []string{"BDSM"}}
+
+	_, reason := Match(r, subj, fixedNow)
+	want := "Matched rule 'R': 5 days old, 2KB, tier: low, tags: BDSM"
+	if reason != want {
+		t.Errorf("reason = %q, want %q (fragment order must be age, size, tier, tags)", reason, want)
+	}
+}

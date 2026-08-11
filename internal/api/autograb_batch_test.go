@@ -350,8 +350,16 @@ func TestAutoGrabBatchHandler_CrossModeSessionIsolation(t *testing.T) {
 	}
 
 	total, _ := stats.snapshot()
-	if total != 2 {
-		t.Errorf("expected exactly 2 Prowlarr searches (one per item, across both modes), got %d", total)
+	// Movies contributes 1 search. Adult's studio "Some Studio" has an
+	// internal space, so it contributes 2 — the base Studio+Title query plus
+	// the 2026-08-11 no-space-studio variant (autograb.go's autoGrabSearch,
+	// mode.Adult branch) that also tries "SomeStudio Some Scene". Both
+	// queries hit the same fakeProwlarrTracking stub and return the
+	// identical release, which dedupeReleases collapses back to one before
+	// grading — so this extra call changes the count here but not the
+	// grab/fallback assertions above.
+	if total != 3 {
+		t.Errorf("expected exactly 3 Prowlarr searches (1 for movies, 2 for adult's studio+title base + no-space-studio variant), got %d", total)
 	}
 }
 

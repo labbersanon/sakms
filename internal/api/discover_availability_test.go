@@ -207,8 +207,16 @@ func TestDiscoverAvailabilityHandler_Adult_StudioTitleDuration_NoTMDBCall(t *tes
 // TestNormalizeAdultQuery — a real "Adult downloads never resolve" report
 // found the raw, unnormalized studio+title text almost never matching how
 // trackers name Adult releases.
+// Also covers the 2026-08-11 no-space-studio variant (see
+// TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle's
+// doc comment for the full bug this variant fixes): "Private Classics" has
+// internal whitespace, so the studio+title query fires TWICE — the
+// punctuation-normalized spaced form first, then the studio-name-squashed
+// form second — and this test asserts both, in order, via
+// fakeProwlarrPerQuery rather than fakeProwlarrRecording (which only
+// captures the LAST query and would silently only see the second one).
 func TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized(t *testing.T) {
-	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
+	prowlarr, queries := fakeProwlarrPerQuery(t, nil)
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
@@ -230,9 +238,16 @@ func TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized(t *testi
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	want := "Private Classics Franky Knight Curvy And Horny Looking For A Stallion"
-	if got := lastQuery.Get("query"); got != want {
-		t.Errorf("query sent to Prowlarr = %q, want punctuation-stripped %q", got, want)
+	wantSpaced := "Private Classics Franky Knight Curvy And Horny Looking For A Stallion"
+	wantNoSpaceStudio := "PrivateClassics Franky Knight Curvy And Horny Looking For A Stallion"
+	if len(*queries) != 2 {
+		t.Fatalf("expected exactly 2 Prowlarr searches (spaced, then no-space-studio variant), got %d: %q", len(*queries), *queries)
+	}
+	if (*queries)[0] != wantSpaced {
+		t.Errorf("first query = %q, want punctuation-stripped %q", (*queries)[0], wantSpaced)
+	}
+	if (*queries)[1] != wantNoSpaceStudio {
+		t.Errorf("second query = %q, want the no-space-studio variant %q", (*queries)[1], wantNoSpaceStudio)
 	}
 }
 
@@ -358,22 +373,41 @@ func fakeProwlarrPerQuery(t *testing.T, bodyByQuery map[string]string) (*httptes
 // reached Prowlarr verbatim and matched nothing — even though properly-named
 // releases of the scene existed.
 //
-// Asserts BOTH halves: releaseTitle is still the query tried FIRST (the
+// Asserts all three query legs: releaseTitle is still tried FIRST (the
 // property TestDiscoverAvailabilityHandler_Adult_ReleaseTitlePreferredOverStudioTitle
 // pins for the well-formed case, which structurally cannot cover ordering — it
-// only ever sees one query), and the Studio+Title query — the same one this
-// branch already used when releaseTitle is absent — is retried second, with its
-// results reaching the grid.
+// only ever sees one query), the spaced Studio+Title query is retried second,
+// and — this is the SAME scene, same studio, that surfaced a second, distinct
+// real bug live the same day — a THIRD, no-space-studio query
+// ("CathysCraving Pixie Smalls Teasing Cheerleader") is tried too, because
+// NZBGeek (a real configured Usenet indexer) indexes this studio's releases
+// as one unbroken token ("CathysCraving...") and never matched the spaced
+// form at all. Discover showed 2 torrent results, both correctly rejected
+// for too few seeders, and reported that as the whole story — while 3 real
+// NZB releases sat in Prowlarr the entire time, invisible because the
+// second query never ran. This test's fixture gives the spaced query one
+// torrent (as before) and the no-space query one NZB release, then asserts
+// BOTH independently populate the grid — proving the merge, not just the
+// extra call.
 func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *testing.T) {
 	const truncatedReleaseTitle = "CathysCraving 26 02 08 Scene 1000 Pixie Smalls Teasing Cheerlea"
 	const studioTitleQuery = "Cathys Craving Pixie Smalls Teasing Cheerleader"
+	const noSpaceStudioQuery = "CathysCraving Pixie Smalls Teasing Cheerleader"
 	// 900 MB / 3480 s x265 1080p — the same fixture this file already
-	// documents as clearing the Low 1080p floor.
+	// documents as clearing the Low 1080p floor. The NZB fixture reuses the
+	// identical size/runtime so both land in the same (res1080, low) cell,
+	// one per protocol — the real-world shape (torrent AND nzb both existing
+	// for one scene).
 	const fallbackBody = `[{"guid":"9","title":"CathysCraving.Pixie.Smalls.Teasing.Cheerleader.XXX.1080p.x265-GROUP","indexer":"I","protocol":"torrent","size":900000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:DDDDDD1234567890abcdef1234567890abcdef12"}]`
+	const noSpaceStudioBody = `[{"guid":"10","title":"CathysCraving.Pixie.Smalls.Teasing.Cheerleader.XXX.1080p.x265-NZBGRP","indexer":"NZBGeek","protocol":"usenet","size":900000000,"downloadUrl":"https://nzbgeek.example/dl/10"}]`
 
 	// The truncated title survives cleaning byte-for-byte, so the first query
-	// IS the raw fragment; only the studio+title retry gets a result.
-	prowlarr, queries := fakeProwlarrPerQuery(t, map[string]string{studioTitleQuery: fallbackBody})
+	// IS the raw fragment; the studio+title retry gets the torrent, and the
+	// no-space-studio variant gets the NZB release.
+	prowlarr, queries := fakeProwlarrPerQuery(t, map[string]string{
+		studioTitleQuery:   fallbackBody,
+		noSpaceStudioQuery: noSpaceStudioBody,
+	})
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
@@ -397,14 +431,17 @@ func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	if len(*queries) != 2 {
-		t.Fatalf("expected exactly 2 Prowlarr searches (releaseTitle, then studio+title fallback), got %d: %q", len(*queries), *queries)
+	if len(*queries) != 3 {
+		t.Fatalf("expected exactly 3 Prowlarr searches (releaseTitle, studio+title fallback, no-space-studio variant), got %d: %q", len(*queries), *queries)
 	}
 	if (*queries)[0] != truncatedReleaseTitle {
 		t.Errorf("first query = %q, want the releaseTitle-derived query %q (releaseTitle must still be tried FIRST)", (*queries)[0], truncatedReleaseTitle)
 	}
 	if (*queries)[1] != studioTitleQuery {
-		t.Errorf("fallback query = %q, want the studio+title query %q", (*queries)[1], studioTitleQuery)
+		t.Errorf("second query = %q, want the studio+title fallback %q", (*queries)[1], studioTitleQuery)
+	}
+	if (*queries)[2] != noSpaceStudioQuery {
+		t.Errorf("third query = %q, want the no-space-studio variant %q", (*queries)[2], noSpaceStudioQuery)
 	}
 
 	var out apidto.AvailabilityPreview
@@ -412,7 +449,10 @@ func TestDiscoverAvailabilityHandler_Adult_ZeroResultsFallsBackToStudioTitle(t *
 		t.Fatalf("decoding response: %v", err)
 	}
 	if out.Res1080.Low.Torrent == nil || out.Res1080.Low.Torrent.GUID != "9" {
-		t.Fatalf("expected the fallback query's release to populate res1080/low/torrent, got %+v", out.Res1080)
+		t.Fatalf("expected the studio+title fallback's torrent release to populate res1080/low/torrent, got %+v", out.Res1080)
+	}
+	if out.Res1080.Low.Usenet == nil || out.Res1080.Low.Usenet.GUID != "10" {
+		t.Fatalf("expected the no-space-studio variant's NZB release to populate res1080/low/usenet — this is the exact bug fixed 2026-08-11, got %+v", out.Res1080)
 	}
 }
 

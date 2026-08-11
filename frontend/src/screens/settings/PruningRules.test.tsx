@@ -60,8 +60,8 @@ const stubFetch = (override?: Override) => {
       if (r) return r;
     }
     if (method === "GET" && isRuleList(url)) return jsonResponse([]);
-    if (method === "GET" && url.includes("/api/settings/purge-scan-interval"))
-      return jsonResponse({ intervalSeconds: 0 });
+    // No purge-scan-interval branch: this tab no longer fetches it (moved to
+    // Settings -> Organize), and the absence test below asserts exactly that.
     if (method === "POST" && url.endsWith("/api/pruning-rules/preview"))
       return jsonResponse({ matchCount: 0 });
     return noContent();
@@ -315,33 +315,24 @@ describe("PruningRulesSection — row mutation error", () => {
   });
 });
 
-describe("PruningRulesSection — purge scan interval (AC3's frontend gap)", () => {
-  it("renders the purge scan interval and PUTs a new value", async () => {
+// Claude 2026-08-10: the "purge scan interval (AC3's frontend gap)" describe
+// block that lived here MOVED to OrganizeScanSchedule.test.tsx along with the
+// Card it exercised, rather than being deleted — see that file's
+// "Purge panel (relocated from the Pruning tab)" block.
+// Reason: the control now lives in Settings -> Organize.
+// Review if: the Organize tab is ever folded back into Pruning.
+describe("PruningRulesSection — the relocated purge scan interval", () => {
+  it("no longer renders the purge scan-interval control or fetches its value", async () => {
     const calls = stubFetch();
     render(() => <PruningRulesSection />);
-    // Value 0 defaults the picker to the "Hours" unit (same convention as
-    // AdultRowAdmin's scan-interval control); typing "1" there means 1 hour
-    // = 3600 seconds.
-    const input = (await screen.findByLabelText(
-      "Purge scan interval",
-    )) as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "1" } });
-    fireEvent.click(screen.getByText("Save"));
+    // Wait for the tab's own first paint before asserting an absence, so this
+    // can't pass merely by running before anything rendered.
+    await screen.findByText("Pruning rules");
 
-    await waitFor(() =>
-      expect(
-        calls.some(
-          (c) =>
-            c.method === "PUT" &&
-            c.url.includes("/api/settings/purge-scan-interval"),
-        ),
-      ).toBe(true),
-    );
-    const put = calls.find(
-      (c) =>
-        c.method === "PUT" && c.url.includes("/api/settings/purge-scan-interval"),
-    )!;
-    expect(put.body).toEqual({ intervalSeconds: 3600 });
+    expect(screen.queryByLabelText("Purge scan interval")).toBeNull();
+    expect(
+      calls.some((c) => c.url.includes("/api/settings/purge-scan-interval")),
+    ).toBe(false);
   });
 });
 

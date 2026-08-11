@@ -280,6 +280,43 @@ fast on a fresh install cannot hang off an opt-in toggle a fresh install never t
 the plan's §1.7 for the full reasoning (the two worked "looks like a scheduler and isn't"
 examples this file already carries, and why this one is genuinely different from both).
 
+**AMENDED 2026-08-10 — the "On-by-default deviation" note above is now stale on one specific
+claim: `scanschedule` is no longer 0/off by default (the scanschedule Settings UI feature).**
+The superseded sentence, quoted verbatim so a future session can find it: *"every other
+scheduler in the enumeration above (`recheck`, `parseentity`, `scanschedule`, `RunUsenetRetry`)
+is 0/off by default."* `internal/scanschedule` (Rename/Purge/Dedup scan scheduling) now defaults
+to `enabled=true` + a 24-hour interval for all three workflows, an operator-visible toggle in
+Settings → Organize (`getScanEnabledHandler`/`getScanIntervalHandler` in
+`internal/api/scanschedule_settings.go`, `scanschedule.DefaultIntervalSeconds` in
+`internal/scanschedule/scanschedule.go`). `recheck`, `parseentity`, and `RunUsenetRetry` are
+unaffected and remain 0/off by default — only `scanschedule`'s own default changed.
+
+**The "first Mainstream-affecting one" claim about `internal/discoverrefresh` is UNCHANGED and
+still true** — `scanschedule` scans Rename/Purge/Dedup proposal queues, not Mainstream Discover,
+so it doesn't compete with or duplicate that distinction. What's corrected is only the count:
+`internal/discoverrefresh` was the second on-by-default scheduler when its own note was written
+(2026-08-03); as of this amendment there is a third, `internal/scanschedule`, joining it and
+`internal/adultnewest`'s browse pass.
+
+**This does not reopen Staged-for-approval or the Scan-only boundary — the default flip changes
+only WHEN a scan runs, never WHAT it's allowed to do.** `internal/scanschedule`'s own compile-time
+import firewall (`allowlist_test.go`'s `TestScanScheduleImportFirewall`/`TestScanOnlyAllowlist`)
+is completely unaffected by this change: it was Scan-only before the flip and is Scan-only after
+it, same as every other point in this file that changed a default without touching what that
+default gates. Same asymmetric boot-vs-live semantics as before too, worth restating because it
+is genuinely load-bearing for anyone reading the Settings UI's toggle:
+`internal/scanschedule.runLoop`'s boot gate (`interval <= 0 || !enabled`) means a workflow that is
+off at boot needs an app restart to start scanning, even after the operator flips it on in
+Settings — there is no live path that starts a stopped loop. Turning a running workflow off (via
+the toggle or the interval) takes effect on its next tick, live, no restart needed. See
+`.omc/plans/autopilot-impl-scanschedule-settings-ui.md` for the full implementation record.
+**Operational note for existing installs**: an operator who saved Purge's pre-existing
+scan-interval control (Settings → Pruning, live since 2026-08-03) with the interval left at its
+old default reads `purge_scan_interval_seconds` as an *explicit* stored `"0"`, not "unset" — by
+design that stays off even after this default flip (only a genuinely-never-set key picks up the
+new 24h default), so Purge's panel can show "on, 24h" while nothing is actually scheduled to run.
+Check that value by hand once after upgrading if Purge scanning was expected to start.
+
 **Staged-for-approval is untouched by this feature — this is not a sixth exception.** It
 adds no `AutoGrabTrigger` and the trigger enumeration under **Staged-for-approval** below
 (`TriggerOperator` / `TriggerRequest` / `TriggerRetry` / `TriggerAirDate` /

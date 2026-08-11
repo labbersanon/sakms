@@ -216,6 +216,156 @@ func TestRunCycle_Dedup_HubGuard(t *testing.T) {
 	}
 }
 
+// --- LoadInterval's unset-vs-stored distinction ---
+
+// TestLoadInterval_UnsetVsStored is the mechanism behind "on by default," and
+// the distinction it pins is the one that must never be collapsed: a key nobody
+// has ever written gets defaultSeconds, while a key an operator explicitly
+// zeroed (or that holds garbage) reads as 0/off. Collapsing them would
+// re-enable a schedule the operator deliberately turned off, on every boot.
+func TestLoadInterval_UnsetVsStored(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("genuinely unset returns the default", func(t *testing.T) {
+		store := newTestSettings(t)
+		got := LoadInterval(ctx, store, RenameIntervalKey, DefaultIntervalSeconds)
+		if want := time.Duration(DefaultIntervalSeconds) * time.Second; got != want {
+			t.Errorf("LoadInterval on an unset key = %s, want %s", got, want)
+		}
+	})
+
+	for _, c := range []struct {
+		name   string
+		stored string
+		want   time.Duration
+	}{
+		{"explicit zero stays off", "0", 0},
+		{"negative stays off", "-1", 0},
+		{"blank stays off", "  ", 0},
+		{"garbage stays off", "soon", 0},
+		{"a stored positive wins over the default", "3600", time.Hour},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := newTestSettings(t)
+			if err := store.Set(ctx, RenameIntervalKey, c.stored); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			if got := LoadInterval(ctx, store, RenameIntervalKey, DefaultIntervalSeconds); got != c.want {
+				t.Errorf("LoadInterval(stored %q) = %s, want %s", c.stored, got, c.want)
+			}
+		})
+	}
+}
+
+// --- the enabled × interval gate ---
+
+// runLoopUntilReturn runs runLoop in a goroutine and reports whether it
+// returned on its own within d (as opposed to still ticking). Used by the gate
+// tests below, which are all deliberately sub-second so they never join
+// TestRunLoop_SkipNotQueue in being timing-sensitive.
+func runLoopUntilReturn(t *testing.T, d time.Duration, run func()) bool {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		run()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// TestRunLoop_BootGates covers both halves of the boot gate, including the
+// spec's explicit edge case: enabled=true with interval=0 is "off," not an
+// error. Either gate alone must start nothing — no ticker, no scan.
+func TestRunLoop_BootGates(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		interval    time.Duration
+		bootEnabled bool
+	}{
+		{"disabled with a positive interval", 20 * time.Millisecond, false},
+		{"enabled with a zero interval (edge case: off, not an error)", 0, true},
+		{"disabled and zero", 0, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f := newFake()
+			// Built on the TEST goroutine, never inside the closure below:
+			// dbtest.New skips (runtime.Goexit) when no Postgres DSN is
+			// configured, and a Goexit inside the spawned goroutine would
+			// deadlock runLoopUntilReturn instead of skipping the test.
+			settingsStore := newTestSettings(t)
+
+			returned := runLoopUntilReturn(t, 250*time.Millisecond, func() {
+				runLoop(ctx, workflowRename, func() time.Duration { return c.interval },
+					c.interval, c.bootEnabled, RenameEnabledKey, f, settingsStore, nil)
+			})
+			if !returned {
+				t.Fatal("runLoop did not return immediately — a gated-off workflow started a ticker")
+			}
+			if got := f.snapshotRename(); len(got) != 0 {
+				t.Errorf("a gated-off workflow scanned %v, want nothing", got)
+			}
+		})
+	}
+}
+
+// TestRunLoop_EnabledAndIntervalPositiveRuns is the positive control for the
+// gate tests above: with both gates satisfied, cycles actually happen. Without
+// it, a bug that stopped every loop unconditionally would pass all three
+// negative cases.
+func TestRunLoop_EnabledAndIntervalPositiveRuns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := newFake()
+	const interval = 20 * time.Millisecond
+
+	go runLoop(ctx, workflowRename, func() time.Duration { return interval },
+		interval, true, RenameEnabledKey, f, newTestSettings(t), nil)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(f.snapshotRename()) >= 3 {
+			return // one full three-mode cycle observed
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("no full cycle ran with enabled=true and interval>0 (scanned %v)", f.snapshotRename())
+}
+
+// TestRunLoop_LiveDisableStopsLoop is the per-tick half of the gate: flipping
+// the enabled key to false while a loop is running stops it on its next tick,
+// the same live behavior setting the interval to 0 already had.
+func TestRunLoop_LiveDisableStopsLoop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	settingsStore := newTestSettings(t)
+	f := newFake()
+	const interval = 20 * time.Millisecond
+
+	if err := settingsStore.SetBool(context.Background(), RenameEnabledKey, false); err != nil {
+		t.Fatalf("SetBool: %v", err)
+	}
+
+	returned := runLoopUntilReturn(t, 2*time.Second, func() {
+		// bootEnabled is true (as it was at boot); the store already says
+		// false, so the FIRST tick's live read must stop the loop.
+		runLoop(ctx, workflowRename, func() time.Duration { return interval },
+			interval, true, RenameEnabledKey, f, settingsStore, nil)
+	})
+	if !returned {
+		t.Fatal("runLoop kept ticking after the enabled key was set to false")
+	}
+	if got := f.snapshotRename(); len(got) != 0 {
+		t.Errorf("a live-disabled loop still scanned %v — the enabled check must precede runCycle", got)
+	}
+}
+
 // TestRunLoop_SkipNotQueue is AC15: when a cycle outruns the interval, the tick
 // that fired during it is skipped, not queued — so cycles never re-fire
 // back-to-back with no idle gap. Without the drain in runLoop, the one buffered
@@ -237,7 +387,10 @@ func TestRunLoop_SkipNotQueue(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runLoop(ctx, workflowRename, reload, interval, f, settingsStore, nil)
+		// bootEnabled=true and an unset RenameEnabledKey (so the per-tick
+		// GetBool returns its true default every tick) keep this test measuring
+		// only the skip-not-queue drain, unchanged by the enabled gate.
+		runLoop(ctx, workflowRename, reload, interval, true, RenameEnabledKey, f, settingsStore, nil)
 		close(done)
 	}()
 

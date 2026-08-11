@@ -27,9 +27,7 @@ import {
   createPruningRule,
   deletePruningRule,
   fetchPruningRules,
-  fetchPurgeScanInterval,
   previewPruningRule,
-  putPurgeScanInterval,
   updatePruningRule,
   type PruningRule,
   type PruningRuleUpsertRequest,
@@ -47,7 +45,6 @@ import {
   useSaveStatus,
 } from "../../components/ui";
 import { MODE_LABELS } from "./shared";
-import { DurationSetting } from "./Advanced";
 
 // PREVIEW_DEBOUNCE_MS mirrors FolderPicker's as-you-type debounce
 // (components/FolderPicker.tsx) — a keystroke in an age/size field, or a
@@ -314,12 +311,19 @@ const RuleForm: Component<{
 };
 
 // PruningRulesSection is the Settings "Pruning" tab's whole panel: the rules
-// CRUD list/form (§6.2) and the purge scan-interval control (§6.3's AC3 gap).
+// CRUD list/form (§6.2).
+//
+// Claude 2026-08-10: the purge scan-interval Card that used to sit below the
+// rules list moved to the new Settings -> Organize tab
+// (OrganizeScanSchedule.tsx), where it now sits beside Rename's and Dedup's and
+// has gained an enabled toggle. Only that Card moved — the rules CRUD below is
+// unchanged.
+// Reason: all three workflows' scan schedules are configured in one place now.
+// Review if: the Organize tab is ever folded back into Pruning.
 export const PruningRulesSection: Component = () => {
   const [rules, { refetch }] = createResource(fetchPruningRules, {
     initialValue: [],
   });
-  const [scanInterval] = createResource(fetchPurgeScanInterval);
   const [editing, setEditing] = createSignal<number | "new" | null>(null);
   const [listError, setListError] = createSignal("");
 
@@ -373,93 +377,73 @@ export const PruningRulesSection: Component = () => {
   };
 
   return (
-    <>
-      <Card title="Pruning rules">
-        <Muted class="mb-3">
-          Operator-authored rules that flag library items for Purge review by
-          age, size, and/or quality tier — AND'd within one rule, OR'd across
-          rules. A rule only ever PROPOSES: nothing is deleted until an
-          operator explicitly Applies it from the Purge review queue.
-        </Muted>
-        <Show when={rules.error}>
-          <ErrorText>{(rules.error as Error)?.message}</ErrorText>
-        </Show>
-        <Show when={listError()}>
-          <ErrorText>{listError()}</ErrorText>
-        </Show>
+    <Card title="Pruning rules">
+      <Muted class="mb-3">
+        Operator-authored rules that flag library items for Purge review by
+        age, size, and/or quality tier — AND'd within one rule, OR'd across
+        rules. A rule only ever PROPOSES: nothing is deleted until an
+        operator explicitly Applies it from the Purge review queue.
+      </Muted>
+      <Show when={rules.error}>
+        <ErrorText>{(rules.error as Error)?.message}</ErrorText>
+      </Show>
+      <Show when={listError()}>
+        <ErrorText>{listError()}</ErrorText>
+      </Show>
 
-        <Show
-          when={(rules() ?? []).length > 0}
-          fallback={<Muted>No pruning rules yet.</Muted>}
-        >
-          <ul>
-            <For each={rules()}>
-              {(rule) => (
-                <li class="flex items-center justify-between gap-2 border-b border-border py-2 last:border-b-0">
-                  <div class="min-w-0 flex-1">
-                    <div class="truncate text-sm font-medium text-fg">
-                      {rule.name}{" "}
-                      <span class="text-xs text-muted">
-                        ({MODE_LABELS[rule.mode as Mode] ?? rule.mode})
-                      </span>
-                    </div>
-                    <div class="text-xs text-muted">
-                      {summarizeConditions(rule)}
-                    </div>
+      <Show
+        when={(rules() ?? []).length > 0}
+        fallback={<Muted>No pruning rules yet.</Muted>}
+      >
+        <ul>
+          <For each={rules()}>
+            {(rule) => (
+              <li class="flex items-center justify-between gap-2 border-b border-border py-2 last:border-b-0">
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-sm font-medium text-fg">
+                    {rule.name}{" "}
+                    <span class="text-xs text-muted">
+                      ({MODE_LABELS[rule.mode as Mode] ?? rule.mode})
+                    </span>
                   </div>
-                  <label class="flex shrink-0 items-center gap-1 text-xs text-muted">
-                    <input
-                      type="checkbox"
-                      aria-label={`${rule.name} enabled`}
-                      checked={rule.enabled}
-                      onChange={() => void toggleEnabled(rule)}
-                    />
-                    enabled
-                  </label>
-                  <Button
-                    aria-label={`Edit ${rule.name}`}
-                    onClick={() => setEditing(rule.id)}
-                  >
-                    <Pencil size={14} />
-                  </Button>
-                  <Button onClick={() => void remove(rule)}>Delete</Button>
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
+                  <div class="text-xs text-muted">
+                    {summarizeConditions(rule)}
+                  </div>
+                </div>
+                <label class="flex shrink-0 items-center gap-1 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    aria-label={`${rule.name} enabled`}
+                    checked={rule.enabled}
+                    onChange={() => void toggleEnabled(rule)}
+                  />
+                  enabled
+                </label>
+                <Button
+                  aria-label={`Edit ${rule.name}`}
+                  onClick={() => setEditing(rule.id)}
+                >
+                  <Pencil size={14} />
+                </Button>
+                <Button onClick={() => void remove(rule)}>Delete</Button>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
 
-        <Show
-          when={editing() !== null}
-          fallback={
-            <div class="mt-3">
-              <Button variant="primary" onClick={() => setEditing("new")}>
-                + New rule
-              </Button>
-            </div>
-          }
-        >
-          <RuleForm rule={editingRule()} onSaved={afterSave} onCancel={closeForm} />
-        </Show>
-      </Card>
-
-      <Card title="Purge scan interval">
-        <Muted class="mb-3">
-          How often Purge automatically re-scans for tag- and rule-matched
-          items to propose (0 = off — manual Scan only, the default). A
-          scheduled scan only ever PROPOSES, exactly like a manual one —
-          nothing is deleted without an explicit Apply in the Purge review
-          queue. Turning this ON from 0 takes effect on the app's next
-          restart; turning it OFF stops a running schedule on its next tick.
-        </Muted>
-        <DurationSetting
-          id="purge-scan-interval"
-          label="Purge scan interval"
-          help="How often a scheduled Purge Scan runs in the background."
-          value={() => scanInterval()}
-          onSave={(v) => putPurgeScanInterval(v)}
-        />
-      </Card>
-    </>
+      <Show
+        when={editing() !== null}
+        fallback={
+          <div class="mt-3">
+            <Button variant="primary" onClick={() => setEditing("new")}>
+              + New rule
+            </Button>
+          </div>
+        }
+      >
+        <RuleForm rule={editingRule()} onSaved={afterSave} onCancel={closeForm} />
+      </Show>
+    </Card>
   );
 };

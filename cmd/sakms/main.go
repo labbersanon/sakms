@@ -625,16 +625,29 @@ func run() error {
 	go api.RunUsenetRetry(ctx, api.LoadUsenetRetryInterval(ctx, settingsStore), &http.Client{Timeout: outboundTimeout},
 		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, libStore, dlManager, nzbManager)
 
-	// General Rename/Purge/Dedup scan scheduler — the fourth deliberate, opt-in
+	// General Rename/Purge/Dedup scan scheduler — the fourth deliberate
 	// exception to "manual by default" (see internal/scanschedule's package doc
 	// + CLAUDE.md's AMENDED "no scheduler" note). Built as a compile-time
 	// Scan-only safety boundary: it drives its workflows only through the narrow
 	// scanschedule.Scanner interface (scanAdapter below), which cannot reach any
-	// Apply-family call. Per-workflow interval + dedup eager-VMAF toggle, all
-	// gated OFF by default (0/off). Run launches one goroutine per workflow and
-	// returns; all are cancelled via ctx on shutdown. Dedup cycles share the
-	// same dedupHub concurrency guard as manual Dedup scans. To remove entirely:
-	// delete internal/scanschedule, scanadapter.go, and this block.
+	// Apply-family call. Per-workflow enabled toggle + interval, plus the dedup
+	// eager-VMAF toggle.
+	//
+	// Claude 2026-08-10: this block used to say "opt-in" and "all gated OFF by
+	// default (0/off)". Both are now FALSE for the three workflows: an unset
+	// key resolves to enabled=true at scanschedule.DefaultIntervalSeconds (24h).
+	// Reason: operator-requested on-by-default scheduling, see
+	// .omc/specs/deep-interview-scanschedule-settings-ui.md; the Scan-only
+	// boundary and the staged-for-approval invariant are untouched — a cycle
+	// still only ever proposes. dedup_vmaf_scan_enabled DOES still default off;
+	// it is the narrower eager-compute opt-in, not a master switch.
+	// Review if: the on-by-default decision is ever reversed.
+	//
+	// Run launches one goroutine per workflow and returns; all are cancelled via
+	// ctx on shutdown. A workflow that is off at boot starts no ticker at all,
+	// so turning one ON needs a restart. Dedup cycles share the same dedupHub
+	// concurrency guard as manual Dedup scans. To remove entirely: delete
+	// internal/scanschedule, scanadapter.go, and this block.
 	scanScheduler := newScanAdapter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, propStore, allowStore, libStore, pruningStore, prober, phashDispatcher, videoDispatcher, entityStore)
 	scanschedule.Run(ctx, scanScheduler, settingsStore, dedupHub)
 

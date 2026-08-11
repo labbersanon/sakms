@@ -1,9 +1,25 @@
 // Package scanschedule is a general Rename/Purge/Dedup scan scheduler — a
 // fourth background scheduler joining internal/recheck, internal/adultnewest,
 // and internal/api's RunWatchFolders, all of which predate it and all of which
-// only ever Scan/propose, never Apply. It is opt-in and 0/off by default for
-// every workflow and mode, launched once from cmd/sakms/main.go and cancelled
-// via ctx on shutdown, exactly like the three schedulers it mirrors.
+// only ever Scan/propose, never Apply. It is launched once from
+// cmd/sakms/main.go and cancelled via ctx on shutdown, exactly like the three
+// schedulers it mirrors.
+//
+// # ON BY DEFAULT (changed 2026-08-10) — this package is no longer opt-in
+//
+// Every workflow now defaults to enabled=true at DefaultIntervalSeconds (24h)
+// when its settings keys are genuinely unset. That reverses this package's
+// original "0/off by default for every workflow and mode" stance, which the
+// text above used to state; it is a deliberate, operator-requested change (see
+// .omc/specs/deep-interview-scanschedule-settings-ui.md), not a drift. The
+// staged-for-approval invariant is untouched — a scheduled cycle still only
+// ever Scans/proposes, and nothing is Applied without a human.
+//
+// Two independent gates decide whether a workflow actually runs: its
+// *_scan_enabled boolean (RenameEnabledKey/PurgeEnabledKey/DedupEnabledKey) and
+// its *_scan_interval_seconds value. A workflow runs only when enabled is true
+// AND the interval is > 0; enabled=true with interval=0 is "off", not an error
+// (an operator who explicitly zeroes the interval has turned it off on purpose).
 //
 // # DELIBERATE EXCEPTION: the Scanner interface is a compile-time safety boundary, not an abstraction
 //
@@ -52,6 +68,7 @@ package scanschedule
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strconv"
 	"strings"
@@ -80,22 +97,48 @@ type Scanner interface {
 	ScanDedup(ctx context.Context, m mode.Mode, eagerVMAF bool) error
 }
 
-// Per-workflow interval settings keys (whole seconds; 0/unset/blank/negative
-// all mean "off", the opt-in gate and the default). One interval per workflow
-// covers all three modes for that workflow. internal/api mirrors these strings
-// in its own GET/PUT settings handlers rather than importing this package, the
-// same import-avoidance recheck/adultnewest use to stay independently
-// deletable.
+// Per-workflow interval settings keys (whole seconds). A genuinely UNSET key
+// reads as DefaultIntervalSeconds (24h, on by default); a stored blank,
+// non-integer, or non-positive value reads as 0/"off" — an operator who
+// explicitly zeroes the picker means it. One interval per workflow covers all
+// three modes for that workflow. internal/api mirrors these strings in its own
+// GET/PUT settings handlers rather than importing this package, the same
+// import-avoidance recheck/adultnewest use to stay independently deletable.
 const (
 	RenameIntervalKey = "rename_scan_interval_seconds"
 	PurgeIntervalKey  = "purge_scan_interval_seconds"
 	DedupIntervalKey  = "dedup_scan_interval_seconds"
 
+	// Per-workflow master on/off keys, genuinely independent of the interval
+	// keys above: toggling a workflow off leaves its stored interval intact, so
+	// re-enabling restores the operator's configured cadence without retyping
+	// it. Unset reads as TRUE (on by default) — see the package doc. Same
+	// mirrored-by-value relationship with internal/api as the interval keys,
+	// guarded by TestScanScheduleSettingsKeyParity over there.
+	RenameEnabledKey = "rename_scan_enabled"
+	PurgeEnabledKey  = "purge_scan_enabled"
+	DedupEnabledKey  = "dedup_scan_enabled"
+
 	// DedupVMAFEnabledKey gates the eager-VMAF fan-out on a scheduled Dedup
-	// cycle (plan AC6). Off by default; independent of DedupIntervalKey (a
-	// Dedup schedule can run with or without eager VMAF).
+	// cycle (plan AC6). Off by default — deliberately NOT changed by the
+	// on-by-default work above, which is about the master Dedup schedule, not
+	// this narrower eager-compute opt-in. Independent of DedupIntervalKey and
+	// DedupEnabledKey (a Dedup schedule can run with or without eager VMAF).
 	DedupVMAFEnabledKey = "dedup_vmaf_scan_enabled"
 )
+
+// DefaultIntervalSeconds is the shared "on by default" cadence (24h) for
+// Rename/Purge/Dedup scan scheduling. internal/api's getScanIntervalHandler
+// registrations for these three keys resolve the same default — it keeps its
+// own mirrored constant rather than importing this package (the deliberate
+// import-avoidance scanschedule_settings.go's header documents, so internal/api
+// still compiles if this package is deleted), and
+// TestScanScheduleSettingsKeyParity asserts the two values are equal. Without
+// that pairing, the API-layer default (what the Settings UI shows) and this
+// package's own default (what actually decides whether a scan runs) could
+// silently diverge — exactly the shape of the bug LoadInterval's hardcoded
+// 0-default had before this constant existed.
+const DefaultIntervalSeconds = 24 * 60 * 60 // 86400
 
 // workflow identifies which of the three Scan workflows a loop/cycle drives.
 type workflow string
@@ -109,28 +152,40 @@ const (
 // allModes is the fixed set every workflow cycle scans, in order.
 var allModes = []mode.Mode{mode.Movies, mode.Series, mode.Adult}
 
-// LoadInterval reads key and returns it as a Duration, or 0 ("off") for any
-// unset, blank, non-integer, or non-positive value — a tolerant read (a corrupt
-// or missing value degrades to "off"/manual-first rather than erroring the boot
-// path), identical in shape to recheck.LoadInterval.
-func LoadInterval(ctx context.Context, settingsStore *settings.Store, key string) time.Duration {
+// LoadInterval reads key and returns it as a Duration. It mirrors
+// internal/api's loadIntervalSeconds unset-vs-corrupt distinction exactly,
+// which is the whole point of the defaultSeconds parameter: a GENUINELY UNSET
+// key returns defaultSeconds (how "on by default" is actually implemented for
+// the scheduler, as opposed to merely for what the Settings UI displays),
+// while a stored-but-blank/non-integer/non-positive value returns 0 ("off").
+//
+// That distinction must not be collapsed. An operator who sets the interval to
+// 0 through the DurationSetting picker has turned scanning off on purpose and
+// it must stay off; only a key nobody has ever written gets the default. A real
+// store error also degrades to "off" rather than erroring the boot path, the
+// same tolerant read recheck.LoadInterval uses.
+func LoadInterval(ctx context.Context, settingsStore *settings.Store, key string, defaultSeconds int) time.Duration {
 	v, err := settingsStore.Get(ctx, key)
+	if errors.Is(err, settings.ErrNotFound) {
+		return time.Duration(defaultSeconds) * time.Second // genuinely unset → default
+	}
 	if err != nil {
-		return 0 // unset (ErrNotFound) or a real store error → treat as off
+		return 0 // real store error → treat as off, tolerant-degrade for boot safety
 	}
 	secs, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil || secs <= 0 {
-		return 0
+		return 0 // stored-but-corrupt or explicit 0 → off, NOT the default
 	}
 	return time.Duration(secs) * time.Second
 }
 
 // Run launches the three per-workflow scheduler loops (Rename, Purge, Dedup)
 // and returns immediately — each loop is its own goroutine, cancelled via ctx
-// on shutdown. A workflow whose interval is <= 0 at boot (the default, since
-// every key is unset until an operator opts in) starts NOTHING for that
-// workflow; re-enabling a workflow that was off at boot needs a restart, same
-// as recheck. Safe to call unconditionally.
+// on shutdown. A workflow whose interval is <= 0 at boot, or whose enabled flag
+// is false at boot, starts NOTHING for that workflow; turning a workflow ON
+// from OFF needs a restart, same as recheck. With both keys unset — the state
+// every install starts in — a workflow IS on, at DefaultIntervalSeconds. Safe
+// to call unconditionally.
 //
 // ctx is the caller's shutdown-aware context, threaded straight through to
 // every Scan call (unlike dedupScanHandler, which needs the Hub's base context
@@ -138,42 +193,63 @@ func LoadInterval(ctx context.Context, settingsStore *settings.Store, key string
 // ctx is already the right lifetime).
 func Run(ctx context.Context, scanner Scanner, settingsStore *settings.Store, hub *dedupscan.Hub) {
 	for _, wk := range []struct {
-		wf  workflow
-		key string
+		wf         workflow
+		key        string
+		enabledKey string
 	}{
-		{workflowRename, RenameIntervalKey},
-		{workflowPurge, PurgeIntervalKey},
-		{workflowDedup, DedupIntervalKey},
+		{workflowRename, RenameIntervalKey, RenameEnabledKey},
+		{workflowPurge, PurgeIntervalKey, PurgeEnabledKey},
+		{workflowDedup, DedupIntervalKey, DedupEnabledKey},
 	} {
 		key := wk.key // capture per iteration for the reload closure
-		interval := LoadInterval(ctx, settingsStore, key)
-		reload := func() time.Duration { return LoadInterval(ctx, settingsStore, key) }
-		go runLoop(ctx, wk.wf, reload, interval, scanner, settingsStore, hub)
+		interval := LoadInterval(ctx, settingsStore, key, DefaultIntervalSeconds)
+		// GetBool degrades to the default on any error, so a store hiccup at
+		// boot leaves a workflow ON rather than silently disabling it — the
+		// same tolerant-read shape the DedupVMAFEnabledKey read in runCycle
+		// uses, just with a true default instead of false.
+		bootEnabled, _ := settingsStore.GetBool(ctx, wk.enabledKey, true)
+		reload := func() time.Duration {
+			return LoadInterval(ctx, settingsStore, key, DefaultIntervalSeconds)
+		}
+		go runLoop(ctx, wk.wf, reload, interval, bootEnabled, wk.enabledKey, scanner, settingsStore, hub)
 	}
 }
 
-// runLoop drives one workflow's scheduler loop until ctx is cancelled. interval
-// is the boot-time cadence; if it is <= 0 the loop returns immediately and
-// starts nothing (the opt-in gate). When enabled, each tick calls reload to
-// re-read the interval so an operator can retune or disable it live (a change to
-// 0 stops the loop cleanly). Mirrors recheck.Run's select-loop exactly, plus the
-// AC15 skip-not-queue drain below. reload is injected (rather than reading
-// settings directly) so the AC15 timing test can drive a fixed sub-second
-// cadence deterministically; production passes a LoadInterval closure.
-func runLoop(ctx context.Context, wf workflow, reload func() time.Duration, interval time.Duration, scanner Scanner, settingsStore *settings.Store, hub *dedupscan.Hub) {
-	if interval <= 0 {
-		return // opt-in gate: off by default, honoring "manual first"
+// runLoop drives one workflow's scheduler loop until ctx is cancelled.
+//
+// Two boot gates, both of which start NOTHING (no ticker, ever, until a
+// restart) when they fail: interval <= 0, and bootEnabled == false. There is
+// deliberately no live path that starts a stopped loop, so turning a workflow
+// ON always needs a restart; turning a running one OFF takes effect on its next
+// tick. That asymmetry is what the Settings UI's help text promises.
+//
+// Each tick re-reads BOTH gates live: reload for the interval (a change to 0
+// stops the loop cleanly) and enabledKey for the master switch. The enabled
+// read is an inline settingsStore.GetBool rather than a helper or an extra
+// reload return value, matching the DedupVMAFEnabledKey precedent in runCycle —
+// and reload deliberately keeps its bare func() time.Duration shape because the
+// AC15 timing test injects a fixed sub-second cadence through it, which
+// LoadInterval (whole seconds only) cannot express.
+func runLoop(ctx context.Context, wf workflow, reload func() time.Duration, interval time.Duration, bootEnabled bool, enabledKey string, scanner Scanner, settingsStore *settings.Store, hub *dedupscan.Hub) {
+	if interval <= 0 || !bootEnabled {
+		return // off at boot: either gate alone is enough to start nothing
 	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	log.Printf("scanschedule: %s scan scheduler enabled (every %s) — a deliberate opt-in exception to manual-by-default; Scan-only, never Apply", wf, interval)
+	log.Printf("scanschedule: %s scan scheduler enabled (every %s) — Scan-only, never Apply", wf, interval)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// GetBool degrades to the default on any error, so a store hiccup
+			// leaves the schedule running rather than silently stopping it.
+			if enabled, _ := settingsStore.GetBool(ctx, enabledKey, true); !enabled {
+				log.Printf("scanschedule: %s scan disabled — stopping (restart to re-enable)", wf)
+				return
+			}
 			cur := reload()
 			if cur <= 0 {
 				log.Printf("scanschedule: %s interval set to 0 — stopping (restart to re-enable)", wf)

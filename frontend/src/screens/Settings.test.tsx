@@ -170,8 +170,18 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/api/modes/adult/newest-rows")) return jsonResponse([]);
   // PruningRulesSection (Pruning tab) mount GETs — Claude 2026-08-03, F1.
   if (url.includes("/api/pruning-rules")) return jsonResponse([]);
-  if (url.includes("/api/settings/purge-scan-interval"))
-    return jsonResponse({ intervalSeconds: 0 });
+  // OrganizeScanScheduleSection (Organize tab) mount GETs — Claude 2026-08-10.
+  // Six endpoints: one enabled + one interval per workflow. Two suffix matches
+  // cover all six; purge-scan-interval is among them (it moved here out of the
+  // Pruning tab with its Card).
+  if (url.includes("-scan-enabled") && !url.includes("dedup-vmaf-"))
+    return jsonResponse({ enabled: true });
+  if (
+    url.includes("/api/settings/rename-scan-interval") ||
+    url.includes("/api/settings/purge-scan-interval") ||
+    url.includes("/api/settings/dedup-scan-interval")
+  )
+    return jsonResponse({ intervalSeconds: 86400 });
   // FolderPicker's as-you-type fetch; the empty-path case returns the fixed
   // browsable roots, matching the real backend.
   if (url.includes("/api/browse"))
@@ -255,7 +265,15 @@ const renderSettingsWithAdultMode = () => {
 const sectionTabBar = () =>
   within(screen.getByRole("button", { name: "Auth" }).parentElement!);
 const goToSection = (
-  name: "Auth" | "AI" | "Library" | "Usenet" | "Advanced" | "UI" | "Pruning",
+  name:
+    | "Auth"
+    | "AI"
+    | "Library"
+    | "Usenet"
+    | "Advanced"
+    | "UI"
+    | "Pruning"
+    | "Organize",
 ) => fireEvent.click(sectionTabBar().getByRole("button", { name }));
 
 // clickSectionSave clicks the one section-level Save button per tab. The batched-
@@ -3657,11 +3675,37 @@ describe("Pruning is its own top-level section tab", () => {
     ).toBeInTheDocument();
     goToSection("Pruning");
     expect(await screen.findByText("Pruning rules")).toBeInTheDocument();
-    // "Purge scan interval" also labels the DurationSetting's own field —
-    // scope to the Card's heading to avoid ambiguity.
+    // Claude 2026-08-10: the "Purge scan interval" heading assertion that was
+    // here moved to the Organize-tab test below, along with the Card.
+    // Reason: only the scan-interval Card moved; the rules CRUD stayed.
+    // Review if: the Organize tab is ever folded back into Pruning.
     expect(
-      screen.getByRole("heading", { name: "Purge scan interval" }),
+      screen.queryByRole("heading", { name: "Purge scan interval" }),
+    ).toBeNull();
+  });
+});
+
+describe("Organize is its own top-level section tab", () => {
+  it("renders all three scan-schedule panels when selected", async () => {
+    stubFetch();
+    renderSettings();
+    await screen.findByLabelText("Library root folder");
+    expect(
+      sectionTabBar().getByRole("button", { name: "Organize" }),
     ).toBeInTheDocument();
+    goToSection("Organize");
+
+    // One toggle + one interval picker per WORKFLOW (all three modes
+    // together), never one per mode.
+    for (const wf of ["Rename", "Dedup", "Purge"]) {
+      expect(
+        await screen.findByLabelText(`${wf} scheduled scanning enabled`),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByLabelText(`${wf} scan interval`),
+      ).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("switch")).toHaveLength(3);
   });
 });
 

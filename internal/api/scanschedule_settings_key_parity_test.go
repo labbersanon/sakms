@@ -26,6 +26,9 @@ func TestScanScheduleSettingsKeyParity(t *testing.T) {
 		{"purge interval", purgeScanIntervalKey, scanschedule.PurgeIntervalKey},
 		{"dedup interval", dedupScanIntervalKey, scanschedule.DedupIntervalKey},
 		{"dedup vmaf enabled", dedupVMAFScanEnabledKey, scanschedule.DedupVMAFEnabledKey},
+		{"rename enabled", renameScanEnabledKey, scanschedule.RenameEnabledKey},
+		{"purge enabled", purgeScanEnabledKey, scanschedule.PurgeEnabledKey},
+		{"dedup enabled", dedupScanEnabledKey, scanschedule.DedupEnabledKey},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -33,5 +36,20 @@ func TestScanScheduleSettingsKeyParity(t *testing.T) {
 				t.Errorf("key drift: internal/api has %q, internal/scanschedule has %q", c.apiKey, c.schedKey)
 			}
 		})
+	}
+}
+
+// TestScanScheduleDefaultIntervalParity guards the SECOND value this package
+// mirrors by hand rather than importing (see defaultScanIntervalSeconds' own
+// doc): the 24h "on by default" cadence. This one is more dangerous to drift
+// than a key string, because a drift here fails SILENTLY in the worst possible
+// direction — internal/api's copy only decides what a GET reports (so what the
+// Settings UI displays), while internal/scanschedule's copy decides whether
+// anything actually scans. Diverge them and the UI cheerfully reports "on,
+// every 24 hours" for a key the scheduler is treating as off.
+func TestScanScheduleDefaultIntervalParity(t *testing.T) {
+	if defaultScanIntervalSeconds != scanschedule.DefaultIntervalSeconds {
+		t.Errorf("default-interval drift: internal/api has %d, internal/scanschedule has %d",
+			defaultScanIntervalSeconds, scanschedule.DefaultIntervalSeconds)
 	}
 }

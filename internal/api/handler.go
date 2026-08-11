@@ -652,8 +652,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/settings/discover-refresh-interval", putDiscoverRefreshIntervalHandler(settingsStore))
 
 	// General Rename/Purge/Dedup scan scheduler settings (see
-	// internal/scanschedule) — one interval per workflow plus the Dedup
-	// eager-VMAF toggle, all 0/off by default. Settings scalars only; the
+	// internal/scanschedule) — one enabled toggle + one interval per workflow,
+	// plus the Dedup eager-VMAF toggle. The three workflows are ON by default at
+	// a 24h cadence (changed 2026-08-10); dedup-vmaf-scan-enabled stays off by
+	// default, it is the narrower eager-compute opt-in, not a master switch.
+	// Enabled and interval are deliberately SEPARATE endpoints, not one combined
+	// DTO, matching dedup-vmaf-scan-enabled's own precedent — so turning a
+	// workflow off never rewrites its stored interval. Settings scalars only; the
 	// scheduler goroutines live in their own package, started once from main.
 	mux.HandleFunc("GET /api/settings/rename-scan-interval", getScanIntervalHandler(settingsStore, renameScanIntervalKey))
 	mux.HandleFunc("PUT /api/settings/rename-scan-interval", putScanIntervalHandler(settingsStore, renameScanIntervalKey))
@@ -661,6 +666,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/settings/purge-scan-interval", putScanIntervalHandler(settingsStore, purgeScanIntervalKey))
 	mux.HandleFunc("GET /api/settings/dedup-scan-interval", getScanIntervalHandler(settingsStore, dedupScanIntervalKey))
 	mux.HandleFunc("PUT /api/settings/dedup-scan-interval", putScanIntervalHandler(settingsStore, dedupScanIntervalKey))
+	mux.HandleFunc("GET /api/settings/rename-scan-enabled", getScanEnabledHandler(settingsStore, renameScanEnabledKey))
+	mux.HandleFunc("PUT /api/settings/rename-scan-enabled", putScanEnabledHandler(settingsStore, renameScanEnabledKey))
+	mux.HandleFunc("GET /api/settings/purge-scan-enabled", getScanEnabledHandler(settingsStore, purgeScanEnabledKey))
+	mux.HandleFunc("PUT /api/settings/purge-scan-enabled", putScanEnabledHandler(settingsStore, purgeScanEnabledKey))
+	mux.HandleFunc("GET /api/settings/dedup-scan-enabled", getScanEnabledHandler(settingsStore, dedupScanEnabledKey))
+	mux.HandleFunc("PUT /api/settings/dedup-scan-enabled", putScanEnabledHandler(settingsStore, dedupScanEnabledKey))
 	mux.HandleFunc("GET /api/settings/dedup-vmaf-scan-enabled", getDedupVMAFScanEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/dedup-vmaf-scan-enabled", putDedupVMAFScanEnabledHandler(settingsStore))
 

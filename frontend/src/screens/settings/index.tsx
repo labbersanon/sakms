@@ -77,6 +77,7 @@ import { UISection } from "./UI";
 import { WebhooksSection } from "./Webhooks";
 import { NodesSection } from "./Nodes";
 import { PruningRulesSection } from "./PruningRules";
+import { OrganizeScanScheduleSection } from "./OrganizeScanSchedule";
 import { StashBoxDatabases } from "./StashBoxDatabases";
 
 // SECTION_TABS is the section-level tab set (distinct from the Movies/Series/
@@ -87,6 +88,12 @@ import { StashBoxDatabases } from "./StashBoxDatabases";
 // tab of its own. Library leads, so it is the default.
 const SECTION_TABS: TabDef[] = [
   { id: "library", label: "Library" },
+  // Claude 2026-08-10: Organize sits next to Pruning because Purge's
+  // scan-interval control moved out of the Pruning tab into it (plan
+  // .omc/plans/autopilot-impl-scanschedule-settings-ui.md §5). The name echoes
+  // the app's existing Organize sidebar grouping (Rename/Purge/Dedup, see
+  // screens/organizeTabs.ts) deliberately — it is the same three workflows.
+  { id: "organize", label: "Organize" },
   { id: "pruning", label: "Pruning" },
   { id: "usenet", label: "Usenet" },
   { id: "torrent", label: "Torrent" },
@@ -193,6 +200,16 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
             <SeriesNewSeasonDiscoverySection />
           </Show>
         </SectionSave>
+      </Show>
+
+      {/* Claude 2026-08-10: Rename/Dedup/Purge scheduled-scan controls, one
+          enabled toggle + one interval picker per workflow (all three modes
+          together, matching internal/scanschedule's allModes cycle). No
+          SectionSave wrapper: the Switch is immediate-apply by contract and
+          DurationSetting renders its own Save button when unbatched — wrapping
+          them would half-batch the panel. */}
+      <Show when={section() === "organize"}>
+        <OrganizeScanScheduleSection />
       </Show>
 
       <Show when={section() === "pruning"}>

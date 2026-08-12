@@ -126,7 +126,7 @@ const rowActions = (m: Mode): { id: RowActionId; label: string }[] => [
 function rowActionEnabled(
   id: RowActionId,
   status: string,
-  titleMode: boolean,
+  _titleMode: boolean,
 ): boolean {
   switch (id) {
     case "rename":

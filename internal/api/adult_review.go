@@ -21,11 +21,13 @@ package api
 // Review if: the section-lock or mode.Build API changes shape.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/library"
@@ -37,6 +39,12 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
+
+// adultReviewPreviewTimeout bounds one Review preview GET end to end. A var so
+// tests can tighten it. Fingerprint lookup against stash boxes can be slow;
+// phash recompute can take up to phash.Hasher's internal timeout — this outer
+// cap ensures the modal never waits indefinitely.
+var adultReviewPreviewTimeout = 30 * time.Second
 
 // adultReviewPreviewHandler serves GET /api/modes/{mode}/rename/proposals/{id}/review.
 // Returns 200 + AdultReviewPreview on success.
@@ -83,7 +91,9 @@ func adultReviewPreviewHandler(connStore *connections.Store, scStore *servicecon
 			return
 		}
 
-		preview, err := rename.BuildAdultReview(ctx, sess, libStore, videoHasher, prober, *p)
+		pctx, cancel := context.WithTimeout(ctx, adultReviewPreviewTimeout)
+		defer cancel()
+		preview, err := rename.BuildAdultReview(pctx, sess, libStore, videoHasher, prober, *p)
 		if err != nil {
 			// eligibility errors are 400; resolution errors are 502.
 			if isEligibilityError(err) {

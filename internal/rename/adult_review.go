@@ -101,10 +101,12 @@ func BuildAdultReview(
 		}
 	}
 
-	// DB recheck: same cascade as identifyAdultFiles (phash-first, Identify
-	// fallback). Called directly rather than via identifyAdultFiles because
-	// that function is batch-shaped and re-hashes. Any error is captured into
-	// RecheckError; the local path must still work without a catalog hit.
+	// DB recheck: fingerprint lookup only — NOT the full Identify (AI/text)
+	// pipeline. Review GET must return quickly so the modal is usable; scan-time
+	// identifyAdultFiles already ran Identify when the row was created. A
+	// synchronous AI/web-search replay here left web-identified rows stuck on
+	// "Loading preview…" for minutes. Any lookup error is captured into
+	// RecheckError; the local confirm path must still work without a catalog hit.
 	if sess != nil && sess.Identify != nil && preview.PHash != "" {
 		matches, lerr := sess.Identify.LookupFingerprints(ctx, []string{preview.PHash})
 		if lerr != nil {
@@ -116,19 +118,6 @@ func BuildAdultReview(
 			preview.CatalogTitle = m.Title
 			preview.CatalogStudio = m.Studio
 			preview.CatalogDate = m.Date
-		} else {
-			// Fingerprint miss: fall back to Identify (AI/text pipeline).
-			m2, ierr := sess.Identify.Identify(ctx, filepath.Base(videoPath), filepath.Base(filepath.Dir(videoPath)))
-			if ierr != nil {
-				preview.RecheckError = appendRecheckError(preview.RecheckError,
-					fmt.Sprintf("identify fallback: %v", ierr))
-			} else if m2 != nil && m2.Box != "" && m2.SceneID != "" {
-				preview.CatalogBox = m2.Box
-				preview.CatalogSceneID = m2.SceneID
-				preview.CatalogTitle = m2.Title
-				preview.CatalogStudio = m2.Studio
-				preview.CatalogDate = m2.Date
-			}
 		}
 	}
 

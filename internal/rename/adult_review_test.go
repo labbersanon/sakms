@@ -161,6 +161,39 @@ func TestBuildAdultReview_CatalogHitPopulatesCatalogFields(t *testing.T) {
 	}
 }
 
+// TestBuildAdultReview_FingerprintMissSkipsIdentify verifies that a fingerprint
+// lookup miss does not invoke the slow Identify (AI/text) pipeline — the preview
+// stays on web-identified fields and returns immediately.
+func TestBuildAdultReview_FingerprintMissSkipsIdentify(t *testing.T) {
+	root := t.TempDir()
+	videoPath := writeSceneFile(t, root, "raw.mp4")
+
+	const phash = "missHash"
+	hasher := &fakeHasher{hashes: map[string]string{videoPath: phash}}
+	prober := &fakeProber{}
+
+	// Box configured but phash not in catalog → lookup miss. No Identify wiring
+	// needed: if Identify ran it would block on nil AI; fast return proves skip.
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{}, nil, nil)
+	sess := adultTestSessionWithBoxes(map[string]*stashbox.Client{"stashdb": stashdb})
+
+	p := webIdentifiedProposal(videoPath, root)
+	p.PHash = phash
+	p.Title = "Web Only Title"
+	p.Studio = "Web Studio"
+
+	preview, err := BuildAdultReview(context.Background(), sess, nil, hasher, prober, p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if preview.CatalogBox != "" || preview.CatalogSceneID != "" {
+		t.Errorf("fingerprint miss should not populate catalog fields, got box=%q scene=%q", preview.CatalogBox, preview.CatalogSceneID)
+	}
+	if !strings.Contains(preview.ProposedName, "Web Only Title") {
+		t.Errorf("proposed name should use web-identified title, got %q", preview.ProposedName)
+	}
+}
+
 // TestBuildAdultReview_EligibilityGuards checks that non-Review-eligible
 // proposals are rejected.
 func TestBuildAdultReview_EligibilityGuards(t *testing.T) {

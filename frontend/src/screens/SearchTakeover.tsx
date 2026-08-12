@@ -187,7 +187,6 @@ type PickedShow = {
   origin: "movies" | "series";
 };
 
-type SeriesSearchBy = "series" | "episode";
 type SeriesDatabase = "tmdb" | "tvdb";
 
 function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
@@ -240,11 +239,9 @@ export const SearchTakeover: Component<{
   // For a move this is the TARGET mode; for a repick it is the proposal's own.
   searchMode: Mode;
   initialQuery: string;
-  // initialSeriesSearchBy seeds the Series-only "Search by" dropdown. TMDB
-  // catalog search matches series (TV show) names — not episode titles. The
-  // dropdown labels what the operator is typing in the single query box.
-  initialSeriesSearchBy?: SeriesSearchBy;
   // initialSeriesDatabase seeds the Series-only database dropdown (TMDB vs TVDB).
+  // TMDB searches series names; TVDB searches episode titles — one field, hint
+  // follows the database choice.
   initialSeriesDatabase?: SeriesDatabase;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
@@ -277,21 +274,15 @@ export const SearchTakeover: Component<{
   onCancel: () => void;
 }> = (props) => {
   const [query, setQuery] = createSignal(props.initialQuery);
-  const [seriesSearchBy, setSeriesSearchBy] = createSignal<SeriesSearchBy>(
-    props.initialSeriesSearchBy ?? "series",
-  );
   const [seriesDatabase, setSeriesDatabase] = createSignal<SeriesDatabase>(
     props.initialSeriesDatabase ?? "tmdb",
   );
-  // `submitted` / `submittedSeriesSearchBy` start empty unless autoSearch asked
+  // `submitted` / `submittedSeriesDatabase` start empty unless autoSearch asked
   // for a mount-time search. See the autoSearch prop doc: an eager fetch on a
   // move entry point would break the "Cancel issues zero requests" guarantee.
   const [submitted, setSubmitted] = createSignal(
     props.autoSearch ? props.initialQuery : "",
   );
-  const [submittedSeriesSearchBy, setSubmittedSeriesSearchBy] = createSignal<
-    SeriesSearchBy
-  >(props.autoSearch ? (props.initialSeriesSearchBy ?? "series") : "series");
   const [submittedSeriesDatabase, setSubmittedSeriesDatabase] = createSignal<
     SeriesDatabase
   >(props.autoSearch ? (props.initialSeriesDatabase ?? "tmdb") : "tmdb");
@@ -299,12 +290,10 @@ export const SearchTakeover: Component<{
   const [results] = createResource(
     () => ({
       q: submitted(),
-      seriesSearchBy:
-        props.searchMode === "series" ? submittedSeriesSearchBy() : "series",
       seriesDatabase:
         props.searchMode === "series" ? submittedSeriesDatabase() : "tmdb",
     }),
-    async ({ q, seriesSearchBy, seriesDatabase }): Promise<SearchResult> => {
+    async ({ q, seriesDatabase }): Promise<SearchResult> => {
     // Solid only skips a fetcher for false/null/undefined — a key with an empty
     // query still RUNS the fetcher. This guard is what makes autoSearch={false}
     // issue zero network calls on mount while the resource still resolves.
@@ -320,8 +309,7 @@ export const SearchTakeover: Component<{
       if (!tvdbQ) {
         return { kind: "catalog", items: [] };
       }
-      const kind = seriesSearchBy === "episode" ? "episode" : "series";
-      const items = await tvdbSearch(tvdbQ, kind);
+      const items = await tvdbSearch(tvdbQ, "episode");
       return {
         kind: "catalog",
         items: items.map((item) => tvdbItemToHit(item)),
@@ -533,11 +521,7 @@ export const SearchTakeover: Component<{
           e.preventDefault();
           setSubmitted(query());
           if (props.searchMode === "series") {
-            const db = seriesDatabase();
-            setSubmittedSeriesSearchBy(
-              db === "tmdb" ? "series" : seriesSearchBy(),
-            );
-            setSubmittedSeriesDatabase(db);
+            setSubmittedSeriesDatabase(seriesDatabase());
           }
         }}
       >
@@ -546,32 +530,12 @@ export const SearchTakeover: Component<{
             class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
             aria-label="Database"
             value={seriesDatabase()}
-            onChange={(e) => {
-              const db = e.currentTarget.value as SeriesDatabase;
-              setSeriesDatabase(db);
-              if (db === "tmdb" && seriesSearchBy() === "episode") {
-                setSeriesSearchBy("series");
-              }
-            }}
+            onChange={(e) =>
+              setSeriesDatabase(e.currentTarget.value as SeriesDatabase)
+            }
           >
             <option value="tmdb">TMDB</option>
             <option value="tvdb">TVDB</option>
-          </select>
-          <select
-            class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
-            aria-label="Search by"
-            value={seriesSearchBy()}
-            onChange={(e) =>
-              setSeriesSearchBy(e.currentTarget.value as SeriesSearchBy)
-            }
-          >
-            <option value="series">Series name</option>
-            <option
-              value="episode"
-              disabled={seriesDatabase() === "tmdb"}
-            >
-              Episode title
-            </option>
           </select>
         </Show>
         <input
@@ -581,19 +545,14 @@ export const SearchTakeover: Component<{
           aria-label="Catalog search query"
           placeholder={
             props.searchMode === "series"
-              ? seriesSearchBy() === "series"
+              ? seriesDatabase() === "tmdb"
                 ? "Series name"
-                : "Episode title"
+                : "Episode name"
               : undefined
           }
         />
         <Button type="submit">Search</Button>
       </form>
-      <Show when={props.searchMode === "series" && seriesDatabase() === "tmdb"}>
-        <Muted class="mt-1">
-          Episode title search uses TVDB — switch database to TVDB.
-        </Muted>
-      </Show>
 
       <Show when={props.notes}>
         <div class="mt-3 rounded-md border border-border bg-surface-2 p-3">

@@ -1799,13 +1799,6 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                   ? p.title || p.sourceName || ""
                   : p.sourceName
               }
-              initialSeriesSearchBy={
-                st.kind === "repick" && props.mode === "series"
-                  ? p.title
-                    ? "series"
-                    : "episode"
-                  : undefined
-              }
               initialSeriesDatabase={
                 st.kind === "repick" && props.mode === "series"
                   ? p.title

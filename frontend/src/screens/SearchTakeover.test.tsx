@@ -955,7 +955,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     for (const u of searches) expect(u).toContain("q=A%20Show");
   });
 
-  it("searches TMDB with the single query when Series name is selected", async () => {
+  it("searches TMDB with the single query field", async () => {
     const fetchMock = mergeFetch([shortFilm()], [catalogItem()]);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -964,7 +964,6 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
         heading="Re-pick “episode.mkv”"
         searchMode="series"
         initialQuery="Duck Soup"
-        initialSeriesSearchBy="series"
         autoSearch={false}
         onCommit={commitSpy()}
         onDone={vi.fn()}
@@ -1317,7 +1316,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
 });
 
 describe("SearchTakeover — Series database dropdown", () => {
-  it("grays out Episode title when TMDB is selected", () => {
+  it("shows Series name placeholder on TMDB and Episode name on TVDB", () => {
     render(() => (
       <SearchTakeover
         heading="Re-pick"
@@ -1330,12 +1329,14 @@ describe("SearchTakeover — Series database dropdown", () => {
       />
     ));
 
-    const episodeOpt = screen.getByRole("option", { name: "Episode title" });
-    expect(episodeOpt).toBeDisabled();
-    expect(screen.getByText(/Episode title search uses TVDB/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Series name")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Database"), {
+      target: { value: "tvdb" },
+    });
+    expect(screen.getByPlaceholderText("Episode name")).toBeInTheDocument();
   });
 
-  it("calls tvdb-search when TVDB and Episode title are selected", async () => {
+  it("calls tvdb-search with kind=episode when TVDB is selected", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tvdb-search")) {
         return jsonResponse([
@@ -1359,7 +1360,6 @@ describe("SearchTakeover — Series database dropdown", () => {
         searchMode="series"
         initialQuery="Duck Soup"
         initialSeriesDatabase="tvdb"
-        initialSeriesSearchBy="episode"
         autoSearch={false}
         onCommit={commitSpy()}
         onDone={vi.fn()}

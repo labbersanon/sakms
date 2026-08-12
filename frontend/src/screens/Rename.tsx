@@ -140,7 +140,7 @@ function rowActionEnabled(
       // the "review" id specifically, consulting isAdultWebIdentified.
       return false;
     case "repick":
-      return titleMode && (status === "pending" || status === "unmatched");
+      return status === "pending" || status === "unmatched";
     case "dismiss":
       return status === "pending" || status === "unmatched";
     case "delete":
@@ -1104,6 +1104,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   // no-premature-abstraction convention says to leave duplicated.
   // See .omc/plans/autopilot-impl.md §5.1 R9.
   const commitRepick = (p: Proposal) => async (pick: TakeoverPick) => {
+    if (pick.kind === "adult") {
+      await repickProposal(p.id, {
+        title: pick.title,
+        box: pick.box,
+        sceneId: pick.sceneId,
+        studio: pick.studio,
+        date: pick.date,
+      });
+      return;
+    }
     if (pick.kind !== "catalog") throw new Error("repick requires a catalog match");
     // `!= null`, never truthiness — season 0 is Specials (unchanged semantics,
     // now enforced by TakeoverPick's shape: the pair is present or absent).
@@ -1724,16 +1734,11 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         </div>
       </Show>
 
-      {/* ONE mount for BOTH entry points, and it deliberately carries NO
-          isTitleMode() guard — this is intentional, not an oversight
-          (.omc/plans/autopilot-impl.md §5.1). (a) Re-pick is already gated
-          upstream: rowActionEnabled("repick", ...) requires titleMode, so a
-          repick takeover is structurally unreachable for Adult rows through
-          the UI. (b) Move MUST mount for Adult rows (AC7) — adding a guard
-          here would silently break every Adult move. Do not "fix" this.
-          ModeTabs stays visible above it (it lives in the parent shell,
-          outside RenameQueue); a mode switch closes the takeover through
-          resetOnModeChange. */}
+      {/* ONE mount for BOTH entry points (.omc/plans/autopilot-impl.md §5.1).
+          Re-pick and Move share SearchTakeover; repick uses props.mode as
+          searchMode (same catalog as the proposal), move uses st.target.
+          ModeTabs stays visible above it; a mode switch closes the takeover
+          through resetOnModeChange. */}
       <Show when={takeover()}>
         {(t) => {
           // Bound ONCE so TypeScript's discriminant narrowing carries across

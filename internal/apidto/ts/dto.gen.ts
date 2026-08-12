@@ -1221,15 +1221,15 @@ export interface Proposal {
 }
 /**
  * RepickRequest is the body of POST /api/proposals/{id}/repick — Rename's
- * manual-override path when Scan's automatic TMDB match was wrong or scored too
- * low to auto-accept (Movies/Series only; Adult identifies via a different id
- * space with its own give-back correction). TMDBID and Title are both required
- * and carry the NEWLY chosen match from the tmdb-search result, never the
- * proposal's current tmdbId; Year is optional (parsed from the result's
- * release date when present). Mirrors internal/api's repickProposalRequest.
+ * manual-override path when Scan's automatic match was wrong or scored too low
+ * to auto-accept. Movies/Series require TMDBID and Title from tmdb-search;
+ * Adult requires Box, SceneID, and Title from scene-search (studio/date echo
+ * the chosen AdultSceneCandidate). Year is optional on TMDB picks (parsed from
+ * the result's release date when present). Mirrors internal/api's
+ * repickProposalRequest.
  */
 export interface RepickRequest {
-  tmdbId: number /* int */;
+  tmdbId?: number /* int */;
   title: string;
   year?: number /* int */;
   /**
@@ -1247,6 +1247,14 @@ export interface RepickRequest {
    */
   seasonNumber?: number /* int */;
   episodeNumber?: number /* int */;
+  /**
+   * --- Adult (stash-box / TPDB) ---
+   * Box and SceneID are required when the proposal's mode is adult.
+   */
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
 }
 /**
  * MoveModeRequest is the body of POST /api/proposals/{id}/move-mode — the

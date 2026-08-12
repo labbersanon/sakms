@@ -285,6 +285,53 @@ func TestRepickWorkflow_Series_WeakMatchSearchRepickApply_EndToEnd(t *testing.T)
 	}
 }
 
+func TestRepickProposalHandler_AdultSceneSearchRepick(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	saved, err := propStore.ReplacePending(ctx, "adult", proposals.Rename, []proposals.Proposal{
+		{
+			Status:         proposals.Unmatched,
+			SourceName:     "garbled.mp4",
+			SourcePath:     "/inbox/garbled.mp4",
+			RootFolderPath: "/media/Adult",
+			Reason:         "web-identified",
+			Title:          "Wrong Title",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	id := saved[0].ID
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	repickBody := strings.NewReader(`{"title":"Catalog Scene","box":"stashdb","sceneId":"scene-uuid","studio":"Studio X","date":"2024-05-01"}`)
+	repickResp, err := http.Post(srv.URL+"/api/proposals/"+strconv.FormatInt(id, 10)+"/repick", "application/json", repickBody)
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer repickResp.Body.Close()
+	if repickResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(repickResp.Body)
+		t.Fatalf("expected 200, got %d: %s", repickResp.StatusCode, body)
+	}
+
+	var updated proposals.Proposal
+	if err := json.NewDecoder(repickResp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if updated.Status != proposals.Pending {
+		t.Fatalf("expected pending after repick, got %q", updated.Status)
+	}
+	if updated.Title != "Catalog Scene" || updated.GiveBackBox != "stashdb" || updated.GiveBackSceneID != "scene-uuid" {
+		t.Fatalf("unexpected identity after repick: %+v", updated)
+	}
+	if updated.Studio != "Studio X" || updated.Date != "2024-05-01" {
+		t.Fatalf("expected studio/date echoed, got studio=%q date=%q", updated.Studio, updated.Date)
+	}
+}
+
 func TestTMDBSearchHandler_RejectsAdultMode(t *testing.T) {
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))

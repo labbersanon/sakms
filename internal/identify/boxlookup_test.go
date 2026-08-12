@@ -427,6 +427,33 @@ func TestListSceneCandidates_EmptyOrderFallsBackToLegacyCascade(t *testing.T) {
 	}
 }
 
+func TestListSceneCandidates_DeduplicatesByBoxAndSceneID(t *testing.T) {
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"dup","title":"First","release_date":"2020-01-01","studio":{"name":"S","parent":null}},
+				{"id":"dup","title":"Duplicate","release_date":"2020-01-02","studio":{"name":"S2","parent":null}},
+				{"id":"other","title":"Other","release_date":"2021-01-01","studio":{"name":"S3","parent":null}}
+			]}}}`))
+		},
+	}, nil)
+
+	items, softErrs := b.ListSceneCandidates(context.Background(), "Some Title", []DatabaseRef{{Name: "stashdb"}})
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 deduplicated items, got %d: %+v", len(items), items)
+	}
+	if items[0].SceneID != "dup" || items[0].Title != "First" {
+		t.Fatalf("first dup row should win: %+v", items[0])
+	}
+	if items[1].SceneID != "other" {
+		t.Fatalf("expected second unique scene, got %+v", items[1])
+	}
+}
+
 // TestMatchResult_RuntimeSecondsThreadedThrough is the regression test for a
 // live bug: MatchResult.RuntimeSeconds wasn't populated by ANY lookup path
 // until this fix, so every Adult grab request built from a cached match had

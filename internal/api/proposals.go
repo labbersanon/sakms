@@ -870,7 +870,7 @@ func dismissProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 }
 
 type repickProposalRequest struct {
-	TMDBID int    `json:"tmdbId"`
+	TMDBID int    `json:"tmdbId,omitempty"`
 	Title  string `json:"title"`
 	Year   int    `json:"year,omitempty"`
 	// SeasonNumber/EpisodeNumber are OPTIONAL and Series-only — the operator's
@@ -882,6 +882,12 @@ type repickProposalRequest struct {
 	// carries the full rationale.
 	SeasonNumber  *int `json:"seasonNumber,omitempty"`
 	EpisodeNumber *int `json:"episodeNumber,omitempty"`
+
+	// --- Adult (stash-box / TPDB) ---
+	Box     string `json:"box,omitempty"`
+	SceneID string `json:"sceneId,omitempty"`
+	Studio  string `json:"studio,omitempty"`
+	Date    string `json:"date,omitempty"`
 }
 
 // repickProposalHandler is Rename's manual-override workflow: when Scan's
@@ -893,13 +899,11 @@ type repickProposalRequest struct {
 // proposal back to Pending (or correcting an already-Pending one) so it
 // becomes actionable via the normal Apply path.
 //
-// Movies/Series Rename proposals only — Purge/Dedup have no "wrong
-// identification" concept to correct, and Adult's Whisparr-lookup
-// identification uses a different id space (foreignId, not tmdbId) whose
-// correction path is moveProposalModeHandler (POST
-// /api/proposals/{id}/move-mode), not this one. Applied/Dismissed proposals
-// are refused: re-picking one would silently rewrite the queue's record of
-// what already happened without touching anything on disk to match.
+// Movies/Series Rename proposals use TMDB ids; Adult uses (box, scene_id) from
+// scene-search. Purge/Dedup have no "wrong identification" concept to correct.
+// Applied/Dismissed proposals are refused: re-picking one would silently rewrite
+// the queue's record of what already happened without touching anything on disk
+// to match.
 func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseProposalID(w, r)
@@ -913,8 +917,8 @@ func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if req.TMDBID <= 0 || req.Title == "" {
-			http.Error(w, "tmdbId and title are both required", http.StatusBadRequest)
+		if req.Title == "" {
+			http.Error(w, "title is required", http.StatusBadRequest)
 			return
 		}
 
@@ -923,12 +927,48 @@ func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 			proposalNotFoundOr500(w, err)
 			return
 		}
-		if p.Workflow != proposals.Rename || (p.Mode != mode.Movies && p.Mode != mode.Series) {
-			http.Error(w, "searching is only supported for movies/series rename proposals", http.StatusBadRequest)
+		if p.Workflow != proposals.Rename {
+			http.Error(w, "searching is only supported for rename proposals", http.StatusBadRequest)
 			return
 		}
 		if p.Status != proposals.Pending && p.Status != proposals.Unmatched {
 			http.Error(w, fmt.Sprintf("proposal %d is %q — only pending or unmatched proposals can be searched", id, p.Status), http.StatusBadRequest)
+			return
+		}
+
+		if p.Mode == mode.Adult {
+			if req.Box == "" || req.SceneID == "" {
+				http.Error(w, "box and sceneId are both required", http.StatusBadRequest)
+				return
+			}
+			if req.TMDBID > 0 || req.SeasonNumber != nil || req.EpisodeNumber != nil {
+				http.Error(w, "tmdbId and season/episode are not supported for adult rename proposals", http.StatusBadRequest)
+				return
+			}
+			if err := propStore.RepickAdultScene(ctx, id, req.Title, req.Studio, req.Date, req.Box, req.SceneID); err != nil {
+				proposalNotFoundOr500(w, err)
+				return
+			}
+			updated, err := propStore.Get(ctx, id)
+			if err != nil {
+				proposalNotFoundOr500(w, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(updated)
+			return
+		}
+
+		if p.Mode != mode.Movies && p.Mode != mode.Series {
+			http.Error(w, "searching is only supported for movies, series, and adult rename proposals", http.StatusBadRequest)
+			return
+		}
+		if req.TMDBID <= 0 {
+			http.Error(w, "tmdbId and title are both required", http.StatusBadRequest)
+			return
+		}
+		if req.Box != "" || req.SceneID != "" {
+			http.Error(w, "box and sceneId are not supported for movies/series rename proposals", http.StatusBadRequest)
 			return
 		}
 

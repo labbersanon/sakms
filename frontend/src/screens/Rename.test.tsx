@@ -541,6 +541,70 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
   });
 });
 
+describe("Rename — Adult Re-pick (scene-search → catalog match)", () => {
+  it("posts box/sceneId to /repick when an adult scene is chosen", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/series/rename/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/adult/rename/proposals"))
+        return jsonResponse([
+          proposal({
+            id: 21,
+            status: "unmatched",
+            sourceName: "mystery.mp4",
+            title: "",
+            reason: "no match",
+          }),
+        ]);
+      if (url.includes("/api/modes/adult/scene-search"))
+        return jsonResponse({
+          items: [
+            {
+              box: "stashdb",
+              sceneId: "uuid-scene-1",
+              title: "Right Scene",
+              studio: "Studio A",
+              date: "2023-06-15",
+            },
+          ],
+        });
+      if (
+        url.includes("/api/proposals/21/repick") &&
+        (init?.method ?? "").toUpperCase() === "POST"
+      )
+        return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("mystery.mp4");
+
+    await runRowAction("mystery.mp4", "repick");
+
+    expect(
+      await screen.findByText(/Search for a new match for “mystery\.mp4”/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByLabelText("Use Right Scene"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.includes("/repick"))).toBe(true),
+    );
+    const repick = calls.find((c) => c.url.includes("/repick"));
+    expect(repick?.body).toMatchObject({
+      title: "Right Scene",
+      box: "stashdb",
+      sceneId: "uuid-scene-1",
+      studio: "Studio A",
+      date: "2023-06-15",
+    });
+    expect(repick?.body).not.toHaveProperty("tmdbId");
+  });
+});
+
 // US-001/US-002 (.omc/state/sessions/432c4084-7a92-43fb-9208-320d3452ed3c/prd.json):
 // rowActionEnabled treats "repick" (and dismiss/delete/move:*) as valid for
 // BOTH "unmatched" and "pending" BY DESIGN, so an already-matched row can

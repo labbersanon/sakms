@@ -192,17 +192,32 @@ type SceneCandidate struct {
 }
 
 // ListSceneCandidates fans a title query across every configured stash box in
-// order plus TPDB, returning the raw union with NO similarity filtering —
-// the operator is the filter here, unlike the automatic identification path
-// (SearchStashBox/SearchTPDB above). Per-box failures are returned as strings
-// rather than aborting the search: one unreachable box must not blank the
-// whole result. Deliberately NOT cached: the automatic path's copy-on-return
-// cache (cache.go) is keyed on a collapsed MatchResult and would serve stale/
+// order plus TPDB, returning the union with NO similarity filtering — the
+// operator is the filter here, unlike the automatic identification path
+// (SearchStashBox/SearchTPDB above). Duplicate (box, scene_id) pairs are
+// dropped so a box that returns the same scene twice does not inflate the
+// capped result set. Per-box failures are returned as strings rather than
+// aborting the search: one unreachable box must not blank the whole result.
+// Deliberately NOT cached: the automatic path's copy-on-return cache
+// (cache.go) is keyed on a collapsed MatchResult and would serve stale/
 // incompatible entries here.
 func (b *BoxSearcher) ListSceneCandidates(ctx context.Context, title string, order []DatabaseRef) (items []SceneCandidate, softErrs []string) {
 	refs := order
 	if len(refs) == 0 {
 		refs = legacyCascade
+	}
+	seen := make(map[string]struct{})
+
+	appendCandidate := func(c SceneCandidate) {
+		if len(items) >= maxSceneCandidates {
+			return
+		}
+		key := c.Box + "\x00" + c.SceneID
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		items = append(items, c)
 	}
 
 	for _, ref := range refs {
@@ -219,7 +234,7 @@ func (b *BoxSearcher) ListSceneCandidates(ctx context.Context, title string, ord
 			if len(items) >= maxSceneCandidates {
 				return items, softErrs
 			}
-			items = append(items, SceneCandidate{
+			appendCandidate(SceneCandidate{
 				Box:             ref.Name,
 				SceneID:         sc.ID,
 				Title:           sc.Title,
@@ -240,7 +255,7 @@ func (b *BoxSearcher) ListSceneCandidates(ctx context.Context, title string, ord
 				if len(items) >= maxSceneCandidates {
 					break
 				}
-				items = append(items, SceneCandidate{
+				appendCandidate(SceneCandidate{
 					Box:             "tpdb",
 					SceneID:         sc.ID,
 					Title:           sc.Title,

@@ -1795,7 +1795,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
               }
               searchMode={st.kind === "repick" ? props.mode : st.target}
               initialQuery={
-                st.kind === "repick" ? p.title || p.sourceName || "" : p.sourceName
+                st.kind === "repick"
+                  ? props.mode === "series" && p.title
+                    ? p.sourceName || ""
+                    : p.title || p.sourceName || ""
+                  : p.sourceName
+              }
+              initialShowTitle={
+                st.kind === "repick" && props.mode === "series"
+                  ? p.title || undefined
+                  : undefined
               }
               // LOAD-BEARING and deliberately asymmetric: repick searches on
               // mount, move must NOT — a mount-time GET would break the move

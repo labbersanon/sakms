@@ -205,6 +205,11 @@ export const SearchTakeover: Component<{
   // For a move this is the TARGET mode; for a repick it is the proposal's own.
   searchMode: Mode;
   initialQuery: string;
+  // initialShowTitle seeds the optional Series-only show-title field (TMDB
+  // catalog lookup). When non-empty on submit, it overrides initialQuery for
+  // the movies+series tmdb-search calls — useful when the main box holds an
+  // episode/release hint and the matched show name lives elsewhere on the row.
+  initialShowTitle?: string;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
   // MoveModePanel's deliberately-empty `submitted`. This difference is
@@ -236,25 +241,44 @@ export const SearchTakeover: Component<{
   onCancel: () => void;
 }> = (props) => {
   const [query, setQuery] = createSignal(props.initialQuery);
-  // `submitted` starts empty unless the caller asked for a mount-time search.
-  // See the autoSearch prop doc: an eager fetch on a move entry point would
-  // break the "Cancel issues zero requests" guarantee.
+  const [showTitle, setShowTitle] = createSignal(props.initialShowTitle ?? "");
+  // `submitted` / `submittedShowTitle` start empty unless autoSearch asked for
+  // a mount-time search. See the autoSearch prop doc: an eager fetch on a move
+  // entry point would break the "Cancel issues zero requests" guarantee.
   const [submitted, setSubmitted] = createSignal(
     props.autoSearch ? props.initialQuery : "",
   );
+  const [submittedShowTitle, setSubmittedShowTitle] = createSignal(
+    props.autoSearch ? (props.initialShowTitle ?? "") : "",
+  );
 
-  const [results] = createResource(submitted, async (q): Promise<SearchResult> => {
-    // Solid only skips a fetcher for false/null/undefined — "" RUNS it. This
-    // guard is what makes autoSearch={false} issue zero network calls on mount
-    // while the resource still resolves. It looks like dead code; it is not.
-    if (!q.trim()) {
-      return props.searchMode === "adult"
-        ? { kind: "adult", items: [] }
-        : { kind: "catalog", items: [] };
+  const catalogTmdbQuery = (q: string, showTitleQ: string): string => {
+    if (props.searchMode === "series" && showTitleQ.trim()) {
+      return showTitleQ.trim();
     }
+    return q.trim();
+  };
+
+  const [results] = createResource(
+    () => ({
+      q: submitted(),
+      showTitle: props.searchMode === "series" ? submittedShowTitle() : "",
+    }),
+    async ({ q, showTitle: showTitleQ }): Promise<SearchResult> => {
+    // Solid only skips a fetcher for false/null/undefined — a key with both
+    // strings empty still RUNS the fetcher. This guard is what makes
+    // autoSearch={false} issue zero network calls on mount while the resource
+    // still resolves. It looks like dead code; it is not.
     if (props.searchMode === "adult") {
+      if (!q.trim()) {
+        return { kind: "adult", items: [] };
+      }
       const res = await adultSceneSearch(q);
       return { kind: "adult", items: res.items, errors: res.errors };
+    }
+    const tmdbQ = catalogTmdbQuery(q, showTitleQ);
+    if (!tmdbQ) {
+      return { kind: "catalog", items: [] };
     }
     // SERIES SEARCHES BOTH CATALOGS. The motivating case is a short film that
     // TMDB files under movies but the operator tracks in their Series library;
@@ -280,8 +304,8 @@ export const SearchTakeover: Component<{
     // is real and accepted: a movies-catalog failure now fails a series search.
     if (props.searchMode === "series") {
       const [movies, series] = await Promise.all([
-        tmdbSearch("movies", q),
-        tmdbSearch("series", q),
+        tmdbSearch("movies", tmdbQ),
+        tmdbSearch("series", tmdbQ),
       ]);
       return {
         kind: "catalog",
@@ -297,12 +321,13 @@ export const SearchTakeover: Component<{
     // than a cast of props.searchMode: adult and series have both returned by
     // this line, so the literal is honest and a cast would silently admit
     // "adult" if that narrowing ever broke.
-    const items = await tmdbSearch(props.searchMode, q);
+    const items = await tmdbSearch(props.searchMode, tmdbQ);
     return {
       kind: "catalog",
       items: items.map((item) => ({ mode: "movies" as const, item })),
     };
-  });
+  },
+  );
 
   const catalogItems = (): CatalogHit[] => {
     const r = results();
@@ -443,10 +468,13 @@ export const SearchTakeover: Component<{
       </Show>
 
       <form
-        class="mt-3 flex items-center gap-2"
+        class="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center"
         onSubmit={(e) => {
           e.preventDefault();
           setSubmitted(query());
+          if (props.searchMode === "series") {
+            setSubmittedShowTitle(showTitle());
+          }
         }}
       >
         <input
@@ -454,7 +482,21 @@ export const SearchTakeover: Component<{
           value={query()}
           onInput={(e) => setQuery(e.currentTarget.value)}
           aria-label="Catalog search query"
+          placeholder={
+            props.searchMode === "series"
+              ? "Episode or release title"
+              : undefined
+          }
         />
+        <Show when={props.searchMode === "series"}>
+          <input
+            class="w-80 max-w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            value={showTitle()}
+            onInput={(e) => setShowTitle(e.currentTarget.value)}
+            aria-label="Show title (optional)"
+            placeholder="Show title (optional)"
+          />
+        </Show>
         <Button type="submit">Search</Button>
       </form>
 

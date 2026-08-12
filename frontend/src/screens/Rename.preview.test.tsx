@@ -166,7 +166,7 @@ describe("Rename — source-file preview (queue row control)", () => {
     // test pass against an empty table.
     await screen.findByText("Applied.mkv");
     expect(screen.getByText("Dismissed.mkv")).toBeInTheDocument();
-    expect(document.querySelectorAll("tbody tr")).toHaveLength(2);
+    expect(document.querySelectorAll("[data-proposal-row]")).toHaveLength(2);
 
     expect(screen.queryByLabelText("Open preview for Applied.mkv")).toBeNull();
     expect(

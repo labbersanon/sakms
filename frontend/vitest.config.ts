@@ -22,6 +22,12 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    environmentOptions: {
+      // Relative /api/* fetch paths need a document base; without this, Node's
+      // fetch rejects with ERR_INVALID_URL when a test's stub is torn down
+      // before ActivityLogPanel's async refetch settles.
+      url: "http://localhost/",
+    },
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],

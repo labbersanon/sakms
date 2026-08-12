@@ -625,8 +625,8 @@ describe("Rename — Re-pick selection reset (stale dropdown after a successful 
 
     render(() => <Rename />);
     const row = (await screen.findByText("Already.Matched.mkv")).closest(
-      "tr",
-    )!;
+      "tr, [data-proposal-row]",
+    )! as HTMLElement;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("rename"); // seeded default, before the manual override
 
@@ -1050,7 +1050,7 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
     // regression that is not one. "Source"/"Scan"/"Page size" below are the
     // load-bearing negatives: those are gone outright.
     expect(screen.queryByText("Vanish.Me.mkv")).toBeNull();
-    expect(screen.queryByText("Source")).toBeNull();
+    expect(document.querySelectorAll("[data-proposal-row]")).toHaveLength(0);
     expect(screen.queryByText("Scan")).toBeNull();
     expect(screen.queryByLabelText("Page size")).toBeNull();
     // ModeTabs is deliberately NOT gone — it lives outside RenameQueue. This
@@ -1079,7 +1079,7 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
     // Exact-match on purpose — see N1's comment; the move heading also
     // contains this name, so a regex here would fail for the wrong reason.
     expect(screen.queryByText("Move.Me.mkv")).toBeNull();
-    expect(screen.queryByText("Source")).toBeNull();
+    expect(document.querySelectorAll("[data-proposal-row]")).toHaveLength(0);
     expect(screen.queryByText("Scan")).toBeNull();
     expect(screen.queryByLabelText("Page size")).toBeNull();
     expect(screen.getByText("Movies")).toBeInTheDocument();
@@ -1128,7 +1128,7 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
       expect(screen.queryByLabelText("Back to list")).toBeNull(),
     );
     expect(await screen.findByText("Commit.Me.mkv")).toBeInTheDocument();
-    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-proposal-row]")).toHaveLength(1);
 
     // EXACTLY one refetch — not zero (a stale list still showing a proposal
     // that has moved to another section) and not two (onDone's refetch racing
@@ -1201,7 +1201,7 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
     await waitFor(() => expect(main.scrollTop).toBe(400));
 
     expect(await screen.findByText("Scroll.Me.mkv")).toBeInTheDocument();
-    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-proposal-row]")).toHaveLength(1);
     expect(screen.getByText("Scroll Me")).toBeInTheDocument();
     expect(
       (
@@ -1295,7 +1295,7 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
     // Only now, with the real table back, does the restore fire.
     expect(await screen.findByText("Commit.Scroll.mkv")).toBeInTheDocument();
     await waitFor(() => expect(main.scrollTop).toBe(400));
-    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-proposal-row]")).toHaveLength(1);
     expect(screen.getByText("Commit Scroll")).toBeInTheDocument();
   });
 });

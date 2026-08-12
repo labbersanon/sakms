@@ -68,9 +68,10 @@ export function fetchProposalPage(
 export function fetchOrganizeEvents(
   workflow: OrganizeWorkflow,
   limit = 50,
+  signal?: AbortSignal,
 ): Promise<OrganizeEvent[]> {
   const q = new URLSearchParams({ workflow, limit: String(limit) });
-  return api<OrganizeEvent[]>(`/api/organize/events?${q}`);
+  return api<OrganizeEvent[]>(`/api/organize/events?${q}`, { signal });
 }
 
 export function fetchPendingIDs(mode: string): Promise<number[]> {

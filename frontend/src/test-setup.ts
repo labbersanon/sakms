@@ -30,3 +30,28 @@ class NoopIntersectionObserver implements IntersectionObserver {
 }
 globalThis.IntersectionObserver =
   NoopIntersectionObserver as unknown as typeof IntersectionObserver;
+
+// ActivityLogPanel fetches /api/organize/events on every Organize screen mount.
+// Rename tests stub fetch per-case and tear the stub down in afterEach; a
+// refetch kicked off by logKey increment can settle after unstub and hit Node's
+// native fetch with a relative URL (ERR_INVALID_URL). This baseline handler
+// absorbs that route when no per-test stub is active — per-test stubs still
+// win because vi.stubGlobal replaces fetch for the test body.
+const baselineFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  const url =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+  if (url.includes("/api/organize/events")) {
+    return Promise.resolve(
+      new Response("[]", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }
+  return baselineFetch(input, init);
+}) as typeof fetch;

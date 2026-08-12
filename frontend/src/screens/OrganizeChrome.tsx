@@ -1,5 +1,5 @@
 // Shared Organize chrome: page size, pagination, activity log panel.
-import { type Component, createResource, For, Show } from "solid-js";
+import { type Component, createResource, For, onCleanup, Show } from "solid-js";
 import {
   type OrganizeWorkflow,
   PAGE_SIZE_OPTIONS,
@@ -83,7 +83,14 @@ export const ActivityLogPanel: Component<{
 }> = (props) => {
   const [events] = createResource(
     () => `${props.workflow}:${props.refreshKey}`,
-    () => fetchOrganizeEvents(props.workflow, 40),
+    () => {
+      const ac = new AbortController();
+      onCleanup(() => ac.abort());
+      return fetchOrganizeEvents(props.workflow, 40, ac.signal).catch((e) => {
+        if (ac.signal.aborted) return [] as OrganizeEvent[];
+        throw e;
+      });
+    },
   );
   return (
     <details class="mt-6 rounded border border-border p-3">

@@ -165,6 +165,9 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, sc
 			return
 		}
 		maybeAutoGiveBack(ctx, m, sess, settingsStore, propStore, saved)
+		if m == mode.Adult {
+			maybeAutoApplyAdultLibrary(ctx, sess, settingsStore, propStore, libStore, prober, saved)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(saved)

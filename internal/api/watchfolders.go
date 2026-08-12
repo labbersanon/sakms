@@ -280,14 +280,17 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 		}
 	}
 
-	if _, err := propStore.ReplacePending(ctx, m, proposals.Rename, found); err != nil {
+	if saved, err := propStore.ReplacePending(ctx, m, proposals.Rename, found); err != nil {
 		if errors.Is(err, proposals.ErrReplaceDeferred) {
 			log.Printf("watchfolders: %s scan deferred (apply in flight) — will retry on apply idle", m)
 		} else {
 			log.Printf("watchfolders: saving proposals for %s: %v", m, err)
 		}
 	} else {
-		log.Printf("watchfolders: %s scan complete, %d proposals", m, len(found))
+		log.Printf("watchfolders: %s scan complete, %d proposals", m, len(saved))
+		if m == mode.Adult {
+			maybeAutoApplyAdultLibrary(ctx, sess, settingsStore, propStore, libStore, prober, saved)
+		}
 	}
 }
 

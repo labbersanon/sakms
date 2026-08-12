@@ -255,6 +255,25 @@ func TestUpdateScenePHash_UpdatesInPlaceAndNoOpOnMissing(t *testing.T) {
 	}
 }
 
+func TestGetSceneByPHash_FindsTrackedScene(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const phash = "abc123deadbeef"
+	if _, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-phash", Title: "By Hash", RootFolderPath: "/adult",
+		FilePath: "/adult/By Hash.mkv", PHash: phash,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := s.GetSceneByPHash(ctx, phash)
+	if err != nil {
+		t.Fatalf("GetSceneByPHash: %v", err)
+	}
+	if got.Title != "By Hash" || got.PHash != phash {
+		t.Errorf("unexpected scene: %+v", got)
+	}
+}
+
 func TestListScenes_EmptyIsNotNil(t *testing.T) {
 	s := newTestStore(t)
 	got, err := s.ListScenes(context.Background())

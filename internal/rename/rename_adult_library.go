@@ -192,6 +192,21 @@ func buildAdultLibraryProposal(
 		p.PHash = id.phash
 		p.DurationSeconds = id.duration
 	}
+
+	// Phash library dedup for web-identified-only matches: after Review mints a
+	// local identity, duplicate downloads in scenes/ keep identifying as
+	// web-identified because the stash-box cascade does not consult local rows.
+	// Route into the same Pending alternate fold catalog duplicates use.
+	if !identitySet && p.PHash != "" {
+		existing, err := libStore.GetSceneByPHash(ctx, p.PHash)
+		switch {
+		case err == nil && existing != nil && existing.FilePath != videoPath:
+			acceptDuplicatePendingScene(&p, existing)
+		case err != nil && !errors.Is(err, library.ErrNotFound):
+			p.Status = proposals.Unmatched
+			p.Reason = fmt.Sprintf("could not check whether phash is already tracked: %v", err)
+		}
+	}
 	return p
 }
 

@@ -478,5 +478,53 @@ func TestClassifyAdultMatch_WebIdentifiedKeepsTitle(t *testing.T) {
 	}
 }
 
+// TestBuildAdultLibraryProposal_PhashMatchesReviewedLocalBecomesPendingAlternate
+// proves web-identified-only identify still routes into the alternate fold when
+// the file's phash is already tracked as a Review local identity.
+func TestBuildAdultLibraryProposal_PhashMatchesReviewedLocalBecomesPendingAlternate(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "scenes", "Wow Girls")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dupPath := writeSceneFile(t, subdir, "raw-dup.mp4")
+
+	const phash = "reviewedLocalHash"
+	libStore := newTestLibraryStore(t)
+	primaryPath := writeSceneFile(t, root, "Wow Girls - Reviewed Title (2024) [phash-reviewedLocalHash].mp4")
+	if _, err := libStore.UpsertScene(context.Background(), library.Scene{
+		Box:            library.LocalSceneBox,
+		SceneID:        library.LocalSceneID(phash),
+		Title:          "Reviewed Title",
+		Studio:         "Wow Girls",
+		Date:           "2024",
+		FilePath:       primaryPath,
+		RootFolderPath: root,
+		PHash:          phash,
+	}); err != nil {
+		t.Fatalf("seed local scene: %v", err)
+	}
+
+	entry := library.UnmappedEntry{Name: filepath.Base(dupPath), Path: dupPath}
+	id := adultIdentification{
+		hashed: true,
+		phash:  phash,
+		match: &identify.MatchResult{
+			Source: "web_search", Title: "Web Only Scene", Studio: "Wow Girls", Type: "scene",
+		},
+	}
+	p := buildAdultLibraryProposal(context.Background(), libStore, root, entry, dupPath, id)
+
+	if p.Status != proposals.Pending {
+		t.Errorf("expected Pending alternate, got %q (%s)", p.Status, p.Reason)
+	}
+	if !strings.Contains(p.Reason, "already in library") {
+		t.Errorf("expected alternate reason, got %q", p.Reason)
+	}
+	if p.GiveBackBox != library.LocalSceneBox {
+		t.Errorf("expected local box, got %q", p.GiveBackBox)
+	}
+}
+
 // Prevent unused import errors if mediainfo is not used elsewhere in this file.
 var _ *mediainfo.Probe

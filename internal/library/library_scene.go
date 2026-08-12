@@ -112,6 +112,46 @@ func (s *Store) GetScene(ctx context.Context, box, sceneID string) (*Scene, erro
 	return &scene, nil
 }
 
+// GetSceneByPHash looks up a tracked scene by its perceptual hash. When
+// multiple rows share a phash (should not happen in normal operation), the
+// row with a live primary file_path is preferred.
+func (s *Store) GetSceneByPHash(ctx context.Context, phash string) (*Scene, error) {
+	if phash == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path,
+		       phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier
+		FROM library_scenes WHERE phash = ?
+	`, phash)
+	if err != nil {
+		return nil, fmt.Errorf("loading scene by phash %q: %w", phash, err)
+	}
+	defer rows.Close()
+
+	var best *Scene
+	for rows.Next() {
+		scene, err := scanScene(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning scene by phash: %w", err)
+		}
+		if best == nil {
+			best = &scene
+			continue
+		}
+		if best.FilePath == "" && scene.FilePath != "" {
+			best = &scene
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading scenes by phash: %w", err)
+	}
+	if best == nil {
+		return nil, ErrNotFound
+	}
+	return best, nil
+}
+
 // ListScenes returns every tracked scene, ordered by title.
 func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 	rows, err := s.db.QueryContext(ctx, `

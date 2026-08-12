@@ -176,7 +176,7 @@ type PickedShow = {
   origin: "movies" | "series";
 };
 
-type SeriesSearchBy = "show" | "episode";
+type SeriesSearchBy = "series" | "episode";
 
 export const SearchTakeover: Component<{
   // --- identity / copy -------------------------------------------------
@@ -208,9 +208,8 @@ export const SearchTakeover: Component<{
   searchMode: Mode;
   initialQuery: string;
   // initialSeriesSearchBy seeds the Series-only "Search by" dropdown. TMDB
-  // catalog search only matches show/movie titles — the dropdown labels what
-  // the operator is typing in the single query box (show name vs episode/release
-  // hint) rather than routing to a different endpoint.
+  // catalog search matches series (TV show) names — not episode titles. The
+  // dropdown labels what the operator is typing in the single query box.
   initialSeriesSearchBy?: SeriesSearchBy;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
@@ -244,7 +243,7 @@ export const SearchTakeover: Component<{
 }> = (props) => {
   const [query, setQuery] = createSignal(props.initialQuery);
   const [seriesSearchBy, setSeriesSearchBy] = createSignal<SeriesSearchBy>(
-    props.initialSeriesSearchBy ?? "show",
+    props.initialSeriesSearchBy ?? "series",
   );
   // `submitted` / `submittedSeriesSearchBy` start empty unless autoSearch asked
   // for a mount-time search. See the autoSearch prop doc: an eager fetch on a
@@ -254,13 +253,13 @@ export const SearchTakeover: Component<{
   );
   const [submittedSeriesSearchBy, setSubmittedSeriesSearchBy] = createSignal<
     SeriesSearchBy
-  >(props.autoSearch ? (props.initialSeriesSearchBy ?? "show") : "show");
+  >(props.autoSearch ? (props.initialSeriesSearchBy ?? "series") : "series");
 
   const [results] = createResource(
     () => ({
       q: submitted(),
       seriesSearchBy:
-        props.searchMode === "series" ? submittedSeriesSearchBy() : "show",
+        props.searchMode === "series" ? submittedSeriesSearchBy() : "series",
     }),
     async ({ q }): Promise<SearchResult> => {
     // Solid only skips a fetcher for false/null/undefined — a key with an empty
@@ -483,7 +482,7 @@ export const SearchTakeover: Component<{
               setSeriesSearchBy(e.currentTarget.value as SeriesSearchBy)
             }
           >
-            <option value="show">Show title</option>
+            <option value="series">Series name</option>
             <option value="episode">Episode title</option>
           </select>
         </Show>
@@ -494,9 +493,9 @@ export const SearchTakeover: Component<{
           aria-label="Catalog search query"
           placeholder={
             props.searchMode === "series"
-              ? seriesSearchBy() === "show"
-                ? "TV show name"
-                : "Episode or release title"
+              ? seriesSearchBy() === "series"
+                ? "Series name"
+                : "Episode title"
               : undefined
           }
         />

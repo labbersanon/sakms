@@ -955,7 +955,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     for (const u of searches) expect(u).toContain("q=A%20Show");
   });
 
-  it("searches TMDB with the single query when Show title is selected", async () => {
+  it("searches TMDB with the single query when Series name is selected", async () => {
     const fetchMock = mergeFetch([shortFilm()], [catalogItem()]);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -964,7 +964,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
         heading="Re-pick “episode.mkv”"
         searchMode="series"
         initialQuery="Duck Soup"
-        initialSeriesSearchBy="show"
+        initialSeriesSearchBy="series"
         autoSearch={false}
         onCommit={commitSpy()}
         onDone={vi.fn()}

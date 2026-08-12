@@ -1802,7 +1802,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
               initialSeriesSearchBy={
                 st.kind === "repick" && props.mode === "series"
                   ? p.title
-                    ? "show"
+                    ? "series"
                     : "episode"
                   : undefined
               }

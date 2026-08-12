@@ -86,7 +86,7 @@ import type {
   SeriesSearchItem,
 } from "@dto";
 import { type Mode, proxyImage, tmdbPoster } from "../api/discover";
-import { adultSceneSearch, tmdbSearch, tvdbSearch } from "../api/rename";
+import { adultSceneSearch, adultSceneResolve, tmdbSearch, tvdbSearch } from "../api/rename";
 import { SectionLockedError } from "../api/client";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import { Button, ErrorText, Muted, yearOf } from "../components/ui";
@@ -100,6 +100,14 @@ import { TextPoster } from "./discover/shared";
 const GRID_CLASS = "grid grid-cols-3 gap-2 sm:grid-cols-4";
 const TILE_CLASS =
   "overflow-hidden rounded border border-border text-left transition hover:border-accent";
+
+function isAdultResolveURL(q: string): boolean {
+  const t = q.trim();
+  if (/^https?:\/\//i.test(t)) {
+    return true;
+  }
+  return /(?:^|\/\/)(?:www\.)?(stashdb\.org|fansdb\.cc|theporndb\.net)\//i.test(t);
+}
 
 // searchLockMessage is the SECTION-AGNOSTIC copy for a search 403. It is one
 // shared handler for both the Movies/Series branch (tmdb-search, classified
@@ -300,6 +308,16 @@ export const SearchTakeover: Component<{
     if (props.searchMode === "adult") {
       if (!q.trim()) {
         return { kind: "adult", items: [] };
+      }
+      if (isAdultResolveURL(q)) {
+        const res = await adultSceneResolve(q.trim());
+        if (!res.item) {
+          throw new Error(res.message || "Could not resolve that URL");
+        }
+        return {
+          kind: "adult",
+          items: [res.item],
+        };
       }
       const res = await adultSceneSearch(q);
       return { kind: "adult", items: res.items, errors: res.errors };
@@ -544,11 +562,13 @@ export const SearchTakeover: Component<{
           onInput={(e) => setQuery(e.currentTarget.value)}
           aria-label="Catalog search query"
           placeholder={
-            props.searchMode === "series"
-              ? seriesDatabase() === "tmdb"
-                ? "Series name"
-                : "Episode name"
-              : undefined
+            props.searchMode === "adult"
+              ? "Search text or paste URL"
+              : props.searchMode === "series"
+                ? seriesDatabase() === "tmdb"
+                  ? "Series name"
+                  : "Episode name"
+                : undefined
           }
         />
         <Button type="submit">Search</Button>

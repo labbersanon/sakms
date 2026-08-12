@@ -290,3 +290,45 @@ func (b *BoxSearcher) SceneByID(ctx context.Context, box, sceneID string) (*Matc
 		Image: sc.ImageURL, Tags: strings.Join(sc.Tags, ","), RuntimeSeconds: sc.Duration,
 	}, nil
 }
+
+// ResolveCatalogRef looks up a scene or TPDB movie by catalog URL components.
+func (b *BoxSearcher) ResolveCatalogRef(ctx context.Context, box, id string, isMovie bool) (*MatchResult, error) {
+	if box == "tpdb" {
+		if b.tpdb == nil {
+			return nil, nil
+		}
+		if isMovie {
+			sc, err := b.tpdb.GetMovieByID(ctx, id)
+			if err != nil || sc == nil {
+				return nil, err
+			}
+			tagNames := make([]string, len(sc.Tags))
+			for i, t := range sc.Tags {
+				tagNames[i] = t.Name
+			}
+			return &MatchResult{
+				Title: sc.Title, Studio: sc.Site, Date: sc.Date,
+				Type: "movie", Source: "tpdb_id", SceneID: sc.ID, Box: "tpdb",
+				Image: sc.Image, Tags: strings.Join(tagNames, ","),
+				Performers:     strings.Join(sc.Performers, ","),
+				RuntimeSeconds: b.resolveTPDBDuration(ctx, sc.ID, sc.Duration),
+			}, nil
+		}
+		sc, err := b.tpdb.GetSceneByID(ctx, id)
+		if err != nil || sc == nil {
+			return nil, err
+		}
+		tagNames := make([]string, len(sc.Tags))
+		for i, t := range sc.Tags {
+			tagNames[i] = t.Name
+		}
+		return &MatchResult{
+			Title: sc.Title, Studio: sc.Site, Date: sc.Date,
+			Type: "scene", Source: "tpdb_id", SceneID: sc.ID, Box: "tpdb",
+			Image: sc.Image, Tags: strings.Join(tagNames, ","),
+			Performers:     strings.Join(sc.Performers, ","),
+			RuntimeSeconds: b.resolveTPDBDuration(ctx, sc.ID, sc.Duration),
+		}, nil
+	}
+	return b.SceneByID(ctx, box, id)
+}

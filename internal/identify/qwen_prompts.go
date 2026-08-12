@@ -190,3 +190,38 @@ func ExtractFromSearch(ctx context.Context, client AIClient, stem string, result
 	}
 	return extracted, nil
 }
+
+// ExtractFromURL parses studio/title/year from a fetched page (studio or tube
+// site URL). Unlike ExtractFromSearch there is no filename stem to sanity-check
+// against — both studio and title must be present for a usable extraction.
+func ExtractFromURL(ctx context.Context, client AIClient, page PageSnippet) (GroundedExtraction, error) {
+	if client == nil {
+		return GroundedExtraction{}, nil
+	}
+
+	prompt := "You are identifying adult video content from a web page.\n" +
+		fmt.Sprintf("Page URL: %s\n", page.URL) +
+		fmt.Sprintf("Page title: %s\n", page.Title) +
+		fmt.Sprintf("Meta description: %s\n", page.Description) +
+		fmt.Sprintf("Page text (truncated): %s\n\n", page.BodyText) +
+		"Determine the REAL production studio (e.g. Tushy, Brazzers, Evil Angel — " +
+		"NOT tube sites, rip sites, or aggregators hosting the video) and the scene " +
+		"or movie title.\n" +
+		"Return ONLY valid JSON with exactly these keys: studio, title, year.\n" +
+		"JSON:"
+
+	result, err := client.ChatJSON(ctx, prompt)
+	if err != nil {
+		return GroundedExtraction{}, err
+	}
+
+	extracted := GroundedExtraction{
+		Studio: ollama.NormalizeField(result["studio"]),
+		Title:  ollama.NormalizeField(result["title"]),
+		Year:   ollama.NormalizeField(result["year"]),
+	}
+	if extracted.Studio == "" || extracted.Title == "" {
+		return GroundedExtraction{}, nil
+	}
+	return extracted, nil
+}

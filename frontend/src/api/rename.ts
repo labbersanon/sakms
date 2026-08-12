@@ -20,6 +20,7 @@ import type {
   AdultReviewConfirmRequest,
   AdultReviewPreview,
   AdultSceneSearchResponse,
+  AdultSceneResolveResponse,
   ApplyBatchItem,
   ApplyBatchResponse,
   DeleteBatchRequest,
@@ -145,6 +146,14 @@ export function adultSceneSearch(
   query: string,
 ): Promise<AdultSceneSearchResponse> {
   return api(`/api/modes/adult/scene-search?q=${encodeURIComponent(query)}`);
+}
+
+export function adultSceneResolve(
+  url: string,
+): Promise<AdultSceneResolveResponse> {
+  return api(
+    `/api/modes/adult/scene-resolve?url=${encodeURIComponent(url)}`,
+  );
 }
 
 // ---- Rename Undo ----------------------------------------------------------

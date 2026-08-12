@@ -1345,6 +1345,14 @@ export interface AdultSceneSearchResponse {
   errors?: string[];
 }
 /**
+ * AdultSceneResolveResponse is GET /api/modes/adult/scene-resolve — one
+ * catalog match from a pasted URL, or a message when resolution fails softly.
+ */
+export interface AdultSceneResolveResponse {
+  item?: AdultSceneCandidate;
+  message?: string;
+}
+/**
  * DedupApplyRequest is the OPTIONAL body of POST /api/proposals/{id}/apply when
  * the proposal is a Dedup group (Rename/Purge send an empty body and ignore
  * these fields — see internal/api's applyProposalRequest, which this mirrors).

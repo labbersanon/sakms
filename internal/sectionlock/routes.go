@@ -192,7 +192,7 @@ func classifyModes(rest []string, out Set) {
 		out.Add(SectionDiscover)
 	case "grabs":
 		out.Add(SectionQueue)
-	case "scene-search":
+	case "scene-search", "scene-resolve":
 		// Claude 2026-08-08: cross-mode move's Adult candidate picker.
 		// Reason: attributed to Organize (the only screens that call it — Rename
 		//   and Dedup), per the shared-route attribution rule. The adult-content

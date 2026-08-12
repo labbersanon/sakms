@@ -1378,6 +1378,44 @@ describe("SearchTakeover — Series database dropdown", () => {
   });
 });
 
+describe("SearchTakeover — Adult URL resolve", () => {
+  it("calls scene-resolve for a pasted URL and shows one result", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/scene-resolve")) {
+        return jsonResponse({
+          item: {
+            box: "stashdb",
+            sceneId: "a29768db-b3cd-4a71-a75e-4294373207bb",
+            title: "Resolved Scene",
+            studio: "Test Studio",
+            date: "2024-01-01",
+          },
+        });
+      }
+      return jsonResponse({ items: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="adult"
+        initialQuery="https://stashdb.org/scenes/a29768db-b3cd-4a71-a75e-4294373207bb"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    expect(await screen.findByLabelText("Use Resolved Scene")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/scene-resolve"))).toBe(
+      true,
+    );
+  });
+});
+
 describe("SearchTakeover — a failed search does not re-throw mid-render", () => {
   it("keeps rendering its own chrome when the search resource errors", async () => {
     vi.stubGlobal(

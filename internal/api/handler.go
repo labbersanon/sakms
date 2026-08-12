@@ -479,6 +479,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// internal/sectionlock/routes.go) even though the move/commit endpoint it
 	// feeds is ungated for Movies<->Series moves (D-1).
 	mux.HandleFunc("GET /api/modes/adult/scene-search", adultSceneSearchHandler(httpClient, connStore, scStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/adult/scene-resolve", adultSceneResolveHandler(httpClient, connStore, scStore, settingsStore))
 	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, whStore))
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +
 	// bitrate-quality-floor scoring, then either grab the top qualifier or

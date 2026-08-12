@@ -656,6 +656,17 @@ func (c *Client) GetSceneByID(ctx context.Context, id string) (*Scene, error) {
 	return &scene, nil
 }
 
+// GetMovieByID fetches one movie directly by TPDB id or slug — same wire shape
+// as scenes (see SearchMovies' doc comment).
+func (c *Client) GetMovieByID(ctx context.Context, id string) (*Scene, error) {
+	var sr sceneResponse
+	if err := c.doGet(ctx, "/movies/"+url.PathEscape(id), url.Values{}, &sr); err != nil {
+		return nil, err
+	}
+	scene := sr.Data.toScene()
+	return &scene, nil
+}
+
 // Performer mirrors a subset of ThePornDB's REST performer response shape.
 // Image is the single chosen image URL — see rawPerformer for how it's picked
 // from TPDB's several nullable image fields; may be empty (no art on file), so

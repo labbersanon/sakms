@@ -1368,6 +1368,13 @@ type AdultSceneSearchResponse struct {
 	Errors []string              `json:"errors,omitempty"`
 }
 
+// AdultSceneResolveResponse is GET /api/modes/adult/scene-resolve — one
+// catalog match from a pasted URL, or a message when resolution fails softly.
+type AdultSceneResolveResponse struct {
+	Item    *AdultSceneCandidate `json:"item,omitempty"`
+	Message string               `json:"message,omitempty"`
+}
+
 // DedupApplyRequest is the OPTIONAL body of POST /api/proposals/{id}/apply when
 // the proposal is a Dedup group (Rename/Purge send an empty body and ignore
 // these fields — see internal/api's applyProposalRequest, which this mirrors).

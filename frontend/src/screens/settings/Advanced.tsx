@@ -135,9 +135,13 @@ export const DurationSetting: Component<{
   const [amount, setAmount] = createSignal(0);
   const [dirty, setDirty] = createSignal(false);
 
+  // Claude 2026-08-12: guard resync so a late-arriving GET cannot clobber an
+  // in-progress edit. Reason: createResource resolves after the operator types.
+  // Troubleshooting: Settings field silently reverts to server value mid-edit.
+  // Review if: this component stops using local val/dirty + server resync.
   createEffect(() => {
     const v = props.value();
-    if (v !== undefined) {
+    if (v !== undefined && !dirty()) {
       const fit = secondsToUnitAmount(v);
       setUnit(fit.unit);
       setAmount(fit.amount);
@@ -335,9 +339,10 @@ export const NumberSetting: Component<{
 }> = (props) => {
   const [val, setVal] = createSignal(0);
   const [dirty, setDirty] = createSignal(false);
+  // Same dirty-guard as DurationSetting above — see that comment.
   createEffect(() => {
     const v = props.value();
-    if (v !== undefined) {
+    if (v !== undefined && !dirty()) {
       setVal(v);
       setDirty(false);
     }
@@ -418,9 +423,10 @@ const IdentifyEnabledSetting: Component<{ mode: () => Mode }> = (props) => {
   const [current] = createResource(props.mode, fetchIdentifyEnabled);
   const [enabled, setEnabled] = createSignal(true);
   const [dirty, setDirty] = createSignal(false);
+  // Same dirty-guard as DurationSetting above — see that comment.
   createEffect(
     on(current, (v) => {
-      if (v !== undefined) {
+      if (v !== undefined && !dirty()) {
         setEnabled(v);
         setDirty(false);
       }
@@ -547,9 +553,10 @@ const RenameGiveBackMainstreamSetting: Component = () => {
   const [current] = createResource(fetchRenameGiveBackMainstream);
   const [enabled, setEnabled] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
+  // Same dirty-guard as DurationSetting above — see that comment.
   createEffect(
     on(current, (v) => {
-      if (v !== undefined) {
+      if (v !== undefined && !dirty()) {
         setEnabled(v);
         setDirty(false);
       }
@@ -605,9 +612,10 @@ const RenameGiveBackAdultSetting: Component = () => {
   const [current] = createResource(fetchRenameGiveBackAdult);
   const [enabled, setEnabled] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
+  // Same dirty-guard as DurationSetting above — see that comment.
   createEffect(
     on(current, (v) => {
-      if (v !== undefined) {
+      if (v !== undefined && !dirty()) {
         setEnabled(v);
         setDirty(false);
       }

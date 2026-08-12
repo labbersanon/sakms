@@ -2593,6 +2593,97 @@ describe("Advanced Settings", () => {
     )!;
     expect(put.body).toEqual({ enabled: false });
   });
+
+  it("phash-threshold keeps an in-progress edit when the GET resolves late (regression)", async () => {
+    let resolvePhash!: (threshold: number) => void;
+    const phashPromise = new Promise<number>((resolve) => {
+      resolvePhash = resolve;
+    });
+    stubFetch((url) => {
+      if (url.includes("/movies/phash-threshold") && url.includes("/api"))
+        return phashPromise.then((threshold) =>
+          jsonResponse({ threshold }),
+        );
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Advanced");
+    const input = (await screen.findByLabelText(
+      "Dedup phash similarity threshold (0–256)",
+    )) as HTMLInputElement;
+    const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
+    const saveButton = within(advancedCard).getByRole("button", {
+      name: "Save",
+    }) as HTMLButtonElement;
+    fireEvent.input(input, { target: { value: "12" } });
+    expect(input.value).toBe("12");
+    await waitFor(() => expect(saveButton.disabled).toBe(false));
+    resolvePhash(8);
+    await waitFor(() => expect(input.value).toBe("12"));
+    expect(saveButton.disabled).toBe(false);
+  });
+
+  it("identify-enabled keeps an in-progress toggle when the GET resolves late (regression)", async () => {
+    let resolveIdentify!: (enabled: boolean) => void;
+    const identifyPromise = new Promise<boolean>((resolve) => {
+      resolveIdentify = resolve;
+    });
+    stubFetch((url) => {
+      if (url.includes("/adult/identify-enabled") && url.includes("/api"))
+        return identifyPromise.then((enabled) =>
+          jsonResponse({ enabled }),
+        );
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Advanced");
+    await screen.findByLabelText("Rename match candidate count (1–20)");
+    fireEvent.click(screen.getByText("Adult"));
+    const toggle = (await screen.findByLabelText(
+      "Adult phash-first identification enabled",
+    )) as HTMLInputElement;
+    const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
+    const saveButton = within(advancedCard).getByRole("button", {
+      name: "Save",
+    }) as HTMLButtonElement;
+    fireEvent.change(toggle, { target: { checked: false } });
+    expect(toggle.checked).toBe(false);
+    await waitFor(() => expect(saveButton.disabled).toBe(false));
+    resolveIdentify(true);
+    await waitFor(() => expect(toggle.checked).toBe(false));
+    expect(saveButton.disabled).toBe(false);
+  });
+});
+
+// --- DurationSetting resync race (isolated) --------------------------------
+
+describe("DurationSetting — resync race", () => {
+  it("keeps an in-progress edit when value() resolves late (regression)", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    let setServerVal: ((v: number) => void) | undefined;
+    const Harness = () => {
+      const [val, setVal] = createSignal<number | undefined>(undefined);
+      setServerVal = setVal;
+      return (
+        <DurationSetting
+          id="race-test"
+          label="Race interval"
+          help="help"
+          value={() => val()}
+          onSave={save}
+        />
+      );
+    };
+    render(() => <Harness />);
+    const input = (await screen.findByLabelText(
+      "Race interval",
+    )) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "5" } });
+    expect(input.value).toBe("5");
+    setServerVal!(7200); // 2 hours — would reseed to amount 2 if dirty guard failed
+    await waitFor(() => expect(input.value).toBe("5"));
+    expect(save).not.toHaveBeenCalled();
+  });
 });
 
 // --- Section tabs (layout: one section on screen at a time) ----------------

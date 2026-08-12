@@ -1191,6 +1191,16 @@ export interface Proposal {
   studio?: string;
   date?: string;
   phash?: string;
+  /**
+   * GiveBackBox/GiveBackSceneID mirror the wire fields that proposals.go
+   * already carries (proposals.go:167-168). The frontend uses the ABSENCE of
+   * GiveBackSceneID (with a non-empty Title) as the structural signal that an
+   * Adult Unmatched row is web-identified — enabling the Review action without
+   * matching on the reason string (a fragility the old reason-substring checks
+   * all had). Added 2026-08-12 for adult-rename-review-alts E2.
+   */
+  giveBackBox?: string;
+  giveBackSceneId?: string;
   reason?: string;
   draftId?: string;
   candidates?: Candidate[];
@@ -1381,6 +1391,61 @@ export interface ProposalPage {
  */
 export interface PendingIDsResponse {
   ids: number /* int64 */[];
+}
+/**
+ * AdultReviewPreview is the response body of
+ * GET /api/modes/{mode}/rename/proposals/{id}/review — the preview shown in the
+ * Review modal before the operator commits. Added 2026-08-12 for
+ * adult-rename-review-alts E2.
+ */
+export interface AdultReviewPreview {
+  /**
+   * ProposedName is the canonical AdultFileName computed from the best
+   * available identity (catalog values when present, web-identified values
+   * otherwise). It seeds the editable input in the modal.
+   */
+  proposedName: string;
+  studio?: string;
+  title?: string;
+  date?: string;
+  /**
+   * PHash is the file's computed perceptual hash. Absent when hashing failed;
+   * the modal warns the operator that Confirm will fail without it.
+   */
+  phash?: string;
+  /**
+   * CatalogBox/CatalogSceneID are non-empty only when a fresh DB recheck
+   * found a catalog match. When both are present the modal must tell the
+   * operator that the edited FileName is ignored and the catalog identity is
+   * used instead (spec requirement: no silent mis-leading).
+   */
+  catalogBox?: string;
+  catalogSceneId?: string;
+  catalogTitle?: string;
+  catalogStudio?: string;
+  catalogDate?: string;
+  /**
+   * RecheckError is a soft informational message — not a blocker. Shown muted
+   * in the modal; Confirm is still available (unless PHash is absent).
+   */
+  recheckError?: string;
+}
+/**
+ * AdultReviewConfirmRequest is the body of
+ * POST /api/modes/{mode}/rename/proposals/{id}/review-confirm. Added 2026-08-12
+ * for adult-rename-review-alts E2.
+ * Branching: when both Box and SceneID are non-empty, the catalog branch runs
+ * (RepickAdultScene → ApplyLibraryAdult). Otherwise the local branch runs
+ * (ConfirmAdultReviewLocal with FileName). FileName is ignored on the catalog
+ * branch; the modal must make this clear to the operator.
+ */
+export interface AdultReviewConfirmRequest {
+  fileName: string; // required on the local branch
+  box?: string; // both present → catalog branch
+  sceneId?: string; // both present → catalog branch
+  title?: string;
+  studio?: string;
+  date?: string;
 }
 /**
  * OrganizeEvent is one activity-log row for Rename/Dedup/Purge screens.

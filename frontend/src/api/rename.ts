@@ -172,3 +172,54 @@ export function fetchRecentlyApplied(
     `/api/modes/${mode}/rename/recently-applied`,
   );
 }
+
+// ---- Adult Review ----------------------------------------------------------
+//
+// Local types until internal/apidto/ts/dto.gen.ts is regenerated from the
+// Go side (Phase E2 of autopilot-impl-adult-rename-review-alts.md).
+// Keep in sync with internal/rename/adult_review.go's AdultReviewPreview
+// and internal/api/adult_review.go's adultReviewConfirmRequest.
+
+export interface AdultReviewPreview {
+  proposedName: string;
+  studio: string;
+  title: string;
+  date: string;
+  phash: string;
+  catalogBox: string;
+  catalogSceneId: string;
+  catalogTitle: string;
+  catalogStudio: string;
+  catalogDate: string;
+  /** Soft: populated but never returned as an error — preview is still usable. */
+  recheckError: string;
+}
+
+export interface AdultReviewConfirmRequest {
+  fileName: string;
+  box?: string;
+  sceneId?: string;
+  title?: string;
+  studio?: string;
+  date?: string;
+}
+
+export function fetchAdultReview(
+  mode: Mode,
+  id: number,
+): Promise<AdultReviewPreview> {
+  return api<AdultReviewPreview>(
+    `/api/modes/${mode}/rename/proposals/${id}/review`,
+  );
+}
+
+export function confirmAdultReview(
+  mode: Mode,
+  id: number,
+  body: AdultReviewConfirmRequest,
+): Promise<unknown> {
+  return api(
+    `/api/modes/${mode}/rename/proposals/${id}/review-confirm`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}

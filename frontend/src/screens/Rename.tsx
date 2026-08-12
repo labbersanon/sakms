@@ -1806,6 +1806,13 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                     : "episode"
                   : undefined
               }
+              initialSeriesDatabase={
+                st.kind === "repick" && props.mode === "series"
+                  ? p.title
+                    ? "tmdb"
+                    : "tvdb"
+                  : undefined
+              }
               // LOAD-BEARING and deliberately asymmetric: repick searches on
               // mount, move must NOT — a mount-time GET would break the move
               // entry point's "Cancel issues zero requests" guarantee. See

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1253,5 +1254,57 @@ func TestDiscoverKeywordsHandler_RequiresQParam(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 without a q param, got %d", resp.StatusCode)
+	}
+}
+
+func TestTvdbSearchHandler_SeriesKind(t *testing.T) {
+	tvdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v4/login":
+			fmt.Fprint(w, `{"status":"success","data":{"token":"tok"}}`)
+		case r.URL.Path == "/v4/search":
+			fmt.Fprint(w, `{"status":"success","data":[{"tvdb_id":"81189","name":"Breaking Bad","year":"2008"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer tvdbSrv.Close()
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/find/") {
+			fmt.Fprint(w, `{"tv_results":[{"id":1396}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer tmdbSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	overrideFixedURL(t, "tvdb", tvdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := connStore.Upsert(ctx, "tvdb", tvdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/tvdb-search?q=Breaking+Bad&kind=series")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0]["tmdbId"] != float64(1396) {
+		t.Fatalf("unexpected items: %+v", items)
 	}
 }

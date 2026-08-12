@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -440,6 +441,111 @@ func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(items)
+	}
+}
+
+// tvdbSearchHandler is Rename SearchTakeover's TVDB-backed series search
+// (GET /api/modes/series/tvdb-search). kind=series searches show names;
+// kind=episode searches episode titles and returns slot numbers for one-click
+// repick. Every hit is mapped to a TMDB id via FindTVByTVDBID so the existing
+// repick/move endpoints stay unchanged.
+func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		if m != mode.Series {
+			http.Error(w, "tvdb-search is only supported for series", http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+		query := r.URL.Query().Get("q")
+		if query == "" {
+			http.Error(w, "q query parameter is required", http.StatusBadRequest)
+			return
+		}
+		kind := r.URL.Query().Get("kind")
+		if kind == "" {
+			kind = "series"
+		}
+		if kind != "series" && kind != "episode" {
+			http.Error(w, "kind must be series or episode", http.StatusBadRequest)
+			return
+		}
+
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if sess.TVDB == nil {
+			http.Error(w, "tvdb isn't configured yet — add it in Settings first", http.StatusBadRequest)
+			return
+		}
+		if sess.TMDB == nil {
+			http.Error(w, "tmdb isn't configured yet — add it in Settings first", http.StatusBadRequest)
+			return
+		}
+
+		var out []apidto.SeriesSearchItem
+		switch kind {
+		case "series":
+			results, err := sess.TVDB.SearchSeries(ctx, query)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			for _, res := range results {
+				tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, res.TVDBID)
+				if err != nil || tmdbID == 0 {
+					continue
+				}
+				item := apidto.SeriesSearchItem{
+					TmdbID: tmdbID,
+					Title:  res.Name,
+				}
+				if res.Year > 0 {
+					item.ReleaseDate = fmt.Sprintf("%d-01-01", res.Year)
+				}
+				out = append(out, item)
+			}
+		default:
+			hits, err := sess.TVDB.SearchEpisodes(ctx, query)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			seriesCache := make(map[int]struct{ name string; year int })
+			for _, hit := range hits {
+				tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, hit.SeriesID)
+				if err != nil || tmdbID == 0 {
+					continue
+				}
+				brief, ok := seriesCache[hit.SeriesID]
+				if !ok {
+					name, year, err := sess.TVDB.SeriesBrief(ctx, hit.SeriesID)
+					if err != nil || name == "" {
+						continue
+					}
+					brief = struct{ name string; year int }{name: name, year: year}
+					seriesCache[hit.SeriesID] = brief
+				}
+				season := hit.SeasonNumber
+				episode := hit.EpisodeNumber
+				item := apidto.SeriesSearchItem{
+					TmdbID:        tmdbID,
+					Title:         hit.Name,
+					SeriesTitle:   brief.name,
+					SeasonNumber:  &season,
+					EpisodeNumber: &episode,
+				}
+				if brief.year > 0 {
+					item.ReleaseDate = fmt.Sprintf("%d-01-01", brief.year)
+				}
+				out = append(out, item)
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out)
 	}
 }
 

@@ -1316,6 +1316,68 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
   });
 });
 
+describe("SearchTakeover — Series database dropdown", () => {
+  it("grays out Episode title when TMDB is selected", () => {
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    const episodeOpt = screen.getByRole("option", { name: "Episode title" });
+    expect(episodeOpt).toBeDisabled();
+    expect(screen.getByText(/Episode title search uses TVDB/)).toBeInTheDocument();
+  });
+
+  it("calls tvdb-search when TVDB and Episode title are selected", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tvdb-search")) {
+        return jsonResponse([
+          {
+            tmdbId: 42,
+            title: "Duck Soup",
+            seriesTitle: "Laurel & Hardy",
+            releaseDate: "1921-01-01",
+            seasonNumber: 3,
+            episodeNumber: 1,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="Duck Soup"
+        initialSeriesDatabase="tvdb"
+        initialSeriesSearchBy="episode"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Duck Soup")).toBeInTheDocument();
+    const tvdbCall = fetchMock.mock.calls.find(([u]) =>
+      String(u).includes("/tvdb-search"),
+    );
+    expect(tvdbCall).toBeTruthy();
+    expect(String(tvdbCall![0])).toContain("kind=episode");
+  });
+});
+
 describe("SearchTakeover — a failed search does not re-throw mid-render", () => {
   it("keeps rendering its own chrome when the search resource errors", async () => {
     vi.stubGlobal(

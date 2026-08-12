@@ -80,9 +80,13 @@ import {
   For,
   Show,
 } from "solid-js";
-import type { AdultSceneCandidate, DiscoverItem } from "@dto";
+import type {
+  AdultSceneCandidate,
+  DiscoverItem,
+  SeriesSearchItem,
+} from "@dto";
 import { type Mode, proxyImage, tmdbPoster } from "../api/discover";
-import { adultSceneSearch, tmdbSearch } from "../api/rename";
+import { adultSceneSearch, tmdbSearch, tvdbSearch } from "../api/rename";
 import { SectionLockedError } from "../api/client";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import { Button, ErrorText, Muted, yearOf } from "../components/ui";
@@ -128,7 +132,14 @@ function searchLockMessage(err: SectionLockedError): string {
 //     record is which of the two `tmdb-search` calls produced this row. That
 //     is a fact about the request, which no field on the response can be
 //     trusted to restate.
-type CatalogHit = { mode: "movies" | "series"; item: DiscoverItem };
+type CatalogHit = {
+  mode: "movies" | "series";
+  item: DiscoverItem;
+  // seriesTitle is the parent show when item.title is an episode name (TVDB
+  // episode search). presetSlot enables one-click commit without step 2.
+  seriesTitle?: string;
+  presetSlot?: { season: number; episode: number };
+};
 
 type SearchResult =
   | { kind: "catalog"; items: CatalogHit[] }
@@ -177,6 +188,28 @@ type PickedShow = {
 };
 
 type SeriesSearchBy = "series" | "episode";
+type SeriesDatabase = "tmdb" | "tvdb";
+
+function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
+  const presetSlot =
+    item.seasonNumber != null && item.episodeNumber != null
+      ? { season: item.seasonNumber, episode: item.episodeNumber }
+      : undefined;
+  return {
+    mode: "series",
+    item: {
+      id: item.tmdbId,
+      title: item.title,
+      posterPath: "",
+      overview: "",
+      releaseDate: item.releaseDate ?? "",
+      voteAverage: 0,
+      mediaType: "tv",
+    },
+    seriesTitle: item.seriesTitle,
+    presetSlot,
+  };
+}
 
 export const SearchTakeover: Component<{
   // --- identity / copy -------------------------------------------------
@@ -211,6 +244,8 @@ export const SearchTakeover: Component<{
   // catalog search matches series (TV show) names — not episode titles. The
   // dropdown labels what the operator is typing in the single query box.
   initialSeriesSearchBy?: SeriesSearchBy;
+  // initialSeriesDatabase seeds the Series-only database dropdown (TMDB vs TVDB).
+  initialSeriesDatabase?: SeriesDatabase;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
   // MoveModePanel's deliberately-empty `submitted`. This difference is
@@ -245,6 +280,9 @@ export const SearchTakeover: Component<{
   const [seriesSearchBy, setSeriesSearchBy] = createSignal<SeriesSearchBy>(
     props.initialSeriesSearchBy ?? "series",
   );
+  const [seriesDatabase, setSeriesDatabase] = createSignal<SeriesDatabase>(
+    props.initialSeriesDatabase ?? "tmdb",
+  );
   // `submitted` / `submittedSeriesSearchBy` start empty unless autoSearch asked
   // for a mount-time search. See the autoSearch prop doc: an eager fetch on a
   // move entry point would break the "Cancel issues zero requests" guarantee.
@@ -254,14 +292,19 @@ export const SearchTakeover: Component<{
   const [submittedSeriesSearchBy, setSubmittedSeriesSearchBy] = createSignal<
     SeriesSearchBy
   >(props.autoSearch ? (props.initialSeriesSearchBy ?? "series") : "series");
+  const [submittedSeriesDatabase, setSubmittedSeriesDatabase] = createSignal<
+    SeriesDatabase
+  >(props.autoSearch ? (props.initialSeriesDatabase ?? "tmdb") : "tmdb");
 
   const [results] = createResource(
     () => ({
       q: submitted(),
       seriesSearchBy:
         props.searchMode === "series" ? submittedSeriesSearchBy() : "series",
+      seriesDatabase:
+        props.searchMode === "series" ? submittedSeriesDatabase() : "tmdb",
     }),
-    async ({ q }): Promise<SearchResult> => {
+    async ({ q, seriesSearchBy, seriesDatabase }): Promise<SearchResult> => {
     // Solid only skips a fetcher for false/null/undefined — a key with an empty
     // query still RUNS the fetcher. This guard is what makes autoSearch={false}
     // issue zero network calls on mount while the resource still resolves.
@@ -271,6 +314,18 @@ export const SearchTakeover: Component<{
       }
       const res = await adultSceneSearch(q);
       return { kind: "adult", items: res.items, errors: res.errors };
+    }
+    if (props.searchMode === "series" && seriesDatabase === "tvdb") {
+      const tvdbQ = q.trim();
+      if (!tvdbQ) {
+        return { kind: "catalog", items: [] };
+      }
+      const kind = seriesSearchBy === "episode" ? "episode" : "series";
+      const items = await tvdbSearch(tvdbQ, kind);
+      return {
+        kind: "catalog",
+        items: items.map((item) => tvdbItemToHit(item)),
+      };
     }
     const tmdbQ = q.trim();
     if (!tmdbQ) {
@@ -398,14 +453,23 @@ export const SearchTakeover: Component<{
   // assignment. `origin` IS still threaded through — onto `PickedShow`, not
   // into this routing decision — purely so step 2 can render the movie-origin
   // advisory below; see PickedShow's own doc comment.
-  const useCatalogItem = (item: DiscoverItem, origin: "movies" | "series") => {
+  const useCatalogItem = (
+    item: DiscoverItem,
+    origin: "movies" | "series",
+    opts?: { presetSlot?: { season: number; episode: number }; seriesTitle?: string },
+  ) => {
+    const showTitle = opts?.seriesTitle ?? item.title;
     const show: PickedShow = {
       tmdbId: item.id,
-      title: item.title,
+      title: showTitle,
       year: yearOf(item.releaseDate),
       origin,
     };
     if (props.searchMode === "series") {
+      if (opts?.presetSlot) {
+        commitSlot(show, opts.presetSlot.season, opts.presetSlot.episode);
+        return;
+      }
       setCommitError(null);
       setPicked(show);
       return;
@@ -469,13 +533,32 @@ export const SearchTakeover: Component<{
           e.preventDefault();
           setSubmitted(query());
           if (props.searchMode === "series") {
-            setSubmittedSeriesSearchBy(seriesSearchBy());
+            const db = seriesDatabase();
+            setSubmittedSeriesSearchBy(
+              db === "tmdb" ? "series" : seriesSearchBy(),
+            );
+            setSubmittedSeriesDatabase(db);
           }
         }}
       >
         <Show when={props.searchMode === "series"}>
           <select
             class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            aria-label="Database"
+            value={seriesDatabase()}
+            onChange={(e) => {
+              const db = e.currentTarget.value as SeriesDatabase;
+              setSeriesDatabase(db);
+              if (db === "tmdb" && seriesSearchBy() === "episode") {
+                setSeriesSearchBy("series");
+              }
+            }}
+          >
+            <option value="tmdb">TMDB</option>
+            <option value="tvdb">TVDB</option>
+          </select>
+          <select
+            class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Search by"
             value={seriesSearchBy()}
             onChange={(e) =>
@@ -483,7 +566,12 @@ export const SearchTakeover: Component<{
             }
           >
             <option value="series">Series name</option>
-            <option value="episode">Episode title</option>
+            <option
+              value="episode"
+              disabled={seriesDatabase() === "tmdb"}
+            >
+              Episode title
+            </option>
           </select>
         </Show>
         <input
@@ -501,6 +589,11 @@ export const SearchTakeover: Component<{
         />
         <Button type="submit">Search</Button>
       </form>
+      <Show when={props.searchMode === "series" && seriesDatabase() === "tmdb"}>
+        <Muted class="mt-1">
+          Episode title search uses TVDB — switch database to TVDB.
+        </Muted>
+      </Show>
 
       <Show when={props.notes}>
         <div class="mt-3 rounded-md border border-border bg-surface-2 p-3">
@@ -625,6 +718,7 @@ export const SearchTakeover: Component<{
                         const src = () => tmdbPoster(item.posterPath);
                         const y = () => yearOf(item.releaseDate);
                         const badgeLabel = hit.mode === "movies" ? "Movie" : "Series";
+                        const seriesLine = () => hit.seriesTitle;
                         // aria-describedby, NOT aria-label. An explicit
                         // aria-label overrides ALL descendant content for the
                         // accessible NAME, so folding the badge into the label
@@ -648,7 +742,12 @@ export const SearchTakeover: Component<{
                               props.searchMode === "series" ? badgeId : undefined
                             }
                             disabled={busy()}
-                            onClick={() => useCatalogItem(item, hit.mode)}
+                            onClick={() =>
+                              useCatalogItem(item, hit.mode, {
+                                presetSlot: hit.presetSlot,
+                                seriesTitle: hit.seriesTitle,
+                              })
+                            }
                           >
                             <div class="aspect-[2/3] w-full">
                               <Show
@@ -668,6 +767,22 @@ export const SearchTakeover: Component<{
                                 {item.title}
                               </div>
                               <div class="text-[11px] text-muted">
+                                <Show when={seriesLine()}>
+                                  {(name) => (
+                                    <>
+                                      <span class="truncate">{name()}</span>
+                                      {" "}
+                                    </>
+                                  )}
+                                </Show>
+                                <Show when={hit.presetSlot}>
+                                  {(slot) => (
+                                    <>
+                                      S{slot().season} E{slot().episode}
+                                      {" "}
+                                    </>
+                                  )}
+                                </Show>
                                 <Show when={y()}>{(yy) => <>{yy()}</>}</Show>
                                 {/* SERIES-MODE ONLY. A movies-mode search
                                     returns one catalog, so every row would

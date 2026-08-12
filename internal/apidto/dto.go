@@ -201,6 +201,20 @@ type DiscoverItem struct {
 	MediaType   string  `json:"mediaType"`
 }
 
+// SeriesSearchItem is one Rename SearchTakeover hit from TVDB-backed series
+// search (GET /api/modes/series/tvdb-search). TmdbID is resolved via TMDB's
+// tvdb_id cross-reference for repick/move commit. For kind=episode, Title is
+// the episode name and SeriesTitle is the parent show; SeasonNumber and
+// EpisodeNumber carry the slot for a one-click commit without step 2.
+type SeriesSearchItem struct {
+	TmdbID        int    `json:"tmdbId"`
+	Title         string `json:"title"`
+	SeriesTitle   string `json:"seriesTitle,omitempty"`
+	ReleaseDate   string `json:"releaseDate,omitempty"`
+	SeasonNumber  *int   `json:"seasonNumber,omitempty"`
+	EpisodeNumber *int   `json:"episodeNumber,omitempty"`
+}
+
 // AdultDiscoverItem is one TPDB scene result for Adult Discover
 // (GET /api/modes/adult/discover) — scene-shaped, not title-shaped (Studio
 // substitutes for a studio/site name). Date is TPDB's release date string,

@@ -30,6 +30,7 @@ import type {
   ProposalPage,
   RecentlyAppliedEntry,
   RepickRequest,
+  SeriesSearchItem,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
 import {
@@ -104,6 +105,15 @@ export function submitDraft(id: number): Promise<unknown> {
 export function tmdbSearch(mode: Mode, query: string): Promise<DiscoverItem[]> {
   return api<DiscoverItem[]>(
     `/api/modes/${mode}/tmdb-search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+export function tvdbSearch(
+  query: string,
+  kind: "series" | "episode",
+): Promise<SeriesSearchItem[]> {
+  return api<SeriesSearchItem[]>(
+    `/api/modes/series/tvdb-search?q=${encodeURIComponent(query)}&kind=${kind}`,
   );
 }
 

@@ -213,6 +213,21 @@ export interface DiscoverItem {
   mediaType: string;
 }
 /**
+ * SeriesSearchItem is one Rename SearchTakeover hit from TVDB-backed series
+ * search (GET /api/modes/series/tvdb-search). TmdbID is resolved via TMDB's
+ * tvdb_id cross-reference for repick/move commit. For kind=episode, Title is
+ * the episode name and SeriesTitle is the parent show; SeasonNumber and
+ * EpisodeNumber carry the slot for a one-click commit without step 2.
+ */
+export interface SeriesSearchItem {
+  tmdbId: number /* int */;
+  title: string;
+  seriesTitle?: string;
+  releaseDate?: string;
+  seasonNumber?: number /* int */;
+  episodeNumber?: number /* int */;
+}
+/**
  * AdultDiscoverItem is one TPDB scene result for Adult Discover
  * (GET /api/modes/adult/discover) — scene-shaped, not title-shaped (Studio
  * substitutes for a studio/site name). Date is TPDB's release date string,

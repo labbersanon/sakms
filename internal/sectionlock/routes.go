@@ -183,7 +183,7 @@ func classifyModes(rest []string, out Set) {
 	// Review if: this route family moves off /api/modes/{mode}/proposals/.
 	case "rename", "purge", "dedup", "proposals":
 		out.Add(SectionOrganize)
-	case "discover", "search", "autograb", "tmdb-search",
+	case "discover", "search", "autograb", "tmdb-search", "tvdb-search",
 		"performers", "studios", "newest-rows":
 		// performers/studios/newest-rows are Adult Discover's own rows and
 		// drill-downs. newest-rows is also configured from Settings; per

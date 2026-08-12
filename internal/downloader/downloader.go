@@ -849,14 +849,27 @@ func (m *Manager) AddTorrent(ctx context.Context, uri string) (string, error) {
 			return "", fmt.Errorf("downloader: adding magnet: %w", err)
 		}
 	} else {
-		mi, err := m.fetchMetainfo(ctx, uri)
+		// Claude 2026-08-11: resolve Prowlarr (and similar) HTTP→magnet redirects.
+		// Reason: indexer download URLs often 301/302 to Location: magnet:…;
+		// Go's default client follows that redirect and fails with
+		// unsupported protocol scheme "magnet".
+		// Troubleshooting: Adult Grab 502 whose UI error embeds &tr= tracker params.
+		// Review if: fetch path gains an explicit magnet Content-Type body handler.
+		mi, magnet, err := m.fetchMetainfoOrMagnet(ctx, uri)
 		if err != nil {
 			return "", err
 		}
-		var addErr error
-		t, addErr = tc.AddTorrent(mi)
-		if addErr != nil {
-			return "", fmt.Errorf("downloader: adding torrent: %w", addErr)
+		if magnet != "" {
+			t, err = tc.AddMagnet(magnet)
+			if err != nil {
+				return "", fmt.Errorf("downloader: adding magnet: %w", err)
+			}
+		} else {
+			var addErr error
+			t, addErr = tc.AddTorrent(mi)
+			if addErr != nil {
+				return "", fmt.Errorf("downloader: adding torrent: %w", addErr)
+			}
 		}
 	}
 
@@ -1203,25 +1216,76 @@ func (m *Manager) computeDir(files []string) string {
 	return filepath.Dir(files[0])
 }
 
-// fetchMetainfo downloads and parses a .torrent file from uri.
-func (m *Manager) fetchMetainfo(ctx context.Context, uri string) (*metainfo.MetaInfo, error) {
+// torrentHTTPClient returns a per-request client that stops on magnet:
+// redirects instead of following them (which would fail with
+// unsupported protocol scheme "magnet"). HTTP(S)→HTTP(S) redirects still
+// follow the usual 10-hop default. The shared Manager client is never mutated.
+func (m *Manager) torrentHTTPClient() *http.Client {
+	base := m.httpClient
+	if base == nil {
+		base = http.DefaultClient
+	}
+	return &http.Client{
+		Transport: base.Transport,
+		Timeout:    base.Timeout,
+		Jar:        base.Jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL != nil && strings.EqualFold(req.URL.Scheme, "magnet") {
+				return http.ErrUseLastResponse
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		},
+	}
+}
+
+// fetchMetainfoOrMagnet downloads a .torrent file from uri, or returns a magnet
+// URI when the server redirects to Location: magnet:… (Prowlarr's common path
+// for magnet-only indexer results). Exactly one of (mi, magnet) is set on success.
+func (m *Manager) fetchMetainfoOrMagnet(ctx context.Context, uri string) (*metainfo.MetaInfo, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		return nil, fmt.Errorf("downloader: building torrent request: %w", err)
+		return nil, "", fmt.Errorf("downloader: building torrent request: %w", err)
 	}
-	resp, err := m.httpClient.Do(req)
+	resp, err := m.torrentHTTPClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("downloader: fetching torrent: %w", err)
+		return nil, "", fmt.Errorf("downloader: fetching torrent: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if loc := magnetLocation(resp); loc != "" {
+		return nil, loc, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("downloader: torrent URL returned %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("downloader: torrent URL returned %d", resp.StatusCode)
 	}
 	mi, err := metainfo.Load(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("downloader: parsing torrent metainfo: %w", err)
+		return nil, "", fmt.Errorf("downloader: parsing torrent metainfo: %w", err)
 	}
-	return mi, nil
+	return mi, "", nil
+}
+
+// magnetLocation returns a trimmed magnet: Location when resp is a redirect
+// (or any response) whose Location header is a magnet URI.
+func magnetLocation(resp *http.Response) string {
+	if resp == nil {
+		return ""
+	}
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		// continue
+	default:
+		return ""
+	}
+	loc := strings.TrimSpace(resp.Header.Get("Location"))
+	if strings.HasPrefix(strings.ToLower(loc), "magnet:") {
+		return loc
+	}
+	return ""
 }
 
 func (m *Manager) pollLoop(ctx context.Context) {

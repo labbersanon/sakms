@@ -182,19 +182,29 @@ function rowActionEnabled(
 //   Rename.review.test.tsx and the inline table in the plan §6 F2.
 // Context: autopilot-impl-adult-rename-review-alts.md §6 F2.
 export function isAdultWebIdentified(p: Proposal, mode: Mode): boolean {
-  return (
-    mode === "adult" &&
-    p.status === "unmatched" &&
-    !!p.title &&
-    !p.giveBackSceneId
-  );
+  if (mode !== "adult" || p.status !== "unmatched" || p.giveBackSceneId) {
+    return false;
+  }
+  const reason = (p.reason || "").toLowerCase();
+  if (reason.includes("web-identified")) return true;
+  return !!p.title;
 }
 
-/** Match found → Rename is auto-selected. */
+/** Pending alternate fold — "already in library" rows use Rename, not Review. */
+export function isAdultAlternateInLibrary(p: Proposal): boolean {
+  return (p.reason || "").toLowerCase().startsWith("alternate:");
+}
+
+/** Match found → Rename; web-identified unmatched → Review. */
 function defaultRowAction(
   status: string,
   titleMode: boolean,
+  mode?: Mode,
+  proposal?: Proposal,
 ): RowActionId | "" {
+  if (mode === "adult" && proposal && isAdultWebIdentified(proposal, mode)) {
+    return "review";
+  }
   if (status === "pending" && rowActionEnabled("rename", status, titleMode)) {
     return "rename";
   }
@@ -212,9 +222,10 @@ export function planActionForRow(
   p: Proposal,
   dropdown: RowActionId | "",
   titleMode: boolean,
+  mode?: Mode,
 ): "apply" | "dismiss" | "delete" | null {
   const action =
-    dropdown || defaultRowAction(p.status, titleMode);
+    dropdown || defaultRowAction(p.status, titleMode, mode, p);
   // Review is per-row and non-batchable by design (same as repick/move:*): it
   // opens a modal rather than committing, and Apply-All must never silently skip
   // or batch it. Return null so openApplyAll excludes it from the plan.
@@ -274,7 +285,11 @@ const RowActions: Component<{
   onRun: (id: RowActionId) => void;
   disabled?: boolean;
 }> = (props) => {
-  const actions = () => rowActions(props.mode);
+  // Review is Adult-only — hide the greyed-out option on Movies/Series rows.
+  const actions = () =>
+    props.mode === "adult"
+      ? rowActions(props.mode)
+      : rowActions(props.mode).filter((a) => a.id !== "review");
   // "review" is structurally gated by isAdultWebIdentified — rowActionEnabled
   // always returns false for it (see its "review" case above). Override here
   // so the dropdown option is correctly enabled/disabled for the specific row.
@@ -293,7 +308,12 @@ const RowActions: Component<{
     const cur = props.selected;
     if (cur && !enabled(cur)) {
       props.onSelect(
-        defaultRowAction(props.proposal.status, props.titleMode),
+        defaultRowAction(
+          props.proposal.status,
+          props.titleMode,
+          props.mode,
+          props.proposal,
+        ),
       );
     }
   });
@@ -634,13 +654,14 @@ const AdultProposalCard: Component<{
       />
       <div class="mt-2 flex flex-wrap items-center gap-1 text-sm">
         <span class="font-medium text-fg">{p().title}</span>
-        <Show
-          when={(p().reason || "")
-            .toLowerCase()
-            .startsWith("web match:")}
-        >
+        <Show when={isAdultWebIdentified(p(), props.mode)}>
           <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
-            web match
+            web identified
+          </span>
+        </Show>
+        <Show when={isAdultAlternateInLibrary(p())}>
+          <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+            already in library
           </span>
         </Show>
       </div>
@@ -1137,7 +1158,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const selectionOf = (p: Proposal): RowActionId | "" => {
     const cur = selections()[p.id];
     if (cur !== undefined) return cur;
-    return defaultRowAction(p.status, isTitleMode());
+    return defaultRowAction(p.status, isTitleMode(), props.mode, p);
   };
 
   const setSelection = (id: number, action: RowActionId | "") => {
@@ -1176,7 +1197,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       for (const p of items) {
         nextStatus[p.id] = p.status;
         if (next[p.id] === undefined) {
-          next[p.id] = defaultRowAction(p.status, titleMode);
+          next[p.id] = defaultRowAction(p.status, titleMode, mode, p);
           changed = true;
           continue;
         }
@@ -1187,7 +1208,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
           // since a stale "repick"/"dismiss"/"delete"/"move:*" selection is
           // exactly what stays "valid" for the new "pending" status and is
           // exactly what this branch exists to catch.
-          next[p.id] = defaultRowAction(p.status, titleMode);
+          next[p.id] = defaultRowAction(p.status, titleMode, mode, p);
           changed = true;
           continue;
         }
@@ -1202,7 +1223,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
               ? rowActionEnabled(cur, p.status, titleMode)
               : false;
         if (cur && !curEnabled) {
-          next[p.id] = defaultRowAction(p.status, titleMode);
+          next[p.id] = defaultRowAction(p.status, titleMode, mode, p);
           changed = true;
         }
       }
@@ -1436,8 +1457,9 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         for (const p of rows) {
           const action = planActionForRow(
             p,
-            sel[p.id] ?? defaultRowAction(p.status, titleMode),
+            sel[p.id] ?? defaultRowAction(p.status, titleMode, props.mode, p),
             titleMode,
+            props.mode,
           );
           if (action) plan.push({ proposal: p, action });
         }

@@ -147,10 +147,26 @@ describe("isAdultWebIdentified", () => {
     ).toBe(false);
   });
 
-  it("returns false for adult unmatched with no title", () => {
+  it("returns false for adult unmatched with no title and no web-identified reason", () => {
     expect(
-      isAdultWebIdentified(adultProposal({ title: "" }), "adult"),
+      isAdultWebIdentified(
+        adultProposal({ title: "", reason: "no confident identification" }),
+        "adult",
+      ),
     ).toBe(false);
+  });
+
+  it("returns true when reason contains web-identified even if title is empty", () => {
+    expect(
+      isAdultWebIdentified(
+        adultProposal({
+          title: "",
+          reason:
+            "web-identified only — no catalog scene id yet; use Review to name and track it",
+        }),
+        "adult",
+      ),
+    ).toBe(true);
   });
 
   it("returns false for adult unmatched with a giveBackSceneId (already has catalog id)", () => {
@@ -206,10 +222,54 @@ describe("Rename — Review option eligibility", () => {
     expect(reviewOption).toBeDisabled();
   });
 
-  it("Review option is disabled for an Adult unmatched row with no title", async () => {
+  it("Review option is enabled and pre-selected for a web-identified Adult unmatched row", async () => {
+    stubFetch((url) => {
+      if (url.includes("/rename/proposals")) return jsonResponse([adultProposal()]);
+      return jsonResponse([]);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("Studio.Title.2024.mkv");
+
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
+    const select = within(row).getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("review");
+    const reviewOption = within(select).getByRole("option", { name: "Review" });
+    expect(reviewOption).not.toBeDisabled();
+  });
+
+  it("already-in-library pending rows default to Rename, not Review", async () => {
     stubFetch((url) => {
       if (url.includes("/rename/proposals"))
-        return jsonResponse([adultProposal({ title: "" })]);
+        return jsonResponse([
+          adultProposal({
+            status: "pending",
+            giveBackSceneId: "scene-abc",
+            reason:
+              "alternate: already in library as \"Tracked Title\" — apply will fold as primary or alternate by quality",
+          }),
+        ]);
+      return jsonResponse([]);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("Studio.Title.2024.mkv");
+
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
+    const select = within(row).getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("rename");
+    const reviewOption = within(select).getByRole("option", { name: "Review" });
+    expect(reviewOption).toBeDisabled();
+  });
+
+  it("Review option is disabled for an Adult unmatched row with no title and no web-identified reason", async () => {
+    stubFetch((url) => {
+      if (url.includes("/rename/proposals"))
+        return jsonResponse([
+          adultProposal({ title: "", reason: "no confident identification" }),
+        ]);
       return jsonResponse([]);
     });
 
@@ -263,11 +323,10 @@ describe("Rename — Review option eligibility", () => {
 
     const row = screen.getByText("Movie.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox");
-    // Review is in BASE_ROW_ACTIONS so the option is rendered (but disabled).
-    const reviewOption = within(select).getByRole("option", { name: "Review" });
-    expect(reviewOption).toBeDisabled();
-    // Review must not be the active selection.
-    expect((select as HTMLSelectElement).value).not.toBe("review");
+    // Review is Adult-only — the option is omitted on Movies/Series rows.
+    expect(
+      within(select).queryByRole("option", { name: "Review" }),
+    ).toBeNull();
   });
 });
 
@@ -515,9 +574,9 @@ describe("Rename — Review not in Apply-All", () => {
     // Direct unit test — no render needed.
     const p = adultProposal();
     // "review" selected → null
-    expect(planActionForRow(p, "review", false)).toBeNull();
-    // "" (no selection) on an unmatched adult row → also null (no default)
-    expect(planActionForRow(p, "", false)).toBeNull();
+    expect(planActionForRow(p, "review", false, "adult")).toBeNull();
+    // Default action is Review for web-identified rows — still excluded from Apply-All.
+    expect(planActionForRow(p, "", false, "adult")).toBeNull();
   });
 
   it("Apply all does not include web-identified Adult rows in the plan", async () => {

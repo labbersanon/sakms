@@ -166,16 +166,6 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, scStore *servi
 		}
 		log.Printf("adult newest entity-scenes: kind=%q name=%q page=%d — Prowlarr returned %d releases", kind, name, page, len(releases))
 
-		// Persist the raw list immediately so the cache is populated regardless
-		// of whether enrichment matches anything. nil sceneKeys = "no links yet";
-		// links are written per-matched-release inside enrichNewestScenesShowMore.
-		// Best-effort: a cache failure must never block the Show More response.
-		if releaseStore != nil {
-			if perr := releaseStore.PersistReleases(tctx, query, releases, nil); perr != nil {
-				log.Printf("adult newest entity-scenes: persisting raw releases (non-fatal): %v", perr)
-			}
-		}
-
 		items := make([]apidto.AdultDiscoverItem, 0, len(releases))
 		for _, rel := range releases {
 			items = append(items, apidto.AdultDiscoverItem{
@@ -189,7 +179,19 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, scStore *servi
 			})
 		}
 
-		matched := enrichNewestScenesShowMore(tctx, sess.Identify, releaseStore, kind, name, items)
+		matched, sceneKeys := enrichNewestScenesShowMore(tctx, sess.Identify, releaseStore, kind, name, items)
+		// Claude 2026-08-11: persist the raw page and every matched scene key in
+		// one batched transaction after enrichment, using the request context.
+		// Reason: per-release × per-scene LinkReleaseToScene calls produced
+		// thousands of deadline failures and prevented cache hits in production.
+		// Troubleshooting: if Show More links time out again, confirm this remains
+		// one PersistReleases call and does not use the enrichment sub-timeout.
+		// Review if: PersistReleases stops accepting multiple scene keys.
+		if releaseStore != nil {
+			if perr := releaseStore.PersistReleases(ctx, query, releases, sceneKeys); perr != nil {
+				log.Printf("adult newest entity-scenes: persisting raw releases and scene links (non-fatal): %v", perr)
+			}
+		}
 		deduped := dedupeAdultShowMoreItems(matched)
 		writeJSON(w, apidto.AdultNewestScenesPage{Items: deduped, HasMore: false})
 	}
@@ -208,31 +210,36 @@ func parseNewestPage(s string) int {
 	return n
 }
 
-// linkSceneKey records one release-to-scene link, logging rather than returning
-// a failure: a link is a cache optimisation and must never fail Show More. label
-// names the key kind in the log line so the three call sites stay distinguishable.
-func linkSceneKey(ctx context.Context, releaseStore *adultnewest.ReleaseStore, sceneKey, downloadURL, label string) {
-	if err := releaseStore.LinkReleaseToScene(ctx, sceneKey, downloadURL); err != nil {
-		log.Printf("adult newest entity-scenes: linking %s (non-fatal): %v", label, err)
-	}
-}
-
 // enrichNewestScenesShowMore is the page>1 enrichment pass over the raw Prowlarr
 // items: it checks the release-level cache (adult_newest_scene_matches) by
 // download URL first, calls identify.EnrichNewestScenes ONLY for cache misses
 // (and only when the entity has a known box in the pool), writes newly-matched
 // results through to the cache, and DROPS any item still unmatched. Returns the
-// surviving (confidently-matched) items in their original order. Best-effort: a
-// cache-lookup error, a missing pool box, a box error/timeout, or no title match
-// simply drops the affected items — it never fails the handler.
+// surviving (confidently-matched) items in their original order plus the unique
+// scene keys the handler batches into PersistReleases. Best-effort: a cache-
+// lookup error, a missing pool box, a box error/timeout, or no title match simply
+// drops the affected items — it never fails the handler.
 //
 // The cache short-circuit is load-bearing for the "second Show More doesn't
 // re-fetch the box catalog" property: EnrichNewestScenes is invoked ONLY when
 // there is at least one miss, so an all-hits request makes zero box calls (zero
 // resolve AND zero catalog).
-func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, releaseStore *adultnewest.ReleaseStore, kind, name string, items []apidto.AdultDiscoverItem) []apidto.AdultDiscoverItem {
+func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, releaseStore *adultnewest.ReleaseStore, kind, name string, items []apidto.AdultDiscoverItem) ([]apidto.AdultDiscoverItem, []string) {
 	if len(items) == 0 {
-		return items
+		return items, nil
+	}
+
+	sceneKeys := make([]string, 0)
+	seenSceneKeys := make(map[string]struct{})
+	addSceneKey := func(key string) {
+		if key == "" {
+			return
+		}
+		if _, exists := seenSceneKeys[key]; exists {
+			return
+		}
+		seenSceneKeys[key] = struct{}{}
+		sceneKeys = append(sceneKeys, key)
 	}
 
 	// 1. Batched cache lookup by download URL.
@@ -266,17 +273,9 @@ func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, re
 			// key can be formed here — the primary box:sceneId link was already
 			// written during the original enrichment pass.
 			if releaseStore != nil && items[i].Title != "" {
-				// Cache-hit path has no SceneID; link the full page under the
-				// title:normalized key so a later DetailPopup open sees every
-				// raw candidate from this Show More response (same HIGH fix as
-				// the fresh-match branch), not only the single hit URL.
-				titleKey := adultSceneKey("", "", items[i].Title)
-				for _, it := range items {
-					if it.DownloadURL == "" {
-						continue
-					}
-					linkSceneKey(ctx, releaseStore, titleKey, it.DownloadURL, "cache-hit title key full-page")
-				}
+				// Cache-hit path has no SceneID; return the title key so the
+				// handler links the full raw page in the same batch as misses.
+				addSceneKey(adultSceneKey("", "", items[i].Title))
 			}
 			continue
 		}
@@ -315,23 +314,14 @@ func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, re
 					if err := releaseStore.UpsertSceneMatch(ctx, sceneMatchFromItem(items[pos], mr.Box)); err != nil {
 						log.Printf("adult newest entity-scenes: caching scene match failed (non-fatal): %v", err)
 					}
-					// A2(b) + code-review HIGH fix: link EVERY release from this
-					// Show More page to the matched scene's keys — not only the
-					// enrichment-matched URL. Linking only the match left
-					// DetailPopup serving a permanently truncated candidate grid
-					// on cache HIT (up to 2 years for NZB). Display still drops
-					// unmatched items below; persistence association is the full
-					// raw page. PK dedupes duplicate link rows.
+					// A2(b): collect both keys once. The handler passes the
+					// unique set to PersistReleases, which links EVERY raw page
+					// release to every matched scene without per-URL calls.
 					primaryKey := adultSceneKey(mr.Box, mr.SceneID, items[pos].Title)
 					titleKey := adultSceneKey("", "", items[pos].Title)
-					for _, it := range items {
-						if it.DownloadURL == "" {
-							continue
-						}
-						linkSceneKey(ctx, releaseStore, primaryKey, it.DownloadURL, "primary key full-page")
-						if items[pos].Title != "" && titleKey != primaryKey {
-							linkSceneKey(ctx, releaseStore, titleKey, it.DownloadURL, "title key full-page")
-						}
+					addSceneKey(primaryKey)
+					if items[pos].Title != "" && titleKey != primaryKey {
+						addSceneKey(titleKey)
 					}
 				}
 			}
@@ -345,7 +335,7 @@ func enrichNewestScenesShowMore(ctx context.Context, id *identify.Identifier, re
 			out = append(out, items[i])
 		}
 	}
-	return out
+	return out, sceneKeys
 }
 
 // sceneMatchFromItem snapshots an item's ENRICHED display fields (after

@@ -729,12 +729,10 @@ func TestAdultNewestPool_DistinctEntitiesSameTitleNotCollapsed(t *testing.T) {
 
 // --- §4.3 release-persistence tests ----------------------------------------
 
-// TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease is §4.3 edit 1: every
-// raw Prowlarr release is written to adult_release_cache immediately after the
-// search, regardless of whether enrichment later matches it. 4 releases, 2
-// matched → response 2 items, 4 cache rows (all raw). Each matched scene is
-// linked to the FULL page of releases (code-review HIGH fix) under both the
-// primary box:sceneId key and the title:normalized key (amendment A2(b)).
+// TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease proves every raw
+// Prowlarr release is written after enrichment in the same batched transaction
+// as all unique scene keys. 4 releases, 2 matched → response 2 items, 4 cache
+// rows (all raw), and 16 links (4 releases × 4 unique primary/title keys).
 func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
 	origTPDB := tpdbrest.DefaultBaseURL
 	defer func() { tpdbrest.DefaultBaseURL = origTPDB }()
@@ -825,6 +823,20 @@ func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
 		t.Errorf("expected all 4 page releases linked under title key %q, got %d (%+v)", titleSilver, len(gotSilver), gotSilver)
 	}
 
+	// Claude 2026-08-11: pin the exact Cartesian batch result.
+	// Reason: Show More now collects four unique scene keys and performs one
+	// PersistReleases call instead of N×M LinkReleaseToScene calls.
+	// Troubleshooting: a count below 16 means a scene key or raw release was
+	// dropped; a count above 16 means key deduplication regressed.
+	// Review if: the fixture's release or matched-scene count changes.
+	var totalLinks int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM adult_release_scene_links`).Scan(&totalLinks); err != nil {
+		t.Fatalf("counting batched scene links: %v", err)
+	}
+	if totalLinks != 16 {
+		t.Errorf("expected 16 unique batched links (4 releases × 4 scene keys), got %d", totalLinks)
+	}
+
 	// Unmatched-as-display releases (r3/r4) are still linked to matched scenes so
 	// DetailPopup can serve the full raw page — they remain in adult_release_cache
 	// and appear under the scene keys above. Display drop-unmatched is unchanged.
@@ -839,12 +851,10 @@ func TestAdultNewestEntityScenes_Page2PersistsEveryRawRelease(t *testing.T) {
 	}
 }
 
-// TestAdultNewestEntityScenes_Page2CacheHitStillLinks is §4.3 edit 3: a cache
-// hit on the adult_newest_scene_matches table must still write a title:normalized
-// link into adult_release_scene_links so resolveAdultReleases can find the
-// release on a subsequent unattended grab. No box calls are made (cache bypass);
-// the SceneID is absent in SceneMatch so only the title key is written here (the
-// primary box:sceneId link was written during the original enrichment pass).
+// TestAdultNewestEntityScenes_Page2CacheHitStillLinks proves a cache hit on
+// adult_newest_scene_matches still contributes its title:normalized key to the
+// handler's one batched PersistReleases call. No box calls are made (cache
+// bypass); SceneMatch has no SceneID, so only the title key is available here.
 func TestAdultNewestEntityScenes_Page2CacheHitStillLinks(t *testing.T) {
 	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -879,10 +889,8 @@ func TestAdultNewestEntityScenes_Page2CacheHitStillLinks(t *testing.T) {
 		t.Errorf("expected enriched title from cache, got %q", page.Items[0].Title)
 	}
 
-	// §4.3 edit 3: the cache-hit path must create a title:normalized link so
-	// the release is discoverable by resolveAdultReleases without re-enriching.
-	// PersistReleases (edit 1) already wrote the row to adult_release_cache;
-	// LinkReleaseToScene (edit 3) connects it to the derived title key.
+	// The cache-hit path must batch a title:normalized link so the release is
+	// discoverable by resolveAdultReleases without re-enriching.
 	titleKey := adultSceneKey("", "", "Cached Scene Title")
 	got, err := releaseStore.FreshReleasesForScene(ctx, titleKey, time.Now())
 	if err != nil {

@@ -120,7 +120,7 @@ const dismissCalls = (calls: Call[]) =>
 // unscoped getByText would match two elements.
 const detailCellFor = (sourceName: string): string => {
   const dialog = screen.getByRole("dialog", { name: "Confirm apply all" });
-  const row = within(dialog).getByText(sourceName).closest("tr, [data-proposal-row]")!;
+  const row = within(dialog).getByText(sourceName).closest("tr, [data-proposal-row]")! as HTMLElement;
   const cells = row.querySelectorAll("td");
   return cells[2]?.textContent ?? "";
 };
@@ -163,7 +163,7 @@ describe("Rename — Delete file option eligibility", () => {
       ["Applied.mkv", false],
       ["Dismissed.mkv", false],
     ] as const) {
-      const row = screen.getByText(sourceName).closest("tr, [data-proposal-row]")!;
+      const row = screen.getByText(sourceName).closest("tr, [data-proposal-row]")! as HTMLElement;
       const select = within(row).getByRole("combobox");
       const option = within(select).getByRole("option", { name: "Delete file" });
       if (shouldBeUsable) {
@@ -202,13 +202,13 @@ describe("Rename — Delete file option eligibility", () => {
       "Applied.mkv",
       "Dismissed.mkv",
     ]) {
-      const row = screen.getByText(sourceName).closest("tr, [data-proposal-row]")!;
+      const row = screen.getByText(sourceName).closest("tr, [data-proposal-row]")! as HTMLElement;
       const select = within(row).getByRole("combobox") as HTMLSelectElement;
       expect(select.value).not.toBe("delete");
     }
     // Pending's match auto-selects Rename — the one non-"" default there is.
     const pendingSelect = within(
-      screen.getByText("Pending.mkv").closest("tr, [data-proposal-row]")!,
+      screen.getByText("Pending.mkv").closest("tr, [data-proposal-row]")! as HTMLElement,
     ).getByRole("combobox") as HTMLSelectElement;
     expect(pendingSelect.value).toBe("rename");
   });
@@ -234,7 +234,7 @@ describe("Rename — ApplyAllConfirm rendering for delete", () => {
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("ToDelete.mkv")).closest("tr, [data-proposal-row]")!;
+    const row = (await screen.findByText("ToDelete.mkv")).closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row).getByRole("combobox"), {
       target: { value: "delete" },
     });
@@ -290,11 +290,11 @@ describe("Rename — ApplyAllConfirm rendering for delete", () => {
 
     // Alpha keeps its auto-selected Rename default; Beta -> dismiss; Gamma -> delete.
     fireEvent.change(
-      within(screen.getByText("Beta.mkv").closest("tr, [data-proposal-row]")!).getByRole("combobox"),
+      within(screen.getByText("Beta.mkv").closest("tr, [data-proposal-row]")! as HTMLElement).getByRole("combobox"),
       { target: { value: "dismiss" } },
     );
     fireEvent.change(
-      within(screen.getByText("Gamma.mkv").closest("tr, [data-proposal-row]")!).getByRole("combobox"),
+      within(screen.getByText("Gamma.mkv").closest("tr, [data-proposal-row]")! as HTMLElement).getByRole("combobox"),
       { target: { value: "delete" } },
     );
 
@@ -338,7 +338,7 @@ describe("Rename — confirming a delete plan dispatches the right endpoint(s)",
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("OnlyDelete.mkv")).closest("tr, [data-proposal-row]")!;
+    const row = (await screen.findByText("OnlyDelete.mkv")).closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row).getByRole("combobox"), {
       target: { value: "delete" },
     });
@@ -406,15 +406,15 @@ describe("Rename — confirming a delete plan dispatches the right endpoint(s)",
     await screen.findByText("Alpha.mkv");
     // Alpha keeps its auto-selected Rename default.
     fireEvent.change(
-      within(screen.getByText("Beta.mkv").closest("tr, [data-proposal-row]")!).getByRole("combobox"),
+      within(screen.getByText("Beta.mkv").closest("tr, [data-proposal-row]")! as HTMLElement).getByRole("combobox"),
       { target: { value: "dismiss" } },
     );
     fireEvent.change(
-      within(screen.getByText("Gamma.mkv").closest("tr, [data-proposal-row]")!).getByRole("combobox"),
+      within(screen.getByText("Gamma.mkv").closest("tr, [data-proposal-row]")! as HTMLElement).getByRole("combobox"),
       { target: { value: "delete" } },
     );
     fireEvent.change(
-      within(screen.getByText("Delta.mkv").closest("tr, [data-proposal-row]")!).getByRole("combobox"),
+      within(screen.getByText("Delta.mkv").closest("tr, [data-proposal-row]")! as HTMLElement).getByRole("combobox"),
       { target: { value: "delete" } },
     );
 
@@ -467,7 +467,7 @@ describe("Rename — single-row Delete goes through the shared confirm modal", (
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("RowDelete.mkv")).closest("tr, [data-proposal-row]")!;
+    const row = (await screen.findByText("RowDelete.mkv")).closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row).getByRole("combobox"), {
       target: { value: "delete" },
     });
@@ -506,7 +506,7 @@ describe("Rename — single-row Delete goes through the shared confirm modal", (
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("CancelDelete.mkv")).closest("tr, [data-proposal-row]")!;
+    const row = (await screen.findByText("CancelDelete.mkv")).closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row).getByRole("combobox"), {
       target: { value: "delete" },
     });
@@ -552,7 +552,7 @@ describe("Rename — delete failure surfaces in the batch result summary", () =>
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("Locked.mkv")).closest("tr, [data-proposal-row]")!;
+    const row = (await screen.findByText("Locked.mkv")).closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row).getByRole("combobox"), {
       target: { value: "delete" },
     });

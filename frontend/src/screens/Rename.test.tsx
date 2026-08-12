@@ -31,7 +31,7 @@ const runRowAction = async (
   sourceName: string,
   action: "rename" | "repick" | "dismiss" | "move:movies" | "move:series" | "move:adult",
 ) => {
-  const row = (await screen.findByText(sourceName)).closest("tr, [data-proposal-row]");
+  const row = (await screen.findByText(sourceName)).closest("tr, [data-proposal-row]")! as HTMLElement;
   expect(row).toBeTruthy();
   const select = within(row as HTMLElement).getByRole("combobox");
   fireEvent.change(select, { target: { value: action } });
@@ -44,7 +44,7 @@ const runRowAction = async (
 
 const clickRowApply = async (sourceName: string) => {
   // Match found → Rename is already selected.
-  const row = (await screen.findByText(sourceName)).closest("tr, [data-proposal-row]");
+  const row = (await screen.findByText(sourceName)).closest("tr, [data-proposal-row]")! as HTMLElement;
   expect(row).toBeTruthy();
   fireEvent.click(
     within(row as HTMLElement).getByRole("button", {
@@ -169,7 +169,7 @@ describe("Rename — Movies (scan → propose → apply one)", () => {
     expect(await screen.findByText("Movie.A")).toBeInTheDocument();
     expect(screen.queryByText("Status")).toBeNull();
     expect(screen.queryByText("pending")).toBeNull();
-    const row = screen.getByText("Movie.A").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Movie.A").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("rename");
     expect(within(select).getByRole("option", { name: "Rename" })).not.toBeDisabled();
@@ -293,7 +293,7 @@ describe("Rename — Apply all (summary confirm)", () => {
 
     render(() => <Rename />);
     await screen.findByText("A.mkv");
-    const rowA = screen.getByText("A.mkv").closest("tr, [data-proposal-row]")!;
+    const rowA = screen.getByText("A.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     expect((within(rowA).getByRole("combobox") as HTMLSelectElement).value).toBe(
       "rename",
     );
@@ -380,7 +380,7 @@ describe("Rename — Apply all (summary confirm)", () => {
 
     render(() => <Rename />);
     await screen.findByText("Keep.mkv");
-    const dropRow = screen.getByText("Drop.mkv").closest("tr, [data-proposal-row]")!;
+    const dropRow = screen.getByText("Drop.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(dropRow).getByRole("combobox"), {
       target: { value: "dismiss" },
     });
@@ -608,7 +608,7 @@ describe("Rename — Re-pick selection reset (stale dropdown after a successful 
     // the old code (verified by temporarily reverting the fix: FAILS,
     // select.value === "repick").
     await waitFor(() => {
-      const row = screen.getByText("Stale.Selection.mkv").closest("tr, [data-proposal-row]")!;
+      const row = screen.getByText("Stale.Selection.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
       const select = within(row).getByRole("combobox") as HTMLSelectElement;
       expect(select.value).toBe("rename");
     });
@@ -649,7 +649,7 @@ describe("Rename — Re-pick selection reset (stale dropdown after a successful 
     );
 
     const selectAfter = within(
-      screen.getByText("Already.Matched.mkv").closest("tr, [data-proposal-row]")!,
+      screen.getByText("Already.Matched.mkv").closest("tr, [data-proposal-row]")! as HTMLElement,
     ).getByRole("combobox") as HTMLSelectElement;
     expect(selectAfter.value).toBe("dismiss");
   });
@@ -812,7 +812,7 @@ describe("Rename — Adult (dropdown; no Status column)", () => {
     await screen.findByText("Studio - Unidentified Scene");
 
     expect(screen.queryByText("Status")).toBeNull();
-    const row = screen.getByText("Studio - Unidentified Scene").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio - Unidentified Scene").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     expect(select.value).toBe("");
     expect(within(select).queryByRole("option", { name: "Give back" })).toBeNull();
@@ -853,7 +853,7 @@ describe("Rename — Move to another section (row action set, AC5)", () => {
       expectedLabels: string[],
       excludedLabel: string,
     ) => {
-      const row = (await screen.findByText(sourceName)).closest("tr, [data-proposal-row]")!;
+      const row = (await screen.findByText(sourceName)).closest("tr, [data-proposal-row]")! as HTMLElement;
       const select = within(row).getByRole("combobox");
       for (const label of expectedLabels) {
         expect(

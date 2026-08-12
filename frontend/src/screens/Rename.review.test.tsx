@@ -182,7 +182,7 @@ describe("Rename — Review option eligibility", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox");
     const reviewOption = within(select).getByRole("option", { name: "Review" });
     expect(reviewOption).not.toBeDisabled();
@@ -199,7 +199,7 @@ describe("Rename — Review option eligibility", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox");
     const reviewOption = within(select).getByRole("option", { name: "Review" });
     expect(reviewOption).toBeDisabled();
@@ -216,7 +216,7 @@ describe("Rename — Review option eligibility", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox");
     const reviewOption = within(select).getByRole("option", { name: "Review" });
     expect(reviewOption).toBeDisabled();
@@ -233,7 +233,7 @@ describe("Rename — Review option eligibility", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox");
     const reviewOption = within(select).getByRole("option", { name: "Review" });
     expect(reviewOption).toBeDisabled();
@@ -260,7 +260,7 @@ describe("Rename — Review option eligibility", () => {
     render(() => <Rename />);
     await screen.findByText("Movie.2024.mkv");
 
-    const row = screen.getByText("Movie.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Movie.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox");
     // Review is in BASE_ROW_ACTIONS so the option is rendered (but disabled).
     const reviewOption = within(select).getByRole("option", { name: "Review" });
@@ -289,7 +289,7 @@ describe("Rename — Review modal", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });
@@ -315,7 +315,7 @@ describe("Rename — Review modal", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });
@@ -350,7 +350,7 @@ describe("Rename — Review modal", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });
@@ -390,7 +390,7 @@ describe("Rename — Review modal", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });
@@ -428,7 +428,7 @@ describe("Rename — Review modal", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });
@@ -468,7 +468,7 @@ describe("Rename — Review modal", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });
@@ -530,7 +530,7 @@ describe("Rename — Review not in Apply-All", () => {
     await screen.findByText("Studio.Title.2024.mkv");
 
     // Select Review on the only row
-    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")!;
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });

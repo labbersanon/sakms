@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,15 +177,15 @@ func buildAdultLibraryProposal(
 //
 // ACCEPTED IMPRECISION, deliberate — do not "fix" this by adding a
 // grabs.quality_tier column: for Adult, this is the tier in force at APPLY
-// time, not at grab time. importGrabContent's mode.Adult branch writes no
-// library row at all (an Adult grab carries no (box, scene_id) identity yet —
-// see that branch's own rationale), so this Apply is the FIRST write of the
-// scene, and it reads whatever adult_quality_tier is set right now. If an
-// operator changes that setting between the grab landing and this Apply
-// running, the recorded tier is the new one. Movies/Series don't have this
-// window because their rows are written at import. The only thing that would
-// close it is a schema column on grabs existing solely for this window, which
-// is exactly the premature abstraction CLAUDE.md bans.
+// time, not at grab time. When importGrabContent's OrganizeImportedAdult
+// succeeds, the scene row is written at import with that moment's tier — this
+// Apply path only runs for files that landed without identity (identify miss
+// or pre-auto-organize imports). If an operator changes adult_quality_tier
+// between a bare import and this Apply, the recorded tier is the new one.
+// Movies/Series don't have this window because their rows are always written
+// at import. The only thing that would close the bare-import window is a
+// schema column on grabs existing solely for it, which is exactly the
+// premature abstraction CLAUDE.md bans.
 func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, p proposals.Proposal, tier string) (sceneID int64, fingerprintSubmitted bool, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, false, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
@@ -302,4 +303,74 @@ func RelocateAdultScene(sourcePath, destRoot, studio, title, date, phash string)
 		return "", fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err)
 	}
 	return unique, nil
+}
+
+// OrganizeImportedAdult identifies a just-imported Adult video and, on a
+// confident match with (box, scene_id), renames/moves it via RelocateAdultScene
+// and records the library_scenes row — the same end state as ApplyLibraryAdult,
+// without a Rename proposal. Grab approval is the operator consent.
+//
+// Claude 2026-08-11: auto rename+move on Adult grab import.
+// Reason: finished grabs were left as raw torrent basenames under /adult until
+// a manual Rename Apply; operator expects download → library name in one step.
+// Troubleshooting: Step Sis landed as "[Familylust.com] …mp4" on Adult-NAS.
+// Review if: Adult import gains a settings toggle to keep proposal-gated Apply.
+//
+// On identify failure or Unmatched, returns ("", nil, nil) so the caller keeps
+// the bare Relocate result and a later Rename scan can still pick the file up.
+func OrganizeImportedAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, hasher PHasher, prober Prober, videoPath, rootFolderPath, tier string) (finalPath string, changes []mode.PathChange, err error) {
+	if videoPath == "" || rootFolderPath == "" {
+		return "", nil, nil
+	}
+	if naming.MatchesAdultSchema(videoPath) {
+		return videoPath, nil, nil
+	}
+	if sess == nil || sess.Identify == nil || hasher == nil {
+		return "", nil, nil
+	}
+	ids := identifyAdultFiles(ctx, sess, hasher, prober, []adultFileID{{
+		path:       videoPath,
+		stem:       filepath.Base(videoPath),
+		parentName: filepath.Base(filepath.Dir(videoPath)),
+	}})
+	if len(ids) == 0 {
+		return "", nil, nil
+	}
+	id := ids[0]
+	status, _, title, _, _ := classifyAdultMatch(id.match, id.err)
+	if status != proposals.Pending || id.match == nil || id.match.Box == "" || id.match.SceneID == "" {
+		return "", nil, nil
+	}
+	if existing, gerr := libStore.GetScene(ctx, id.match.Box, id.match.SceneID); gerr == nil {
+		log.Printf("rename: organize import skipped %q — already tracked as %q", videoPath, existing.Title)
+		return "", nil, nil
+	} else if gerr != nil && !errors.Is(gerr, library.ErrNotFound) {
+		return "", nil, fmt.Errorf("checking library for %q: %w", title, gerr)
+	}
+
+	phash := id.phash
+	destPath, err := RelocateAdultScene(videoPath, rootFolderPath, id.match.Studio, id.match.Title, id.match.Date, phash)
+	if err != nil {
+		return "", nil, fmt.Errorf("relocating identified scene: %w", err)
+	}
+	if destPath != videoPath {
+		changes = []mode.PathChange{{Path: videoPath, Kind: mode.Deleted}, {Path: destPath, Kind: mode.Created}}
+	}
+
+	var fileSize int64
+	var fileMTime string
+	if info, statErr := os.Stat(destPath); statErr == nil {
+		fileSize = info.Size()
+		fileMTime = info.ModTime().UTC().Format(time.RFC3339Nano)
+	}
+	if _, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: id.match.Box, SceneID: id.match.SceneID,
+		Title: id.match.Title, Studio: id.match.Studio, Date: id.match.Date,
+		FilePath: destPath, RootFolderPath: rootFolderPath,
+		Size: fileSize, QualityTier: tier,
+		PHash: phash, PHashFileSize: fileSize, PHashFileMTime: fileMTime,
+	}); err != nil {
+		return destPath, changes, fmt.Errorf("recording organized scene: %w", err)
+	}
+	return destPath, changes, nil
 }

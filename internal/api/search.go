@@ -25,6 +25,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
+	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -488,7 +489,7 @@ func listGrabsHandler(grabsStore *grabs.Store) http.HandlerFunc {
 // finishes — this endpoint is the on-demand "check it now" the Grabs UI offers.
 //
 // GID routing: "nzb-" prefix → usenet engine; everything else → torrent engine.
-func checkImportHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober) http.HandlerFunc {
+func checkImportHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, videoHasher rename.PHasher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -553,11 +554,6 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			}
 			if newStatus == grabs.Completed {
 				contentPath := downloadContentPath(nzbItem.Files, nzbItem.Dir, nzb.StagingDir())
-				changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadGateway)
-					return
-				}
 				sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
 				if err != nil {
 					// Layer 2 rejects an Adult g.Mode here. The security
@@ -571,6 +567,11 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 						return
 					}
 					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)), settingsStore, sess, videoHasher, prober)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
 					return
 				}
 				postGrabRuntimeReview(ctx, prober, grabsStore, sess, g, changes)
@@ -642,7 +643,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 				files, dir, staging = copied, filepath.Dir(copied[0]), dl.ImportRoot(g.DownloadGID)
 			}
 			contentPath := downloadContentPath(files, dir, staging)
-			changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
+			changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)), settingsStore, sess, videoHasher, prober)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return

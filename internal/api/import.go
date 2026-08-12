@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
@@ -35,7 +36,10 @@ import (
 // un-flipped (the operator can retry via check-import). files is aria2's
 // reported file list for the GID; the first file (or, empty, the grab's
 // staging dir) is the content path handed to the import core.
-func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager) func(gid string, files []string) {
+//
+// videoHasher is Adult's StashDB-compatible phash (may be nil in tests that
+// never import Adult); required for OrganizeImportedAdult on Adult grabs.
+func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager, videoHasher rename.PHasher) func(gid string, files []string) {
 	return func(gid string, files []string) {
 		ctx := context.Background()
 		g, err := grabsStore.GetByDownloadGID(ctx, gid)
@@ -64,16 +68,18 @@ func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.St
 			return
 		}
 
-		changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
+		sess, sessErr := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
+		if sessErr != nil {
+			log.Printf("downloader import: grab %d building session: %v", g.ID, sessErr)
+		}
+
+		changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)), settingsStore, sess, videoHasher, prober)
 		if err != nil {
 			log.Printf("downloader import: grab %d (gid %s): %v", g.ID, gid, err)
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
-		if err != nil {
-			log.Printf("downloader import: grab %d building session: %v", g.ID, err)
-		} else {
+		if sess != nil {
 			postGrabRuntimeReview(ctx, prober, grabsStore, sess, g, changes)
 			sess.NotifyPlayers(ctx, changes)
 		}
@@ -136,7 +142,7 @@ func clean(p string) string {
 // parallel to DownloadCompleteImporter. Uses nzb.StagingDir() as the staging
 // root. dl is the torrent manager (may be nil) — passed only so mode.Build
 // can construct a session for player notification.
-func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager, nzb *usenet.Manager) func(gid string, files []string) {
+func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, prober dedup.Prober, dl *downloader.Manager, nzb *usenet.Manager, videoHasher rename.PHasher) func(gid string, files []string) {
 	return func(gid string, files []string) {
 		ctx := context.Background()
 		g, err := grabsStore.GetByDownloadGID(ctx, gid)
@@ -156,16 +162,18 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			return
 		}
 
-		changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)))
+		sess, sessErr := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
+		if sessErr != nil {
+			log.Printf("usenet import: grab %d building session: %v", g.ID, sessErr)
+		}
+
+		changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)), settingsStore, sess, videoHasher, prober)
 		if err != nil {
 			log.Printf("usenet import: grab %d (gid %s): %v", g.ID, gid, err)
 			return
 		}
 
-		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
-		if err != nil {
-			log.Printf("usenet import: grab %d building session: %v", g.ID, err)
-		} else {
+		if sess != nil {
 			postGrabRuntimeReview(ctx, prober, grabsStore, sess, g, changes)
 			sess.NotifyPlayers(ctx, changes)
 		}
@@ -180,118 +188,198 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 }
 
 // importGrabContent is the shared import core: it relocates a completed
-// download at contentPath into g's target root folder (reusing
-// internal/rename.Relocate) and records it in SAK's own library the same way
-// Rename's Apply does for a brand-new orphan — Movies as an Item, Series as a
-// season/episode-aware set of Episode rows, Adult left untracked for the next
-// Rename scan to identify (see the mode.Adult branch's rationale). It returns
-// the exact PathChanges the import created (for the caller to hand to
-// NotifyPlayers), or an error describing which step failed — it writes no HTTP
-// response, so both the manual check-import handler and the downloader's
-// onComplete callback can call it.
+// download at contentPath into g's target root folder using the mode's
+// library naming (RelocateMovie / RelocateEpisode / OrganizeImportedAdult)
+// and records it in SAK's own library the same way Rename's Apply does.
+// Grab approval is operator consent — no Rename proposal row is required.
 //
 // Extracted from checkImportHandler verbatim when the unified downloader
 // added a second, non-HTTP caller (the background completion callback), which
 // is exactly the "second real caller justifies the extraction" bar this
 // project's conventions set for pulling logic out of a handler.
 //
+// Claude 2026-08-11: auto rename+move on grab import (all modes).
+// Reason: finished grabs were left as raw torrent/NZB basenames until a
+//   manual Rename Apply; operator expects download → library name in one step.
+// Troubleshooting: Adult Step Sis landed as "[Familylust.com] …mp4" on Adult-NAS.
+// Review if: import gains a settings toggle to keep proposal-gated Apply only.
+//
 // tier is the operator's configured quality tier for g.Mode, recorded on every
-// library row this import writes as "the tier preference in force when this
-// file entered the library". Every caller resolves it the same way, with
-// string(autoGrabTier(ctx, settingsStore, g.Mode)) — the same per-mode setting
-// Search and auto-grab already read to build the search profile. Note the
-// mode.Adult branch writes no row, so tier is unused there (see that branch,
-// and rename.ApplyLibraryAdult's documented grab-to-Apply window).
-func importGrabContent(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string) ([]mode.PathChange, error) {
+// library row this import writes. sess/videoHasher may be nil (session build
+// failed, or Adult hasher unset in a Movies-only test) — Movies/Series still
+// organize via naming presets; Adult then falls back to basename Relocate and
+// leaves the file for a later Rename scan (import still succeeds).
+func importGrabContent(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, settingsStore *settings.Store, sess *mode.Session, videoHasher rename.PHasher, prober dedup.Prober) ([]mode.PathChange, error) {
+	switch g.Mode {
+	case mode.Movies:
+		return importGrabMovies(ctx, libStore, g, contentPath, tier, settingsStore, sess, prober)
+	case mode.Series:
+		return importGrabSeries(ctx, libStore, g, contentPath, tier, settingsStore, sess, prober)
+	case mode.Adult:
+		return importGrabAdult(ctx, libStore, g, contentPath, tier, sess, videoHasher, prober)
+	default:
+		return nil, fmt.Errorf("unknown mode %q", g.Mode)
+	}
+}
+
+func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, settingsStore *settings.Store, sess *mode.Session, prober dedup.Prober) ([]mode.PathChange, error) {
+	_ = prober
+	preset, err := resolveNamingPreset(ctx, settingsStore, mode.Movies)
+	if err != nil {
+		return nil, fmt.Errorf("resolving movies naming preset: %w", err)
+	}
+	videoPath, err := library.ResolveVideoFile(contentPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving the video file failed: %w", err)
+	}
+	year := movieYearFromTMDB(ctx, sess, g.TMDBID)
+	destPath, err := rename.RelocateMovie(videoPath, g.RootFolderPath, g.Title, year, g.TMDBID, preset)
+	if err != nil {
+		return nil, fmt.Errorf("download completed but import failed: %w", err)
+	}
+	var changes []mode.PathChange
+	if destPath != videoPath {
+		changes = []mode.PathChange{{Path: videoPath, Kind: mode.Deleted}, {Path: destPath, Kind: mode.Created}}
+	} else {
+		changes = []mode.PathChange{{Path: destPath, Kind: mode.Created}}
+	}
+	if _, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: g.TMDBID, Title: g.Title, Year: year,
+		FilePath: destPath, RootFolderPath: g.RootFolderPath,
+		Size: library.FileSize(destPath), QualityTier: tier,
+	}); err != nil {
+		return changes, fmt.Errorf("file relocated but recording it in the library failed: %w", err)
+	}
+	return changes, nil
+}
+
+func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, settingsStore *settings.Store, sess *mode.Session, prober dedup.Prober) ([]mode.PathChange, error) {
+	_ = prober
+	preset, err := resolveNamingPreset(ctx, settingsStore, mode.Series)
+	if err != nil {
+		return nil, fmt.Errorf("resolving series naming preset: %w", err)
+	}
+	videoPaths, err := library.ResolveEpisodeVideoFiles(contentPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving the video file(s) failed: %w", err)
+	}
+	seriesYear := seriesYearFromTMDB(ctx, sess, g.TMDBID)
+	series, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: g.TMDBID, Title: g.Title, Year: seriesYear, RootFolderPath: g.RootFolderPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("recording the series failed: %w", err)
+	}
+	var changes []mode.PathChange
+	for _, videoPath := range videoPaths {
+		season, episodes, ok := library.ParseEpisodeNumbers(filepath.Base(videoPath))
+		if !ok {
+			if len(videoPaths) != 1 || !g.SeasonSpecified {
+				continue
+			}
+			season, episodes = g.SeasonNumber, []int{g.EpisodeNumber}
+		}
+		destPath, err := rename.RelocateEpisodeRange(videoPath, g.RootFolderPath, g.Title, seriesYear, g.TMDBID, season, episodes, "", preset)
+		if err != nil {
+			return changes, fmt.Errorf("download completed but import failed: %w", err)
+		}
+		if destPath != videoPath {
+			changes = append(changes, mode.PathChange{Path: videoPath, Kind: mode.Deleted}, mode.PathChange{Path: destPath, Kind: mode.Created})
+		} else {
+			changes = append(changes, mode.PathChange{Path: destPath, Kind: mode.Created})
+		}
+		videoSize := library.FileSize(destPath)
+		for _, episode := range episodes {
+			if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+				SeriesID: series.ID, SeasonNumber: season, EpisodeNumber: episode, FilePath: destPath,
+				Size: videoSize, QualityTier: tier,
+			}); err != nil {
+				return changes, fmt.Errorf("file relocated but recording episode s%de%d failed: %w", season, episode, err)
+			}
+		}
+	}
+	if len(changes) == 0 {
+		return nil, fmt.Errorf("download completed but no episode files could be identified for import")
+	}
+	return changes, nil
+}
+
+func importGrabAdult(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, sess *mode.Session, videoHasher rename.PHasher, prober dedup.Prober) ([]mode.PathChange, error) {
+	// Claude 2026-08-11: basename Relocate into Adult root, then organize.
+	// Reason: OrganizeImportedAdult expects a path already under the library
+	//   root (same as Rename Apply); staging→root still needs the first move.
+	// Troubleshooting: identifying from /data/downloads left files on the wrong volume.
+	// Review if: OrganizeImportedAdult accepts a staging source and relocates in one step.
 	movedPath, err := rename.Relocate(contentPath, g.RootFolderPath)
 	if err != nil {
 		return nil, fmt.Errorf("download completed but import failed: %w", err)
 	}
-
-	// changes accumulates the exact file(s) this import created. movedPath can
-	// be a wrapping directory (Relocate moves contentPath's whole tree), so
-	// Movies/Series notify with the resolved video file path(s) — the same
-	// "actual path, not the directory" discipline as rename.go — while Adult
-	// notifies with movedPath directly (the scene is left untracked for the
-	// next Rename scan, and Stash's RescanPaths handles a directory tree fine).
-	switch g.Mode {
-	case mode.Movies:
-		videoPath, err := library.ResolveVideoFile(movedPath)
-		if err != nil {
-			return nil, fmt.Errorf("file relocated but resolving the video file failed: %w", err)
-		}
-		if _, err := libStore.Upsert(ctx, library.Item{
-			Mode: mode.Movies, TMDBID: g.TMDBID, Title: g.Title,
-			FilePath: videoPath, RootFolderPath: g.RootFolderPath,
-			// videoPath, not movedPath: Relocate can leave a wrapping directory,
-			// and library.FileSize reports 0 for one.
-			Size: library.FileSize(videoPath), QualityTier: tier,
-		}); err != nil {
-			return nil, fmt.Errorf("file relocated but recording it in the library failed: %w", err)
-		}
-		return []mode.PathChange{{Path: videoPath, Kind: mode.Created}}, nil
-
-	case mode.Series:
-		videoPaths, err := library.ResolveEpisodeVideoFiles(movedPath)
-		if err != nil {
-			return nil, fmt.Errorf("file relocated but resolving the video file(s) failed: %w", err)
-		}
-		series, err := libStore.UpsertSeries(ctx, library.Series{
-			TMDBID: g.TMDBID, Title: g.Title, RootFolderPath: g.RootFolderPath,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("file relocated but recording the series failed: %w", err)
-		}
-		var changes []mode.PathChange
-		for _, videoPath := range videoPaths {
-			season, episodes, ok := library.ParseEpisodeNumbers(filepath.Base(videoPath))
-			if !ok {
-				// A season-pack grab's own request already recorded which season
-				// it targeted; a single-episode grab whose relocated file name
-				// didn't carry its own SxxExx token falls back to what was
-				// requested — only sound when there's exactly one resolved file
-				// and a season was actually specified at grab time (SeasonNumber
-				// alone can't tell "Season 0/Specials" from "no season picked").
-				if len(videoPaths) != 1 || !g.SeasonSpecified {
-					continue
-				}
-				season, episodes = g.SeasonNumber, []int{g.EpisodeNumber}
-			}
-			// Logical episode-splitting: a bundled multi-episode filename
-			// (e.g. "S01E01-E02") relocates as ONE file but must record an
-			// Episode row for EVERY number it contains. One Created PathChange
-			// per physical file still, not per episode row.
-			//
-			// One physical file, so one stat: every row that file produces
-			// carries its FULL size, not a share of it. The storage aggregation
-			// de-duplicates by file_path rather than dividing.
-			videoSize := library.FileSize(videoPath)
-			for _, episode := range episodes {
-				if _, err := libStore.UpsertEpisode(ctx, library.Episode{
-					SeriesID: series.ID, SeasonNumber: season, EpisodeNumber: episode, FilePath: videoPath,
-					Size: videoSize, QualityTier: tier,
-				}); err != nil {
-					return nil, fmt.Errorf("file relocated but recording episode s%de%d failed: %w", season, episode, err)
-				}
-			}
-			changes = append(changes, mode.PathChange{Path: videoPath, Kind: mode.Created})
-		}
-		return changes, nil
-
-	case mode.Adult:
-		// Adult owns its own library (Whisparr eliminated, Stage 4), but an
-		// Adult grab carries NO stable scene identity at grab time (grabRequest
-		// has no box/scene_id, TMDBID is always 0 for Adult) — library.Scene is
-		// keyed on (box, scene_id), so there is nothing to UpsertScene on yet.
-		// Recording an empty-key scene would be actively harmful (every grab
-		// collides on the ("","") row, and a recorded scene is masked from the
-		// next Rename scan that's meant to identify it). So relocate into the
-		// Adult root and stop — the next Adult Rename scan discovers, identifies,
-		// and UpsertScenes it with a real (box, scene_id). Notify with movedPath
-		// directly (Stash's RescanPaths handles a directory tree fine).
+	videoPath, resolveErr := library.ResolveVideoFile(movedPath)
+	if resolveErr != nil {
+		// Directory tree or non-video — notify the relocated path; Rename scan later.
 		return []mode.PathChange{{Path: movedPath, Kind: mode.Created}}, nil
-
-	default:
-		return nil, fmt.Errorf("unknown mode %q", g.Mode)
 	}
+	finalPath, orgChanges, orgErr := rename.OrganizeImportedAdult(ctx, sess, libStore, videoHasher, prober, videoPath, g.RootFolderPath, tier)
+	if orgErr != nil {
+		// Identify/relocate organize failure must not fail the import — file is
+		// already in the Adult root for a later Rename scan.
+		log.Printf("import: adult organize for grab %d: %v (left at %q)", g.ID, orgErr, videoPath)
+		return []mode.PathChange{{Path: videoPath, Kind: mode.Created}}, nil
+	}
+	if finalPath != "" {
+		if len(orgChanges) > 0 {
+			return orgChanges, nil
+		}
+		return []mode.PathChange{{Path: finalPath, Kind: mode.Created}}, nil
+	}
+	return []mode.PathChange{{Path: videoPath, Kind: mode.Created}}, nil
+}
+
+// movieYearFromTMDB returns the release year for tmdbID when TMDB is available;
+// 0 otherwise (naming omits "(year)" — still a correct RelocateMovie destination).
+func movieYearFromTMDB(ctx context.Context, sess *mode.Session, tmdbID int) int {
+	if sess == nil || sess.TMDB == nil || tmdbID <= 0 {
+		return 0
+	}
+	d, err := sess.TMDB.MovieDetails(ctx, tmdbID)
+	if err != nil {
+		return 0
+	}
+	return yearFromDate(d.ReleaseDate)
+}
+
+func seriesYearFromTMDB(ctx context.Context, sess *mode.Session, tmdbID int) int {
+	if sess == nil || sess.TMDB == nil || tmdbID <= 0 {
+		return 0
+	}
+	d, err := sess.TMDB.TVDetails(ctx, tmdbID)
+	if err != nil {
+		return 0
+	}
+	// TVDetails does not expose first_air_date; season 1's air_date is the
+	// usual show-year stand-in for RelocateEpisode folder naming.
+	for _, s := range d.Seasons {
+		if s.SeasonNumber == 1 {
+			if y := yearFromDate(s.AirDate); y != 0 {
+				return y
+			}
+		}
+	}
+	for _, s := range d.Seasons {
+		if y := yearFromDate(s.AirDate); y != 0 {
+			return y
+		}
+	}
+	return 0
+}
+
+func yearFromDate(date string) int {
+	if len(date) < 4 {
+		return 0
+	}
+	y, err := strconv.Atoi(date[:4])
+	if err != nil {
+		return 0
+	}
+	return y
 }

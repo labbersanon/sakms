@@ -518,7 +518,7 @@ func run() error {
 	// of "the download finished." Reuses the signal-driven ctx so shutdown
 	// stops the torrent client too.
 	if dlManager != nil {
-		dlManager.SetOnComplete(api.DownloadCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager))
+		dlManager.SetOnComplete(api.DownloadCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager, videoHasher))
 		// Stale-torrent callback, wired the same way and for the same reason as
 		// the completion callback above: the engine detects the dead download,
 		// internal/api owns what to do about it (cancel + park for re-search).
@@ -531,7 +531,7 @@ func run() error {
 		}()
 	}
 	if nzbManager != nil {
-		nzbManager.SetOnComplete(api.UsenetCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager, nzbManager))
+		nzbManager.SetOnComplete(api.UsenetCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager, nzbManager, videoHasher))
 		go nzbManager.Start(ctx)
 	}
 

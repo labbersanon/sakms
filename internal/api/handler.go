@@ -483,7 +483,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// continue per item. See autoGrabBatchHandler in autograb_batch.go.
 	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore))
 	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
-	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober))
+	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober, videoHasher))
 	// Request-status worklist + its excluded-titles endpoints live on their own
 	// mux (api.NewRequestsMux), mounted in cmd/sakms/main.go — they need an
 	// *excludes.Store, a dependency NewMux doesn't carry (same precedent as

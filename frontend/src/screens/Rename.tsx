@@ -497,6 +497,23 @@ const UndoOutcome: Component<{ result: UndoResult }> = (props) => {
   );
 };
 
+// formatAppliedAt turns backend timestamps (RFC3339 nano or legacy
+// "YYYY-MM-DD HH:MM:SS") into a short, locale-stable label for the UI.
+export function formatAppliedAt(raw: string): string {
+  if (!raw) return "";
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
 const RecentlyAppliedSection: Component<{
   entries: RecentlyAppliedEntry[];
   loadError: string;
@@ -521,63 +538,44 @@ const RecentlyAppliedSection: Component<{
       when={props.entries.length > 0}
       fallback={<Muted class="mt-2">Nothing to undo yet.</Muted>}
     >
-      <table class="mt-2 w-full text-left text-sm">
-        <thead>
-          <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
-            <th class="px-2 py-2 font-medium">Source</th>
-            <th class="px-2 py-2 font-medium">Title</th>
-            <th class="px-2 py-2 font-medium">Applied</th>
-            <th class="px-2 py-2 font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <For each={props.entries}>
-            {(e) => {
-              // aria-describedby rather than folding the note into the
-              // button's aria-label, mirroring SearchTakeover's
-              // movie-origin badge: the label stays the stable
-              // `Undo <sourceName>` every test and screen-reader user
-              // navigates by, and the caveat is announced after it.
-              const noteId = createUniqueId();
-              return (
-                <tr class="border-b border-border/60 align-top">
-                  <td class="px-2 py-2 font-mono text-xs">{e.sourceName}</td>
-                  <td class="px-2 py-2">
-                    <div class="flex flex-wrap items-center gap-1">
-                      <span>{e.title}</span>
-                      {/* Visible, not tooltip-buried: viaAlternateFold means
-                          Undo will NEVER move this file back (the Apply took
-                          the promote/demote-by-tier branch, whose file now
-                          belongs to a different, still-valid proposal). An
-                          operator who does not know that reads the resulting
-                          "file not restored" as a failure. */}
-                      <Show when={e.viaAlternateFold}>
-                        <span
-                          id={noteId}
-                          class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted"
-                        >
-                          quality alternate — file won’t be moved back on undo
-                        </span>
-                      </Show>
-                    </div>
-                  </td>
-                  <td class="px-2 py-2 text-muted">{e.appliedAt}</td>
-                  <td class="px-2 py-2">
-                    <Button
-                      onClick={() => props.onUndo(e)}
-                      disabled={props.disabled || props.busyId !== null}
-                      aria-label={`Undo ${e.sourceName}`}
-                      aria-describedby={e.viaAlternateFold ? noteId : undefined}
+      <ul class="mt-2 space-y-3">
+        <For each={props.entries}>
+          {(e) => {
+            const noteId = createUniqueId();
+            return (
+              <li class="rounded-lg border border-border/60 p-3">
+                <div class="break-all font-mono text-xs text-muted">
+                  {e.sourceName}
+                </div>
+                <div class="mt-1 flex flex-wrap items-center gap-1 text-sm">
+                  <span class="font-medium text-fg">{e.title}</span>
+                  <Show when={e.viaAlternateFold}>
+                    <span
+                      id={noteId}
+                      class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted"
                     >
-                      {props.busyId === e.proposalId ? "Undoing…" : "Undo"}
-                    </Button>
-                  </td>
-                </tr>
-              );
-            }}
-          </For>
-        </tbody>
-      </table>
+                      quality alternate — file won’t be moved back on undo
+                    </span>
+                  </Show>
+                </div>
+                <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <span class="text-xs text-muted">
+                    Applied {formatAppliedAt(e.appliedAt)}
+                  </span>
+                  <Button
+                    onClick={() => props.onUndo(e)}
+                    disabled={props.disabled || props.busyId !== null}
+                    aria-label={`Undo ${e.sourceName}`}
+                    aria-describedby={e.viaAlternateFold ? noteId : undefined}
+                  >
+                    {props.busyId === e.proposalId ? "Undoing…" : "Undo"}
+                  </Button>
+                </div>
+              </li>
+            );
+          }}
+        </For>
+      </ul>
     </Show>
     <Show when={props.result}>{(r) => <UndoOutcome result={r()} />}</Show>
     {/* Surfaced VERBATIM. internal/api/rename_undo.go writes these as

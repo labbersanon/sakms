@@ -417,12 +417,36 @@ func queryInt(q url.Values, key string, def int) int {
 // down to selectAvailabilityCandidate's autograb.Select call. rejections
 // collects why cells came up empty (see rejectionSet) — nil-tolerant, so a
 // caller that only wants the grid can pass nil.
+//
+// Claude 2026-08-11: reject releases that cannot form a valid Grab request.
+// Reason: grading only proves quality; it does not prove Prowlarr supplied the
+// downloadUrl and protocol required by the mutating endpoint.
+// Troubleshooting: prevents populated cells that fail only after clicking Grab.
+// Review if: AvailabilityCandidate makes both fields structurally non-optional.
 func buildAvailabilityPreview(candidates []autograb.Candidate, releases []prowlarr.Release, minSeeders int, rejections *rejectionSet) apidto.AvailabilityPreview {
+	filteredCandidates := make([]autograb.Candidate, 0, len(candidates))
+	filteredReleases := make([]prowlarr.Release, 0, len(releases))
+	for i, rel := range releases {
+		var missing []string
+		if rel.DownloadURL == "" {
+			missing = append(missing, "downloadUrl")
+		}
+		if rel.Protocol == "" {
+			missing = append(missing, "protocol")
+		}
+		if len(missing) > 0 {
+			log.Printf("discover availability: skipped ungrabbable candidate title=%q missing=%s", rel.Title, strings.Join(missing, ","))
+			continue
+		}
+		filteredCandidates = append(filteredCandidates, candidates[i])
+		filteredReleases = append(filteredReleases, rel)
+	}
+
 	return apidto.AvailabilityPreview{
-		Res2160: buildResolutionAvailability(candidates, releases, 2160, minSeeders, rejections),
-		Res1080: buildResolutionAvailability(candidates, releases, 1080, minSeeders, rejections),
-		Res720:  buildResolutionAvailability(candidates, releases, 720, minSeeders, rejections),
-		Res480:  buildResolutionAvailability(candidates, releases, 480, minSeeders, rejections),
+		Res2160: buildResolutionAvailability(filteredCandidates, filteredReleases, 2160, minSeeders, rejections),
+		Res1080: buildResolutionAvailability(filteredCandidates, filteredReleases, 1080, minSeeders, rejections),
+		Res720:  buildResolutionAvailability(filteredCandidates, filteredReleases, 720, minSeeders, rejections),
+		Res480:  buildResolutionAvailability(filteredCandidates, filteredReleases, 480, minSeeders, rejections),
 	}
 }
 

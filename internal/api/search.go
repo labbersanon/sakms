@@ -339,8 +339,23 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if req.DownloadURL == "" || req.Protocol == "" || req.RootFolderPath == "" {
-			http.Error(w, "downloadUrl, protocol, and rootFolderPath are required", http.StatusBadRequest)
+		// Claude 2026-08-11: report the exact missing Grab request fields.
+		// Reason: the previous all-fields message concealed whether the release
+		// candidate, protocol mapping, or configured root caused the rejection.
+		// Troubleshooting: makes malformed availability candidates diagnosable.
+		// Review if: request decoding moves to shared field-level validation.
+		var missing []string
+		if strings.TrimSpace(req.DownloadURL) == "" {
+			missing = append(missing, "downloadUrl")
+		}
+		if strings.TrimSpace(req.Protocol) == "" {
+			missing = append(missing, "protocol")
+		}
+		if strings.TrimSpace(req.RootFolderPath) == "" {
+			missing = append(missing, "rootFolderPath")
+		}
+		if len(missing) > 0 {
+			http.Error(w, "missing required field(s): "+strings.Join(missing, ", "), http.StatusBadRequest)
 			return
 		}
 

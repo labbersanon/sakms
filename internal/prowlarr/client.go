@@ -5,7 +5,7 @@
 // normalization is Prowlarr's whole job).
 //
 // The response shape below (ReleaseResource: title/guid/indexer/protocol/
-// size/seeders/downloadUrl/publishDate/categories) is modeled on Prowlarr's
+// size/seeders/downloadUrl/magnetUrl/publishDate/categories) is modeled on Prowlarr's
 // documented /api/v1/search endpoint, which mirrors the release-search
 // resource shared across the Servarr-family apps (Radarr/Sonarr/Prowlarr are
 // built on the same underlying codebase). This has NOT been run against a
@@ -79,6 +79,12 @@ type Release struct {
 	IndexerFlags []string `json:"indexerFlags"`
 }
 
+// Claude 2026-08-11: preserve Prowlarr's separate magnetUrl field.
+// Reason: torrent results can omit downloadUrl while carrying a directly
+// grabbable magnetUrl (or, on some indexers, a magnet URI in guid).
+// Troubleshooting: prevents graded releases from reaching Grab with an empty URL.
+// Review if: Prowlarr guarantees one canonical populated downloadUrl field.
+//
 // releaseResource is the raw shape Prowlarr's /api/v1/search returns —
 // decoded into this first, then mapped into Release, so a shape mismatch
 // against the real API (this hasn't been confirmed live — see package doc)
@@ -91,6 +97,7 @@ type releaseResource struct {
 	Size        int64  `json:"size"`
 	Seeders     int    `json:"seeders"`
 	DownloadURL string `json:"downloadUrl"`
+	MagnetURL   string `json:"magnetUrl"`
 	PublishDate string `json:"publishDate"`
 	Categories  []struct {
 		ID int `json:"id"`
@@ -263,6 +270,13 @@ func (c *Client) search(ctx context.Context, q url.Values) ([]Release, error) {
 		for j, cat := range r.Categories {
 			cats[j] = cat.ID
 		}
+		downloadURL := r.DownloadURL
+		if downloadURL == "" {
+			downloadURL = r.MagnetURL
+		}
+		if downloadURL == "" && strings.HasPrefix(strings.ToLower(r.GUID), "magnet:") {
+			downloadURL = r.GUID
+		}
 		out[i] = Release{
 			GUID:         r.GUID,
 			Title:        r.Title,
@@ -270,7 +284,7 @@ func (c *Client) search(ctx context.Context, q url.Values) ([]Release, error) {
 			Protocol:     Protocol(strings.ToLower(r.Protocol)),
 			Size:         r.Size,
 			Seeders:      r.Seeders,
-			DownloadURL:  r.DownloadURL,
+			DownloadURL:  downloadURL,
 			PublishDate:  r.PublishDate,
 			Categories:   cats,
 			IndexerFlags: r.IndexerFlags,

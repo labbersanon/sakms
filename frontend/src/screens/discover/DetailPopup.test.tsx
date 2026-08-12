@@ -890,6 +890,37 @@ describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shap
       rootFolderPath: "/movies",
     });
   });
+
+  // Claude 2026-08-11: cover malformed availability data at the UI boundary.
+  // Reason: a populated cell must not POST an empty release URL/protocol and
+  // leave the operator with only the API's generic 400 response.
+  // Troubleshooting: reproduces the Adult DetailPopup Grab failure client-side.
+  // Review if: availability response decoding rejects malformed candidates.
+  it("names missing candidate fields before resolving the root folder or calling manualGrab", async () => {
+    const preview = emptyPreview();
+    preview.res1080.low.torrent = candidate({ downloadUrl: "", protocol: "" });
+
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(preview);
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "low", maxResolution: 1080 });
+      if (url.includes("/discover/description")) return emptyDescription();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = { mode: "adult", item: adultScene() };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Grab" }));
+
+    expect(
+      await screen.findByText(
+        "selected release is missing required field(s): downloadUrl, protocol",
+      ),
+    ).toBeInTheDocument();
+    expect(calls.some((c) => c.url.includes("/library/root-folder"))).toBe(false);
+    expect(calls.some((c) => c.url.includes("/search/grab"))).toBe(false);
+  });
 });
 
 describe("DetailPopup — Adult tags/performers", () => {

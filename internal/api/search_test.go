@@ -225,6 +225,56 @@ func TestSearchHandler_ProwlarrNotConfigured(t *testing.T) {
 	}
 }
 
+// Claude 2026-08-11: require field-specific Grab request diagnostics.
+// Reason: naming every required field hid which candidate value was actually
+// absent and made release-mapping failures indistinguishable from root config.
+// Troubleshooting: preserves actionable 400s for malformed DetailPopup posts.
+// Review if: Grab validation returns structured field errors instead of text.
+func TestGrabHandler_NamesMissingRequiredFields(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		req  grabRequest
+		want string
+	}{
+		{
+			name: "download URL only",
+			req:  grabRequest{Protocol: "torrent", RootFolderPath: "/adult"},
+			want: "missing required field(s): downloadUrl\n",
+		},
+		{
+			name: "protocol and root folder",
+			req:  grabRequest{DownloadURL: "magnet:?xt=urn:btih:abc"},
+			want: "missing required field(s): protocol, rootFolderPath\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.req)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			resp, err := http.Post(srv.URL+"/api/modes/adult/search/grab", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("POST failed: %v", err)
+			}
+			var got bytes.Buffer
+			_, _ = got.ReadFrom(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%q", resp.StatusCode, got.String())
+			}
+			if got.String() != tt.want {
+				t.Errorf("body = %q, want %q", got.String(), tt.want)
+			}
+		})
+	}
+}
+
 func TestGrabHandler_Torrent_SendsToAria2AndRecordsGrab(t *testing.T) {
 	dl := newTestDownloader("gid-abc", t.TempDir())
 

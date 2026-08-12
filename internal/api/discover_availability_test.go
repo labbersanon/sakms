@@ -16,6 +16,7 @@ import (
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
+	"github.com/labbersanon/sakms/internal/prowlarr"
 )
 
 // fakeProwlarrRecording is fakeProwlarr's sibling: serves a static body but
@@ -97,6 +98,55 @@ func TestDiscoverAvailabilityHandler_Movies_BasicFetch(t *testing.T) {
 	}
 	if out.Res720.Low.Torrent != nil || out.Res480.Low.Torrent != nil || out.Res2160.Low.Torrent != nil {
 		t.Errorf("expected the 1080p release to appear in ONLY the res1080 bucket, got %+v", out)
+	}
+}
+
+// Claude 2026-08-11: pin the availability grid's Grab-field boundary.
+// Reason: a quality-qualified release is still unusable without both its
+// download URL and protocol; the grid must only expose candidates Grab accepts.
+// Troubleshooting: reproduces the populated-cell/empty-downloadUrl production bug.
+// Review if: Prowlarr Release makes these fields non-empty by construction.
+func TestBuildAvailabilityPreview_SkipsMissingDownloadURLOrProtocol(t *testing.T) {
+	const validURL = "magnet:?xt=urn:btih:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	valid := prowlarr.Release{
+		GUID: "valid", Title: "Some.Movie.2023.1080p.WEB-DL.x265-GROUP",
+		Protocol: prowlarr.Torrent, Size: 8_000_000_000, Seeders: 10, DownloadURL: validURL,
+	}
+	tests := []struct {
+		name    string
+		invalid prowlarr.Release
+	}{
+		{
+			name: "empty DownloadURL",
+			invalid: prowlarr.Release{
+				GUID: "missing-url", Title: "Some.Movie.2023.1080p.WEB-DL.x265-GROUP",
+				Protocol: prowlarr.Torrent, Size: 8_000_000_000, Seeders: 100,
+			},
+		},
+		{
+			name: "empty Protocol",
+			invalid: prowlarr.Release{
+				GUID: "missing-protocol", Title: "Some.Movie.2023.1080p.WEB-DL.x265-GROUP",
+				Size: 8_000_000_000, Seeders: 100, DownloadURL: validURL,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			onlyInvalid := []prowlarr.Release{tt.invalid}
+			preview := buildAvailabilityPreview(buildAutoGrabCandidates(onlyInvalid, 6_000, false), onlyInvalid, 1, nil)
+			if got := countPopulatedCells(preview); got != 0 {
+				t.Fatalf("ungrabbable release populated %d cell(s): %+v", got, preview)
+			}
+
+			withValid := []prowlarr.Release{tt.invalid, valid}
+			preview = buildAvailabilityPreview(buildAutoGrabCandidates(withValid, 6_000, false), withValid, 1, nil)
+			got := preview.Res1080.Low.Torrent
+			if got == nil || got.GUID != valid.GUID || got.DownloadURL != validURL {
+				t.Fatalf("valid neighbor was not selected after filtering invalid release: %+v", got)
+			}
+		})
 	}
 }
 

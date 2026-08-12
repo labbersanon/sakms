@@ -701,6 +701,20 @@ export const DetailPopup: Component<{
     setGrabError("");
     setGrabbing(true);
     try {
+      // Claude 2026-08-11: validate the selected release before any Grab request.
+      // Reason: availability data is external input, so a populated grid cell
+      // must not imply its downloadUrl and protocol are usable.
+      // Troubleshooting: replaces the opaque server 400 with the exact bad fields.
+      // Review if: AvailabilityCandidate validates these fields while decoding.
+      const missing = [
+        !c.downloadUrl?.trim() ? "downloadUrl" : "",
+        !c.protocol?.trim() ? "protocol" : "",
+      ].filter(Boolean);
+      if (missing.length) {
+        throw new Error(
+          `selected release is missing required field(s): ${missing.join(", ")}`,
+        );
+      }
       const root = await libraryRootFolder(mode());
       if (!root) {
         throw new Error(

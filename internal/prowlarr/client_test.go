@@ -77,6 +77,45 @@ func TestSearch_ParsesFixtureAcrossBothProtocols(t *testing.T) {
 	}
 }
 
+// Claude 2026-08-11: cover Prowlarr's alternate torrent enclosure fields.
+// Reason: magnet-only releases must remain grabbable, while downloadUrl keeps
+// precedence when Prowlarr supplies both representations.
+// Troubleshooting: reproduces the Adult DetailPopup empty-downloadUrl failure.
+// Review if: releaseResource no longer accepts magnetUrl or magnet GUIDs.
+func TestSearch_DownloadURLFallbacksToMagnetURLThenMagnetGUID(t *testing.T) {
+	const downloadURL = "https://indexer.example/download/1.torrent"
+	const magnetURL = "magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	const guidMagnet = "magnet:?xt=urn:btih:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[
+			{"guid":"guid-1","title":"download wins","protocol":"torrent","downloadUrl":"` + downloadURL + `","magnetUrl":"` + magnetURL + `"},
+			{"guid":"guid-2","title":"magnet fallback","protocol":"torrent","magnetUrl":"` + magnetURL + `"},
+			{"guid":"` + guidMagnet + `","title":"guid fallback","protocol":"torrent"},
+			{"guid":"ordinary-guid","title":"no enclosure","protocol":"torrent"}
+		]`))
+	})
+
+	releases, err := c.Search(context.Background(), "anything", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(releases) != 4 {
+		t.Fatalf("expected 4 releases, got %d", len(releases))
+	}
+	if got := releases[0].DownloadURL; got != downloadURL {
+		t.Errorf("downloadUrl precedence = %q, want %q", got, downloadURL)
+	}
+	if got := releases[1].DownloadURL; got != magnetURL {
+		t.Errorf("magnetUrl fallback = %q, want %q", got, magnetURL)
+	}
+	if got := releases[2].DownloadURL; got != guidMagnet {
+		t.Errorf("magnet guid fallback = %q, want %q", got, guidMagnet)
+	}
+	if got := releases[3].DownloadURL; got != "" {
+		t.Errorf("ordinary guid must not become a download URL, got %q", got)
+	}
+}
+
 func TestSearch_NoCategoriesOmitsParam(t *testing.T) {
 	var gotPath string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

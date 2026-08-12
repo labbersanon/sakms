@@ -71,7 +71,8 @@ export function episodeRangeFileName(
   ext: string,
 ): string {
   if (episodeNumbers.length < 2) {
-    const episodeNumber = episodeNumbers.length === 1 ? episodeNumbers[0] : 0;
+    const episodeNumber =
+      episodeNumbers.length === 1 ? (episodeNumbers[0] ?? 0) : 0;
     return episodeFileName(
       preset,
       seriesTitle,
@@ -81,8 +82,8 @@ export function episodeRangeFileName(
       ext,
     );
   }
-  const first = episodeNumbers[0];
-  const last = episodeNumbers[episodeNumbers.length - 1];
+  const first = episodeNumbers[0] ?? 0;
+  const last = episodeNumbers[episodeNumbers.length - 1] ?? first;
   const series = safePathComponent(seriesTitle);
   const epTitle = safePathComponent(episodeTitle);
   let base: string;

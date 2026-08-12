@@ -2,15 +2,15 @@ package tvdb
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
-
-	"github.com/labbersanon/sakms/internal/httpx"
+	"strings"
+	"unicode"
 )
 
-// EpisodeHit is one episode from GET /v4/search?type=episode.
+const maxEpisodeSearchSeries = 10
+
+// EpisodeHit is one episode matched by title from a supported per-series
+// episode listing. TheTVDB v4 does not expose a global episode-title search.
 type EpisodeHit struct {
 	EpisodeID     int
 	Name          string
@@ -21,64 +21,75 @@ type EpisodeHit struct {
 
 // SearchEpisodes searches TheTVDB for episodes by title.
 func (c *Client) SearchEpisodes(ctx context.Context, query string) ([]EpisodeHit, error) {
-	if err := c.ensureToken(ctx); err != nil {
-		return nil, err
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []EpisodeHit{}, nil
 	}
-	c.mu.Lock()
-	token := c.token
-	c.mu.Unlock()
 
-	q := url.Values{}
-	q.Set("query", query)
-	q.Set("type", "episode")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.cfg.BaseURL+"/v4/search?"+q.Encode(), nil)
+	// Claude 2026-08-12: replace unsupported /search?type=episode.
+	// Reason: TVDB v4 search can filter only movie/series/person/company; the
+	// real episode shape is available from /series/{id}/episodes/{season-type}.
+	// Troubleshooting: TVDB Rename Search returning nothing for every episode
+	// title despite tests passing against a hand-authored fake search payload.
+	// Review if: TVDB adds a documented global episode-title search endpoint.
+	series, err := c.SearchSeries(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("tvdb: building episode search request: %w", err)
+		return nil, fmt.Errorf("tvdb: episode search series seed %q: %w", query, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	var envelope struct {
-		Data []json.RawMessage `json:"data"`
-	}
-	if err := httpx.DoJSON(c.http, req, httpx.MaxResponseBodySize, &envelope); err != nil {
-		return nil, fmt.Errorf("tvdb: episode search %q: %w", query, err)
+	if len(series) > maxEpisodeSearchSeries {
+		series = series[:maxEpisodeSearchSeries]
 	}
 
-	out := make([]EpisodeHit, 0, len(envelope.Data))
-	for _, raw := range envelope.Data {
-		if hit, ok := decodeEpisodeHit(raw); ok {
-			out = append(out, hit)
+	out := []EpisodeHit{}
+	seen := make(map[int]bool)
+	for _, s := range series {
+		episodes, err := c.SeriesEpisodes(ctx, s.TVDBID, SeasonTypeOfficial)
+		if err != nil {
+			return nil, fmt.Errorf("tvdb: episode search series %d: %w", s.TVDBID, err)
+		}
+		for _, ep := range episodes {
+			if seen[ep.ID] || !episodeTitleSearchMatch(query, ep.Name) {
+				continue
+			}
+			seriesID := ep.SeriesID
+			if seriesID == 0 {
+				seriesID = s.TVDBID
+			}
+			out = append(out, EpisodeHit{
+				EpisodeID:     ep.ID,
+				Name:          ep.Name,
+				SeasonNumber:  ep.SeasonNumber,
+				EpisodeNumber: ep.Number,
+				SeriesID:      seriesID,
+			})
+			seen[ep.ID] = true
 		}
 	}
 	return out, nil
 }
 
-type flexibleEpisode struct {
-	ID           int              `json:"id"`
-	Name         string           `json:"name"`
-	SeasonNumber int              `json:"seasonNumber"`
-	Number       int              `json:"number"`
-	SeriesID     int              `json:"seriesId"`
-	Episode      *flexibleEpisode `json:"episode"`
+func episodeTitleSearchMatch(query, title string) bool {
+	q := normalizeEpisodeSearchText(query)
+	t := normalizeEpisodeSearchText(title)
+	if q == "" || t == "" {
+		return false
+	}
+	return t == q || strings.Contains(t, q) || strings.Contains(q, t)
 }
 
-func decodeEpisodeHit(raw json.RawMessage) (EpisodeHit, bool) {
-	var f flexibleEpisode
-	if err := json.Unmarshal(raw, &f); err != nil {
-		return EpisodeHit{}, false
+func normalizeEpisodeSearchText(s string) string {
+	var b strings.Builder
+	lastSpace := true
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
 	}
-	if f.Episode != nil {
-		f = *f.Episode
-	}
-	if f.ID <= 0 || f.SeriesID <= 0 || f.Name == "" || f.Number < 1 {
-		return EpisodeHit{}, false
-	}
-	return EpisodeHit{
-		EpisodeID:     f.ID,
-		Name:          f.Name,
-		SeasonNumber:  f.SeasonNumber,
-		EpisodeNumber: f.Number,
-		SeriesID:      f.SeriesID,
-	}, true
+	return strings.TrimSpace(b.String())
 }

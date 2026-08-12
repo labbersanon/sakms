@@ -485,7 +485,7 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			return
 		}
 
-		var out []apidto.SeriesSearchItem
+		out := []apidto.SeriesSearchItem{}
 		switch kind {
 		case "series":
 			results, err := sess.TVDB.SearchSeries(ctx, query)
@@ -513,32 +513,37 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
-			seriesCache := make(map[int]struct{ name string; year int })
+			type episodeSeriesInfo struct {
+				tmdbID int
+				name   string
+				year   int
+			}
+			seriesCache := make(map[int]episodeSeriesInfo)
 			for _, hit := range hits {
-				tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, hit.SeriesID)
-				if err != nil || tmdbID == 0 {
-					continue
-				}
-				brief, ok := seriesCache[hit.SeriesID]
+				info, ok := seriesCache[hit.SeriesID]
 				if !ok {
+					tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, hit.SeriesID)
+					if err != nil || tmdbID == 0 {
+						continue
+					}
 					name, year, err := sess.TVDB.SeriesBrief(ctx, hit.SeriesID)
 					if err != nil || name == "" {
 						continue
 					}
-					brief = struct{ name string; year int }{name: name, year: year}
-					seriesCache[hit.SeriesID] = brief
+					info = episodeSeriesInfo{tmdbID: tmdbID, name: name, year: year}
+					seriesCache[hit.SeriesID] = info
 				}
 				season := hit.SeasonNumber
 				episode := hit.EpisodeNumber
 				item := apidto.SeriesSearchItem{
-					TmdbID:        tmdbID,
+					TmdbID:        info.tmdbID,
 					Title:         hit.Name,
-					SeriesTitle:   brief.name,
+					SeriesTitle:   info.name,
 					SeasonNumber:  &season,
 					EpisodeNumber: &episode,
 				}
-				if brief.year > 0 {
-					item.ReleaseDate = fmt.Sprintf("%d-01-01", brief.year)
+				if info.year > 0 {
+					item.ReleaseDate = fmt.Sprintf("%d-01-01", info.year)
 				}
 				out = append(out, item)
 			}

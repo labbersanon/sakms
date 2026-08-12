@@ -14,12 +14,21 @@ func TestSearchEpisodes(t *testing.T) {
 		fmt.Fprint(w, `{"status":"success","data":{"token":"tok-ep"}}`)
 	})
 	mux.HandleFunc("GET /v4/search", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("type") != "episode" {
-			t.Errorf("expected type=episode, got %q", r.URL.Query().Get("type"))
+		if r.URL.Query().Get("type") != "series" {
+			t.Errorf("expected type=series, got %q", r.URL.Query().Get("type"))
 		}
-		fmt.Fprint(w, `{"status":"success","data":[{
-			"id":1001,"name":"Duck Soup","seasonNumber":3,"number":1,"seriesId":73910
-		}]}`)
+		fmt.Fprint(w, `{"status":"success","data":[{"tvdb_id":"73910","name":"Laurel & Hardy","year":"1921"}]}`)
+	})
+	mux.HandleFunc("GET /v4/series/73910/episodes/official", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "0":
+			fmt.Fprint(w, `{"status":"success","data":{"episodes":[
+				{"id":1001,"seriesId":73910,"name":"Duck Soup","seasonNumber":3,"number":1},
+				{"id":1002,"seriesId":73910,"name":"The Music Box","seasonNumber":8,"number":3}
+			]}}`)
+		default:
+			fmt.Fprint(w, `{"status":"success","data":{"episodes":[]}}`)
+		}
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

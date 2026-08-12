@@ -571,6 +571,12 @@ const TitleProposalCard: Component<{
   );
 };
 
+function stripStudioPrefix(text: string, studio: string): string {
+  if (!studio || !text) return text;
+  const prefix = `${studio} - `;
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+}
+
 // AdultProposalCard is the mobile-friendly row layout for Adult Rename
 // proposals — the eight-column table (Source/Title/Studio/Date/PHash/Root/
 // Reason/Actions) collapses on narrow viewports the same way Recently Applied
@@ -585,13 +591,16 @@ const AdultProposalCard: Component<{
   disabled: boolean;
 }> = (props) => {
   const p = () => props.proposal;
+  const studio = () => p().studio || "";
   return (
     <li
       data-proposal-row
       class="rounded-lg border border-border/60 p-3"
     >
       <div class="flex items-start gap-1 break-all font-mono text-xs text-muted">
-        <span class="min-w-0 flex-1">{p().sourceName}</span>
+        <span class="min-w-0 flex-1">
+          {stripStudioPrefix(p().sourceName, studio())}
+        </span>
         <Show
           when={rowActionEnabled(
             "preview",
@@ -606,7 +615,9 @@ const AdultProposalCard: Component<{
         </Show>
       </div>
       <div class="mt-1 flex flex-wrap items-center gap-1 text-sm">
-        <span class="font-medium text-fg">{p().title}</span>
+        <span class="font-medium text-fg">
+          {stripStudioPrefix(p().title, studio())}
+        </span>
         <Show
           when={(p().reason || "")
             .toLowerCase()

@@ -787,6 +787,37 @@ describe("Rename — mode-specific columns", () => {
     expect(hashCell.textContent).toBe("abcdef0123456789".slice(0, 12) + "…");
     expect(screen.queryByText("Year")).toBeNull();
   });
+
+  it("shows studio once on adult cards when the source name uses the studio prefix", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/adult/rename/proposals"))
+        return jsonResponse([
+          proposal({
+            id: 4,
+            sourceName:
+              "MaxineX - Frisky Flatmates Chapter 2 (2024-10-23) [phash-abc].mp4",
+            title: "Frisky Flatmates Chapter 2",
+            studio: "MaxineX",
+            date: "2024-10-23",
+            phash: "abc",
+          }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Adult"));
+    const row = (await screen.findByText("Frisky Flatmates Chapter 2")).closest(
+      "[data-proposal-row]",
+    )! as HTMLElement;
+    expect(
+      within(row).getByText(
+        "Frisky Flatmates Chapter 2 (2024-10-23) [phash-abc].mp4",
+      ),
+    ).toBeInTheDocument();
+    expect(within(row).queryByText(/^MaxineX - /)).toBeNull();
+    expect(within(row).getAllByText("MaxineX")).toHaveLength(1);
+  });
 });
 
 describe("Rename — Adult (dropdown; no Status column)", () => {

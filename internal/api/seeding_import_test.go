@@ -198,17 +198,20 @@ func TestCheckImport_FailedAutoImport_ConsumesTheCopyAndLeavesTheSeedIntact(t *t
 		}
 	}
 
-	// (2) exactly one copy of the content landed in the library.
+	// (2) both episodes landed in the library under the naming-preset tree:
+	// <root>/<Series [tmdbid-N]>/Season 01/<episode>.ext
+	// (Jellyfin default; year omitted because TMDB is unavailable in tests).
 	entries, err := os.ReadDir(f.tvRoot)
 	if err != nil {
 		t.Fatalf("reading the TV root: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("expected exactly one relocated pack under the TV root, got %d: %v", len(entries), entries)
+		t.Fatalf("expected exactly one series folder under the TV root, got %d: %v", len(entries), entries)
 	}
-	imported, err := os.ReadDir(filepath.Join(f.tvRoot, entries[0].Name()))
+	seasonDir := filepath.Join(f.tvRoot, entries[0].Name(), "Season 01")
+	imported, err := os.ReadDir(seasonDir)
 	if err != nil {
-		t.Fatalf("reading the relocated pack: %v", err)
+		t.Fatalf("reading the Season 01 folder: %v", err)
 	}
 	if len(imported) != 2 {
 		t.Errorf("expected both episodes relocated exactly once, got %d: %v", len(imported), imported)

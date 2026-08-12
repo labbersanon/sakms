@@ -138,10 +138,13 @@ func TestCheckImportHandler_MultiFileTorrent_RelocatesWholeFolder(t *testing.T) 
 	if len(episodes) != 2 {
 		t.Fatalf("expected BOTH episodes recorded (whole-folder relocate), got %d: %+v", len(episodes), episodes)
 	}
-	// Both relocated files must exist on disk under the TV root.
-	for _, name := range []string{"Some.Show.S01E01.mkv", "Some.Show.S01E02.mkv"} {
-		if _, err := os.Stat(filepath.Join(tvRoot, "Some.Show.S01.1080p.WEB-DL", name)); err != nil {
-			t.Errorf("expected %s relocated under the TV root, got err=%v", name, err)
+	// Both relocated files must exist on disk under the TV root in the
+	// naming-preset tree: <root>/<Series [tmdbid-N]>/Season NN/<episode>.ext
+	// (Jellyfin default; year omitted because TMDB is unavailable in tests).
+	for _, name := range []string{"Some Show S01E01.mkv", "Some Show S01E02.mkv"} {
+		want := filepath.Join(tvRoot, "Some Show [tmdbid-777]", "Season 01", name)
+		if _, err := os.Stat(want); err != nil {
+			t.Errorf("expected %s organized under the TV root, got err=%v", name, err)
 		}
 	}
 }

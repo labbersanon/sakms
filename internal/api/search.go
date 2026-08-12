@@ -759,7 +759,31 @@ func postGrabRuntimeReview(ctx context.Context, prober dedup.Prober, grabsStore 
 	if prober == nil || sess.TMDB == nil || g.TMDBID == 0 {
 		return
 	}
-	if len(changes) != 1 {
+	// Claude 2026-08-12: find the Created path rather than requiring exactly
+	// one change. RelocateMovie/RelocateEpisodeRange always emit a Deleted+
+	// Created pair when the file moves (the normal import case), so len==1
+	// only holds when the file was already in place, which never happens on
+	// import. Probe the Created path in either case.
+	// Review if: changes shape changes (e.g. multi-file season-pack review added).
+	importedPath := ""
+	for _, ch := range changes {
+		if ch.Kind == mode.Created {
+			importedPath = ch.Path
+			break
+		}
+	}
+	if importedPath == "" {
+		return
+	}
+	// Season packs produce multiple Created paths; only single-episode grabs
+	// are probed — a pack has no single runtime to compare against.
+	createdCount := 0
+	for _, ch := range changes {
+		if ch.Kind == mode.Created {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
 		return
 	}
 
@@ -782,7 +806,7 @@ func postGrabRuntimeReview(ctx context.Context, prober dedup.Prober, grabsStore 
 		return
 	}
 
-	probe, err := prober.Probe(ctx, changes[0].Path)
+	probe, err := prober.Probe(ctx, importedPath)
 	if err != nil {
 		return
 	}

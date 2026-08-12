@@ -178,9 +178,13 @@ func episodeTouchedRows(upserted []library.Episode, resolved map[int]*library.Ep
 }
 
 // sceneTouchedRows builds the touched-row set for an Adult Apply. One entry
-// against library_scenes, keyed (box, scene_id). Adult has no alternate-fold
-// path at all (ApplyLibraryAdult upserts directly, no promote/demote branch),
-// so an Adult entry's ViaAlternateFold is always false.
+// against library_scenes, keyed (box, scene_id).
+//
+// ViaAlternateFold is NOT always false here: the alternate fold gate in
+// ApplyLibraryAdult (added in C6) passes promoted directly to recordUndoArchive.
+// Simple-path Applies (new scene, no existing file) still pass false. The
+// promote branch passes true (undo must NOT move the file back). The lose/tie
+// branch passes false (undo can and should move it back via the size-match gate).
 //
 // The pre-image is the WHOLE scene row, which matters beyond title/path:
 // PHash/PHashFileSize/PHashFileMTime are the phash cache's file-identity key,

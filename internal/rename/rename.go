@@ -61,7 +61,18 @@ func classifyAdultMatch(res *identify.MatchResult, err error) (status proposals.
 	}
 	foreignID, hasID := res.WhisparrForeignID()
 	if !hasID {
-		return proposals.Unmatched, "web-identified only (no scene ID) — needs manual review", "", "", ""
+		// Claude 2026-08-12: return res.Title (was ""), keeping the "web-identified"
+		// substring so tmdb_session.go:106's Contains check still fires.
+		// Reason: deep-interview-adult-rename-review-alts B4 — a web-identified-only
+		//   proposal's title is the seed for the Review popup default name, and the
+		//   frontend gate for the Review action keys on p.title != "". Without this,
+		//   Review is never offered and maybeAutoGiveBack (tmdb_session.go:102-117)
+		//   is dead for Adult (it requires p.Title != ""). SubmitDraft's p.Title == ""
+		//   guard also no longer rejects these rows.
+		// Troubleshooting: web-identified Adult rows showed no Review action; the
+		//   "web-identified" substring in reason must be preserved for tmdb_session.go.
+		// Review if: maybeAutoGiveBack no longer checks reason for "web-identified".
+		return proposals.Unmatched, "web-identified only — no catalog scene id yet; use Review to name and track it", res.Title, "", res.Type
 	}
 	return proposals.Pending, "", res.Title, foreignID, res.Type
 }

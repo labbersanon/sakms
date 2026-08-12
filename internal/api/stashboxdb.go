@@ -119,6 +119,7 @@ func stashBoxStoreError(w http.ResponseWriter, err error) {
 	case errors.Is(err, stashboxdb.ErrCapReached),
 		errors.Is(err, stashboxdb.ErrNameRequired),
 		errors.Is(err, stashboxdb.ErrNameReserved),
+		errors.Is(err, stashboxdb.ErrNameReservedLocal),
 		errors.Is(err, stashboxdb.ErrNameTaken),
 		errors.Is(err, stashboxdb.ErrNameHaunted),
 		errors.Is(err, stashboxdb.ErrInvalidEndpoint),

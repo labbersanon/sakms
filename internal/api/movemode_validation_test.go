@@ -140,7 +140,7 @@ func TestMoveMode_AdultRequiresBoxAndSceneID(t *testing.T) {
 		// sess is used ONLY by submitFingerprintGiveBack, which returns early
 		// on an empty PHash (internal/rename/rename.go:78) — and MoveMode
 		// clears phash — so an empty session is safe here.
-		sceneID, fingerprintSubmitted, changes, err := rename.ApplyLibraryAdult(ctx, &mode.Session{}, libStore, *moved, "high")
+		sceneID, fingerprintSubmitted, changes, err := rename.ApplyLibraryAdult(ctx, &mode.Session{}, libStore, *moved, "high", nil)
 		if err != nil {
 			t.Fatalf("rename.ApplyLibraryAdult on the moved row: %v", err)
 		}

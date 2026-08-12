@@ -299,9 +299,15 @@ func revertTouchedRows(ctx context.Context, libStore *library.Store, entry UndoE
 // byte-identical before and after. More than one file row is the signal that
 // actually distinguishes the two states.
 //
-// Adult is exempt by construction — library_scenes has no alternates table and
-// ApplyLibraryAdult has no promote/demote branch, so a scene row can never
-// become shared this way.
+// Claude 2026-08-12: added tableLibraryScenes case.
+// Reason: deep-interview-adult-rename-review-alts C8 — Adult now has an alternate-fold
+//   branch (ApplyLibraryAdult C6). Without this case, undoing an Adult Apply that
+//   inserted a scene row R, AFTER a later proposal folded an alternate into R,
+//   deletes R and cascades away the second proposal's file rows — the same cross-
+//   proposal corruption this function exists to prevent for Movies/Series.
+//   Removed the stale comment "Adult is exempt by construction" (its Review if:
+//   condition — ApplyLibraryAdult gaining a promote/demote branch — has now been met).
+// Review if: the alternate fold is removed from ApplyLibraryAdult.
 func rowNowSharedWithAnotherApply(ctx context.Context, libStore *library.Store, t touchedRow) (bool, string) {
 	switch t.Table {
 	case tableLibraryItems:
@@ -316,6 +322,12 @@ func rowNowSharedWithAnotherApply(ctx context.Context, libStore *library.Store, 
 			return false, ""
 		}
 		return true, fmt.Sprintf("library_episodes row %d now holds %d files — another proposal folded an alternate into it after this Apply, so the row was left in place rather than deleted", t.RowID, len(files))
+	case tableLibraryScenes:
+		files, err := libStore.ListSceneFiles(ctx, t.RowID)
+		if err != nil || len(files) <= 1 {
+			return false, ""
+		}
+		return true, fmt.Sprintf("library_scenes row %d now holds %d files — another proposal folded an alternate into it after this Apply, so the row was left in place rather than deleted", t.RowID, len(files))
 	default:
 		return false, ""
 	}

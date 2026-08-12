@@ -146,6 +146,23 @@ func (s *Store) PrimarySceneFile(ctx context.Context, sceneRowID int64) (SceneFi
 	return f, err
 }
 
+// DeleteSceneFileByPath removes the library_scene_files row for the given path,
+// if one exists. A no-op if no row matches. Used by applyAdultAlternate to clean
+// up the stale row for the original primary path after it has been physically moved
+// to an alternate-named destination — the two paths differ in Adult (because
+// phash is embedded in the filename) unlike Movies where the canonical filename
+// stays the same.
+func (s *Store) DeleteSceneFileByPath(ctx context.Context, filePath string) error {
+	if filePath == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM library_scene_files WHERE file_path = $1`, filePath)
+	if err != nil {
+		return fmt.Errorf("deleting scene file row for %q: %w", filePath, err)
+	}
+	return nil
+}
+
 // AllScenePaths returns every on-disk Adult path — denormalized
 // library_scenes.file_path plus library_scene_files — so Rename's known-map
 // skips alternates. Mirrors AllEpisodeFilePaths (library_episode_files.go:141).

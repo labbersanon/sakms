@@ -547,6 +547,56 @@ func TestDiscoverAvailability_Adult_NoStudioNoPerformersStillReturnsGrid(t *test
 	}
 }
 
+// Claude 2026-08-11: regression coverage for card-enclosure availability.
+// Reason: a valid RSS/Show More link must survive a zero-result Prowlarr search
+// and remain manually grabbable even when the torrent has no seeder metadata.
+// Troubleshooting: this failed in production as the popup's zero-release empty
+// state despite the Discover card already carrying a valid enclosure.
+// Review if: known enclosures move to a separate manual-candidate response field.
+func TestDiscoverAvailability_Adult_KnownEnclosureSurvivesZeroProwlarrResults(t *testing.T) {
+	prowlarrSrv, prowlarrCount := fakeProwlarrCounting(t, `[]`)
+	srv, _ := testAdultAvailabilitySetup(t, prowlarrSrv.URL)
+
+	const (
+		title       = "Known Enclosure Scene"
+		releaseName = "Vixen.Known.Enclosure.Scene.XXX.1080p.x265-GROUP"
+		downloadURL = "magnet:?xt=urn:btih:KNOWNENCLOSURE"
+	)
+	reqURL := fmt.Sprintf(
+		"%s/api/modes/adult/discover/availability?title=%s&releaseTitle=%s&durationSeconds=1800&downloadUrl=%s&protocol=torrent&sizeBytes=900000000",
+		srv.URL, urlQueryEscape(title), urlQueryEscape(releaseName), urlQueryEscape(downloadURL),
+	)
+	resp, err := http.Get(reqURL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if n := atomic.LoadInt32(prowlarrCount); n != 1 {
+		t.Fatalf("expected one zero-result Prowlarr search, got %d", n)
+	}
+
+	var out apidto.AvailabilityPreview
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if countPopulatedCells(out) == 0 {
+		t.Fatal("expected the known enclosure to force a populated availability grid")
+	}
+	got := out.Res1080.Low.Torrent
+	if got == nil {
+		t.Fatalf("expected the known 1080p torrent in res1080/low/torrent, got %+v", out.Res1080)
+	}
+	if got.DownloadURL != downloadURL || got.Protocol != "torrent" || got.Size != 900000000 {
+		t.Errorf("forced enclosure fields = %+v, want URL/protocol/size from the card", got)
+	}
+	if out.Diagnostics.RawReleaseCount != 1 || out.Diagnostics.MatchedReleaseCount != 1 {
+		t.Errorf("diagnostics = %+v, want one known raw/matched enclosure", out.Diagnostics)
+	}
+}
+
 // fakeTMDBSeriesSeasonRuntime is fakeTMDBSeriesRuntime's whole-season sibling
 // — returns multiple episodes (not one) from /tv/{id}/season/{n}, for
 // proving seriesSeasonTotalRuntimeSeconds sums every episode's runtime

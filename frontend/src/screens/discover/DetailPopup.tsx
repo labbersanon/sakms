@@ -560,11 +560,20 @@ export const DetailPopup: Component<{
         // Review if: a Show More item ever carries a real catalog id (currently
         // internal/api/adultdiscover_newest_scenes.go emits source="prowlarr", no id).
         const isCatalog = CATALOG_SOURCES.includes(scene.source) && !!scene.id;
+        // Claude 2026-08-11: carry the card's known enclosure into availability.
+        // Reason: RSS/Show More cards already know a usable release even when a
+        // fresh Prowlarr title search returns no results.
+        // Troubleshooting: a known enclosure must never produce the popup's
+        // "No matching releases found for this search" empty state.
+        // Review if: AdultDiscoverItem stops carrying direct-grab fields.
         return fetchAvailabilityPreview("adult", {
           title: scene.title,
           studio: scene.studio,
           releaseTitle: scene.releaseTitle,
           durationSeconds: scene.durationSeconds,
+          downloadUrl: scene.downloadUrl,
+          protocol: scene.protocol,
+          sizeBytes: scene.sizeBytes,
           box: isCatalog ? scene.source : undefined,
           sceneId: isCatalog ? scene.id : undefined,
           performers: scene.performers?.length ? scene.performers : undefined,

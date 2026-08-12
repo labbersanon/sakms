@@ -518,7 +518,20 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
       throw new Error("unexpected fetch: " + url);
     });
 
-    const target: DetailTarget = { mode: "adult", item: adultScene() };
+    // Claude 2026-08-11: include a real card enclosure in the Adult request
+    // wiring regression test.
+    // Reason: DetailPopup must seed availability when Prowlarr finds nothing.
+    // Troubleshooting: missing query assertions here allow the production empty
+    // state to return even though the card still has a valid direct link.
+    // Review if: availability moves from query params to a request body.
+    const target: DetailTarget = {
+      mode: "adult",
+      item: adultScene({
+        downloadUrl: "magnet:?xt=urn:btih:KNOWN",
+        protocol: "torrent",
+        sizeBytes: 900_000_000,
+      }),
+    };
     render(() => <DetailPopup target={target} onClose={() => {}} />);
 
     expect(await screen.findByRole("button", { name: "Grab" })).not.toBeDisabled();
@@ -529,6 +542,11 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     const availCall = calls.find((c) => c.url.includes("/discover/availability"));
     expect(availCall?.url).toContain("studio=Vixen");
     expect(availCall?.url).toContain("durationSeconds=1800");
+    expect(availCall?.url).toContain(
+      "downloadUrl=magnet%3A%3Fxt%3Durn%3Abtih%3AKNOWN",
+    );
+    expect(availCall?.url).toContain("protocol=torrent");
+    expect(availCall?.url).toContain("sizeBytes=900000000");
     expect(availCall?.url).not.toContain("tmdbId");
   });
 

@@ -453,7 +453,9 @@ export function fetchAdultDescription(
 // items with a non-empty id (A2(c) guard — never for prowlarr-sourced Show More
 // items). The backend keys its persisted-release cache on box:sceneId so a
 // re-open can be served without a Prowlarr search. performers is a soft identity
-// signal server-side; it never hard-rejects a release.
+// signal server-side; it never hard-rejects a release. downloadUrl/protocol/
+// sizeBytes carry an Adult card's already-known RSS/Show More enclosure so a
+// zero-result Prowlarr search cannot erase a release the card already proved exists.
 interface AvailabilityPreviewParams {
   title: string;
   tmdbId?: number;
@@ -465,6 +467,9 @@ interface AvailabilityPreviewParams {
   box?: string;
   sceneId?: string;
   performers?: string[];
+  downloadUrl?: string;
+  protocol?: string;
+  sizeBytes?: number;
 }
 
 // fetchAvailabilityPreview runs DetailPopup's one upfront, user-click-
@@ -493,6 +498,15 @@ export function fetchAvailabilityPreview(
     if (params.performers && params.performers.length > 0) {
       q.set("performers", params.performers.join(","));
     }
+    // Claude 2026-08-11: seed Adult availability with a known card enclosure.
+    // Reason: an RSS/Show More download link remains usable even when Prowlarr
+    // returns no raw title-search releases.
+    // Troubleshooting: if the popup shows a zero-release empty state for a card
+    // with a direct link, confirm these three params are present in the request.
+    // Review if: availability accepts a request body instead of query params.
+    if (params.downloadUrl) q.set("downloadUrl", params.downloadUrl);
+    if (params.protocol) q.set("protocol", params.protocol);
+    if (params.sizeBytes != null) q.set("sizeBytes", String(params.sizeBytes));
   } else {
     if (params.tmdbId != null) q.set("tmdbId", String(params.tmdbId));
     if (mode === "series") {

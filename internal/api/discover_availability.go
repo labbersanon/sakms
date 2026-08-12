@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -96,6 +97,8 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		}
 
 		req := apidto.AutoGrabRequest{Title: title}
+		var knownAdultEnclosure prowlarr.Release
+		hasKnownAdultEnclosure := false
 		switch m {
 		case mode.Adult:
 			// box/sceneId feed resolveAdultReleases' cache key; performers is a
@@ -106,6 +109,23 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			req.Box = q.Get("box")
 			req.SceneID = q.Get("sceneId")
 			req.DurationSeconds = queryInt(q, "durationSeconds", 0)
+			req.DownloadURL = q.Get("downloadUrl")
+			req.DownloadProtocol = strings.ToLower(q.Get("protocol"))
+			sizeBytes, _ := strconv.ParseInt(q.Get("sizeBytes"), 10, 64)
+			if req.DownloadURL != "" {
+				hasKnownAdultEnclosure = true
+				releaseTitle := req.ReleaseTitle
+				if releaseTitle == "" {
+					releaseTitle = title
+				}
+				knownAdultEnclosure = prowlarr.Release{
+					Title:       releaseTitle,
+					Indexer:     "feed",
+					Protocol:    prowlarr.Protocol(req.DownloadProtocol),
+					Size:        sizeBytes,
+					DownloadURL: req.DownloadURL,
+				}
+			}
 		case mode.Series:
 			req.TMDBID = queryInt(q, "tmdbId", 0)
 			req.SeasonNumber = queryInt(q, "season", 0)
@@ -159,8 +179,32 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 				return
 			}
 		}
-		log.Printf("discover availability: mode=%s title=%q tmdbId=%d — Prowlarr returned %d raw releases, runtimeSeconds=%.0f",
-			m, title, req.TMDBID, len(releases), runtimeSeconds)
+		if hasKnownAdultEnclosure {
+			cardEnclosure := knownAdultEnclosure
+			found := false
+			for _, rel := range releases {
+				if rel.DownloadURL != knownAdultEnclosure.DownloadURL {
+					continue
+				}
+				knownAdultEnclosure = rel
+				if knownAdultEnclosure.Title == "" {
+					knownAdultEnclosure.Title = cardEnclosure.Title
+				}
+				if knownAdultEnclosure.Protocol == "" {
+					knownAdultEnclosure.Protocol = cardEnclosure.Protocol
+				}
+				if knownAdultEnclosure.Size <= 0 {
+					knownAdultEnclosure.Size = cardEnclosure.Size
+				}
+				found = true
+				break
+			}
+			if !found {
+				releases = append([]prowlarr.Release{knownAdultEnclosure}, releases...)
+			}
+		}
+		log.Printf("discover availability: mode=%s title=%q tmdbId=%d — candidate set has %d raw releases (knownAdultEnclosure=%v), runtimeSeconds=%.0f",
+			m, title, req.TMDBID, len(releases), hasKnownAdultEnclosure, runtimeSeconds)
 
 		// autoGrabSearch/seriesEpisodeRuntimeSeconds deliberately returns 0
 		// runtime for a Series whole-season request (EpisodeNumber == 0) —
@@ -228,9 +272,61 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		if unrecognizedResolution > 0 {
 			rejections.add(autograb.StatusUnknownResolution)
 		}
+		// Claude 2026-08-11: force a known Adult card enclosure into the grid
+		// when normal title filtering or grading still leaves every cell empty.
+		// Reason: a valid RSS/Show More enclosure is stronger availability
+		// evidence than a zero-result Prowlarr search or an ungradeable candidate.
+		// Troubleshooting: a known enclosure must never yield "No matching
+		// releases found for this search"; this fallback keeps Grab usable.
+		// Review if: the popup gains a separate ungraded/manual candidate surface.
+		forcedKnownEnclosure := false
+		if m == mode.Adult && hasKnownAdultEnclosure && countPopulatedCells(preview) == 0 {
+			forcedInput := buildAutoGrabCandidates([]prowlarr.Release{knownAdultEnclosure}, runtimeSeconds, false)[0]
+			resolution := forcedInput.Resolution
+			if !isDiscoverAvailabilityResolution(resolution) {
+				resolution = discoverAvailabilityResolutions[len(discoverAvailabilityResolutions)-1]
+			}
+			if knownAdultEnclosure.Protocol != prowlarr.Torrent && knownAdultEnclosure.Protocol != prowlarr.Usenet {
+				lowerURL := strings.ToLower(knownAdultEnclosure.DownloadURL)
+				if strings.HasPrefix(lowerURL, "magnet:") || strings.Contains(lowerURL, ".torrent") {
+					knownAdultEnclosure.Protocol = prowlarr.Torrent
+				} else {
+					knownAdultEnclosure.Protocol = prowlarr.Usenet
+				}
+			}
+			grade := autograb.GradeCandidate(forcedInput, quality.Low, minSeedersFor(m))
+			candidate := &apidto.AvailabilityCandidate{
+				GUID: knownAdultEnclosure.GUID, Title: knownAdultEnclosure.Title,
+				Indexer: knownAdultEnclosure.Indexer, Protocol: string(knownAdultEnclosure.Protocol),
+				Size: knownAdultEnclosure.Size, Seeders: knownAdultEnclosure.Seeders,
+				DownloadURL: knownAdultEnclosure.DownloadURL, PublishDate: knownAdultEnclosure.PublishDate,
+				Score: grade.Score,
+			}
+			var cell *apidto.TierAvailability
+			switch resolution {
+			case 2160:
+				cell = &preview.Res2160.Low
+			case 1080:
+				cell = &preview.Res1080.Low
+			case 720:
+				cell = &preview.Res720.Low
+			default:
+				cell = &preview.Res480.Low
+			}
+			if knownAdultEnclosure.Protocol == prowlarr.Torrent {
+				cell.Torrent = candidate
+			} else {
+				cell.Usenet = candidate
+			}
+			forcedKnownEnclosure = true
+		}
+		matchedReleaseCount := len(candidates)
+		if forcedKnownEnclosure && matchedReleaseCount == 0 {
+			matchedReleaseCount = 1
+		}
 		preview.Diagnostics = apidto.AvailabilityDiagnostics{
 			RawReleaseCount:     len(releases),
-			MatchedReleaseCount: len(candidates),
+			MatchedReleaseCount: matchedReleaseCount,
 			RejectionReasons:    rejections.sorted(),
 		}
 		log.Printf("discover availability: mode=%s title=%q — final grid has %d/32 populated cells", m, title, countPopulatedCells(preview))

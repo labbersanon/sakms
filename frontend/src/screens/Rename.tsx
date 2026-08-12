@@ -48,6 +48,11 @@ import {
   savePageSize,
   saveShowHistory,
 } from "../api/organize";
+import { fetchNamingPreset } from "../api/settings";
+import {
+  type NamingPreset,
+  proposedFileName,
+} from "../naming";
 import {
   SourcePreviewDisclosure,
   SourcePreviewPopout,
@@ -497,11 +502,50 @@ const UndoOutcome: Component<{ result: UndoResult }> = (props) => {
   );
 };
 
+// ProposalFileNames shows the on-disk basename today and the pending Apply
+// target basename — the two fields operators need before confirming a rename.
+const ProposalFileNames: Component<{
+  proposal: Proposal;
+  mode: Mode;
+  preset: NamingPreset;
+  titleMode: boolean;
+}> = (props) => {
+  const p = () => props.proposal;
+  const proposed = () => proposedFileName(props.mode, props.preset, p());
+  return (
+    <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+      <dt class="text-muted">Current name</dt>
+      <dd class="break-all font-mono">
+        <div class="flex items-start gap-1">
+          <span class="min-w-0 flex-1">{p().sourceName}</span>
+          <Show
+            when={rowActionEnabled(
+              "preview",
+              p().status,
+              props.titleMode,
+            )}
+          >
+            <SourcePreviewPopout
+              src={proposalVideoUrl(props.mode, p().id)}
+              label={p().sourceName}
+            />
+          </Show>
+        </div>
+      </dd>
+      <Show when={p().status === "pending"}>
+        <dt class="text-muted">Proposed name</dt>
+        <dd class="break-all font-mono">{proposed() || "—"}</dd>
+      </Show>
+    </dl>
+  );
+};
+
 // TitleProposalCard is the stacked card layout for Movies/Series Rename
 // proposals — same treatment as AdultProposalCard and Recently Applied.
 const TitleProposalCard: Component<{
   proposal: Proposal;
   mode: Mode;
+  preset: NamingPreset;
   titleMode: boolean;
   selected: RowActionId | "";
   onSelect: (id: RowActionId | "") => void;
@@ -514,22 +558,13 @@ const TitleProposalCard: Component<{
       data-proposal-row
       class="rounded-lg border border-border/60 p-3"
     >
-      <div class="flex items-start gap-1 break-all font-mono text-xs text-muted">
-        <span class="min-w-0 flex-1">{p().sourceName}</span>
-        <Show
-          when={rowActionEnabled(
-            "preview",
-            p().status,
-            props.titleMode,
-          )}
-        >
-          <SourcePreviewPopout
-            src={proposalVideoUrl(props.mode, p().id)}
-            label={p().sourceName}
-          />
-        </Show>
-      </div>
-      <div class="mt-1 flex flex-wrap items-center gap-1 text-sm">
+      <ProposalFileNames
+        proposal={p()}
+        mode={props.mode}
+        preset={props.preset}
+        titleMode={props.titleMode}
+      />
+      <div class="mt-2 flex flex-wrap items-center gap-1 text-sm">
         <span class="font-medium text-fg">{p().title}</span>
         <Show
           when={(p().reason || "")
@@ -571,12 +606,6 @@ const TitleProposalCard: Component<{
   );
 };
 
-function stripStudioPrefix(text: string, studio: string): string {
-  if (!studio || !text) return text;
-  const prefix = `${studio} - `;
-  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
-}
-
 // AdultProposalCard is the mobile-friendly row layout for Adult Rename
 // proposals — the eight-column table (Source/Title/Studio/Date/PHash/Root/
 // Reason/Actions) collapses on narrow viewports the same way Recently Applied
@@ -584,6 +613,7 @@ function stripStudioPrefix(text: string, studio: string): string {
 const AdultProposalCard: Component<{
   proposal: Proposal;
   mode: Mode;
+  preset: NamingPreset;
   titleMode: boolean;
   selected: RowActionId | "";
   onSelect: (id: RowActionId | "") => void;
@@ -591,33 +621,19 @@ const AdultProposalCard: Component<{
   disabled: boolean;
 }> = (props) => {
   const p = () => props.proposal;
-  const studio = () => p().studio || "";
   return (
     <li
       data-proposal-row
       class="rounded-lg border border-border/60 p-3"
     >
-      <div class="flex items-start gap-1 break-all font-mono text-xs text-muted">
-        <span class="min-w-0 flex-1">
-          {stripStudioPrefix(p().sourceName, studio())}
-        </span>
-        <Show
-          when={rowActionEnabled(
-            "preview",
-            p().status,
-            props.titleMode,
-          )}
-        >
-          <SourcePreviewPopout
-            src={proposalVideoUrl(props.mode, p().id)}
-            label={p().sourceName}
-          />
-        </Show>
-      </div>
-      <div class="mt-1 flex flex-wrap items-center gap-1 text-sm">
-        <span class="font-medium text-fg">
-          {stripStudioPrefix(p().title || "", studio())}
-        </span>
+      <ProposalFileNames
+        proposal={p()}
+        mode={props.mode}
+        preset={props.preset}
+        titleMode={props.titleMode}
+      />
+      <div class="mt-2 flex flex-wrap items-center gap-1 text-sm">
+        <span class="font-medium text-fg">{p().title}</span>
         <Show
           when={(p().reason || "")
             .toLowerCase()
@@ -965,6 +981,12 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     }),
     ({ mode, limit, offset, view }) => fetchProposals(mode, limit, offset, view),
   );
+  const [namingPreset] = createResource(
+    () => props.mode,
+    (mode) => fetchNamingPreset(mode).catch(() => "jellyfin" as NamingPreset),
+  );
+  const preset = (): NamingPreset =>
+    namingPreset() === "legacy" ? "legacy" : "jellyfin";
   const proposals = () => page()?.items ?? [];
 
   // Rename Undo's "Recently Applied" list. Its own resource keyed on the mode
@@ -1604,6 +1626,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                           <TitleProposalCard
                             proposal={p}
                             mode={props.mode}
+                            preset={preset()}
                             titleMode={isTitleMode()}
                             selected={selectionOf(p)}
                             onSelect={(id) => setSelection(p.id, id)}
@@ -1615,6 +1638,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                         <AdultProposalCard
                           proposal={p}
                           mode={props.mode}
+                          preset={preset()}
                           titleMode={isTitleMode()}
                           selected={selectionOf(p)}
                           onSelect={(id) => setSelection(p.id, id)}

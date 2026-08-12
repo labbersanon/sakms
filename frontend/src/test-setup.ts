@@ -53,5 +53,13 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       }),
     );
   }
+  if (url.includes("/naming-preset")) {
+    return Promise.resolve(
+      new Response(JSON.stringify({ preset: "jellyfin" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }
   return baselineFetch(input, init);
 }) as typeof fetch;

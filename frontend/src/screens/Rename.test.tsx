@@ -104,6 +104,7 @@ const stubFetch = (handler: Handler) => {
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
     if (url.includes("/api/organize/events")) return jsonResponse([]);
+    if (url.includes("/naming-preset")) return jsonResponse({ preset: "jellyfin" });
     // Rename Undo's "Recently Applied" list mounts unconditionally, so every
     // test in this file now hits it. Same try/fall-back shape as pending-ids
     // below: a test that cares stubs it in its own handler and wins; every
@@ -788,14 +789,13 @@ describe("Rename — mode-specific columns", () => {
     expect(screen.queryByText("Year")).toBeNull();
   });
 
-  it("shows studio once on adult cards when the source name uses the studio prefix", async () => {
+  it("shows current and proposed file names on adult cards", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/adult/rename/proposals"))
         return jsonResponse([
           proposal({
             id: 4,
-            sourceName:
-              "MaxineX - Frisky Flatmates Chapter 2 (2024-10-23) [phash-abc].mp4",
+            sourceName: "inbox.mp4",
             title: "Frisky Flatmates Chapter 2",
             studio: "MaxineX",
             date: "2024-10-23",
@@ -807,16 +807,16 @@ describe("Rename — mode-specific columns", () => {
 
     render(() => <Rename />);
     fireEvent.click(await screen.findByText("Adult"));
-    const row = (await screen.findByText("Frisky Flatmates Chapter 2")).closest(
+    const row = (await screen.findByText("Current name")).closest(
       "[data-proposal-row]",
     )! as HTMLElement;
+    expect(within(row).getByText("inbox.mp4")).toBeInTheDocument();
+    expect(within(row).getByText("Proposed name")).toBeInTheDocument();
     expect(
       within(row).getByText(
-        "Frisky Flatmates Chapter 2 (2024-10-23) [phash-abc].mp4",
+        "MaxineX - Frisky Flatmates Chapter 2 (2024-10-23) [phash-abc].mp4",
       ),
     ).toBeInTheDocument();
-    expect(within(row).queryByText(/^MaxineX - /)).toBeNull();
-    expect(within(row).getAllByText("MaxineX")).toHaveLength(1);
   });
 });
 

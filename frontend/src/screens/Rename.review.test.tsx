@@ -91,6 +91,7 @@ const stubFetch = (handler: Handler) => {
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
     if (url.includes("/api/organize/events")) return jsonResponse([]);
+    if (url.includes("/naming-preset")) return jsonResponse({ preset: "jellyfin" });
     if (url.includes("/rename/recently-applied")) return jsonResponse([]);
     if (url.includes("/pending-ids")) {
       try {

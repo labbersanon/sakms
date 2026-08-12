@@ -17,6 +17,8 @@
 
 import { api } from "./client";
 import type {
+  AdultReviewConfirmRequest,
+  AdultReviewPreview,
   AdultSceneSearchResponse,
   ApplyBatchItem,
   ApplyBatchResponse,
@@ -36,7 +38,13 @@ import {
   type ProposalListView,
 } from "./organize";
 
-export type { Proposal, RecentlyAppliedEntry, RepickRequest };
+export type {
+  AdultReviewConfirmRequest,
+  AdultReviewPreview,
+  Proposal,
+  RecentlyAppliedEntry,
+  RepickRequest,
+};
 export type { ProposalStatus };
 
 export function scanRename(mode: Mode): Promise<void> {
@@ -174,35 +182,7 @@ export function fetchRecentlyApplied(
 }
 
 // ---- Adult Review ----------------------------------------------------------
-//
-// Local types until internal/apidto/ts/dto.gen.ts is regenerated from the
-// Go side (Phase E2 of autopilot-impl-adult-rename-review-alts.md).
-// Keep in sync with internal/rename/adult_review.go's AdultReviewPreview
-// and internal/api/adult_review.go's adultReviewConfirmRequest.
-
-export interface AdultReviewPreview {
-  proposedName: string;
-  studio: string;
-  title: string;
-  date: string;
-  phash: string;
-  catalogBox: string;
-  catalogSceneId: string;
-  catalogTitle: string;
-  catalogStudio: string;
-  catalogDate: string;
-  /** Soft: populated but never returned as an error — preview is still usable. */
-  recheckError: string;
-}
-
-export interface AdultReviewConfirmRequest {
-  fileName: string;
-  box?: string;
-  sceneId?: string;
-  title?: string;
-  studio?: string;
-  date?: string;
-}
+// DTOs live in @dto (AdultReviewPreview / AdultReviewConfirmRequest).
 
 export function fetchAdultReview(
   mode: Mode,

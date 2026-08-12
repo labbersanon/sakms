@@ -337,6 +337,107 @@ func TestConfirmAdultReviewLocal_MissingExtensionFilledFromSource(t *testing.T) 
 	}
 }
 
+// TestConfirmAdultReviewLocal_DuplicatePhashRoutesToAlternate verifies the
+// duplicate-local guard: a second live file with the same phash folds via
+// applyAdultAlternate instead of UpsertScene ON CONFLICT re-pointing file_path.
+func TestConfirmAdultReviewLocal_DuplicatePhashRoutesToAlternate(t *testing.T) {
+	root := t.TempDir()
+	primaryFile := writeSceneFile(t, root, "Studio X - Web Identified Scene (2024-01-15) [phash-dupHash].mp4")
+	const phash = "dupHash"
+	libStore := newTestLibraryStore(t)
+	existing, err := libStore.UpsertScene(context.Background(), library.Scene{
+		Box: library.LocalSceneBox, SceneID: library.LocalSceneID(phash),
+		Title: "Web Identified Scene", Studio: "Studio X", Date: "2024-01-15",
+		FilePath: primaryFile, RootFolderPath: root,
+		PHash: phash, QualityTier: "high",
+	})
+	if err != nil {
+		t.Fatalf("seeding local primary: %v", err)
+	}
+
+	orphan := writeSceneFile(t, root, "raw-dup.mp4")
+	hasher := &fakeHasher{hashes: map[string]string{orphan: phash}}
+	prober := mapProber{
+		primaryFile: {Height: 2160, CodecName: "hevc", BitRate: 40_000_000},
+		orphan:      {Height: 1080, CodecName: "h264", BitRate: 8_000_000},
+	}
+
+	p := webIdentifiedProposal(orphan, root)
+	p.PHash = phash
+
+	sceneID, changes, cerr := ConfirmAdultReviewLocal(
+		context.Background(), libStore, hasher, prober, p, "ignored-by-alternate.mp4", "high")
+	if cerr != nil {
+		t.Fatalf("ConfirmAdultReviewLocal: %v", cerr)
+	}
+	if sceneID != existing.ID {
+		t.Errorf("expected fold onto existing scene %d, got %d", existing.ID, sceneID)
+	}
+	if len(changes) == 0 {
+		t.Error("expected at least one path change from the alternate fold")
+	}
+
+	sc, gerr := libStore.GetScene(context.Background(), library.LocalSceneBox, library.LocalSceneID(phash))
+	if gerr != nil {
+		t.Fatalf("GetScene: %v", gerr)
+	}
+	if sc.FilePath != primaryFile {
+		t.Errorf("primary path changed to %q — lose branch must keep the live 4K primary at %q", sc.FilePath, primaryFile)
+	}
+	files, lerr := libStore.ListSceneFiles(context.Background(), sc.ID)
+	if lerr != nil {
+		t.Fatalf("ListSceneFiles: %v", lerr)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 library_scene_files rows after alternate fold, got %d: %+v", len(files), files)
+	}
+	// Orphan should still exist somewhere under root (alternate name).
+	if _, statErr := os.Stat(orphan); !os.IsNotExist(statErr) {
+		t.Errorf("orphan source path %q should have been moved; stat err=%v", orphan, statErr)
+	}
+}
+
+// TestConfirmAdultReviewLocal_StalePrimaryAllowsNewLocal verifies fileExists on
+// the duplicate gate: a missing primary path is not an occupied slot, so Confirm
+// creates/reclaims the local identity instead of calling applyAdultAlternate.
+func TestConfirmAdultReviewLocal_StalePrimaryAllowsNewLocal(t *testing.T) {
+	root := t.TempDir()
+	gonePrimary := filepath.Join(root, "gone-primary.mp4")
+	const phash = "staleHash"
+	libStore := newTestLibraryStore(t)
+	_, err := libStore.UpsertScene(context.Background(), library.Scene{
+		Box: library.LocalSceneBox, SceneID: library.LocalSceneID(phash),
+		Title: "Gone", Studio: "Studio X", Date: "2024-01-15",
+		FilePath: gonePrimary, RootFolderPath: root,
+		PHash: phash, QualityTier: "high",
+	})
+	if err != nil {
+		t.Fatalf("seeding stale local row: %v", err)
+	}
+
+	orphan := writeSceneFile(t, root, "raw-stale.mp4")
+	hasher := &fakeHasher{hashes: map[string]string{orphan: phash}}
+	p := webIdentifiedProposal(orphan, root)
+	p.PHash = phash
+
+	_, _, cerr := ConfirmAdultReviewLocal(
+		context.Background(), libStore, hasher, &fakeProber{}, p,
+		"Reclaimed (Studio X) (2024-01-15) [phash-staleHash].mp4", "1080p")
+	if cerr != nil {
+		t.Fatalf("ConfirmAdultReviewLocal: %v", cerr)
+	}
+	sc, gerr := libStore.GetScene(context.Background(), library.LocalSceneBox, library.LocalSceneID(phash))
+	if gerr != nil {
+		t.Fatalf("GetScene: %v", gerr)
+	}
+	if sc.FilePath == gonePrimary {
+		t.Error("stale primary path was kept — Confirm should have reclaimed FilePath onto the live file")
+	}
+	if _, statErr := os.Stat(sc.FilePath); statErr != nil {
+		t.Errorf("new primary %q missing: %v", sc.FilePath, statErr)
+	}
+}
+
 // TestUpgradeLocalAdultScenes_UpgradesLocalSceneToCatalogIdentity verifies
 // that a local scene whose phash resolves to a catalog scene is upgraded in
 // place: same library_scenes.id, new (box, scene_id), file renamed.

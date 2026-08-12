@@ -174,6 +174,13 @@ func ConfirmAdultReviewLocal(
 
 	// Phash is required for the local identity key. Re-hash if absent; hard
 	// fail on error — a local identity without a phash is not an identity.
+	// Claude 2026-08-12: write recomputed phash back onto p before alternate fold.
+	// Reason: applyAdultAlternate reads p.PHash for AdultFileName / file rows /
+	//   UpdateScenePrimaryPath; leaving p.PHash empty after a local recompute
+	//   named files without [phash-…] and wiped library_scenes.phash.
+	// Troubleshooting: Review confirm of a second same-phash file produced an
+	//   alternate without a phash tag and left Dedup's cache key empty.
+	// Review if: applyAdultAlternate takes an explicit phash argument instead.
 	phash := p.PHash
 	if phash == "" && hasher != nil {
 		if h, herr := hasher.Hash(ctx, videoPath); herr == nil {
@@ -183,6 +190,7 @@ func ConfirmAdultReviewLocal(
 	if phash == "" {
 		return 0, nil, fmt.Errorf("cannot create a local identity for %q: no perceptual hash could be computed", videoPath)
 	}
+	p.PHash = phash
 
 	// Sanitise the operator-supplied fileName: strip directory components first
 	// (guards against "../../etc/x.mp4"), then neutralise remaining separators.
@@ -198,11 +206,17 @@ func ConfirmAdultReviewLocal(
 	}
 
 	// Duplicate-local guard BEFORE the move: if another local row already holds
-	// this phash with a different file, route into the alternate fold. Do this
-	// before step 5's move so applyAdultAlternate can compute its own destination.
+	// this phash with a live different file, route into the alternate fold. Do
+	// this before step 5's move so applyAdultAlternate can compute its own destination.
+	// Claude 2026-08-12: require fileExists — stale deleted paths are not occupied slots.
+	// Reason: mirrors ApplyLibraryAdult's fold gate (rename_adult_library.go); without
+	//   it a missing primary makes promote fail or lose/tie leave a dead primary path.
+	// Troubleshooting: Review confirm 502'd after an external delete of the first local file.
+	// Review if: ConfirmAdultReviewLocal stops routing collisions into applyAdultAlternate.
 	existingLocal, gerr := libStore.GetScene(ctx, library.LocalSceneBox, library.LocalSceneID(phash))
 	if gerr == nil && existingLocal != nil &&
-		existingLocal.FilePath != "" && existingLocal.FilePath != videoPath {
+		existingLocal.FilePath != "" && existingLocal.FilePath != videoPath &&
+		fileExists(existingLocal.FilePath) {
 		// A second file with the same phash is a genuine duplicate. Route into
 		// the alternate fold instead of letting UpsertScene's ON CONFLICT
 		// re-point file_path and orphan the first file.

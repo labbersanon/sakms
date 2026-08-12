@@ -182,6 +182,18 @@ func upgradeOneLocalScene(
 		library.FileSize(movedPrimary), phash, phashSize, phashMTime); pErr != nil {
 		return changes, fmt.Errorf("updating primary path for scene %d: %w", sc.ID, pErr)
 	}
+	// Claude 2026-08-12: sync primary library_scene_files row after upgrade rename.
+	// Reason: UpdateScenePrimaryPath only rewrites library_scenes; the old primary
+	//   file row still pointed at the pre-upgrade path (is_primary=true), leaving
+	//   PrimarySceneFile / alternate-fold fallbacks / undo row-share counting wrong.
+	// Troubleshooting: after silent upgrade, ListSceneFiles still showed the old path.
+	// Review if: UpdateScenePrimaryPath also rewrites the primary SceneFile row.
+	if syncErr := libStore.SyncPrimarySceneFile(ctx, library.Scene{
+		ID: sc.ID, FilePath: movedPrimary, QualityTier: sc.QualityTier,
+		Size: library.FileSize(movedPrimary), PHash: phash,
+	}); syncErr != nil {
+		log.Printf("rename: upgrade scene %d: syncing primary file row: %v", sc.ID, syncErr)
+	}
 
 	organizeevents.Log(ctx, organizeevents.Event{
 		Workflow: "rename",

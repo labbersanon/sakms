@@ -615,13 +615,19 @@ const ReviewDialog: Component<{
   const [fileName, setFileName] = createSignal("");
   const [confirming, setConfirming] = createSignal(false);
   const [confirmError, setConfirmError] = createSignal("");
+  // Claude 2026-08-12: seed proposed name once; do not re-seed from !fileName().
+  // Reason: clearing the input made fileName() empty, so the effect snapped the
+  //   field back to proposedName and blocked intentional empties / edits.
+  // Troubleshooting: Confirm stayed enabled after operator cleared the name.
+  // Review if: ReviewDialog remounts per open (then a flag is enough forever).
+  const [nameSeeded, setNameSeeded] = createSignal(false);
 
-  // Seed the editable field from the preview's proposed name once loaded.
   createEffect(() => {
+    if (nameSeeded()) return;
     const data = preview();
-    if (data && !fileName()) {
-      setFileName(data.proposedName);
-    }
+    if (!data) return;
+    setFileName(data.proposedName);
+    setNameSeeded(true);
   });
 
   const isCatalogMatch = () => {

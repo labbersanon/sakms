@@ -28,8 +28,7 @@ import {
   waitFor,
   within,
 } from "@solidjs/testing-library";
-import type { Proposal } from "@dto";
-import type { AdultReviewPreview } from "../api/rename";
+import type { AdultReviewPreview, Proposal } from "@dto";
 import { Rename, isAdultWebIdentified, planActionForRow } from "./Rename";
 
 // ---- Helpers ----------------------------------------------------------------
@@ -376,8 +375,45 @@ describe("Rename — Review modal", () => {
     await waitFor(() => {
       const rc = reviewCalls(calls);
       expect(rc).toHaveLength(1);
-      expect(rc[0].body).toEqual({ fileName: "My Custom Name.mkv" });
+      expect(rc[0]!.body).toEqual({ fileName: "My Custom Name.mkv" });
     });
+  });
+
+  it("clearing the proposed name does not snap back to the preview default", async () => {
+    stubFetch((url) => {
+      if (url.includes("/review")) return jsonResponse(defaultPreview);
+      if (url.includes("/rename/proposals")) return jsonResponse([adultProposal()]);
+      return jsonResponse([]);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Adult"));
+    await screen.findByText("Studio.Title.2024.mkv");
+
+    const row = screen.getByText("Studio.Title.2024.mkv").closest("tr")!;
+    fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
+      target: { value: "review" },
+    });
+    fireEvent.click(
+      within(row as HTMLElement).getByRole("button", {
+        name: /Apply selected action/,
+      }),
+    );
+
+    const dialog = await screen.findByRole("dialog", { name: /Review/ });
+    await within(dialog).findByText("Current name");
+    const input = within(dialog).getByRole("textbox", {
+      name: /proposed name/i,
+    }) as HTMLInputElement;
+    await waitFor(() =>
+      expect(input.value).toBe(defaultPreview.proposedName),
+    );
+
+    fireEvent.input(input, { target: { value: "" } });
+    await waitFor(() => expect(input.value).toBe(""));
+    expect(
+      within(dialog).getByRole("button", { name: /confirm/i }),
+    ).toBeDisabled();
   });
 
   it("Cancel issues no mutating request", async () => {
@@ -460,7 +496,7 @@ describe("Rename — Review modal", () => {
     await waitFor(() => {
       const rc = reviewCalls(calls);
       expect(rc).toHaveLength(1);
-      expect(rc[0].body).toMatchObject({
+      expect(rc[0]!.body).toMatchObject({
         box: "tpdb",
         sceneId: "scene-777",
         title: "Catalog Title",

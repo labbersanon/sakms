@@ -168,6 +168,15 @@ func adultReviewConfirmHandler(connStore *connections.Store, scStore *servicecon
 			// Catalog branch: flip the proposal to Pending with the chosen
 			// catalog identity, then run the ordinary ApplyLibraryAdult (which
 			// includes alternate fold, give-back, and undo behaviour for free).
+			// Claude 2026-08-12: reject reserved local box on the catalog branch.
+			// Reason: req.Box is otherwise unvalidated; box=local would write into
+			//   the Review local-identity namespace and fold against phash scenes.
+			// Troubleshooting: crafted confirm body created a "catalog" row under box=local.
+			// Review if: catalog confirm validates box against configured stashbox list.
+			if strings.EqualFold(req.Box, library.LocalSceneBox) {
+				http.Error(w, `box "local" is reserved for Review local identities — pick a catalog scene`, http.StatusBadRequest)
+				return
+			}
 			if repickErr := propStore.RepickAdultScene(ctx, p.ID, req.Title, req.Studio, req.Date, req.Box, req.SceneID); repickErr != nil {
 				if errors.Is(repickErr, proposals.ErrNotFound) {
 					http.Error(w, "no proposal with that id", http.StatusBadRequest)

@@ -349,9 +349,9 @@ func proposeOneLibrary(
 		}
 		p.Status = proposals.Unmatched
 		if IsJunkRenameFilename(entry.Name) {
-			p.Reason = fmt.Sprintf("filename too generic for web naming authority (%q) — needs manual review", entry.Name)
+			p.Reason = fmt.Sprintf("filename too generic to identify from the web (%q) — use Search to pick a match", entry.Name)
 		} else {
-			p.Reason = "no year, actor, or duration available to corroborate a match — needs manual review"
+			p.Reason = "no year, actor, or duration available to corroborate a match — use Search to pick a match"
 		}
 		return p
 	}
@@ -1287,9 +1287,9 @@ func proposeOneEpisodeLibrary(
 		}
 		p.Status = proposals.Unmatched
 		if IsJunkRenameFilename(name) {
-			p.Reason = fmt.Sprintf("filename too generic for web naming authority (%q) — needs manual review", name)
+			p.Reason = fmt.Sprintf("filename too generic to identify from the web (%q) — use Search to pick a match", name)
 		} else {
-			p.Reason = "no year, actor, or duration available to corroborate a match — needs manual review"
+			p.Reason = "no year, actor, or duration available to corroborate a match — use Search to pick a match"
 		}
 		return p, false
 	}
@@ -1455,7 +1455,7 @@ func proposeOneEpisodeLibrary(
 // two are indistinguishable in the proposals table.
 const compactCodeWebAuthorityRefusedReason = "season/episode came from a compact eNNNN code; " +
 	"web naming authority is not consulted for these (it cannot verify the season exists and " +
-	"would mint a synthetic show id) — needs manual review"
+	"would mint a synthetic show id) — use Search to pick a match"
 
 func trySeriesQueries(
 	ctx context.Context, sess *mode.Session, sig FileSignals, cfg MatchConfig,

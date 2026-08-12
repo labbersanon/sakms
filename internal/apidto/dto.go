@@ -1217,7 +1217,15 @@ type Proposal struct {
 	Studio              string      `json:"studio,omitempty"`
 	Date                string      `json:"date,omitempty"`
 	PHash               string      `json:"phash,omitempty"`
-	Reason              string      `json:"reason,omitempty"`
+	// GiveBackBox/GiveBackSceneID mirror the wire fields that proposals.go
+	// already carries (proposals.go:167-168). The frontend uses the ABSENCE of
+	// GiveBackSceneID (with a non-empty Title) as the structural signal that an
+	// Adult Unmatched row is web-identified — enabling the Review action without
+	// matching on the reason string (a fragility the old reason-substring checks
+	// all had). Added 2026-08-12 for adult-rename-review-alts E2.
+	GiveBackBox     string `json:"giveBackBox,omitempty"`
+	GiveBackSceneID string `json:"giveBackSceneId,omitempty"`
+	Reason          string `json:"reason,omitempty"`
 	DraftID             string      `json:"draftId,omitempty"`
 	Candidates          []Candidate `json:"candidates,omitempty"`
 	// PHashSimilarity is the minimum pairwise phash similarity across the
@@ -1415,6 +1423,52 @@ type ProposalPage struct {
 // PendingIDsResponse is Rename "Select all matching" — all Pending ids for a mode.
 type PendingIDsResponse struct {
 	IDs []int64 `json:"ids"`
+}
+
+// AdultReviewPreview is the response body of
+// GET /api/modes/{mode}/rename/proposals/{id}/review — the preview shown in the
+// Review modal before the operator commits. Added 2026-08-12 for
+// adult-rename-review-alts E2.
+type AdultReviewPreview struct {
+	// ProposedName is the canonical AdultFileName computed from the best
+	// available identity (catalog values when present, web-identified values
+	// otherwise). It seeds the editable input in the modal.
+	ProposedName string `json:"proposedName"`
+	Studio       string `json:"studio,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Date         string `json:"date,omitempty"`
+	// PHash is the file's computed perceptual hash. Absent when hashing failed;
+	// the modal warns the operator that Confirm will fail without it.
+	PHash string `json:"phash,omitempty"`
+	// CatalogBox/CatalogSceneID are non-empty only when a fresh DB recheck
+	// found a catalog match. When both are present the modal must tell the
+	// operator that the edited FileName is ignored and the catalog identity is
+	// used instead (spec requirement: no silent mis-leading).
+	CatalogBox     string `json:"catalogBox,omitempty"`
+	CatalogSceneID string `json:"catalogSceneId,omitempty"`
+	CatalogTitle   string `json:"catalogTitle,omitempty"`
+	CatalogStudio  string `json:"catalogStudio,omitempty"`
+	CatalogDate    string `json:"catalogDate,omitempty"`
+	// RecheckError is a soft informational message — not a blocker. Shown muted
+	// in the modal; Confirm is still available (unless PHash is absent).
+	RecheckError string `json:"recheckError,omitempty"`
+}
+
+// AdultReviewConfirmRequest is the body of
+// POST /api/modes/{mode}/rename/proposals/{id}/review-confirm. Added 2026-08-12
+// for adult-rename-review-alts E2.
+//
+// Branching: when both Box and SceneID are non-empty, the catalog branch runs
+// (RepickAdultScene → ApplyLibraryAdult). Otherwise the local branch runs
+// (ConfirmAdultReviewLocal with FileName). FileName is ignored on the catalog
+// branch; the modal must make this clear to the operator.
+type AdultReviewConfirmRequest struct {
+	FileName string `json:"fileName"`          // required on the local branch
+	Box      string `json:"box,omitempty"`     // both present → catalog branch
+	SceneID  string `json:"sceneId,omitempty"` // both present → catalog branch
+	Title    string `json:"title,omitempty"`
+	Studio   string `json:"studio,omitempty"`
+	Date     string `json:"date,omitempty"`
 }
 
 // OrganizeEvent is one activity-log row for Rename/Dedup/Purge screens.

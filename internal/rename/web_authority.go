@@ -481,7 +481,7 @@ func tryWebAuthoritySeries(
 func unmatchedAfterWebAuthority(p *proposals.Proposal, entryName string, lastLimit int, lastTerm string) {
 	if IsJunkRenameFilename(entryName) {
 		p.Status = proposals.Unmatched
-		p.Reason = fmt.Sprintf("filename too generic for web naming authority (%q) — needs manual review", entryName)
+		p.Reason = fmt.Sprintf("filename too generic to identify from the web (%q) — use Search to pick a match", entryName)
 		return
 	}
 	if lastLimit == 0 {

@@ -181,6 +181,33 @@ func (s *Store) DeleteSceneTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	return nil
 }
 
+// UpgradeSceneIdentity rewrites the (box, scene_id) key and display fields of
+// an existing local scene row when the auto-upgrade pass finds a catalog match
+// for it. It is keyed on id (the stable row primary key), NOT on the old
+// (box, scene_id), so the row's tags (library_scene_tags.scene_id), its
+// library_scene_files rows, and any undo-archive touched_rows_snapshot entries
+// pointing at this id all survive the rename. Updating a non-existent id is
+// not an error, matching DeleteScene's convention.
+//
+// Claude 2026-08-12: added for Phase D5 — adult-rename-review-alts.
+// Reason: local phash-backed scenes gain a permanent catalog identity when
+//   UpgradeLocalAdultScenes finds a fingerprint match. A delete+reinsert would
+//   silently orphan tags, file rows, and undo references; a targeted UPDATE
+//   keyed on id preserves them all.
+// Review if: library_scenes stops having a stable id across identity changes.
+func (s *Store) UpgradeSceneIdentity(ctx context.Context, id int64, box, sceneID, title, studio, date string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE library_scenes
+		SET box = ?, scene_id = ?, title = ?, studio = ?, date = ?,
+		    updated_at = sakms_now()
+		WHERE id = ?
+	`, box, sceneID, title, studio, date, id)
+	if err != nil {
+		return fmt.Errorf("upgrading scene identity for row %d: %w", id, err)
+	}
+	return nil
+}
+
 // UpdateScenePHash writes a freshly-computed perceptual hash and its file-
 // identity key (size + mtime) onto an existing tracked scene, without
 // rewriting the rest of the row — the targeted write Dedup's Scan uses to

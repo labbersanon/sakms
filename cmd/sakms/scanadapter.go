@@ -154,6 +154,15 @@ func (a *scanAdapter) ScanRename(ctx context.Context, m mode.Mode) error {
 		}
 		found, err = rename.ScanLibrarySeries(ctx, sess, a.libStore, rootPath, preset, matchCfg, a.prober)
 	case mode.Adult:
+		// Claude 2026-08-12: upgrade local scenes before scanning (D6).
+		// Reason: UpgradeLocalAdultScenes must run before ScanLibraryAdult so
+		//   upgraded files appear in the known map and are not re-proposed.
+		//   Allowlisted in internal/scanschedule/allowlist_test.go — it is a
+		//   pre-scan identity upgrade, not a proposal Apply. Soft-fail.
+		// Review if: UpgradeLocalAdultScenes is folded into ScanLibraryAdult.
+		if _, upgradeErr := rename.UpgradeLocalAdultScenes(ctx, sess, a.libStore, a.prober); upgradeErr != nil {
+			log.Printf("scan: upgrade local adult scenes: %v", upgradeErr)
+		}
 		found, err = rename.ScanLibraryAdult(ctx, sess, a.libStore, a.videoHasher, a.prober, rootPath)
 	default:
 		return nil

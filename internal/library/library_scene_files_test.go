@@ -434,3 +434,54 @@ func TestPrimarySceneFile_FoundAndNotFound(t *testing.T) {
 		t.Fatalf("expected the primary file, got %+v", pf)
 	}
 }
+
+// TestUpgradeSceneIdentity_RewritesBoxAndSceneIDPreservingID verifies the core
+// guarantee: the row's id (and therefore its tags and file rows) survives the
+// box/scene_id rewrite.
+func TestUpgradeSceneIdentity_RewritesBoxAndSceneIDPreservingID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sc, err := s.UpsertScene(ctx, Scene{
+		Box: LocalSceneBox, SceneID: LocalSceneID("abc123"),
+		Title: "Local Name", Studio: "Local Studio", Date: "2024-01-01",
+		FilePath: "/adult/local.mp4", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("seeding local scene: %v", err)
+	}
+	originalID := sc.ID
+
+	if err := s.UpgradeSceneIdentity(ctx, sc.ID, "stashdb", "catalog-uuid", "Catalog Title", "Catalog Studio", "2023-06-15"); err != nil {
+		t.Fatalf("UpgradeSceneIdentity: %v", err)
+	}
+
+	// Must be findable by new identity.
+	got, err := s.GetScene(ctx, "stashdb", "catalog-uuid")
+	if err != nil {
+		t.Fatalf("GetScene after upgrade: %v", err)
+	}
+	if got.ID != originalID {
+		t.Errorf("id changed: was %d, now %d — tags and file rows would be orphaned", originalID, got.ID)
+	}
+	if got.Box != "stashdb" || got.SceneID != "catalog-uuid" {
+		t.Errorf("box/scene_id not updated: got %q/%q", got.Box, got.SceneID)
+	}
+	if got.Title != "Catalog Title" || got.Studio != "Catalog Studio" || got.Date != "2023-06-15" {
+		t.Errorf("title/studio/date not updated: got %q/%q/%q", got.Title, got.Studio, got.Date)
+	}
+
+	// Old local identity must no longer exist.
+	if _, getErr := s.GetScene(ctx, LocalSceneBox, LocalSceneID("abc123")); getErr == nil {
+		t.Error("old local identity should not exist after upgrade")
+	}
+}
+
+// TestUpgradeSceneIdentity_NonexistentIDIsNoop verifies that upgrading a
+// non-existent id is not an error — matching DeleteScene's convention.
+func TestUpgradeSceneIdentity_NonexistentIDIsNoop(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpgradeSceneIdentity(context.Background(), 99999, "box", "sid", "T", "S", "D"); err != nil {
+		t.Errorf("expected no error for non-existent id, got %v", err)
+	}
+}

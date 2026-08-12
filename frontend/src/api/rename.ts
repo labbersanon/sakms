@@ -190,6 +190,7 @@ export function fetchAdultReview(
 ): Promise<AdultReviewPreview> {
   return api<AdultReviewPreview>(
     `/api/modes/${mode}/rename/proposals/${id}/review`,
+    { signal: AbortSignal.timeout(35000) },
   );
 }
 

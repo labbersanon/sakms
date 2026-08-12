@@ -126,10 +126,9 @@ func TestBuildAdultReview_HasherFailureIsSoft(t *testing.T) {
 	}
 }
 
-// TestBuildAdultReview_CatalogHitPopulatesCatalogFields verifies that when the
-// fingerprint lookup returns a match, the Catalog* fields are populated and the
-// proposed name uses catalog values.
-func TestBuildAdultReview_CatalogHitPopulatesCatalogFields(t *testing.T) {
+// TestBuildAdultReview_PreviewSkipsOutboundRecheck verifies preview does not
+// populate catalog fields from a live stash-box lookup — recheck is scan-time only.
+func TestBuildAdultReview_PreviewSkipsOutboundRecheck(t *testing.T) {
 	root := t.TempDir()
 	videoPath := writeSceneFile(t, root, "raw.mp4")
 
@@ -149,47 +148,10 @@ func TestBuildAdultReview_CatalogHitPopulatesCatalogFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if preview.CatalogBox != "stashdb" || preview.CatalogSceneID != "scene-999" {
-		t.Errorf("expected catalog hit stashdb/scene-999, got box=%q scene=%q", preview.CatalogBox, preview.CatalogSceneID)
-	}
-	if preview.CatalogTitle != "Catalog Scene Title" {
-		t.Errorf("expected catalog title, got %q", preview.CatalogTitle)
-	}
-	// Proposed name should use catalog values, not the web-identified ones.
-	if !strings.Contains(preview.ProposedName, "Catalog Scene Title") {
-		t.Errorf("proposed name should use catalog title when available, got %q", preview.ProposedName)
-	}
-}
-
-// TestBuildAdultReview_FingerprintMissSkipsIdentify verifies that a fingerprint
-// lookup miss does not invoke the slow Identify (AI/text) pipeline — the preview
-// stays on web-identified fields and returns immediately.
-func TestBuildAdultReview_FingerprintMissSkipsIdentify(t *testing.T) {
-	root := t.TempDir()
-	videoPath := writeSceneFile(t, root, "raw.mp4")
-
-	const phash = "missHash"
-	hasher := &fakeHasher{hashes: map[string]string{videoPath: phash}}
-	prober := &fakeProber{}
-
-	// Box configured but phash not in catalog → lookup miss. No Identify wiring
-	// needed: if Identify ran it would block on nil AI; fast return proves skip.
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{}, nil, nil)
-	sess := adultTestSessionWithBoxes(map[string]*stashbox.Client{"stashdb": stashdb})
-
-	p := webIdentifiedProposal(videoPath, root)
-	p.PHash = phash
-	p.Title = "Web Only Title"
-	p.Studio = "Web Studio"
-
-	preview, err := BuildAdultReview(context.Background(), sess, nil, hasher, prober, p)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if preview.CatalogBox != "" || preview.CatalogSceneID != "" {
-		t.Errorf("fingerprint miss should not populate catalog fields, got box=%q scene=%q", preview.CatalogBox, preview.CatalogSceneID)
+		t.Errorf("preview should not run outbound recheck, got box=%q scene=%q", preview.CatalogBox, preview.CatalogSceneID)
 	}
-	if !strings.Contains(preview.ProposedName, "Web Only Title") {
+	if !strings.Contains(preview.ProposedName, "Web Identified Scene") {
 		t.Errorf("proposed name should use web-identified title, got %q", preview.ProposedName)
 	}
 }

@@ -44,6 +44,9 @@ func (id *Identifier) LookupFingerprints(ctx context.Context, phashes []string) 
 			}
 			scenes, err := client.FindScenesByFingerprints(ctx, chunk)
 			if err != nil {
+				if ctx.Err() != nil {
+					return results, ctx.Err()
+				}
 				continue // best-effort: whole chunk retried at the next stage
 			}
 			for i, phash := range chunk {

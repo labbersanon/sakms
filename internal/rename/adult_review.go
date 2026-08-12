@@ -24,6 +24,11 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 )
 
+// adultReviewHashTimeout caps on-demand phash recompute during preview GET.
+// Full phash.Hasher uses a 2-minute internal budget; preview must not block
+// the modal on a large file when the scan omitted phash.
+const adultReviewHashTimeout = 15 * time.Second
+
 // AdultReviewPreview is the response body for GET …/review: the current
 // source basename, the proposed canonical name, the phash (so the frontend
 // can warn when it is absent), the result of a fresh DB recheck, and any
@@ -67,9 +72,8 @@ func adultReviewGuards(p proposals.Proposal) error {
 }
 
 // BuildAdultReview assembles the preview payload for the Review popup. It
-// re-hashes the video on demand if p.PHash is empty, runs a fresh DB recheck,
-// and returns a proposed canonical name. Any recheck failure is captured into
-// RecheckError and swallowed so the local path remains available.
+// may re-hash on demand when p.PHash is empty (short timeout). No outbound
+// stash-box recheck — preview must return immediately for the modal.
 func BuildAdultReview(
 	ctx context.Context, sess *mode.Session, libStore *library.Store,
 	hasher PHasher, prober Prober, p proposals.Proposal,
@@ -89,48 +93,26 @@ func BuildAdultReview(
 		PHash:  p.PHash,
 	}
 
-	// Re-hash on demand: a row scanned before the hasher was available, or one
-	// whose phash was not cached, needs a fresh hash for the preview name and
-	// the identity key.
+	// Preview uses proposal phash/title/studio/date only — no outbound stash-box
+	// recheck on GET. LookupFingerprints against multiple boxes (stashdb, fansdb,
+	// tpdb) could block for tens of seconds per box; replaying it synchronously
+	// left the Review modal on "Loading preview…". Scan-time identifyAdultFiles
+	// already ran fingerprint + Identify when the row was created; catalog confirm
+	// on Review still works when the operator picks a catalog scene via repick.
 	if preview.PHash == "" && hasher != nil {
-		if h, herr := hasher.Hash(ctx, videoPath); herr == nil {
+		hctx, cancel := context.WithTimeout(ctx, adultReviewHashTimeout)
+		if h, herr := hasher.Hash(hctx, videoPath); herr == nil {
 			preview.PHash = h
 		} else {
-			// Soft failure — preview is still usable; Confirm will fail.
-			preview.RecheckError = fmt.Sprintf("could not compute phash: %v", herr)
-		}
-	}
-
-	// DB recheck: fingerprint lookup only — NOT the full Identify (AI/text)
-	// pipeline. Review GET must return quickly so the modal is usable; scan-time
-	// identifyAdultFiles already ran Identify when the row was created. A
-	// synchronous AI/web-search replay here left web-identified rows stuck on
-	// "Loading preview…" for minutes. Any lookup error is captured into
-	// RecheckError; the local confirm path must still work without a catalog hit.
-	if sess != nil && sess.Identify != nil && preview.PHash != "" {
-		matches, lerr := sess.Identify.LookupFingerprints(ctx, []string{preview.PHash})
-		if lerr != nil {
 			preview.RecheckError = appendRecheckError(preview.RecheckError,
-				fmt.Sprintf("fingerprint lookup: %v", lerr))
-		} else if m, hit := matches[preview.PHash]; hit && m != nil && m.Box != "" && m.SceneID != "" {
-			preview.CatalogBox = m.Box
-			preview.CatalogSceneID = m.SceneID
-			preview.CatalogTitle = m.Title
-			preview.CatalogStudio = m.Studio
-			preview.CatalogDate = m.Date
+				fmt.Sprintf("could not compute phash: %v", herr))
 		}
+		cancel()
 	}
 
-	// Use catalog values when present; fall back to proposal's web-identified fields.
-	studio := preview.Studio
-	title := preview.Title
-	date := preview.Date
-	if preview.CatalogBox != "" {
-		studio = preview.CatalogStudio
-		title = preview.CatalogTitle
-		date = preview.CatalogDate
-	}
-	preview.ProposedName = naming.AdultFileName(studio, title, date, preview.PHash, filepath.Ext(videoPath))
+	// Use proposal fields for the proposed canonical name.
+	preview.ProposedName = naming.AdultFileName(
+		preview.Studio, preview.Title, preview.Date, preview.PHash, filepath.Ext(videoPath))
 	return preview, nil
 }
 

@@ -298,7 +298,7 @@ func RelocateAdultScene(sourcePath, destRoot, studio, title, date, phash string)
 	if err != nil {
 		return "", err
 	}
-	if err := os.Rename(sourcePath, unique); err != nil {
+	if err := place.Move(sourcePath, unique); err != nil {
 		return "", fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err)
 	}
 	return unique, nil

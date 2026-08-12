@@ -185,7 +185,7 @@ func moveUnique(source, dest string) (string, []mode.PathChange, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if err := os.Rename(source, unique); err != nil {
+	if err := place.Move(source, unique); err != nil {
 		return "", nil, fmt.Errorf("moving %q to %q: %w", source, unique, err)
 	}
 	return unique, []mode.PathChange{

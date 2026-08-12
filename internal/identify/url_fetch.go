@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -13,11 +14,11 @@ import (
 const maxPageBytes = 512 * 1024
 
 var (
-	titleTagRe  = regexp.MustCompile(`(?is)<title[^>]*>([^<]*)</title>`)
-	ogTitleRe   = regexp.MustCompile(`(?is)<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']*)["']`)
-	ogDescRe    = regexp.MustCompile(`(?is)<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']*)["']`)
-	metaDescRe  = regexp.MustCompile(`(?is)<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']`)
-	tagStripRe  = regexp.MustCompile(`(?s)<[^>]+>`)
+	titleTagRe    = regexp.MustCompile(`(?is)<title[^>]*>([^<]*)</title>`)
+	ogTitleRe     = regexp.MustCompile(`(?is)<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']*)["']`)
+	ogDescRe      = regexp.MustCompile(`(?is)<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']*)["']`)
+	metaDescRe    = regexp.MustCompile(`(?is)<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']`)
+	tagStripRe    = regexp.MustCompile(`(?s)<[^>]+>`)
 	spaceCollapse = regexp.MustCompile(`\s+`)
 )
 
@@ -36,7 +37,7 @@ func FetchPageSnippet(ctx context.Context, client *http.Client, rawURL string) (
 	if err != nil {
 		return PageSnippet{}, err
 	}
-	if err := validatePublicHost(ctx, u.Hostname()); err != nil {
+	if err := validatePublicHTTPURL(ctx, u); err != nil {
 		return PageSnippet{}, err
 	}
 
@@ -47,7 +48,7 @@ func FetchPageSnippet(ctx context.Context, client *http.Client, rawURL string) (
 	req.Header.Set("User-Agent", "sakms-adult-url-resolve/1.0")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	body, err := httpx.DoJSONBytes(client, req, maxPageBytes)
+	body, err := httpx.DoJSONBytes(publicRedirectClient(ctx, client), req, maxPageBytes)
 	if err != nil {
 		return PageSnippet{}, fmt.Errorf("fetching page: %w", err)
 	}
@@ -77,4 +78,43 @@ func FetchPageSnippet(ctx context.Context, client *http.Client, rawURL string) (
 	}
 	snippet.BodyText = text
 	return snippet, nil
+}
+
+// Claude 2026-08-12: validate redirect targets for pasted Adult resolve URLs.
+// Reason: the initial host check is not enough when a public URL redirects to a
+// private/internal address.
+// Troubleshooting: prevents SSRF through HTTP 30x redirects while preserving the
+// shared outbound client's timeout/transport settings.
+// Review if: arbitrary URL fetching moves to a dedicated safe HTTP client.
+func publicRedirectClient(ctx context.Context, base *http.Client) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	c := *base
+	previous := base.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if err := validatePublicHTTPURL(ctx, req.URL); err != nil {
+			return err
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		return nil
+	}
+	return &c
+}
+
+func validatePublicHTTPURL(ctx context.Context, u *url.URL) error {
+	if u == nil || u.Host == "" {
+		return fmt.Errorf("invalid URL")
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("URL must use http or https")
+	}
+	return validatePublicHost(ctx, u.Hostname())
 }

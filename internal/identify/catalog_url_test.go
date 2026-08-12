@@ -4,14 +4,20 @@ import "testing"
 
 func TestParseCatalogSceneURL(t *testing.T) {
 	tests := []struct {
-		url      string
-		box      string
-		id       string
-		isMovie  bool
-		wantOK   bool
+		url     string
+		box     string
+		id      string
+		isMovie bool
+		wantOK  bool
 	}{
 		{
 			url:    "https://stashdb.org/scenes/a29768db-b3cd-4a71-a75e-4294373207bb",
+			box:    "stashdb",
+			id:     "a29768db-b3cd-4a71-a75e-4294373207bb",
+			wantOK: true,
+		},
+		{
+			url:    "stashdb.org/scenes/a29768db-b3cd-4a71-a75e-4294373207bb",
 			box:    "stashdb",
 			id:     "a29768db-b3cd-4a71-a75e-4294373207bb",
 			wantOK: true,

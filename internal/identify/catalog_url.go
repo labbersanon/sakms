@@ -5,11 +5,29 @@ import (
 	"strings"
 )
 
+// Claude 2026-08-12: accept schemeless pasted catalog URLs.
+// Reason: SearchTakeover routes known catalog domains without requiring
+// "https://", so the deterministic catalog lookup must parse the same input.
+// Troubleshooting: "stashdb.org/scenes/<uuid>" should not fall through to the
+// AI-required arbitrary URL path.
+// Review if: the frontend stops accepting schemeless catalog domains.
+func parseCatalogURL(raw string) (*url.URL, error) {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err == nil && u.Host != "" {
+		return u, nil
+	}
+	if !strings.Contains(trimmed, "://") {
+		return url.Parse("https://" + trimmed)
+	}
+	return u, err
+}
+
 // ParseCatalogSceneURL recognizes stash-box and TPDB scene/movie page URLs.
 // Returns box ("stashdb"|"fansdb"|"tpdb"), the catalog id or slug, and whether
 // the path is a TPDB movie (vs scene). Non-catalog URLs return ok=false.
 func ParseCatalogSceneURL(raw string) (box, sceneID string, isMovie bool, ok bool) {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	u, err := parseCatalogURL(raw)
 	if err != nil || u.Host == "" {
 		return "", "", false, false
 	}

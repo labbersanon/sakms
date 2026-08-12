@@ -499,7 +499,7 @@ describe("Rename — Recently Applied refreshes after Apply, not only after Undo
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("Fresh.mkv")).closest("tr")!;
+    const row = (await screen.findByText("Fresh.mkv")).closest("tr, [data-proposal-row]")!;
     const before = recentGets(calls).length;
     fireEvent.click(
       within(row).getByRole("button", {

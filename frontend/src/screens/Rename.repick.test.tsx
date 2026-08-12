@@ -164,7 +164,7 @@ const openRepick = async (
 ): Promise<HTMLElement> => {
   render(() => <Rename />);
   if (mode === "Series") fireEvent.click(await screen.findByText("Series"));
-  const row = (await screen.findByText(sourceName)).closest("tr");
+  const row = (await screen.findByText(sourceName)).closest("tr, [data-proposal-row]");
   expect(row).toBeTruthy();
   fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
     target: { value: "repick" },

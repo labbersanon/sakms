@@ -247,7 +247,7 @@ describe("Rename — source-file preview (queue row control)", () => {
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("Movie.A.mkv")).closest("tr")!;
+    const row = (await screen.findByText("Movie.A.mkv")).closest("tr, [data-proposal-row]")!;
     const select = within(row).getByRole("combobox") as HTMLSelectElement;
     const optionLabels = Array.from(select.options).map((o) => o.textContent);
     expect(optionLabels).toEqual([
@@ -282,7 +282,7 @@ describe("Rename — source-file preview (queue row control)", () => {
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("Movie.A.mkv")).closest("tr")!;
+    const row = (await screen.findByText("Movie.A.mkv")).closest("tr, [data-proposal-row]")!;
     fireEvent.change(within(row).getByRole("combobox"), {
       target: { value: "repick" },
     });
@@ -342,7 +342,7 @@ describe("Rename — SearchTakeover preview wiring (§6.3, §8.5 #13)", () => {
     });
 
     render(() => <Rename />);
-    const row = (await screen.findByText("Movie.A.mkv")).closest("tr")!;
+    const row = (await screen.findByText("Movie.A.mkv")).closest("tr, [data-proposal-row]")!;
     fireEvent.change(within(row).getByRole("combobox"), {
       target: { value: "move:adult" },
     });

@@ -176,6 +176,8 @@ type PickedShow = {
   origin: "movies" | "series";
 };
 
+type SeriesSearchBy = "show" | "episode";
+
 export const SearchTakeover: Component<{
   // --- identity / copy -------------------------------------------------
   heading: string;
@@ -205,11 +207,11 @@ export const SearchTakeover: Component<{
   // For a move this is the TARGET mode; for a repick it is the proposal's own.
   searchMode: Mode;
   initialQuery: string;
-  // initialShowTitle seeds the optional Series-only show-title field (TMDB
-  // catalog lookup). When non-empty on submit, it overrides initialQuery for
-  // the movies+series tmdb-search calls — useful when the main box holds an
-  // episode/release hint and the matched show name lives elsewhere on the row.
-  initialShowTitle?: string;
+  // initialSeriesSearchBy seeds the Series-only "Search by" dropdown. TMDB
+  // catalog search only matches show/movie titles — the dropdown labels what
+  // the operator is typing in the single query box (show name vs episode/release
+  // hint) rather than routing to a different endpoint.
+  initialSeriesSearchBy?: SeriesSearchBy;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
   // MoveModePanel's deliberately-empty `submitted`. This difference is
@@ -241,34 +243,29 @@ export const SearchTakeover: Component<{
   onCancel: () => void;
 }> = (props) => {
   const [query, setQuery] = createSignal(props.initialQuery);
-  const [showTitle, setShowTitle] = createSignal(props.initialShowTitle ?? "");
-  // `submitted` / `submittedShowTitle` start empty unless autoSearch asked for
-  // a mount-time search. See the autoSearch prop doc: an eager fetch on a move
-  // entry point would break the "Cancel issues zero requests" guarantee.
+  const [seriesSearchBy, setSeriesSearchBy] = createSignal<SeriesSearchBy>(
+    props.initialSeriesSearchBy ?? "show",
+  );
+  // `submitted` / `submittedSeriesSearchBy` start empty unless autoSearch asked
+  // for a mount-time search. See the autoSearch prop doc: an eager fetch on a
+  // move entry point would break the "Cancel issues zero requests" guarantee.
   const [submitted, setSubmitted] = createSignal(
     props.autoSearch ? props.initialQuery : "",
   );
-  const [submittedShowTitle, setSubmittedShowTitle] = createSignal(
-    props.autoSearch ? (props.initialShowTitle ?? "") : "",
-  );
-
-  const catalogTmdbQuery = (q: string, showTitleQ: string): string => {
-    if (props.searchMode === "series" && showTitleQ.trim()) {
-      return showTitleQ.trim();
-    }
-    return q.trim();
-  };
+  const [submittedSeriesSearchBy, setSubmittedSeriesSearchBy] = createSignal<
+    SeriesSearchBy
+  >(props.autoSearch ? (props.initialSeriesSearchBy ?? "show") : "show");
 
   const [results] = createResource(
     () => ({
       q: submitted(),
-      showTitle: props.searchMode === "series" ? submittedShowTitle() : "",
+      seriesSearchBy:
+        props.searchMode === "series" ? submittedSeriesSearchBy() : "show",
     }),
-    async ({ q, showTitle: showTitleQ }): Promise<SearchResult> => {
-    // Solid only skips a fetcher for false/null/undefined — a key with both
-    // strings empty still RUNS the fetcher. This guard is what makes
-    // autoSearch={false} issue zero network calls on mount while the resource
-    // still resolves. It looks like dead code; it is not.
+    async ({ q }): Promise<SearchResult> => {
+    // Solid only skips a fetcher for false/null/undefined — a key with an empty
+    // query still RUNS the fetcher. This guard is what makes autoSearch={false}
+    // issue zero network calls on mount while the resource still resolves.
     if (props.searchMode === "adult") {
       if (!q.trim()) {
         return { kind: "adult", items: [] };
@@ -276,7 +273,7 @@ export const SearchTakeover: Component<{
       const res = await adultSceneSearch(q);
       return { kind: "adult", items: res.items, errors: res.errors };
     }
-    const tmdbQ = catalogTmdbQuery(q, showTitleQ);
+    const tmdbQ = q.trim();
     if (!tmdbQ) {
       return { kind: "catalog", items: [] };
     }
@@ -473,10 +470,23 @@ export const SearchTakeover: Component<{
           e.preventDefault();
           setSubmitted(query());
           if (props.searchMode === "series") {
-            setSubmittedShowTitle(showTitle());
+            setSubmittedSeriesSearchBy(seriesSearchBy());
           }
         }}
       >
+        <Show when={props.searchMode === "series"}>
+          <select
+            class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+            aria-label="Search by"
+            value={seriesSearchBy()}
+            onChange={(e) =>
+              setSeriesSearchBy(e.currentTarget.value as SeriesSearchBy)
+            }
+          >
+            <option value="show">Show title</option>
+            <option value="episode">Episode title</option>
+          </select>
+        </Show>
         <input
           class="w-80 max-w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
           value={query()}
@@ -484,19 +494,12 @@ export const SearchTakeover: Component<{
           aria-label="Catalog search query"
           placeholder={
             props.searchMode === "series"
-              ? "Episode or release title"
+              ? seriesSearchBy() === "show"
+                ? "TV show name"
+                : "Episode or release title"
               : undefined
           }
         />
-        <Show when={props.searchMode === "series"}>
-          <input
-            class="w-80 max-w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-            value={showTitle()}
-            onInput={(e) => setShowTitle(e.currentTarget.value)}
-            aria-label="Show title (optional)"
-            placeholder="Show title (optional)"
-          />
-        </Show>
         <Button type="submit">Search</Button>
       </form>
 

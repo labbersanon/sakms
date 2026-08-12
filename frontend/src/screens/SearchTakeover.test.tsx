@@ -955,7 +955,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     for (const u of searches) expect(u).toContain("q=A%20Show");
   });
 
-  it("uses the optional show title for TMDB search when provided, not the main query", async () => {
+  it("searches TMDB with the single query when Show title is selected", async () => {
     const fetchMock = mergeFetch([shortFilm()], [catalogItem()]);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -964,6 +964,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
         heading="Re-pick “episode.mkv”"
         searchMode="series"
         initialQuery="Duck Soup"
+        initialSeriesSearchBy="show"
         autoSearch={false}
         onCommit={commitSpy()}
         onDone={vi.fn()}
@@ -971,15 +972,14 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
       />
     ));
 
-    fireEvent.input(screen.getByLabelText("Show title (optional)"), {
+    fireEvent.input(screen.getByLabelText("Catalog search query"), {
       target: { value: "Laurel and Hardy" },
     });
     fireEvent.click(screen.getByText("Search"));
 
     await screen.findByLabelText("Use A Show");
 
-    const searches = tmdbSearchCalls(fetchMock);
-    const laurelSearches = searches.filter((u) =>
+    const laurelSearches = tmdbSearchCalls(fetchMock).filter((u) =>
       decodeURIComponent(u).includes("Laurel"),
     );
     expect(laurelSearches.some((u) => u.startsWith(MOVIE_SEARCH_URL))).toBe(true);

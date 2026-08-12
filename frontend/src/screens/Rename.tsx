@@ -1796,14 +1796,14 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
               searchMode={st.kind === "repick" ? props.mode : st.target}
               initialQuery={
                 st.kind === "repick"
-                  ? props.mode === "series" && p.title
-                    ? p.sourceName || ""
-                    : p.title || p.sourceName || ""
+                  ? p.title || p.sourceName || ""
                   : p.sourceName
               }
-              initialShowTitle={
+              initialSeriesSearchBy={
                 st.kind === "repick" && props.mode === "series"
-                  ? p.title || undefined
+                  ? p.title
+                    ? "show"
+                    : "episode"
                   : undefined
               }
               // LOAD-BEARING and deliberately asymmetric: repick searches on

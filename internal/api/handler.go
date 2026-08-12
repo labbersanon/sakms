@@ -232,8 +232,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// classification fires via classifyModes — see adult_review.go's file doc
 	// and proposal_video.go:79-84 for why bare /api/proposals/{id}/… is refused.
 	// Claude 2026-08-12: adult-rename-review-alts E1.
-	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals/{id}/review", adultReviewPreviewHandler(connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober))
-	mux.HandleFunc("POST /api/modes/{mode}/rename/proposals/{id}/review-confirm", adultReviewConfirmHandler(connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober))
+	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals/{id}/review", adultReviewPreviewHandler(connStore, scStore, settingsStore, propStore, libStore, httpClient, videoHasher, prober))
+	mux.HandleFunc("POST /api/modes/{mode}/rename/proposals/{id}/review-confirm", adultReviewConfirmHandler(connStore, scStore, settingsStore, propStore, libStore, httpClient, videoHasher, prober))
 
 	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, settingsStore, propStore, libStore, pruningStore))
 	mux.HandleFunc("GET /api/modes/{mode}/purge/proposals", listProposalsHandler(propStore, proposals.Purge))

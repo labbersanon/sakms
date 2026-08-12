@@ -50,7 +50,7 @@ var adultReviewPreviewTimeout = 30 * time.Second
 // Returns 200 + AdultReviewPreview on success.
 // 400 for: non-Adult/non-Rename/non-Unmatched/already-has-a-scene-id proposal.
 // 502 for an unresolvable source file.
-func adultReviewPreviewHandler(connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober deduprober) http.HandlerFunc {
+func adultReviewPreviewHandler(connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, httpClient *http.Client, videoHasher rename.PHasher, prober deduprober) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -81,7 +81,7 @@ func adultReviewPreviewHandler(connStore *connections.Store, scStore *servicecon
 		}
 
 		// Layer 2 section lock — mode.Build rejects Adult when locked.
-		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, nil, nil, p.Mode)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 		if err != nil {
 			if errors.Is(err, sectionlock.ErrSectionLocked) {
 				writeSectionLocked(w, sectionlock.SectionAdultContent)
@@ -117,7 +117,7 @@ func adultReviewPreviewHandler(connStore *connections.Store, scStore *servicecon
 //
 // Both branches: NotifyPlayers, organizeevents.Log, respond 200 with the
 // refreshed (now-applied) proposal.
-func adultReviewConfirmHandler(connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober deduprober) http.HandlerFunc {
+func adultReviewConfirmHandler(connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, httpClient *http.Client, videoHasher rename.PHasher, prober deduprober) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -148,7 +148,7 @@ func adultReviewConfirmHandler(connStore *connections.Store, scStore *servicecon
 
 		// Layer 2 — needed for sess.Identify (catalog confirm) and
 		// sess.NotifyPlayers (both branches). mode.Build rejects Adult when locked.
-		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, nil, nil, p.Mode)
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, p.Mode)
 		if err != nil {
 			if errors.Is(err, sectionlock.ErrSectionLocked) {
 				writeSectionLocked(w, sectionlock.SectionAdultContent)

@@ -78,6 +78,18 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 	if err := row.Scan(&scene.ID, &scene.CreatedAt, &scene.UpdatedAt); err != nil {
 		return Scene{}, fmt.Errorf("upserting scene %q: %w", scene.Title, err)
 	}
+	// Claude 2026-08-12: sync the primary library_scene_files row after every upsert.
+	// Reason: deep-interview-adult-rename-review-alts — Adult gains alternate-version
+	//   support (library_scene_files, 0010). Mirrors UpsertEpisode's SyncPrimaryEpisodeFile
+	//   call so every existing Adult write path (ApplyLibraryAdult, OrganizeImportedAdult,
+	//   Dedup Apply, cross-mode move) maintains a correct primary file row for free, with
+	//   no call-site changes.
+	// Troubleshooting: alternate fold logic found no primary file row because Apply
+	//   wrote only library_scenes without a corresponding library_scene_files primary entry.
+	// Review if: UpsertScene is split into a catalog-only and a file-bearing variant.
+	if err := s.SyncPrimarySceneFile(ctx, scene); err != nil {
+		return Scene{}, fmt.Errorf("syncing primary file for scene %q: %w", scene.Title, err)
+	}
 	return scene, nil
 }
 

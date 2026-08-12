@@ -257,3 +257,91 @@ func TestEpisodeAlternateFileName_MatchesSeriesSchema(t *testing.T) {
 		})
 	}
 }
+
+// adultAlternateCase is shared by TestAdultAlternateFileName and
+// TestAdultAlternateFileName_MatchesAdultSchema_WithPhash so that cases added
+// for byte-exact rendering are automatically checked for schema conformance too.
+type adultAlternateCase struct {
+	name                            string
+	studio, title, date, phash      string
+	res, codec, bitrate             string
+	ext                             string
+	want                            string
+}
+
+var adultAlternateCases = []adultAlternateCase{
+	// Plan §7.1 named example verbatim
+	{"all fields all tokens", "Studio", "Scene Title", "2024-01-02", "abc123", "1080p", "h264", "8 Mbps", ".mkv",
+		"Studio - Scene Title (2024-01-02) [phash-abc123] - 1080p h264 8 Mbps.mkv"},
+	{"partial tokens res-only", "Studio", "Scene Title", "2024-01-02", "abc123", "720p", "", "", ".mkv",
+		"Studio - Scene Title (2024-01-02) [phash-abc123] - 720p.mkv"},
+	{"no tokens falls back to alternate", "Studio", "Scene Title", "2024-01-02", "abc123", "", "", "", ".mkv",
+		"Studio - Scene Title (2024-01-02) [phash-abc123] - alternate.mkv"},
+	// Empty phash drops the tag — alternate has its own hash, not the primary's
+	{"empty phash drops tag", "Studio", "Scene Title", "2024-01-02", "", "1080p", "h264", "8 Mbps", ".mkv",
+		"Studio - Scene Title (2024-01-02) - 1080p h264 8 Mbps.mkv"},
+	{"empty phash no tokens", "Studio", "Scene Title", "2024-01-02", "", "", "", "", ".mkv",
+		"Studio - Scene Title (2024-01-02) - alternate.mkv"},
+	// Optional fields omitted
+	{"no studio", "", "Scene Title", "2024-01-02", "def456", "1080p", "h264", "8 Mbps", ".mkv",
+		"Scene Title (2024-01-02) [phash-def456] - 1080p h264 8 Mbps.mkv"},
+	{"no date", "Studio", "Scene Title", "", "def456", "1080p", "h264", "8 Mbps", ".mkv",
+		"Studio - Scene Title [phash-def456] - 1080p h264 8 Mbps.mkv"},
+	{"title only no tokens", "", "Scene Title", "", "", "", "", "", ".avi",
+		"Scene Title - alternate.avi"},
+}
+
+func TestAdultAlternateFileName(t *testing.T) {
+	for _, c := range adultAlternateCases {
+		t.Run(c.name, func(t *testing.T) {
+			got := AdultAlternateFileName(c.studio, c.title, c.date, c.phash, c.res, c.codec, c.bitrate, c.ext)
+			if got != c.want {
+				t.Errorf("got  %q\nwant %q", got, c.want)
+			}
+		})
+	}
+}
+
+// An alternate name with a phash must be accepted by MatchesAdultSchema so the
+// known-map keeps it from being re-proposed on every Scan. An alternate without
+// a phash (empty hash) renders without the [phash-…] tag and MatchesAdultSchema
+// returns false — the known-map from AllScenePaths is the real guard in that case.
+func TestAdultAlternateFileName_MatchesAdultSchema_WithPhash(t *testing.T) {
+	for _, c := range adultAlternateCases {
+		if c.phash == "" {
+			continue // no-phash alternate has no [phash-…] tag by design; schema check not applicable
+		}
+		t.Run(c.name, func(t *testing.T) {
+			name := AdultAlternateFileName(c.studio, c.title, c.date, c.phash, c.res, c.codec, c.bitrate, c.ext)
+			path := filepath.Join("/adult", name)
+			if !MatchesAdultSchema(path) {
+				t.Errorf("alternate %q (with phash) is not MatchesAdultSchema-conformant; it would be re-proposed on every Scan", path)
+			}
+		})
+	}
+}
+
+// An alternate without a phash must NOT match AdultSchema — MatchesAdultSchema
+// checks for [phash-…] and a name without it returns false. This pins the
+// known-map dependency documented in AdultAlternateFileName's doc comment.
+func TestAdultAlternateFileName_NoPhash_DoesNotMatchAdultSchema(t *testing.T) {
+	name := AdultAlternateFileName("Studio", "Scene Title", "2024-01-02", "", "1080p", "h264", "8 Mbps", ".mkv")
+	path := filepath.Join("/adult", name)
+	if MatchesAdultSchema(path) {
+		t.Errorf("alternate %q (no phash) should not match MatchesAdultSchema — AllScenePaths is the guard", path)
+	}
+}
+
+// The result must never be byte-equal to AdultFileName for the same inputs,
+// so the alternate cannot silently collide with the primary on disk.
+func TestAdultAlternateFileName_NeverEqualToAdultFileName(t *testing.T) {
+	primary := AdultFileName("Studio", "Scene Title", "2024-01-02", "abc123", ".mkv")
+	alt := AdultAlternateFileName("Studio", "Scene Title", "2024-01-02", "abc123", "1080p", "h264", "8 Mbps", ".mkv")
+	if primary == alt {
+		t.Errorf("AdultAlternateFileName must not equal AdultFileName for the same inputs: %q", primary)
+	}
+	altNoTokens := AdultAlternateFileName("Studio", "Scene Title", "2024-01-02", "abc123", "", "", "", ".mkv")
+	if primary == altNoTokens {
+		t.Errorf("AdultAlternateFileName (no tokens) must not equal AdultFileName: %q", primary)
+	}
+}

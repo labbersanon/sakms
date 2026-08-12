@@ -616,7 +616,7 @@ const AdultProposalCard: Component<{
       </div>
       <div class="mt-1 flex flex-wrap items-center gap-1 text-sm">
         <span class="font-medium text-fg">
-          {stripStudioPrefix(p().title, studio())}
+          {stripStudioPrefix(p().title || "", studio())}
         </span>
         <Show
           when={(p().reason || "")

@@ -497,6 +497,82 @@ const UndoOutcome: Component<{ result: UndoResult }> = (props) => {
   );
 };
 
+// AdultProposalCard is the mobile-friendly row layout for Adult Rename
+// proposals — the eight-column table (Source/Title/Studio/Date/PHash/Root/
+// Reason/Actions) collapses on narrow viewports the same way Recently Applied
+// did before its card layout fix.
+const AdultProposalCard: Component<{
+  proposal: Proposal;
+  mode: Mode;
+  titleMode: boolean;
+  selected: RowActionId | "";
+  onSelect: (id: RowActionId | "") => void;
+  onRun: (id: RowActionId) => void;
+  disabled: boolean;
+}> = (props) => {
+  const p = () => props.proposal;
+  return (
+    <li
+      data-proposal-row
+      class="rounded-lg border border-border/60 p-3"
+    >
+      <div class="flex items-start gap-1 break-all font-mono text-xs text-muted">
+        <span class="min-w-0 flex-1">{p().sourceName}</span>
+        <Show
+          when={rowActionEnabled(
+            "preview",
+            p().status,
+            props.titleMode,
+          )}
+        >
+          <SourcePreviewPopout
+            src={proposalVideoUrl(props.mode, p().id)}
+            label={p().sourceName}
+          />
+        </Show>
+      </div>
+      <div class="mt-1 flex flex-wrap items-center gap-1 text-sm">
+        <span class="font-medium text-fg">{p().title}</span>
+        <Show
+          when={(p().reason || "")
+            .toLowerCase()
+            .startsWith("web match:")}
+        >
+          <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+            web match
+          </span>
+        </Show>
+      </div>
+      <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+        <dt class="text-muted">Studio</dt>
+        <dd>{p().studio}</dd>
+        <dt class="text-muted">Date</dt>
+        <dd>{p().date}</dd>
+        <dt class="text-muted">PHash</dt>
+        <dd class="font-mono" title={p().phash}>
+          {shortHash(p().phash || "")}
+        </dd>
+        <dt class="text-muted">Root</dt>
+        <dd class="break-all font-mono">{p().rootFolderPath}</dd>
+      </dl>
+      <Show when={p().reason}>
+        <div class="mt-2 text-xs text-muted">{p().reason}</div>
+      </Show>
+      <div class="mt-3">
+        <RowActions
+          proposal={p()}
+          mode={props.mode}
+          titleMode={props.titleMode}
+          selected={props.selected}
+          onSelect={props.onSelect}
+          onRun={props.onRun}
+          disabled={props.disabled}
+        />
+      </div>
+    </li>
+  );
+};
+
 // formatAppliedAt turns backend timestamps (RFC3339 nano or legacy
 // "YYYY-MM-DD HH:MM:SS") into a short, locale-stable label for the UI.
 export function formatAppliedAt(raw: string): string {
@@ -1433,98 +1509,112 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                 </div>
               }
             >
-              <div class="mt-4 overflow-x-auto rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
-                <table class="w-full text-left text-sm">
-                  <thead>
-                    <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
-                      <th class="px-2 py-2 font-medium">Source</th>
-                      <th class="px-2 py-2 font-medium">Title</th>
-                      <Show when={props.mode === "movies" || props.mode === "series"}>
-                        <th class="px-2 py-2 font-medium">Year</th>
-                      </Show>
-                      <Show when={props.mode === "series"}>
-                        <th class="px-2 py-2 font-medium">Season</th>
-                        <th class="px-2 py-2 font-medium">Episode</th>
-                      </Show>
-                      <Show when={props.mode === "adult"}>
-                        <th class="px-2 py-2 font-medium">Studio</th>
-                        <th class="px-2 py-2 font-medium">Date</th>
-                        <th class="px-2 py-2 font-medium">PHash</th>
-                      </Show>
-                      <th class="px-2 py-2 font-medium">Root Folder</th>
-                      <th class="px-2 py-2 font-medium">Reason</th>
-                      <th class="px-2 py-2 font-medium">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              <div class="mt-4 rounded-xl border border-border bg-surface/95 p-3 shadow-sm backdrop-blur-md">
+                <Show
+                  when={props.mode === "adult"}
+                  fallback={
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-left text-sm">
+                        <thead>
+                          <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
+                            <th class="px-2 py-2 font-medium">Source</th>
+                            <th class="px-2 py-2 font-medium">Title</th>
+                            <Show when={props.mode === "movies" || props.mode === "series"}>
+                              <th class="px-2 py-2 font-medium">Year</th>
+                            </Show>
+                            <Show when={props.mode === "series"}>
+                              <th class="px-2 py-2 font-medium">Season</th>
+                              <th class="px-2 py-2 font-medium">Episode</th>
+                            </Show>
+                            <th class="px-2 py-2 font-medium">Root Folder</th>
+                            <th class="px-2 py-2 font-medium">Reason</th>
+                            <th class="px-2 py-2 font-medium">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <For each={proposals()}>
+                            {(p) => (
+                              <tr
+                                data-proposal-row
+                                class="border-b border-border/60 align-top"
+                              >
+                                <td class="px-2 py-2 font-mono text-xs">
+                                  <div class="flex items-center gap-1">
+                                    <span>{p.sourceName}</span>
+                                    <Show
+                                      when={rowActionEnabled(
+                                        "preview",
+                                        p.status,
+                                        isTitleMode(),
+                                      )}
+                                    >
+                                      <SourcePreviewPopout
+                                        src={proposalVideoUrl(props.mode, p.id)}
+                                        label={p.sourceName}
+                                      />
+                                    </Show>
+                                  </div>
+                                </td>
+                                <td class="px-2 py-2">
+                                  <div class="flex flex-wrap items-center gap-1">
+                                    <span>{p.title}</span>
+                                    <Show
+                                      when={(p.reason || "")
+                                        .toLowerCase()
+                                        .startsWith("web match:")}
+                                    >
+                                      <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                                        web match
+                                      </span>
+                                    </Show>
+                                  </div>
+                                </td>
+                                <Show when={props.mode === "movies" || props.mode === "series"}>
+                                  <td class="px-2 py-2">{p.year || ""}</td>
+                                </Show>
+                                <Show when={props.mode === "series"}>
+                                  <td class="px-2 py-2">{p.seasonNumber ?? ""}</td>
+                                  <td class="px-2 py-2">
+                                    {episodeDisplay(p.episodeNumber, p.extraEpisodeNumbers)}
+                                  </td>
+                                </Show>
+                                <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
+                                <td class="px-2 py-2 text-muted">{p.reason}</td>
+                                <td class="px-2 py-2">
+                                  <RowActions
+                                    proposal={p}
+                                    mode={props.mode}
+                                    titleMode={isTitleMode()}
+                                    selected={selectionOf(p)}
+                                    onSelect={(id) => setSelection(p.id, id)}
+                                    onRun={(id) => runRowAction(p, id)}
+                                    disabled={acting() || scanning()}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                          </For>
+                        </tbody>
+                      </table>
+                    </div>
+                  }
+                >
+                  <ul class="space-y-3">
                     <For each={proposals()}>
                       {(p) => (
-                        <tr class="border-b border-border/60 align-top">
-                          <td class="px-2 py-2 font-mono text-xs">
-                            <div class="flex items-center gap-1">
-                              <span>{p.sourceName}</span>
-                              <Show
-                                when={rowActionEnabled(
-                                  "preview",
-                                  p.status,
-                                  isTitleMode(),
-                                )}
-                              >
-                                <SourcePreviewPopout
-                                  src={proposalVideoUrl(props.mode, p.id)}
-                                  label={p.sourceName}
-                                />
-                              </Show>
-                            </div>
-                          </td>
-                          <td class="px-2 py-2">
-                            <div class="flex flex-wrap items-center gap-1">
-                              <span>{p.title}</span>
-                              <Show
-                                when={(p.reason || "")
-                                  .toLowerCase()
-                                  .startsWith("web match:")}
-                              >
-                                <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
-                                  web match
-                                </span>
-                              </Show>
-                            </div>
-                          </td>
-                          <Show when={props.mode === "movies" || props.mode === "series"}>
-                            <td class="px-2 py-2">{p.year || ""}</td>
-                          </Show>
-                          <Show when={props.mode === "series"}>
-                            <td class="px-2 py-2">{p.seasonNumber ?? ""}</td>
-                            <td class="px-2 py-2">
-                              {episodeDisplay(p.episodeNumber, p.extraEpisodeNumbers)}
-                            </td>
-                          </Show>
-                          <Show when={props.mode === "adult"}>
-                            <td class="px-2 py-2">{p.studio}</td>
-                            <td class="px-2 py-2">{p.date}</td>
-                            <td class="px-2 py-2" title={p.phash}>
-                              {shortHash(p.phash || "")}
-                            </td>
-                          </Show>
-                          <td class="px-2 py-2 font-mono text-xs">{p.rootFolderPath}</td>
-                          <td class="px-2 py-2 text-muted">{p.reason}</td>
-                          <td class="px-2 py-2">
-                            <RowActions
-                              proposal={p}
-                              mode={props.mode}
-                              titleMode={isTitleMode()}
-                              selected={selectionOf(p)}
-                              onSelect={(id) => setSelection(p.id, id)}
-                              onRun={(id) => runRowAction(p, id)}
-                              disabled={acting() || scanning()}
-                            />
-                          </td>
-                        </tr>
+                        <AdultProposalCard
+                          proposal={p}
+                          mode={props.mode}
+                          titleMode={isTitleMode()}
+                          selected={selectionOf(p)}
+                          onSelect={(id) => setSelection(p.id, id)}
+                          onRun={(id) => runRowAction(p, id)}
+                          disabled={acting() || scanning()}
+                        />
                       )}
                     </For>
-                  </tbody>
-                </table>
+                  </ul>
+                </Show>
               </div>
               <PaginationBar
                 total={page()?.total ?? 0}

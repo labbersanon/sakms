@@ -752,6 +752,37 @@ func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbI
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// RepickAdultScene is the Adult-only sibling of Repick: it promotes a
+// web-identified-only Unmatched Adult proposal to Pending with a specific
+// catalog (box, scene_id) identity so the ordinary ApplyLibraryAdult path
+// (including the alternate fold, give-back, and undo) can run unmodified.
+//
+// A separate method rather than a parameter on Repick because Movies' Repick
+// is provably untouched by this feature rather than merely reviewed as such —
+// matching the RepickEpisode precedent. Adult uses (box, scene_id) rather than
+// (tmdbID, year), so sharing the signature would mean adding optional columns
+// and special-casing the UPDATE, which costs more than a single extra method.
+//
+// Claude 2026-08-12: added for Phase D3 — adult-rename-review-alts.
+// Reason: the Review confirm (catalog branch) needs to flip a web-identified
+//   Unmatched row to Pending with a specific catalog identity before calling
+//   ApplyLibraryAdult. MoveMode is explicitly refused here (it refuses same-mode
+//   moves, proposal_movemode.go) and Repick overwrites wrong fields.
+// Review if: Repick gains an optional (box, scene_id) parameter.
+func (s *Store) RepickAdultScene(ctx context.Context, id int64, title, studio, date, box, sceneID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE proposals
+		SET title = ?, studio = ?, scene_date = ?,
+		    give_back_box = ?, give_back_scene_id = ?,
+		    status = ?, reason = ''
+		WHERE id = ?
+	`, title, studio, date, box, sceneID, string(Pending), id)
+	if err != nil {
+		return fmt.Errorf("re-picking adult scene for proposal %d: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
 // ErrModeMoveConflict is returned when a cross-mode move would collide with
 // an existing live proposal for the same file in the target mode — the
 // partial unique index proposals_live_source_path_uidx

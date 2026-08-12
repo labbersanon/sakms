@@ -53,7 +53,7 @@ func TestClassifyAdultMatch(t *testing.T) {
 		{
 			name:       "web_search only (no scene id)",
 			res:        &identify.MatchResult{Source: "web_search", SceneID: "", Box: ""},
-			wantStatus: proposals.Unmatched, wantReason: "web-identified only (no scene ID) — needs manual review",
+			wantStatus: proposals.Unmatched, wantReason: "web-identified only — no catalog scene id yet; use Review to name and track it",
 		},
 		{
 			name:       "stashdb match",

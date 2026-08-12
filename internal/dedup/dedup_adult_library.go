@@ -98,15 +98,27 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 	}
 
 	trackedByKey := make(map[sceneDedupKey]library.Scene, len(scenes))
-	known := make(map[string]bool, len(scenes))
-	for _, sc := range scenes {
-		if sc.FilePath != "" {
-			// Marking just the file path is enough — ScanRootFolder's recursive
-			// walk decides atomicity dynamically from known at whatever depth it
-			// encounters a directory, so it doesn't need the wrapping folder
-			// pre-marked too.
-			known[sc.FilePath] = true
+	// Claude 2026-08-12: use AllScenePaths instead of sc.FilePath for the known map.
+	// Reason: deep-interview-adult-rename-review-alts C10 — library_scene_files holds
+	//   alternate paths that ListScenes never returns. Without this fix, Dedup would
+	//   re-discover a folded alternate as an orphan and propose deleting a file that
+	//   Rename deliberately kept. This is a data-loss-adjacent fix, not a tidy-up.
+	// Troubleshooting: Dedup proposed deleting a file that had been folded as an
+	//   alternate by Rename — the file was in library_scene_files but not in known.
+	// Review if: AllScenePaths stops covering library_scene_files.
+	known := map[string]bool{}
+	if paths, pathErr := libStore.AllScenePaths(ctx); pathErr == nil {
+		for _, p := range paths {
+			known[p] = true
 		}
+	} else {
+		for _, sc := range scenes {
+			if sc.FilePath != "" {
+				known[sc.FilePath] = true
+			}
+		}
+	}
+	for _, sc := range scenes {
 		trackedByKey[sceneDedupKey{box: sc.Box, sceneID: sc.SceneID}] = sc
 	}
 

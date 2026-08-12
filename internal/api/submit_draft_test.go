@@ -75,7 +75,7 @@ func TestSubmitDraftHandler_GivesUnmatchedProposalBackToTPDB(t *testing.T) {
 		{
 			Status: proposals.Unmatched, SourceName: "Some Scene", SourcePath: "/media/Adult/Some Scene",
 			RootFolderPath: "/media/Adult", Title: "Some Scene", Studio: "Some Studio", Date: "2024",
-			Reason: "web-identified only (no scene ID) — needs manual review",
+			Reason: "web-identified only — no catalog scene id yet; use Review to name and track it",
 		},
 	})
 	if err != nil {

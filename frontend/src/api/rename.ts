@@ -17,6 +17,8 @@
 
 import { api } from "./client";
 import type {
+  AdultReviewConfirmRequest,
+  AdultReviewPreview,
   AdultSceneSearchResponse,
   ApplyBatchItem,
   ApplyBatchResponse,
@@ -36,7 +38,13 @@ import {
   type ProposalListView,
 } from "./organize";
 
-export type { Proposal, RecentlyAppliedEntry, RepickRequest };
+export type {
+  AdultReviewConfirmRequest,
+  AdultReviewPreview,
+  Proposal,
+  RecentlyAppliedEntry,
+  RepickRequest,
+};
 export type { ProposalStatus };
 
 export function scanRename(mode: Mode): Promise<void> {
@@ -170,5 +178,28 @@ export function fetchRecentlyApplied(
 ): Promise<RecentlyAppliedEntry[]> {
   return api<RecentlyAppliedEntry[]>(
     `/api/modes/${mode}/rename/recently-applied`,
+  );
+}
+
+// ---- Adult Review ----------------------------------------------------------
+// DTOs live in @dto (AdultReviewPreview / AdultReviewConfirmRequest).
+
+export function fetchAdultReview(
+  mode: Mode,
+  id: number,
+): Promise<AdultReviewPreview> {
+  return api<AdultReviewPreview>(
+    `/api/modes/${mode}/rename/proposals/${id}/review`,
+  );
+}
+
+export function confirmAdultReview(
+  mode: Mode,
+  id: number,
+  body: AdultReviewConfirmRequest,
+): Promise<unknown> {
+  return api(
+    `/api/modes/${mode}/rename/proposals/${id}/review-confirm`,
+    { method: "POST", body: JSON.stringify(body) },
   );
 }

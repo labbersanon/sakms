@@ -53,8 +53,20 @@ var restrictedPkgs = map[string]bool{
 // mutation lives only in Apply*), and ReplacePending (the transactional
 // persist the propose phase needs, the same call watchfolders' scanFromWatcher
 // already establishes as the Scan-only persistence precedent).
+//
+// UpgradeLocalAdultScenes is explicitly allowlisted because it runs as a
+// pre-scan step that promotes local (box="local") scenes to a catalog identity
+// before ScanLibraryAdult builds the known-map. It is not an Apply (no proposal
+// row is involved), but it does rename files — which is why it is listed
+// explicitly here rather than via the Scan* prefix. Adding it to the scheduled
+// scan path is safe because it is purely additive (soft-fail, logs errors, no
+// data loss path) and the scan schedule's whole purpose is keeping the library
+// current, of which identity upgrades are a part. — added 2026-08-12 for
+// adult-rename-review-alts D6.
 func allowedFunc(name string) bool {
-	return name == "ReplacePending" || strings.HasPrefix(name, "Scan")
+	return name == "ReplacePending" ||
+		name == "UpgradeLocalAdultScenes" ||
+		strings.HasPrefix(name, "Scan")
 }
 
 // TestScanScheduleImportFirewall proves internal/scanschedule does not import

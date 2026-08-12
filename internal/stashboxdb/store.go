@@ -43,6 +43,12 @@ var (
 	ErrNameRequired = errors.New("stashboxdb: name is required")
 	// ErrNameReserved is returned when a name collides with ReservedName.
 	ErrNameReserved = errors.New(`stashboxdb: "` + ReservedName + `" is reserved for the built-in TPDB lane`)
+	// ErrNameReservedLocal is returned when the name "local" is used.
+	// "local" is reserved for the phash-backed local identity scheme
+	// (library_scene_local.go). Cannot import internal/library to check
+	// library.LocalSceneBox — that closes a cycle (library→mode→stashboxdb);
+	// see reservedBoxLocal below.
+	ErrNameReservedLocal = errors.New(`stashboxdb: "local" is a reserved name for the local-identity scheme — choose a different name`)
 	// ErrNameTaken is returned when a name collides with another live row.
 	ErrNameTaken = errors.New("stashboxdb: another database already uses that name")
 	// ErrNameHaunted is the §2.8 name-reuse tombstone: the name has tracked
@@ -605,6 +611,12 @@ func (s *Store) nameFree(ctx context.Context, name string, excludeID int64) erro
 	return nameFreeInTx(ctx, s.db, name, excludeID)
 }
 
+// reservedBoxLocal duplicates library.LocalSceneBox by value, NOT by import.
+// Importing internal/library here closes a cycle: library → mode → stashboxdb.
+// Keep these two in sync; library/library_scene_local.go is the definition of record.
+// A test in both packages asserts the string values are equal so drift is caught.
+const reservedBoxLocal = "local"
+
 // nameFreeInTx applies both name guards: uniqueness among live rows, and the
 // §2.8 name-reuse tombstone. The tombstone's rationale is silent data
 // conflation, not tidiness — rebinding a name that has `library_scenes` history
@@ -615,6 +627,15 @@ func (s *Store) nameFree(ctx context.Context, name string, excludeID int64) erro
 // identical database after an accidental delete is indistinguishable from a
 // rebind and is likewise refused — choose a new name (§5-S5).
 func nameFreeInTx(ctx context.Context, q queryRower, name string, excludeID int64) error {
+	// Claude 2026-08-12: reserve "local" before the uniqueness/haunted checks.
+	// Reason: deep-interview-adult-rename-review-alts B5 — "local" is the reserved
+	//   box value for the local-identity scheme. Without this check, the operator
+	//   gets the confusing ErrNameHaunted once a local scene exists, and nothing at
+	//   all before the first local scene. EqualFold catches "LOCAL", "Local", etc.
+	// Review if: library.LocalSceneBox changes from "local".
+	if strings.EqualFold(name, reservedBoxLocal) {
+		return ErrNameReservedLocal
+	}
 	var taken int
 	if err := q.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM stashbox_databases WHERE lower(name) = lower(?) AND id <> ?`,

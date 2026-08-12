@@ -299,7 +299,14 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		}
 	}
 	if len(changes) == 0 {
-		return nil, fmt.Errorf("download completed but no episode files could be identified for import")
+		// Claude 2026-08-12: no episodes were parseable — return success with
+		// no changes (series row already created by UpsertSeries). The files
+		// stay on disk for a later Rename scan; the grab becomes Imported so
+		// it is not retried. Only reaches here when SeasonSpecified==false and
+		// no filename parsed — the SeasonSpecified==true fallback path
+		// (season/episode from the grab row) is handled inside the loop above.
+		// Review if: this case should instead report a non-200 to the caller.
+		return nil, nil
 	}
 	return changes, nil
 }

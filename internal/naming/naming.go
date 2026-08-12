@@ -148,6 +148,44 @@ func AdultFileName(studio, title, date, phash, ext string) string {
 	return name + ext
 }
 
+// AdultAlternateFileName formats a non-primary copy of an Adult scene living
+// in the same flat Adult root as the primary. Its structure is:
+//
+//	AdultFileName(studio, title, date, phash, "") + " - <res> <codec> <bitrate>" + ext
+//
+// or " - alternate" when all three quality tokens are empty — the exact shape
+// MovieAlternateFileName (naming.go:92) and EpisodeAlternateFileName
+// (naming.go:235) use, adapted for Adult's base-name format.
+//
+// IMPORTANT: the phash argument is THAT FILE's own hash, not the scene's
+// primary hash. Adult's base name embeds a file property ([phash-HASH]), so
+// giving the alternate the primary's hash would produce two files claiming the
+// same perceptual hash, breaking Dedup's cache-validation and making the two
+// names indistinguishable. Consequence: an alternate whose hash could not be
+// computed renders with no [phash-…] tag, so MatchesAdultSchema returns false
+// for it — the known-map from AllScenePaths is what keeps it from being
+// re-proposed on the next Scan, and that map is not optional.
+//
+// Claude 2026-08-12: AdultAlternateFileName — mirrors Movies/Series alternate shape for Adult
+// Reason: deep-interview-adult-rename-review-alts — Adult gains multi-file alternate support
+// Troubleshooting: phash must be the alternate file's OWN hash (see doc above)
+// Review if: Jellyfin edition tags become the preferred alternate naming shape
+func AdultAlternateFileName(studio, title, date, phash, res, codec, bitrate, ext string) string {
+	base := AdultFileName(studio, title, date, phash, "")
+	var parts []string
+	for _, tok := range []string{res, codec, bitrate} {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		parts = append(parts, SafePathComponent(tok))
+	}
+	if len(parts) == 0 {
+		return base + " - alternate" + ext
+	}
+	return base + " - " + strings.Join(parts, " ") + ext
+}
+
 // EpisodeFileName formats one episode's target file name: Jellyfin's
 // documented convention is space-separated ("Series Title S03E05 Episode
 // Title.ext"); Legacy keeps this project's original dash-separated shape

@@ -663,12 +663,21 @@ func TestUndoSeries_AlternateFoldNeverMovesAFile(t *testing.T) {
 // ----------------------------------------------------------------- Adult ----
 
 // TestUndoAdult_RoundTripRestoresPriorSceneRow is the UPDATE case: a scene row
-// for (box, scene_id) already existed, so undo restores its pre-Apply snapshot
-// rather than deleting it — phash cache-validity fields included.
+// for (box, scene_id) already existed but its file is no longer on disk (a stale
+// row), so the fold gate does not fire and Apply takes the simple path — undo
+// restores the pre-Apply snapshot rather than deleting it, phash cache-validity
+// fields included.
+//
+// The stale-file case is deliberate: a live file at oldPath would trigger the
+// alternate fold gate (applyAdultAlternate), which is correct behavior but is
+// tested by TestApplyLibraryAdult_AlternatePromoteAndLose. This test keeps the
+// simple UPDATE path clearly exercised.
 func TestUndoAdult_RoundTripRestoresPriorSceneRow(t *testing.T) {
 	e := newUndoEnv(t, nil)
 	sess := adultTestSession(t, nil, map[string]*stashbox.Client{})
-	oldPath := writeFileAt(t, filepath.Join(e.root, "old", "original.mp4"), "old-scene")
+	// oldPath is a DB-only reference — no file on disk. This prevents the fold gate
+	// from firing so the simple Apply path (UpsertScene overwrite) runs.
+	oldPath := filepath.Join(e.root, "old", "stale-original.mp4")
 	src := writeFileAt(t, filepath.Join(e.root, "inbox", "raw-release.mp4"), "scene-bytes")
 
 	prior, err := e.libStore.UpsertScene(e.ctx, library.Scene{
@@ -686,7 +695,7 @@ func TestUndoAdult_RoundTripRestoresPriorSceneRow(t *testing.T) {
 		GiveBackBox: "stashdb", GiveBackSceneID: "scene-1", PHash: "newhash", DurationSeconds: 1800,
 	})[0]
 
-	sceneID, _, changes, err := ApplyLibraryAdult(e.ctx, sess, e.libStore, p, "high")
+	sceneID, _, changes, err := ApplyLibraryAdult(e.ctx, sess, e.libStore, p, "high", nil)
 	if err != nil {
 		t.Fatalf("ApplyLibraryAdult: %v", err)
 	}
@@ -737,7 +746,7 @@ func TestUndoAdult_ReportsUnretractableGiveBack(t *testing.T) {
 		GiveBackBox: "stashdb", GiveBackSceneID: "scene-9", PHash: "hash9", DurationSeconds: 1200,
 	})[0]
 
-	sceneID, submitted, _, err := ApplyLibraryAdult(e.ctx, sess, e.libStore, p, "high")
+	sceneID, submitted, _, err := ApplyLibraryAdult(e.ctx, sess, e.libStore, p, "high", nil)
 	if err != nil {
 		t.Fatalf("ApplyLibraryAdult: %v", err)
 	}

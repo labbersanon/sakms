@@ -472,13 +472,12 @@ func TestCheckImportHandler_TorrentCompleted_PerformsImport(t *testing.T) {
 	if updated.Status != grabs.Imported {
 		t.Errorf("expected status Imported, got %q", updated.Status)
 	}
-	// Relocate moves the whole contentPath directory (preserving its
-	// basename) into the root folder, the same generic behavior it already
-	// has for a directory-shaped Rename source — so the file lands at
-	// <root>/<download-dir-name>/movie.mkv, not directly at <root>/movie.mkv.
-	wantPath := filepath.Join(moviesRoot, filepath.Base(downloadDir), "movie.mkv")
+	// RelocateMovie organizes the video file into a naming-preset folder:
+	// <root>/<Title [tmdbid-N]>/<Title [tmdbid-N]>.ext (Jellyfin default,
+	// year omitted because TMDB is unavailable in unit tests).
+	wantPath := filepath.Join(moviesRoot, "Some Movie [tmdbid-42]", "Some Movie [tmdbid-42].mkv")
 	if _, err := os.Stat(wantPath); err != nil {
-		t.Errorf("expected the file to have been relocated into the root folder: %v", err)
+		t.Errorf("expected the file to have been organized into the library: %v", err)
 	}
 	item, err := libStore.GetByTMDBID(ctx, mode.Movies, 42)
 	if err != nil {
@@ -500,11 +499,9 @@ func TestCheckImportHandler_TorrentCompleted_PerformsImport(t *testing.T) {
 }
 
 // TestCheckImportHandler_MoviesCompleted_NotifiesJellyfin is Slice 5 end to
-// end: a completed grab-import's Relocate lands the file, and
-// sess.NotifyPlayers fires exactly one Created PathChange for the resolved
-// video file — NOT movedPath itself, since Relocate here moves the whole
-// downloadDir (a directory), the same "actual file, not the wrapping
-// directory" discipline as rename.go's row 1.
+// end: a completed grab-import's RelocateMovie lands the file at the naming-
+// preset path, and sess.NotifyPlayers fires a Deleted PathChange for the
+// source path and a Created PathChange for the organized library path.
 func TestCheckImportHandler_MoviesCompleted_NotifiesJellyfin(t *testing.T) {
 	dir := t.TempDir()
 	downloadDir := filepath.Join(dir, "downloads", "Some.Movie.2023.1080p.WEB-DL.x264-GROUP")
@@ -557,8 +554,16 @@ func TestCheckImportHandler_MoviesCompleted_NotifiesJellyfin(t *testing.T) {
 		t.Fatalf("expected exactly one notify call to Jellyfin, got %d", jf.CallCount())
 	}
 	batch := jf.Batches()[0]
-	if len(batch) != 1 || batch[0].Path != item.FilePath || batch[0].UpdateType != "Created" {
-		t.Errorf("expected a single Created PathChange for the resolved video file %q, got %+v", item.FilePath, batch)
+	// RelocateMovie emits a Deleted (source) + Created (organized path) pair.
+	// The batch must contain a Created entry for the library path.
+	var createdPath string
+	for _, ch := range batch {
+		if ch.UpdateType == "Created" {
+			createdPath = ch.Path
+		}
+	}
+	if createdPath != item.FilePath {
+		t.Errorf("expected a Created PathChange for the organized library file %q, got batch=%+v", item.FilePath, batch)
 	}
 }
 

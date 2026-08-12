@@ -396,7 +396,7 @@ func applyByWorkflow(ctx context.Context, settingsStore *settings.Store, propSto
 			// before the error check so a post-move UpsertScene failure still
 			// notifies Stash of what physically moved (partial-success rule,
 			// same as the Movies/Series library path).
-			sceneID, fingerprintSubmitted, changes, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p, string(autoGrabTier(ctx, settingsStore, p.Mode)))
+			sceneID, fingerprintSubmitted, changes, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p, string(autoGrabTier(ctx, settingsStore, p.Mode)), prober)
 			if err != nil {
 				return changes, err
 			}

@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/stashbox"
@@ -73,19 +76,19 @@ func TestScanLibraryAdult_RequiresRootFolderPath(t *testing.T) {
 	}
 }
 
-// TestScanLibraryAdult_SkipsAlreadyTrackedScene is the key improvement the
-// library-owned (box, scene_id) key unlocks: a newly-found file that
-// identifies to a scene already tracked in library_scenes is demoted to
-// Unmatched (pre-Apply dedup) rather than being re-proposed — the Whisparr
-// path couldn't do this.
-func TestScanLibraryAdult_SkipsAlreadyTrackedScene(t *testing.T) {
+// TestScanLibraryAdult_AlreadyTrackedIsPendingAlternate is the B3 regression test.
+// A newly-found file that identifies to an already-tracked scene must now surface as
+// Pending with an "alternate:" reason (not Unmatched "leaving in place for manual review").
+// The proposal still carries the file's own PHash so applyAdultAlternate can build
+// both filenames correctly.
+func TestScanLibraryAdult_AlreadyTrackedIsPendingAlternate(t *testing.T) {
 	root := t.TempDir()
 	scenePath := writeSceneFile(t, root, "new-copy.mp4")
 
-	hasher := &fakeHasher{hashes: map[string]string{scenePath: "hash1"}}
+	hasher := &fakeHasher{hashes: map[string]string{scenePath: "newhash"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
 	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
-		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
+		"newhash": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
 	libStore := newTestLibraryStore(t)
@@ -94,6 +97,7 @@ func TestScanLibraryAdult_SkipsAlreadyTrackedScene(t *testing.T) {
 	// new copy — it's the identity, not the path, that makes it a duplicate).
 	if _, err := libStore.UpsertScene(context.Background(), library.Scene{
 		Box: "stashdb", SceneID: "box-scene-1", Title: "Cascade Scene",
+		Studio: "Best Studio", Date: "2022-01-01",
 		FilePath: "/elsewhere/original.mp4", RootFolderPath: "/elsewhere",
 	}); err != nil {
 		t.Fatalf("seeding tracked scene: %v", err)
@@ -103,11 +107,26 @@ func TestScanLibraryAdult_SkipsAlreadyTrackedScene(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || got[0].Status != proposals.Unmatched {
-		t.Fatalf("expected the already-tracked scene to surface as unmatched rather than re-proposed, got %+v", got)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
 	}
-	if got[0].ForeignID != "" {
-		t.Errorf("expected no ForeignID on a dedup-skipped proposal, got %q", got[0].ForeignID)
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Errorf("expected Pending (alternate), got %q", p.Status)
+	}
+	if !strings.HasPrefix(p.Reason, "alternate:") {
+		t.Errorf("expected reason to start with 'alternate:', got %q", p.Reason)
+	}
+	// Title/Studio/Date come from the tracked row, not the identify result.
+	if p.Title != "Cascade Scene" || p.Studio != "Best Studio" || p.Date != "2022-01-01" {
+		t.Errorf("expected identity from the tracked row, got title=%q studio=%q date=%q", p.Title, p.Studio, p.Date)
+	}
+	// The proposal's own PHash must be the file's hash (for the alternate filename).
+	if p.PHash != "newhash" {
+		t.Errorf("expected PHash from the file's hash, got %q", p.PHash)
+	}
+	if p.GiveBackBox != "stashdb" || p.GiveBackSceneID != "box-scene-1" {
+		t.Errorf("expected GiveBack from the tracked row, got box=%q scene=%q", p.GiveBackBox, p.GiveBackSceneID)
 	}
 }
 
@@ -148,7 +167,7 @@ func TestApplyLibraryAdult_RelocatesAndRecordsScene(t *testing.T) {
 		SourcePath: sourcePath, RootFolderPath: root,
 	}
 
-	sceneID, _, changes, err := ApplyLibraryAdult(context.Background(), sess, libStore, p, "high")
+	sceneID, _, changes, err := ApplyLibraryAdult(context.Background(), sess, libStore, p, "high", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +216,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{})
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {
-		if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, proposals.Proposal{Status: status}, ""); err == nil {
+		if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, proposals.Proposal{Status: status}, "", nil); err == nil {
 			t.Errorf("expected ApplyLibraryAdult to refuse a %q proposal", status)
 		}
 	}
@@ -206,7 +225,7 @@ func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 func TestApplyLibraryAdult_RefusesProposalWithoutSceneIdentifier(t *testing.T) {
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{})
 	p := proposals.Proposal{ID: 1, Status: proposals.Pending, Title: "No Identity", SourcePath: "/tmp/x.mp4", RootFolderPath: "/tmp"}
-	if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p, ""); err == nil {
+	if _, _, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p, "", nil); err == nil {
 		t.Fatal("expected ApplyLibraryAdult to refuse a proposal with no (box, scene_id) identity")
 	}
 }
@@ -227,7 +246,7 @@ func TestApplyLibraryAdult_FiresFingerprintGiveBack(t *testing.T) {
 		SourcePath: sourcePath, RootFolderPath: root,
 	}
 
-	_, submitted, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p, "")
+	_, submitted, _, err := ApplyLibraryAdult(context.Background(), sess, newTestLibraryStore(t), p, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,7 +282,7 @@ func TestScanLibraryAdult_ThenApply_RoundTrip(t *testing.T) {
 		t.Fatalf("expected one Pending proposal from the scan, got %+v", got)
 	}
 
-	sceneID, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, got[0], "")
+	sceneID, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, got[0], "", nil)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -287,3 +306,177 @@ func TestScanLibraryAdult_ThenApply_RoundTrip(t *testing.T) {
 		t.Fatalf("expected the applied scene to not be re-proposed, got %+v", again)
 	}
 }
+
+// TestApplyLibraryAdult_AlternatePromoteAndLose tests the C6 fold gate:
+// a second file for an already-tracked scene goes through applyAdultAlternate.
+// Promote branch: orphan has higher quality → it becomes the new primary.
+// Lose branch: orphan has lower quality → it becomes the alternate.
+func TestApplyLibraryAdult_AlternatePromoteAndLose(t *testing.T) {
+	t.Run("promote: better orphan becomes primary", func(t *testing.T) {
+		root := t.TempDir()
+		// Primary at 1080p is already tracked.
+		primaryFile := writeSceneFile(t, root, "Best Studio - Best Scene (2022-05-05) [phash-oldhash].mkv")
+		libStore := newTestLibraryStore(t)
+		existing, err := libStore.UpsertScene(context.Background(), library.Scene{
+			Box: "stashdb", SceneID: "scene-promote-1", Title: "Best Scene",
+			Studio: "Best Studio", Date: "2022-05-05",
+			FilePath: primaryFile, RootFolderPath: root,
+			PHash: "oldhash", QualityTier: "medium",
+		})
+		if err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+
+		// Orphan at 4K — should win.
+		orphan := writeSceneFile(t, root, "raw-4k.mkv")
+		orphanProber := mapProber{
+			primaryFile: {Height: 1080, CodecName: "h264", BitRate: 5_000_000},
+			orphan:      {Height: 2160, CodecName: "hevc", BitRate: 40_000_000},
+		}
+		_ = existing
+
+		sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{})
+		p := proposals.Proposal{
+			ID: 1, Status: proposals.Pending,
+			Title: "Best Scene", Studio: "Best Studio", Date: "2022-05-05",
+			GiveBackBox: "stashdb", GiveBackSceneID: "scene-promote-1",
+			PHash: "newhash", DurationSeconds: 1800,
+			SourcePath: orphan, RootFolderPath: root,
+		}
+		sceneID, _, changes, err := ApplyLibraryAdult(context.Background(), sess, libStore, p, "medium", orphanProber)
+		if err != nil {
+			t.Fatalf("ApplyLibraryAdult: %v", err)
+		}
+		if sceneID == 0 {
+			t.Fatal("expected a nonzero scene id")
+		}
+
+		// The orphan should now be the primary (AdultFileName with newhash).
+		newPrimary := filepath.Join(root, "Best Studio - Best Scene (2022-05-05) [phash-newhash].mkv")
+		if _, statErr := os.Stat(newPrimary); statErr != nil {
+			t.Errorf("expected the orphan to be the new primary at %q: %v", newPrimary, statErr)
+		}
+		// The old primary should now have an alternate name with quality tokens.
+		found := false
+		for _, ch := range changes {
+			if ch.Kind == mode.Created && strings.Contains(filepath.Base(ch.Path), "alternate") {
+				found = true
+				break
+			}
+			if ch.Kind == mode.Created && strings.Contains(filepath.Base(ch.Path), "1080p") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected the demoted primary to have a quality-token alternate name, changes: %+v", changes)
+		}
+
+		// Two file rows must exist.
+		files, err := libStore.ListSceneFiles(context.Background(), sceneID)
+		if err != nil {
+			t.Fatalf("ListSceneFiles: %v", err)
+		}
+		if len(files) != 2 {
+			t.Errorf("expected 2 file rows, got %d: %+v", len(files), files)
+		}
+		primaryCount := 0
+		for _, f := range files {
+			if f.IsPrimary {
+				primaryCount++
+			}
+		}
+		if primaryCount != 1 {
+			t.Errorf("expected exactly 1 primary file row, got %d", primaryCount)
+		}
+	})
+
+	t.Run("lose: lower-quality orphan becomes alternate", func(t *testing.T) {
+		root := t.TempDir()
+		// Primary at 4K is already tracked.
+		primaryFile := writeSceneFile(t, root, "Best Studio - Best Scene (2022-05-05) [phash-oldhash].mkv")
+		libStore := newTestLibraryStore(t)
+		_, err := libStore.UpsertScene(context.Background(), library.Scene{
+			Box: "stashdb", SceneID: "scene-lose-1", Title: "Best Scene",
+			Studio: "Best Studio", Date: "2022-05-05",
+			FilePath: primaryFile, RootFolderPath: root,
+			PHash: "oldhash", QualityTier: "high",
+		})
+		if err != nil {
+			t.Fatalf("seeding: %v", err)
+		}
+
+		// Orphan at 1080p — loses to the 4K primary.
+		orphan := writeSceneFile(t, root, "raw-1080p.mkv")
+		orphanProber := mapProber{
+			primaryFile: {Height: 2160, CodecName: "hevc", BitRate: 40_000_000},
+			orphan:      {Height: 1080, CodecName: "h264", BitRate: 8_000_000},
+		}
+
+		sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{})
+		p := proposals.Proposal{
+			ID: 2, Status: proposals.Pending,
+			Title: "Best Scene", Studio: "Best Studio", Date: "2022-05-05",
+			GiveBackBox: "stashdb", GiveBackSceneID: "scene-lose-1",
+			PHash: "lowhash", DurationSeconds: 900,
+			SourcePath: orphan, RootFolderPath: root,
+		}
+		sceneID, _, _, err := ApplyLibraryAdult(context.Background(), sess, libStore, p, "high", orphanProber)
+		if err != nil {
+			t.Fatalf("ApplyLibraryAdult: %v", err)
+		}
+
+		// Primary file must not have moved.
+		if _, statErr := os.Stat(primaryFile); statErr != nil {
+			t.Errorf("expected the primary file to remain at %q: %v", primaryFile, statErr)
+		}
+
+		// Two file rows: one primary, one non-primary.
+		files, err := libStore.ListSceneFiles(context.Background(), sceneID)
+		if err != nil {
+			t.Fatalf("ListSceneFiles: %v", err)
+		}
+		if len(files) != 2 {
+			t.Fatalf("expected 2 file rows, got %d: %+v", len(files), files)
+		}
+		primaryRows := 0
+		for _, f := range files {
+			if f.IsPrimary {
+				primaryRows++
+				if f.FilePath != primaryFile {
+					t.Errorf("expected primary row to point at original file %q, got %q", primaryFile, f.FilePath)
+				}
+			}
+		}
+		if primaryRows != 1 {
+			t.Errorf("expected exactly 1 primary row, got %d", primaryRows)
+		}
+	})
+}
+
+// TestClassifyAdultMatch_WebIdentifiedKeepsTitle is the B4 regression test:
+// a web-identified-only result (no scene ID) must return the result's Title,
+// and the reason must contain "web-identified" for tmdb_session.go's substring check.
+func TestClassifyAdultMatch_WebIdentifiedKeepsTitle(t *testing.T) {
+	res := &identify.MatchResult{
+		Source: "web_search", Box: "", SceneID: "",
+		Title: "Web Only Scene", Studio: "Hot Studio", Type: "scene",
+	}
+	status, reason, title, foreignID, _ := classifyAdultMatch(res, nil)
+
+	if status != proposals.Unmatched {
+		t.Errorf("expected Unmatched, got %q", status)
+	}
+	if title != "Web Only Scene" {
+		t.Errorf("expected title %q, got %q", "Web Only Scene", title)
+	}
+	if foreignID != "" {
+		t.Errorf("expected empty foreignID, got %q", foreignID)
+	}
+	if !strings.Contains(reason, "web-identified") {
+		t.Errorf("expected reason to contain 'web-identified' (for tmdb_session.go:106), got %q", reason)
+	}
+}
+
+// Prevent unused import errors if mediainfo is not used elsewhere in this file.
+var _ *mediainfo.Probe

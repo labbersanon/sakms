@@ -78,6 +78,18 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 	if err := row.Scan(&scene.ID, &scene.CreatedAt, &scene.UpdatedAt); err != nil {
 		return Scene{}, fmt.Errorf("upserting scene %q: %w", scene.Title, err)
 	}
+	// Claude 2026-08-12: sync the primary library_scene_files row after every upsert.
+	// Reason: deep-interview-adult-rename-review-alts — Adult gains alternate-version
+	//   support (library_scene_files, 0010). Mirrors UpsertEpisode's SyncPrimaryEpisodeFile
+	//   call so every existing Adult write path (ApplyLibraryAdult, OrganizeImportedAdult,
+	//   Dedup Apply, cross-mode move) maintains a correct primary file row for free, with
+	//   no call-site changes.
+	// Troubleshooting: alternate fold logic found no primary file row because Apply
+	//   wrote only library_scenes without a corresponding library_scene_files primary entry.
+	// Review if: UpsertScene is split into a catalog-only and a file-bearing variant.
+	if err := s.SyncPrimarySceneFile(ctx, scene); err != nil {
+		return Scene{}, fmt.Errorf("syncing primary file for scene %q: %w", scene.Title, err)
+	}
 	return scene, nil
 }
 
@@ -165,6 +177,33 @@ func (s *Store) DeleteSceneTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM library_scenes WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("deleting scene %d: %w", id, err)
+	}
+	return nil
+}
+
+// UpgradeSceneIdentity rewrites the (box, scene_id) key and display fields of
+// an existing local scene row when the auto-upgrade pass finds a catalog match
+// for it. It is keyed on id (the stable row primary key), NOT on the old
+// (box, scene_id), so the row's tags (library_scene_tags.scene_id), its
+// library_scene_files rows, and any undo-archive touched_rows_snapshot entries
+// pointing at this id all survive the rename. Updating a non-existent id is
+// not an error, matching DeleteScene's convention.
+//
+// Claude 2026-08-12: added for Phase D5 — adult-rename-review-alts.
+// Reason: local phash-backed scenes gain a permanent catalog identity when
+//   UpgradeLocalAdultScenes finds a fingerprint match. A delete+reinsert would
+//   silently orphan tags, file rows, and undo references; a targeted UPDATE
+//   keyed on id preserves them all.
+// Review if: library_scenes stops having a stable id across identity changes.
+func (s *Store) UpgradeSceneIdentity(ctx context.Context, id int64, box, sceneID, title, studio, date string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE library_scenes
+		SET box = ?, scene_id = ?, title = ?, studio = ?, date = ?,
+		    updated_at = sakms_now()
+		WHERE id = ?
+	`, box, sceneID, title, studio, date, id)
+	if err != nil {
+		return fmt.Errorf("upgrading scene identity for row %d: %w", id, err)
 	}
 	return nil
 }

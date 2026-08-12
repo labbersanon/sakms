@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/labbersanon/sakms/internal/connections"
@@ -134,6 +135,18 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, sc
 			if rpErr != nil && !errors.Is(rpErr, settings.ErrNotFound) {
 				http.Error(w, rpErr.Error(), http.StatusInternalServerError)
 				return
+			}
+			// Claude 2026-08-12: upgrade local scenes before scanning (D6).
+			// Reason: deep-interview-adult-rename-review-alts — UpgradeLocalAdultScenes
+			//   silently upgrades any local (box="local") scenes whose phash now resolves
+			//   to a catalog identity. Must run before ScanLibraryAdult so the upgraded
+			//   files appear in the known map and are not re-proposed. Soft-fail: errors
+			//   are logged and swallowed; the Scan still runs.
+			// Review if: UpgradeLocalAdultScenes is folded into ScanLibraryAdult.
+			if upgradeChanges, upgradeErr := rename.UpgradeLocalAdultScenes(ctx, sess, libStore, prober); upgradeErr != nil {
+				log.Printf("rename scan: upgrade local adult scenes: %v", upgradeErr)
+			} else if len(upgradeChanges) > 0 {
+				sess.NotifyPlayers(ctx, upgradeChanges)
 			}
 			found, err = rename.ScanLibraryAdult(ctx, sess, libStore, videoHasher, prober, rootPath)
 		}

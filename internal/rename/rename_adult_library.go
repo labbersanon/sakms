@@ -43,15 +43,29 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 		return nil, fmt.Errorf("no Adult library root folder configured yet — add one in Settings first")
 	}
 
-	scenes, err := libStore.ListScenes(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("loading library scenes: %w", err)
-	}
-	known := make(map[string]bool, len(scenes))
-	for _, sc := range scenes {
-		// Marking just the file path is enough — ScanRootFolder's recursive
-		// walk decides atomicity dynamically from known, same as Movies/Series.
-		known[sc.FilePath] = true
+	// Claude 2026-08-12: use AllScenePaths instead of ListScenes for the known map.
+	// Reason: deep-interview-adult-rename-review-alts B1 — library_scene_files
+	//   holds non-primary (alternate) paths that ListScenes never returns, so a
+	//   folded alternate was re-discovered as an orphan on the next Scan. Mirrors
+	//   ScanLibrary's AllFilePaths feed (rename.go:175-186) and ScanLibrarySeries'
+	//   AllEpisodeFilePaths feed (rename.go:701-712), including the soft-fail-on-error
+	//   style: if AllScenePaths fails, fall back to ListScenes so Scan still runs.
+	// Troubleshooting: after an alternate fold, the demoted file re-appeared as a
+	//   Rename proposal on the next Scan.
+	// Review if: AllScenePaths stops covering library_scene_files.
+	known := map[string]bool{}
+	if paths, err := libStore.AllScenePaths(ctx); err == nil {
+		for _, p := range paths {
+			known[p] = true
+		}
+	} else {
+		scenes, listErr := libStore.ListScenes(ctx)
+		if listErr != nil {
+			return nil, fmt.Errorf("loading library scenes: %w", listErr)
+		}
+		for _, sc := range scenes {
+			known[sc.FilePath] = true
+		}
 	}
 
 	entries, err := library.ScanRootFolder(rootFolderPath, known)
@@ -126,26 +140,53 @@ func buildAdultLibraryProposal(
 	// on the RAW Box/SceneID, never WhisparrForeignID(), which collapses
 	// stashdb/fansdb to the same shape and tpdb-prefixes — the library table is
 	// keyed on the raw pair for exactly that reason.
+	//
+	// Claude 2026-08-12: was demote-to-Unmatched; now becomes Pending alternate.
+	// Reason: deep-interview-adult-rename-review-alts B3 — a second copy of a
+	//   tracked scene should fold as primary-or-alternate by quality, not sit
+	//   forever as an Unmatched manual-review row. acceptDuplicatePendingScene
+	//   copies identity from the tracked row (the authoritative source) so
+	//   applyAdultAlternate can build correct filenames for both the incumbent
+	//   and the orphan. The proposal must NOT return early after the duplicate
+	//   check — it must fall through to the phash/duration capture below so the
+	//   alternate has its own hash for its filename. identitySet guards the
+	//   second assignment block so it doesn't overwrite what acceptDuplicatePendingScene set.
+	// Troubleshooting: was: p.Status=Unmatched, "leaving in place for manual review".
+	// Review if: the alternate fold gate in ApplyLibraryAdult is removed.
+	identitySet := false
 	if status == proposals.Pending {
-		if existing, err := libStore.GetScene(ctx, id.match.Box, id.match.SceneID); err == nil {
+		existing, err := libStore.GetScene(ctx, id.match.Box, id.match.SceneID)
+		switch {
+		case err == nil:
+			// acceptDuplicatePendingScene overwrites Title/Studio/Date/GiveBack*
+			// from the tracked row, which is authoritative. Set the base fields
+			// first (ForeignID/ItemType come from the identify result, not the row).
+			p.ForeignID, p.ItemType = foreignID, itemType
+			if id.match != nil {
+				p.GiveBackBox, p.GiveBackSceneID = id.match.Box, id.match.SceneID
+			}
+			acceptDuplicatePendingScene(&p, existing)
+			identitySet = true
+			// Fall through to phash/duration capture below — do NOT return.
+		case !errors.Is(err, library.ErrNotFound):
 			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("already tracked in the library as %q — leaving in place for manual review", existing.Title)
-			return p
-		} else if !errors.Is(err, library.ErrNotFound) {
-			p.Status = proposals.Unmatched
-			p.Reason = fmt.Sprintf("checking whether %q is already tracked: %v", title, err)
+			p.Reason = fmt.Sprintf("could not check whether %q is already tracked: %v", title, err)
 			return p
 		}
 	}
 
-	p.Status, p.Reason, p.Title, p.ForeignID, p.ItemType = status, reason, title, foreignID, itemType
+	if !identitySet {
+		p.Status, p.Reason, p.Title, p.ForeignID, p.ItemType = status, reason, title, foreignID, itemType
+	}
 	if id.match != nil {
-		// Captured regardless of match outcome: an Unmatched (web-identified-
-		// only) proposal still needs Studio/Date for SubmitDraft's give-back.
-		p.Studio, p.Date = id.match.Studio, id.match.Date
-		// GiveBackBox/GiveBackSceneID are the raw Box/SceneID, kept separate
-		// from ForeignID for the same reason the library key is (above).
-		p.GiveBackBox, p.GiveBackSceneID = id.match.Box, id.match.SceneID
+		if !identitySet {
+			// Captured regardless of match outcome: an Unmatched (web-identified-
+			// only) proposal still needs Studio/Date for SubmitDraft's give-back.
+			p.Studio, p.Date = id.match.Studio, id.match.Date
+			// GiveBackBox/GiveBackSceneID are the raw Box/SceneID, kept separate
+			// from ForeignID for the same reason the library key is (above).
+			p.GiveBackBox, p.GiveBackSceneID = id.match.Box, id.match.SceneID
+		}
 	}
 	if id.hashed {
 		p.PHash = id.phash
@@ -186,7 +227,18 @@ func buildAdultLibraryProposal(
 // at import. The only thing that would close the bare-import window is a
 // schema column on grabs existing solely for it, which is exactly the
 // premature abstraction CLAUDE.md bans.
-func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, p proposals.Proposal, tier string) (sceneID int64, fingerprintSubmitted bool, changes []mode.PathChange, err error) {
+// Claude 2026-08-12: added prober parameter; added alternate-fold gate.
+// Reason: deep-interview-adult-rename-review-alts C6 — ApplyLibraryAdult now has
+//   a promote/demote branch (applyAdultAlternate). prober is required for quality
+//   ranking; the fold gate fires when the target (box, scene_id) is already tracked
+//   with a live file. viaAlternateFold is promoted, NEVER true — undo_apply.go:190-193
+//   short-circuits the file move on that flag and blanket-setting it would make
+//   every lose/tie Adult Apply un-undoable. The stale Claude block below
+//   ("viaAlternateFold is ALWAYS false for Adult — no promote/demote branch") has
+//   been met (Review if: ApplyLibraryAdult gains an alternate/promote branch) and
+//   is removed and replaced with this one.
+// Review if: the alternate fold is removed or quality ranking moves off prober.
+func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, p proposals.Proposal, tier string, prober Prober) (sceneID int64, fingerprintSubmitted bool, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
 		return 0, false, nil, fmt.Errorf("proposal %d is %q, not pending — nothing to apply", p.ID, p.Status)
 	}
@@ -219,6 +271,23 @@ func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *librar
 	existingScene, sceneErr := libStore.GetScene(ctx, p.GiveBackBox, p.GiveBackSceneID)
 	if sceneErr != nil {
 		existingScene = nil
+	}
+
+	// Alternate fold gate: if the scene is already tracked with a live file,
+	// route into applyAdultAlternate instead of the simple path.
+	// fileExists reuses series_alternates.go:324 — same package, not duplicated.
+	// A stale row pointing at a deleted file is not an occupied slot.
+	if existingScene != nil && existingScene.FilePath != "" && fileExists(existingScene.FilePath) {
+		altSceneID, altChanges, promoted, altErr := applyAdultAlternate(ctx, libStore, existingScene, p, videoPath, tier, prober)
+		if altErr != nil {
+			return altSceneID, false, altChanges, altErr
+		}
+		submitted := submitFingerprintGiveBack(ctx, sess, p)
+		landed := lastCreatedPath(altChanges, videoPath)
+		recordUndoArchive(ctx, mode.Adult, p, videoPath,
+			sceneTouchedRows(existingScene, altSceneID),
+			landed, library.FileSize(landed), promoted, submitted)
+		return altSceneID, submitted, altChanges, nil
 	}
 
 	destPath, err := RelocateAdultScene(videoPath, p.RootFolderPath, p.Studio, p.Title, p.Date, p.PHash)
@@ -258,21 +327,14 @@ func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *librar
 	}
 
 	submitted := submitFingerprintGiveBack(ctx, sess, p)
-	// Claude 2026-08-10: archive this Apply so it can be undone.
-	// Reason: deep-interview-rename-undo — viaAlternateFold is ALWAYS false for
-	//   Adult (no promote/demote branch exists here at all), so undo always
-	//   evaluates the ordinary size-match gate. `submitted` is threaded in
-	//   because it is otherwise unrecoverable at undo time: it is persisted onto
-	//   the PROPOSAL via MarkFingerprintSubmitted, and this entry's proposal
-	//   snapshot is the PRE-Apply row, where it is empty by definition — so
-	//   reading the live proposal later cannot distinguish "this Apply
-	//   submitted" from "a later manual retry did". Undo reports it as "cannot
-	//   be retracted"; it never makes an outbound call of its own.
-	// Troubleshooting: an undone Adult Apply failed to warn that a community
-	//   give-back had fired — `submitted` was computed after this call, or the
-	//   flag was read back off the proposal instead of the archive.
-	// Review if: ApplyLibraryAdult gains an alternate/promote branch, or
-	//   fingerprint submission moves off the proposal row.
+	// Claude 2026-08-12: simple path — viaAlternateFold is false because no
+	//   promote/demote occurred here (the fold gate above handled that case).
+	//   `submitted` is threaded in because it is otherwise unrecoverable at undo
+	//   time: it is persisted onto the PROPOSAL via MarkFingerprintSubmitted, and
+	//   this entry's proposal snapshot is the PRE-Apply row, where it is empty by
+	//   definition — so reading the live proposal later cannot distinguish "this
+	//   Apply submitted" from "a later manual retry did".
+	// Review if: fingerprint submission moves off the proposal row.
 	recordUndoArchive(ctx, mode.Adult, p, videoPath,
 		sceneTouchedRows(existingScene, scene.ID), destPath, fileSize, false, submitted)
 	return scene.ID, submitted, changes, nil

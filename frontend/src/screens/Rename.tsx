@@ -24,13 +24,16 @@ import type { Mode } from "../api/discover";
 import type { ApplyBatchResponse, ApplyBatchResultItem } from "@dto";
 import { ApiError } from "../api/client";
 import {
+  type AdultReviewConfirmRequest,
   type Proposal,
   type RecentlyAppliedEntry,
   type UndoResult,
   applyBatchStreaming,
   applyProposal,
+  confirmAdultReview,
   deleteBatch,
   dismissProposal,
+  fetchAdultReview,
   fetchProposals,
   fetchRecentlyApplied,
   moveProposalMode,
@@ -69,6 +72,7 @@ import {
 
 type RowActionId =
   | "rename"
+  | "review"
   | "repick"
   | "dismiss"
   | "delete"
@@ -88,6 +92,17 @@ type RowActionId =
 // Context: .omc/plans/autopilot-impl.md §3.2.
 const BASE_ROW_ACTIONS: { id: RowActionId; label: string }[] = [
   { id: "rename", label: "Rename" },
+  // Claude 2026-08-12: "Review" is second — after Rename, before Search.
+  // Reason: Review is the constructive path for a web-identified Adult row with
+  //   no catalog scene id. Positioning matters: it must not sit adjacent to the
+  //   destructive Delete entry (same reasoning as the "Delete file" comment
+  //   below). Gating is structural (isAdultWebIdentified), not status-based, so
+  //   rowActionEnabled always returns false for it — the RowActions component's
+  //   local `enabled` function consults isAdultWebIdentified directly.
+  // Review if: Review becomes batchable (it is currently excluded from
+  //   planActionForRow and must never be auto-selected as the default).
+  // Context: autopilot-impl-adult-rename-review-alts.md §6 F1.
+  { id: "review", label: "Review" },
   { id: "repick", label: "Search" },
   { id: "dismiss", label: "Dismiss" },
   { id: "delete", label: "Delete file" },
@@ -111,6 +126,14 @@ function rowActionEnabled(
   switch (id) {
     case "rename":
       return status === "pending";
+    case "review":
+      // Structural gating is done by isAdultWebIdentified (needs the whole
+      // proposal and mode, not just status). rowActionEnabled always returns
+      // false here so the selection-seeding effect never auto-selects Review
+      // and the dropdown's generic `enabled()` call disables it. The
+      // RowActions component's local `enabled` function overrides this for
+      // the "review" id specifically, consulting isAdultWebIdentified.
+      return false;
     case "repick":
       return titleMode && (status === "pending" || status === "unmatched");
     case "dismiss":
@@ -141,6 +164,27 @@ function rowActionEnabled(
   }
 }
 
+// Claude 2026-08-12: structural predicate for the Review action gate.
+// Reason: Review is Adult-only, unmatched-only, requires a web-identified title,
+//   and must not fire for a row that already has a catalog scene id. This cannot
+//   be expressed in rowActionEnabled's (id, status, titleMode) signature without
+//   widening it to take the full proposal (8+ call sites). A sibling predicate
+//   that is consulted in the three places that build/validate the dropdown is the
+//   lowest-footprint correct approach.
+// Troubleshooting: Review appearing for a pending row, or for an unmatched row
+//   with no title, or for a row that already has a giveBackSceneId.
+// Review if: the predicate gains a fourth condition — update the test matrix in
+//   Rename.review.test.tsx and the inline table in the plan §6 F2.
+// Context: autopilot-impl-adult-rename-review-alts.md §6 F2.
+export function isAdultWebIdentified(p: Proposal, mode: Mode): boolean {
+  return (
+    mode === "adult" &&
+    p.status === "unmatched" &&
+    !!p.title &&
+    !p.giveBackSceneId
+  );
+}
+
 /** Match found → Rename is auto-selected. */
 function defaultRowAction(
   status: string,
@@ -166,6 +210,10 @@ export function planActionForRow(
 ): "apply" | "dismiss" | "delete" | null {
   const action =
     dropdown || defaultRowAction(p.status, titleMode);
+  // Review is per-row and non-batchable by design (same as repick/move:*): it
+  // opens a modal rather than committing, and Apply-All must never silently skip
+  // or batch it. Return null so openApplyAll excludes it from the plan.
+  if (action === "review") return null;
   if (action === "rename" && rowActionEnabled("rename", p.status, titleMode)) {
     return "apply";
   }
@@ -222,8 +270,13 @@ const RowActions: Component<{
   disabled?: boolean;
 }> = (props) => {
   const actions = () => rowActions(props.mode);
+  // "review" is structurally gated by isAdultWebIdentified — rowActionEnabled
+  // always returns false for it (see its "review" case above). Override here
+  // so the dropdown option is correctly enabled/disabled for the specific row.
   const enabled = (id: RowActionId) =>
-    rowActionEnabled(id, props.proposal.status, props.titleMode);
+    id === "review"
+      ? isAdultWebIdentified(props.proposal, props.mode)
+      : rowActionEnabled(id, props.proposal.status, props.titleMode);
   const hasAny = () => actions().some((a) => enabled(a.id));
   const selectedOk = () => {
     const id = props.selected;
@@ -352,7 +405,7 @@ const ApplyAllConfirm: Component<{
         </h3>
         <Muted class="mt-1">
           Runs each row’s dropdown choice (Rename is selected when a match is
-          found; searching is skipped — needs a manual pick).
+          found; searching and Review are skipped — each needs a manual pick).
         </Muted>
         <Show when={props.plan.some((x) => x.action === "delete")}>
           <p class="mt-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
@@ -536,6 +589,197 @@ const RecentlyAppliedSection: Component<{
   </div>
 );
 
+// ReviewDialog — Adult Review modal.
+//
+// Claude 2026-08-12: modal, NOT SearchTakeover.
+// Reason: SearchTakeover is a full-page takeover built around a catalog
+//   search-and-pick flow with scroll-save/restore plumbing; Review is a
+//   two-field confirm with no search results list. Reusing it would drag in
+//   openTakeover, the scroll-restore effect, and the TakeoverPick discriminated
+//   union for no benefit.
+// Troubleshooting: dialog not focused / scroll position lost — Review is an
+//   overlay, not a takeover; the list stays mounted underneath it.
+// Context: autopilot-impl-adult-rename-review-alts.md §6 F4.
+const ReviewDialog: Component<{
+  proposal: Proposal;
+  mode: Mode;
+  onDone: () => void;
+  onCancel: () => void;
+}> = (props) => {
+  const p = props.proposal;
+  const [preview, { }] = createResource(
+    () => ({ mode: props.mode, id: p.id }),
+    ({ mode, id }) => fetchAdultReview(mode, id),
+  );
+
+  const [fileName, setFileName] = createSignal("");
+  const [confirming, setConfirming] = createSignal(false);
+  const [confirmError, setConfirmError] = createSignal("");
+  // Claude 2026-08-12: seed proposed name once; do not re-seed from !fileName().
+  // Reason: clearing the input made fileName() empty, so the effect snapped the
+  //   field back to proposedName and blocked intentional empties / edits.
+  // Troubleshooting: Confirm stayed enabled after operator cleared the name.
+  // Review if: ReviewDialog remounts per open (then a flag is enough forever).
+  const [nameSeeded, setNameSeeded] = createSignal(false);
+
+  createEffect(() => {
+    if (nameSeeded()) return;
+    const data = preview();
+    if (!data) return;
+    setFileName(data.proposedName);
+    setNameSeeded(true);
+  });
+
+  const isCatalogMatch = () => {
+    const data = preview();
+    return !!(data?.catalogBox && data.catalogSceneId);
+  };
+
+  const canConfirm = () => {
+    if (confirming()) return false;
+    if (!preview()) return false;
+    // Can't confirm if no phash — Confirm will fail server-side anyway, and
+    // the no-phash warning already tells the operator to use Cancel.
+    if (!preview()?.phash) return false;
+    // Catalog branch: no fileName needed (it is ignored).
+    if (isCatalogMatch()) return true;
+    // Local branch: fileName must be non-empty.
+    return fileName().trim().length > 0;
+  };
+
+  const handleConfirm = () => {
+    const data = preview();
+    if (!data) return;
+    setConfirming(true);
+    setConfirmError("");
+    let body: AdultReviewConfirmRequest;
+    if (isCatalogMatch()) {
+      body = {
+        fileName: fileName(),
+        box: data.catalogBox,
+        sceneId: data.catalogSceneId,
+        title: data.catalogTitle || data.title,
+        studio: data.catalogStudio || data.studio,
+        date: data.catalogDate || data.date,
+      };
+    } else {
+      body = { fileName: fileName() };
+    }
+    void confirmAdultReview(props.mode, p.id, body)
+      .then(() => {
+        props.onDone();
+      })
+      .catch((e: Error) => {
+        setConfirmError(e.message);
+        setConfirming(false);
+      });
+  };
+
+  return (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Review ${p.sourceName}`}
+    >
+      <div class="max-h-[80vh] w-full max-w-xl overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
+        <div class="border-b border-border px-4 py-3">
+          <h3 class="text-base font-semibold text-fg">
+            Review &ldquo;{p.sourceName}&rdquo;
+          </h3>
+        </div>
+        <div class="max-h-[55vh] overflow-y-auto px-4 py-3">
+          <Show when={preview.loading}>
+            <Muted>Loading preview…</Muted>
+          </Show>
+          <Show when={preview.error}>
+            <ErrorText>
+              Could not load preview: {(preview.error as Error)?.message}
+            </ErrorText>
+          </Show>
+          <Show when={preview()}>
+            {(data) => (
+              <>
+                <div class="mb-3">
+                  <div class="mb-1 text-xs font-medium uppercase tracking-wide text-muted">
+                    Current name
+                  </div>
+                  <div class="rounded border border-border bg-bg px-2 py-1 font-mono text-sm text-fg">
+                    {p.sourceName}
+                  </div>
+                </div>
+
+                <Show when={isCatalogMatch()}>
+                  <div class="mb-3 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+                    <div class="font-medium text-fg">
+                      Catalog match found — {data().catalogTitle || data().title}
+                    </div>
+                    <div class="mt-1 text-muted">
+                      This scene was found in the catalog (
+                      {data().catalogBox}/{data().catalogSceneId}). Confirm will
+                      apply the catalog identity. The proposed name below will be
+                      ignored — the catalog name is computed automatically.
+                    </div>
+                  </div>
+                </Show>
+
+                <div class="mb-3">
+                  <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-muted">
+                    Proposed name
+                  </label>
+                  <input
+                    class="w-full rounded border border-border bg-bg px-2 py-1 font-mono text-sm text-fg disabled:opacity-50"
+                    type="text"
+                    aria-label="Proposed name"
+                    value={fileName()}
+                    disabled={isCatalogMatch()}
+                    onInput={(e) => setFileName(e.currentTarget.value)}
+                  />
+                </div>
+
+                <Show when={!data().phash}>
+                  <div class="mb-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+                    No perceptual hash available — Confirm will fail. Use Cancel
+                    and let a Scan with a hashing pass run first.
+                  </div>
+                </Show>
+
+                <Show when={data().recheckError}>
+                  <Muted class="mb-3 block">
+                    Catalog recheck: {data().recheckError}
+                  </Muted>
+                </Show>
+
+                <SourcePreviewDisclosure
+                  src={proposalVideoUrl(props.mode, p.id)}
+                  label={p.sourceName}
+                />
+              </>
+            )}
+          </Show>
+          <Show when={confirmError()}>
+            <div class="mt-2">
+              <ErrorText>{confirmError()}</ErrorText>
+            </div>
+          </Show>
+        </div>
+        <div class="flex justify-end gap-2 border-t border-border px-4 py-3">
+          <Button variant="secondary" onClick={props.onCancel}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!canConfirm()}
+            onClick={handleConfirm}
+          >
+            {confirming() ? "Confirming…" : "Confirm"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // TakeoverState replaces the two former `repickFor` / `moveFor` signals with
 // ONE discriminated value, because the two entry points now render the SAME
 // component (SearchTakeover) in the SAME slot — two independent signals could
@@ -589,6 +833,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
     recent.error ? [] : (recent() ?? []);
 
   const [takeover, setTakeover] = createSignal<TakeoverState | null>(null);
+  const [reviewFor, setReviewFor] = createSignal<Proposal | null>(null);
 
   // Claude 2026-08-08: scroll save/restore around the full-page takeover.
   // Reason: the takeover removes the table from the DOM, which collapses the
@@ -741,6 +986,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   // transitioned unmatched -> pending; clear invalid choices.
   createEffect(() => {
     const titleMode = isTitleMode();
+    const mode = props.mode;
     const items = proposals();
     const nextStatus: Record<number, string> = {};
     setSelections((prev) => {
@@ -765,7 +1011,16 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
           continue;
         }
         const cur = next[p.id];
-        if (cur && !rowActionEnabled(cur, p.status, titleMode)) {
+        // "review" uses isAdultWebIdentified, not rowActionEnabled — check it
+        // separately so a review selection on a row that is no longer eligible
+        // (e.g. it gained a giveBackSceneId from a re-scan) gets cleared.
+        const curEnabled =
+          cur === "review"
+            ? isAdultWebIdentified(p, mode)
+            : cur
+              ? rowActionEnabled(cur, p.status, titleMode)
+              : false;
+        if (cur && !curEnabled) {
           next[p.id] = defaultRowAction(p.status, titleMode);
           changed = true;
         }
@@ -822,6 +1077,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         // A mode switch abandons the pending scroll restore outright — the
         // list it was measured against is gone. (§5.1 R4.)
         setTakeover(null);
+        setReviewFor(null);
         setSavedScrollTop(null);
         setBatchResult(null);
         setApplyAllPlan(null);
@@ -845,6 +1101,7 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
       },
       resetAfterAct: () => {
         setTakeover(null);
+        setReviewFor(null);
         setSavedScrollTop(null);
       },
       refetch: refetchBoth,
@@ -859,6 +1116,12 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
   const runRowAction = (p: Proposal, id: RowActionId) => {
     if (id === "rename") {
       void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
+    } else if (id === "review") {
+      // Opens the ReviewDialog modal. Not batchable (planActionForRow returns
+      // null for "review"), so this branch fires only from a single row's Apply
+      // button. No scroll-save/restore needed — the modal is an overlay, not a
+      // full-page takeover, so the list stays mounted underneath it.
+      setReviewFor(p);
     } else if (id === "repick") {
       openTakeover({ kind: "repick", proposal: p });
     } else if (id === "delete") {
@@ -1281,6 +1544,24 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
                 plan={plan()}
                 onCancel={() => setApplyAllPlan(null)}
                 onConfirm={confirmApplyAll}
+              />
+            )}
+          </Show>
+
+          <Show when={reviewFor()}>
+            {(rp) => (
+              <ReviewDialog
+                proposal={rp()}
+                mode={props.mode}
+                onDone={() => {
+                  batch(() => {
+                    void refetch();
+                    setReviewFor(null);
+                  });
+                  void refetchRecentQuietly();
+                  setLogKey((k) => k + 1);
+                }}
+                onCancel={() => setReviewFor(null)}
               />
             )}
           </Show>

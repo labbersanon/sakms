@@ -19,7 +19,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { Proposal, RecentlyAppliedEntry } from "@dto";
-import { Rename } from "./Rename";
+import { Rename, formatAppliedAt } from "./Rename";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -125,6 +125,28 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("formatAppliedAt", () => {
+  it("formats legacy space-separated timestamps", () => {
+    expect(formatAppliedAt("2026-08-10 09:15:00")).toBe(
+      "Aug 10, 2026, 9:15 AM",
+    );
+  });
+
+  it("formats RFC3339 nano timestamps from the API", () => {
+    const raw = "2026-08-12T02:14:09.924763727Z";
+    expect(formatAppliedAt(raw)).toBe(
+      new Date(raw).toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }),
+    );
+  });
+});
+
 describe("Rename — Recently Applied list", () => {
   it("renders one row per entry, with the applied timestamp", async () => {
     stubFetch((url) => {
@@ -140,14 +162,15 @@ describe("Rename — Recently Applied list", () => {
     render(() => <Rename />);
     // Wait on a ROW, not the static "Recently applied" heading — that heading
     // renders before the resource resolves, so keying on it races the fetch.
-    const table = (await screen.findByText("One.mkv")).closest("table")!;
-    // Two data rows plus the header row.
-    expect(within(table).getAllByRole("row")).toHaveLength(3);
-    expect(within(table).getByText("One.mkv")).toBeInTheDocument();
-    expect(within(table).getByText("Two.mkv")).toBeInTheDocument();
-    expect(within(table).getAllByText("2026-08-10 09:15:00")).toHaveLength(2);
+    const row = await screen.findByText("One.mkv");
+    const list = row.closest("ul")!;
+    expect(within(list).getByText("One.mkv")).toBeInTheDocument();
+    expect(within(list).getByText("Two.mkv")).toBeInTheDocument();
     expect(
-      within(table).getByRole("button", { name: "Undo One.mkv" }),
+      within(list).getAllByText(/Applied Aug 10, 2026, 9:15 AM/),
+    ).toHaveLength(2);
+    expect(
+      within(list).getByRole("button", { name: "Undo One.mkv" }),
     ).toBeInTheDocument();
   });
 
@@ -198,7 +221,7 @@ describe("Rename — Recently Applied list", () => {
     });
 
     render(() => <Rename />);
-    const foldedRow = (await screen.findByText("Folded.mkv")).closest("tr")!;
+    const foldedRow = (await screen.findByText("Folded.mkv")).closest("li")!;
     const caveat = within(foldedRow).getByText(/file won’t be moved back on undo/);
     expect(caveat).toBeInTheDocument();
     // Announced as a DESCRIPTION of the Undo button, not folded into its name
@@ -207,7 +230,7 @@ describe("Rename — Recently Applied list", () => {
       within(foldedRow).getByRole("button", { name: "Undo Folded.mkv" }),
     ).toHaveAttribute("aria-describedby", caveat.id);
 
-    const plainRow = screen.getByText("Plain.mkv").closest("tr")!;
+    const plainRow = screen.getByText("Plain.mkv").closest("li")!;
     expect(
       within(plainRow).queryByText(/file won’t be moved back on undo/),
     ).toBeNull();

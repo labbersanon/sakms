@@ -61,7 +61,11 @@ import {
   inputClass,
   labelClass,
 } from "../components/ui";
-import { MediaFallbackTile, MediaGridSkeleton } from "../components/media";
+import {
+  MediaCardShell,
+  MediaFallbackTile,
+  MediaGridSkeleton,
+} from "../components/media";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import {
   ADULT_MEDIA_TABS,
@@ -146,15 +150,9 @@ const PosterCard: Component<{
   });
 
   return (
-    <button
-      type="button"
-      class="flex w-full flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent"
-      classList={{
-        "border-accent": props.selected,
-        "border-transparent": !props.selected,
-      }}
-      aria-pressed={props.selected}
-      aria-label={props.item.title}
+    <MediaCardShell
+      label={props.item.title}
+      selected={props.selected}
       onClick={props.onClick}
     >
       {/* Poster area — 2:3 aspect ratio */}
@@ -211,7 +209,7 @@ const PosterCard: Component<{
           </div>
         </Show>
       </div>
-    </button>
+    </MediaCardShell>
   );
 };
 
@@ -832,7 +830,7 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
 export const LibraryMainstream: Component = () => {
   const [params] = useSearchParams();
   const initialTab: MainstreamMediaTab =
-    params.tab === "movies" || params.mode === "movies" ? "movies" : "series";
+    params.tab === "series" || params.mode === "series" ? "series" : "movies";
   // An unrecognized tier folds to "" so the <select> can never display a value
   // it isn't actually filtering by.
   const initialTier =
@@ -864,15 +862,15 @@ export const LibraryAdult: Component = () => {
       when={adultEnabled()}
       fallback={<Muted class="mt-4">Adult mode is disabled in Settings.</Muted>}
     >
+      <ScreenTabs
+        tabs={ADULT_MEDIA_TABS}
+        current={tab}
+        onSelect={(id) => setTab(id as AdultMediaTab)}
+      />
       <Show
         when={!lock.isLocked(ADULT_CONTENT_SECTION)}
         fallback={<SectionLockOverlay label={sectionLabel(ADULT_CONTENT_SECTION)} />}
       >
-        <ScreenTabs
-          tabs={ADULT_MEDIA_TABS}
-          current={tab}
-          onSelect={(id) => setTab(id as AdultMediaTab)}
-        />
         <Show when={tab() === "scenes"} fallback={<AdultMoviesPlaceholder />}>
           <LibraryView mode="adult" />
         </Show>

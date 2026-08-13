@@ -621,23 +621,31 @@ const LibraryRow: Component<{
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
 }> = (props) => {
-  const [entries] = createResource(props.reloadToken, async () => {
-    if (props.mode) {
-      const items = await fetchTrackedItems(props.mode).catch(() => [] as TrackedItem[]);
-      return items.map((item) => ({ mode: props.mode!, item }));
+  const [entries] = createResource(
+    () => [props.reloadToken(), props.mode] as const,
+    async ([, mode]) => {
+      if (mode) {
+        const items = await fetchTrackedItems(mode).catch(() => [] as TrackedItem[]);
+        return items.map((item) => ({ mode, item }));
+      }
+      const [movies, series] = await Promise.all([
+        fetchTrackedItems("movies").catch(() => [] as TrackedItem[]),
+        fetchTrackedItems("series").catch(() => [] as TrackedItem[]),
+      ]);
+      return [
+        ...movies.map((item) => ({ mode: "movies" as const, item })),
+        ...series.map((item) => ({ mode: "series" as const, item })),
+      ];
     }
-    const [movies, series] = await Promise.all([
-      fetchTrackedItems("movies").catch(() => [] as TrackedItem[]),
-      fetchTrackedItems("series").catch(() => [] as TrackedItem[]),
-    ]);
-    return [
-      ...movies.map((item) => ({ mode: "movies" as const, item })),
-      ...series.map((item) => ({ mode: "series" as const, item })),
-    ];
-  });
+  );
 
   const [visible, setVisible] = createSignal(LIBRARY_PAGE_SIZE);
-  createEffect(on(props.reloadToken, () => setVisible(LIBRARY_PAGE_SIZE)));
+  createEffect(
+    on(
+      () => [props.reloadToken(), props.mode] as const,
+      () => setVisible(LIBRARY_PAGE_SIZE),
+    ),
+  );
 
   const shown = () => (entries() ?? []).slice(0, visible());
   const hasMore = () => (entries()?.length ?? 0) > visible();
@@ -830,6 +838,11 @@ export const MainstreamDiscover: Component<{
     clearSearch();
     setFilters(f);
   };
+  const resetFilters = () =>
+    setFilters({
+      ...DEFAULT_MAINSTREAM_FILTERS,
+      contentType: props.contentType ?? DEFAULT_MAINSTREAM_FILTERS.contentType,
+    });
 
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
@@ -898,7 +911,7 @@ export const MainstreamDiscover: Component<{
   // install) matches the page's original hardcoded row sequence exactly.
   const knownKeys = () => [
     "trakt-watchlist",
-    ...MAINSTREAM_ROWS.filter((r) => !props.contentType || r.mode === props.contentType).map((r) => r.key),
+    ...MAINSTREAM_ROWS.map((r) => r.key),
     ...slidersForTab().map((s) => `slider:${s.id}`),
     ...mainstreamFeeds().map((f) => `rssfeed:${f.id}`),
     "library",
@@ -912,11 +925,21 @@ export const MainstreamDiscover: Component<{
   // combines them so RowEditor's error line doesn't need two <Show> blocks.
   const [rowActionError, setRowActionError] = createSignal("");
   const editError = () => rowOrderError() || rowActionError();
+  const keyMatchesContentType = (key: string): boolean => {
+    if (!props.contentType) return true;
+    const builtinRow = MAINSTREAM_ROWS.find((r) => r.key === key);
+    if (builtinRow) return builtinRow.mode === props.contentType;
+    if (key.startsWith("slider:")) {
+      return slidersForTab().some((s) => `slider:${s.id}` === key);
+    }
+    if (key.startsWith("rssfeed:")) {
+      return mainstreamFeeds().some((f) => `rssfeed:${f.id}` === key);
+    }
+    return true;
+  };
 
   const descriptorFor = (key: string): RowDescriptor | undefined => {
-    const builtinRow = MAINSTREAM_ROWS.find(
-      (r) => r.key === key && (!props.contentType || r.mode === props.contentType),
-    );
+    const builtinRow = MAINSTREAM_ROWS.find((r) => r.key === key);
     if (builtinRow) {
       return { key, label: builtinRow.title, kind: "structural", hidden: isHidden(key) };
     }
@@ -943,8 +966,17 @@ export const MainstreamDiscover: Component<{
 
   const rowDescriptors = (): RowDescriptor[] =>
     orderedKeys()
+      .filter(keyMatchesContentType)
       .map(descriptorFor)
       .filter((d): d is RowDescriptor => d !== undefined);
+  const persistVisibleOrder = (orderedVisible: string[]) => {
+    const visible = new Set(rowDescriptors().map((row) => row.key));
+    const pending = [...orderedVisible];
+    const next = orderedKeys().map((key) =>
+      visible.has(key) && pending.length > 0 ? pending.shift()! : key,
+    );
+    persistOrder([...next, ...pending]);
+  };
 
   const toggleRowEnabled = async (row: RowDescriptor) => {
     try {
@@ -1006,13 +1038,11 @@ export const MainstreamDiscover: Component<{
         return enabledFeeds().some((f) => `rssfeed:${f.id}` === key);
       }
       // structural rows (built-ins, Trakt, library): shown unless hidden.
-      return !isHidden(key);
+      return keyMatchesContentType(key) && !isHidden(key);
     });
 
   const renderRow = (key: string): JSX.Element => {
-    const builtinRow = MAINSTREAM_ROWS.find(
-      (r) => r.key === key && (!props.contentType || r.mode === props.contentType),
-    );
+    const builtinRow = MAINSTREAM_ROWS.find((r) => r.key === key);
     if (builtinRow) {
       return (
         <PaginatedRow
@@ -1084,7 +1114,7 @@ export const MainstreamDiscover: Component<{
             e.preventDefault();
             // A search takes over the view — reset any active filter so clearing
             // the search returns to the carousels, not into a stale filter grid.
-            setFilters(DEFAULT_MAINSTREAM_FILTERS);
+            resetFilters();
             setSubmitted(draft());
           }}
         >
@@ -1143,7 +1173,7 @@ export const MainstreamDiscover: Component<{
             <Show when={props.editMode?.()}>
               <RowEditor
                 rows={rowDescriptors()}
-                onReorder={persistOrder}
+                onReorder={persistVisibleOrder}
                 onToggleEnabled={(r) => void toggleRowEnabled(r)}
                 onToggleHidden={(r) => toggleHidden(r.key)}
                 onDelete={(r) => void deleteRow(r)}

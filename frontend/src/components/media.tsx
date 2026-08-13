@@ -1,4 +1,4 @@
-import { type Component, type JSX, For, Show } from "solid-js";
+import { type Component, type JSX, Index, Show } from "solid-js";
 
 type MediaGridSkeletonProps = {
   count?: number;
@@ -9,11 +9,17 @@ export const MediaGridSkeleton: Component<MediaGridSkeletonProps> = (props) => {
   return (
     <div
       class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
       aria-label="Loading media"
     >
-      <For each={Array.from({ length: count() })}>
+      <Index each={Array.from({ length: count() })}>
         {() => (
-          <div class="overflow-hidden rounded-lg border-2 border-transparent bg-surface">
+          <div
+            class="overflow-hidden rounded-lg border-2 border-transparent bg-surface"
+            aria-hidden="true"
+          >
             <div
               class="w-full animate-pulse bg-surface-2"
               style="aspect-ratio: 2 / 3"
@@ -24,10 +30,31 @@ export const MediaGridSkeleton: Component<MediaGridSkeletonProps> = (props) => {
             </div>
           </div>
         )}
-      </For>
+      </Index>
     </div>
   );
 };
+
+export const MediaCardShell: Component<{
+  label: string;
+  selected?: boolean;
+  onClick: () => void;
+  children: JSX.Element;
+}> = (props) => (
+  <button
+    type="button"
+    class="flex w-full flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent"
+    classList={{
+      "border-accent": !!props.selected,
+      "border-transparent": !props.selected,
+    }}
+    aria-pressed={props.selected}
+    aria-label={props.label}
+    onClick={props.onClick}
+  >
+    {props.children}
+  </button>
+);
 
 export const MediaFallbackTile: Component<{
   title: string;
@@ -40,7 +67,7 @@ export const MediaFallbackTile: Component<{
       "animate-pulse": !!props.loading,
       "bg-danger/10 text-danger/60": !!props.error,
     }}
-    aria-label={`${props.title} artwork unavailable`}
+    aria-hidden="true"
   >
     {props.title.charAt(0).toUpperCase()}
   </div>

@@ -12,6 +12,7 @@ import {
   SIDEBAR_COLLAPSED_KEY,
   createPersistedBool,
 } from "./AppShell";
+import { AdultModeContext } from "../components/ui";
 
 const NAV_LABELS = [
   "Dashboard",
@@ -139,6 +140,51 @@ describe("Sidebar", () => {
     for (const label of ORGANIZE_CHILDREN) {
       expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
     }
+  });
+
+  it("icon-collapsed Library opens a flyout with media sections", () => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
+    renderSidebar();
+    fireEvent.click(screen.getByLabelText("Library"));
+    expect(
+      screen.getByRole("menu", { name: "Library sections" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Mainstream" })).toHaveAttribute(
+      "href",
+      "/library/mainstream",
+    );
+    expect(screen.getByRole("menuitem", { name: "Adult" })).toHaveAttribute(
+      "href",
+      "/library/adult",
+    );
+  });
+
+  it("hides Adult media children when Adult mode is disabled", () => {
+    const Harness = () => {
+      const [collapsed, setCollapsed] = createPersistedBool(
+        SIDEBAR_COLLAPSED_KEY,
+        false,
+      );
+      return (
+        <AdultModeContext.Provider
+          value={{ enabled: () => false, refetch: () => {} }}
+        >
+          <Sidebar
+            collapsed={collapsed}
+            onToggle={() => setCollapsed(!collapsed())}
+          />
+        </AdultModeContext.Provider>
+      );
+    };
+    render(() => (
+      <Router root={Harness}>
+        <Route path="/" component={() => <div />} />
+        <Route path="*" component={() => <div />} />
+      </Router>
+    ));
+
+    expect(screen.getAllByText("Mainstream")).toHaveLength(2);
+    expect(screen.queryByText("Adult")).not.toBeInTheDocument();
   });
 });
 

@@ -297,9 +297,9 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
 // muted em-dash rather than "0 B / 0 items".
 //
 // Movies and Series cells drill into the Library screen's filtered list. Adult
-// cells never do — Library.tsx's LibraryMode excludes Adult by design, so a
-// link would misdirect rather than filter; they render as non-interactive text
-// carrying the reason instead. That text is dimmed with opacity (NOT text-muted:
+// cells stay non-interactive for this scaffold slice: the new Adult Library
+// route exists, but Adult Movies/catalog enrichment is not built yet and storage
+// allocation is still scene-shaped. That text is dimmed with opacity (NOT text-muted:
 // body()'s own text-fg on the size line wins the cascade over a colour class on
 // the wrapper, but opacity applies to the whole subtree and can't be overridden)
 // so the cell reads as disabled at rest, not just to assistive tech.
@@ -332,7 +332,7 @@ const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
           <span
             class="block cursor-not-allowed opacity-50"
             aria-disabled="true"
-            title="Adult isn't browsable in Library yet"
+            title="Adult storage drill-down will land with the Adult Movies/enrichment slice"
           >
             {body()}
           </span>

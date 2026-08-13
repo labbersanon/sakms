@@ -360,7 +360,7 @@ describe("Dashboard view", () => {
     expect(screen.getByText("Storage Allocation")).toBeInTheDocument();
   });
 
-  it("links Movies and Series cells into Library with mode and tier", async () => {
+  it("links Movies and Series cells into Library with tab and tier", async () => {
     const { container } = renderDashboard();
     await screen.findByText("5.0 TB");
 
@@ -369,14 +369,16 @@ describe("Dashboard view", () => {
     // string, and .href would be absolutized to http://localhost/…
     const links = [...container.querySelectorAll("a")];
     const hrefs = links.map((a) => a.getAttribute("href"));
-    expect(hrefs).toContain("/library?mode=movies&tier=lossless");
-    expect(hrefs).toContain("/library?mode=movies&tier=medium");
-    expect(hrefs).toContain("/library?mode=series&tier=high");
+    expect(hrefs).toContain("/library/mainstream?tab=movies&tier=lossless");
+    expect(hrefs).toContain("/library/mainstream?tab=movies&tier=medium");
+    expect(hrefs).toContain("/library/mainstream?tab=series&tier=high");
     // The Unknown tier is a real, linkable drill-down target, not a dead cell.
-    expect(hrefs).toContain("/library?mode=series&tier=unknown");
+    expect(hrefs).toContain("/library/mainstream?tab=series&tier=unknown");
 
     const movies = links.find(
-      (a) => a.getAttribute("href") === "/library?mode=movies&tier=lossless",
+      (a) =>
+        a.getAttribute("href") ===
+        "/library/mainstream?tab=movies&tier=lossless",
     );
     expect(movies!.textContent).toContain("5.0 TB");
     expect(movies!.textContent).toContain("12 items");
@@ -390,7 +392,7 @@ describe("Dashboard view", () => {
     expect(adultRow.textContent).toContain("Adult");
     expect(adultRow.querySelector("a")).toBeNull();
     for (const a of container.querySelectorAll("a")) {
-      expect(a.getAttribute("href")).not.toContain("mode=adult");
+      expect(a.getAttribute("href")).not.toContain("/library/adult");
     }
 
     const disabled = adultRow.querySelector(

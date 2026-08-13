@@ -54,6 +54,7 @@ import {
   SectionLockOverlay,
   type SectionLockControl,
   type ScreenTabsRegistration,
+  useAdultEnabled,
   useSectionLock,
 } from "../components/ui";
 import { fetchAdultModeEnabled } from "../api/settings";
@@ -234,7 +235,13 @@ const IconMenu: Component = () => (
   </svg>
 );
 
-type NavItem = { href: string; label: string; icon: Component; group?: MediaRoot };
+type NavItem = {
+  href: string;
+  label: string;
+  icon: Component;
+  section: string;
+  group?: MediaRoot;
+};
 
 // NAV_ITEMS is EXPORTED (it was module-private until the section PIN lock) so
 // the nav-drift test can set-compare its hrefs against LOCKABLE_TAB_SECTIONS
@@ -243,14 +250,14 @@ type NavItem = { href: string; label: string; icon: Component; group?: MediaRoot
 // note on LOCKABLE_TAB_SECTIONS for why the two lists are authored
 // independently rather than derived one from the other.
 export const NAV_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
-  { href: "/discover/mainstream", label: "Discover", icon: IconDiscover, group: "discover" },
-  { href: "/library/mainstream", label: "Library", icon: IconLibrary, group: "library" },
-  { href: "/queue", label: "Queue", icon: IconQueue },
-  { href: "/organize", label: "Organize", icon: IconRename },
-  { href: "/tag", label: "Tag", icon: IconTag },
-  { href: "/collections", label: "Collections", icon: IconCollections },
-  { href: "/settings", label: "Settings", icon: IconSettings },
+  { href: "/dashboard", label: "Dashboard", icon: IconDashboard, section: "dashboard" },
+  { href: "/discover/mainstream", label: "Discover", icon: IconDiscover, section: "discover", group: "discover" },
+  { href: "/library/mainstream", label: "Library", icon: IconLibrary, section: "library", group: "library" },
+  { href: "/queue", label: "Queue", icon: IconQueue, section: "queue" },
+  { href: "/organize", label: "Organize", icon: IconRename, section: "organize" },
+  { href: "/tag", label: "Tag", icon: IconTag, section: "tag" },
+  { href: "/collections", label: "Collections", icon: IconCollections, section: "collections" },
+  { href: "/settings", label: "Settings", icon: IconSettings, section: "settings" },
 ];
 
 // Sidebar is the presentational left nav. `collapsed` is an accessor so the
@@ -287,6 +294,11 @@ export const Sidebar: Component<{
   // added here. With no SectionLockContext Provider (a standalone Sidebar
   // test harness) isLocked is always false, so nothing changes for them.
   const lock = useSectionLock();
+  const adultEnabled = useAdultEnabled();
+  const mediaSections = () =>
+    adultEnabled()
+      ? MEDIA_SECTIONS
+      : MEDIA_SECTIONS.filter((section) => section.id !== "adult");
 
   return (
     <nav
@@ -328,7 +340,7 @@ export const Sidebar: Component<{
                     <Show when={!props.collapsed()}>
                       <span>{item.label}</span>
                     </Show>
-                    <Show when={lock.isLocked(item.href.split("/")[1] ?? "")}>
+                    <Show when={lock.isLocked(item.section)}>
                       <span
                         class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
                         title={`${item.label} is locked`}
@@ -345,6 +357,7 @@ export const Sidebar: Component<{
                     root={group()}
                     label={item.label}
                     icon={item.icon}
+                    sections={mediaSections()}
                     collapsed={props.collapsed}
                     locked={lock.isLocked(group())}
                     onCloseMobile={closeMobile}
@@ -376,6 +389,7 @@ const MediaNavGroup: Component<{
   root: MediaRoot;
   label: string;
   icon: Component;
+  sections: typeof MEDIA_SECTIONS;
   collapsed: () => boolean;
   locked: boolean;
   onCloseMobile: () => void;
@@ -495,7 +509,7 @@ const MediaNavGroup: Component<{
 
       <Show when={!props.collapsed() && groupOpen()}>
         <div class="ml-3 flex flex-col gap-0.5 border-l border-chrome-fg/15 pl-2">
-          <For each={MEDIA_SECTIONS}>
+          <For each={props.sections}>
             {(section) => (
               <A
                 href={mediaSectionHref(props.root, section.id)}
@@ -524,7 +538,7 @@ const MediaNavGroup: Component<{
           onMouseEnter={openFlyout}
           onMouseLeave={scheduleCloseFlyout}
         >
-          <For each={MEDIA_SECTIONS}>
+          <For each={props.sections}>
             {(section) => (
               <A
                 href={mediaSectionHref(props.root, section.id)}

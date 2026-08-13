@@ -16,16 +16,14 @@ import { NAV_ITEMS, sectionForPath } from "../screens/AppShell";
 import { LOCKABLE_TAB_SECTIONS } from "./sectionLock";
 
 describe("FE-1 — NAV_ITEMS / LOCKABLE_TAB_SECTIONS drift", () => {
-  it("every sidebar href maps to a lockable section id, and vice versa", () => {
-    const fromNav = NAV_ITEMS.map((i) => i.href.slice(1));
+  it("every sidebar item maps to a lockable section id, and vice versa", () => {
+    const fromNav = NAV_ITEMS.map((i) => i.section);
     expect([...fromNav].sort()).toEqual([...LOCKABLE_TAB_SECTIONS].sort());
   });
 
-  it("no sidebar href is bare '/' — slice(1) stays lossless", () => {
-    // The derivation rule the Go side documents (href minus the leading "/")
-    // only holds while every href has a non-empty tail. "/" itself IS an app
-    // route, but it lives in APP_ROUTES, not NAV_ITEMS, and is mapped to
-    // "discover" explicitly by sectionForPath.
+  it("no sidebar href is bare '/'", () => {
+    // "/" itself IS an app route, but it lives in APP_ROUTES, not NAV_ITEMS, and
+    // is mapped to "discover" explicitly by sectionForPath.
     for (const item of NAV_ITEMS) {
       expect(item.href.startsWith("/")).toBe(true);
       expect(item.href.length).toBeGreaterThan(1);
@@ -43,7 +41,7 @@ describe("sectionForPath — the route table's one special case", () => {
 
   it("maps every sidebar href to its own section", () => {
     for (const item of NAV_ITEMS) {
-      expect(sectionForPath(item.href)).toBe(item.href.slice(1));
+      expect(sectionForPath(item.href)).toBe(item.section);
     }
   });
 

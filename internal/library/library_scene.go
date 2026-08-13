@@ -167,24 +167,14 @@ func (s *Store) GetSceneByPHash(ctx context.Context, phash string) (*Scene, erro
 
 // ListScenes returns every tracked scene, ordered by title.
 func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	out, err := s.queryScenes(ctx, `
 		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class
 		FROM library_scenes ORDER BY title
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("listing scenes: %w", err)
 	}
-	defer rows.Close()
-
-	out := []Scene{}
-	for rows.Next() {
-		scene, err := scanScene(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scanning scene: %w", err)
-		}
-		out = append(out, scene)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ListScenesByAspect is ListScenes filtered by poster_aspect_class. Dedup,
@@ -192,24 +182,14 @@ func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 // aspect is the caller's problem — the HTTP layer maps it to 400 before
 // calling this.
 func (s *Store) ListScenesByAspect(ctx context.Context, aspect string) ([]Scene, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	out, err := s.queryScenes(ctx, `
 		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class
 		FROM library_scenes WHERE poster_aspect_class = ? ORDER BY title
 	`, aspect)
 	if err != nil {
 		return nil, fmt.Errorf("listing scenes by aspect %q: %w", aspect, err)
 	}
-	defer rows.Close()
-
-	out := []Scene{}
-	for rows.Next() {
-		scene, err := scanScene(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scanning scene: %w", err)
-		}
-		out = append(out, scene)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // DeleteScene permanently removes scene id and its tags. Explicit two-
@@ -269,9 +249,11 @@ func (s *Store) DeleteSceneTx(ctx context.Context, tx *sql.Tx, id int64) error {
 //
 // Claude 2026-08-12: added for Phase D5 — adult-rename-review-alts.
 // Reason: local phash-backed scenes gain a permanent catalog identity when
-//   UpgradeLocalAdultScenes finds a fingerprint match. A delete+reinsert would
-//   silently orphan tags, file rows, and undo references; a targeted UPDATE
-//   keyed on id preserves them all.
+//
+//	UpgradeLocalAdultScenes finds a fingerprint match. A delete+reinsert would
+//	silently orphan tags, file rows, and undo references; a targeted UPDATE
+//	keyed on id preserves them all.
+//
 // Review if: library_scenes stops having a stable id across identity changes.
 func (s *Store) UpgradeSceneIdentity(ctx context.Context, id int64, box, sceneID, title, studio, date string) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -364,6 +346,23 @@ func (s *Store) SceneTagVocabulary(ctx context.Context) ([]string, error) {
 			return nil, fmt.Errorf("scanning tag: %w", err)
 		}
 		out = append(out, tag)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) queryScenes(ctx context.Context, query string, args ...any) ([]Scene, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Scene{}
+	for rows.Next() {
+		scene, err := scanScene(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning scene: %w", err)
+		}
+		out = append(out, scene)
 	}
 	return out, rows.Err()
 }

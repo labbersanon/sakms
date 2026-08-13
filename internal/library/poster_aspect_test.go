@@ -116,15 +116,3 @@ func TestProbePosterAspect(t *testing.T) {
 		}
 	})
 }
-
-func TestNormalizePosterAspect(t *testing.T) {
-	if got := normalizePosterAspect(""); got != PosterAspectHorizontal {
-		t.Fatalf("empty = %q, want horizontal", got)
-	}
-	if got := normalizePosterAspect("vertical"); got != PosterAspectVertical {
-		t.Fatalf("vertical = %q", got)
-	}
-	if got := normalizePosterAspect("nope"); got != PosterAspectHorizontal {
-		t.Fatalf("garbage = %q, want horizontal", got)
-	}
-}

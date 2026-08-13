@@ -46,13 +46,14 @@ func parseHWAccels(text string) string {
 // acceleration with a transparent CPU retry on any ffmpeg failure.
 func newRunner(hwaccel string) runner {
 	return func(ctx context.Context, path string, frames int) ([][]byte, error) {
-		dur, err := ffprobeDuration(ctx, path)
+		dur, codec, err := ffprobeVideo(ctx, path)
 		if err != nil {
 			return nil, err
 		}
 		if dur <= 0 {
 			return nil, fmt.Errorf("phash: %s reports no positive duration", path)
 		}
+		selectedHWAccel := selectHWAccelForCodec(hwaccel, codec)
 
 		out := make([][]byte, frames)
 		g, gctx := errgroup.WithContext(ctx)
@@ -61,7 +62,7 @@ func newRunner(hwaccel string) runner {
 			i := i
 			t := dur * float64(i) / float64(frames+1)
 			g.Go(func() error {
-				raw, err := extractFrame(gctx, path, t, hwaccel)
+				raw, err := extractFrame(gctx, path, t, selectedHWAccel)
 				if err != nil {
 					return err
 				}
@@ -73,6 +74,25 @@ func newRunner(hwaccel string) runner {
 			return nil, err
 		}
 		return out, nil
+	}
+}
+
+// Claude 2026-08-12: route pHash hwaccel by codec instead of only ffmpeg build.
+// Reason: ffmpeg advertising "cuda" does not mean every codec/profile works;
+// AV1 pHash extraction on wade-pc repeatedly timed out under CUDA while CPU
+// extraction on the same file/timestamp succeeded.
+// Troubleshooting: Dedup scan appears hung at a title while CUDA frame extracts
+// wait for the phash timeout before CPU fallback.
+// Review if: node startup adds real per-codec decode probes and advertises them.
+func selectHWAccelForCodec(hwaccel, codec string) string {
+	if hwaccel == "" {
+		return ""
+	}
+	switch strings.ToLower(codec) {
+	case "h264", "hevc", "h265":
+		return hwaccel
+	default:
+		return ""
 	}
 }
 
@@ -89,24 +109,30 @@ func extractFrame(ctx context.Context, path string, t float64, hwaccel string) (
 	return ffmpegFrame(ctx, path, t, "")
 }
 
-// ffprobeDuration probes the video's duration in seconds via ffprobe.
-func ffprobeDuration(ctx context.Context, path string) (float64, error) {
+// ffprobeVideo probes the video's duration and primary video codec via ffprobe.
+func ffprobeVideo(ctx context.Context, path string) (duration float64, codec string, err error) {
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
-		"-show_entries", "format=duration",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name:format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1",
 		path,
 	)
 	raw, err := cmd.Output()
 	if err != nil {
-		return 0, fmt.Errorf("phash: ffprobe duration of %s: %w", path, err)
+		return 0, "", fmt.Errorf("phash: ffprobe video metadata of %s: %w", path, err)
 	}
-	trimmed := strings.TrimSpace(string(raw))
-	d, err := strconv.ParseFloat(trimmed, 64)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) < 2 {
+		return 0, "", fmt.Errorf("phash: incomplete ffprobe video metadata %q for %s", strings.TrimSpace(string(raw)), path)
+	}
+	codec = strings.TrimSpace(lines[0])
+	durationText := strings.TrimSpace(lines[len(lines)-1])
+	d, err := strconv.ParseFloat(durationText, 64)
 	if err != nil {
-		return 0, fmt.Errorf("phash: parsing duration %q of %s: %w", trimmed, path, err)
+		return 0, "", fmt.Errorf("phash: parsing duration %q of %s: %w", durationText, path, err)
 	}
-	return d, nil
+	return d, codec, nil
 }
 
 // ffmpegFrame extracts one frame at timestamp t from path as PNG bytes.

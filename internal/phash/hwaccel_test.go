@@ -29,3 +29,23 @@ func TestParseHWAccels_EmptyOutputReturnsEmpty(t *testing.T) {
 		t.Errorf("got %q, want empty string", got)
 	}
 }
+
+func TestSelectHWAccelForCodec_AllowsStableHardwareDecodeCodecs(t *testing.T) {
+	for _, codec := range []string{"h264", "hevc", "h265"} {
+		if got := selectHWAccelForCodec("cuda", codec); got != "cuda" {
+			t.Errorf("codec %q: got %q, want cuda", codec, got)
+		}
+	}
+}
+
+func TestSelectHWAccelForCodec_RoutesAV1ToCPU(t *testing.T) {
+	if got := selectHWAccelForCodec("cuda", "av1"); got != "" {
+		t.Errorf("AV1 must route CPU after CUDA timeout failures, got %q", got)
+	}
+}
+
+func TestSelectHWAccelForCodec_NoDetectedHWAccelStaysCPU(t *testing.T) {
+	if got := selectHWAccelForCodec("", "h264"); got != "" {
+		t.Errorf("no detected hwaccel should stay CPU, got %q", got)
+	}
+}

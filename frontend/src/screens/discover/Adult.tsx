@@ -55,6 +55,7 @@ import {
   fetchPerformerGenders,
   updateAdultNewestRow,
 } from "../../api/adultNewestRows";
+import { MediaCardShell } from "../../components/media";
 import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
 import {
   type GrabTarget,
@@ -221,7 +222,15 @@ const AdultCard: Component<{
   // Review if: the carousel's visible-card count drops below 3 on desktop.
   return (
     <div class="w-[240px] shrink-0">
-      <div class="group cursor-pointer" onClick={onBody}>
+      {/* Claude 2026-08-13: clickable body is MediaCardShell, not a div.
+          Reason: Adult scene cards share the Library/Discover media card
+          primitive. Width stays on this outer wrapper (tests climb to
+          .w-[240px]); the shell only owns the clickable poster/title block.
+          Troubleshooting: SelectCheckbox is display-only (pointer-events-none)
+          and is safe inside the button. There are no nested interactive chips
+          on AdultCard.
+          Review if: a nested control is added inside the poster frame. */}
+      <MediaCardShell class="group" label={props.item.title} onClick={onBody}>
         <div class="relative aspect-video overflow-hidden rounded-lg border border-border bg-surface">
           <Show when={inSelect()}>
             <SelectCheckbox checked={checked()} />
@@ -242,7 +251,7 @@ const AdultCard: Component<{
         </div>
         <div class="mt-1.5 truncate text-sm text-fg">{props.item.title}</div>
         <div class="truncate text-xs text-muted">{subtitle() || "—"}</div>
-      </div>
+      </MediaCardShell>
       {/* Claude 2026-08-02: the inline Grab button and its
           `!onOpenReleases || inSelect()` M3 suppression gate used to live here.
           Reason: the gate existed SOLELY to hide that button on catalog-Search

@@ -402,7 +402,15 @@ export const PosterCard: Component<{
   };
   return (
     <div class="w-[220px] shrink-0">
-      <div class="group cursor-pointer" onClick={onBody}>
+      {/* Claude 2026-08-13: clickable body is MediaCardShell, not a div.
+          Reason: Discover browse cards share the Library/Discover media card
+          primitive. SeriesSeasonSelect stays a sibling below the shell so its
+          buttons are not nested inside the card <button>.
+          Troubleshooting: tests climb to this outer div.w-[220px]; do not
+          move the width class onto the shell. SelectCheckbox is display-only
+          (pointer-events-none) and is safe inside the button.
+          Review if: season chips are ever moved into the poster frame. */}
+      <MediaCardShell class="group" label={props.item.title} onClick={onBody}>
         <div class="relative aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
           <Show when={inSelect() && props.mode === "movies"}>
             <SelectCheckbox checked={movieChecked()} />
@@ -430,7 +438,7 @@ export const PosterCard: Component<{
             <span>★ {props.item.voteAverage.toFixed(1)}</span>
           </Show>
         </div>
-      </div>
+      </MediaCardShell>
       {/* Claude 2026-08-02: the inline Grab button was removed from this slot;
           the card body's click → DetailPopup is now the grab path for Movies
           and Series alike. Select-mode's season/episode chips are the ONLY

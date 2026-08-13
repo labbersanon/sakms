@@ -378,7 +378,7 @@ const DetailPanel: Component<{
   createEffect(on(() => props.item.id, () => setVideoError(false)));
 
   return (
-    <div class="flex w-full flex-col rounded-xl border border-border bg-surface p-4">
+    <div class="flex w-full flex-col">
       {/* Header row */}
       <div class="mb-3 flex items-start justify-between gap-2">
         <div class="min-w-0 flex-1">
@@ -411,8 +411,8 @@ const DetailPanel: Component<{
           src={posterUrl()}
           alt=""
           loading="lazy"
-          class="mb-3 w-full rounded object-cover"
-          style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
+          class="mx-auto mb-3 w-40 rounded object-cover"
+          style="aspect-ratio: 2/3; object-position: top"
         />
       </Show>
       <Show when={showAdultVideo()}>
@@ -421,8 +421,8 @@ const DetailPanel: Component<{
           muted
           preload="metadata"
           playsinline
-          class="mb-3 w-full rounded object-cover"
-          style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
+          class="mx-auto mb-3 w-40 rounded object-cover"
+          style="aspect-ratio: 2/3; object-position: top"
           onError={() => setVideoError(true)}
         />
       </Show>
@@ -611,7 +611,9 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
     });
   };
 
-  const loading = () => vocab.loading || tracked.loading;
+  const loading = () =>
+    (vocab.loading && vocab() === undefined) ||
+    (tracked.loading && tracked() === undefined);
 
   // genreOptions is the de-duplicated, alphabetised union of every genre on the
   // CURRENTLY LOADED mode's items — built from tracked(), never from the already

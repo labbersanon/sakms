@@ -193,10 +193,16 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
     );
+    const dialog = screen.getByRole("dialog", { name: "Inception" });
+    expect(dialog).toBeInTheDocument();
     expect(screen.getByText("Genres")).toBeInTheDocument();
     expect(screen.getByText("Cast")).toBeInTheDocument();
     expect(screen.getByText("Leonardo DiCaprio")).toBeInTheDocument();
     expect(screen.getByText("Tom Hardy")).toBeInTheDocument();
+    fireEvent.click(dialog.parentElement!);
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Close detail panel")).not.toBeInTheDocument(),
+    );
   });
 
   it("adds a tag from the detail panel via the GENERIC /items/{id}/tags route", async () => {

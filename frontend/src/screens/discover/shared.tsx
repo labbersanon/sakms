@@ -13,6 +13,8 @@ import {
   createSignal,
   on,
   onCleanup,
+  onMount,
+  createUniqueId,
   For,
   Show,
   Switch,
@@ -64,23 +66,38 @@ export const Modal: Component<{
   title: string;
   onClose: () => void;
   children: JSX.Element;
-}> = (props) => (
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-    onClick={props.onClose}
-  >
+}> = (props) => {
+  const titleId = createUniqueId();
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => document.removeEventListener("keydown", onKey));
+  });
+  return (
     <div
-      class="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-xl border border-border bg-surface p-5 shadow-2xl"
-      onClick={(e) => e.stopPropagation()}
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={props.onClose}
     >
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <h3 class="truncate text-base font-semibold text-fg">{props.title}</h3>
-        <Button onClick={props.onClose}>Close</Button>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        class="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-xl border border-border bg-surface p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <h3 id={titleId} class="truncate text-base font-semibold text-fg">
+            {props.title}
+          </h3>
+          <Button onClick={props.onClose}>Close</Button>
+        </div>
+        {props.children}
       </div>
-      {props.children}
     </div>
-  </div>
-);
+  );
+};
 
 // NOT_CONFIGURED_SERVICES maps the two external services Discover itself
 // depends on (backend errors are the fixed strings "tmdb isn't configured

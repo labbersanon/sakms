@@ -25,6 +25,7 @@ const NAV_LABELS = [
 ];
 
 const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup"];
+const MEDIA_CHILDREN = ["Mainstream", "Adult"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router
 // context) with its collapsed state owned by the persisted-bool helper — the
@@ -59,8 +60,11 @@ describe("Sidebar", () => {
     for (const label of ORGANIZE_CHILDREN) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    // 8 nav icons + 1 sidebar-collapse chevron + 1 Organize-group chevron.
-    expect(container.querySelectorAll("svg").length).toBe(10);
+    for (const label of MEDIA_CHILDREN) {
+      expect(screen.getAllByText(label)).toHaveLength(2);
+    }
+    // 8 nav icons + 1 sidebar-collapse chevron + 3 group chevrons.
+    expect(container.querySelectorAll("svg").length).toBe(12);
   });
 
   it("collapse toggle hides labels but keeps icons", () => {
@@ -68,9 +72,9 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByLabelText("Collapse sidebar"));
 
     for (const label of NAV_LABELS) {
-      if (label === "Organize") {
-        expect(screen.getByLabelText("Organize")).toBeInTheDocument();
-        expect(screen.queryByText("Organize")).not.toBeInTheDocument();
+      if (label === "Discover" || label === "Library" || label === "Organize") {
+        expect(screen.getByLabelText(label)).toBeInTheDocument();
+        expect(screen.queryByText(label)).not.toBeInTheDocument();
         continue;
       }
       expect(screen.queryByText(label)).not.toBeInTheDocument();
@@ -78,9 +82,12 @@ describe("Sidebar", () => {
     for (const label of ORGANIZE_CHILDREN) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
+    for (const label of MEDIA_CHILDREN) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
     expect(container.querySelectorAll("svg").length).toBe(9);
     for (const label of NAV_LABELS) {
-      if (label === "Organize") continue;
+      if (label === "Discover" || label === "Library" || label === "Organize") continue;
       expect(container.querySelector(`a[title="${label}"]`)).toBeTruthy();
     }
   });
@@ -96,6 +103,9 @@ describe("Sidebar", () => {
     }
     for (const label of ORGANIZE_CHILDREN) {
       expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    for (const label of MEDIA_CHILDREN) {
+      expect(screen.getAllByText(label)).toHaveLength(2);
     }
   });
 

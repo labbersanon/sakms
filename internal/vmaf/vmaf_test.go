@@ -123,16 +123,25 @@ func TestCompute_RealFFmpeg(t *testing.T) {
 // ffmpeg subprocess timing.
 func TestCompute_SharedSemaphoreBoundsCombinedConcurrency(t *testing.T) {
 	orig := computeFunc
-	defer func() { computeFunc = orig }()
+	origDuration := durationFunc
+	defer func() {
+		computeFunc = orig
+		durationFunc = origDuration
+	}()
+	durationFunc = func(ctx context.Context, path string) (time.Duration, error) {
+		return time.Minute, nil
+	}
 
 	const callers = maxConcurrentVMAF * 4
 
 	var mu sync.Mutex
 	current, maxObserved := 0, 0
-	entered := make(chan struct{}, callers) // buffered so a stub never blocks on send
+	// One Compute now runs several samples; keep the observation channel large
+	// enough that post-release sample calls cannot block the stub during wg.Wait.
+	entered := make(chan struct{}, callers*defaultSampleCount)
 	release := make(chan struct{})
 
-	computeFunc = func(ctx context.Context, a, b string) (float64, error) {
+	computeFunc = func(ctx context.Context, a, b string, sample sampleWindow) (float64, error) {
 		mu.Lock()
 		current++
 		if current > maxObserved {
@@ -183,5 +192,69 @@ func TestCompute_SharedSemaphoreBoundsCombinedConcurrency(t *testing.T) {
 	if maxObserved != maxConcurrentVMAF {
 		t.Errorf("expected the semaphore to admit exactly %d concurrent computations under load, observed max %d",
 			maxConcurrentVMAF, maxObserved)
+	}
+}
+
+func TestCompute_AveragesAtLeastThreeSuccessfulSamples(t *testing.T) {
+	orig := computeFunc
+	origDuration := durationFunc
+	defer func() {
+		computeFunc = orig
+		durationFunc = origDuration
+	}()
+	durationFunc = func(ctx context.Context, path string) (time.Duration, error) {
+		return time.Minute, nil
+	}
+
+	calls := 0
+	computeFunc = func(ctx context.Context, a, b string, sample sampleWindow) (float64, error) {
+		calls++
+		switch calls {
+		case 1:
+			return 90, nil
+		case 2:
+			return 80, nil
+		case 3, 4:
+			return 0, context.DeadlineExceeded
+		default:
+			return 70, nil
+		}
+	}
+
+	got, err := Compute(context.Background(), "candidate.mkv", "reference.mkv")
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	if calls != defaultSampleCount {
+		t.Fatalf("computeFunc calls = %d, want %d", calls, defaultSampleCount)
+	}
+	if got != 80 {
+		t.Fatalf("score = %.2f, want average 80", got)
+	}
+}
+
+func TestCompute_FailsWhenFewerThanThreeSamplesSucceed(t *testing.T) {
+	orig := computeFunc
+	origDuration := durationFunc
+	defer func() {
+		computeFunc = orig
+		durationFunc = origDuration
+	}()
+	durationFunc = func(ctx context.Context, path string) (time.Duration, error) {
+		return time.Minute, nil
+	}
+
+	calls := 0
+	computeFunc = func(ctx context.Context, a, b string, sample sampleWindow) (float64, error) {
+		calls++
+		if calls <= 2 {
+			return 90, nil
+		}
+		return 0, context.DeadlineExceeded
+	}
+
+	_, err := Compute(context.Background(), "candidate.mkv", "reference.mkv")
+	if err == nil {
+		t.Fatal("expected Compute to fail with only 2 successful samples")
 	}
 }

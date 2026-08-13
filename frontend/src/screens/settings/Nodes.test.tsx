@@ -543,7 +543,7 @@ describe("NodeRow — pause switch state (redundant 'Paused' badge removed)", ()
 });
 
 describe("ApproveModal", () => {
-  it("collects only maxJobs — no path-mapping section, no read of path-mappings", async () => {
+  it("defaults new nodes to maxJobs=2 and cpuCapPercent=50 without path mappings", async () => {
     const calls = stubFetch();
     render(() => <NodesSection />);
 
@@ -554,6 +554,14 @@ describe("ApproveModal", () => {
 
     expect(screen.queryByText("Path mappings (library → node)")).toBeNull();
     expect(screen.queryByPlaceholderText("/mnt/media")).toBeNull();
+    const maxJobs = screen.getByRole("spinbutton", {
+      name: "Max concurrent jobs",
+    }) as HTMLInputElement;
+    const cpu = screen.getByRole("spinbutton", {
+      name: "Approval max CPU percent",
+    }) as HTMLInputElement;
+    expect(maxJobs.value).toBe("2");
+    expect(cpu.value).toBe("50");
 
     // Two "Approve" buttons exist once the modal is open: the PendingRow's
     // trigger (still rendered underneath the overlay) and the modal's own
@@ -564,8 +572,14 @@ describe("ApproveModal", () => {
     await waitFor(() => {
       const approve = calls.find((c) => c.url.endsWith("/api/nodes/pending-1/approve"));
       expect(approve).toBeDefined();
-      const body = approve!.body as { pathMap: unknown[]; maxJobs: number };
+      const body = approve!.body as {
+        pathMap: unknown[];
+        maxJobs: number;
+        cpuCapPercent: number;
+      };
       expect(body.pathMap).toEqual([]);
+      expect(body.maxJobs).toBe(2);
+      expect(body.cpuCapPercent).toBe(50);
     });
 
     // ApproveModal never fetches path-mappings for the pending node anymore.

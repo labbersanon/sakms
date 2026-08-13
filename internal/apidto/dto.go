@@ -2741,8 +2741,9 @@ type NodeSettingsRequest struct {
 
 // ApproveNodeRequest is the body for POST /api/nodes/{id}/approve.
 type ApproveNodeRequest struct {
-	PathMap []NodePathMappingInput `json:"pathMap"`
-	MaxJobs int                    `json:"maxJobs"`
+	PathMap       []NodePathMappingInput `json:"pathMap"`
+	MaxJobs       int                    `json:"maxJobs"`
+	CPUCapPercent int                    `json:"cpuCapPercent"`
 }
 
 // NodePauseRequest is the body for PUT /api/nodes/{id}/pause — the dedicated,

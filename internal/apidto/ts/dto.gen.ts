@@ -2728,6 +2728,7 @@ export interface NodeSettingsRequest {
 export interface ApproveNodeRequest {
   pathMap: NodePathMappingInput[];
   maxJobs: number /* int */;
+  cpuCapPercent: number /* int */;
 }
 /**
  * NodePauseRequest is the body for PUT /api/nodes/{id}/pause — the dedicated,

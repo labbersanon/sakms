@@ -72,7 +72,7 @@ func resolvePathMap(ctx context.Context, settingsStore *settings.Store, in []api
 // Reachability constraint in the security-hardening addendum: RequestBrowse
 // only reaches an already-authenticated connectedNode, and a pending node
 // is never in that map).
-func toApprovalPersistedSettings(in []apidto.NodePathMappingInput, maxJobs int) nodesettings.Settings {
+func toApprovalPersistedSettings(in []apidto.NodePathMappingInput, maxJobs, cpuCapPercent int) nodesettings.Settings {
 	entries := make([]nodesettings.PathMappingEntry, 0, len(in))
 	for _, pm := range in {
 		entries = append(entries, nodesettings.PathMappingEntry{
@@ -81,7 +81,7 @@ func toApprovalPersistedSettings(in []apidto.NodePathMappingInput, maxJobs int) 
 			VerificationStatus: nodesettings.VerificationUnverifiedApproval,
 		})
 	}
-	return nodesettings.Settings{PathMappings: entries, MaxJobs: maxJobs}
+	return nodesettings.Settings{PathMappings: entries, MaxJobs: maxJobs, CPUCapPercent: cpuCapPercent}
 }
 
 // verifyAndBuildPersistedSettings is Safeguard 1's save-time hard gate: for
@@ -565,7 +565,7 @@ func approveNodeHandler(pairingReg *nodes.PairingRegistry, nodeKeyStore *nodekey
 		// Persist by the durable key id (keyID) — the same id nodekeys.Validate
 		// resolves and Registry.Connect keys its live entry by, so a later
 		// reconnect's pushPersistedNodeSettings lookup finds this record.
-		if err := nodeSettingsStore.Set(r.Context(), keyID, toApprovalPersistedSettings(body.PathMap, body.MaxJobs)); err != nil {
+		if err := nodeSettingsStore.Set(r.Context(), keyID, toApprovalPersistedSettings(body.PathMap, body.MaxJobs, body.CPUCapPercent)); err != nil {
 			log.Printf("nodes/approve: persist settings for %s: %v", keyID, err)
 			if err := nodeKeyStore.Revoke(r.Context(), keyID); err != nil {
 				log.Printf("nodes/approve: revoke key %s after persist failure: %v", keyID, err)
@@ -581,10 +581,9 @@ func approveNodeHandler(pairingReg *nodes.PairingRegistry, nodeKeyStore *nodekey
 			Settings: nodes.NodeSettings{
 				PathMap: pathMap,
 				MaxJobs: body.MaxJobs,
-				// CPUCapPercent (and PauseDispatch) are intentionally left at their
-				// zero value here: a freshly-approved node has no persisted cap yet,
-				// so 0 (unlimited) is correct — the documented approval/pairing
-				// exception to "always send the STORED value" (see NodeSettings doc).
+				// CPUCapPercent is now part of the approve body so first-run node
+				// deployments receive the same default cap the UI shows.
+				CPUCapPercent: body.CPUCapPercent,
 			},
 		}
 

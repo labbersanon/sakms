@@ -89,6 +89,16 @@ func TestNodeBrowseResult_NoNodeBearerKey_401(t *testing.T) {
 	}
 }
 
+func TestApprovalPersistedSettings_IncludesCPUCapPercent(t *testing.T) {
+	got := toApprovalPersistedSettings(nil, 2, 50)
+	if got.MaxJobs != 2 {
+		t.Fatalf("MaxJobs = %d, want 2", got.MaxJobs)
+	}
+	if got.CPUCapPercent != 50 {
+		t.Fatalf("CPUCapPercent = %d, want 50", got.CPUCapPercent)
+	}
+}
+
 func TestNodePathMappings_FixedFiveRows_ConfiguredAndPersistedValues(t *testing.T) {
 	mux, _, _, settingsStore, nodeSettingsStore, _, apiKey := testNodesMux(t)
 	srv := httptest.NewServer(mux)

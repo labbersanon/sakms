@@ -53,6 +53,14 @@ const LIBRARY_PATH_LABELS: Record<string, string> = {
   series_kids_root_path: "Series kids root",
 };
 
+// Claude 2026-08-12: safer defaults for newly-approved worker nodes.
+// Reason: unlimited jobs/CPU let one pHash scan fan out many ffmpeg decodes and
+// destabilize CUDA on wade-pc; defaults should be bounded before first use.
+// Troubleshooting: Dedup hashing slow due node CUDA failures and local fallback.
+// Review if: node-side frame extraction becomes globally queue-limited.
+const DEFAULT_NODE_MAX_JOBS = 2;
+const DEFAULT_NODE_CPU_CAP_PERCENT = 50;
+
 // NodePathMappingRow renders one fixed row, entirely read-only: a label +
 // the library path's current server-side value (for context — Library
 // settings owns configuring it), and the node-reported NodePath as plain
@@ -107,7 +115,10 @@ const ApproveModal: Component<{
   onClose: () => void;
   onDone: () => void;
 }> = (props) => {
-  const [maxJobs, setMaxJobs] = createSignal(0);
+  const [maxJobs, setMaxJobs] = createSignal(DEFAULT_NODE_MAX_JOBS);
+  const [cpuCapPercent, setCpuCapPercent] = createSignal(
+    DEFAULT_NODE_CPU_CAP_PERCENT,
+  );
   const [saving, setSaving] = createSignal(false);
   const [err, setErr] = createSignal("");
 
@@ -118,6 +129,7 @@ const ApproveModal: Component<{
       await approveNode(props.pending.id, {
         pathMap: [],
         maxJobs: maxJobs(),
+        cpuCapPercent: cpuCapPercent(),
       });
       props.onDone();
       props.onClose();
@@ -149,9 +161,34 @@ const ApproveModal: Component<{
             type="number"
             class={inputClass}
             min="0"
+            aria-label="Max concurrent jobs"
             value={maxJobs()}
             onInput={(e) => setMaxJobs(Number(e.currentTarget.value))}
           />
+        </div>
+        <div>
+          <label class={labelClass}>Max CPU % (0 = unlimited)</label>
+          <div class="mt-1 flex items-center gap-3">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={cpuCapPercent()}
+              aria-label="Approval max CPU percent slider"
+              class="h-2 flex-1 accent-accent"
+              onInput={(e) => setCpuCapPercent(Number(e.currentTarget.value))}
+            />
+            <input
+              type="number"
+              class={`${inputClass} !w-20`}
+              min={0}
+              max={100}
+              aria-label="Approval max CPU percent"
+              value={cpuCapPercent()}
+              onInput={(e) => setCpuCapPercent(Number(e.currentTarget.value))}
+            />
+            <span class="text-xs text-muted">%</span>
+          </div>
         </div>
         <Show when={err()}>
           <ErrorText>{err()}</ErrorText>

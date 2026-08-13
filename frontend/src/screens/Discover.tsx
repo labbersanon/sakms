@@ -3,4 +3,4 @@
 // public import path stable — `import { Discover } from "./Discover"` (and
 // "./screens/Discover" from outside) still resolves — so nothing else in the
 // codebase or the test suite has to change its imports.
-export { Discover } from "./discover";
+export { Discover, DiscoverAdult, DiscoverMainstream } from "./discover";

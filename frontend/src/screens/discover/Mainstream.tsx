@@ -872,7 +872,6 @@ export const MainstreamDiscover: Component<{
     fetchDiscoverSliders().catch(() => [] as Slider[]),
   );
   const allSliders = () => slidersData() ?? [];
-  const enabledSliders = () => allSliders().filter((s) => s.enabled);
   const slidersForTab = () =>
     allSliders().filter((s) => {
       if (!props.contentType) return true;

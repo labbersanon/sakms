@@ -51,6 +51,7 @@ import {
   Button,
   Card,
   ErrorText,
+  ModeTabs,
   Muted,
   ScreenTabs,
   SectionLockOverlay,
@@ -890,4 +891,19 @@ const AdultMoviesPlaceholder: Component = () => (
   </Card>
 );
 
-export const Library: Component = LibraryMainstream;
+export const Library: Component = () => {
+  const [params] = useSearchParams();
+  const initialMode: Mode =
+    params.mode === "series" || params.mode === "adult" ? params.mode : "movies";
+  const initialTier =
+    typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
+      ? params.tier
+      : "";
+  const [mode, setMode] = createSignal<Mode>(initialMode);
+  return (
+    <div>
+      <ModeTabs current={mode} onSelect={setMode} />
+      <LibraryView mode={mode()} initialTier={initialTier} />
+    </div>
+  );
+};

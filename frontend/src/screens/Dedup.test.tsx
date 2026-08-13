@@ -1163,6 +1163,7 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
     dedupProposal({
       id: 3,
       title: "V",
+      pHashSimilarity: 0.8,
       candidates: [
         candidate({ label: "tracked", path: "/m/keep.mkv", winner: true }),
         candidate({ label: "orphan.mkv", path: "/m/dupe.mkv", winner: false }),
@@ -1295,6 +1296,35 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
     // Past one full poll interval, no further VMAF fetches fire.
     await new Promise((r) => setTimeout(r, 2800));
     expect(calls.filter((c) => c.url.includes("/vmaf")).length).toBe(afterUnmount);
+  });
+
+  it("does not request VMAF for low-confidence possible duplicates", async () => {
+    const calls = stubFetch((url) => {
+      if (
+        url.includes("/api/modes/movies/dedup/proposals") &&
+        !url.includes("/vmaf") &&
+        !url.includes("/video")
+      )
+        return jsonResponse([
+          dedupProposal({
+            id: 30,
+            title: "Possible Only",
+            pHashSimilarity: 0.5,
+            candidates: [
+              candidate({ label: "primary.mkv", path: "/m/primary.mkv", winner: true }),
+              candidate({ label: "alt.mkv", path: "/m/alt.mkv", winner: false }),
+            ],
+          }),
+        ]);
+      if (url.includes("/vmaf")) throw new Error("low-confidence group must not request VMAF");
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Dedup />);
+    await screen.findByText("Possible Only");
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(calls.some((c) => c.url.includes("/vmaf"))).toBe(false);
   });
 });
 

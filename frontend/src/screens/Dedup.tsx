@@ -125,6 +125,18 @@ const similarityLabel = (s: number): string => {
   return "possible duplicate — review carefully";
 };
 
+// Claude 2026-08-12: VMAF is quality scoring, not duplicate detection.
+// Reason: only spend VMAF compute after pHash confidence reaches the same
+// threshold that the UI already labels "likely duplicate"; "possible" groups
+// need human duplicate review first, not expensive quality scoring.
+// Troubleshooting: sampled VMAF still looked like a hung scan on low-confidence
+// groups because every non-primary tile mounted a polling VMAF badge.
+// Review if: similarityLabel's likely/high thresholds change.
+const VMAF_MIN_CONFIDENCE = 0.7;
+
+const shouldScoreVmaf = (p: Proposal): boolean =>
+  (p.pHashSimilarity ?? 0) >= VMAF_MIN_CONFIDENCE;
+
 // ViewMode toggles the group layout: "list" (compact table) or "card" (tiles
 // with a video preview). Persisted per mode in localStorage, defaulting to
 // "card" (AC1) — an absent/invalid stored value reads as "card" so tests without
@@ -861,12 +873,14 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
                                           </span>
                                         }
                                       >
-                                        <VmafBadge
-                                          mode={props.mode}
-                                          proposalId={p.id}
-                                          candidateIndex={i()}
-                                          referenceIndex={primaryOf(p)}
-                                        />
+                                        <Show when={shouldScoreVmaf(p)}>
+                                          <VmafBadge
+                                            mode={props.mode}
+                                            proposalId={p.id}
+                                            candidateIndex={i()}
+                                            referenceIndex={primaryOf(p)}
+                                          />
+                                        </Show>
                                       </Show>
                                     </div>
                                     <Show when={pending()}>

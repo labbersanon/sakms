@@ -9,7 +9,7 @@
 // Mainstream.tsx/Adult.tsx).
 
 import { type Component, type JSX, createResource, For, Show } from "solid-js";
-import { labelClass } from "../../components/ui";
+import { labelClass, FILTER_BAR_FIELDS_CLASS } from "../../components/ui";
 import { type AdultSortBy, type DiscoverSortBy } from "../../api/discover";
 import { type Genre, fetchGenres } from "../../api/discoverSliders";
 
@@ -100,13 +100,13 @@ const SelectField: Component<{
   onChange: (value: string) => void;
   children: JSX.Element;
 }> = (props) => (
-  <div class="flex flex-col">
+  <div class="flex w-full flex-col sm:w-auto">
     <label class={labelClass} for={props.id}>
       {props.label}
     </label>
     <select
       id={props.id}
-      class={`mt-1 ${SELECT_CLASS}`}
+      class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
       value={props.value}
       onChange={(e) => props.onChange(e.currentTarget.value)}
     >
@@ -141,7 +141,7 @@ export const MainstreamFilterSortBar: Component<{
 
   return (
     <div class="mb-4 rounded-xl border border-border bg-surface p-4">
-      <div class="flex flex-wrap items-end gap-3">
+      <div class={FILTER_BAR_FIELDS_CLASS}>
         <Show when={!props.lockedContentType}>
           <SelectField
             id="discover-filter-content-type"
@@ -206,7 +206,7 @@ export const MainstreamFilterSortBar: Component<{
         <Show when={isMainstreamFilterActive(props.value())}>
           <button
             type="button"
-            class="text-sm text-accent underline"
+            class="text-sm text-accent underline sm:self-end"
             onClick={() =>
               props.onChange({
                 ...DEFAULT_MAINSTREAM_FILTERS,
@@ -254,7 +254,7 @@ export const AdultSortBar: Component<{
   onChange: (v: AdultSortValue) => void;
 }> = (props) => (
   <div class="mb-4 rounded-xl border border-border bg-surface p-4">
-    <div class="flex flex-wrap items-end gap-3">
+    <div class={FILTER_BAR_FIELDS_CLASS}>
       <SelectField
         id="discover-adult-sort"
         label="Sort"

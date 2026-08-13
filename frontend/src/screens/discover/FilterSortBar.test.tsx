@@ -80,6 +80,7 @@ describe("MainstreamFilterSortBar", () => {
       { id: 12, name: "Adventure" },
     ]);
     const { onChange } = renderBar();
+    expect(screen.getByLabelText("Genre").closest(".flex-col")).not.toBeNull();
     // The genre options load async; wait for one before selecting it.
     await screen.findByText("Action");
     fireEvent.change(screen.getByLabelText("Genre"), {

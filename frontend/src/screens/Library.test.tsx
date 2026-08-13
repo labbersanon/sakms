@@ -290,6 +290,9 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     renderLibrary();
     expect(await screen.findByRole("button", { name: "Inception" })).toBeInTheDocument();
     expect(screen.queryByText("View all")).toBeNull();
+    const search = screen.getByPlaceholderText("Search titles…");
+    expect(search.parentElement?.className).toContain("w-full");
+    expect(search.parentElement?.parentElement?.className).toContain("flex-col");
     expect(screen.getByRole("button", { name: "Interstellar" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "The Matrix" })).toBeInTheDocument();
 

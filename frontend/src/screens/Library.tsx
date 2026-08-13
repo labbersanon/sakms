@@ -60,6 +60,7 @@ import {
   useSectionLock,
   inputClass,
   labelClass,
+  FILTER_BAR_FIELDS_CLASS,
 } from "../components/ui";
 import {
   MediaCardShell,
@@ -95,7 +96,7 @@ type SortKey = "title" | "added";
 const TIER_VALUES = ["low", "medium", "high", "lossless", "unknown"];
 
 const selectClass =
-  "rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent";
+  "w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent sm:w-auto";
 
 // firstFrameSrc appends the #t=0.1 media fragment so the browser seeks just past
 // the start and paints that frame as the still. Without the fragment a
@@ -717,13 +718,15 @@ const LibraryView: Component<{
             </Muted>
           }
         >
-          {/* Claude 2026-08-13: frame matches Discover FilterSortBar.
-              Reason: cinematic leftover chrome; no shared generic — Library
-              filtering is a third distinct surface. Inner mb-3 dropped.
+          {/* Claude 2026-08-13: frame matches Discover FilterSortBar;
+              FILTER_BAR_FIELDS_CLASS stacks fields on a phone.
+              Reason: no shared generic — Library filtering is a third
+              surface. Search used min-w-0 flex-1 beside three selects and
+              collapsed to a sliver (labels overlapped).
               Review if: FilterSortBar's frame class changes. */}
           <div class="mb-4 rounded-xl border border-border bg-surface p-4">
-          <div class="flex flex-wrap items-end gap-3">
-            <div class="min-w-0 flex-1">
+          <div class={FILTER_BAR_FIELDS_CLASS}>
+            <div class="w-full min-w-0 sm:min-w-[12rem] sm:flex-1">
               <label class={labelClass} for="library-search">
                 Search
               </label>
@@ -739,7 +742,7 @@ const LibraryView: Component<{
                 }}
               />
             </div>
-            <div class="flex flex-col">
+            <div class="flex w-full flex-col sm:w-auto">
               <label class={labelClass} for="library-genre">
                 Genre
               </label>
@@ -764,7 +767,7 @@ const LibraryView: Component<{
                 render — unlike genreOptions() above, which is derived from the
                 fetched items — so the seeded value still always has an option
                 to bind to. */}
-            <div class="flex flex-col">
+            <div class="flex w-full flex-col sm:w-auto">
               <label class={labelClass} for="library-tier">
                 Quality tier
               </label>
@@ -787,7 +790,7 @@ const LibraryView: Component<{
                 </For>
               </select>
             </div>
-            <div class="flex flex-col">
+            <div class="flex w-full flex-col sm:w-auto">
               <label class={labelClass} for="library-sort">
                 Sort
               </label>

@@ -28,6 +28,14 @@ export const inputClass =
 
 export const labelClass = "block text-xs font-medium text-muted";
 
+// Claude 2026-08-13: stack filter fields on a phone; row+wrap from sm.
+// Reason: Library Search used min-w-0 flex-1 on the same row as three
+// selects, so the input collapsed to a sliver and labels overlapped.
+// Shared with FilterSortBar so the two chrome twins stay aligned.
+// Review if: a compact always-horizontal filter bar is added.
+export const FILTER_BAR_FIELDS_CLASS =
+  "flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end";
+
 // AuthScreen centers a single auth panel on the page — the setup wizard, the
 // login form, and the SSO notice all share this frame. The full logo (not
 // just the favicon glyph) gets its one prominent moment here — this is the

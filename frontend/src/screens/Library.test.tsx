@@ -27,7 +27,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
+import { createSignal, Show } from "solid-js";
 import type { SeasonState, TagEntry, TrackedItem } from "@dto";
+import {
+  AdultModeContext,
+  ScreenTabBar,
+  ScreenTabsContext,
+  type ScreenTabsRegistration,
+} from "../components/ui";
 import { Library } from "./Library";
 
 const jsonResponse = (obj: unknown): Response =>
@@ -821,5 +828,48 @@ describe("Library — Adult catalog", () => {
     expect(
       calls.some((c) => c.url.includes("/api/modes/adult/items/50/tags")),
     ).toBe(false);
+  });
+
+  it("adds Adult to the shell-registered tab bar after adult-mode-enabled resolves", async () => {
+    stubFetch(makeHandler([inception()]));
+    const history = createMemoryHistory();
+    history.set({ value: "/library", replace: true });
+    const Harness = () => {
+      const [adultEnabled, setAdultEnabled] = createSignal(false);
+      const [reg, setReg] = createSignal<ScreenTabsRegistration | null>(null);
+      return (
+        <AdultModeContext.Provider
+          value={{ enabled: adultEnabled, refetch: () => {} }}
+        >
+          <ScreenTabsContext.Provider value={setReg}>
+            <Show when={reg()}>
+              {(r) => (
+                <div data-testid="shell-slot">
+                  <ScreenTabBar
+                    tabs={r().tabs}
+                    current={r().current}
+                    onSelect={r().onSelect}
+                    trailing={r().trailing}
+                  />
+                </div>
+              )}
+            </Show>
+            <button type="button" onClick={() => setAdultEnabled(true)}>
+              Enable adult in harness
+            </button>
+            <MemoryRouter history={history}>
+              <Route path="/library" component={Library} />
+            </MemoryRouter>
+          </ScreenTabsContext.Provider>
+        </AdultModeContext.Provider>
+      );
+    };
+
+    render(() => <Harness />);
+    await screen.findByRole("button", { name: "Inception" });
+    expect(screen.queryByText("Adult")).toBeNull();
+
+    fireEvent.click(screen.getByText("Enable adult in harness"));
+    await waitFor(() => expect(screen.getByText("Adult")).toBeInTheDocument());
   });
 });

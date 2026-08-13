@@ -524,17 +524,9 @@ export function ModeTabs(props: {
   // tab left to navigate away by.
   const adultEnabled = () =>
     adultEnabledRaw() && !lock.isLocked(ADULT_CONTENT_SECTION);
-  // `tabs` stays a FUNCTION, called inline at each JSX call site below
-  // (never hoisted into a plain variable) — Solid compiles JSX prop
-  // expressions into getters, so calling it inline keeps the standalone
-  // <ScreenTabBar> fallback path properly reactive to adultEnabled()
-  // resolving after mount (e.g. AppShell's real resource is still loading at
-  // first paint). The useScreenTabs(reg) call just below is a plain object,
-  // NOT JSX, so ITS `tabs` snapshot is unavoidably taken once at mount —  a
-  // known, accepted constraint (see AdultModeContext's doc comment and the
-  // plan's Risks table: a live toggle won't re-register an already-mounted
-  // shell-registered ModeTabs; not a practical issue since workflow screens
-  // remount on navigation).
+  // `tabs` stays a FUNCTION. The inline fallback and the shell registration both
+  // read it reactively so an AppShell refresh cannot permanently register the
+  // pre-load "Adult hidden" snapshot before /adult-mode-enabled resolves.
   const tabs = () => (adultEnabled() ? MODES : MODES.filter((m) => m.id !== "adult"));
 
   // Falls back to Movies the moment Adult mode becomes disabled while this
@@ -547,12 +539,24 @@ export function ModeTabs(props: {
     }
   });
 
-  const registered = useScreenTabs({
-    tabs: tabs(),
-    current: props.current,
-    onSelect: (id) => props.onSelect(id as Mode),
-  });
-  if (registered) return null as unknown as JSX.Element;
+  const setReg = useContext(ScreenTabsContext);
+  if (setReg) {
+    // Claude 2026-08-12: make ModeTabs shell registration reactive.
+    // Reason: AppShell provides adultEnabled as false until its boot fetch
+    // resolves; a one-shot registration omitted Adult forever after refresh.
+    // Troubleshooting: Library's Adult tab appeared during SPA navigation but
+    // disappeared after page refresh even though adult-mode-enabled was true.
+    // Review if: useScreenTabs grows first-class reactive tab accessors.
+    createEffect(() =>
+      setReg({
+        tabs: tabs(),
+        current: props.current,
+        onSelect: (id) => props.onSelect(id as Mode),
+      }),
+    );
+    onCleanup(() => setReg(null));
+    return null as unknown as JSX.Element;
+  }
   return (
     <ScreenTabBar
       tabs={tabs()}

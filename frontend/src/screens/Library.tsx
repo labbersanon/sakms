@@ -99,6 +99,8 @@ const PosterCard: Component<{
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };
+  const adultVideoUrl = () =>
+    props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";
 
   return (
     <button
@@ -117,9 +119,22 @@ const PosterCard: Component<{
         <Show
           when={posterUrl()}
           fallback={
-            <div class="flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-bold text-muted">
-              {props.item.title.charAt(0).toUpperCase()}
-            </div>
+            <Show
+              when={adultVideoUrl()}
+              fallback={
+                <div class="flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-bold text-muted">
+                  {props.item.title.charAt(0).toUpperCase()}
+                </div>
+              }
+            >
+              <video
+                src={adultVideoUrl()}
+                muted
+                preload="metadata"
+                class="h-full w-full object-cover"
+                aria-label={`Poster preview ${props.item.title}`}
+              />
+            </Show>
           }
         >
           <img
@@ -314,6 +329,8 @@ const DetailPanel: Component<{
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };
+  const adultVideoUrl = () =>
+    props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";
 
   return (
     <div class="flex w-72 flex-shrink-0 flex-col rounded-xl border border-border bg-surface p-4 overflow-y-auto">
@@ -344,14 +361,30 @@ const DetailPanel: Component<{
       </div>
 
       {/* Small poster */}
-      <Show when={posterUrl()}>
-        <img
-          src={posterUrl()}
-          alt=""
-          loading="lazy"
-          class="mb-3 w-full rounded object-cover"
-          style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
-        />
+      <Show when={posterUrl() || adultVideoUrl()}>
+        {(src) => (
+          <Show
+            when={posterUrl()}
+            fallback={
+              <video
+                src={src()}
+                muted
+                preload="metadata"
+                class="mb-3 w-full rounded object-cover"
+                style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
+                aria-label={`Poster preview ${props.item.title}`}
+              />
+            }
+          >
+            <img
+              src={posterUrl()}
+              alt=""
+              loading="lazy"
+              class="mb-3 w-full rounded object-cover"
+              style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
+            />
+          </Show>
+        )}
       </Show>
 
       {/* Genres — read-only */}

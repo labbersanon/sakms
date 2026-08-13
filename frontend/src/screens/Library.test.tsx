@@ -791,6 +791,7 @@ describe("Library — Adult catalog", () => {
             qualityTiers: ["high"],
             createdAt: "2026-04-01T00:00:00.000Z",
             imageUrl: "https://cdn.example.test/adult-scene.jpg",
+            videoUrl: "/api/modes/adult/tracked/50/video",
           }),
         ],
         onPost: (url) => {
@@ -834,6 +835,28 @@ describe("Library — Adult catalog", () => {
     expect(
       calls.some((c) => c.url.includes("/api/modes/adult/items/50/tags")),
     ).toBe(false);
+  });
+
+  it("falls back to the tracked video URL when a web-tracked Adult scene has no image", async () => {
+    stubFetch(
+      makeHandler([inception()], {
+        adult: [
+          item({
+            id: 51,
+            title: "Web Tracked Scene",
+            videoUrl: "/api/modes/adult/tracked/51/video",
+          }),
+        ],
+      }),
+    );
+    renderLibrary();
+    await screen.findByRole("button", { name: "Inception" });
+    fireEvent.click(screen.getByText("Adult"));
+
+    const card = await screen.findByRole("button", { name: "Web Tracked Scene" });
+    const video = card.querySelector("video") as HTMLVideoElement;
+    expect(video).not.toBeNull();
+    expect(video.getAttribute("src")).toBe("/api/modes/adult/tracked/51/video");
   });
 
   it("adds Adult to the shell-registered tab bar after adult-mode-enabled resolves", async () => {

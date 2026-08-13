@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/library"
@@ -53,6 +55,7 @@ type libraryTrackedItem struct {
 	QualityTiers   []string             `json:"qualityTiers,omitempty"`
 	Files          []libraryTrackedFile `json:"files,omitempty"`
 	ImageURL       string               `json:"imageUrl,omitempty"`
+	VideoURL       string               `json:"videoUrl,omitempty"`
 }
 
 // libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
@@ -210,6 +213,7 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					ID: sc.ID, Title: sc.Title, Tags: tags,
 					CreatedAt: sc.CreatedAt, QualityTiers: []string{tier},
 					ImageURL: resolveImage(sc),
+					VideoURL: fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID),
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -218,5 +222,30 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 		}
 
 		http.Error(w, fmt.Sprintf("unknown mode %q", m), http.StatusBadRequest)
+	}
+}
+
+func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		if m != mode.Adult {
+			http.Error(w, "tracked video is only supported for adult scenes right now", http.StatusBadRequest)
+			return
+		}
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			http.Error(w, "invalid tracked id", http.StatusBadRequest)
+			return
+		}
+		scene, err := libStore.GetSceneByID(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, library.ErrNotFound) {
+				http.Error(w, "no tracked scene with that id", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.ServeFile(w, r, scene.FilePath)
 	}
 }

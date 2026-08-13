@@ -87,6 +87,9 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	if !reflect.DeepEqual(got[0].QualityTiers, []string{"high"}) {
 		t.Fatalf("expected Adult qualityTiers [high], got %+v", got[0].QualityTiers)
 	}
+	if got[0].VideoURL != fmt.Sprintf("/api/modes/adult/tracked/%d/video", scene.ID) {
+		t.Fatalf("expected adult tracked video URL for poster fallback, got %q", got[0].VideoURL)
+	}
 }
 
 // TestListTracked_Adult_EmptyWhenNoScenes proves Adult needs no *arr

@@ -64,6 +64,7 @@ import {
 import {
   MediaCardShell,
   MediaBadge,
+  MediaDetailShell,
   MediaFallbackTile,
   MediaGridSkeleton,
 } from "../components/media";
@@ -354,7 +355,6 @@ const DetailPanel: Component<{
   onDraftChange: (v: string) => void;
   onAdd: () => void;
   onRemoveTag: (tag: string) => void;
-  onClose: () => void;
 }> = (props) => {
   const [posterPath] = createResource(
     () =>
@@ -377,56 +377,47 @@ const DetailPanel: Component<{
   // still for every scene selected after it.
   createEffect(on(() => props.item.id, () => setVideoError(false)));
 
-  return (
-    <div class="flex w-full flex-col">
-      {/* Header row */}
-      <div class="mb-3 flex items-start justify-between gap-2">
-        <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-semibold text-fg">{props.item.title}</p>
-          <Show when={props.item.year}>
-            <p class="text-xs text-muted">{props.item.year}</p>
-          </Show>
-          <Show when={props.item.collectionName}>
-            <p class="mt-0.5 truncate text-xs text-muted italic">
-              {props.item.collectionName}
-            </p>
-          </Show>
-        </div>
-        <button
-          type="button"
-          class="flex-shrink-0 rounded p-1 text-muted hover:text-fg"
-          aria-label="Close detail panel"
-          onClick={props.onClose}
-        >
-          {/* Inline × SVG — no icon library */}
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-        </button>
-      </div>
-
-      {/* Small poster */}
-      <Show when={posterUrl()}>
+  const media = () => {
+    if (posterUrl()) {
+      return (
         <img
           src={posterUrl()}
           alt=""
           loading="lazy"
-          class="mx-auto mb-3 w-40 rounded object-cover"
+          class="h-full w-full object-cover"
           style="aspect-ratio: 2/3; object-position: top"
         />
-      </Show>
-      <Show when={showAdultVideo()}>
+      );
+    }
+    if (!showAdultVideo()) return undefined;
+    return (
         <video
           src={firstFrameSrc(adultVideoUrl())}
           muted
           preload="metadata"
           playsinline
-          class="mx-auto mb-3 w-40 rounded object-cover"
+          class="h-full w-full object-cover"
           style="aspect-ratio: 2/3; object-position: top"
           onError={() => setVideoError(true)}
         />
-      </Show>
+    );
+  };
 
+  return (
+    <MediaDetailShell
+      title={props.item.title}
+      poster={media()}
+      actions={
+        <div class="flex flex-col gap-0.5 text-xs text-muted">
+          <Show when={props.item.year}>
+            <span>{props.item.year}</span>
+          </Show>
+          <Show when={props.item.collectionName}>
+            <span class="italic">{props.item.collectionName}</span>
+          </Show>
+        </div>
+      }
+    >
       {/* Genres — read-only */}
       <Show when={(props.item.genres ?? []).length > 0}>
         <div class="mb-3">
@@ -502,7 +493,7 @@ const DetailPanel: Component<{
       </Show>
 
       {/* Tags — mutable */}
-      <div class="flex-1">
+      <div>
         <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Tags</p>
         <div class="mb-2 flex flex-wrap gap-1">
           <For each={props.item.tags ?? []}>
@@ -540,7 +531,7 @@ const DetailPanel: Component<{
           <Button onClick={props.onAdd}>Add</Button>
         </div>
       </div>
-    </div>
+    </MediaDetailShell>
   );
 };
 
@@ -812,7 +803,6 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
                     onRemoveTag={(tag) =>
                       void act(() => removeTag(props.mode, item().id, tag))
                     }
-                    onClose={() => setSelectedId(null)}
                   />
                 </Modal>
               )}

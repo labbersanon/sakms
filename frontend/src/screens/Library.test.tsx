@@ -191,7 +191,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
 
     fireEvent.click(card);
     await waitFor(() =>
-      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
     );
     const dialog = screen.getByRole("dialog", { name: "Inception" });
     expect(dialog).toBeInTheDocument();
@@ -201,7 +201,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(screen.getByText("Tom Hardy")).toBeInTheDocument();
     fireEvent.click(dialog.parentElement!);
     await waitFor(() =>
-      expect(screen.queryByLabelText("Close detail panel")).not.toBeInTheDocument(),
+      expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument(),
     );
   });
 
@@ -247,7 +247,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
-      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByLabelText("Remove hd"));
 
@@ -292,12 +292,12 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
-      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
     );
 
     fireEvent.click(screen.getByText("Series"));
     await waitFor(() =>
-      expect(screen.queryByLabelText("Close detail panel")).toBeNull(),
+      expect(screen.queryByRole("button", { name: "Close" })).toBeNull(),
     );
     expect(await screen.findByRole("button", { name: "Breaking Bad" })).toBeInTheDocument();
   });
@@ -601,7 +601,7 @@ describe("Library — per-season monitoring (Series only)", () => {
     renderLibrary("/library?mode=series");
     fireEvent.click(await screen.findByRole("button", { name: "Breaking Bad" }));
     await waitFor(() =>
-      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
     );
   };
 
@@ -643,7 +643,7 @@ describe("Library — per-season monitoring (Series only)", () => {
     renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
-      expect(screen.getByLabelText("Close detail panel")).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
     );
 
     expect(screen.queryByText("Seasons")).toBeNull();

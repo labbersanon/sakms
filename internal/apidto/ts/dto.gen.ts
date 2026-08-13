@@ -1630,7 +1630,6 @@ export interface TrackedItem {
   createdAt?: string;
   qualityTiers?: string[];
   files?: TrackedItemFile[];
-  imageUrl?: string;
   videoUrl?: string;
 }
 /**

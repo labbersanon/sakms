@@ -78,6 +78,7 @@ const WatchlistCard: Component<{
 };
 
 export const TraktWatchlistRow: Component<{
+  contentType?: "movies" | "series";
   onGrab: (t: GrabTarget) => void;
 }> = (props) => {
   const [status] = createResource(fetchTraktStatus);
@@ -85,6 +86,13 @@ export const TraktWatchlistRow: Component<{
     () => (status()?.linked ? true : undefined),
     () => fetchTraktWatchlist(),
   );
+  const visibleItems = () =>
+    (items() ?? []).filter((item) => {
+      if (!props.contentType) return true;
+      return props.contentType === "series"
+        ? item.type === "show"
+        : item.type === "movie";
+    });
 
   return (
     <Show when={status()?.linked}>
@@ -94,7 +102,7 @@ export const TraktWatchlistRow: Component<{
       >
         <Carousel
           title="Trakt Watchlist"
-          items={items() ?? []}
+          items={visibleItems()}
           loading={items.loading}
           emptyText="Your Trakt watchlist is empty."
           renderItem={(item) => <WatchlistCard item={item} onGrab={props.onGrab} />}

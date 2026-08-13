@@ -63,6 +63,7 @@ import {
 } from "../components/ui";
 import {
   MediaCardShell,
+  MediaBadge,
   MediaFallbackTile,
   MediaGridSkeleton,
 } from "../components/media";
@@ -200,11 +201,7 @@ const PosterCard: Component<{
         <Show when={(props.item.genres ?? []).length > 0}>
           <div class="mt-1 flex flex-wrap gap-0.5">
             <For each={(props.item.genres ?? []).slice(0, 2)}>
-              {(g) => (
-                <span class="rounded bg-surface-2 px-1 py-0.5 text-[10px] text-muted">
-                  {g}
-                </span>
-              )}
+              {(g) => <MediaBadge class="!rounded !px-1 !text-[10px]">{g}</MediaBadge>}
             </For>
           </div>
         </Show>

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"io/fs"
 	"net/http/httptest"
 	"testing"
@@ -55,6 +56,23 @@ func TestHandler_CacheControl_Root(t *testing.T) {
 
 	if got := w.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestBuiltIndex_UsesRootRelativeAssets(t *testing.T) {
+	sub, err := fs.Sub(embedded, "static")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	body, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	if bytes.Contains(body, []byte(`"./assets/`)) || bytes.Contains(body, []byte(`'./assets/`)) {
+		t.Fatalf("index.html uses relative asset URLs; nested SPA routes resolve them under the route path")
+	}
+	if !bytes.Contains(body, []byte(`"/assets/`)) && !bytes.Contains(body, []byte(`'/assets/`)) {
+		t.Fatalf("index.html does not reference root-relative Vite assets")
 	}
 }
 

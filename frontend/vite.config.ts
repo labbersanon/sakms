@@ -21,11 +21,15 @@ const dtoAlias = fileURLToPath(
 // gitignored/dockerignored — a bare `go build ./cmd/sakms` fails cleanly
 // until `pnpm build` has populated it (plan Guardrail #6).
 //
-// base: "./" keeps asset URLs relative, so the generated index.html works
-// regardless of the path it's ultimately mounted at.
+// Claude 2026-08-13: absolute asset URLs for nested SPA routes.
+// Reason: Library/Discover now have depth-2 client routes; relative "./assets"
+// resolves to /library/assets on hard refresh and the SPA fallback returns HTML.
+// Troubleshooting: blank page only after refreshing /library/mainstream or
+// /discover/adult means this base likely regressed.
+// Review if: the app is intentionally mounted below a non-root path.
 export default defineConfig({
   plugins: [solid(), tailwindcss()],
-  base: "./",
+  base: "/",
   resolve: {
     alias: {
       "@dto": dtoAlias,

@@ -896,12 +896,14 @@ export const MainstreamDiscover: Component<{
   const [feedsData] = createResource(reloadToken, () =>
     fetchRssFeeds().catch(() => [] as RssFeed[]),
   );
+  const allMainstreamFeeds = () =>
+    (feedsData() ?? []).filter((f) => f.target === "movie" || f.target === "tv");
   const mainstreamFeeds = () =>
-    (feedsData() ?? []).filter((f) => {
+    allMainstreamFeeds().filter((f) => {
       if (props.contentType) {
         return f.target === (props.contentType === "movies" ? "movie" : "tv");
       }
-      return f.target === "movie" || f.target === "tv";
+      return true;
     });
   const enabledFeeds = () => mainstreamFeeds().filter((f) => f.enabled);
 
@@ -912,8 +914,8 @@ export const MainstreamDiscover: Component<{
   const knownKeys = () => [
     "trakt-watchlist",
     ...MAINSTREAM_ROWS.map((r) => r.key),
-    ...slidersForTab().map((s) => `slider:${s.id}`),
-    ...mainstreamFeeds().map((f) => `rssfeed:${f.id}`),
+    ...allSliders().map((s) => `slider:${s.id}`),
+    ...allMainstreamFeeds().map((f) => `rssfeed:${f.id}`),
     "library",
   ];
 
@@ -953,7 +955,7 @@ export const MainstreamDiscover: Component<{
     }
     if (key.startsWith("slider:")) {
       const id = Number(key.slice("slider:".length));
-        const s = slidersForTab().find((s) => s.id === id);
+      const s = allSliders().find((s) => s.id === id);
       return s ? { key, label: s.title, kind: "entity", enabled: s.enabled } : undefined;
     }
     if (key.startsWith("rssfeed:")) {
@@ -991,7 +993,7 @@ export const MainstreamDiscover: Component<{
           enabled: !s.enabled,
         });
       } else if (row.key.startsWith("rssfeed:")) {
-        const f = mainstreamFeeds().find((f) => `rssfeed:${f.id}` === row.key);
+        const f = allMainstreamFeeds().find((f) => `rssfeed:${f.id}` === row.key);
         if (!f) return;
         await updateRssFeed(f.id, {
           title: f.title,
@@ -1056,7 +1058,8 @@ export const MainstreamDiscover: Component<{
         />
       );
     }
-    if (key === "trakt-watchlist") return <TraktWatchlistRow onGrab={setGrabTarget} />;
+    if (key === "trakt-watchlist")
+      return <TraktWatchlistRow contentType={props.contentType} onGrab={setGrabTarget} />;
     if (key === "library")
       return (
         <LibraryRow

@@ -188,7 +188,25 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 			// — served straight from libStore, same {id, title, tags} shape as
 			// Movies/Series, keyed on a library_scenes row instead of an
 			// item/series row.
-			scenes, err := libStore.ListScenes(ctx)
+			//
+			// Claude 2026-08-13: optional ?aspect=vertical|horizontal SQL filter.
+			// Reason: Adult Library Movies vs Scenes share library_scenes;
+			//   classification is write-once at import, this handler must not
+			//   probe images. Omit aspect → unfiltered (Dedup/Tag/legacy clients).
+			//   Frontend does not send aspect until Slice 3.
+			// Review if: frontend Library tabs consume this param.
+			aspect := strings.TrimSpace(r.URL.Query().Get("aspect"))
+			var scenes []library.Scene
+			var err error
+			switch aspect {
+			case "":
+				scenes, err = libStore.ListScenes(ctx)
+			case library.PosterAspectVertical, library.PosterAspectHorizontal:
+				scenes, err = libStore.ListScenesByAspect(ctx, aspect)
+			default:
+				http.Error(w, "aspect must be vertical or horizontal", http.StatusBadRequest)
+				return
+			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return

@@ -45,6 +45,7 @@ import {
   createRssFeed,
   deleteRssFeed,
   fetchRssFeeds,
+  isAdultRssTarget,
   isProtocolUndetected,
   reorderRssFeeds,
   rescanRssFeed,
@@ -79,7 +80,7 @@ export function reorderAdultFeedIds(
 ): number[] {
   let ai = 0;
   return allFeeds.map((f) =>
-    f.target === "adult" ? (newAdultOrder[ai++] ?? f.id) : f.id,
+    isAdultRssTarget(f.target) ? (newAdultOrder[ai++] ?? f.id) : f.id,
   );
 }
 
@@ -315,7 +316,8 @@ export const RssFeedAdminSection: Component = () => {
 
   // Only adult feeds are managed here; movie/tv feeds live in Mainstream's own
   // (deferred) UI. The full list is still kept for the reorder id mapping.
-  const adultFeeds = () => (feeds() ?? []).filter((f) => f.target === "adult");
+  const adultFeeds = () =>
+    (feeds() ?? []).filter((f) => isAdultRssTarget(f.target));
 
   const closeForm = () => setEditing(null);
   const editingFeed = (): RssFeed | undefined => {

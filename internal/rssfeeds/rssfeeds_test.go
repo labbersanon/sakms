@@ -118,6 +118,26 @@ func TestCreate_RejectsUnknownTarget(t *testing.T) {
 	}
 }
 
+func TestCreate_AcceptsAdultMovieTarget(t *testing.T) {
+	s := newTestStore(t)
+	f, err := s.Create(context.Background(), "Movie Feed", "https://example.com/adult-movies", TargetAdultMovie, Torrent, true)
+	if err != nil {
+		t.Fatalf("Create adult-movie: %v", err)
+	}
+	if f.Target != TargetAdultMovie {
+		t.Fatalf("target = %q", f.Target)
+	}
+}
+
+func TestIsAdultTarget(t *testing.T) {
+	if !IsAdultTarget(TargetAdult) || !IsAdultTarget(TargetAdultMovie) {
+		t.Fatal("adult and adult-movie must both be Adult-section targets")
+	}
+	if IsAdultTarget(TargetMovie) || IsAdultTarget(TargetTV) {
+		t.Fatal("movie/tv must not be Adult-section targets")
+	}
+}
+
 func TestCreate_RejectsUnknownProtocol(t *testing.T) {
 	s := newTestStore(t)
 	_, err := s.Create(context.Background(), "Bogus", "https://example.com/rss", TargetMovie, Protocol("bogus"), true)

@@ -103,7 +103,7 @@ type textMatchScene struct {
 // AI/text identification fallback. Reimplemented here (rather than shared with
 // internal/identify's own fingerprint test fake) since that one is unexported
 // to its own package.
-func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title string }, rec *giveBackRecord, textMatch *textMatchScene) *stashbox.Client {
+func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title, image string }, rec *giveBackRecord, textMatch *textMatchScene) *stashbox.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -151,7 +151,11 @@ func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title string }
 			for i, fp := range v.FPs {
 				hash := fp[0]["hash"]
 				if scene, ok := results[hash]; ok {
-					matches[i] = []map[string]any{{"id": scene.id, "title": scene.title, "release_date": "", "studio": map[string]any{"name": ""}}}
+					row := map[string]any{"id": scene.id, "title": scene.title, "release_date": "", "studio": map[string]any{"name": ""}}
+					if scene.image != "" {
+						row["images"] = []map[string]any{{"url": scene.image}}
+					}
+					matches[i] = []map[string]any{row}
 				} else {
 					matches[i] = []map[string]any{}
 				}

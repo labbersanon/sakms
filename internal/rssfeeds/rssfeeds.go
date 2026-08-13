@@ -42,15 +42,25 @@ var ErrReorderMismatch = errors.New("rssfeeds: reorder ids must match the full s
 type Target string
 
 const (
-	TargetMovie Target = "movie"
-	TargetTV    Target = "tv"
-	TargetAdult Target = "adult"
+	TargetMovie      Target = "movie"
+	TargetTV         Target = "tv"
+	TargetAdult      Target = "adult"
+	TargetAdultMovie Target = "adult-movie"
 )
 
+// IsAdultTarget reports whether t is an Adult-section feed (scene or movie).
+// Section-lock, Discover feed scanning, and Settings adult-feed lists must
+// use this rather than comparing to TargetAdult alone — adult-movie feeds
+// are Adult-locked too.
+func IsAdultTarget(t Target) bool {
+	return t == TargetAdult || t == TargetAdultMovie
+}
+
 var validTargets = map[Target]bool{
-	TargetMovie: true,
-	TargetTV:    true,
-	TargetAdult: true,
+	TargetMovie:      true,
+	TargetTV:         true,
+	TargetAdult:      true,
+	TargetAdultMovie: true,
 }
 
 // Protocol is admin-set per feed at creation, not sniffed from the feed's

@@ -256,6 +256,7 @@ func run() error {
 	// Reuses the same outboundTimeout-bounded client every other external client
 	// in this program uses.
 	imageProxy := imageproxy.New(&http.Client{Timeout: outboundTimeout})
+	library.SetPosterProxy(imageProxy)
 	// entityStore is the DB-first entity cache for Adult filename parsing. It
 	// wraps the same sqlDB as every other store — no second connection needed.
 	entityStore := parseentity.NewSQLiteStore(sqlDB)

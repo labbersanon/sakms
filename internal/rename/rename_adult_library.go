@@ -440,12 +440,14 @@ func OrganizeImportedAdult(ctx context.Context, sess *mode.Session, libStore *li
 		fileSize = info.Size()
 		fileMTime = info.ModTime().UTC().Format(time.RFC3339Nano)
 	}
+	aspect := library.ProbePosterAspect(ctx, id.match.Image)
 	if _, err := libStore.UpsertScene(ctx, library.Scene{
 		Box: id.match.Box, SceneID: id.match.SceneID,
 		Title: id.match.Title, Studio: id.match.Studio, Date: id.match.Date,
 		FilePath: destPath, RootFolderPath: rootFolderPath,
 		Size: fileSize, QualityTier: tier,
 		PHash: phash, PHashFileSize: fileSize, PHashFileMTime: fileMTime,
+		PosterAspectClass: aspect,
 	}); err != nil {
 		return destPath, changes, fmt.Errorf("recording organized scene: %w", err)
 	}

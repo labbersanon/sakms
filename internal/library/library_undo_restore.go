@@ -71,15 +71,20 @@ func (s *Store) RestoreEpisode(ctx context.Context, ep Episode) error {
 // path back without them would leave Stage-2 Dedup trusting a hash computed for
 // a different file size/mtime.
 func (s *Store) RestoreScene(ctx context.Context, scene Scene) error {
+	// Claude 2026-08-13: normalize missing/empty posterAspectClass to horizontal.
+	// Reason: pre-migration undo snapshots have no posterAspectClass JSON key;
+	//   writing "" would fail the CHECK constraint.
+	// Review if: every snapshot is known to include the field.
+	scene.PosterAspectClass = normalizePosterAspect(scene.PosterAspectClass)
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE library_scenes SET
 			box = ?, scene_id = ?, title = ?, studio = ?, date = ?, file_path = ?,
 			root_folder_path = ?, phash = ?, phash_file_size = ?, phash_file_mtime = ?,
-			size = ?, quality_tier = ?, updated_at = sakms_now()
+			size = ?, quality_tier = ?, poster_aspect_class = ?, updated_at = sakms_now()
 		WHERE id = ?
 	`, scene.Box, scene.SceneID, scene.Title, scene.Studio, scene.Date, scene.FilePath,
 		scene.RootFolderPath, scene.PHash, scene.PHashFileSize, scene.PHashFileMTime,
-		scene.Size, scene.QualityTier, scene.ID); err != nil {
+		scene.Size, scene.QualityTier, scene.PosterAspectClass, scene.ID); err != nil {
 		return fmt.Errorf("restoring library scene %d: %w", scene.ID, err)
 	}
 	return nil
@@ -122,7 +127,7 @@ func (s *Store) GetEpisodeByID(ctx context.Context, episodeID int64) (*Episode, 
 // key GetScene takes is itself restorable state.
 func (s *Store) GetSceneByID(ctx context.Context, sceneID int64) (*Scene, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class
 		FROM library_scenes WHERE id = ?
 	`, sceneID)
 	scene, err := scanScene(row)

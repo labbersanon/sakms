@@ -104,13 +104,14 @@ func listRssFeedsHandler(store *rssfeeds.Store) http.HandlerFunc {
 	}
 }
 
-// withoutAdultFeeds drops every target:"adult" row. Returns a fresh slice
-// rather than filtering in place — the caller's slice comes straight from the
-// Store and must not be rearranged under it.
+// withoutAdultFeeds drops every Adult-section feed (target "adult" or
+// "adult-movie"). Returns a fresh slice rather than filtering in place — the
+// caller's slice comes straight from the Store and must not be rearranged
+// under it.
 func withoutAdultFeeds(feeds []rssfeeds.Feed) []rssfeeds.Feed {
 	out := make([]rssfeeds.Feed, 0, len(feeds))
 	for _, f := range feeds {
-		if f.Target == rssfeeds.TargetAdult {
+		if rssfeeds.IsAdultTarget(f.Target) {
 			continue
 		}
 		out = append(out, f)
@@ -134,7 +135,7 @@ func denyIfAdultFeed(w http.ResponseWriter, r *http.Request, store *rssfeeds.Sto
 		}
 		return nil, true
 	}
-	if f.Target == rssfeeds.TargetAdult && denyIfAdultLocked(w, r) {
+	if rssfeeds.IsAdultTarget(f.Target) && denyIfAdultLocked(w, r) {
 		return nil, true
 	}
 	return f, false
@@ -209,7 +210,7 @@ func createRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store) http.H
 		// Checked BEFORE the auto-detect fetch below: creating an Adult feed
 		// while Adult is locked must not first go and fetch the operator's
 		// Adult feed URL.
-		if rssfeeds.Target(req.Target) == rssfeeds.TargetAdult && denyIfAdultLocked(w, r) {
+		if rssfeeds.IsAdultTarget(rssfeeds.Target(req.Target)) && denyIfAdultLocked(w, r) {
 			return
 		}
 
@@ -264,7 +265,7 @@ func updateRssFeedHandler(store *rssfeeds.Store) http.HandlerFunc {
 		if _, done := denyIfAdultFeed(w, r, store, id); done {
 			return
 		}
-		if rssfeeds.Target(req.Target) == rssfeeds.TargetAdult && denyIfAdultLocked(w, r) {
+		if rssfeeds.IsAdultTarget(rssfeeds.Target(req.Target)) && denyIfAdultLocked(w, r) {
 			return
 		}
 		// req.FeedURL is three-state (*string): nil preserves the stored
@@ -456,7 +457,7 @@ func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store, relea
 		// keys collects each Adult item's enclosure key for the single batched
 		// pool join below; nil (and never allocated) for a Movies/Series feed.
 		var keys []string
-		adult := f.Target == rssfeeds.TargetAdult
+		adult := rssfeeds.IsAdultTarget(f.Target)
 		for i, it := range items {
 			downloadURL := it.EnclosureURL
 			if downloadURL == "" {

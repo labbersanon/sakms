@@ -51,10 +51,11 @@ func (id *Identifier) LookupFingerprints(ctx context.Context, phashes []string) 
 			}
 			for i, phash := range chunk {
 				if i < len(scenes) && scenes[i] != nil {
-					results[phash] = &MatchResult{
-						Title: scenes[i].Title, Studio: scenes[i].StudioName, Date: scenes[i].ReleaseDate,
-						Type: "scene", Source: box + "_fingerprint", SceneID: scenes[i].ID, Box: box,
-					}
+			results[phash] = &MatchResult{
+				Title: scenes[i].Title, Studio: scenes[i].StudioName, Date: scenes[i].ReleaseDate,
+				Type: "scene", Source: box + "_fingerprint", SceneID: scenes[i].ID, Box: box,
+				Image: scenes[i].ImageURL,
+			}
 				}
 			}
 		}

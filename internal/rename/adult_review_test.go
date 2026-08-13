@@ -136,7 +136,7 @@ func TestBuildAdultReview_PreviewSkipsOutboundRecheck(t *testing.T) {
 	hasher := &fakeHasher{hashes: map[string]string{videoPath: phash}}
 	prober := &fakeProber{}
 
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
 		phash: {id: "scene-999", title: "Catalog Scene Title"},
 	}, nil, nil)
 	sess := adultTestSessionWithBoxes(map[string]*stashbox.Client{"stashdb": stashdb})
@@ -455,7 +455,7 @@ func TestUpgradeLocalAdultScenes_UpgradesLocalSceneToCatalogIdentity(t *testing.
 	originalID := sc.ID
 
 	// Wire a catalog box that returns a hit for this phash.
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
 		phash: {id: "catalog-001", title: "Catalog Title"},
 	}, nil, nil)
 	sess := adultTestSessionWithBoxes(map[string]*stashbox.Client{"stashdb": stashdb})
@@ -511,7 +511,7 @@ func TestUpgradeLocalAdultScenes_SkipsWhenCatalogAlreadyTracked(t *testing.T) {
 		t.Fatalf("inserting catalog scene: %v", err)
 	}
 
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
 		phash: {id: "catalog-001", title: "Already Tracked"},
 	}, nil, nil)
 	sess := adultTestSessionWithBoxes(map[string]*stashbox.Client{"stashdb": stashdb})

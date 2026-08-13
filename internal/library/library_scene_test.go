@@ -2,7 +2,9 @@ package library
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 )
 
@@ -282,5 +284,126 @@ func TestListScenes_EmptyIsNotNil(t *testing.T) {
 	}
 	if got == nil {
 		t.Error("expected an empty slice, not nil, so it serializes as [] not null")
+	}
+}
+
+func TestUpsertScene_EmptyPosterAspectBecomesHorizontal(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	created, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-aspect-empty", Title: "Empty Class", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("UpsertScene: %v", err)
+	}
+	if created.PosterAspectClass != PosterAspectHorizontal {
+		t.Fatalf("got %q, want horizontal", created.PosterAspectClass)
+	}
+	got, err := s.GetScene(ctx, "stashdb", "uuid-aspect-empty")
+	if err != nil {
+		t.Fatalf("GetScene: %v", err)
+	}
+	if got.PosterAspectClass != PosterAspectHorizontal {
+		t.Fatalf("stored %q, want horizontal", got.PosterAspectClass)
+	}
+}
+
+func TestUpsertScene_PosterAspectWriteOnce(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	created, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-aspect-once", Title: "Movie Poster", RootFolderPath: "/adult",
+		PosterAspectClass: PosterAspectVertical,
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if created.PosterAspectClass != PosterAspectVertical {
+		t.Fatalf("first upsert class = %q, want vertical", created.PosterAspectClass)
+	}
+	updated, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-aspect-once", Title: "Movie Poster (renamed)", RootFolderPath: "/adult",
+		PosterAspectClass: PosterAspectHorizontal,
+	})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if updated.Title != "Movie Poster (renamed)" {
+		t.Fatalf("title should update, got %q", updated.Title)
+	}
+	if updated.PosterAspectClass != PosterAspectVertical {
+		t.Fatalf("write-once class = %q, want vertical", updated.PosterAspectClass)
+	}
+	got, err := s.GetScene(ctx, "stashdb", "uuid-aspect-once")
+	if err != nil {
+		t.Fatalf("GetScene: %v", err)
+	}
+	if got.PosterAspectClass != PosterAspectVertical {
+		t.Fatalf("stored class = %q, want vertical", got.PosterAspectClass)
+	}
+}
+
+func TestListScenesByAspect(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.UpsertScene(ctx, Scene{Box: "stashdb", SceneID: "h", Title: "H", RootFolderPath: "/adult", PosterAspectClass: PosterAspectHorizontal}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertScene(ctx, Scene{Box: "stashdb", SceneID: "v", Title: "V", RootFolderPath: "/adult", PosterAspectClass: PosterAspectVertical}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.ListScenes(ctx)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("ListScenes = %d err=%v, want 2", len(all), err)
+	}
+	vert, err := s.ListScenesByAspect(ctx, PosterAspectVertical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vert) != 1 || vert[0].SceneID != "v" {
+		t.Fatalf("vertical = %+v", vert)
+	}
+	horiz, err := s.ListScenesByAspect(ctx, PosterAspectHorizontal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(horiz) != 1 || horiz[0].SceneID != "h" {
+		t.Fatalf("horizontal = %+v", horiz)
+	}
+}
+
+func TestRestoreScene_MissingPosterAspectDefaultsHorizontal(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	created, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-undo", Title: "Snap", Studio: "S", Date: "2024-01-01",
+		FilePath: "/adult/a.mp4", RootFolderPath: "/adult",
+		PosterAspectClass: PosterAspectVertical,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Pre-migration undo snapshot: no posterAspectClass key.
+	raw := `{"id":` + strconv.FormatInt(created.ID, 10) + `,"box":"stashdb","sceneId":"uuid-undo","title":"Snap","studio":"S","date":"2024-01-01","filePath":"/adult/a.mp4","rootFolderPath":"/adult"}`
+	var scene Scene
+	if err := json.Unmarshal([]byte(raw), &scene); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if scene.PosterAspectClass != "" {
+		t.Fatalf("fixture leaked posterAspectClass %q", scene.PosterAspectClass)
+	}
+	scene.ID = created.ID
+	if err := s.RestoreScene(ctx, scene); err != nil {
+		t.Fatalf("RestoreScene: %v", err)
+	}
+	got, err := s.GetSceneByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSceneByID: %v", err)
+	}
+	if got.PosterAspectClass != PosterAspectHorizontal {
+		t.Fatalf("restored class = %q, want horizontal", got.PosterAspectClass)
+	}
+	if got.Title != "Snap" {
+		t.Fatalf("title = %q", got.Title)
 	}
 }

@@ -18,6 +18,11 @@
 // thin SQLite-backed Store (same shape as internal/grabs/internal/
 // connections) plus ScanRootFolder, a plain directory walk that replaces
 // what Radarr/Sonarr's RootFolder.UnmappedFolders used to compute for free.
+// Claude 2026-08-13: ProbePosterAspect is the one exception — it classifies
+// a catalog poster via imageproxy.Validate + the process Proxy (SetPosterProxy).
+// Reason: Adult Movies vs Scenes membership is write-once at grab/import from
+// the catalog image; the Store still never dials itself.
+// Review if: classification moves out of this package.
 package library
 
 import (

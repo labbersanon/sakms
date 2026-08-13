@@ -34,7 +34,7 @@ func TestScanLibraryAdult_ProducesPendingProposalForNewScene(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
@@ -87,7 +87,7 @@ func TestScanLibraryAdult_AlreadyTrackedIsPendingAlternate(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "newhash"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
 		"newhash": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
@@ -140,7 +140,7 @@ func TestScanLibraryAdult_SkipsAlreadyConformantName(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{fresh: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{fresh: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
@@ -268,7 +268,7 @@ func TestScanLibraryAdult_ThenApply_RoundTrip(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title string }{
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})

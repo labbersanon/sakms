@@ -148,6 +148,39 @@ func TestSectionLockW2_RssFeedListFiltersAdultRowsButKeepsMainstream(t *testing.
 	}
 }
 
+func TestSectionLockW2_RssFeedAdultMovieIsLockedLikeAdult(t *testing.T) {
+	f := newLayer2Fixture(t)
+	protocol := "torrent"
+	denied := w2Do(t, f.srv.URL, http.MethodPost, "/api/discover/rss-feeds", apidto.RssFeedCreateRequest{
+		Title: "Adult Movies", FeedURL: "https://example.invalid/adult-movies.xml",
+		Target: "adult-movie", Protocol: &protocol, Enabled: true,
+	}, withKey)
+	assertSectionLockedJSON(t, denied)
+
+	created := w2Do(t, f.srv.URL, http.MethodPost, "/api/discover/rss-feeds", apidto.RssFeedCreateRequest{
+		Title: "Adult Movies", FeedURL: "https://example.invalid/adult-movies.xml",
+		Target: "adult-movie", Protocol: &protocol, Enabled: true,
+	}, withKey, withPinHeader(sectionLockTestPin))
+	if created.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(created.Body)
+		t.Fatalf("PIN create adult-movie = %d (%s), want 200", created.StatusCode, body)
+	}
+	var feed apidto.RssFeed
+	if err := json.NewDecoder(created.Body).Decode(&feed); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+
+	locked := listRssFeeds(t, f.srv.URL, withKey)
+	for _, row := range locked {
+		if row.Target == "adult-movie" || row.Target == "adult" {
+			t.Fatalf("adult-movie feed leaked into the locked list: %+v", row)
+		}
+	}
+
+	got := w2Do(t, f.srv.URL, http.MethodDelete, "/api/discover/rss-feeds/"+strconv.Itoa(feed.ID), nil, withKey)
+	assertSectionLockedJSON(t, got)
+}
+
 // Every WRITE addressed to an Adult feed refuses with the one rejection shape
 // §6 defines, so the frontend can raise its PIN overlay.
 func TestSectionLockW2_RssFeedWritesRefuseAdult(t *testing.T) {

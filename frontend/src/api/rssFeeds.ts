@@ -62,8 +62,14 @@ export function isProtocolUndetected(
 
 // TARGETS mirrors internal/rssfeeds.Target's fixed enum — a feed belongs to
 // exactly one mode, no "mixed" (unlike Slider's target, which allows mixed).
-export const TARGETS = ["movie", "tv", "adult"] as const;
+export const TARGETS = ["movie", "tv", "adult", "adult-movie"] as const;
 export type RssFeedTarget = (typeof TARGETS)[number];
+
+// isAdultRssTarget matches internal/rssfeeds.IsAdultTarget — scene and
+// movie Adult feeds share section-lock and Settings list membership.
+export function isAdultRssTarget(t: string): boolean {
+  return t === "adult" || t === "adult-movie";
+}
 
 // PROTOCOLS mirrors internal/rssfeeds.Protocol's fixed enum — admin-set at
 // creation, not sniffed from the feed's XML.

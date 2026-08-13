@@ -154,9 +154,14 @@ describe("reorderAdultFeedIds", () => {
     expect(reorderAdultFeedIds(all, [2, 1, 3])).toEqual([10, 2, 1, 20, 3]);
   });
 
-  it("is a plain identity when every feed is adult", () => {
-    const all: RssFeed[] = [feed({ id: 1 }), feed({ id: 2 }), feed({ id: 3 })];
-    expect(reorderAdultFeedIds(all, [3, 1, 2])).toEqual([3, 1, 2]);
+  it("treats adult-movie slots as adult for reorder mapping", () => {
+    const all: RssFeed[] = [
+      feed({ id: 10, target: "movie" }),
+      feed({ id: 1, target: "adult" }),
+      feed({ id: 4, target: "adult-movie" }),
+      feed({ id: 20, target: "tv" }),
+    ];
+    expect(reorderAdultFeedIds(all, [4, 1])).toEqual([10, 4, 1, 20]);
   });
 });
 

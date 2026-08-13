@@ -694,7 +694,7 @@ func runFeedCycle(ctx context.Context, httpClient *http.Client, connStore *conne
 	var adultFeeds []rssfeeds.Feed
 	enabledIDs := make([]int64, 0, len(feeds))
 	for _, f := range feeds {
-		if f.Target == rssfeeds.TargetAdult && f.Enabled {
+		if rssfeeds.IsAdultTarget(f.Target) && f.Enabled {
 			adultFeeds = append(adultFeeds, f)
 			enabledIDs = append(enabledIDs, int64(f.ID))
 		}

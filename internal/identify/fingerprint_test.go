@@ -51,10 +51,14 @@ func (f *fakeFingerprintBox) handle(w http.ResponseWriter, r *http.Request) {
 		hash := fp[0]["hash"]
 		f.queried = append(f.queried, hash)
 		if scene, ok := f.results[hash]; ok {
-			matches[i] = []map[string]any{{
+			row := map[string]any{
 				"id": scene.ID, "title": scene.Title, "release_date": scene.ReleaseDate,
 				"studio": map[string]any{"name": scene.StudioName},
-			}}
+			}
+			if scene.ImageURL != "" {
+				row["images"] = []map[string]any{{"url": scene.ImageURL}}
+			}
+			matches[i] = []map[string]any{row}
 		} else {
 			matches[i] = []map[string]any{}
 		}
@@ -84,6 +88,21 @@ func TestLookupFingerprints_StashDBHitStopsCascade(t *testing.T) {
 	}
 	if got.Title != "Some Scene" || got.SceneID != "scene1" || got.Box != "stashdb" || got.Source != "stashdb_fingerprint" {
 		t.Errorf("unexpected match: %+v", got)
+	}
+}
+
+func TestLookupFingerprints_CopiesImageURL(t *testing.T) {
+	stashdb := newFakeFingerprintBox(t, map[string]stashbox.Scene{
+		"hash1": {ID: "scene1", Title: "Some Scene", ImageURL: "https://cdn.example/p.jpg"},
+	})
+	id := newTestIdentifier(map[string]*stashbox.Client{"stashdb": stashdb})
+	results, err := id.LookupFingerprints(context.Background(), []string{"hash1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := results["hash1"]
+	if got == nil || got.Image != "https://cdn.example/p.jpg" {
+		t.Fatalf("Image = %+v, want catalog URL", got)
 	}
 }
 

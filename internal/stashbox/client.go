@@ -78,14 +78,24 @@ type Scene struct {
 	// ImageURL, Tags, and Duration are populated by both the browse path
 	// (QueryScenes) and the title/id identification paths (SearchScene and
 	// FindScene), all of which request images/tags/duration for display +
-	// matching. The fingerprint path (FindScenesByFingerprints) keeps a
-	// minimal hash-matching selection that omits them, so scenes it returns
-	// leave these zero-valued — that's expected, not a bug. Duration was
-	// added to SearchScene/FindScene's selections after a live bug: a caller
-	// (internal/adultnewest) building a grab request from a match with no
-	// runtime silently failed to auto-qualify anything against Adult's
-	// bitrate-quality-floor scorer, which never re-fetches a real runtime
-	// the way Movies/Series do.
+	// matching. The fingerprint path (FindScenesByFingerprints) now also
+	// requests images { url } so grab/import can classify poster aspect
+	// write-once (Adult Movies vs Scenes). Tags/Duration stay omitted on
+	// that path — that's expected, not a bug.
+	// Claude 2026-08-13: fingerprint selection gained images { url }.
+	// Reason: OrganizeImportedAdult classifies from MatchResult.Image; the
+	//   previous minimal selection left ImageURL empty on every fingerprint
+	//   hit, so every grab would store horizontal.
+	// Review if: a dedicated scene-by-id fetch is used instead of widening
+	//   the fingerprint selection.
+	// Prior claim (no longer true for ImageURL): "The fingerprint path
+	//   (FindScenesByFingerprints) keeps a minimal hash-matching selection
+	//   that omits them, so scenes it returns leave these zero-valued."
+	// Duration was added to SearchScene/FindScene's selections after a live
+	// bug: a caller (internal/adultnewest) building a grab request from a
+	// match with no runtime silently failed to auto-qualify anything against
+	// Adult's bitrate-quality-floor scorer, which never re-fetches a real
+	// runtime the way Movies/Series do.
 	ImageURL string
 	Tags     []string
 	Duration int
@@ -214,7 +224,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 
 const fpQuery = `query FindByFingerprints($fps: [[FingerprintQueryInput!]!]!) {
   findScenesBySceneFingerprints(fingerprints: $fps) {
-    id title release_date studio { name parent { name } }
+    id title release_date studio { name parent { name } } images { url }
   }
 }`
 

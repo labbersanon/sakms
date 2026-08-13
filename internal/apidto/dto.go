@@ -2232,8 +2232,10 @@ type BrowseResponse struct {
 // --- Optional raw RSS feed rows (internal/rssfeeds + internal/rssfeed) — a
 // per-row raw RSS 2.0 feed URL (NZBGeek saved-search style), fetched and
 // parsed server-side, rendered as one more optional Discover row. Target is
-// "movie" | "tv" | "adult" (a feed belongs to exactly one mode, no "mixed").
-// Mirrors Slider's CRUD+reorder DTO shape almost exactly.
+// "movie" | "tv" | "adult" | "adult-movie" (a feed belongs to exactly one
+// mode, no "mixed"). "adult" is scene RSS; "adult-movie" is Adult Movies RSS.
+// Both are Adult-section locked. Mirrors Slider's CRUD+reorder DTO shape
+// almost exactly.
 type RssFeed struct {
 	ID    int    `json:"id"`
 	Title string `json:"title"`

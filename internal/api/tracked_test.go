@@ -133,6 +133,53 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	}
 }
 
+func TestListTracked_Adult_AspectQuery(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "h", Title: "Horiz", RootFolderPath: "/adult",
+		PosterAspectClass: library.PosterAspectHorizontal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "v", Title: "Vert", RootFolderPath: "/adult",
+		PosterAspectClass: library.PosterAspectVertical,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all := getTrackedItems(t, srv, "adult")
+	if len(all) != 2 {
+		t.Fatalf("omit aspect: got %d, want 2", len(all))
+	}
+
+	resp, err := http.Get(srv.URL + "/api/modes/adult/tracked?aspect=vertical")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("vertical: status %d", resp.StatusCode)
+	}
+	var vert []libraryTrackedItem
+	if err := json.NewDecoder(resp.Body).Decode(&vert); err != nil {
+		t.Fatal(err)
+	}
+	if len(vert) != 1 || vert[0].Title != "Vert" {
+		t.Fatalf("vertical filter = %+v", vert)
+	}
+
+	bad, err := http.Get(srv.URL + "/api/modes/adult/tracked?aspect=garbage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("garbage aspect: status %d, want 400", bad.StatusCode)
+	}
+}
+
 // TestListTracked_Adult_EmptyWhenNoScenes proves Adult needs no *arr
 // connection at all now — an empty library returns an empty list with 200,
 // not a 400 (the old Whisparr-missing behavior).

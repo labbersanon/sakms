@@ -175,7 +175,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// /api/settings/ai-model pair below.
 	mux.HandleFunc("GET /api/ollama/models", ollamaModelsHandler(httpClient))
 
-	mux.HandleFunc("GET /api/modes/{mode}/tracked", listTrackedHandler(httpClient, connStore, scStore, settingsStore, libStore))
+	mux.HandleFunc("GET /api/modes/{mode}/tracked", listTrackedHandler(httpClient, connStore, settingsStore, libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tracked/{id}/video", trackedVideoHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/collections", collectionsHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/library/root-folder", getLibraryRootFolderHandler(settingsStore))

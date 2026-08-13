@@ -10,7 +10,6 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
-	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -80,7 +79,7 @@ type libraryTrackedFile struct {
 // UI needs real item context instead of guessing an ID. connStore/
 // settingsStore/httpClient are retained on the signature (NewMux wires them)
 // but no longer used, since no mode builds a Servarr session.
-func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, libStore *library.Store) http.HandlerFunc {
+func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, settingsStore *settings.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -184,21 +183,6 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 				return
 			}
 			out := make([]libraryTrackedItem, len(scenes))
-			resolveImage := func(library.Scene) string { return "" }
-			if sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult); err == nil &&
-				sess.Identify != nil && sess.Identify.Boxes != nil {
-				boxes := sess.Identify.Boxes
-				resolveImage = func(sc library.Scene) string {
-					if sc.Box == library.LocalSceneBox || sc.SceneID == "" {
-						return ""
-					}
-					match, err := boxes.ResolveCatalogRef(ctx, sc.Box, sc.SceneID, false)
-					if err != nil || match == nil {
-						return ""
-					}
-					return match.Image
-				}
-			}
 			for i, sc := range scenes {
 				tags, err := libStore.SceneTags(ctx, sc.ID)
 				if err != nil {
@@ -212,7 +196,6 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 				out[i] = libraryTrackedItem{
 					ID: sc.ID, Title: sc.Title, Tags: tags,
 					CreatedAt: sc.CreatedAt, QualityTiers: []string{tier},
-					ImageURL: resolveImage(sc),
 					VideoURL: fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID),
 				}
 			}

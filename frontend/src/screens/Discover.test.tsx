@@ -12,7 +12,7 @@ import type {
   SeasonSummary,
   TrackedItem,
 } from "@dto";
-import { Discover } from "./Discover";
+import { Discover, DiscoverAdult, DiscoverMainstream } from "./Discover";
 import {
   fetchAdultDiscoverMergedRecent,
   fetchAdultDiscoverSorted,
@@ -121,6 +121,28 @@ const mainstreamDefaults = (url: string): Response | null => {
 };
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("Discover — route-specific media tabs", () => {
+  it("renders Series and Movies tabs on the Mainstream discover route", async () => {
+    stubFetch((url) => mainstreamDefaults(url) ?? jsonResponse([]));
+
+    render(() => <DiscoverMainstream />);
+
+    expect(await screen.findByText("Trending Shows")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+  });
+
+  it("renders Scenes and Movies tabs on the Adult discover route", async () => {
+    stubFetch((url) => mainstreamDefaults(url) ?? jsonResponse([]));
+
+    render(() => <DiscoverAdult />);
+
+    expect(await screen.findByPlaceholderText("Search scenes by title…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    expect(screen.getByText("Adult Movies")).toBeInTheDocument();
+  });
+});
 
 describe("Discover — Mainstream combined rows", () => {
   it("renders all four category rows (movies + series × trending + popular) with cards", async () => {

@@ -27,7 +27,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
-import { createSignal, Show } from "solid-js";
+import { type Component, createSignal, Show } from "solid-js";
 import type { SeasonState, TagEntry, TrackedItem } from "@dto";
 import {
   AdultModeContext,
@@ -35,7 +35,7 @@ import {
   ScreenTabsContext,
   type ScreenTabsRegistration,
 } from "../components/ui";
-import { Library } from "./Library";
+import { Library, LibraryAdult, LibraryMainstream } from "./Library";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -85,6 +85,17 @@ const renderLibrary = (url = "/library") => {
   return render(() => (
     <MemoryRouter history={history}>
       <Route path="/library" component={Library} />
+    </MemoryRouter>
+  ));
+};
+
+const renderLibraryRoute = (url: string, component: Component) => {
+  const history = createMemoryHistory();
+  history.set({ value: url, replace: true });
+  return render(() => (
+    <MemoryRouter history={history}>
+      <Route path="/library/mainstream" component={component} />
+      <Route path="/library/adult" component={component} />
     </MemoryRouter>
   ));
 };
@@ -532,6 +543,34 @@ describe("Library — quality-tier deep link and filter", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Lossless Movie" })).toBeNull();
     expect(tierSelect().value).toBe("unknown");
+  });
+});
+
+describe("Library — route-specific media tabs", () => {
+  it("renders Series and Movies tabs on the Mainstream library route", async () => {
+    stubFetch(
+      makeHandler([item({ id: 1, title: "Movie Row", tmdbId: 1 })], {
+        series: [item({ id: 2, title: "Series Row", tmdbId: 2 })],
+      }),
+    );
+    renderLibraryRoute("/library/mainstream", LibraryMainstream);
+
+    expect(await screen.findByRole("button", { name: "Series Row" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    expect(await screen.findByRole("button", { name: "Movie Row" })).toBeInTheDocument();
+  });
+
+  it("renders Scenes and Movies tabs on the Adult library route", async () => {
+    stubFetch(
+      makeHandler([], {
+        adult: [item({ id: 3, title: "Scene Row", qualityTiers: ["high"] })],
+      }),
+    );
+    renderLibraryRoute("/library/adult", LibraryAdult);
+
+    expect(await screen.findByRole("button", { name: "Scene Row" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    expect(screen.getByText("Adult Movies")).toBeInTheDocument();
   });
 });
 

@@ -1,7 +1,7 @@
 // Shared Discover machinery used by BOTH the Mainstream and Adult sub-screens:
 // the grab pipeline (GrabTarget → GrabDialog → auto-grab / manual FallbackPickList),
 // the not-configured setup modal (ConfigureConnectionModal + its detection helper),
-// the TextPoster art fallback, and the generic PaginatedStrip pagination engine.
+// and the generic PaginatedStrip pagination engine.
 // These were extracted verbatim from the original single-file Discover.tsx — they
 // are pieces already shared within that file, relocated, not newly abstracted.
 
@@ -721,14 +721,16 @@ export const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> 
   );
 };
 
-// TextPoster is the fallback tile when no art exists (TMDB/TPDB returned a
-// blank poster/image) — a titled placeholder that keeps the card's footprint
-// identical to an image card so rows don't reflow.
-export const TextPoster: Component<{ label: string }> = (props) => (
-  <div class="flex h-full w-full items-center justify-center bg-surface-2 p-2 text-center text-xs text-muted">
-    {props.label}
-  </div>
-);
+// Claude 2026-08-13: TextPoster retired. Call sites now use MediaFallbackTile
+// from components/media.tsx (same poster-hole fill; letter instead of full
+// title). Reason: leftover cinematic — two tiles did one job; Library already
+// used the letter tile; the full-title tile doubled getByText matches.
+// Review if: a surface still needs the full title inside the poster hole.
+// export const TextPoster: Component<{ label: string }> = (props) => (
+//   <div class="flex h-full w-full items-center justify-center bg-surface-2 p-2 text-center text-xs text-muted">
+//     {props.label}
+//   </div>
+// );
 
 // PaginatedStrip is the generic "Show more" strip every Discover row is built
 // from: a title, a horizontal (or, via containerClass, wrapping) list of cards,

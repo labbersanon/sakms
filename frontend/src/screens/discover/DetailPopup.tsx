@@ -74,7 +74,8 @@ import {
 import { libraryRootFolder, manualGrab } from "../../api/grab";
 import { fetchQualityPrefs } from "../../api/settings";
 import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components/ui";
-import { type GrabTarget, Modal, TextPoster } from "./shared";
+import { MediaFallbackTile } from "../../components/media";
+import { type GrabTarget, Modal } from "./shared";
 import { PosterCard } from "./Mainstream";
 import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
 
@@ -771,7 +772,7 @@ export const DetailPopup: Component<{
             rel="noreferrer"
             class="h-28 w-20 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
           >
-            <Show when={posterSrc()} fallback={<TextPoster label={item().title} />}>
+            <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
               <img
                 src={posterSrc()}
                 alt={item().title}
@@ -1067,7 +1068,7 @@ export const DetailPopup: Component<{
                             <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface-2">
                               <Show
                                 when={tmdbProfile(c.profilePath)}
-                                fallback={<TextPoster label={c.name} />}
+                                fallback={<MediaFallbackTile title={c.name} />}
                               >
                                 <img
                                   src={tmdbProfile(c.profilePath)}

@@ -29,7 +29,7 @@ import type { RssFeedItem } from "@dto";
 import { libraryRootFolder, manualGrab } from "../../api/grab";
 import { proxyImage } from "../../api/discover";
 import { Button, ErrorText } from "../../components/ui";
-import { TextPoster } from "./shared";
+import { MediaFallbackTile } from "../../components/media";
 
 // formatSize renders a byte count as a short human-readable size — "" when
 // absent (SizeBytes is 0/omitted for a malformed/no-enclosure item).
@@ -112,7 +112,7 @@ export const RssFeedCard: Component<{
         <div class="aspect-video overflow-hidden rounded-lg border border-border bg-surface">
           <Show
             when={posterSrc()}
-            fallback={<TextPoster label={displayTitle()} />}
+            fallback={<MediaFallbackTile title={displayTitle()} />}
           >
             <img
               src={posterSrc()}

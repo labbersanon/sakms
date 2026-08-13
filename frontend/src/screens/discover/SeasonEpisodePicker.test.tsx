@@ -56,7 +56,7 @@ const season = (over: Partial<SeasonSummary> = {}): SeasonSummary => ({
 });
 
 describe("SeasonEpisodePicker — season grid (T-6.1)", () => {
-  it("renders one tile per season, proxied posters, TextPoster for a blank posterPath", () => {
+  it("renders one tile per season, proxied posters, MediaFallbackTile for a blank posterPath", () => {
     render(() => (
       <SeasonEpisodePicker
         tmdbId={1399}
@@ -69,9 +69,8 @@ describe("SeasonEpisodePicker — season grid (T-6.1)", () => {
     ));
 
     // One tile per season, rendered in the order given (ordering is the API's
-    // decision, deliberately not re-sorted here). getAllByText because an
-    // art-less tile's TextPoster fallback repeats the label as its placeholder
-    // text — same convention as CalendarView.test.tsx.
+    // decision, deliberately not re-sorted here). The art-less tile's
+    // MediaFallbackTile shows a letter, not a repeated title.
     expect(screen.getAllByText("Specials").length).toBeGreaterThan(0);
     expect(screen.getByText("Season 1")).toBeInTheDocument();
 
@@ -84,8 +83,8 @@ describe("SeasonEpisodePicker — season grid (T-6.1)", () => {
         encodeURIComponent("https://image.tmdb.org/t/p/w342/p1.jpg"),
     );
 
-    // The season WITHOUT art renders no image at all — the TextPoster fallback
-    // repeats the label, so scope the assertion to that tile.
+    // The season WITHOUT art renders no image at all — MediaFallbackTile
+    // fills the poster hole, so scope the assertion to that tile.
     const specialsTile = screen.getAllByText("Specials")[0]!.closest("button")!;
     expect(within(specialsTile).queryByRole("img")).toBeNull();
 

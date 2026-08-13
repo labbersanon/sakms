@@ -49,7 +49,7 @@ import { type Component, For, Show, createResource, createSignal } from "solid-j
 import type { SeasonSummary } from "@dto";
 import { fetchTitleDetail, tmdbPoster, tmdbStill } from "../../api/discover";
 import { Button, Muted, yearOf } from "../../components/ui";
-import { TextPoster } from "./shared";
+import { MediaFallbackTile } from "../../components/media";
 
 // FE-1a declared local PickerEpisode/PickerSeason shapes mirroring the (then
 // unbuilt) apidto types field-for-field; FE-1b swapped them for the generated
@@ -305,7 +305,7 @@ export const SeasonEpisodePicker: Component<{
                         <div class="aspect-[2/3] w-full">
                           <Show
                             when={src()}
-                            fallback={<TextPoster label={seasonLabel(s)} />}
+                            fallback={<MediaFallbackTile title={seasonLabel(s)} />}
                           >
                             <img
                               src={src()}
@@ -396,7 +396,7 @@ export const SeasonEpisodePicker: Component<{
                           <div class="aspect-video w-full">
                             <Show
                               when={src()}
-                              fallback={<TextPoster label={label()} />}
+                              fallback={<MediaFallbackTile title={label()} />}
                             >
                               <img
                                 src={src()}

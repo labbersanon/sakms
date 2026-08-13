@@ -19,15 +19,16 @@ import { fetchTraktStatus, fetchTraktWatchlist, type TraktWatchlistItem } from "
 import { fetchTitlePoster, tmdbPoster, type DiscoverItem } from "../api/discover";
 import { GrabButton } from "../screens/discover/Mainstream";
 import { type GrabTarget } from "../screens/discover/shared";
+import { MediaFallbackTile } from "./media";
 
-// TextPoster mirrors Discover.tsx's own fallback tile (not exported from
-// there — small enough to duplicate rather than grow that file's export
-// surface further for a one-line component).
-const TextPoster: Component<{ label: string }> = (props) => (
-  <div class="flex h-full w-full items-center justify-center bg-surface-2 p-2 text-center text-xs text-muted">
-    {props.label}
-  </div>
-);
+// Claude 2026-08-13: local TextPoster copy retired; MediaFallbackTile is the
+// shared missing-art tile. Reason: leftover cinematic duplication.
+// Review if: Trakt cards need a full-title poster hole again.
+// const TextPoster: Component<{ label: string }> = (props) => (
+//   <div class="flex h-full w-full items-center justify-center bg-surface-2 p-2 text-center text-xs text-muted">
+//     {props.label}
+//   </div>
+// );
 
 // WatchlistCard maps one Trakt watchlist entry to sakms's card shape. Trakt
 // gives only (type, title, year, tmdbId) — no poster — so art is resolved the
@@ -57,7 +58,7 @@ const WatchlistCard: Component<{
   return (
     <div class="w-36 shrink-0" title={props.item.title}>
       <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
-        <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
+        <Show when={src()} fallback={<MediaFallbackTile title={props.item.title} />}>
           <img
             src={src()}
             alt={props.item.title}

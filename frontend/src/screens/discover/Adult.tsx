@@ -55,7 +55,7 @@ import {
   fetchPerformerGenders,
   updateAdultNewestRow,
 } from "../../api/adultNewestRows";
-import { MediaCardShell } from "../../components/media";
+import { MediaCardShell, MediaFallbackTile } from "../../components/media";
 import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
 import {
   type GrabTarget,
@@ -63,7 +63,6 @@ import {
   PaginatedStrip,
   SearchReleasePicker,
   SelectCheckbox,
-  TextPoster,
   notConfiguredService,
 } from "./shared";
 import { useSelection } from "./selection";
@@ -139,7 +138,7 @@ export const AdultCard: Component<{
   // second job went away with the button itself on 2026-08-02.)
   onOpenReleases?: () => void;
   // Claude 2026-08-13: "poster" is 2:3 for Discover Movies; default "video"
-  // keeps Scenes at 16:9. Width wrapper stays w-[240px].
+  // keeps Scenes at 16:9. Width lives on MediaCardShell (wrapper collapsed).
   // Review if: a third Adult card geometry is added.
   aspect?: "video" | "poster";
 }> = (props) => {
@@ -224,17 +223,13 @@ export const AdultCard: Component<{
   // Troubleshooting: EntityCard's two w-[200px] tiles below are a DIFFERENT
   // component and stay at 200px — never find/replace this width in this file.
   // Review if: the carousel's visible-card count drops below 3 on desktop.
+  //
+  // Claude 2026-08-13: width moved onto MediaCardShell (wrapper collapsed).
+  // Reason: leftover cinematic after Slice 3; tests climb .w-[240px] on the
+  // button. SelectCheckbox stays display-only inside the shell.
+  // Review if: a nested interactive control is added inside the poster frame.
   return (
-    <div class="w-[240px] shrink-0">
-      {/* Claude 2026-08-13: clickable body is MediaCardShell, not a div.
-          Reason: Adult scene cards share the Library/Discover media card
-          primitive. Width stays on this outer wrapper (tests climb to
-          .w-[240px]); the shell only owns the clickable poster/title block.
-          Troubleshooting: SelectCheckbox is display-only (pointer-events-none)
-          and is safe inside the button. There are no nested interactive chips
-          on AdultCard.
-          Review if: a nested control is added inside the poster frame. */}
-      <MediaCardShell class="group" label={props.item.title} onClick={onBody}>
+    <MediaCardShell class="group w-[240px] shrink-0" label={props.item.title} onClick={onBody}>
         <div
           class="relative overflow-hidden rounded-lg border border-border bg-surface"
           classList={{
@@ -245,7 +240,7 @@ export const AdultCard: Component<{
           <Show when={inSelect()}>
             <SelectCheckbox checked={checked()} />
           </Show>
-          <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
+          <Show when={src()} fallback={<MediaFallbackTile title={props.item.title} />}>
             <img
               src={src()}
               alt={props.item.title}
@@ -261,24 +256,19 @@ export const AdultCard: Component<{
         </div>
         <div class="mt-1.5 truncate text-sm text-fg">{props.item.title}</div>
         <div class="truncate text-xs text-muted">{subtitle() || "—"}</div>
-      </MediaCardShell>
-      {/* Claude 2026-08-02: the inline Grab button and its
-          `!onOpenReleases || inSelect()` M3 suppression gate used to live here.
-          Reason: the gate existed SOLELY to hide that button on catalog-Search
-          cards, so it had no condition left to express once the button went —
-          see .omc/plans/autopilot-impl-discover-card-cleanup.md §3.2. Unlike
-          PosterCard, AdultCard has nothing else to render here (its
-          SelectCheckbox sits inside the poster frame above), so the slot is
-          empty rather than collapsed.
-          Troubleshooting: select-mode is deliberately UNAFFECTED — the
-          checkbox and sceneTarget()'s registration both sit above and are
-          untouched, which is what preserves the direct-enclosure
-          (Prowlarr-skipping) bulk path §0.2 relies on.
-          Review if: any non-select-mode affordance is added back to this
-          card. */}
-    </div>
+    </MediaCardShell>
   );
 };
+
+// Claude 2026-08-02: AdultCard's inline Grab button and its
+// `!onOpenReleases || inSelect()` M3 suppression gate used to live after the
+// poster/title block. Reason: the gate existed SOLELY to hide that button on
+// catalog-Search cards, so it had no condition left to express once the button
+// went — see .omc/plans/autopilot-impl-discover-card-cleanup.md §3.2.
+// Troubleshooting: select-mode is deliberately UNAFFECTED — the checkbox and
+// sceneTarget()'s registration both sit above and are untouched, which is what
+// preserves the direct-enclosure (Prowlarr-skipping) bulk path §0.2 relies on.
+// Review if: any non-select-mode affordance is added back to this card.
 
 // EntityCard is one Studio or Performer on the Adult browse rows — image-or-text
 // tile + name, no grab (these are pure browse/navigation, not gradable items).
@@ -294,10 +284,15 @@ export const AdultCard: Component<{
 // one aspect-video/object-cover frame before this fix).
 //
 // onSelect is OPTIONAL: the Studios/Performers rows that support drill-down
-// pass it, and the whole card renders as a button that drills into that
-// entity's scenes (via setDrill). Rows with no drill target omit onSelect,
-// rendering a plain, non-interactive <div> tile instead — same art/name, no
-// click behavior.
+// pass it, and the whole card renders as a MediaCardShell button that drills
+// into that entity's scenes (via setDrill). Rows with no drill target omit
+// onSelect, rendering a plain, non-interactive <div> tile instead — same
+// art/name, no click behavior.
+//
+// Claude 2026-08-13: clickable path uses MediaCardShell. Reason: leftover
+// cinematic — last Discover card body still on a raw <button>. No nested
+// interactive controls (drill is the card click).
+// Review if: EntityCard gains chips or a nested control.
 // namesDiverged (merged rows only) flags a fuzzy — but not near-exact — pairing
 // of a TPDB and a StashDB entity: the two source names genuinely differ, so the
 // card MUST show BOTH ("TPDB: {altName}" and "StashDB: {name}") as two
@@ -332,7 +327,7 @@ const EntityCard: Component<{
           "aspect-video": props.kind === "studio",
         }}
       >
-        <Show when={src()} fallback={<TextPoster label={props.name} />}>
+        <Show when={src()} fallback={<MediaFallbackTile title={props.name} />}>
           <img
             src={src()}
             alt={props.name}
@@ -369,14 +364,14 @@ const EntityCard: Component<{
       }
     >
       {(onSelect) => (
-        <button
-          type="button"
-          class="w-[200px] shrink-0 text-left"
+        <MediaCardShell
+          class="w-[200px] shrink-0"
+          label={props.name}
           title={hoverTitle()}
           onClick={() => onSelect()()}
         >
           {artwork()}
-        </button>
+        </MediaCardShell>
       )}
     </Show>
   );
@@ -949,7 +944,7 @@ export const AdultDiscover: Component<{
                     >
                       <Show
                         when={proxyImage(d().image)}
-                        fallback={<TextPoster label={d().name} />}
+                        fallback={<MediaFallbackTile title={d().name} />}
                       >
                         <img
                           src={proxyImage(d().image)}

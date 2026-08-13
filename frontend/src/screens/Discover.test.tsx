@@ -481,7 +481,7 @@ describe("Discover — existing-library row", () => {
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
-    const { container } = render(() => <DiscoverMainstream />);
+    render(() => <DiscoverMainstream />);
 
     expect(await screen.findByText("In your library")).toBeInTheDocument();
     expect(await screen.findByText("Owned Show")).toBeInTheDocument();
@@ -491,16 +491,12 @@ describe("Discover — existing-library row", () => {
     expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
     expect(screen.queryByText("Owned Show")).not.toBeInTheDocument();
 
-    // The lazily-resolved library posters render through the proxy.
-    const libImgs = Array.from(container.querySelectorAll("img")).filter((img) =>
-      decodeURIComponent(img.getAttribute("src") ?? "").match(/libmovie|libshow/),
-    );
-    expect(libImgs.length).toBe(1);
-    for (const img of libImgs) {
-      const src = img.getAttribute("src") ?? "";
-      expect(src.startsWith("/api/images/proxy?url=")).toBe(true);
-      expect(src.startsWith("https://image.tmdb.org")).toBe(false);
-    }
+    // The lazily-resolved library poster renders through the proxy.
+    const img = await screen.findByRole("img", { name: "Owned Movie" });
+    const src = img.getAttribute("src") ?? "";
+    expect(decodeURIComponent(src)).toMatch(/libmovie/);
+    expect(src.startsWith("/api/images/proxy?url=")).toBe(true);
+    expect(src.startsWith("https://image.tmdb.org")).toBe(false);
   });
 
   // Claude 2026-08-02: LibraryCard's DetailPopup wiring is NEW — before the
@@ -526,17 +522,14 @@ describe("Discover — existing-library row", () => {
     render(() => <DiscoverMainstream />);
     clickMoviesTab();
     await screen.findByText("Owned Movie");
-    const card = screen
-      .getByText("Owned Movie")
-      .closest("div.w-\\[220px\\]") as HTMLElement;
+    const card = screen.getByRole("button", { name: "Owned Movie" });
 
     // AC2: the inline Grab button is gone; the body click replaced it.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
-    expect(
-      within(card).getByRole("button", { name: "Owned Movie" }),
-    ).toHaveClass("cursor-pointer");
+    expect(card).toHaveClass("cursor-pointer");
+    expect(card).toHaveClass("w-[220px]");
 
-    fireEvent.click(within(card).getByText("Owned Movie"));
+    fireEvent.click(card);
     // The popup's own resolution selector — markup a LibraryCard never renders.
     expect(await screen.findByText("480p")).toBeInTheDocument();
   });
@@ -560,16 +553,11 @@ describe("Discover — existing-library row", () => {
 
     render(() => <DiscoverMainstream />);
     clickMoviesTab();
-    // A tmdbId-0 card resolves no poster, so it falls back to TextPoster — which
-    // repeats the title. Both matches sit inside the same card wrapper, so
-    // either one climbs to it; findAllByText avoids the multiple-match throw.
-    const titles = await screen.findAllByText("Unmatched Movie");
-    const card = titles[0]!.closest("div.w-\\[220px\\]") as HTMLElement;
-
-    // The card must not be operable when it cannot open a valid popup.
-    expect(
-      within(card).getByRole("button", { name: "Unmatched Movie" }),
-    ).toBeDisabled();
+    // Claude 2026-08-13: missing art uses MediaFallbackTile (first letter),
+    // so the title is unique on the caption. The card itself is the shell
+    // <button> after the wrapper collapse.
+    const card = await screen.findByRole("button", { name: "Unmatched Movie" });
+    expect(card).toBeDisabled();
 
     // Snapshot BEFORE the click: other rows legitimately fire these endpoints on
     // mount, so the assertion has to be "no NEW popup request", not "none ever".
@@ -577,7 +565,7 @@ describe("Discover — existing-library row", () => {
       /\/discover\/(detail|trailer|availability)/.test(String(u)),
     ).length;
 
-    fireEvent.click(titles[0]!);
+    fireEvent.click(card);
 
     // No popup opened. Asserted on the Modal's OWN chrome ("Close"), which
     // renders synchronously with the popup, NOT on "480p" — that comes from the
@@ -619,13 +607,9 @@ describe("Discover — existing-library row", () => {
     await screen.findByText("Owned Movie");
     fireEvent.click(screen.getByText("Select"));
 
-    const card = screen
-      .getByText("Owned Movie")
-      .closest("div.w-\\[220px\\]") as HTMLElement;
-    expect(
-      within(card).getByRole("button", { name: "Owned Movie" }),
-    ).toBeDisabled();
-    fireEvent.click(within(card).getByText("Owned Movie"));
+    const card = screen.getByRole("button", { name: "Owned Movie" });
+    expect(card).toBeDisabled();
+    fireEvent.click(card);
 
     // No popup — even though this same click opens one outside select-mode.
     // Asserted on the Modal's OWN chrome ("Close"), which renders synchronously
@@ -642,10 +626,8 @@ describe("Discover — existing-library row", () => {
     // Leaving select-mode restores the popup route — proving the inertness is
     // the select-mode guard, not a broken handler.
     fireEvent.click(screen.getByText("Done selecting"));
-    expect(
-      within(card).getByRole("button", { name: "Owned Movie" }),
-    ).not.toBeDisabled();
-    fireEvent.click(within(card).getByText("Owned Movie"));
+    expect(card).not.toBeDisabled();
+    fireEvent.click(card);
     expect(await screen.findByText("480p")).toBeInTheDocument();
   });
 });

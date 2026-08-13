@@ -90,8 +90,8 @@ import { adultSceneSearch, adultSceneResolve, tmdbSearch, tvdbSearch } from "../
 import { SectionLockedError } from "../api/client";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import { Button, ErrorText, Muted, yearOf } from "../components/ui";
+import { MediaFallbackTile } from "../components/media";
 import { SeasonEpisodeAccordion } from "./discover/SeasonEpisodeAccordion";
-import { TextPoster } from "./discover/shared";
 
 // Duplicated from SeasonEpisodePicker.tsx:69/71-72 rather than imported.
 // Exporting them from that file would be a modification of a Non-Goal-3
@@ -731,7 +731,7 @@ export const SearchTakeover: Component<{
                             <div class="aspect-[2/3] w-full">
                               <Show
                                 when={src()}
-                                fallback={<TextPoster label={item.title} />}
+                                fallback={<MediaFallbackTile title={item.title} />}
                               >
                                 <img
                                   src={src()}
@@ -800,7 +800,7 @@ export const SearchTakeover: Component<{
                       {(c) => {
                         // proxyImage, NOT tmdbPoster: imageUrl is a FULL URL,
                         // not a TMDB path. It is omitempty, so `?? ""` — and
-                        // proxyImage("") returns "", which routes to TextPoster.
+                        // proxyImage("") returns "", which routes to MediaFallbackTile.
                         const src = () => proxyImage(c.imageUrl ?? "");
                         return (
                           <button
@@ -813,7 +813,7 @@ export const SearchTakeover: Component<{
                             <div class="aspect-video w-full">
                               <Show
                                 when={src()}
-                                fallback={<TextPoster label={c.title} />}
+                                fallback={<MediaFallbackTile title={c.title} />}
                               >
                                 <img
                                   src={src()}

@@ -47,18 +47,25 @@ export const MediaCardShell: Component<{
   selected?: boolean;
   disabled?: boolean;
   class?: string;
+  title?: string;
   onClick: () => void;
   children: JSX.Element;
 }> = (props) => (
   <button
     type="button"
-    class={`flex w-full cursor-pointer flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-default ${props.class ?? ""}`}
+    // Claude 2026-08-13: width is caller-owned (default w-full for Library
+    // grid). Reason: Discover carousel cards collapse their extra wrapper onto
+    // this button (w-[220px]/w-[240px]/w-[200px]); a hardcoded w-full fights
+    // those classes in Tailwind.
+    // Review if: every caller passes an explicit width class.
+    class={`flex cursor-pointer flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-default ${props.class ?? "w-full"}`}
     classList={{
       "border-accent": !!props.selected,
       "border-transparent": !props.selected,
     }}
     aria-pressed={props.selected}
     aria-label={props.label}
+    title={props.title}
     disabled={props.disabled}
     onClick={props.onClick}
   >

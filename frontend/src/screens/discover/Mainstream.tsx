@@ -48,7 +48,6 @@ import {
   PaginatedStrip,
   SearchReleasePicker,
   SelectCheckbox,
-  TextPoster,
   notConfiguredService,
 } from "./shared";
 import { type EpisodePick, SeasonEpisodePicker } from "./SeasonEpisodePicker";
@@ -75,7 +74,7 @@ import {
   updateRssFeed,
 } from "../../api/rssFeeds";
 import { TraktWatchlistRow } from "../../components/TraktWatchlistRow";
-import { MediaCardShell } from "../../components/media";
+import { MediaCardShell, MediaFallbackTile } from "../../components/media";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
@@ -402,20 +401,18 @@ export const PosterCard: Component<{
   };
   return (
     <div class="w-[220px] shrink-0">
-      {/* Claude 2026-08-13: clickable body is MediaCardShell, not a div.
-          Reason: Discover browse cards share the Library/Discover media card
-          primitive. SeriesSeasonSelect stays a sibling below the shell so its
-          buttons are not nested inside the card <button>.
-          Troubleshooting: tests climb to this outer div.w-[220px]; do not
-          move the width class onto the shell. SelectCheckbox is display-only
-          (pointer-events-none) and is safe inside the button.
-          Review if: season chips are ever moved into the poster frame. */}
-      <MediaCardShell class="group" label={props.item.title} onClick={onBody}>
+      {/* Claude 2026-08-13: outer wrapper stays for SeriesSeasonSelect
+          siblings (nested buttons cannot live inside MediaCardShell).
+          AdultCard/LibraryCard collapsed their wrappers onto the shell;
+          PosterCard cannot — chips sit below the button.
+          Reason: leftover cinematic wrapper collapse after Slice 3.
+          Review if: season chips move out of this card. */}
+      <MediaCardShell class="group w-full" label={props.item.title} onClick={onBody}>
         <div class="relative aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
           <Show when={inSelect() && props.mode === "movies"}>
             <SelectCheckbox checked={movieChecked()} />
           </Show>
-          <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
+          <Show when={src()} fallback={<MediaFallbackTile title={props.item.title} />}>
             <img
               src={src()}
               alt={props.item.title}
@@ -590,30 +587,30 @@ const LibraryCard: Component<{
   };
 
   return (
-    <div class="w-[220px] shrink-0" title={props.item.title}>
-      <MediaCardShell
-        label={props.item.title}
-        disabled={!clickable()}
-        onClick={openDetail}
-      >
-        <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
-          <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
-            <img
-              src={src()}
-              alt={props.item.title}
-              loading="lazy"
-              class="h-full w-full object-cover"
-            />
-          </Show>
-        </div>
-        <div class="mt-1.5 truncate text-sm text-fg" title={props.item.title}>
-          {props.item.title}
-        </div>
-        <div class="flex items-center gap-2 text-xs text-muted">
-          <span>{props.item.year || "—"}</span>
-        </div>
-      </MediaCardShell>
-    </div>
+    <MediaCardShell
+      class="w-[220px] shrink-0"
+      label={props.item.title}
+      title={props.item.title}
+      disabled={!clickable()}
+      onClick={openDetail}
+    >
+      <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
+        <Show when={src()} fallback={<MediaFallbackTile title={props.item.title} />}>
+          <img
+            src={src()}
+            alt={props.item.title}
+            loading="lazy"
+            class="h-full w-full object-cover"
+          />
+        </Show>
+      </div>
+      <div class="mt-1.5 truncate text-sm text-fg" title={props.item.title}>
+        {props.item.title}
+      </div>
+      <div class="flex items-center gap-2 text-xs text-muted">
+        <span>{props.item.year || "—"}</span>
+      </div>
+    </MediaCardShell>
   );
 };
 

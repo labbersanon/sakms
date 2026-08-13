@@ -785,7 +785,7 @@ describe("SearchTakeover — the caller-supplied preview slot", () => {
 });
 
 describe("SearchTakeover — images are proxied, never hot-linked", () => {
-  it("Adult cards proxy imageUrl and fall back to TextPoster when it is absent", async () => {
+  it("Adult cards proxy imageUrl and fall back to MediaFallbackTile when it is absent", async () => {
     const withArt = adultCandidate({
       sceneId: "a1",
       title: "Art Scene",
@@ -834,14 +834,13 @@ describe("SearchTakeover — images are proxied, never hot-linked", () => {
         encodeURIComponent("https://cdn.example.com/a.jpg"),
     );
 
-    // Absent imageUrl -> proxyImage("") -> "" -> TextPoster, which is the
-    // bg-surface-2 placeholder tile. Scoped with `within`, because TextPoster
-    // renders the same label the card footer does.
+    // Absent imageUrl -> proxyImage("") -> "" -> MediaFallbackTile, which is
+    // the bg-surface-2 placeholder tile (first letter, not a repeated title).
     const blankTile = await screen.findByLabelText("Use No Art Scene");
     expect(blankTile.querySelector("img")).toBeNull();
     expect(blankTile.querySelector(".bg-surface-2")).not.toBeNull();
     // Structural, not a count: the missing <img> plus the bg-surface-2
-    // placeholder are what prove TextPoster rendered. Pinning an exact
+    // placeholder are what prove MediaFallbackTile rendered. Pinning an exact
     // occurrence count would couple this to the card footer's markup, which
     // has nothing to do with the never-hot-link rule under test.
     expect(within(blankTile).getAllByText("No Art Scene").length).toBeGreaterThan(0);

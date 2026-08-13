@@ -28,10 +28,11 @@ import (
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
+	"github.com/labbersanon/sakms/internal/tvdb"
 )
 
 // overrideFixedURL points the hardcoded base-URL package var for a fixed-URL
-// service (tmdb/stashdb/fansdb/tpdb/brave) at u for the duration of the test,
+// service (tmdb/tvdb/stashdb/fansdb/tpdb/brave) at u for the duration of the test,
 // restoring it on cleanup. Handlers now ignore Connection.URL for these
 // services and read the package var instead, so a test that stands up a fake
 // server must redirect the var, not just store the URL. No-op for any other
@@ -71,6 +72,10 @@ func overrideFixedURL(t *testing.T, service, u string) {
 		prev := tmdb.DefaultBaseURL
 		tmdb.DefaultBaseURL = u
 		t.Cleanup(func() { tmdb.DefaultBaseURL = prev })
+	case "tvdb":
+		prev := tvdb.DefaultBaseURL
+		tvdb.DefaultBaseURL = u
+		t.Cleanup(func() { tvdb.DefaultBaseURL = prev })
 	case "stashdb":
 		prev := stashbox.StashDBURL
 		stashbox.StashDBURL = u

@@ -74,6 +74,7 @@ import {
   type AdultMediaTab,
   type MainstreamMediaTab,
 } from "./mediaNav";
+import { Modal } from "./discover/shared";
 import { useWorkflowActions } from "./workflowHooks";
 
 type PosterMode = Exclude<Mode, "adult">;
@@ -377,7 +378,7 @@ const DetailPanel: Component<{
   createEffect(on(() => props.item.id, () => setVideoError(false)));
 
   return (
-    <div class="flex w-72 flex-shrink-0 flex-col rounded-xl border border-border bg-surface p-4 overflow-y-auto">
+    <div class="flex w-full flex-col rounded-xl border border-border bg-surface p-4">
       {/* Header row */}
       <div class="mb-3 flex items-start justify-between gap-2">
         <div class="min-w-0 flex-1">
@@ -767,9 +768,8 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
             </div>
           </div>
 
-          <div class="flex gap-4">
-            {/* Left: card grid */}
-            <div class="min-w-0 flex-1">
+          <div>
+            <div class="min-w-0">
               {/* "nothing tracked" and "nothing matches the filters" are two
                   different states — only the first existed before filters did. */}
               <Show
@@ -797,21 +797,22 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
               </Show>
             </div>
 
-            {/* Right: detail panel (when a card is selected) */}
             <Show when={selectedItem()}>
               {(item) => (
-                <DetailPanel
-                  item={item()}
-                  mode={props.mode}
-                  datalistId={datalistId()}
-                  draft={detailDraft()}
-                  onDraftChange={setDetailDraft}
-                  onAdd={() => submitDetailAdd(item())}
-                  onRemoveTag={(tag) =>
-                    void act(() => removeTag(props.mode, item().id, tag))
-                  }
-                  onClose={() => setSelectedId(null)}
-                />
+                <Modal title={item().title} onClose={() => setSelectedId(null)}>
+                  <DetailPanel
+                    item={item()}
+                    mode={props.mode}
+                    datalistId={datalistId()}
+                    draft={detailDraft()}
+                    onDraftChange={setDetailDraft}
+                    onAdd={() => submitDetailAdd(item())}
+                    onRemoveTag={(tag) =>
+                      void act(() => removeTag(props.mode, item().id, tag))
+                    }
+                    onClose={() => setSelectedId(null)}
+                  />
+                </Modal>
               )}
             </Show>
           </div>

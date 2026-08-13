@@ -49,13 +49,25 @@ import {
 } from "../api/tag";
 import {
   Button,
+  Card,
   ErrorText,
-  ModeTabs,
   Muted,
+  ScreenTabs,
+  SectionLockOverlay,
   Switch,
+  useAdultEnabled,
+  useSectionLock,
   inputClass,
   labelClass,
 } from "../components/ui";
+import { MediaFallbackTile, MediaGridSkeleton } from "../components/media";
+import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
+import {
+  ADULT_MEDIA_TABS,
+  MAINSTREAM_MEDIA_TABS,
+  type AdultMediaTab,
+  type MainstreamMediaTab,
+} from "./mediaNav";
 import { useWorkflowActions } from "./workflowHooks";
 
 type PosterMode = Exclude<Mode, "adult">;
@@ -152,9 +164,11 @@ const PosterCard: Component<{
             <Show
               when={showAdultVideo()}
               fallback={
-                <div class="flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-bold text-muted">
-                  {props.item.title.charAt(0).toUpperCase()}
-                </div>
+                <MediaFallbackTile
+                  title={props.item.title}
+                  loading={!!adultVideoUrl() && !videoVisible()}
+                  error={videoError()}
+                />
               }
             >
               <video
@@ -669,7 +683,7 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
         </For>
       </datalist>
 
-      <Show when={!loading()} fallback={<Muted class="mt-4">Loading…</Muted>}>
+      <Show when={!loading()} fallback={<MediaGridSkeleton />}>
         <Show
           when={tracked() && tracked()!.length > 0}
           fallback={<Muted class="mt-4">Nothing tracked yet.</Muted>}
@@ -768,7 +782,7 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
                   <Muted class="mt-4">No items match this search or genre.</Muted>
                 }
               >
-                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                   <For each={visibleItems()}>
                     {(item) => (
                       <PosterCard
@@ -811,27 +825,69 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
   );
 };
 
-// Library is the mode-switching shell over the matching mode's catalog grid.
-export const Library: Component = () => {
-  // ?mode= and ?tier= SEED the initial view only — a Dashboard storage-allocation
-  // cell links here as /library?mode=movies&tier=lossless. Read once, at mount,
-  // and deliberately NOT kept in sync with the URL afterwards: two-way binding
-  // would fight resetOnModeChange (which clears the filters on a tab click) and
-  // would make every tab click rewrite the URL. From here it's local state.
+// LibraryMainstream is the Mainstream child under the Library sidebar group.
+// It owns only the Series/Movies top tabs; the Mainstream-vs-Adult split now
+// belongs to AppShell navigation.
+export const LibraryMainstream: Component = () => {
   const [params] = useSearchParams();
-  const initialMode: Mode =
-    params.mode === "series" || params.mode === "adult" ? params.mode : "movies";
+  const initialTab: MainstreamMediaTab =
+    params.tab === "movies" || params.mode === "movies" ? "movies" : "series";
   // An unrecognized tier folds to "" so the <select> can never display a value
   // it isn't actually filtering by.
   const initialTier =
     typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
       ? params.tier
       : "";
-  const [mode, setMode] = createSignal<Mode>(initialMode);
+  const [tab, setTab] = createSignal<MainstreamMediaTab>(initialTab);
   return (
     <div>
-      <ModeTabs current={mode} onSelect={setMode} />
-      <LibraryView mode={mode()} initialTier={initialTier} />
+      <ScreenTabs
+        tabs={MAINSTREAM_MEDIA_TABS}
+        current={tab}
+        onSelect={(id) => setTab(id as MainstreamMediaTab)}
+      />
+      <LibraryView mode={tab()} initialTier={initialTier} />
     </div>
   );
 };
+
+export const LibraryAdult: Component = () => {
+  const [params] = useSearchParams();
+  const adultEnabled = useAdultEnabled();
+  const lock = useSectionLock();
+  const initialTab: AdultMediaTab = params.tab === "movies" ? "movies" : "scenes";
+  const [tab, setTab] = createSignal<AdultMediaTab>(initialTab);
+
+  return (
+    <Show
+      when={adultEnabled()}
+      fallback={<Muted class="mt-4">Adult mode is disabled in Settings.</Muted>}
+    >
+      <Show
+        when={!lock.isLocked(ADULT_CONTENT_SECTION)}
+        fallback={<SectionLockOverlay label={sectionLabel(ADULT_CONTENT_SECTION)} />}
+      >
+        <ScreenTabs
+          tabs={ADULT_MEDIA_TABS}
+          current={tab}
+          onSelect={(id) => setTab(id as AdultMediaTab)}
+        />
+        <Show when={tab() === "scenes"} fallback={<AdultMoviesPlaceholder />}>
+          <LibraryView mode="adult" />
+        </Show>
+      </Show>
+    </Show>
+  );
+};
+
+const AdultMoviesPlaceholder: Component = () => (
+  <Card title="Adult Movies">
+    <Muted>
+      Adult Movies will use TPDB/catalog adult movie entities. The navigation
+      surface is in place; the async catalog enrichment/data surface will land in
+      a follow-up slice.
+    </Muted>
+  </Card>
+);
+
+export const Library: Component = LibraryMainstream;

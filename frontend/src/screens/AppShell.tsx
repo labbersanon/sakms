@@ -35,6 +35,14 @@ import {
   isOrganizeTabId,
 } from "./organizeTabs";
 import {
+  MEDIA_NAV_EXPANDED_KEY,
+  MEDIA_SECTIONS,
+  isMediaSection,
+  mediaSectionHref,
+  type MediaRoot,
+  type MediaSection,
+} from "./mediaNav";
+import {
   AdultModeContext,
   Button,
   ErrorText,
@@ -56,8 +64,8 @@ import {
   sectionLabel,
 } from "../api/sectionLock";
 import { Dashboard } from "./Dashboard";
-import { Discover } from "./Discover";
-import { Library } from "./Library";
+import { DiscoverAdult, DiscoverMainstream } from "./Discover";
+import { LibraryAdult, LibraryMainstream } from "./Library";
 import { Queue } from "./Queue";
 import { Organize } from "./Organize";
 import { Tag } from "./Tag";
@@ -69,7 +77,21 @@ import { BrowserNotifications } from "../components/BrowserNotifications";
 // serves. Guardrail #2 / requirement #7: the router must NEVER claim any
 // /api/* path (the OIDC callback /api/auth/oidc/callback is a real server
 // route). A unit test asserts none of these start with "/api".
-export const APP_ROUTES = ["/dashboard", "/", "/discover", "/library", "/queue", "/organize", "/tag", "/collections", "/settings"] as const;
+export const APP_ROUTES = [
+  "/dashboard",
+  "/",
+  "/discover",
+  "/discover/mainstream",
+  "/discover/adult",
+  "/library",
+  "/library/mainstream",
+  "/library/adult",
+  "/queue",
+  "/organize",
+  "/tag",
+  "/collections",
+  "/settings",
+] as const;
 
 // SIDEBAR_COLLAPSED_KEY persists the sidebar's collapsed/expanded choice across
 // reloads. A single boolean is enough ("true" = collapsed).
@@ -212,7 +234,7 @@ const IconMenu: Component = () => (
   </svg>
 );
 
-type NavItem = { href: string; label: string; icon: Component };
+type NavItem = { href: string; label: string; icon: Component; group?: MediaRoot };
 
 // NAV_ITEMS is EXPORTED (it was module-private until the section PIN lock) so
 // the nav-drift test can set-compare its hrefs against LOCKABLE_TAB_SECTIONS
@@ -222,8 +244,8 @@ type NavItem = { href: string; label: string; icon: Component };
 // independently rather than derived one from the other.
 export const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
-  { href: "/discover", label: "Discover", icon: IconDiscover },
-  { href: "/library", label: "Library", icon: IconLibrary },
+  { href: "/discover/mainstream", label: "Discover", icon: IconDiscover, group: "discover" },
+  { href: "/library/mainstream", label: "Library", icon: IconLibrary, group: "library" },
   { href: "/queue", label: "Queue", icon: IconQueue },
   { href: "/organize", label: "Organize", icon: IconRename },
   { href: "/tag", label: "Tag", icon: IconTag },
@@ -292,27 +314,43 @@ export const Sidebar: Component<{
           <Show
             when={item.href === "/organize"}
             fallback={
-              <A
-                href={item.href}
-                title={item.label}
-                onClick={closeMobile}
-                class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
-                activeClass="!bg-white/10 !text-chrome-fg"
-              >
-                <span class="flex shrink-0 items-center">{item.icon({})}</span>
-                <Show when={!props.collapsed()}>
-                  <span>{item.label}</span>
-                </Show>
-                <Show when={lock.isLocked(item.href.slice(1))}>
-                  <span
-                    class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
-                    title={`${item.label} is locked`}
-                    aria-label={`${item.label} is locked`}
+              <Show
+                when={item.group}
+                fallback={
+                  <A
+                    href={item.href}
+                    title={item.label}
+                    onClick={closeMobile}
+                    class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
+                    activeClass="!bg-white/10 !text-chrome-fg"
                   >
-                    <LockGlyph />
-                  </span>
-                </Show>
-              </A>
+                    <span class="flex shrink-0 items-center">{item.icon({})}</span>
+                    <Show when={!props.collapsed()}>
+                      <span>{item.label}</span>
+                    </Show>
+                    <Show when={lock.isLocked(item.href.split("/")[1] ?? "")}>
+                      <span
+                        class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+                        title={`${item.label} is locked`}
+                        aria-label={`${item.label} is locked`}
+                      >
+                        <LockGlyph />
+                      </span>
+                    </Show>
+                  </A>
+                }
+              >
+                {(group) => (
+                  <MediaNavGroup
+                    root={group()}
+                    label={item.label}
+                    icon={item.icon}
+                    collapsed={props.collapsed}
+                    locked={lock.isLocked(group())}
+                    onCloseMobile={closeMobile}
+                  />
+                )}
+              </Show>
             }
           >
             <OrganizeNavGroup
@@ -324,6 +362,190 @@ export const Sidebar: Component<{
         )}
       </For>
     </nav>
+  );
+};
+
+// Claude 2026-08-13: Library/Discover collapsible media groups.
+// Reason: deep-interview-library-discover-cinematic-consistency — Mainstream
+// and Adult are sidebar children now; Series/Movies and Scenes/Movies are
+// screen-level tabs inside those routes.
+// Troubleshooting: if Library or Discover behaves like a flat nav item again,
+// check this group before changing route-level tabs.
+// Review if: media routes move away from /{library|discover}/{mainstream|adult}.
+const MediaNavGroup: Component<{
+  root: MediaRoot;
+  label: string;
+  icon: Component;
+  collapsed: () => boolean;
+  locked: boolean;
+  onCloseMobile: () => void;
+}> = (props) => {
+  const loc = useLocation();
+  const navigate = useNavigate();
+  const [groupOpen, setGroupOpen] = createPersistedBool(
+    MEDIA_NAV_EXPANDED_KEY[props.root],
+    true,
+  );
+  const [flyoutOpen, setFlyoutOpen] = createSignal(false);
+  let flyoutTimer: ReturnType<typeof setTimeout> | undefined;
+  let rootEl: HTMLDivElement | undefined;
+
+  const onRoot = () =>
+    loc.pathname === `/${props.root}` ||
+    loc.pathname.startsWith(`/${props.root}/`);
+  const activeSection = (): MediaSection => {
+    const [, , section] = loc.pathname.split("/");
+    return isMediaSection(section) ? section : "mainstream";
+  };
+
+  const openFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(true);
+  };
+  const scheduleCloseFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    flyoutTimer = setTimeout(() => setFlyoutOpen(false), 150);
+  };
+  const closeFlyoutNow = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(false);
+  };
+  const goMedia = (section: MediaSection = "mainstream") => {
+    setGroupOpen(true);
+    navigate(mediaSectionHref(props.root, section));
+    closeFlyoutNow();
+    props.onCloseMobile();
+  };
+
+  createEffect(() => {
+    if (!flyoutOpen()) return;
+    const onDoc = (e: MouseEvent) => {
+      if (rootEl && !rootEl.contains(e.target as Node)) closeFlyoutNow();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeFlyoutNow();
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+  onCleanup(() => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+  });
+
+  const linkClass =
+    "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg";
+  const activeLink = "!bg-white/10 !text-chrome-fg";
+
+  return (
+    <div
+      ref={rootEl}
+      class="relative"
+      onMouseEnter={() => {
+        if (props.collapsed()) openFlyout();
+      }}
+      onMouseLeave={() => {
+        if (props.collapsed()) scheduleCloseFlyout();
+      }}
+    >
+      <button
+        type="button"
+        title={props.label}
+        aria-label={props.label}
+        aria-expanded={props.collapsed() ? flyoutOpen() : groupOpen()}
+        aria-haspopup={props.collapsed() ? "menu" : undefined}
+        onClick={() => {
+          if (props.collapsed()) {
+            if (flyoutOpen()) goMedia();
+            else openFlyout();
+            return;
+          }
+          goMedia();
+        }}
+        class={linkClass}
+        classList={{ [activeLink]: onRoot() }}
+      >
+        <span class="flex shrink-0 items-center">{props.icon({})}</span>
+        <Show when={!props.collapsed()}>
+          <span class="flex-1 text-left">{props.label}</span>
+          <span
+            class="flex shrink-0 items-center text-chrome-fg/60"
+            onClick={(e) => {
+              e.stopPropagation();
+              setGroupOpen(!groupOpen());
+            }}
+            role="presentation"
+          >
+            <IconChevron collapsed={!groupOpen()} />
+          </span>
+        </Show>
+        <Show when={props.locked}>
+          <span
+            class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+            title={`${props.label} is locked`}
+            aria-label={`${props.label} is locked`}
+          >
+            <LockGlyph />
+          </span>
+        </Show>
+      </button>
+
+      <Show when={!props.collapsed() && groupOpen()}>
+        <div class="ml-3 flex flex-col gap-0.5 border-l border-chrome-fg/15 pl-2">
+          <For each={MEDIA_SECTIONS}>
+            {(section) => (
+              <A
+                href={mediaSectionHref(props.root, section.id)}
+                title={`${props.label} ${section.label}`}
+                onClick={() => {
+                  setGroupOpen(true);
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onRoot() && activeSection() === section.id,
+                }}
+              >
+                {section.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+
+      <Show when={props.collapsed() && flyoutOpen()}>
+        <div
+          role="menu"
+          aria-label={`${props.label} sections`}
+          class="absolute left-full top-0 z-50 ml-1 min-w-[9rem] rounded-md border border-border bg-chrome p-1 shadow-lg"
+          onMouseEnter={openFlyout}
+          onMouseLeave={scheduleCloseFlyout}
+        >
+          <For each={MEDIA_SECTIONS}>
+            {(section) => (
+              <A
+                href={mediaSectionHref(props.root, section.id)}
+                role="menuitem"
+                title={section.label}
+                onClick={() => {
+                  closeFlyoutNow();
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onRoot() && activeSection() === section.id,
+                }}
+              >
+                {section.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
   );
 };
 
@@ -568,7 +790,7 @@ export function createSectionLockControl(): SectionLockControl {
 // links /discover), so a bare slice(1) would yield "" and leave the landing
 // view ungated while /discover itself was overlaid.
 export function sectionForPath(pathname: string): string | null {
-  const id = (pathname === "/" ? "/discover" : pathname).slice(1);
+  const id = (pathname === "/" ? "discover" : pathname.split("/")[1]) ?? "";
   return (LOCKABLE_TAB_SECTIONS as readonly string[]).includes(id) ? id : null;
 }
 
@@ -779,10 +1001,14 @@ export const AppShell: Component<{
 
   return (
     <Router root={ShellRoot}>
-      <Route path="/" component={Discover} />
+      <Route path="/" component={DiscoverMainstream} />
       <Route path="/dashboard" component={Dashboard} />
-      <Route path="/discover" component={Discover} />
-      <Route path="/library" component={Library} />
+      <Route path="/discover" component={DiscoverMainstream} />
+      <Route path="/discover/mainstream" component={DiscoverMainstream} />
+      <Route path="/discover/adult" component={DiscoverAdult} />
+      <Route path="/library" component={LibraryMainstream} />
+      <Route path="/library/mainstream" component={LibraryMainstream} />
+      <Route path="/library/adult" component={LibraryAdult} />
       <Route path="/queue" component={Queue} />
       <Route path="/organize" component={Organize} />
       <Route path="/tag" component={Tag} />

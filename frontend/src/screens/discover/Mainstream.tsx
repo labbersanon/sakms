@@ -55,6 +55,7 @@ import { type EpisodePick, SeasonEpisodePicker } from "./SeasonEpisodePicker";
 import { useSelection } from "./selection";
 import {
   type MainstreamFilters,
+  type MainstreamContentType,
   DEFAULT_MAINSTREAM_FILTERS,
   MainstreamFilterSortBar,
   isMainstreamFilterActive,
@@ -615,11 +616,16 @@ const LIBRARY_PAGE_SIZE = 20;
 // poster fetches stay bounded. Reloads on reloadToken alongside the category
 // rows; the visible count resets to one page on every reload.
 const LibraryRow: Component<{
+  mode?: "movies" | "series";
   reloadToken: () => number;
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
 }> = (props) => {
   const [entries] = createResource(props.reloadToken, async () => {
+    if (props.mode) {
+      const items = await fetchTrackedItems(props.mode).catch(() => [] as TrackedItem[]);
+      return items.map((item) => ({ mode: props.mode!, item }));
+    }
     const [movies, series] = await Promise.all([
       fetchTrackedItems("movies").catch(() => [] as TrackedItem[]),
       fetchTrackedItems("series").catch(() => [] as TrackedItem[]),
@@ -737,6 +743,7 @@ const SliderRow: Component<{
 // TMDB missing. editMode (from Discover/index.tsx's tab-bar Edit toggle) swaps
 // the row block for RowEditor's reorder/enable/delete UI.
 export const MainstreamDiscover: Component<{
+  contentType?: MainstreamContentType;
   editMode?: () => boolean;
   // onFilteringChange lets the tab shell (index.tsx) disable its Edit toggle
   // while a filtered grid is up — reordering carousels has no meaning against
@@ -767,9 +774,24 @@ export const MainstreamDiscover: Component<{
   // filters are mutually exclusive views). When filtering, a single filtered
   // grid replaces the carousels.
   const [filters, setFilters] = createSignal<MainstreamFilters>(
-    DEFAULT_MAINSTREAM_FILTERS,
+    {
+      ...DEFAULT_MAINSTREAM_FILTERS,
+      contentType: props.contentType ?? DEFAULT_MAINSTREAM_FILTERS.contentType,
+    },
   );
   const filtering = () => !searching() && isMainstreamFilterActive(filters());
+  createEffect(
+    on(
+      () => props.contentType,
+      (contentType) => {
+        if (!contentType) return;
+        setDraft("");
+        setSubmitted("");
+        setFilters({ ...DEFAULT_MAINSTREAM_FILTERS, contentType });
+      },
+      { defer: true },
+    ),
+  );
 
   // view toggles the whole page between the default rows and the F2 calendar.
   // Calendar has no reorderable rows, so — like an active filter — it must
@@ -818,6 +840,10 @@ export const MainstreamDiscover: Component<{
       // plain error), instead of being swallowed into an empty "No results
       // found". Reusing the row plumbing keeps one detection path, not two.
       try {
+        if (props.contentType) {
+          const items = await fetchTmdbSearch(props.contentType, q);
+          return items.map((item) => ({ mode: props.contentType!, item }));
+        }
         const [movies, series] = await Promise.all([
           fetchTmdbSearch("movies", q),
           fetchTmdbSearch("series", q),
@@ -847,12 +873,24 @@ export const MainstreamDiscover: Component<{
   );
   const allSliders = () => slidersData() ?? [];
   const enabledSliders = () => allSliders().filter((s) => s.enabled);
+  const slidersForTab = () =>
+    allSliders().filter((s) => {
+      if (!props.contentType) return true;
+      const target = props.contentType === "movies" ? "movie" : "tv";
+      return s.target === target || s.target === "mixed";
+    });
+  const enabledSlidersForTab = () => slidersForTab().filter((s) => s.enabled);
 
   const [feedsData] = createResource(reloadToken, () =>
     fetchRssFeeds().catch(() => [] as RssFeed[]),
   );
   const mainstreamFeeds = () =>
-    (feedsData() ?? []).filter((f) => f.target === "movie" || f.target === "tv");
+    (feedsData() ?? []).filter((f) => {
+      if (props.contentType) {
+        return f.target === (props.contentType === "movies" ? "movie" : "tv");
+      }
+      return f.target === "movie" || f.target === "tv";
+    });
   const enabledFeeds = () => mainstreamFeeds().filter((f) => f.enabled);
 
   // knownKeys is every row this screen currently knows about, builtin +
@@ -861,8 +899,8 @@ export const MainstreamDiscover: Component<{
   // install) matches the page's original hardcoded row sequence exactly.
   const knownKeys = () => [
     "trakt-watchlist",
-    ...MAINSTREAM_ROWS.map((r) => r.key),
-    ...allSliders().map((s) => `slider:${s.id}`),
+    ...MAINSTREAM_ROWS.filter((r) => !props.contentType || r.mode === props.contentType).map((r) => r.key),
+    ...slidersForTab().map((s) => `slider:${s.id}`),
     ...mainstreamFeeds().map((f) => `rssfeed:${f.id}`),
     "library",
   ];
@@ -877,7 +915,9 @@ export const MainstreamDiscover: Component<{
   const editError = () => rowOrderError() || rowActionError();
 
   const descriptorFor = (key: string): RowDescriptor | undefined => {
-    const builtinRow = MAINSTREAM_ROWS.find((r) => r.key === key);
+    const builtinRow = MAINSTREAM_ROWS.find(
+      (r) => r.key === key && (!props.contentType || r.mode === props.contentType),
+    );
     if (builtinRow) {
       return { key, label: builtinRow.title, kind: "structural", hidden: isHidden(key) };
     }
@@ -891,7 +931,7 @@ export const MainstreamDiscover: Component<{
     }
     if (key.startsWith("slider:")) {
       const id = Number(key.slice("slider:".length));
-      const s = allSliders().find((s) => s.id === id);
+        const s = slidersForTab().find((s) => s.id === id);
       return s ? { key, label: s.title, kind: "entity", enabled: s.enabled } : undefined;
     }
     if (key.startsWith("rssfeed:")) {
@@ -910,7 +950,7 @@ export const MainstreamDiscover: Component<{
   const toggleRowEnabled = async (row: RowDescriptor) => {
     try {
       if (row.key.startsWith("slider:")) {
-        const s = allSliders().find((s) => `slider:${s.id}` === row.key);
+        const s = slidersForTab().find((s) => `slider:${s.id}` === row.key);
         if (!s) return;
         await updateSlider(s.id, {
           title: s.title,
@@ -961,7 +1001,7 @@ export const MainstreamDiscover: Component<{
   const visibleKeys = () =>
     orderedKeys().filter((key) => {
       if (key.startsWith("slider:")) {
-        return enabledSliders().some((s) => `slider:${s.id}` === key);
+        return enabledSlidersForTab().some((s) => `slider:${s.id}` === key);
       }
       if (key.startsWith("rssfeed:")) {
         return enabledFeeds().some((f) => `rssfeed:${f.id}` === key);
@@ -971,7 +1011,9 @@ export const MainstreamDiscover: Component<{
     });
 
   const renderRow = (key: string): JSX.Element => {
-    const builtinRow = MAINSTREAM_ROWS.find((r) => r.key === key);
+    const builtinRow = MAINSTREAM_ROWS.find(
+      (r) => r.key === key && (!props.contentType || r.mode === props.contentType),
+    );
     if (builtinRow) {
       return (
         <PaginatedRow
@@ -989,13 +1031,14 @@ export const MainstreamDiscover: Component<{
     if (key === "library")
       return (
         <LibraryRow
+          mode={props.contentType}
           reloadToken={reloadToken}
           onGrab={setGrabTarget}
           onDetail={setDetailTarget}
         />
       );
     if (key.startsWith("slider:")) {
-      const slider = enabledSliders().find((s) => `slider:${s.id}` === key)!;
+      const slider = enabledSlidersForTab().find((s) => `slider:${s.id}` === key)!;
       return (
         <SliderRow
           slider={slider}
@@ -1058,7 +1101,11 @@ export const MainstreamDiscover: Component<{
         </form>
 
         <Show when={!searching()}>
-          <MainstreamFilterSortBar value={filters} onChange={applyFilters} />
+          <MainstreamFilterSortBar
+            value={filters}
+            onChange={applyFilters}
+            lockedContentType={props.contentType}
+          />
         </Show>
       </Show>
 

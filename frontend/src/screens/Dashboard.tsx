@@ -73,6 +73,12 @@ function titleCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+function libraryTierHref(mode: string, tier: string): string {
+  if (mode === "adult") return `/library/adult?tab=scenes&tier=${tier}`;
+  const tab = mode === "movies" ? "movies" : "series";
+  return `/library/mainstream?tab=${tab}&tier=${tier}`;
+}
+
 // formatGbps renders an aggregate disk throughput for the Disk I/O gauge label:
 // <1e6 → "X KB/s", <1e9 → "X MB/s", else "X.X GB/s" (decimal SI, matching the
 // gauge's 500 MB/s ceiling reasoning rather than the binary formatBps above).
@@ -333,7 +339,7 @@ const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
         }
       >
         <A
-          href={`/library?mode=${props.mode}&tier=${props.cell.tier}`}
+          href={libraryTierHref(props.mode, props.cell.tier)}
           class="block hover:text-accent"
         >
           {body()}

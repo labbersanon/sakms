@@ -124,6 +124,7 @@ const SelectField: Component<{
 export const MainstreamFilterSortBar: Component<{
   value: () => MainstreamFilters;
   onChange: (f: MainstreamFilters) => void;
+  lockedContentType?: MainstreamContentType;
 }> = (props) => {
   const [genres] = createResource(
     () => props.value().contentType,
@@ -141,18 +142,20 @@ export const MainstreamFilterSortBar: Component<{
   return (
     <div class="mb-4 rounded-xl border border-border bg-surface p-4">
       <div class="flex flex-wrap items-end gap-3">
-        <SelectField
-          id="discover-filter-content-type"
-          label="Content type"
-          value={props.value().contentType}
-          onChange={(v) =>
-            patch({ contentType: v as MainstreamContentType, genreId: null })
-          }
-        >
-          <For each={CONTENT_TYPE_OPTIONS}>
-            {(ct) => <option value={ct}>{CONTENT_TYPE_LABELS[ct]}</option>}
-          </For>
-        </SelectField>
+        <Show when={!props.lockedContentType}>
+          <SelectField
+            id="discover-filter-content-type"
+            label="Content type"
+            value={props.value().contentType}
+            onChange={(v) =>
+              patch({ contentType: v as MainstreamContentType, genreId: null })
+            }
+          >
+            <For each={CONTENT_TYPE_OPTIONS}>
+              {(ct) => <option value={ct}>{CONTENT_TYPE_LABELS[ct]}</option>}
+            </For>
+          </SelectField>
+        </Show>
 
         <SelectField
           id="discover-filter-genre"
@@ -204,7 +207,13 @@ export const MainstreamFilterSortBar: Component<{
           <button
             type="button"
             class="text-sm text-accent underline"
-            onClick={() => props.onChange(DEFAULT_MAINSTREAM_FILTERS)}
+            onClick={() =>
+              props.onChange({
+                ...DEFAULT_MAINSTREAM_FILTERS,
+                contentType:
+                  props.lockedContentType ?? DEFAULT_MAINSTREAM_FILTERS.contentType,
+              })
+            }
           >
             Clear filters
           </button>

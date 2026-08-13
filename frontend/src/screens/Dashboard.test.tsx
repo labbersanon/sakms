@@ -400,7 +400,7 @@ describe("Dashboard view", () => {
     );
     expect(disabled).not.toBeNull();
     expect(disabled!.getAttribute("title")).toBe(
-      "Adult isn't browsable in Library yet",
+      "Adult storage drill-down will land with the Adult Movies/enrichment slice",
     );
     expect(disabled!.textContent).toContain("6.0 TB");
     expect(disabled!.textContent).toContain("100 items");

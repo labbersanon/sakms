@@ -29,6 +29,7 @@ import {
   useAdultEnabled,
   useSectionLock,
 } from "../../components/ui";
+import { DISCOVER_NAV_LINK_CLASS } from "../../components/ViewAllLink";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../../api/sectionLock";
 import { MAINSTREAM_ROWS, PosterCard } from "./Mainstream";
 import { AdultCard, toAdultDiscoverItem } from "./Adult";
@@ -41,8 +42,12 @@ import { type DetailTarget, DetailPopup } from "./DetailPopup";
 
 const WRAP = "flex flex-wrap gap-3";
 
+// Claude 2026-08-13: chip class shared with ViewAllLink (not text-accent).
+// Reason: gold-on-cream wallpaper swallowed the back link on mobile View All.
+// mb-3 is BackLink-only — View all sits in a flex header and must not grow.
+// Review if: DISCOVER_NAV_LINK_CLASS is retired.
 const BackLink: Component<{ href: string }> = (props) => (
-  <A href={props.href} class="inline-block text-sm text-accent hover:underline">
+  <A href={props.href} class={`${DISCOVER_NAV_LINK_CLASS} mb-3`}>
     Back to Discover
   </A>
 );

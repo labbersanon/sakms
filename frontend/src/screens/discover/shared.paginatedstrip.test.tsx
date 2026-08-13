@@ -128,6 +128,8 @@ describe("PaginatedStrip View all", () => {
     expect(await screen.findByText("Row 1")).toBeInTheDocument();
     const link = screen.getByRole("link", { name: "View all Test Strip" });
     expect(link.getAttribute("href")).toBe("/discover/row/adult-newest/1");
+    expect(link.className).toContain("bg-surface/95");
+    expect(link.className).toContain("text-fg");
   });
 });
 

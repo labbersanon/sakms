@@ -82,6 +82,8 @@ describe("Carousel", () => {
     ));
     const link = screen.getByRole("link", { name: "View all Trending Movies" });
     expect(link.getAttribute("href")).toBe("/discover/row/tmdb/trending-movies");
+    expect(link.className).toContain("bg-surface/95");
+    expect(link.className).toContain("text-fg");
   });
 
   it("shows the empty fallback and no arrows when there are no items", () => {

@@ -64,7 +64,10 @@ describe("TmdbRowView", () => {
 
     expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
     expect(screen.getByText("Trending Movies")).toBeInTheDocument();
-    expect(screen.getByText("Back to Discover")).toBeInTheDocument();
+    const back = screen.getByText("Back to Discover");
+    expect(back).toBeInTheDocument();
+    expect(back.className).toContain("bg-surface/95");
+    expect(back.className).toContain("text-fg");
     expect(screen.queryByText("View all")).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([u]) =>

@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -87,6 +91,9 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	if !reflect.DeepEqual(got[0].QualityTiers, []string{"high"}) {
 		t.Fatalf("expected Adult qualityTiers [high], got %+v", got[0].QualityTiers)
 	}
+	if got[0].VideoURL != fmt.Sprintf("/api/modes/adult/tracked/%d/video", scene.ID) {
+		t.Fatalf("expected adult tracked video URL for poster fallback, got %q", got[0].VideoURL)
+	}
 }
 
 // TestListTracked_Adult_EmptyWhenNoScenes proves Adult needs no *arr
@@ -111,6 +118,128 @@ func TestListTracked_Adult_EmptyWhenNoScenes(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected an empty list, got %+v", got)
+	}
+}
+
+func TestListTracked_Adult_OmitsVideoURLWhenSceneHasNoFile(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "No File", RootFolderPath: "/media/Adult",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := getTrackedItems(t, srv, "adult")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 scene, got %+v", got)
+	}
+	if got[0].VideoURL != "" {
+		t.Fatalf("expected videoUrl omitted when FilePath is empty, got %q", got[0].VideoURL)
+	}
+}
+
+func TestTrackedVideoHandler_AdultServesFile(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "scene.mp4")
+	if err := os.WriteFile(path, []byte("video-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=3600" {
+		t.Fatalf("Cache-Control = %q, want private max-age", got)
+	}
+}
+
+func TestTrackedVideoHandler_AdultRejectsDirectory(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
+		FilePath: dir, RootFolderPath: dir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for directory path, got %d", resp.StatusCode)
+	}
+}
+
+func TestTrackedVideoHandler_AdultRejectsEmptyPath(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "Some Scene", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for empty path, got %d", resp.StatusCode)
+	}
+}
+
+func TestTrackedVideoHandler_AdultLockedRefusesBeforeAnyBytes(t *testing.T) {
+	const marker = "ADULT-TRACKED-VIDEO-BYTES-DO-NOT-SERVE"
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "scene.mp4")
+	if err := os.WriteFile(path, []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv := httptest.NewServer(withLockedAdult(mux))
+	defer srv.Close()
+
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 while Adult is locked, got %d body=%q", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), marker) {
+		t.Fatalf("locked Adult video response leaked marker bytes: %q", body)
 	}
 }
 

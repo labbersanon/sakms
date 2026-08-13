@@ -24,7 +24,7 @@
 // shared: they are module-local there, and exporting them would mean editing
 // Tag.test.tsx's untouched Adult regression describes.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { createSignal, Show } from "solid-js";
@@ -88,6 +88,21 @@ const renderLibrary = (url = "/library") => {
     </MemoryRouter>
   ));
 };
+
+beforeEach(() => {
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      private cb: IntersectionObserverCallback;
+      constructor(cb: IntersectionObserverCallback) {
+        this.cb = cb;
+      }
+      observe = (target: Element) =>
+        this.cb([{ isIntersecting: true, target } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      disconnect = () => {};
+    },
+  );
+});
 
 afterEach(() => {
   // Unmount SolidJS components FIRST so pending createResource re-fetches
@@ -790,7 +805,7 @@ describe("Library — Adult catalog", () => {
             tags: added ? ["reviewed"] : [],
             qualityTiers: ["high"],
             createdAt: "2026-04-01T00:00:00.000Z",
-            imageUrl: "https://cdn.example.test/adult-scene.jpg",
+            videoUrl: "/api/modes/adult/tracked/50/video",
           }),
         ],
         onPost: (url) => {
@@ -811,11 +826,8 @@ describe("Library — Adult catalog", () => {
 
     const card = await screen.findByRole("button", { name: "Adult Scene" });
     expect(card).toBeInTheDocument();
-    const img = card.querySelector("img") as HTMLImageElement;
-    expect(img.getAttribute("src")).toBe(
-      "/api/images/proxy?url=" +
-        encodeURIComponent("https://cdn.example.test/adult-scene.jpg"),
-    );
+    const video = card.querySelector("video") as HTMLVideoElement;
+    expect(video.getAttribute("src")).toBe("/api/modes/adult/tracked/50/video#t=0.1");
     fireEvent.click(card);
 
     const addInput = await screen.findByLabelText("Add tag to Adult Scene");
@@ -834,6 +846,31 @@ describe("Library — Adult catalog", () => {
     expect(
       calls.some((c) => c.url.includes("/api/modes/adult/items/50/tags")),
     ).toBe(false);
+  });
+
+  it("falls back to the tracked video URL when a web-tracked Adult scene has no image", async () => {
+    stubFetch(
+      makeHandler([inception()], {
+        adult: [
+          item({
+            id: 51,
+            title: "Web Tracked Scene",
+            videoUrl: "/api/modes/adult/tracked/51/video",
+          }),
+        ],
+      }),
+    );
+    renderLibrary();
+    await screen.findByRole("button", { name: "Inception" });
+    fireEvent.click(screen.getByText("Adult"));
+
+    const card = await screen.findByRole("button", { name: "Web Tracked Scene" });
+    const video = card.querySelector("video") as HTMLVideoElement;
+    expect(video).not.toBeNull();
+    expect(video.getAttribute("src")).toBe("/api/modes/adult/tracked/51/video#t=0.1");
+
+    fireEvent.error(video);
+    await waitFor(() => expect(card.querySelector("video")).toBeNull());
   });
 
   it("adds Adult to the shell-registered tab bar after adult-mode-enabled resolves", async () => {

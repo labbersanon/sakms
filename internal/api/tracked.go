@@ -2,14 +2,16 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 
-	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
-	"github.com/labbersanon/sakms/internal/serviceconn"
-	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // libraryTrackedItem is Movies' shape for the Tag workflow's item picker —
@@ -52,7 +54,7 @@ type libraryTrackedItem struct {
 	CreatedAt      string               `json:"createdAt,omitempty"`
 	QualityTiers   []string             `json:"qualityTiers,omitempty"`
 	Files          []libraryTrackedFile `json:"files,omitempty"`
-	ImageURL       string               `json:"imageUrl,omitempty"`
+	VideoURL       string               `json:"videoUrl,omitempty"`
 }
 
 // libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
@@ -69,15 +71,22 @@ type libraryTrackedFile struct {
 	DurationSec float64 `json:"durationSec,omitempty"`
 }
 
+func browserPlayableVideo(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp4", ".m4v", ".webm", ".mov":
+		return true
+	default:
+		return false
+	}
+}
+
 // listTrackedHandler returns every item {mode} currently tracks — straight
 // from libStore for every mode now (no *arr app involved): items for Movies,
 // series for Series, scenes for Adult (Whisparr eliminated, Stage 4). Backs
 // the Tag workflow's item picker (there's no other way to browse what's
 // trackable to assign/remove a tag on) and is generically useful anywhere a
-// UI needs real item context instead of guessing an ID. connStore/
-// settingsStore/httpClient are retained on the signature (NewMux wires them)
-// but no longer used, since no mode builds a Servarr session.
-func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, libStore *library.Store) http.HandlerFunc {
+// UI needs real item context instead of guessing an ID.
+func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -181,21 +190,6 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 				return
 			}
 			out := make([]libraryTrackedItem, len(scenes))
-			resolveImage := func(library.Scene) string { return "" }
-			if sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult); err == nil &&
-				sess.Identify != nil && sess.Identify.Boxes != nil {
-				boxes := sess.Identify.Boxes
-				resolveImage = func(sc library.Scene) string {
-					if sc.Box == library.LocalSceneBox || sc.SceneID == "" {
-						return ""
-					}
-					match, err := boxes.ResolveCatalogRef(ctx, sc.Box, sc.SceneID, false)
-					if err != nil || match == nil {
-						return ""
-					}
-					return match.Image
-				}
-			}
 			for i, sc := range scenes {
 				tags, err := libStore.SceneTags(ctx, sc.ID)
 				if err != nil {
@@ -209,7 +203,9 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 				out[i] = libraryTrackedItem{
 					ID: sc.ID, Title: sc.Title, Tags: tags,
 					CreatedAt: sc.CreatedAt, QualityTiers: []string{tier},
-					ImageURL: resolveImage(sc),
+				}
+				if sc.FilePath != "" && browserPlayableVideo(sc.FilePath) {
+					out[i].VideoURL = fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID)
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -218,5 +214,57 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 		}
 
 		http.Error(w, fmt.Sprintf("unknown mode %q", m), http.StatusBadRequest)
+	}
+}
+
+func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		if m != mode.Adult {
+			http.Error(w, "tracked video is only supported for adult scenes right now", http.StatusBadRequest)
+			return
+		}
+		if denyIfAdultLocked(w, r) {
+			return
+		}
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			http.Error(w, "invalid tracked id", http.StatusBadRequest)
+			return
+		}
+		scene, err := libStore.GetSceneByID(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, library.ErrNotFound) {
+				http.Error(w, "no tracked scene with that id", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if scene.FilePath == "" {
+			http.Error(w, "tracked scene has no video file", http.StatusNotFound)
+			return
+		}
+		f, err := os.Open(scene.FilePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "tracked scene video file not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "tracked scene video file is not accessible", http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			http.Error(w, "tracked scene video file is not accessible", http.StatusInternalServerError)
+			return
+		}
+		if info.IsDir() {
+			http.Error(w, "tracked scene video path is a directory", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 	}
 }

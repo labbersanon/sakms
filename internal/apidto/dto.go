@@ -1218,30 +1218,30 @@ type Candidate struct {
 // Winner (the keeper); Rename/Purge never populate it (it's absent from their
 // wire rows, so the shared TS type carries it as optional).
 type Proposal struct {
-	ID                  int64       `json:"id"`
-	Status              string      `json:"status"`
-	SourceName          string      `json:"sourceName"`
-	SourcePath          string      `json:"sourcePath,omitempty"`
-	RootFolderPath      string      `json:"rootFolderPath"`
-	Title               string      `json:"title,omitempty"`
-	Year                int         `json:"year,omitempty"`
-	SeasonNumber        int         `json:"seasonNumber,omitempty"`
-	EpisodeNumber       int         `json:"episodeNumber,omitempty"`
-	ExtraEpisodeNumbers []int       `json:"extraEpisodeNumbers,omitempty"`
-	Studio              string      `json:"studio,omitempty"`
-	Date                string      `json:"date,omitempty"`
-	PHash               string      `json:"phash,omitempty"`
+	ID                  int64  `json:"id"`
+	Status              string `json:"status"`
+	SourceName          string `json:"sourceName"`
+	SourcePath          string `json:"sourcePath,omitempty"`
+	RootFolderPath      string `json:"rootFolderPath"`
+	Title               string `json:"title,omitempty"`
+	Year                int    `json:"year,omitempty"`
+	SeasonNumber        int    `json:"seasonNumber,omitempty"`
+	EpisodeNumber       int    `json:"episodeNumber,omitempty"`
+	ExtraEpisodeNumbers []int  `json:"extraEpisodeNumbers,omitempty"`
+	Studio              string `json:"studio,omitempty"`
+	Date                string `json:"date,omitempty"`
+	PHash               string `json:"phash,omitempty"`
 	// GiveBackBox/GiveBackSceneID mirror the wire fields that proposals.go
 	// already carries (proposals.go:167-168). The frontend uses the ABSENCE of
 	// GiveBackSceneID (with a non-empty Title) as the structural signal that an
 	// Adult Unmatched row is web-identified — enabling the Review action without
 	// matching on the reason string (a fragility the old reason-substring checks
 	// all had). Added 2026-08-12 for adult-rename-review-alts E2.
-	GiveBackBox     string `json:"giveBackBox,omitempty"`
-	GiveBackSceneID string `json:"giveBackSceneId,omitempty"`
-	Reason          string `json:"reason,omitempty"`
-	DraftID             string      `json:"draftId,omitempty"`
-	Candidates          []Candidate `json:"candidates,omitempty"`
+	GiveBackBox     string      `json:"giveBackBox,omitempty"`
+	GiveBackSceneID string      `json:"giveBackSceneId,omitempty"`
+	Reason          string      `json:"reason,omitempty"`
+	DraftID         string      `json:"draftId,omitempty"`
+	Candidates      []Candidate `json:"candidates,omitempty"`
 	// PHashSimilarity is the minimum pairwise phash similarity across the
 	// duplicate group [0.0–1.0], populated only by phash-primary scans
 	// (Movies/Series). Zero means the proposal was produced by the legacy
@@ -1668,7 +1668,7 @@ type TrackedItem struct {
 	CreatedAt      string            `json:"createdAt,omitempty"`
 	QualityTiers   []string          `json:"qualityTiers,omitempty"`
 	Files          []TrackedItemFile `json:"files,omitempty"`
-	ImageURL       string            `json:"imageUrl,omitempty"`
+	VideoURL       string            `json:"videoUrl,omitempty"`
 }
 
 // TrackedItemFile is one primary or alternate video under a Movies tracked

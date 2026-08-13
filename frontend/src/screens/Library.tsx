@@ -23,14 +23,18 @@
 
 import {
   type Component,
+  createEffect,
   createResource,
   createSignal,
   For,
+  on,
+  onCleanup,
+  onMount,
   Show,
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { Mode } from "../api/discover";
-import { fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
+import { fetchTitlePoster, tmdbPoster } from "../api/discover";
 import {
   fetchSeasonStates,
   putAllSeasonsMonitored,
@@ -93,12 +97,33 @@ const PosterCard: Component<{
   );
 
   const posterUrl = () => {
-    if (props.mode === "adult") {
-      return proxyImage(props.item.imageUrl ?? "");
-    }
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };
+  const adultVideoUrl = () =>
+    props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";
+  const adultVideoSrc = () =>
+    adultVideoUrl() ? `${adultVideoUrl()}#t=0.1` : "";
+  const [videoVisible, setVideoVisible] = createSignal(false);
+  const [videoError, setVideoError] = createSignal(false);
+  let posterBox: HTMLDivElement | undefined;
+
+  onMount(() => {
+    if (props.mode !== "adult" || !props.item.videoUrl || !posterBox) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setVideoVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setVideoVisible(true);
+        observer.disconnect();
+      }
+    });
+    observer.observe(posterBox);
+    onCleanup(() => observer.disconnect());
+  });
+  const showAdultVideo = () => adultVideoUrl() && videoVisible() && !videoError();
 
   return (
     <button
@@ -113,13 +138,27 @@ const PosterCard: Component<{
       onClick={props.onClick}
     >
       {/* Poster area — 2:3 aspect ratio */}
-      <div class="relative w-full" style="aspect-ratio: 2/3">
+      <div ref={posterBox} class="relative w-full" style="aspect-ratio: 2/3">
         <Show
           when={posterUrl()}
           fallback={
-            <div class="flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-bold text-muted">
-              {props.item.title.charAt(0).toUpperCase()}
-            </div>
+            <Show
+              when={showAdultVideo()}
+              fallback={
+                <div class="flex h-full w-full items-center justify-center bg-surface-2 text-2xl font-bold text-muted">
+                  {props.item.title.charAt(0).toUpperCase()}
+                </div>
+              }
+            >
+              <video
+                src={adultVideoSrc()}
+                muted
+                preload="metadata"
+                class="h-full w-full object-cover"
+                playsinline
+                onError={() => setVideoError(true)}
+              />
+            </Show>
           }
         >
           <img
@@ -308,12 +347,14 @@ const DetailPanel: Component<{
   );
 
   const posterUrl = () => {
-    if (props.mode === "adult") {
-      return proxyImage(props.item.imageUrl ?? "");
-    }
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };
+  const adultVideoUrl = () =>
+    props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";
+  const [videoError, setVideoError] = createSignal(false);
+  const showAdultVideo = () => adultVideoUrl() && !videoError();
+  createEffect(on(() => props.item.id, () => setVideoError(false)));
 
   return (
     <div class="flex w-72 flex-shrink-0 flex-col rounded-xl border border-border bg-surface p-4 overflow-y-auto">
@@ -351,6 +392,17 @@ const DetailPanel: Component<{
           loading="lazy"
           class="mb-3 w-full rounded object-cover"
           style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
+        />
+      </Show>
+      <Show when={!posterUrl() && showAdultVideo()}>
+        <video
+          src={`${adultVideoUrl()}#t=0.1`}
+          muted
+          preload="metadata"
+          playsinline
+          class="mb-3 w-full rounded object-cover"
+          style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
+          onError={() => setVideoError(true)}
         />
       </Show>
 

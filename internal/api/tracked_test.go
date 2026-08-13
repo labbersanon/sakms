@@ -328,12 +328,7 @@ func TestListTracked_Series_UnbackfilledEpisodeFoldsToUnknown(t *testing.T) {
 	}
 }
 
-// TestListTracked_Adult_QualityTiersOmitted — Adult isn't browsable in Library
-// (its tag CRUD table has no tier filter), and the Dashboard's Adult cells are
-// deliberately non-clickable, so there is nothing for this field to feed.
-// Locked in here so a future "consistency" edit trips this test rather than
-// silently changing Adult's wire shape.
-func TestListTracked_Adult_QualityTiersOmitted(t *testing.T) {
+func TestListTracked_Adult_QualityTiersPresent(t *testing.T) {
 	libStore, srv := newTrackedTestServer(t)
 	ctx := context.Background()
 	if _, err := libStore.UpsertScene(ctx, library.Scene{
@@ -348,8 +343,8 @@ func TestListTracked_Adult_QualityTiersOmitted(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 scene, got %+v", got)
 	}
-	if len(got[0].QualityTiers) != 0 {
-		t.Fatalf("expected qualityTiers to be omitted for Adult even with a stored tier, got %+v", got[0].QualityTiers)
+	if !reflect.DeepEqual(got[0].QualityTiers, []string{"high"}) {
+		t.Fatalf("expected Adult qualityTiers [high], got %+v", got[0].QualityTiers)
 	}
 }
 

@@ -1630,6 +1630,7 @@ export interface TrackedItem {
   createdAt?: string;
   qualityTiers?: string[];
   files?: TrackedItemFile[];
+  imageUrl?: string;
 }
 /**
  * TrackedItemFile is one primary or alternate video under a Movies tracked

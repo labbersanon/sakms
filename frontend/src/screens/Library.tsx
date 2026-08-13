@@ -30,7 +30,7 @@ import {
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { Mode } from "../api/discover";
-import { fetchTitlePoster, tmdbPoster } from "../api/discover";
+import { fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
 import {
   fetchSeasonStates,
   putAllSeasonsMonitored,
@@ -93,6 +93,9 @@ const PosterCard: Component<{
   );
 
   const posterUrl = () => {
+    if (props.mode === "adult") {
+      return proxyImage(props.item.imageUrl ?? "");
+    }
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };
@@ -305,6 +308,9 @@ const DetailPanel: Component<{
   );
 
   const posterUrl = () => {
+    if (props.mode === "adult") {
+      return proxyImage(props.item.imageUrl ?? "");
+    }
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };

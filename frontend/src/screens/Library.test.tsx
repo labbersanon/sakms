@@ -790,6 +790,7 @@ describe("Library — Adult catalog", () => {
             tags: added ? ["reviewed"] : [],
             qualityTiers: ["high"],
             createdAt: "2026-04-01T00:00:00.000Z",
+            imageUrl: "https://cdn.example.test/adult-scene.jpg",
           }),
         ],
         onPost: (url) => {
@@ -810,6 +811,11 @@ describe("Library — Adult catalog", () => {
 
     const card = await screen.findByRole("button", { name: "Adult Scene" });
     expect(card).toBeInTheDocument();
+    const img = card.querySelector("img") as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe(
+      "/api/images/proxy?url=" +
+        encodeURIComponent("https://cdn.example.test/adult-scene.jpg"),
+    );
     fireEvent.click(card);
 
     const addInput = await screen.findByLabelText("Add tag to Adult Scene");

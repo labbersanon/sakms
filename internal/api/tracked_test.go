@@ -46,14 +46,15 @@ func getTrackedItems(t *testing.T, srv *httptest.Server, m string) []libraryTrac
 
 // TestListTracked_Adult_ReturnsSceneLibraryItems proves Adult is served
 // straight from libStore now (Whisparr eliminated, Stage 4) — scene id,
-// title, and scene-level tags, the same {id, title, tags} shape Movies/Series
-// return, keyed on a library_scenes row.
+// title, scene-level tags, Library sort timestamp, and quality tier, keyed on
+// a library_scenes row.
 func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 	scene, err := libStore.UpsertScene(ctx, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
 		FilePath: "/media/Adult/Some Scene.mp4", RootFolderPath: "/media/Adult",
+		QualityTier: "high",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -80,13 +81,11 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	if len(got) != 1 || got[0].Title != "Some Scene" || len(got[0].Tags) != 1 || got[0].Tags[0] != "favorite" {
 		t.Fatalf("unexpected response: %+v", got)
 	}
-	// CreatedAt is deliberately left unpopulated for Adult (see
-	// libraryTrackedItem's doc comment) — Adult has no Library grid to sort,
-	// and omitting it (omitempty) keeps this response byte-identical to
-	// before the field existed. Locked in here so a future "consistency"
-	// edit trips this test.
-	if got[0].CreatedAt != "" {
-		t.Fatalf("expected createdAt to be omitted for Adult, got %q", got[0].CreatedAt)
+	if got[0].CreatedAt == "" {
+		t.Fatalf("expected createdAt for Adult Library sorting, got %+v", got[0])
+	}
+	if !reflect.DeepEqual(got[0].QualityTiers, []string{"high"}) {
+		t.Fatalf("expected Adult qualityTiers [high], got %+v", got[0].QualityTiers)
 	}
 }
 

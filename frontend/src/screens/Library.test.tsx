@@ -3,8 +3,8 @@
 // "Tag — grid view" describe (poster render + detail open, add tag, remove tag,
 // title search, mode-switch clears selection); a sixth case from that describe,
 // the Grid/Table toggle, did NOT migrate — it went away with the toggle itself.
-// Four groups are new: the genre filter, the added-date sort, the
-// Adult-is-not-offered guard, and the quality-tier deep link + filter.
+// Four groups are new: the genre filter, the added-date sort, Adult Library
+// visibility, and the quality-tier deep link + filter.
 //
 // EVERY case here mounts through renderLibrary, not a bare <Library />: the
 // shell reads its ?mode=/?tier= deep link with useSearchParams, which throws
@@ -17,9 +17,8 @@
 //   1. Tag-editing mechanics are IDENTICAL to Tag's — the detail panel's add and
 //      remove still hit the GENERIC /api/modes/{mode}/items/{id}/tags routes with
 //      the same shapes. Only the entry point moved.
-//   2. Library NEVER offers Adult. Adult keeps its own table at /tag; a stray
-//      Adult tab here would silently point the generic item-tag routes at scenes
-//      (they 400 server-side).
+//   2. Adult uses the same tracked-list entry point but must still route tag
+//      mutations through the dedicated scene-tag endpoints.
 //
 // The fetch/stub helpers below are duplicated from Tag.test.tsx rather than
 // shared: they are module-local there, and exporting them would mean editing
@@ -99,6 +98,7 @@ const makeHandler = (
   movies: TrackedItem[],
   overrides: {
     series?: TrackedItem[];
+    adult?: TrackedItem[];
     seasons?: SeasonState[];
     onPost?: (url: string) => Response;
     onDelete?: (url: string) => Response;
@@ -111,6 +111,10 @@ const makeHandler = (
     if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
     if (url.includes("/api/modes/series/tracked"))
       return jsonResponse(overrides.series ?? []);
+    if (url.includes("/api/modes/adult/scenes/tags"))
+      return jsonResponse(vocab(["reviewed"]));
+    if (url.includes("/api/modes/adult/tracked"))
+      return jsonResponse(overrides.adult ?? []);
     if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
     // Season state — only ever reached from a SERIES detail panel. Answered
     // unconditionally rather than gated on overrides.seasons so the negative
@@ -420,21 +424,35 @@ describe("Library — quality-tier deep link and filter", () => {
     expect(screen.queryByRole("button", { name: "Medium Show" })).toBeNull();
   });
 
-  // Library has no Adult mode at all (LibraryMode excludes it), so a hand-typed
-  // or stale URL must degrade to Movies rather than break the screen.
-  for (const bogus of ["adult", "not-a-mode"]) {
-    it(`falls back to Movies for ?mode=${bogus}`, async () => {
-      const calls = stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
-      renderLibrary(`/library?mode=${bogus}`);
+  it("seeds Adult from ?mode=adult", async () => {
+    const calls = stubFetch(
+      makeHandler(tieredMovies, {
+        series: tieredSeries,
+        adult: [item({ id: 30, title: "Adult Scene", qualityTiers: ["high"] })],
+      }),
+    );
+    renderLibrary(`/library?mode=adult`);
 
-      expect(
-        await screen.findByRole("button", { name: "Lossless Movie" }),
-      ).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Mixed Show" })).toBeNull();
-      expect(screen.getByText("Movies").className).toContain("bg-accent");
-      expect(calls.some((c) => c.url.includes("/api/modes/adult"))).toBe(false);
-    });
-  }
+    expect(
+      await screen.findByRole("button", { name: "Adult Scene" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Adult").className).toContain("bg-accent");
+    expect(calls.some((c) => c.url.includes("/api/modes/adult/tracked"))).toBe(
+      true,
+    );
+  });
+
+  it("falls back to Movies for an unrecognized mode", async () => {
+    const calls = stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
+    renderLibrary(`/library?mode=not-a-mode`);
+
+    expect(
+      await screen.findByRole("button", { name: "Lossless Movie" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mixed Show" })).toBeNull();
+    expect(screen.getByText("Movies").className).toContain("bg-accent");
+    expect(calls.some((c) => c.url.includes("/api/modes/adult"))).toBe(false);
+  });
 
   it("clears the incoming tier filter when the tab changes", async () => {
     stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
@@ -753,16 +771,55 @@ describe("Library — per-season monitoring (Series only)", () => {
   });
 });
 
-describe("Library — Adult is not offered (Acceptance Criterion 7)", () => {
-  it("renders Movies and Series tabs only — never an Adult tab", async () => {
-    const calls = stubFetch(makeHandler([inception()]));
+describe("Library — Adult catalog", () => {
+  it("renders an Adult tab and uses scene tag routes", async () => {
+    let added = false;
+    const calls = stubFetch(
+      makeHandler([inception()], {
+        adult: [
+          item({
+            id: 50,
+            title: "Adult Scene",
+            tags: added ? ["reviewed"] : [],
+            qualityTiers: ["high"],
+            createdAt: "2026-04-01T00:00:00.000Z",
+          }),
+        ],
+        onPost: (url) => {
+          if (url.includes("/api/modes/adult/scenes/50/tags")) {
+            added = true;
+            return noContent();
+          }
+          throw new Error("unexpected POST: " + url);
+        },
+      }),
+    );
     renderLibrary();
     await screen.findByRole("button", { name: "Inception" });
 
     expect(screen.getByText("Movies")).toBeInTheDocument();
     expect(screen.getByText("Series")).toBeInTheDocument();
-    expect(screen.queryByText("Adult")).toBeNull();
-    // And nothing here ever reaches an Adult route.
-    expect(calls.some((c) => c.url.includes("/api/modes/adult"))).toBe(false);
+    fireEvent.click(screen.getByText("Adult"));
+
+    const card = await screen.findByRole("button", { name: "Adult Scene" });
+    expect(card).toBeInTheDocument();
+    fireEvent.click(card);
+
+    const addInput = await screen.findByLabelText("Add tag to Adult Scene");
+    fireEvent.input(addInput, { target: { value: "reviewed" } });
+    fireEvent.click(screen.getByText("Add"));
+
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.url.includes("/api/modes/adult/scenes/50/tags"),
+        ),
+      ).toBe(true),
+    );
+    expect(
+      calls.some((c) => c.url.includes("/api/modes/adult/items/50/tags")),
+    ).toBe(false);
   });
 });

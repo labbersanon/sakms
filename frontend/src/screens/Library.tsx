@@ -1,10 +1,10 @@
-// Library — browse the tracked Movies/Series catalog. This is the one poster-grid
+// Library — browse the tracked Movies/Series/Adult catalog. This is the one poster-grid
 // browser in the app: it took over the grid half that used to live in Tag.tsx
 // (PosterCard, DetailPanel, the client-side title search and the selection/detail
 // wiring all moved here verbatim), leaving Tag as the tag-CRUD table it was
 // originally documented to be.
 //
-// Layout, top to bottom: a Movies/Series tab bar over a filter row (title search
+// Layout, top to bottom: a Movies/Series/Adult tab bar over a filter row (title search
 // | genre | quality tier | sort) and a poster grid; selecting a card slides a
 // DetailPanel in at w-72 showing genres/cast/tags — plus, for Series only, the
 // per-season monitoring panel (SeasonsPanel). Tag mutations in the panel go
@@ -14,12 +14,6 @@
 // The mode and tier are ALSO seedable from the URL (/library?mode=…&tier=…),
 // which is what the Dashboard's storage-allocation cells link into. That is a
 // one-shot seed at mount, not a two-way binding — see the Library shell below.
-//
-// ADULT IS DELIBERATELY EXCLUDED (spec Non-Goal 1). Adult keeps its own table
-// view at /tag with all three mode tabs; this screen uses ScreenTabs over a local
-// Movies|Series TabDef set rather than ModeTabs/MODES, both of which would
-// re-introduce Adult. Adult's wire response carries no createdAt either, so there
-// is nothing here for it to sort by.
 //
 // Filter and sort are CLIENT-SIDE by design (spec Non-Goal 4), over the already
 // fetched GET /api/modes/{mode}/tracked payload — matching the precedent Tag's
@@ -52,27 +46,15 @@ import {
 import {
   Button,
   ErrorText,
+  ModeTabs,
   Muted,
-  ScreenTabs,
   Switch,
-  type TabDef,
   inputClass,
   labelClass,
 } from "../components/ui";
 import { useWorkflowActions } from "./workflowHooks";
 
-// LibraryMode is the subset of Mode this screen browses. Adult is absent by
-// design, so PosterCard/DetailPanel's Exclude<Mode, "adult"> prop is satisfied
-// without a cast.
-type LibraryMode = Exclude<Mode, "adult">;
-
-// LIBRARY_MODES is Library's own tab set, deliberately NOT ui.tsx's shared MODES
-// (which includes Adult). Kept local so a future mode added to MODES can never
-// silently appear here.
-const LIBRARY_MODES: TabDef[] = [
-  { id: "movies", label: "Movies" },
-  { id: "series", label: "Series" },
-];
+type PosterMode = Exclude<Mode, "adult">;
 
 // SortKey selects the grid's ordering. "title" keeps the server's own
 // ORDER BY title (no client-side re-sort — SQLite's collation is authoritative);
@@ -96,15 +78,18 @@ const selectClass =
 // with an accent ring; unselected uses a transparent border.
 const PosterCard: Component<{
   item: TrackedItem;
-  mode: LibraryMode;
+  mode: Mode;
   selected: boolean;
   onClick: () => void;
 }> = (props) => {
   // Key the resource on tmdbId — when absent, the source accessor returns
   // undefined and Solid skips the fetch entirely.
   const [posterPath] = createResource(
-    () => props.item.tmdbId,
-    (id) => fetchTitlePoster(props.mode, id),
+    () =>
+      props.mode !== "adult" && props.item.tmdbId
+        ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
+        : undefined,
+    ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId),
   );
 
   const posterUrl = () => {
@@ -303,7 +288,7 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
 // Genres and cast are READ-ONLY. Tags are mutable via act() from the parent.
 const DetailPanel: Component<{
   item: TrackedItem;
-  mode: LibraryMode;
+  mode: Mode;
   datalistId: string;
   draft: string;
   onDraftChange: (v: string) => void;
@@ -312,8 +297,11 @@ const DetailPanel: Component<{
   onClose: () => void;
 }> = (props) => {
   const [posterPath] = createResource(
-    () => props.item.tmdbId,
-    (id) => fetchTitlePoster(props.mode, id),
+    () =>
+      props.mode !== "adult" && props.item.tmdbId
+        ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
+        : undefined,
+    ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId),
   );
 
   const posterUrl = () => {
@@ -428,11 +416,8 @@ const DetailPanel: Component<{
         </div>
       </Show>
 
-      {/* Per-season monitoring — SERIES ONLY. Movies has no seasons, and the
-          routes behind this panel carry a literal `series` path segment, so
-          rendering it for Movies would 404 as well as make no sense. Library
-          has no Adult mode at all (LibraryMode excludes it), so this one
-          equality is the whole guard. */}
+      {/* Per-season monitoring — SERIES ONLY. Movies/Adult have no seasons, and
+          the routes behind this panel carry a literal `series` path segment. */}
       <Show when={props.mode === "series"}>
         <SeasonsPanel seriesID={props.item.id} />
       </Show>
@@ -483,7 +468,7 @@ const DetailPanel: Component<{
 // LibraryView is one mode's catalog grid. Keyed on props.mode so both resources
 // refetch when the shell switches tabs. vocab + tracked load in parallel — vocab
 // only feeds the DetailPanel's add-tag autocomplete.
-const LibraryView: Component<{ mode: LibraryMode; initialTier?: string }> = (
+const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
   props,
 ) => {
   const [vocab, { refetch: refetchVocab }] = createResource(
@@ -758,8 +743,7 @@ const LibraryView: Component<{ mode: LibraryMode; initialTier?: string }> = (
   );
 };
 
-// Library is the mode-switching shell: a Movies/Series tab bar (never Adult)
-// over the matching mode's catalog grid.
+// Library is the mode-switching shell over the matching mode's catalog grid.
 export const Library: Component = () => {
   // ?mode= and ?tier= SEED the initial view only — a Dashboard storage-allocation
   // cell links here as /library?mode=movies&tier=lossless. Read once, at mount,
@@ -767,24 +751,18 @@ export const Library: Component = () => {
   // would fight resetOnModeChange (which clears the filters on a tab click) and
   // would make every tab click rewrite the URL. From here it's local state.
   const [params] = useSearchParams();
-  // Anything that isn't "series" falls back to Movies. Library has no Adult mode
-  // (LibraryMode excludes it), so a hand-typed ?mode=adult must not break the
-  // screen.
-  const initialMode: LibraryMode = params.mode === "series" ? "series" : "movies";
+  const initialMode: Mode =
+    params.mode === "series" || params.mode === "adult" ? params.mode : "movies";
   // An unrecognized tier folds to "" so the <select> can never display a value
   // it isn't actually filtering by.
   const initialTier =
     typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
       ? params.tier
       : "";
-  const [mode, setMode] = createSignal<LibraryMode>(initialMode);
+  const [mode, setMode] = createSignal<Mode>(initialMode);
   return (
     <div>
-      <ScreenTabs
-        tabs={LIBRARY_MODES}
-        current={mode}
-        onSelect={(id) => setMode(id as LibraryMode)}
-      />
+      <ModeTabs current={mode} onSelect={setMode} />
       <LibraryView mode={mode()} initialTier={initialTier} />
     </div>
   );

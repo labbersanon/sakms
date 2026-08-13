@@ -26,36 +26,31 @@ import (
 // are keyed on (box, sceneId) and have no TMDB identity — the Tag picker, this
 // type's original caller, ignores them for every mode.
 //
-// CreatedAt is another additive omitempty field, populated only for
-// Movies/Series so the frontend's Library screen can offer an added-date
-// sort. It is deliberately left unpopulated for Adult (see the comment at
-// the Adult branch below) — Adult has no Library grid to sort, and leaving
-// it zero (omitted, since it's omitempty) keeps Adult's wire response
-// byte-identical to before this field existed.
+// CreatedAt is another additive omitempty field, populated for every mode so
+// the frontend's Library screen can offer an added-date sort.
 //
 // QualityTiers is additive too, backing the Library screen's tier filter and
 // the Dashboard Storage Allocation grid's drill-down. It is a SLICE, not a
 // single value, because a series genuinely has more than one: its episodes are
 // grabbed at different times under different tier settings, and collapsing that
 // to one value would be a fabricated majority vote. Movies carry a 1-element
-// slice; Adult is left empty (Adult isn't browsable in Library — its tag CRUD
-// table in Tag.tsx has no tier filter to honor). A stored "" (a row the
-// boot-time backfill hasn't reached) folds to "unknown" here rather than being
-// omitted: the Dashboard grid folds "" into the same visible, clickable Unknown
-// cell, so omitting it would make that cell drill down to an empty list. The
-// fold is display-only — the stored "" is untouched.
+// slice; Adult scenes carry a 1-element slice. A stored "" (a row the boot-time
+// backfill hasn't reached) folds to "unknown" here rather than being omitted:
+// the Dashboard grid folds "" into the same visible, clickable Unknown cell, so
+// omitting it would make that cell drill down to an empty list. The fold is
+// display-only — the stored "" is untouched.
 type libraryTrackedItem struct {
-	ID             int64                 `json:"id"`
-	Title          string                `json:"title"`
-	Tags           []string              `json:"tags"`
-	TMDBID         int                   `json:"tmdbId,omitempty"`
-	Year           int                   `json:"year,omitempty"`
-	CollectionName string                `json:"collectionName,omitempty"`
-	Genres         []string              `json:"genres,omitempty"`
-	Cast           []string              `json:"cast,omitempty"`
-	CreatedAt      string                `json:"createdAt,omitempty"`
-	QualityTiers   []string              `json:"qualityTiers,omitempty"`
-	Files          []libraryTrackedFile  `json:"files,omitempty"`
+	ID             int64                `json:"id"`
+	Title          string               `json:"title"`
+	Tags           []string             `json:"tags"`
+	TMDBID         int                  `json:"tmdbId,omitempty"`
+	Year           int                  `json:"year,omitempty"`
+	CollectionName string               `json:"collectionName,omitempty"`
+	Genres         []string             `json:"genres,omitempty"`
+	Cast           []string             `json:"cast,omitempty"`
+	CreatedAt      string               `json:"createdAt,omitempty"`
+	QualityTiers   []string             `json:"qualityTiers,omitempty"`
+	Files          []libraryTrackedFile `json:"files,omitempty"`
 }
 
 // libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
@@ -190,14 +185,14 @@ func listTrackedHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				// CreatedAt deliberately left unset here (see the type's doc
-				// comment) — Scene.CreatedAt exists but Adult has no Library
-				// grid to sort by it, and omitting it keeps this response
-				// byte-identical to before the field existed. QualityTiers is
-				// left unset for the same reason: Adult isn't browsable in
-				// Library, so there's no tier filter for it to feed, and the
-				// Dashboard's Adult cells are deliberately non-clickable.
-				out[i] = libraryTrackedItem{ID: sc.ID, Title: sc.Title, Tags: tags}
+				tier := sc.QualityTier
+				if tier == "" {
+					tier = "unknown"
+				}
+				out[i] = libraryTrackedItem{
+					ID: sc.ID, Title: sc.Title, Tags: tags,
+					CreatedAt: sc.CreatedAt, QualityTiers: []string{tier},
+				}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)

@@ -52,6 +52,7 @@ import {
   Show,
 } from "solid-js";
 import { Muted } from "./ui";
+import { ViewAllLink } from "./ViewAllLink";
 
 // LOAD_MORE_THRESHOLD_PX is how close (in px) to the trailing edge the
 // container must scroll before onLoadMore fires — far enough ahead that the
@@ -114,6 +115,11 @@ export type CarouselProps<T> = {
   loading?: boolean;
   emptyText?: string;
   class?: string;
+  // Claude 2026-08-13: opt-in View All header link (Slice 4). Omitted = today's
+  // heading. Scroll/lazy-load is unchanged.
+  // Reason: Mainstream TMDB rows go through Carousel, not PaginatedStrip.
+  // Review if: Trakt/library/slider rows ever gain View All (4B forbids it).
+  viewAll?: { href: string };
 };
 
 export function Carousel<T>(props: CarouselProps<T>): JSX.Element {
@@ -160,9 +166,14 @@ export function Carousel<T>(props: CarouselProps<T>): JSX.Element {
 
   return (
     <section class={props.class ?? "mt-6"}>
-      <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">
-        {props.title}
-      </h2>
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-muted">
+          {props.title}
+        </h2>
+        <Show when={props.viewAll}>
+          {(va) => <ViewAllLink href={va().href} title={props.title} />}
+        </Show>
+      </div>
       <Show
         when={props.items.length > 0}
         fallback={

@@ -102,6 +102,35 @@ describe("PaginatedStrip auto-advance stop conditions", () => {
   });
 });
 
+describe("PaginatedStrip View all", () => {
+  it("omits View all when viewAll is not set", async () => {
+    renderStrip((page) => ({ items: [{ id: page }], hasMore: false }));
+    expect(await screen.findByText("Row 1")).toBeInTheDocument();
+    expect(screen.queryByText("View all")).not.toBeInTheDocument();
+  });
+
+  it("renders View all when viewAll is set", async () => {
+    const load = vi.fn(async (page: number) => ({
+      items: [{ id: page }],
+      hasMore: false,
+    }));
+    render(() => (
+      <PaginatedStrip<Row>
+        title="Test Strip"
+        reloadToken={() => 0}
+        load={load}
+        onError={() => {}}
+        viewAll={{ href: "/discover/row/adult-newest/1" }}
+      >
+        {(item) => <div>Row {item.id}</div>}
+      </PaginatedStrip>
+    ));
+    expect(await screen.findByText("Row 1")).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "View all Test Strip" });
+    expect(link.getAttribute("href")).toBe("/discover/row/adult-newest/1");
+  });
+});
+
 // infiniteScroll opts a strip into IntersectionObserver-driven load-on-scroll in
 // place of the manual "Show more" button (F3/F4). jsdom has no real
 // IntersectionObserver, so these tests install a controllable spy: the ctor mock

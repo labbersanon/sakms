@@ -101,7 +101,7 @@ type ModedTitle = { mode: "movies" | "series"; item: DiscoverItem };
 // `key` is this row's stable identity in the Discover row-order feature (see
 // RowEditor.tsx/api/rowOrder.ts's mergeRowOrder) — never renamed once
 // shipped, since a stored row-order value references it by this string.
-const MAINSTREAM_ROWS: {
+export const MAINSTREAM_ROWS: {
   key: string;
   title: string;
   mode: "movies" | "series";
@@ -482,6 +482,7 @@ const PaginatedRow: Component<{
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
   onError: (err: unknown) => void;
+  viewAll?: { href: string };
 }> = (props) => {
   const [items, setItems] = createSignal<DiscoverItem[]>([]);
   const [page, setPage] = createSignal(0);
@@ -529,6 +530,7 @@ const PaginatedRow: Component<{
       onLoadMore={() => void load(false)}
       hasMore={!exhausted()}
       loading={loading()}
+      viewAll={props.viewAll}
     />
   );
 };
@@ -1068,6 +1070,7 @@ export const MainstreamDiscover: Component<{
           onGrab={setGrabTarget}
           onDetail={setDetailTarget}
           onError={setSetupError}
+          viewAll={{ href: `/discover/row/tmdb/${builtinRow.key}` }}
         />
       );
     }

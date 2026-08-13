@@ -175,12 +175,20 @@ describe("Discover — Mainstream combined rows", () => {
     expect(screen.getByText("Popular Shows")).toBeInTheDocument();
     expect(await screen.findByText("Trend Show")).toBeInTheDocument();
     expect(screen.getByText("Pop Show")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View all Trending Shows" })).toHaveAttribute(
+      "href",
+      "/discover/row/tmdb/trending-shows",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Movies" }));
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
     expect(screen.getByText("Popular Movies")).toBeInTheDocument();
     expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
     expect(screen.getByText("Pop Movie")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View all Trending Movies" })).toHaveAttribute(
+      "href",
+      "/discover/row/tmdb/trending-movies",
+    );
   });
 
   it("routes every poster image through the image proxy — never hot-links image.tmdb.org", async () => {
@@ -1141,6 +1149,12 @@ describe("Discover — Adult admin newest rows", () => {
 
     expect(await screen.findByText("Fresh Scene")).toBeInTheDocument();
     expect(await screen.findByText("Fresh Performer")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View all Newest Scenes" })).toHaveAttribute(
+      "href",
+      "/discover/row/adult-newest/1",
+    );
+    expect(screen.queryByRole("link", { name: "View all Female Performers" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "View all Newest Performers" })).toBeNull();
 
     // Claude 2026-08-02: this pair used to tell AdultCard from EntityCard by
     // Grab-button PRESENCE. After the Discover card cleanup neither card has
@@ -1441,6 +1455,10 @@ describe("Discover — Adult Movies tab", () => {
     expect(screen.queryByText("Catalog Movie Title")).not.toBeInTheDocument();
     const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[240px\\]") as HTMLElement;
     expect(sceneCard.querySelector(".aspect-video")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View all Newest Scenes" })).toHaveAttribute(
+      "href",
+      "/discover/row/adult-newest/1",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Movies" }));
 
@@ -1450,6 +1468,10 @@ describe("Discover — Adult Movies tab", () => {
       .getByText("Catalog Movie Title")
       .closest(".w-\\[240px\\]") as HTMLElement;
     expect(movieCard.querySelector(".aspect-\\[2\\/3\\]")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View all Newest Movies" })).toHaveAttribute(
+      "href",
+      "/discover/row/adult-newest/2",
+    );
     expect(screen.queryByPlaceholderText("Search scenes by title…")).toBeNull();
     expect(screen.queryByText("Edit")).toBeNull();
     expect(screen.getByText("Select")).toBeInTheDocument();
@@ -1846,6 +1868,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     expect(await screen.findByText("Filtered Movie")).toBeInTheDocument();
     expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
     expect(screen.queryByText("Trend Movie")).not.toBeInTheDocument();
+    expect(screen.queryByText("View all")).not.toBeInTheDocument();
     // Decision DE regression guard: the filter grid's PaginatedStrip returns
     // a plain array here (1 item, under a full page), which still exhausts
     // via the pre-existing length check — the DE fix's widened "Show more"
@@ -1869,6 +1892,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     fireEvent.click(screen.getByText("Clear filters"));
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
     expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View all Trending Movies" })).toBeInTheDocument();
     expect(screen.queryByText("Filtered Movie")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit" })).not.toBeDisabled();
   });
@@ -1895,6 +1919,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
     render(() => <DiscoverAdult />);
     expect(await screen.findByText("Studios")).toBeInTheDocument();
     expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
+    expect(screen.queryByText("View all")).not.toBeInTheDocument();
 
     // "Recently Added" → TPDB recently_created sort; rows give way to the grid.
     fireEvent.change(screen.getByLabelText("Sort"), {
@@ -1903,6 +1928,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
 
     expect(await screen.findByText("Sorted Scene")).toBeInTheDocument();
     expect(screen.queryByText("Vixen Studio")).not.toBeInTheDocument();
+    expect(screen.queryByText("View all")).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([u]) =>
         String(u).includes("sortBy=recently_created"),

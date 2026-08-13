@@ -65,7 +65,7 @@ import {
   sectionLabel,
 } from "../api/sectionLock";
 import { Dashboard } from "./Dashboard";
-import { DiscoverAdult, DiscoverMainstream } from "./Discover";
+import { AdultNewestRowView, DiscoverAdult, DiscoverMainstream, TmdbRowView } from "./Discover";
 import { LibraryAdult, LibraryMainstream } from "./Library";
 import { Queue } from "./Queue";
 import { Organize } from "./Organize";
@@ -78,12 +78,20 @@ import { BrowserNotifications } from "../components/BrowserNotifications";
 // serves. Guardrail #2 / requirement #7: the router must NEVER claim any
 // /api/* path (the OIDC callback /api/auth/oidc/callback is a real server
 // route). A unit test asserts none of these start with "/api".
+//
+// Claude 2026-08-13: /discover/row/tmdb/:key and /discover/row/adult-newest/:rowId
+// are Discover View All (Slice 4). Reason: signed-off families — TMDB keys from
+// MAINSTREAM_ROWS, adult newest scene/movie only; studio/performer skipped
+// because drill-down already is view-all. Do not widen sectionForPath.
+// Review if: entity rows lose drill-down and need ?gender= fan-out.
 export const APP_ROUTES = [
   "/dashboard",
   "/",
   "/discover",
   "/discover/mainstream",
   "/discover/adult",
+  "/discover/row/tmdb/:key",
+  "/discover/row/adult-newest/:rowId",
   "/library",
   "/library/mainstream",
   "/library/adult",
@@ -1020,6 +1028,8 @@ export const AppShell: Component<{
       <Route path="/discover" component={DiscoverMainstream} />
       <Route path="/discover/mainstream" component={DiscoverMainstream} />
       <Route path="/discover/adult" component={DiscoverAdult} />
+      <Route path="/discover/row/tmdb/:key" component={TmdbRowView} />
+      <Route path="/discover/row/adult-newest/:rowId" component={AdultNewestRowView} />
       <Route path="/library" component={LibraryMainstream} />
       <Route path="/library/mainstream" component={LibraryMainstream} />
       <Route path="/library/adult" component={LibraryAdult} />

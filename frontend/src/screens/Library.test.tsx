@@ -197,6 +197,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     // Card is a button with aria-label = title.
     const card = await screen.findByRole("button", { name: "Inception" });
     expect(card).toBeInTheDocument();
+    expect(screen.queryByText("View all")).toBeNull();
     expect(
       calls
         .filter((c) => c.url.includes("/api/modes/movies/tracked"))
@@ -288,6 +289,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
 
     renderLibrary();
     expect(await screen.findByRole("button", { name: "Inception" })).toBeInTheDocument();
+    expect(screen.queryByText("View all")).toBeNull();
     expect(screen.getByRole("button", { name: "Interstellar" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "The Matrix" })).toBeInTheDocument();
 
@@ -595,10 +597,12 @@ describe("Library — route-specific media tabs", () => {
     renderLibraryRoute("/library/adult", LibraryAdult);
 
     expect(await screen.findByRole("button", { name: "Scene Row" })).toBeInTheDocument();
+    expect(screen.queryByText("View all")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Movies" }));
     expect(
       await screen.findByText("No vertical-classified titles yet."),
     ).toBeInTheDocument();
+    expect(screen.queryByText("View all")).toBeNull();
   });
 });
 

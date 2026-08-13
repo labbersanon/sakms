@@ -68,6 +68,20 @@ describe("Carousel", () => {
     expect(screen.getByText("Trending Movies")).toBeInTheDocument();
     expect(screen.getByText("Item 0")).toBeInTheDocument();
     expect(screen.getByText("Item 2")).toBeInTheDocument();
+    expect(screen.queryByText("View all")).not.toBeInTheDocument();
+  });
+
+  it("renders a View all link when viewAll is set", () => {
+    render(() => (
+      <Carousel
+        title="Trending Movies"
+        items={items(3)}
+        renderItem={(item) => <div>{item.label}</div>}
+        viewAll={{ href: "/discover/row/tmdb/trending-movies" }}
+      />
+    ));
+    const link = screen.getByRole("link", { name: "View all Trending Movies" });
+    expect(link.getAttribute("href")).toBe("/discover/row/tmdb/trending-movies");
   });
 
   it("shows the empty fallback and no arrows when there are no items", () => {

@@ -103,7 +103,7 @@ const sourceLabel = (source: string): string => {
 // no ★; slug: "" makes DetailPopup's TPDB external link fall through to
 // undefined rather than a guaranteed-broken URL. releaseTitle passes through
 // unchanged via the spread below (already present on AdultNewestReleaseItem).
-const toAdultDiscoverItem = (
+export const toAdultDiscoverItem = (
   item: AdultNewestReleaseItem,
 ): AdultDiscoverItem => ({
   ...item,
@@ -128,7 +128,7 @@ const toAdultDiscoverItem = (
 // no description to show for a scene, so this isn't a richer version of the
 // removed tooltip, just its replacement per the same convention PosterCard
 // uses.
-const AdultCard: Component<{
+export const AdultCard: Component<{
   item: AdultDiscoverItem;
   onDetail: (t: DetailTarget) => void;
   // onOpenReleases, when passed (only by the catalog-Search result grid),
@@ -711,6 +711,7 @@ export const AdultDiscover: Component<{
           reloadToken={reloadToken}
           load={(page) => fetchAdultNewestRowItems(id, page)}
           onError={setSetupError}
+          viewAll={{ href: `/discover/row/adult-newest/${id}` }}
         >
           {(item) => (
             <AdultCard

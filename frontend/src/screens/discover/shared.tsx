@@ -34,6 +34,7 @@ import {
   manualGrab,
 } from "../../api/grab";
 import { Button, ErrorText, Muted } from "../../components/ui";
+import { ViewAllLink } from "../../components/ViewAllLink";
 import {
   buildConnectionUpsertBody,
   fetchNetscanKnown,
@@ -782,6 +783,13 @@ export function PaginatedStrip<T>(props: {
   // observer is created and "Show more" renders exactly as today. Used ONLY by
   // Adult Discover's merged Studios and gender-split Performers rows.
   infiniteScroll?: boolean;
+  // Claude 2026-08-13: opt-in View All header link (Slice 4). Omitted = today's
+  // heading. In-row "Show more" is unchanged.
+  // Reason: 4B — only PaginatedStrip + Mainstream PaginatedRow. Callers that
+  // must not grow View All (Trakt, library, sliders, calendar, search/filter)
+  // simply omit this.
+  // Review if: entity rows (studio/performer) ever lose their drill-down.
+  viewAll?: { href: string };
 }): JSX.Element {
   const [items, setItems] = createSignal<T[]>([]);
   const [page, setPage] = createSignal(0);
@@ -1030,9 +1038,14 @@ export function PaginatedStrip<T>(props: {
 
   return (
     <section class="mt-6">
-      <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">
-        {props.title}
-      </h2>
+      <div class="mb-2 flex items-center justify-between gap-3">
+        <h2 class="text-sm font-semibold uppercase tracking-wide text-muted">
+          {props.title}
+        </h2>
+        <Show when={props.viewAll}>
+          {(va) => <ViewAllLink href={va().href} title={props.title} />}
+        </Show>
+      </div>
       <Show
         when={items().length > 0 || canAdvance()}
         fallback={

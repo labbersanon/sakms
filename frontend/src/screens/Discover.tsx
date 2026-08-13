@@ -6,3 +6,4 @@
 // longer exported. Reason: Slice 1.5 — unrouted; tests mount the routed shells.
 // Review if: a combined deep-link shell is restored.
 export { DiscoverAdult, DiscoverMainstream } from "./discover";
+export { AdultNewestRowView, TmdbRowView } from "./discover/RowView";

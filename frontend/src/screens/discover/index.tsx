@@ -57,16 +57,12 @@ import {
   createSignal,
   on,
   Show,
-  Switch,
-  Match,
 } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
   Button,
-  Card,
   Muted,
   ScreenTabs,
-  type TabDef,
   SectionLockOverlay,
   useAdultEnabled,
   useSectionLock,
@@ -83,10 +79,12 @@ import {
   type MainstreamMediaTab,
 } from "../mediaNav";
 
-const LEGACY_DISCOVER_TABS: TabDef[] = [
-  { id: "mainstream", label: "Mainstream" },
-  { id: "adult", label: "Adult" },
-];
+// Claude 2026-08-13: LEGACY_DISCOVER_TABS retired with the unrouted Discover shell.
+// Reason: Slice 1.5 — AppShell routes DiscoverMainstream / DiscoverAdult only.
+// const LEGACY_DISCOVER_TABS: TabDef[] = [
+//   { id: "mainstream", label: "Mainstream" },
+//   { id: "adult", label: "Adult" },
+// ];
 
 // Discover is the tab shell: Mainstream (combined Movies+Series) / Adult. Tabs
 // register with the app shell (which draws the bar in its consistent location);
@@ -247,11 +245,11 @@ export const DiscoverAdult: Component = () => {
     });
 
   const toggles = () => (
-    <Show when={tab() === "scenes"}>
-      <div class="flex items-center gap-1">
-        <Button class="!px-3 !py-1.5 !text-sm" onClick={toggleSelect}>
-          {selection.selectMode() ? "Done selecting" : "Select"}
-        </Button>
+    <div class="flex items-center gap-1">
+      <Button class="!px-3 !py-1.5 !text-sm" onClick={toggleSelect}>
+        {selection.selectMode() ? "Done selecting" : "Select"}
+      </Button>
+      <Show when={tab() === "scenes"}>
         <Button
           class="!px-3 !py-1.5 !text-sm"
           disabled={adultSorting()}
@@ -259,8 +257,8 @@ export const DiscoverAdult: Component = () => {
         >
           {editMode() ? "Done" : "Edit"}
         </Button>
-      </div>
-    </Show>
+      </Show>
+    </div>
   );
 
   const selectTab = (id: string) => {
@@ -288,8 +286,18 @@ export const DiscoverAdult: Component = () => {
             when={!adultLocked()}
             fallback={<SectionLockOverlay label={sectionLabel(ADULT_CONTENT_SECTION)} />}
           >
-            <Show when={tab() === "scenes"} fallback={<AdultMoviesPlaceholder />}>
+            <Show
+              when={tab() === "scenes"}
+              fallback={
+                <AdultDiscover
+                  kind="movie"
+                  editMode={editMode}
+                  onSortingChange={setAdultSorting}
+                />
+              }
+            >
               <AdultDiscover
+                kind="scene"
                 editMode={editMode}
                 onSortingChange={setAdultSorting}
               />
@@ -302,132 +310,136 @@ export const DiscoverAdult: Component = () => {
   );
 };
 
-const AdultMoviesPlaceholder: Component = () => (
-  <Card title="Adult Movies">
-    <Muted>
-      Adult Movies will use TPDB/catalog adult movie entities. The route and tab
-      are scaffolded here so the follow-up enrichment/data slice has a dedicated
-      surface instead of reusing Scenes.
-    </Muted>
-  </Card>
-);
-
-export const Discover: Component = () => {
-  const adultEnabled = useAdultEnabled();
-  const lock = useSectionLock();
-  const adultLocked = () => lock.isLocked(ADULT_CONTENT_SECTION);
-  const selection = createSelection();
-  const [tab, setTab] = createSignal("mainstream");
-  const [editMode, setEditMode] = createSignal(false);
-  const [mainstreamFiltering, setMainstreamFiltering] = createSignal(false);
-  const [adultSorting, setAdultSorting] = createSignal(false);
-  createEffect(() => {
-    if (mainstreamFiltering() || adultSorting()) setEditMode(false);
-  });
-
-  let location: ReturnType<typeof useLocation> | undefined;
-  try {
-    location = useLocation();
-  } catch {
-    location = undefined;
-  }
-  createEffect(
-    on(
-      () => location?.pathname,
-      () => {
-        selection.clear();
-        selection.setSelectMode(false);
-      },
-      { defer: true },
-    ),
-  );
-
-  const editDisabled = () =>
-    (tab() === "mainstream" && mainstreamFiltering()) ||
-    (tab() === "adult" && adultSorting());
-
-  const toggleSelect = () => {
-    const on = !selection.selectMode();
-    selection.setSelectMode(on);
-    if (on) setEditMode(false);
-    if (!on) selection.clear();
-  };
-
-  const toggleEdit = () =>
-    setEditMode((v) => {
-      const next = !v;
-      if (next) selection.setSelectMode(false);
-      return next;
-    });
-
-  const toggles = () => (
-    <div class="flex items-center gap-1">
-      <Button class="!px-3 !py-1.5 !text-sm" onClick={toggleSelect}>
-        {selection.selectMode() ? "Done selecting" : "Select"}
-      </Button>
-      <Button
-        class="!px-3 !py-1.5 !text-sm"
-        disabled={editDisabled()}
-        onClick={toggleEdit}
-      >
-        {editMode() ? "Done" : "Edit"}
-      </Button>
-    </div>
-  );
-
-  const selectTab = (id: string) => {
-    setEditMode(false);
-    selection.setSelectMode(false);
-    selection.clear();
-    setTab(id);
-  };
-
-  return (
-    <SelectionProvider store={selection}>
-      <div>
-        <Show
-          when={adultEnabled()}
-          fallback={
-            <div class="mt-4">
-              <div class="mb-2 flex justify-end">{toggles()}</div>
-              <MainstreamDiscover
-                editMode={editMode}
-                onFilteringChange={setMainstreamFiltering}
-              />
-            </div>
-          }
-        >
-          <ScreenTabs
-            tabs={LEGACY_DISCOVER_TABS}
-            current={tab}
-            onSelect={selectTab}
-            trailing={toggles()}
-            class="flex items-center gap-1"
-          />
-          <div class="mt-4">
-            <Switch>
-              <Match when={tab() === "adult" && adultLocked()}>
-                <SectionLockOverlay
-                  label={sectionLabel(ADULT_CONTENT_SECTION)}
-                />
-              </Match>
-              <Match when={tab() === "adult"}>
-                <AdultDiscover
-                  editMode={editMode}
-                  onSortingChange={setAdultSorting}
-                />
-              </Match>
-              <Match when={tab() === "mainstream"}>
-                <MainstreamDiscover
-                  editMode={editMode}
-                  onFilteringChange={setMainstreamFiltering}
-                />
-              </Match>
-            </Switch>
-          </div>
-        </Show>
-        <BulkBar />
-      </div>
-    </SelectionProvider>
-  );
-};
+// Claude 2026-08-13: unrouted legacy Discover shell + AdultMoviesPlaceholder.
+// Reason: Slice 1.5/2 — tests mount DiscoverMainstream/DiscoverAdult; Movies tab
+// now mounts AdultDiscover kind=movie. Do not re-export Discover.
+// Review if: a combined Mainstream/Adult ModeTabs deep-link is restored.
+// const AdultMoviesPlaceholder: Component = () => (
+//   <Card title="Adult Movies">
+//     <Muted>
+//       Adult Movies will use TPDB/catalog adult movie entities. The route and tab
+//       are scaffolded here so the follow-up enrichment/data slice has a dedicated
+//       surface instead of reusing Scenes.
+//     </Muted>
+//   </Card>
+// );
+//
+// export const Discover: Component = () => {
+//   const adultEnabled = useAdultEnabled();
+//   const lock = useSectionLock();
+//   const adultLocked = () => lock.isLocked(ADULT_CONTENT_SECTION);
+//   const selection = createSelection();
+//   const [tab, setTab] = createSignal("mainstream");
+//   const [editMode, setEditMode] = createSignal(false);
+//   const [mainstreamFiltering, setMainstreamFiltering] = createSignal(false);
+//   const [adultSorting, setAdultSorting] = createSignal(false);
+//   createEffect(() => {
+//     if (mainstreamFiltering() || adultSorting()) setEditMode(false);
+//   });
+//
+//   let location: ReturnType<typeof useLocation> | undefined;
+//   try {
+//     location = useLocation();
+//   } catch {
+//     location = undefined;
+//   }
+//   createEffect(
+//     on(
+//       () => location?.pathname,
+//       () => {
+//         selection.clear();
+//         selection.setSelectMode(false);
+//       },
+//       { defer: true },
+//     ),
+//   );
+//
+//   const editDisabled = () =>
+//     (tab() === "mainstream" && mainstreamFiltering()) ||
+//     (tab() === "adult" && adultSorting());
+//
+//   const toggleSelect = () => {
+//     const on = !selection.selectMode();
+//     selection.setSelectMode(on);
+//     if (on) setEditMode(false);
+//     if (!on) selection.clear();
+//   };
+//
+//   const toggleEdit = () =>
+//     setEditMode((v) => {
+//       const next = !v;
+//       if (next) selection.setSelectMode(false);
+//       return next;
+//     });
+//
+//   const toggles = () => (
+//     <div class="flex items-center gap-1">
+//       <Button class="!px-3 !py-1.5 !text-sm" onClick={toggleSelect}>
+//         {selection.selectMode() ? "Done selecting" : "Select"}
+//       </Button>
+//       <Button
+//         class="!px-3 !py-1.5 !text-sm"
+//         disabled={editDisabled()}
+//         onClick={toggleEdit}
+//       >
+//         {editMode() ? "Done" : "Edit"}
+//       </Button>
+//     </div>
+//   );
+//
+//   const selectTab = (id: string) => {
+//     setEditMode(false);
+//     selection.setSelectMode(false);
+//     selection.clear();
+//     setTab(id);
+//   };
+//
+//   return (
+//     <SelectionProvider store={selection}>
+//       <div>
+//         <Show
+//           when={adultEnabled()}
+//           fallback={
+//             <div class="mt-4">
+//               <div class="mb-2 flex justify-end">{toggles()}</div>
+//               <MainstreamDiscover
+//                 editMode={editMode}
+//                 onFilteringChange={setMainstreamFiltering}
+//               />
+//             </div>
+//           }
+//         >
+//           <ScreenTabs
+//             tabs={LEGACY_DISCOVER_TABS}
+//             current={tab}
+//             onSelect={selectTab}
+//             trailing={toggles()}
+//             class="flex items-center gap-1"
+//           />
+//           <div class="mt-4">
+//             <Switch>
+//               <Match when={tab() === "adult" && adultLocked()}>
+//                 <SectionLockOverlay
+//                   label={sectionLabel(ADULT_CONTENT_SECTION)}
+//                 />
+//               </Match>
+//               <Match when={tab() === "adult"}>
+//                 <AdultDiscover
+//                   editMode={editMode}
+//                   onSortingChange={setAdultSorting}
+//                 />
+//               </Match>
+//               <Match when={tab() === "mainstream"}>
+//                 <MainstreamDiscover
+//                   editMode={editMode}
+//                   onFilteringChange={setMainstreamFiltering}
+//                 />
+//               </Match>
+//             </Switch>
+//           </div>
+//         </Show>
+//         <BulkBar />
+//       </div>
+//     </SelectionProvider>
+//   );
+// };

@@ -12,7 +12,7 @@ import type {
   SeasonSummary,
   TrackedItem,
 } from "@dto";
-import { Discover, DiscoverAdult, DiscoverMainstream } from "./Discover";
+import { DiscoverAdult, DiscoverMainstream } from "./Discover";
 import {
   fetchAdultDiscoverMergedRecent,
   fetchAdultDiscoverSorted,
@@ -122,6 +122,13 @@ const mainstreamDefaults = (url: string): Response | null => {
 
 afterEach(() => vi.unstubAllGlobals());
 
+// DiscoverMainstream defaults to Series (MAINSTREAM_MEDIA_TABS[0]). Movie
+// rows, movie sliders, movie RSS, and movies-scoped search/filter only mount
+// after this click. Do not call it from Series season/grab/select tests.
+const clickMoviesTab = () => {
+  fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+};
+
 describe("Discover — route-specific media tabs", () => {
   it("renders Series and Movies tabs on the Mainstream discover route", async () => {
     stubFetch((url) => mainstreamDefaults(url) ?? jsonResponse([]));
@@ -140,7 +147,9 @@ describe("Discover — route-specific media tabs", () => {
 
     expect(await screen.findByPlaceholderText("Search scenes by title…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Movies" }));
-    expect(screen.getByText("Adult Movies")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Search scenes by title…")).toBeNull();
+    expect(screen.queryByText("Edit")).toBeNull();
+    expect(screen.getByText("Select")).toBeInTheDocument();
   });
 });
 
@@ -160,20 +169,18 @@ describe("Discover — Mainstream combined rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
 
-    // All four row headers are present (the combined page, not a Movies/Series
-    // toggle).
-    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
-    expect(screen.getByText("Trending Shows")).toBeInTheDocument();
-    expect(screen.getByText("Popular Movies")).toBeInTheDocument();
+    expect(await screen.findByText("Trending Shows")).toBeInTheDocument();
     expect(screen.getByText("Popular Shows")).toBeInTheDocument();
-
-    // A card from each row renders.
-    expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
     expect(await screen.findByText("Trend Show")).toBeInTheDocument();
-    expect(await screen.findByText("Pop Movie")).toBeInTheDocument();
-    expect(await screen.findByText("Pop Show")).toBeInTheDocument();
+    expect(screen.getByText("Pop Show")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    expect(screen.getByText("Popular Movies")).toBeInTheDocument();
+    expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
+    expect(screen.getByText("Pop Movie")).toBeInTheDocument();
   });
 
   it("routes every poster image through the image proxy — never hot-links image.tmdb.org", async () => {
@@ -185,7 +192,8 @@ describe("Discover — Mainstream combined rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    const { container } = render(() => <Discover />);
+    const { container } = render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
 
     const imgs = Array.from(container.querySelectorAll("img"));
@@ -207,7 +215,8 @@ describe("Discover — Mainstream combined rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    const { container } = render(() => <Discover />);
+    const { container } = render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     // "No Art Movie" appears twice per card (the text-tile label + the title
     // line), so use findAllByText.
     await screen.findAllByText("No Art Movie");
@@ -229,12 +238,16 @@ describe("Discover — Upcoming rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
 
-    expect(await screen.findByText("Upcoming Movies")).toBeInTheDocument();
-    expect(screen.getByText("Upcoming Shows")).toBeInTheDocument();
-    expect(await screen.findByText("Upcoming Movie")).toBeInTheDocument();
+    expect(await screen.findByText("Upcoming Shows")).toBeInTheDocument();
     expect(await screen.findByText("Upcoming Show")).toBeInTheDocument();
+    expect(screen.queryByText("Upcoming Movies")).not.toBeInTheDocument();
+
+    clickMoviesTab();
+    expect(await screen.findByText("Upcoming Movies")).toBeInTheDocument();
+    expect(await screen.findByText("Upcoming Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Upcoming Shows")).not.toBeInTheDocument();
   });
 });
 
@@ -254,7 +267,8 @@ describe("Discover — custom slider rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
 
     expect(await screen.findByText("Heist Movies")).toBeInTheDocument();
     expect(await screen.findByText("Heist Movie One")).toBeInTheDocument();
@@ -282,7 +296,7 @@ describe("Discover — custom slider rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
 
     expect(await screen.findByText("Mixed Movie Item")).toBeInTheDocument();
     expect(await screen.findByText("Mixed Show Item")).toBeInTheDocument();
@@ -360,7 +374,7 @@ describe("Discover — custom slider rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
     const card = (await screen.findByText("Gridded Show")).closest(
       "div.w-\\[220px\\]",
     ) as HTMLElement;
@@ -411,7 +425,8 @@ describe("Discover — Carousel lazy-load-more pagination (append, not replace)"
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     expect(await screen.findByText("Page One Movie")).toBeInTheDocument();
 
     // The Carousel component's own lazy-load trigger is scroll-position-driven
@@ -458,17 +473,21 @@ describe("Discover — existing-library row", () => {
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
-    const { container } = render(() => <Discover />);
+    const { container } = render(() => <DiscoverMainstream />);
 
     expect(await screen.findByText("In your library")).toBeInTheDocument();
-    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
     expect(await screen.findByText("Owned Show")).toBeInTheDocument();
+    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
+
+    clickMoviesTab();
+    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Owned Show")).not.toBeInTheDocument();
 
     // The lazily-resolved library posters render through the proxy.
     const libImgs = Array.from(container.querySelectorAll("img")).filter((img) =>
       decodeURIComponent(img.getAttribute("src") ?? "").match(/libmovie|libshow/),
     );
-    expect(libImgs.length).toBe(2);
+    expect(libImgs.length).toBe(1);
     for (const img of libImgs) {
       const src = img.getAttribute("src") ?? "";
       expect(src.startsWith("/api/images/proxy?url=")).toBe(true);
@@ -496,7 +515,8 @@ describe("Discover — existing-library row", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Owned Movie");
     const card = screen
       .getByText("Owned Movie")
@@ -530,7 +550,8 @@ describe("Discover — existing-library row", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     // A tmdbId-0 card resolves no poster, so it falls back to TextPoster — which
     // repeats the title. Both matches sit inside the same card wrapper, so
     // either one climbs to it; findAllByText avoids the multiple-match throw.
@@ -585,7 +606,8 @@ describe("Discover — existing-library row", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Owned Movie");
     fireEvent.click(screen.getByText("Select"));
 
@@ -634,12 +656,13 @@ describe("Discover — Mainstream search (replaces rows, then restores)", () => 
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     // Rows are visible initially.
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
     expect(await screen.findByText("A Row Movie")).toBeInTheDocument();
 
-    // Search — the rows are replaced by one merged result grid.
+    // Search — the rows are replaced by one tab-scoped result grid.
     fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
       target: { value: "search" },
     });
@@ -647,7 +670,7 @@ describe("Discover — Mainstream search (replaces rows, then restores)", () => 
 
     expect(await screen.findByText("Search results")).toBeInTheDocument();
     expect(await screen.findByText("Search Movie")).toBeInTheDocument();
-    expect(await screen.findByText("Search Show")).toBeInTheDocument();
+    expect(screen.queryByText("Search Show")).not.toBeInTheDocument();
     // Rows are gone while searching.
     expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
     expect(screen.queryByText("A Row Movie")).not.toBeInTheDocument();
@@ -709,7 +732,8 @@ describe("Discover — row-editor Edit mode", () => {
     });
     vi.stubGlobal("fetch", fn);
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
     // The RSS feed row already renders as its own carousel in the default
     // (no stored order) position — after every fixed MAINSTREAM_ROWS entry.
@@ -805,7 +829,8 @@ describe("Discover — the row editor carries NO per-entity actions (Settings-on
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     expect(await screen.findByText("Heist Movies")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Edit"));
@@ -852,8 +877,7 @@ describe("Discover — the row editor carries NO per-entity actions (Settings-on
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     fireEvent.click(await screen.findByText("Edit"));
     // Await a GRIP, not the card title: the editor renders its "No rows yet."
     // empty state while the newest-rows resource is still in flight, and every
@@ -912,8 +936,7 @@ describe("Discover — Adult tab (row-based browse)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
 
     // Only the Newest Scenes row has items → exactly one "Show more".
     expect(await screen.findByText("Newest Page One Item 0")).toBeInTheDocument();
@@ -949,8 +972,7 @@ describe("Discover — Adult tab (row-based browse)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
 
     expect(await screen.findByText("Only Item")).toBeInTheDocument();
     expect(screen.queryByText("Show more")).not.toBeInTheDocument();
@@ -990,8 +1012,7 @@ describe("Discover — Adult stash-box provenance (no stash-box rows)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
 
     // No newest-rows admin data in this fixture, so the browse view has
     // nothing but the search bar/sort bar — confirm that quiescent state
@@ -1025,8 +1046,7 @@ describe("Discover — Adult stash-box provenance (no stash-box rows)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
 
     expect(await screen.findByText("Plain TPDB Scene")).toBeInTheDocument();
     expect(await screen.findByText("Merged StashDB Scene")).toBeInTheDocument();
@@ -1108,8 +1128,7 @@ describe("Discover — Adult admin newest rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
 
     // Both enabled row headers render (the Performer row fans out to a
     // "Female Performers" strip, the discovered gender's own title); the
@@ -1160,8 +1179,7 @@ describe("Discover — Adult admin newest rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     // The disabled row is filtered from the live browse content...
     expect(await screen.findByText("Newest Scenes")).toBeInTheDocument();
     expect(screen.queryByText("Hidden Studios")).not.toBeInTheDocument();
@@ -1216,8 +1234,7 @@ describe("Discover — Adult admin newest rows", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     fireEvent.click(await screen.findByText("Edit"));
 
     expect(await screen.findByLabelText("Drag Newest Scenes")).toBeTruthy();
@@ -1303,8 +1320,7 @@ describe("Discover — Adult admin newest rows", () => {
       }),
     );
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     fireEvent.click(await screen.findByText("Edit"));
     await screen.findByLabelText("Drag Newest Scenes");
 
@@ -1362,12 +1378,12 @@ describe("Discover — Adult admin newest rows", () => {
       }),
     );
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     fireEvent.click(await screen.findByText("Edit"));
     await screen.findByLabelText("Drag Newest Scenes");
-    // One /resolve per row's strip on first mount.
-    await waitFor(() => expect(resolveCalls).toHaveLength(3));
+    // Scenes browse mounts scene+studio strips only — the movie row stays in
+    // the unfiltered editor (2.0d) and does not /resolve on this tab.
+    await waitFor(() => expect(resolveCalls).toHaveLength(2));
     const before = resolveCalls.length;
 
     dragAdultRow(0, 2);
@@ -1380,8 +1396,83 @@ describe("Discover — Adult admin newest rows", () => {
       }),
     ).toBeInTheDocument();
     // ...and not one strip re-ran its loader. Keyed on row objects this would
-    // be 6.
+    // be 4 (two visible strips remounted).
     expect(resolveCalls).toHaveLength(before);
+  });
+});
+
+describe("Discover — Adult Movies tab", () => {
+  const movieRelease = {
+    id: "m1",
+    title: "Catalog Movie Title",
+    studio: "Vixen",
+    date: "2026-01-02",
+    image: "https://cdn.theporndb.net/movies/m.jpg",
+    source: "tpdb",
+    rowType: "movie",
+  };
+  const sceneRelease = {
+    id: "s1",
+    title: "Fresh Scene",
+    studio: "Vixen",
+    date: "2026-01-02",
+    image: "https://cdn.theporndb.net/scenes/fresh.jpg",
+    source: "tpdb",
+    rowType: "scene",
+  };
+
+  it("Movies tab shows movie newest-row cards at 2:3; Scenes browse does not", async () => {
+    stubFetch((url) => {
+      if (url.includes("/newest-rows/1/resolve")) return jsonResponse([sceneRelease]);
+      if (url.includes("/newest-rows/2/resolve")) return jsonResponse([movieRelease]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+          { id: 2, title: "Newest Movies", rowType: "movie", sortOrder: 1, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <DiscoverAdult />);
+
+    expect(await screen.findByText("Fresh Scene")).toBeInTheDocument();
+    expect(screen.queryByText("Catalog Movie Title")).not.toBeInTheDocument();
+    const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[240px\\]") as HTMLElement;
+    expect(sceneCard.querySelector(".aspect-video")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+
+    expect(await screen.findByText("Catalog Movie Title")).toBeInTheDocument();
+    expect(screen.queryByText("Fresh Scene")).not.toBeInTheDocument();
+    const movieCard = screen
+      .getByText("Catalog Movie Title")
+      .closest(".w-\\[240px\\]") as HTMLElement;
+    expect(movieCard.querySelector(".aspect-\\[2\\/3\\]")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Search scenes by title…")).toBeNull();
+    expect(screen.queryByText("Edit")).toBeNull();
+    expect(screen.getByText("Select")).toBeInTheDocument();
+  });
+
+  it("Select on Movies can check a movie card", async () => {
+    stubFetch((url) => {
+      if (url.includes("/newest-rows/2/resolve")) return jsonResponse([movieRelease]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 2, title: "Newest Movies", rowType: "movie", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <DiscoverAdult />);
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    await screen.findByText("Catalog Movie Title");
+    fireEvent.click(screen.getByText("Select"));
+    fireEvent.click(screen.getByText("Catalog Movie Title"));
+    expect(await screen.findByText("1 selected")).toBeInTheDocument();
   });
 });
 
@@ -1412,8 +1503,7 @@ describe("Discover — Adult never touches the per-screen row-order KV store", (
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     // Await both the browse view AND the row editor: the KV reads this guards
     // against were fired by useRowOrder, which the editor path is what used to
     // mount. Awaiting a rendered row proves the mount's requests really ran.
@@ -1465,7 +1555,7 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
 
     expect(await screen.findByText("Set up TMDB")).toBeInTheDocument();
     expect(
@@ -1495,7 +1585,8 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Set up TMDB");
 
     fireEvent.input(screen.getByPlaceholderText("API key"), {
@@ -1531,9 +1622,7 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
-    render(() => <Discover />);
-
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
 
     expect(await screen.findByText("Set up TPDB")).toBeInTheDocument();
     expect(
@@ -1550,7 +1639,7 @@ describe("Discover — TMDB/TPDB not-configured setup pop-up", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
 
     expect(await screen.findByText("internal server error")).toBeInTheDocument();
     expect(screen.queryByText(/^Set up/)).not.toBeInTheDocument();
@@ -1585,7 +1674,8 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Hover Movie");
 
     const card = screen.getByText("Hover Movie").closest("div.w-\\[220px\\]") as HTMLElement;
@@ -1618,7 +1708,8 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Click Movie");
     const card = screen.getByText("Click Movie").closest("div.w-\\[220px\\]") as HTMLElement;
 
@@ -1652,8 +1743,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     await screen.findByText("Hover Scene");
 
     const card = screen.getByText("Hover Scene").closest(".w-\\[240px\\]") as HTMLElement;
@@ -1693,8 +1783,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     await screen.findByText("Click Scene");
     const card = screen.getByText("Click Scene").closest(".w-\\[240px\\]") as HTMLElement;
 
@@ -1744,7 +1833,8 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
     expect(await screen.findByText("Trend Movie")).toBeInTheDocument();
 
@@ -1802,8 +1892,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     expect(await screen.findByText("Studios")).toBeInTheDocument();
     expect(await screen.findByText("Vixen Studio")).toBeInTheDocument();
 
@@ -1855,7 +1944,8 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
 
     // Activate a filter, then submit a search — the search should win (view
@@ -1905,8 +1995,7 @@ describe("Discover — filter/sort replaces the rows, then restores", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     expect(await screen.findByText("Studios")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Sort"), {
@@ -2002,7 +2091,7 @@ describe("Discover — Adult mode disabled (no dangling tab bar)", () => {
   const renderDiscoverDisabled = () =>
     render(() => (
       <AdultModeContext.Provider value={{ enabled: () => false, refetch: () => {} }}>
-        <Discover />
+        <DiscoverMainstream />
       </AdultModeContext.Provider>
     ));
 
@@ -2017,14 +2106,11 @@ describe("Discover — Adult mode disabled (no dangling tab bar)", () => {
 
     renderDiscoverDisabled();
 
-    // Mainstream content renders directly, unconditionally.
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
 
-    // No tab bar — neither pill button is present. (Content headers like
-    // "Trending Movies" don't collide with these, confirmed above.)
     expect(screen.queryByRole("button", { name: "Mainstream" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Adult" })).toBeNull();
-    expect(screen.queryByText("Adult")).toBeNull();
   });
 
   it("never fetches Adult-only data (Studios/Performers/scene rows)", async () => {
@@ -2037,6 +2123,7 @@ describe("Discover — Adult mode disabled (no dangling tab bar)", () => {
     });
 
     renderDiscoverDisabled();
+    clickMoviesTab();
     await screen.findByText("Trending Movies");
   });
 });

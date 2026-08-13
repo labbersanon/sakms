@@ -35,7 +35,7 @@ import {
   ScreenTabsContext,
   type ScreenTabsRegistration,
 } from "../components/ui";
-import { Library, LibraryAdult, LibraryMainstream } from "./Library";
+import { LibraryAdult, LibraryMainstream } from "./Library";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -79,12 +79,17 @@ const item = (over: Partial<TrackedItem>): TrackedItem => ({
 // createMemoryHistory per render is deliberate over history.pushState — jsdom's
 // window.location is shared for the whole file, so a pushed query string would
 // leak into whatever case ran next.
-const renderLibrary = (url = "/library") => {
+const renderLibrary = (url = "/library/mainstream") => {
   const history = createMemoryHistory();
-  history.set({ value: url, replace: true });
+  const isAdult =
+    url.includes("mode=adult") || url.startsWith("/library/adult");
+  const path = isAdult ? "/library/adult" : "/library/mainstream";
+  const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+  history.set({ value: path + q, replace: true });
   return render(() => (
     <MemoryRouter history={history}>
-      <Route path="/library" component={Library} />
+      <Route path="/library/mainstream" component={LibraryMainstream} />
+      <Route path="/library/adult" component={LibraryAdult} />
     </MemoryRouter>
   ));
 };
@@ -137,6 +142,7 @@ const makeHandler = (
   overrides: {
     series?: TrackedItem[];
     adult?: TrackedItem[];
+    adultVertical?: TrackedItem[];
     seasons?: SeasonState[];
     onPost?: (url: string) => Response;
     onDelete?: (url: string) => Response;
@@ -151,8 +157,11 @@ const makeHandler = (
       return jsonResponse(overrides.series ?? []);
     if (url.includes("/api/modes/adult/scenes/tags"))
       return jsonResponse(vocab(["reviewed"]));
-    if (url.includes("/api/modes/adult/tracked"))
+    if (url.includes("/api/modes/adult/tracked")) {
+      if (url.includes("aspect=vertical"))
+        return jsonResponse(overrides.adultVertical ?? []);
       return jsonResponse(overrides.adult ?? []);
+    }
     if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
     // Season state — only ever reached from a SERIES detail panel. Answered
     // unconditionally rather than gated on overrides.seasons so the negative
@@ -182,12 +191,17 @@ const inception = (over: Partial<TrackedItem> = {}): TrackedItem =>
 
 describe("Library — grid and detail panel (migrated from Tag)", () => {
   it("renders poster cards and opens the detail panel on click", async () => {
-    stubFetch(makeHandler([inception()]));
+    const calls = stubFetch(makeHandler([inception()]));
     renderLibrary();
 
     // Card is a button with aria-label = title.
     const card = await screen.findByRole("button", { name: "Inception" });
     expect(card).toBeInTheDocument();
+    expect(
+      calls
+        .filter((c) => c.url.includes("/api/modes/movies/tracked"))
+        .every((c) => !c.url.includes("aspect=")),
+    ).toBe(true);
 
     fireEvent.click(card);
     await waitFor(() =>
@@ -481,12 +495,12 @@ describe("Library — quality-tier deep link and filter", () => {
         adult: [item({ id: 30, title: "Adult Scene", qualityTiers: ["high"] })],
       }),
     );
-    renderLibrary(`/library?mode=adult`);
+    renderLibrary(`/library/adult`);
 
     expect(
       await screen.findByRole("button", { name: "Adult Scene" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Adult").className).toContain("bg-accent");
+    expect(screen.getByText("Scenes").className).toContain("bg-accent");
     expect(calls.some((c) => c.url.includes("/api/modes/adult/tracked"))).toBe(
       true,
     );
@@ -582,7 +596,9 @@ describe("Library — route-specific media tabs", () => {
 
     expect(await screen.findByRole("button", { name: "Scene Row" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Movies" }));
-    expect(screen.getByText("Adult Movies")).toBeInTheDocument();
+    expect(
+      await screen.findByText("No vertical-classified titles yet."),
+    ).toBeInTheDocument();
   });
 });
 
@@ -873,12 +889,7 @@ describe("Library — Adult catalog", () => {
         },
       }),
     );
-    renderLibrary();
-    await screen.findByRole("button", { name: "Inception" });
-
-    expect(screen.getByText("Movies")).toBeInTheDocument();
-    expect(screen.getByText("Series")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Adult"));
+    renderLibrary("/library/adult");
 
     const card = await screen.findByRole("button", { name: "Adult Scene" });
     expect(card).toBeInTheDocument();
@@ -916,9 +927,7 @@ describe("Library — Adult catalog", () => {
         ],
       }),
     );
-    renderLibrary();
-    await screen.findByRole("button", { name: "Inception" });
-    fireEvent.click(screen.getByText("Adult"));
+    renderLibrary("/library/adult");
 
     const card = await screen.findByRole("button", { name: "Unplayable Scene" });
     const video = card.querySelector("video") as HTMLVideoElement;
@@ -929,10 +938,12 @@ describe("Library — Adult catalog", () => {
     await waitFor(() => expect(card.querySelector("video")).toBeNull());
   });
 
-  it("adds Adult to the shell-registered tab bar after adult-mode-enabled resolves", async () => {
-    stubFetch(makeHandler([inception()]));
+  it("registers Scenes and Movies tabs on the Adult library route once adult mode is on", async () => {
+    stubFetch(makeHandler([], {
+      adult: [item({ id: 3, title: "Scene Row", qualityTiers: ["high"] })],
+    }));
     const history = createMemoryHistory();
-    history.set({ value: "/library", replace: true });
+    history.set({ value: "/library/adult", replace: true });
     const Harness = () => {
       const [adultEnabled, setAdultEnabled] = createSignal(false);
       const [reg, setReg] = createSignal<ScreenTabsRegistration | null>(null);
@@ -957,7 +968,7 @@ describe("Library — Adult catalog", () => {
               Enable adult in harness
             </button>
             <MemoryRouter history={history}>
-              <Route path="/library" component={Library} />
+              <Route path="/library/adult" component={LibraryAdult} />
             </MemoryRouter>
           </ScreenTabsContext.Provider>
         </AdultModeContext.Provider>
@@ -965,10 +976,64 @@ describe("Library — Adult catalog", () => {
     };
 
     render(() => <Harness />);
-    await screen.findByRole("button", { name: "Inception" });
-    expect(screen.queryByText("Adult")).toBeNull();
+    expect(screen.getByText("Adult mode is disabled in Settings.")).toBeInTheDocument();
+    expect(screen.queryByText("Scenes")).toBeNull();
 
     fireEvent.click(screen.getByText("Enable adult in harness"));
-    await waitFor(() => expect(screen.getByText("Adult")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Scenes")).toBeInTheDocument());
+    expect(screen.getByText("Movies")).toBeInTheDocument();
+  });
+
+  it("Scenes fetches ?aspect=horizontal and Movies fetches ?aspect=vertical", async () => {
+    const calls = stubFetch(
+      makeHandler([], {
+        adult: [
+          item({
+            id: 50,
+            title: "Horizontal Scene",
+            qualityTiers: ["high"],
+            videoUrl: "/api/modes/adult/tracked/50/video",
+          }),
+        ],
+        adultVertical: [item({ id: 80, title: "Vertical Title", qualityTiers: ["high"] })],
+      }),
+    );
+    renderLibrary("/library/adult");
+
+    const sceneCard = await screen.findByRole("button", { name: "Horizontal Scene" });
+    const sceneFrame = sceneCard.querySelector("div.relative.w-full") as HTMLElement;
+    expect(sceneFrame.style.aspectRatio).toBe("16 / 9");
+    expect(
+      calls.some((c) => c.url.includes("/api/modes/adult/tracked?aspect=horizontal")),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    const movieCard = await screen.findByRole("button", { name: "Vertical Title" });
+    const movieFrame = movieCard.querySelector("div.relative.w-full") as HTMLElement;
+    expect(movieFrame.style.aspectRatio).toBe("2 / 3");
+    expect(screen.queryByRole("button", { name: "Horizontal Scene" })).toBeNull();
+    expect(
+      calls.some((c) => c.url.includes("/api/modes/adult/tracked?aspect=vertical")),
+    ).toBe(true);
+  });
+
+  it("Scenes skeleton uses 16 / 9 before the tracked list resolves", async () => {
+    let resolveTracked!: (value: Response) => void;
+    const trackedPending = new Promise<Response>((resolve) => {
+      resolveTracked = resolve;
+    });
+    stubFetch((url) => {
+      if (url.includes("/api/modes/adult/scenes/tags")) return jsonResponse(vocab(["reviewed"]));
+      if (url.includes("/api/modes/adult/tracked")) return trackedPending;
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+    renderLibrary("/library/adult");
+
+    const skeleton = await screen.findByRole("status", { name: "Loading media" });
+    const pulse = skeleton.querySelector(".animate-pulse") as HTMLElement;
+    expect(pulse.style.aspectRatio).toBe("16 / 9");
+    resolveTracked(jsonResponse([]));
+    expect(await screen.findByText("Nothing tracked yet.")).toBeInTheDocument();
   });
 });

@@ -49,9 +49,9 @@ import {
 } from "../api/tag";
 import {
   Button,
-  Card,
+  // Card, // Claude 2026-08-13: only the commented-out AdultMoviesPlaceholder used this.
   ErrorText,
-  ModeTabs,
+  // ModeTabs, // Claude 2026-08-13: only the commented-out legacy Library shell used this.
   Muted,
   ScreenTabs,
   SectionLockOverlay,
@@ -111,6 +111,11 @@ const PosterCard: Component<{
   mode: Mode;
   selected: boolean;
   onClick: () => void;
+  // Claude 2026-08-13: poster frame ratio, default 2:3.
+  // Reason: Library Scenes is 16:9 (2B); Mainstream and Adult Movies stay 2:3.
+  // Threaded as a value so a future catalog poster does not bake the tab into
+  // the card. Review if: Adult catalog artwork lands and 2B is revisited.
+  posterAspect?: string;
 }> = (props) => {
   // Key the resource on tmdbId — when absent, the source accessor returns
   // undefined and Solid skips the fetch entirely.
@@ -158,8 +163,11 @@ const PosterCard: Component<{
       selected={props.selected}
       onClick={props.onClick}
     >
-      {/* Poster area — 2:3 aspect ratio */}
-      <div ref={posterBox} class="relative w-full" style="aspect-ratio: 2/3">
+      <div
+        ref={posterBox}
+        class="relative w-full"
+        style={{ "aspect-ratio": props.posterAspect ?? "2 / 3" }}
+      >
         <Show
           when={posterUrl()}
           fallback={
@@ -355,6 +363,7 @@ const DetailPanel: Component<{
   onDraftChange: (v: string) => void;
   onAdd: () => void;
   onRemoveTag: (tag: string) => void;
+  posterAspect?: string;
 }> = (props) => {
   const [posterPath] = createResource(
     () =>
@@ -385,7 +394,10 @@ const DetailPanel: Component<{
           alt=""
           loading="lazy"
           class="h-full w-full object-cover"
-          style="aspect-ratio: 2/3; object-position: top"
+          style={{
+            "aspect-ratio": props.posterAspect ?? "2 / 3",
+            "object-position": "top",
+          }}
         />
       );
     }
@@ -397,7 +409,10 @@ const DetailPanel: Component<{
           preload="metadata"
           playsinline
           class="h-full w-full object-cover"
-          style="aspect-ratio: 2/3; object-position: top"
+          style={{
+            "aspect-ratio": props.posterAspect ?? "2 / 3",
+            "object-position": "top",
+          }}
           onError={() => setVideoError(true)}
         />
     );
@@ -538,16 +553,29 @@ const DetailPanel: Component<{
 // LibraryView is one mode's catalog grid. Keyed on props.mode so both resources
 // refetch when the shell switches tabs. vocab + tracked load in parallel — vocab
 // only feeds the DetailPanel's add-tag autocomplete.
-const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
-  props,
-) => {
+//
+// Claude 2026-08-13: optional aspect is the Adult Library tab filter
+// (horizontal Scenes / vertical Movies). Omitted = no query param so Mainstream
+// and Tag-style callers stay unfiltered. posterAspect is the card/modal/skeleton
+// frame (2B). Both go in the resource key and datalistId so a later
+// single-instance refactor cannot skip refetch or collide ids.
+const LibraryView: Component<{
+  mode: Mode;
+  initialTier?: string;
+  aspect?: "vertical" | "horizontal";
+  posterAspect?: string;
+}> = (props) => {
   const [vocab, { refetch: refetchVocab }] = createResource(
-    () => props.mode,
-    (m) => fetchTagVocabulary(m),
+    () => ({ mode: props.mode, aspect: props.aspect ?? "" }),
+    ({ mode }) => fetchTagVocabulary(mode),
   );
   const [tracked, { refetch: refetchTracked }] = createResource(
-    () => props.mode,
-    (m) => fetchTrackedItems(m),
+    () => ({ mode: props.mode, aspect: props.aspect ?? "" }),
+    ({ mode, aspect }) =>
+      fetchTrackedItems(
+        mode,
+        aspect === "vertical" || aspect === "horizontal" ? aspect : undefined,
+      ),
   );
 
   // selectedId is the item currently shown in the DetailPanel.
@@ -565,7 +593,8 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
   // detailDraft is the add-tag input value in the DetailPanel.
   const [detailDraft, setDetailDraft] = createSignal("");
 
-  const datalistId = () => `library-tag-vocab-${props.mode}`;
+  const datalistId = () =>
+    `library-tag-vocab-${props.mode}${props.aspect ? `-${props.aspect}` : ""}`;
 
   // refresh re-pulls both vocab (a newly added label may be new to the mode) and
   // the tracked rows after any mutation — same post-mutation behavior as Tag.
@@ -673,14 +702,26 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
         </For>
       </datalist>
 
-      <Show when={!loading()} fallback={<MediaGridSkeleton />}>
+      <Show
+        when={!loading()}
+        fallback={<MediaGridSkeleton aspect={props.posterAspect} />}
+      >
         <Show
           when={tracked() && tracked()!.length > 0}
-          fallback={<Muted class="mt-4">Nothing tracked yet.</Muted>}
+          fallback={
+            <Muted class="mt-4">
+              {props.aspect === "vertical"
+                ? "No vertical-classified titles yet."
+                : "Nothing tracked yet."}
+            </Muted>
+          }
         >
-          {/* Filter row — search | genre | sort. Inside the empty-state gate
-              because the genre options are derived from the loaded items. */}
-          <div class="mb-3 flex flex-wrap items-end gap-3">
+          {/* Claude 2026-08-13: frame matches Discover FilterSortBar.
+              Reason: cinematic leftover chrome; no shared generic — Library
+              filtering is a third distinct surface. Inner mb-3 dropped.
+              Review if: FilterSortBar's frame class changes. */}
+          <div class="mb-4 rounded-xl border border-border bg-surface p-4">
+          <div class="flex flex-wrap items-end gap-3">
             <div class="min-w-0 flex-1">
               <label class={labelClass} for="library-search">
                 Search
@@ -760,6 +801,7 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
               </select>
             </div>
           </div>
+          </div>
 
           <div>
             <div class="min-w-0">
@@ -777,6 +819,7 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
                       <PosterCard
                         item={item}
                         mode={props.mode}
+                        posterAspect={props.posterAspect}
                         selected={selectedId() === item.id}
                         onClick={() =>
                           setSelectedId((prev) =>
@@ -796,6 +839,7 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
                   <DetailPanel
                     item={item()}
                     mode={props.mode}
+                    posterAspect={props.posterAspect}
                     datalistId={datalistId()}
                     draft={detailDraft()}
                     onDraftChange={setDetailDraft}
@@ -861,37 +905,61 @@ export const LibraryAdult: Component = () => {
         when={!lock.isLocked(ADULT_CONTENT_SECTION)}
         fallback={<SectionLockOverlay label={sectionLabel(ADULT_CONTENT_SECTION)} />}
       >
-        <Show when={tab() === "scenes"} fallback={<AdultMoviesPlaceholder />}>
-          <LibraryView mode="adult" />
+        {/* Claude 2026-08-13: keyed remount per Adult tab.
+            Reason: both tabs are mode=adult so useWorkflowActions will not
+            reset search/genre/tier/selectedId; a Show swap without keyed
+            leaked state and a stale selectedId closed the modal.
+            aspect omitted is never passed here — Scenes always sends
+            horizontal, Movies vertical — Mainstream still omits it.
+            Review if: useWorkflowActions grows a composite reset key. */}
+        <Show when={tab()} keyed>
+          {(t) => (
+            <LibraryView
+              mode="adult"
+              aspect={t === "movies" ? "vertical" : "horizontal"}
+              posterAspect={t === "movies" ? "2 / 3" : "16 / 9"}
+            />
+          )}
         </Show>
       </Show>
     </Show>
   );
 };
 
-const AdultMoviesPlaceholder: Component = () => (
-  <Card title="Adult Movies">
-    <Muted>
-      Adult Movies will use TPDB/catalog adult movie entities. The navigation
-      surface is in place; the async catalog enrichment/data surface will land in
-      a follow-up slice.
-    </Muted>
-  </Card>
-);
+// Claude 2026-08-13: AdultMoviesPlaceholder retired — LibraryAdult now mounts
+// LibraryView for both Scenes and Movies. Left commented so the empty-state
+// copy is recoverable if the Movies tab is reverted to a scaffold.
+// Reason: Slice 3 replaces the placeholder with ?aspect=vertical.
+// Review if: production still has zero vertical rows and the empty copy
+// ("No vertical-classified titles yet.") needs to change.
+// const AdultMoviesPlaceholder: Component = () => (
+//   <Card title="Adult Movies">
+//     <Muted>
+//       Adult Movies will use TPDB/catalog adult movie entities. The navigation
+//       surface is in place; the async catalog enrichment/data surface will land in
+//       a follow-up slice.
+//     </Muted>
+//   </Card>
+// );
 
-export const Library: Component = () => {
-  const [params] = useSearchParams();
-  const initialMode: Mode =
-    params.mode === "series" || params.mode === "adult" ? params.mode : "movies";
-  const initialTier =
-    typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
-      ? params.tier
-      : "";
-  const [mode, setMode] = createSignal<Mode>(initialMode);
-  return (
-    <div>
-      <ModeTabs current={mode} onSelect={setMode} />
-      <LibraryView mode={mode()} initialTier={initialTier} />
-    </div>
-  );
-};
+// Claude 2026-08-13: unrouted legacy Library shell. Tests mount
+// LibraryMainstream / LibraryAdult. AppShell never imported this.
+// Reason: Slice 1.5 — ModeTabs Movies/Series/Adult is not a production
+// route; keeping it exported let 20 tests cover the wrong shell.
+// Review if: a fallback deep-link to /library?mode= is restored.
+// export const Library: Component = () => {
+//   const [params] = useSearchParams();
+//   const initialMode: Mode =
+//     params.mode === "series" || params.mode === "adult" ? params.mode : "movies";
+//   const initialTier =
+//     typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
+//       ? params.tier
+//       : "";
+//   const [mode, setMode] = createSignal<Mode>(initialMode);
+//   return (
+//     <div>
+//       <ModeTabs current={mode} onSelect={setMode} />
+//       <LibraryView mode={mode()} initialTier={initialTier} />
+//     </div>
+//   );
+// };

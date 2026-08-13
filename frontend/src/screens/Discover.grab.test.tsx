@@ -26,7 +26,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { AdultNewestReleaseItem, DiscoverItem } from "@dto";
-import { Discover } from "./Discover";
+import { DiscoverAdult, DiscoverMainstream } from "./Discover";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -142,6 +142,10 @@ const mainstreamDefaults = (url: string): Response | null => {
 
 afterEach(() => vi.unstubAllGlobals());
 
+const clickMoviesTab = () => {
+  fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+};
+
 describe("Discover auto-grab — Movies (direct one-click)", () => {
   it("grabs the top qualifier on one click and shows success — exactly one auto-grab fires", async () => {
     const calls = stubFetch((url) => {
@@ -157,7 +161,8 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     const grabButtons = await screen.findAllByText("Grab");
     fireEvent.click(grabButtons[0]!);
 
@@ -201,7 +206,8 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
 
     expect(await screen.findByText("Hero.Movie.1080p.x265-GRP")).toBeInTheDocument();
@@ -234,7 +240,8 @@ describe("Discover auto-grab — duplicate grab (regression: guard response must
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
 
     expect(await screen.findByText("already grabbing this release")).toBeInTheDocument();
@@ -259,7 +266,8 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
 
     expect(await screen.findByText("some other backend failure")).toBeInTheDocument();
@@ -276,7 +284,8 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
 
     expect(await screen.findByText(/Prowlarr isn't configured yet/)).toBeInTheDocument();
@@ -295,7 +304,8 @@ describe("Discover auto-grab — error handling (regression: dialog must not get
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
 
     expect(
@@ -333,7 +343,8 @@ describe("Discover auto-grab — blocked by global pause (HTTP 423)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
 
     expect(await screen.findByText(/globally paused/)).toBeInTheDocument();
@@ -365,7 +376,7 @@ describe("Discover auto-grab — Series (per-item picker gates the grab)", () =>
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
 
     // Clicking Grab opens the season/episode grid — it must NOT auto-grab yet.
     fireEvent.click((await screen.findAllByText("Grab"))[0]!);
@@ -464,8 +475,7 @@ describe("Discover auto-grab — Adult (runtime-sourced, via select-mode bulk)",
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     await screen.findByText("Scene One");
 
     fireEvent.click(screen.getByText("Select"));
@@ -526,7 +536,7 @@ describe("Discover search — a searched Series result opens the release picker 
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
     fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
       target: { value: "searched" },
     });

@@ -14,7 +14,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { Discover } from "../Discover";
+import { DiscoverAdult, DiscoverMainstream } from "../Discover";
 import {
   AdultModeContext,
   SectionLockContext,
@@ -67,7 +67,7 @@ const defaults = (url: string): Response | null => {
   return null;
 };
 
-const renderLocked = () => {
+const renderLockedMainstream = () => {
   const seen: string[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -80,7 +80,27 @@ const renderLocked = () => {
   render(() => (
     <AdultModeContext.Provider value={{ enabled: () => true, refetch: () => {} }}>
       <SectionLockContext.Provider value={adultLockedControl}>
-        <Discover />
+        <DiscoverMainstream />
+      </SectionLockContext.Provider>
+    </AdultModeContext.Provider>
+  ));
+  return seen;
+};
+
+const renderLockedAdult = () => {
+  const seen: string[] = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    seen.push(url);
+    const d = defaults(url);
+    if (d) return d;
+    throw new Error("unexpected fetch: " + url);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(() => (
+    <AdultModeContext.Provider value={{ enabled: () => true, refetch: () => {} }}>
+      <SectionLockContext.Provider value={adultLockedControl}>
+        <DiscoverAdult />
       </SectionLockContext.Provider>
     </AdultModeContext.Provider>
   ));
@@ -91,26 +111,19 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("FE-5 — Adult overlay is sub-tab-scoped", () => {
   it("Mainstream Discover still renders when only adult-content is locked", async () => {
-    renderLocked();
+    renderLockedMainstream();
+    fireEvent.click(await screen.findByRole("button", { name: "Movies" }));
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
     expect(await screen.findByText("Mainstream Title")).toBeInTheDocument();
-    // No screen-level overlay: the Mainstream tab shows no PIN box at all.
     expect(screen.queryByLabelText("Section PIN")).toBeNull();
   });
 
-  it("the Adult tab stays visible and shows the PIN overlay in its panel", async () => {
-    const seen = renderLocked();
-    await screen.findByText("Trending Movies");
-
-    const adultTab = screen.getByText("Adult");
-    expect(adultTab).toBeInTheDocument();
-    fireEvent.click(adultTab);
-
+  it("the Adult route shows the PIN overlay and does not mount AdultDiscover", async () => {
+    const seen = renderLockedAdult();
     expect(
       await screen.findByText("Adult content is locked"),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Section PIN")).toBeInTheDocument();
-    // AdultDiscover was never mounted, so it fired none of its own requests.
     expect(seen.some((u) => u.includes("/api/modes/adult/"))).toBe(false);
   });
 });

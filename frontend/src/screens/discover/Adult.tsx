@@ -138,6 +138,10 @@ const AdultCard: Component<{
   // unchanged. (It also used to suppress the one-click Grab button (M3); that
   // second job went away with the button itself on 2026-08-02.)
   onOpenReleases?: () => void;
+  // Claude 2026-08-13: "poster" is 2:3 for Discover Movies; default "video"
+  // keeps Scenes at 16:9. Width wrapper stays w-[240px].
+  // Review if: a third Adult card geometry is added.
+  aspect?: "video" | "poster";
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -231,7 +235,13 @@ const AdultCard: Component<{
           on AdultCard.
           Review if: a nested control is added inside the poster frame. */}
       <MediaCardShell class="group" label={props.item.title} onClick={onBody}>
-        <div class="relative aspect-video overflow-hidden rounded-lg border border-border bg-surface">
+        <div
+          class="relative overflow-hidden rounded-lg border border-border bg-surface"
+          classList={{
+            "aspect-video": (props.aspect ?? "video") === "video",
+            "aspect-[2/3]": props.aspect === "poster",
+          }}
+        >
           <Show when={inSelect()}>
             <SelectCheckbox checked={checked()} />
           </Show>
@@ -407,7 +417,13 @@ type AdultDrill = {
 export const AdultDiscover: Component<{
   editMode?: () => boolean;
   onSortingChange?: (active: boolean) => void;
+  // Claude 2026-08-13: "movie" is Discover Adult Movies (1A). Default "scene"
+  // keeps every existing mount on Scenes. One component, two Show-swapped
+  // mounts — per-tab state reset is expected.
+  // Review if: Movies gains search/sort (blocked: no movie-scoped backend).
+  kind?: "scene" | "movie";
 }> = (props) => {
+  const kind = () => props.kind ?? "scene";
   // Claude 2026-08-02: the grabTarget signal (and the <GrabDialog> it drove)
   // was removed along with AdultCard's inline Grab button — AdultCard was its
   // only writer, so both became unreachable.
@@ -579,7 +595,10 @@ export const AdultDiscover: Component<{
   const [feedsData] = createResource(reloadToken, () =>
     fetchRssFeeds().catch(() => [] as RssFeed[]),
   );
-  const adultFeeds = () => (feedsData() ?? []).filter((f) => f.target === "adult");
+  const adultFeeds = () =>
+    (feedsData() ?? []).filter((f) =>
+      kind() === "movie" ? f.target === "adult-movie" : f.target === "adult",
+    );
   const enabledAdultFeeds = () => adultFeeds().filter((f) => f.enabled);
 
   const {
@@ -625,6 +644,13 @@ export const AdultDiscover: Component<{
   const visibleRowIds = () =>
     orderedRows()
       .filter((r) => r.enabled)
+      .filter((r) =>
+        kind() === "movie"
+          ? r.rowType === "movie"
+          : r.rowType === "scene" ||
+            r.rowType === "studio" ||
+            r.rowType === "performer",
+      )
       .map((r) => r.id);
 
   const toggleRowEnabled = async (row: RowDescriptor) => {
@@ -675,7 +701,9 @@ export const AdultDiscover: Component<{
     if (!initial) return null;
     const title = () => row()?.title ?? initial.title;
 
-    // Scene/Movie rows are unchanged: one strip of grabbable AdultCards.
+    // Scene/Movie rows: one strip of grabbable AdultCards. Movies tab uses
+    // the 2:3 poster frame; Scenes stays 16:9. rowDescriptors() stays
+    // unfiltered so a Scenes drag still POSTs the full id set (2.0d).
     if (initial.rowType === "movie" || initial.rowType === "scene") {
       return (
         <PaginatedStrip<AdultNewestReleaseItem>
@@ -688,6 +716,7 @@ export const AdultDiscover: Component<{
             <AdultCard
               item={toAdultDiscoverItem(item)}
               onDetail={setDetailTarget}
+              aspect={initial.rowType === "movie" ? "poster" : "video"}
             />
           )}
         </PaginatedStrip>
@@ -762,6 +791,7 @@ export const AdultDiscover: Component<{
 
   return (
     <div>
+      <Show when={kind() === "scene"}>
       <form
         class="mb-4 flex gap-2"
         onSubmit={(e) => {
@@ -783,8 +813,9 @@ export const AdultDiscover: Component<{
           <Button onClick={clearSearch}>Clear</Button>
         </Show>
       </form>
+      </Show>
 
-      <Show when={!searching() && !drill()}>
+      <Show when={kind() === "scene" && !searching() && !drill()}>
         <AdultSortBar value={adultSort} onChange={applyAdultSort} />
       </Show>
 
@@ -817,7 +848,7 @@ export const AdultDiscover: Component<{
                 when={sorting()}
                 fallback={
                   <>
-                <Show when={props.editMode?.()}>
+                <Show when={kind() === "scene" && props.editMode?.()}>
                   <RowEditor
                     rows={rowDescriptors()}
                     onReorder={(keys) => {

@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { Route, Router, useNavigate } from "@solidjs/router";
 import type { DiscoverItem, EpisodeSummary, SeasonSummary } from "@dto";
-import { Discover } from "./index";
+import { DiscoverMainstream } from "./index";
 import { PosterCard } from "./Mainstream";
 import { SelectionProvider, createSelection } from "./selection";
 
@@ -103,10 +103,15 @@ const trendingMovie = (title = "Trend Movie", id = 1): Handler => (url) => {
 
 afterEach(() => vi.unstubAllGlobals());
 
+const clickMoviesTab = () => {
+  fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+};
+
 describe("Discover select-mode — toggle + checkbox overlay", () => {
   it("shows checkboxes only in select-mode, and selecting a card raises the BulkBar", async () => {
     stubFetch(trendingMovie());
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
 
     // No checkbox and no bulk bar before entering select-mode.
@@ -130,7 +135,8 @@ describe("Discover select-mode — toggle + checkbox overlay", () => {
 
   it("Clear empties the selection and hides the BulkBar", async () => {
     stubFetch(trendingMovie());
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
     fireEvent.click(screen.getByText("Select"));
     fireEvent.click(screen.getByText("Trend Movie"));
@@ -144,7 +150,8 @@ describe("Discover select-mode — toggle + checkbox overlay", () => {
 describe("Discover select-mode — Select/Edit mutual exclusivity", () => {
   it("turning on Select forces Edit off and vice-versa", async () => {
     stubFetch(trendingMovie());
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
 
     // Enter Select → its label flips; Edit stays available.
@@ -169,15 +176,16 @@ describe("Discover select-mode — Select/Edit mutual exclusivity", () => {
 describe("Discover select-mode — pre-mortem #5 navigation lifecycle", () => {
   it("clears the selection on a TAB change (no stale card survives)", async () => {
     stubFetch(trendingMovie());
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
     fireEvent.click(screen.getByText("Select"));
     fireEvent.click(screen.getByText("Trend Movie"));
     await screen.findByText("1 selected");
 
-    // Switch to the Adult tab — selection must be wiped, BulkBar gone, and
+    // Switch to Series — selection must be wiped, BulkBar gone, and
     // Select-mode reset (its toggle label back to "Select").
-    fireEvent.click(screen.getByText("Adult"));
+    fireEvent.click(screen.getByRole("button", { name: "Series" }));
     expect(screen.queryByText("1 selected")).toBeNull();
     expect(screen.getByText("Select")).toBeInTheDocument();
     expect(screen.queryByText("Done selecting")).toBeNull();
@@ -201,7 +209,7 @@ describe("Discover select-mode — pre-mortem #5 navigation lifecycle", () => {
           component={() => (
             <>
               <Nav />
-              <Discover />
+              <DiscoverMainstream />
             </>
           )}
         />
@@ -217,6 +225,7 @@ describe("Discover select-mode — pre-mortem #5 navigation lifecycle", () => {
       </Router>
     ));
 
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
     fireEvent.click(screen.getByText("Select"));
     fireEvent.click(screen.getByText("Trend Movie"));
@@ -232,6 +241,8 @@ describe("Discover select-mode — pre-mortem #5 navigation lifecycle", () => {
     fireEvent.click(screen.getByText("go-other"));
     await screen.findByText("OTHER PAGE");
     fireEvent.click(screen.getByText("go-home"));
+    await screen.findByRole("button", { name: "Series" });
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
 
     // Selection did not survive the round-trip.
@@ -258,13 +269,14 @@ describe("Discover select-mode — pre-mortem #5 navigation lifecycle", () => {
           component={() => (
             <>
               <Nav />
-              <Discover />
+              <DiscoverMainstream />
             </>
           )}
         />
       </Router>
     ));
 
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
     fireEvent.click(screen.getByText("Select"));
     fireEvent.click(screen.getByText("Trend Movie"));
@@ -293,7 +305,8 @@ describe("Discover select-mode — works over every card surface", () => {
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     await screen.findByText("Trend Movie");
 
     fireEvent.click(screen.getByText("Select"));
@@ -319,7 +332,8 @@ describe("Discover select-mode — works over every card surface", () => {
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
     });
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
 
     fireEvent.click(screen.getByText("Select"));
     // Switch to the Calendar sub-view.
@@ -402,7 +416,7 @@ const seriesCardFetch = () =>
 describe("Discover select-mode — series season/episode selection", () => {
   it("a series card opens the grid picker and adds one whole season to the selection", async () => {
     seriesCardFetch();
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
     await screen.findByText("Trend Show");
 
     fireEvent.click(screen.getByText("Select"));
@@ -425,7 +439,7 @@ describe("Discover select-mode — series season/episode selection", () => {
 
   it("selecting two episodes of one season counts two in the BulkBar", async () => {
     seriesCardFetch();
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
     await screen.findByText("Trend Show");
 
     fireEvent.click(screen.getByText("Select"));

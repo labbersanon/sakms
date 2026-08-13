@@ -580,6 +580,14 @@ func (s *ReleaseStore) listFiltered(ctx context.Context, rowType RowType, genreF
 // sceneRowTypes is the row_type set the pooled scene listings (SearchScenes,
 // ListRecentScenes) draw from — grabbable scene/movie entities, never
 // Studio/Performer aggregates (those have no enclosure and aren't a "scene").
+//
+// Claude 2026-08-13: RowMovie stays in this set on purpose (plan 2.0a).
+// Reason: Search and Recently Released are available-pool surfaces, not the
+// Discover Scenes/Movies taxonomy. 1A splits newest-row browse + RSS rows;
+// filtering movies out of this SQL would delete them from Scenes search with
+// no Movies-side search backend to land on.
+// Troubleshooting: movie entities still appear in Scenes search/recent at 16:9.
+// Review if: a movie-scoped search endpoint is added.
 var sceneRowTypes = []any{string(RowScene), string(RowMovie)}
 
 // SearchScenes returns one page of cached scene/movie entities whose title

@@ -2,10 +2,17 @@ import { type Component, type JSX, Index, Show } from "solid-js";
 
 type MediaGridSkeletonProps = {
   count?: number;
+  // Claude 2026-08-13: aspect is CSS aspect-ratio, default 2 / 3.
+  // Reason: Library Scenes is 16:9 (answer 2B); a hardcoded portrait skeleton
+  // would flash the wrong frame before Adult cards paint.
+  // Troubleshooting: only Library.tsx consumes this; Mainstream is untouched.
+  // Review if: a second grid skeleton consumer needs a different default.
+  aspect?: string;
 };
 
 export const MediaGridSkeleton: Component<MediaGridSkeletonProps> = (props) => {
   const count = () => props.count ?? 12;
+  const aspect = () => props.aspect ?? "2 / 3";
   return (
     <div
       class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
@@ -22,7 +29,7 @@ export const MediaGridSkeleton: Component<MediaGridSkeletonProps> = (props) => {
           >
             <div
               class="w-full animate-pulse bg-surface-2"
-              style="aspect-ratio: 2 / 3"
+              style={{ "aspect-ratio": aspect() }}
             />
             <div class="space-y-1.5 p-2">
               <div class="h-2.5 w-3/4 animate-pulse rounded bg-surface-2" />

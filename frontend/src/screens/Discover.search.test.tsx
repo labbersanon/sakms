@@ -32,7 +32,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { AdultDiscoverItem, DiscoverItem } from "@dto";
-import { Discover } from "./Discover";
+import { DiscoverAdult, DiscoverMainstream } from "./Discover";
 
 const jsonResponse = (obj: unknown): Response =>
   new Response(JSON.stringify(obj), {
@@ -118,6 +118,10 @@ const availabilityDefaults = (url: string): Response | null => {
 
 afterEach(() => vi.unstubAllGlobals());
 
+const clickMoviesTab = () => {
+  fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+};
+
 describe("Discover search — Mainstream catalog-first (two-step)", () => {
   it("submit renders catalog cards (tmdb-search) with ZERO release-picker /search; clicking a card fires /search exactly once and doesn't re-fire; searched cards have no Grab button", async () => {
     const calls = stubFetch((url) => {
@@ -134,7 +138,8 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
       target: { value: "catalog" },
     });
@@ -184,7 +189,8 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
       target: { value: "pick" },
     });
@@ -223,7 +229,8 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
       target: { value: "empty" },
     });
@@ -249,7 +256,8 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
       target: { value: "nomatch" },
     });
@@ -282,8 +290,7 @@ describe("Discover search — Adult one-shot", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     fireEvent.input(screen.getByPlaceholderText("Search scenes by title…"), {
       target: { value: "adult" },
     });
@@ -333,8 +340,7 @@ describe("Discover search — Adult one-shot", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     fireEvent.input(screen.getByPlaceholderText("Search scenes by title…"), {
       target: { value: "grab" },
     });
@@ -372,8 +378,7 @@ describe("Discover search — Adult one-shot", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     fireEvent.input(screen.getByPlaceholderText("Search scenes by title…"), {
       target: { value: "nomatch" },
     });
@@ -409,7 +414,8 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
     const card = (await screen.findByText("Browse Movie")).closest(
       "div.w-\\[220px\\]",
     ) as HTMLElement;
@@ -437,8 +443,7 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <Discover />);
-    fireEvent.click(await screen.findByText("Adult"));
+    render(() => <DiscoverAdult />);
     const card = (await screen.findByText("Browse Scene")).closest(
       ".w-\\[240px\\]",
     ) as HTMLElement;

@@ -64,6 +64,7 @@ const feeds = [
   { id: 11, title: "Feed B", feedUrl: "", target: "adult", protocol: "torrent", enabled: true, sortOrder: 1 },
   { id: 12, title: "Feed C Disabled", feedUrl: "", target: "adult", protocol: "usenet", enabled: false, sortOrder: 2 },
   { id: 13, title: "Movie Feed", feedUrl: "", target: "movie", protocol: "usenet", enabled: true, sortOrder: 3 },
+  { id: 14, title: "Adult Movie Feed", feedUrl: "", target: "adult-movie", protocol: "usenet", enabled: true, sortOrder: 4 },
 ];
 
 // mounts answers every fetch AdultDiscover fires on the plain browse view.
@@ -125,6 +126,7 @@ describe("AdultDiscover — RSS feeds decoupled from the row editor", () => {
     // Disabled and non-adult feeds render nothing.
     expect(screen.queryByText("Feed C Disabled")).toBeNull();
     expect(screen.queryByText("Movie Feed")).toBeNull();
+    expect(screen.queryByText("Adult Movie Feed")).toBeNull();
 
     // Positioned AFTER all editor-managed rows: the admin newest row precedes
     // Feed A in the DOM. Presence alone would pass even if the independent
@@ -144,5 +146,16 @@ describe("AdultDiscover — RSS feeds decoupled from the row editor", () => {
 
     // Feeds render in sort_order: Feed A (sortOrder 0) before Feed B (1).
     expect(feedA.compareDocumentPosition(feedB) & FOLLOWING).toBeTruthy();
+  });
+
+  it("Movies kind renders adult-movie feeds and hides scene-target feeds", async () => {
+    stubFetch(mounts);
+
+    render(() => <AdultDiscover kind="movie" />);
+
+    expect(await screen.findByText("Adult Movie Feed")).toBeInTheDocument();
+    expect(screen.queryByText("Feed A")).toBeNull();
+    expect(screen.queryByText("Feed B")).toBeNull();
+    expect(screen.queryByText("Movie Feed")).toBeNull();
   });
 });

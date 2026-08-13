@@ -71,6 +71,10 @@ type libraryTrackedFile struct {
 	DurationSec float64 `json:"durationSec,omitempty"`
 }
 
+// browserPlayableVideo reports whether a <video> element can decode the file at
+// path. An Adult scene in a container no browser plays (mkv, avi, wmv…) gets no
+// videoUrl at all rather than one that renders as a broken element — the poster
+// falls back to the title tile instead.
 func browserPlayableVideo(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".mp4", ".m4v", ".webm", ".mov":
@@ -217,6 +221,14 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 	}
 }
 
+// trackedVideoHandler streams one tracked scene's own video file, which the
+// Library grid uses as the poster still — an Adult scene has no tmdbId and so no
+// poster artwork to fetch. The path never crosses the wire: the client addresses
+// a library row id and the file path is resolved here.
+//
+// The Adult section-lock check runs BEFORE the file is opened, so a locked
+// request answers 403 without a byte of the scene reaching the client
+// (TestTrackedVideoHandler_AdultLockedRefusesBeforeAnyBytes pins that ordering).
 func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))

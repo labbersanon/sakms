@@ -17,16 +17,53 @@ import (
 	"github.com/labbersanon/sakms/internal/mode"
 )
 
-// newTrackedTestServer wires a mux over a fresh store set and returns the
-// library store to seed plus the running server — the 24-argument NewMux call
-// is pure boilerplate for the qualityTiers cases below, which touch no store
-// but libStore.
-func newTrackedTestServer(t *testing.T) (*library.Store, *httptest.Server) {
+// newTrackedMux wires a mux over a fresh store set and returns the library store
+// to seed plus the BARE handler — bare so the locked-Adult case can wrap it in
+// withLockedAdult, which an already-started server cannot be. The 24-argument
+// NewMux call is pure boilerplate for the cases below, which touch no store but
+// libStore.
+func newTrackedMux(t *testing.T) (*library.Store, *http.ServeMux) {
 	t.Helper()
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
+	return libStore, mux
+}
+
+// newTrackedTestServer is newTrackedMux already serving, for every case that
+// needs no middleware between the client and the mux.
+func newTrackedTestServer(t *testing.T) (*library.Store, *httptest.Server) {
+	t.Helper()
+	libStore, mux := newTrackedMux(t)
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return libStore, srv
+}
+
+// seedScene upserts one scene and returns it with its assigned row id.
+func seedScene(t *testing.T, libStore *library.Store, scene library.Scene) library.Scene {
+	t.Helper()
+	out, err := libStore.UpsertScene(context.Background(), scene)
+	if err != nil {
+		t.Fatalf("seeding scene: %v", err)
+	}
+	return out
+}
+
+// getTrackedVideo GETs the Adult tracked-video route for one scene id and
+// returns the drained response — the body matters to the locked case (it must
+// carry no file bytes), the status and headers to the rest.
+func getTrackedVideo(t *testing.T, srv *httptest.Server, sceneID int64) (*http.Response, []byte) {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, sceneID))
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	return resp, body
 }
 
 // getTrackedItems GETs /api/modes/{m}/tracked and decodes it, failing on
@@ -123,12 +160,9 @@ func TestListTracked_Adult_EmptyWhenNoScenes(t *testing.T) {
 
 func TestListTracked_Adult_OmitsVideoURLWhenSceneHasNoFile(t *testing.T) {
 	libStore, srv := newTrackedTestServer(t)
-	ctx := context.Background()
-	if _, err := libStore.UpsertScene(ctx, library.Scene{
+	seedScene(t, libStore, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "No File", RootFolderPath: "/media/Adult",
-	}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	})
 
 	got := getTrackedItems(t, srv, "adult")
 	if len(got) != 1 {
@@ -141,26 +175,18 @@ func TestListTracked_Adult_OmitsVideoURLWhenSceneHasNoFile(t *testing.T) {
 
 func TestTrackedVideoHandler_AdultServesFile(t *testing.T) {
 	libStore, srv := newTrackedTestServer(t)
-	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "scene.mp4")
 	if err := os.WriteFile(path, []byte("video-bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	scene, err := libStore.UpsertScene(ctx, library.Scene{
+	scene := seedScene(t, libStore, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
 		FilePath: path, RootFolderPath: filepath.Dir(path),
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
-	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
-	}
-	defer resp.Body.Close()
+	resp, body := getTrackedVideo(t, srv, scene.ID)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+		t.Fatalf("expected 200, got %d body=%q", resp.StatusCode, body)
 	}
 	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=3600" {
 		t.Fatalf("Cache-Control = %q, want private max-age", got)
@@ -169,21 +195,13 @@ func TestTrackedVideoHandler_AdultServesFile(t *testing.T) {
 
 func TestTrackedVideoHandler_AdultRejectsDirectory(t *testing.T) {
 	libStore, srv := newTrackedTestServer(t)
-	ctx := context.Background()
 	dir := t.TempDir()
-	scene, err := libStore.UpsertScene(ctx, library.Scene{
+	scene := seedScene(t, libStore, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
 		FilePath: dir, RootFolderPath: dir,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
-	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
-	}
-	defer resp.Body.Close()
+	resp, _ := getTrackedVideo(t, srv, scene.ID)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for directory path, got %d", resp.StatusCode)
 	}
@@ -191,50 +209,37 @@ func TestTrackedVideoHandler_AdultRejectsDirectory(t *testing.T) {
 
 func TestTrackedVideoHandler_AdultRejectsEmptyPath(t *testing.T) {
 	libStore, srv := newTrackedTestServer(t)
-	ctx := context.Background()
-	scene, err := libStore.UpsertScene(ctx, library.Scene{
+	scene := seedScene(t, libStore, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "Some Scene", RootFolderPath: "/adult",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
-	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
-	}
-	defer resp.Body.Close()
+	resp, _ := getTrackedVideo(t, srv, scene.ID)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for empty path, got %d", resp.StatusCode)
 	}
 }
 
+// TestTrackedVideoHandler_AdultLockedRefusesBeforeAnyBytes pins the ordering:
+// the Adult section-lock check runs before the file is opened, so a locked
+// request answers 403 without a single byte of the scene reaching the client. A
+// status-only assertion would pass against a handler that streams first and
+// reports the lock afterwards, hence the marker.
 func TestTrackedVideoHandler_AdultLockedRefusesBeforeAnyBytes(t *testing.T) {
 	const marker = "ADULT-TRACKED-VIDEO-BYTES-DO-NOT-SERVE"
-	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	ctx := context.Background()
+	libStore, mux := newTrackedMux(t)
 	path := filepath.Join(t.TempDir(), "scene.mp4")
 	if err := os.WriteFile(path, []byte(marker), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	scene, err := libStore.UpsertScene(ctx, library.Scene{
+	scene := seedScene(t, libStore, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
 		FilePath: path, RootFolderPath: filepath.Dir(path),
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
-	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
 	srv := httptest.NewServer(withLockedAdult(mux))
 	defer srv.Close()
 
-	resp, err := http.Get(fmt.Sprintf("%s/api/modes/adult/tracked/%d/video", srv.URL, scene.ID))
-	if err != nil {
-		t.Fatalf("GET failed: %v", err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	resp, body := getTrackedVideo(t, srv, scene.ID)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 while Adult is locked, got %d body=%q", resp.StatusCode, body)
 	}

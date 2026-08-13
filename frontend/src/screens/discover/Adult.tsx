@@ -55,7 +55,7 @@ import {
   fetchPerformerGenders,
   updateAdultNewestRow,
 } from "../../api/adultNewestRows";
-import { MediaCardShell, MediaFallbackTile } from "../../components/media";
+import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS } from "../../components/media";
 import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
 import {
   type GrabTarget,
@@ -141,6 +141,11 @@ export const AdultCard: Component<{
   // keeps Scenes at 16:9. Width lives on MediaCardShell (wrapper collapsed).
   // Review if: a third Adult card geometry is added.
   aspect?: "video" | "poster";
+  // Claude 2026-08-13: "grid" fills wrap cells; default keeps 240px carousel.
+  // Reason: same mobile wrap overflow as PosterCard. Tests that climb
+  // .w-[240px] are carousel/browse rows (layout omitted).
+  // Review if: EntityCard wrap grids appear (they do not today).
+  layout?: "row" | "grid";
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -229,7 +234,15 @@ export const AdultCard: Component<{
   // button. SelectCheckbox stays display-only inside the shell.
   // Review if: a nested interactive control is added inside the poster frame.
   return (
-    <MediaCardShell class="group w-[240px] shrink-0" label={props.item.title} onClick={onBody}>
+    <MediaCardShell
+      class={
+        props.layout === "grid"
+          ? "group min-w-0 w-full"
+          : "group w-[240px] shrink-0"
+      }
+      label={props.item.title}
+      onClick={onBody}
+    >
         <div
           class="relative overflow-hidden rounded-lg border border-border bg-surface"
           classList={{
@@ -891,10 +904,10 @@ export const AdultDiscover: Component<{
                       : fetchAdultDiscoverSorted(adultSort() as AdultSortBy, page)
                   }
                   onError={setSetupError}
-                  containerClass="flex flex-wrap gap-3"
+                  containerClass={MEDIA_POSTER_GRID_CLASS}
                 >
                   {(item) => (
-                    <AdultCard item={item} onDetail={setDetailTarget} />
+                    <AdultCard item={item} onDetail={setDetailTarget} layout="grid" />
                   )}
                 </PaginatedStrip>
               </Show>
@@ -981,7 +994,7 @@ export const AdultDiscover: Component<{
                     return fetchNewestEntityScenes(dd.kind, dd.name, page);
                   }}
                   onError={setSetupError}
-                  containerClass="flex flex-wrap gap-3"
+                  containerClass={MEDIA_POSTER_GRID_CLASS}
                   // perPage=0: shared.tsx's DE-2 auto-advance chain treats an
                   // envelope page shorter than perPage as "sparse, fetch
                   // another page automatically" — correct for the merged
@@ -997,7 +1010,7 @@ export const AdultDiscover: Component<{
                   perPage={0}
                 >
                   {(item) => (
-                    <AdultCard item={item} onDetail={setDetailTarget} />
+                    <AdultCard item={item} onDetail={setDetailTarget} layout="grid" />
                   )}
                 </PaginatedStrip>
               </div>
@@ -1014,12 +1027,13 @@ export const AdultDiscover: Component<{
               when={(results()?.items?.length ?? 0) > 0}
               fallback={<Muted>No scenes found.</Muted>}
             >
-              <div class="flex flex-wrap gap-3">
+              <div class={MEDIA_POSTER_GRID_CLASS}>
                 <For each={results()?.items}>
                   {(s) => (
                     <AdultCard
                       item={s.scene}
                       onDetail={setDetailTarget}
+                      layout="grid"
                       onOpenReleases={() =>
                         setReleasePicker({
                           title: s.scene.title,

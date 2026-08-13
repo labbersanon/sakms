@@ -74,7 +74,7 @@ import {
   updateRssFeed,
 } from "../../api/rssFeeds";
 import { TraktWatchlistRow } from "../../components/TraktWatchlistRow";
-import { MediaCardShell, MediaFallbackTile } from "../../components/media";
+import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS } from "../../components/media";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
@@ -365,6 +365,11 @@ export const PosterCard: Component<{
   // 2026-08-02, when no card renders one. Browse-row call sites omit it, so
   // their click→DetailPopup behavior is unchanged.
   onOpenReleases?: () => void;
+  // Claude 2026-08-13: "grid" fills Library-style wrap cells (View All,
+  // search, filter). Default "row" keeps the 220px carousel/calendar tile.
+  // Reason: flex-wrap + fixed width showed one poster per phone row.
+  // Review if: calendar or rec-rail should share the grid.
+  layout?: "row" | "grid";
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -400,7 +405,7 @@ export const PosterCard: Component<{
     props.onDetail({ mode: props.mode, item: props.item });
   };
   return (
-    <div class="w-[220px] shrink-0">
+    <div class={props.layout === "grid" ? "min-w-0 w-full" : "w-[220px] shrink-0"}>
       {/* Claude 2026-08-13: outer wrapper stays for SeriesSeasonSelect
           siblings (nested buttons cannot live inside MediaCardShell).
           AdultCard/LibraryCard collapsed their wrappers onto the shell;
@@ -1227,7 +1232,7 @@ export const MainstreamDiscover: Component<{
                 )
               }
               onError={setSetupError}
-              containerClass="flex flex-wrap gap-3"
+              containerClass={MEDIA_POSTER_GRID_CLASS}
             >
               {(item) => (
                 <PosterCard
@@ -1235,6 +1240,7 @@ export const MainstreamDiscover: Component<{
                   item={item}
                   onGrab={setGrabTarget}
                   onDetail={setDetailTarget}
+                  layout="grid"
                 />
               )}
             </PaginatedStrip>
@@ -1250,7 +1256,7 @@ export const MainstreamDiscover: Component<{
               when={(results()?.length ?? 0) > 0}
               fallback={<Muted>No results found.</Muted>}
             >
-              <div class="flex flex-wrap gap-3">
+              <div class={MEDIA_POSTER_GRID_CLASS}>
                 <For each={results()}>
                   {(e) => (
                     <PosterCard
@@ -1258,6 +1264,7 @@ export const MainstreamDiscover: Component<{
                       item={e.item}
                       onGrab={setGrabTarget}
                       onDetail={setDetailTarget}
+                      layout="grid"
                       onOpenReleases={() =>
                         setReleasePicker({
                           mode: e.mode,

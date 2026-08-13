@@ -30,6 +30,7 @@ import {
   useSectionLock,
 } from "../../components/ui";
 import { DISCOVER_NAV_LINK_CLASS } from "../../components/ViewAllLink";
+import { MEDIA_POSTER_GRID_CLASS } from "../../components/media";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../../api/sectionLock";
 import { MAINSTREAM_ROWS, PosterCard } from "./Mainstream";
 import { AdultCard, toAdultDiscoverItem } from "./Adult";
@@ -40,7 +41,12 @@ import {
 } from "./shared";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
 
-const WRAP = "flex flex-wrap gap-3";
+// Claude 2026-08-13: View All uses Library's 2-col poster grid, not flex-wrap.
+// Reason: 220/240px cards in a wrap showed one poster per phone row.
+// Cards pass layout="grid" so they fill the cell (w-full), not the carousel
+// 220/240px. Browse-row carousels are unchanged.
+// Review if: carousel rows also need a mobile size.
+const WRAP = MEDIA_POSTER_GRID_CLASS;
 
 // Claude 2026-08-13: chip class shared with ViewAllLink (not text-accent).
 // Reason: gold-on-cream wallpaper swallowed the back link on mobile View All.
@@ -83,6 +89,7 @@ export const TmdbRowView: Component = () => {
                 mode={r().mode}
                 item={item}
                 onDetail={setDetailTarget}
+                layout="grid"
               />
             )}
           </PaginatedStrip>
@@ -154,6 +161,7 @@ const AdultNewestRowBody: Component<{ rowId: number }> = (props) => {
                   item={toAdultDiscoverItem(item)}
                   onDetail={setDetailTarget}
                   aspect={r().rowType === "movie" ? "poster" : "video"}
+                  layout="grid"
                 />
               )}
             </PaginatedStrip>

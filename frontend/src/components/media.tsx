@@ -1,5 +1,13 @@
 import { type Component, type JSX, Index, Show } from "solid-js";
 
+// Claude 2026-08-13: one poster grid for Library, View All, and Discover wrap
+// surfaces (search/filter/drill). Reason: View All used flex-wrap + 220/240px
+// cards, so a phone showed one ~330px-tall poster per row. Library already
+// filled the width with this 2-col grid. Carousel/calendar keep fixed widths.
+// Review if: a wrap surface needs a horizontal row instead.
+export const MEDIA_POSTER_GRID_CLASS =
+  "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6";
+
 type MediaGridSkeletonProps = {
   count?: number;
   // Claude 2026-08-13: aspect is CSS aspect-ratio, default 2 / 3.
@@ -15,7 +23,7 @@ export const MediaGridSkeleton: Component<MediaGridSkeletonProps> = (props) => {
   const aspect = () => props.aspect ?? "2 / 3";
   return (
     <div
-      class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+      class={MEDIA_POSTER_GRID_CLASS}
       role="status"
       aria-live="polite"
       aria-busy="true"

@@ -67,6 +67,7 @@ import {
   MediaDetailShell,
   MediaFallbackTile,
   MediaGridSkeleton,
+  MEDIA_POSTER_GRID_CLASS,
 } from "../components/media";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import {
@@ -813,7 +814,7 @@ const LibraryView: Component<{
                   <Muted class="mt-4">No items match this search or genre.</Muted>
                 }
               >
-                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+                <div class={MEDIA_POSTER_GRID_CLASS}>
                   <For each={visibleItems()}>
                     {(item) => (
                       <PosterCard

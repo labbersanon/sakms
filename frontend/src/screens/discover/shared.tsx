@@ -1058,9 +1058,13 @@ export function PaginatedStrip<T>(props: {
           <For each={items()}>{(item) => props.children(item)}</For>
           {/* Manual "Show more" — rendered EXCEPT when infiniteScroll is on.
               With the prop absent this reduces to <Show when={canAdvance()}>,
-              reactively and DOM-identical to before. */}
+              reactively and DOM-identical to before.
+              Claude 2026-08-13: col-span-full so a grid wrap (View All) puts
+              Show more on its own row instead of stretching beside a poster.
+              Harmless in the default flex carousel (col-span is ignored).
+              Review if: wrap grids get a different pager. */}
           <Show when={!props.infiniteScroll && canAdvance()}>
-            <div class="flex w-28 shrink-0 items-center justify-center">
+            <div class="col-span-full flex w-28 shrink-0 items-center justify-center justify-self-start">
               <Button
                 class="!py-1 text-xs"
                 onClick={() => void load(false)}
@@ -1077,7 +1081,7 @@ export function PaginatedStrip<T>(props: {
           <Show when={props.infiniteScroll && canAdvance()}>
             <div
               ref={attachSentinel}
-              class="flex w-28 shrink-0 items-center justify-center"
+              class="col-span-full flex w-28 shrink-0 items-center justify-center justify-self-start"
             >
               <Show when={loading()}>
                 <Muted>Loading…</Muted>

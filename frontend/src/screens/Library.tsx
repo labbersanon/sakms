@@ -76,9 +76,15 @@ const TIER_VALUES = ["low", "medium", "high", "lossless", "unknown"];
 const selectClass =
   "rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent";
 
+// firstFrameSrc appends the #t=0.1 media fragment so the browser seeks just past
+// the start and paints that frame as the still. Without the fragment a
+// preload="metadata" <video> stays blank until playback begins.
+const firstFrameSrc = (videoUrl: string) => `${videoUrl}#t=0.1`;
+
 // PosterCard is one grid cell. It lazily fetches the item's TMDB poster and
-// renders it; falls back to a grey tile with the first letter of the title when
-// the item has no tmdbId or the fetch returns "". Selected state is indicated
+// renders it; with no poster it falls back to the Adult scene's own video still
+// (Adult scenes have no tmdbId, so that is their only artwork) and then to a
+// grey tile with the first letter of the title. Selected state is indicated
 // with an accent ring; unselected uses a transparent border.
 const PosterCard: Component<{
   item: TrackedItem;
@@ -102,12 +108,14 @@ const PosterCard: Component<{
   };
   const adultVideoUrl = () =>
     props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";
-  const adultVideoSrc = () =>
-    adultVideoUrl() ? `${adultVideoUrl()}#t=0.1` : "";
   const [videoVisible, setVideoVisible] = createSignal(false);
   const [videoError, setVideoError] = createSignal(false);
+  const showAdultVideo = () =>
+    adultVideoUrl() && videoVisible() && !videoError();
   let posterBox: HTMLDivElement | undefined;
 
+  // A grid of Adult cards would otherwise ask the server for every scene's
+  // metadata at once, so the <video> is withheld until its tile is on screen.
   onMount(() => {
     if (props.mode !== "adult" || !props.item.videoUrl || !posterBox) return;
     if (typeof IntersectionObserver === "undefined") {
@@ -123,7 +131,6 @@ const PosterCard: Component<{
     observer.observe(posterBox);
     onCleanup(() => observer.disconnect());
   });
-  const showAdultVideo = () => adultVideoUrl() && videoVisible() && !videoError();
 
   return (
     <button
@@ -151,7 +158,7 @@ const PosterCard: Component<{
               }
             >
               <video
-                src={adultVideoSrc()}
+                src={firstFrameSrc(adultVideoUrl())}
                 muted
                 preload="metadata"
                 class="h-full w-full object-cover"
@@ -354,6 +361,9 @@ const DetailPanel: Component<{
     props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";
   const [videoError, setVideoError] = createSignal(false);
   const showAdultVideo = () => adultVideoUrl() && !videoError();
+  // Selecting another card does NOT remount this panel (the parent's <Show> is
+  // non-keyed), so one unplayable scene would otherwise suppress the video
+  // still for every scene selected after it.
   createEffect(on(() => props.item.id, () => setVideoError(false)));
 
   return (
@@ -394,9 +404,9 @@ const DetailPanel: Component<{
           style="aspect-ratio: 2/3; max-height: 10rem; object-position: top"
         />
       </Show>
-      <Show when={!posterUrl() && showAdultVideo()}>
+      <Show when={showAdultVideo()}>
         <video
-          src={`${adultVideoUrl()}#t=0.1`}
+          src={firstFrameSrc(adultVideoUrl())}
           muted
           preload="metadata"
           playsinline

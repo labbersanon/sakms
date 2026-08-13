@@ -89,17 +89,22 @@ const renderLibrary = (url = "/library") => {
   ));
 };
 
+// PosterCard withholds an Adult scene's <video> until its tile intersects the
+// viewport, and jsdom ships no IntersectionObserver — this stub reports every
+// observed tile as visible immediately, so the video assertions below see the
+// element without any scrolling.
 beforeEach(() => {
   vi.stubGlobal(
     "IntersectionObserver",
     class {
-      private cb: IntersectionObserverCallback;
-      constructor(cb: IntersectionObserverCallback) {
-        this.cb = cb;
+      constructor(private cb: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        this.cb(
+          [{ isIntersecting: true, target } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        );
       }
-      observe = (target: Element) =>
-        this.cb([{ isIntersecting: true, target } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
-      disconnect = () => {};
+      disconnect() {}
     },
   );
 });
@@ -848,13 +853,13 @@ describe("Library — Adult catalog", () => {
     ).toBe(false);
   });
 
-  it("falls back to the tracked video URL when a web-tracked Adult scene has no image", async () => {
+  it("drops the Adult video still for the letter tile when the video cannot load", async () => {
     stubFetch(
       makeHandler([inception()], {
         adult: [
           item({
             id: 51,
-            title: "Web Tracked Scene",
+            title: "Unplayable Scene",
             videoUrl: "/api/modes/adult/tracked/51/video",
           }),
         ],
@@ -864,7 +869,7 @@ describe("Library — Adult catalog", () => {
     await screen.findByRole("button", { name: "Inception" });
     fireEvent.click(screen.getByText("Adult"));
 
-    const card = await screen.findByRole("button", { name: "Web Tracked Scene" });
+    const card = await screen.findByRole("button", { name: "Unplayable Scene" });
     const video = card.querySelector("video") as HTMLVideoElement;
     expect(video).not.toBeNull();
     expect(video.getAttribute("src")).toBe("/api/modes/adult/tracked/51/video#t=0.1");

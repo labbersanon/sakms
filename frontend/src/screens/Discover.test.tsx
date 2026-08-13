@@ -504,6 +504,9 @@ describe("Discover — existing-library row", () => {
 
     // AC2: the inline Grab button is gone; the body click replaced it.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
+    expect(
+      within(card).getByRole("button", { name: "Owned Movie" }),
+    ).toHaveClass("cursor-pointer");
 
     fireEvent.click(within(card).getByText("Owned Movie"));
     // The popup's own resolution selector — markup a LibraryCard never renders.
@@ -534,8 +537,10 @@ describe("Discover — existing-library row", () => {
     const titles = await screen.findAllByText("Unmatched Movie");
     const card = titles[0]!.closest("div.w-\\[220px\\]") as HTMLElement;
 
-    // The card must not even advertise a click it will not honor.
-    expect(card.querySelector(".cursor-pointer")).toBeNull();
+    // The card must not be operable when it cannot open a valid popup.
+    expect(
+      within(card).getByRole("button", { name: "Unmatched Movie" }),
+    ).toBeDisabled();
 
     // Snapshot BEFORE the click: other rows legitimately fire these endpoints on
     // mount, so the assertion has to be "no NEW popup request", not "none ever".
@@ -587,6 +592,9 @@ describe("Discover — existing-library row", () => {
     const card = screen
       .getByText("Owned Movie")
       .closest("div.w-\\[220px\\]") as HTMLElement;
+    expect(
+      within(card).getByRole("button", { name: "Owned Movie" }),
+    ).toBeDisabled();
     fireEvent.click(within(card).getByText("Owned Movie"));
 
     // No popup — even though this same click opens one outside select-mode.
@@ -604,6 +612,9 @@ describe("Discover — existing-library row", () => {
     // Leaving select-mode restores the popup route — proving the inertness is
     // the select-mode guard, not a broken handler.
     fireEvent.click(screen.getByText("Done selecting"));
+    expect(
+      within(card).getByRole("button", { name: "Owned Movie" }),
+    ).not.toBeDisabled();
     fireEvent.click(within(card).getByText("Owned Movie"));
     expect(await screen.findByText("480p")).toBeInTheDocument();
   });

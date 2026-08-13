@@ -827,7 +827,7 @@ const LibraryView: Component<{ mode: Mode; initialTier?: string }> = (
 export const LibraryMainstream: Component = () => {
   const [params] = useSearchParams();
   const initialTab: MainstreamMediaTab =
-    params.tab === "movies" || params.mode === "movies" ? "movies" : "series";
+    params.tab === "series" || params.mode === "series" ? "series" : "movies";
   // An unrecognized tier folds to "" so the <select> can never display a value
   // it isn't actually filtering by.
   const initialTier =

@@ -45,7 +45,7 @@ export const MediaCardShell: Component<{
 }> = (props) => (
   <button
     type="button"
-    class={`flex w-full flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-default ${props.class ?? ""}`}
+    class={`flex w-full cursor-pointer flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-default ${props.class ?? ""}`}
     classList={{
       "border-accent": !!props.selected,
       "border-transparent": !props.selected,

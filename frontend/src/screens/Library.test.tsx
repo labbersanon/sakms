@@ -555,9 +555,9 @@ describe("Library — route-specific media tabs", () => {
     );
     renderLibraryRoute("/library/mainstream", LibraryMainstream);
 
-    expect(await screen.findByRole("button", { name: "Series Row" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
     expect(await screen.findByRole("button", { name: "Movie Row" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Series" }));
+    expect(await screen.findByRole("button", { name: "Series Row" })).toBeInTheDocument();
   });
 
   it("renders Scenes and Movies tabs on the Adult library route", async () => {

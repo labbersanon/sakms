@@ -38,18 +38,21 @@ export const MediaGridSkeleton: Component<MediaGridSkeletonProps> = (props) => {
 export const MediaCardShell: Component<{
   label: string;
   selected?: boolean;
+  disabled?: boolean;
+  class?: string;
   onClick: () => void;
   children: JSX.Element;
 }> = (props) => (
   <button
     type="button"
-    class="flex w-full flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent"
+    class={`flex w-full flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-default ${props.class ?? ""}`}
     classList={{
       "border-accent": !!props.selected,
       "border-transparent": !props.selected,
     }}
     aria-pressed={props.selected}
     aria-label={props.label}
+    disabled={props.disabled}
     onClick={props.onClick}
   >
     {props.children}

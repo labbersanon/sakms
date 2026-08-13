@@ -75,6 +75,7 @@ import {
   updateRssFeed,
 } from "../../api/rssFeeds";
 import { TraktWatchlistRow } from "../../components/TraktWatchlistRow";
+import { MediaCardShell } from "../../components/media";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
@@ -580,7 +581,11 @@ const LibraryCard: Component<{
 
   return (
     <div class="w-[220px] shrink-0" title={props.item.title}>
-      <div classList={{ "cursor-pointer": clickable() }} onClick={openDetail}>
+      <MediaCardShell
+        label={props.item.title}
+        disabled={!clickable()}
+        onClick={openDetail}
+      >
         <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
           <Show when={src()} fallback={<TextPoster label={props.item.title} />}>
             <img
@@ -597,7 +602,7 @@ const LibraryCard: Component<{
         <div class="flex items-center gap-2 text-xs text-muted">
           <span>{props.item.year || "—"}</span>
         </div>
-      </div>
+      </MediaCardShell>
     </div>
   );
 };

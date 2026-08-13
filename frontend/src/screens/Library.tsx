@@ -405,10 +405,10 @@ const DetailPanel: Component<{
 
   return (
     <MediaDetailShell
-      title={props.item.title}
       poster={media()}
-      actions={
-        <div class="flex flex-col gap-0.5 text-xs text-muted">
+      chromeless
+      subtitle={
+        <div class="flex flex-col gap-0.5">
           <Show when={props.item.year}>
             <span>{props.item.year}</span>
           </Show>

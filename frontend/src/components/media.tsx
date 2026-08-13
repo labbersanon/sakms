@@ -98,31 +98,52 @@ export const MediaBadge: Component<{
 };
 
 export const MediaDetailShell: Component<{
-  title: string;
+  title?: string;
+  subtitle?: JSX.Element;
   poster?: JSX.Element;
   hero?: JSX.Element;
   actions?: JSX.Element;
+  chromeless?: boolean;
   children: JSX.Element;
-}> = (props) => (
-  <div class="overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl">
-    <Show when={props.hero}>
-      <div class="relative min-h-48 bg-bg">{props.hero}</div>
-    </Show>
-    <div class="p-4 sm:p-6">
+}> = (props) => {
+  const body = () => (
+    <div class={props.chromeless ? "" : "p-4 sm:p-6"}>
       <div class="flex flex-col gap-4 sm:flex-row">
-        <Show when={props.poster}>
-          <div class="mx-auto w-32 shrink-0 overflow-hidden rounded-lg border border-border sm:mx-0">
-            {props.poster}
-          </div>
+        <Show when={props.poster} keyed>
+          {(poster) => (
+            <div class="mx-auto w-32 shrink-0 overflow-hidden rounded-lg border border-border sm:mx-0">
+              {poster}
+            </div>
+          )}
         </Show>
         <div class="min-w-0 flex-1">
-          <h2 class="text-xl font-semibold text-fg">{props.title}</h2>
+          <Show when={props.title}>
+            {(title) => (
+              <h2 class="text-xl font-semibold text-fg">{title()}</h2>
+            )}
+          </Show>
+          <Show when={props.subtitle}>
+            <div class={props.title ? "mt-1 text-sm text-muted" : "text-sm text-muted"}>
+              {props.subtitle}
+            </div>
+          </Show>
           <Show when={props.actions}>
             <div class="mt-3 flex flex-wrap gap-2">{props.actions}</div>
           </Show>
-          <div class="mt-4">{props.children}</div>
+          <div class={props.title || props.subtitle || props.actions ? "mt-4" : ""}>
+            {props.children}
+          </div>
         </div>
       </div>
     </div>
-  </div>
-);
+  );
+  if (props.chromeless) return body();
+  return (
+    <div class="overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl">
+      <Show when={props.hero}>
+        <div class="relative min-h-48 bg-bg">{props.hero}</div>
+      </Show>
+      {body()}
+    </div>
+  );
+};

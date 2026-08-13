@@ -25,7 +25,7 @@
 // Tag.test.tsx's untouched Adult regression describes.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { type Component, createSignal, Show } from "solid-js";
 import type { SeasonState, TagEntry, TrackedItem } from "@dto";
@@ -202,6 +202,12 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     fireEvent.click(dialog.parentElement!);
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument(),
+    );
+    fireEvent.click(card);
+    const reopened = screen.getByRole("dialog", { name: "Inception" });
+    fireEvent.click(within(reopened).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Inception" })).not.toBeInTheDocument(),
     );
   });
 

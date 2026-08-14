@@ -9,6 +9,8 @@ data/
 *.db-shm
 /bin/
 /sakms
+/sakms-node
+/sakms-node-tray
 web/node_modules/
 web/dist/
 # Frontend: keep source in the build context, but not local install/build

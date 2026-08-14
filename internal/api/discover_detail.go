@@ -286,6 +286,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			Crew:                  mapCrew(credits.Crew),
 			WatchProviders:        mapWatchProviders(providers),
 			Recommendations:       mapDiscoverItems(recs),
+			Overview:              ext.Overview,
 			// `"seasons":[]` and never null — for a Movie (which never populates
 			// ext.Seasons), for a Series whose TVDetails call soft-failed, and for
 			// a Series TMDB reports zero seasons for. The zero-length make() above
@@ -315,6 +316,7 @@ type titleExtended struct {
 	Networks              []string
 	Studios               []string
 	ReleaseDates          []apidto.ReleaseDateEntry
+	Overview              string
 	// Seasons is Series-only (nil for a Movie) — TMDB's seasons[] as /tv/{id}
 	// returns it, in TMDB's own order. It is what the handler's per-season
 	// episode fan-out iterates.
@@ -333,6 +335,7 @@ func extendedFromMovie(d tmdb.MovieDetails) titleExtended {
 		Genres:                d.Genres,
 		Studios:               d.Studios,
 		ReleaseDates:          mapReleaseDates(d.ReleaseDates),
+		Overview:              d.Overview,
 	}
 }
 
@@ -346,6 +349,7 @@ func extendedFromTV(d tmdb.TVDetails) titleExtended {
 		Genres:                d.Genres,
 		Networks:              d.Networks,
 		Seasons:               d.Seasons,
+		Overview:              d.Overview,
 	}
 }
 

@@ -1099,6 +1099,8 @@ describe("DetailPopup — AC5: no placeholder description in any mode", () => {
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -1163,6 +1165,8 @@ describe("DetailPopup — AC5: no placeholder description in any mode", () => {
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -1172,7 +1176,7 @@ describe("DetailPopup — AC5: no placeholder description in any mode", () => {
     ));
 
     expect(await screen.findByText("An overview.")).toBeInTheDocument();
-    expect(overviewParagraphs(container)).toHaveLength(1);
+    expect(overviewParagraphs(container)).toHaveLength(0);
   });
 });
 
@@ -1191,6 +1195,7 @@ const titleDetail = (over: Partial<TitleDetail> = {}): TitleDetail => ({
   releaseDates: [{ type: "Theatrical", date: "2024-05-01" }],
   genres: ["Action"],
   keywords: ["heist", "spy"],
+  overview: "A hero saves the day.",
   cast: [{ name: "Actor One", character: "Hero", profilePath: "/a1.jpg" }],
   crew: [{ name: "Dir One", job: "Director", profilePath: "" }],
   watchProviders: [{ name: "Netflix", logoPath: "/nf.jpg" }],
@@ -1229,6 +1234,7 @@ const emptyDetail = (): TitleDetail =>
     crew: [],
     watchProviders: [],
     recommendations: [],
+    overview: "",
   });
 
 describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
@@ -1245,14 +1251,15 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-  it("renders every populated section (collection/keywords/metadata/crew/cast/providers+JustWatch/recommendations)", async () => {
+  it("renders every populated section (collection/keywords/synopsis/metadata/cast/providers+JustWatch/recommendations)", async () => {
     stubWithDetail(titleDetail());
     const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
     render(() => <DetailPopup target={target} onClose={() => {}} />);
 
-    // Collection banner + keyword chips + metadata sidebar.
+    // Collection banner + keyword chips + synopsis under tags + metadata sidebar.
     expect(await screen.findByText("Hero Collection")).toBeInTheDocument();
     expect(screen.getByText("heist")).toBeInTheDocument();
+    expect(screen.getByText("A hero saves the day.")).toBeInTheDocument();
     expect(screen.getByText("Released")).toBeInTheDocument();
     expect(screen.getByText("2h 5m")).toBeInTheDocument();
     // Production Country renders with a leading flag emoji, so match loosely.
@@ -1260,9 +1267,8 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     expect(screen.getByText("Studio X")).toBeInTheDocument();
     expect(screen.getByText("Theatrical")).toBeInTheDocument();
 
-    // Crew ABOVE cast; both render their people.
-    expect(screen.getByText("Dir One")).toBeInTheDocument();
-    expect(screen.getByText("Director")).toBeInTheDocument();
+    expect(screen.queryByText("Crew")).not.toBeInTheDocument();
+    expect(screen.queryByText("Dir One")).not.toBeInTheDocument();
     expect(screen.getByText("Actor One")).toBeInTheDocument();
     expect(screen.getByText("Hero")).toBeInTheDocument();
 

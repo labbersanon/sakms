@@ -502,6 +502,7 @@ type TVDetails struct {
 	ProductionCountry     string   // display name of the first production country
 	ProductionCountryCode string   // ISO 3166-1 code
 	Networks              []string // networks[].name
+	Overview              string
 	// Seasons is TMDB's seasons[] array, in the order TMDB returns it
 	// (season 0 / Specials included when present). It comes free with the
 	// /tv/{id} body this method already fetches — no extra round trip — and
@@ -536,6 +537,7 @@ type tvDetailsResponse struct {
 	Name       string `json:"name"`
 	PosterPath string `json:"poster_path"`
 	Status     string `json:"status"`
+	Overview   string `json:"overview"`
 	// OriginalLanguage is TMDB's original_language ISO 639-1 code.
 	OriginalLanguage string `json:"original_language"`
 	// EpisodeRunTime is TMDB's list of typical per-episode runtimes (minutes);
@@ -574,6 +576,7 @@ func (c *Client) TVDetails(ctx context.Context, tmdbID int) (TVDetails, error) {
 		Title:            resp.Name,
 		PosterPath:       resp.PosterPath,
 		Status:           resp.Status,
+		Overview:         resp.Overview,
 		OriginalLanguage: resp.OriginalLanguage,
 		Genres:           make([]string, len(resp.Genres)),
 		Networks:         make([]string, len(resp.Networks)),

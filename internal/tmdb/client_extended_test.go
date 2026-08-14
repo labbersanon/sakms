@@ -207,6 +207,7 @@ func TestMovieDetails_ExtendedFields(t *testing.T) {
 func TestTVDetails_ExtendedFields(t *testing.T) {
 	const body = `{
 	  "id": 7, "name": "A Show", "poster_path": "/p.jpg", "status": "Returning Series",
+	  "overview": "A show synopsis.",
 	  "original_language": "ja", "episode_run_time": [24, 25],
 	  "genres": [{"name": "Animation"}],
 	  "networks": [{"name": "Some Network"}],
@@ -223,6 +224,9 @@ func TestTVDetails_ExtendedFields(t *testing.T) {
 	}
 	if d.Title != "A Show" || d.Status != "Returning Series" || d.OriginalLanguage != "ja" {
 		t.Errorf("unexpected base/extended fields: %+v", d)
+	}
+	if d.Overview != "A show synopsis." {
+		t.Errorf("unexpected overview: %q", d.Overview)
 	}
 	if d.Runtime != 24 {
 		t.Errorf("expected Runtime from episode_run_time[0]=24, got %d", d.Runtime)

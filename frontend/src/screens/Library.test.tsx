@@ -78,6 +78,7 @@ const emptyTitleDetail = (): TitleDetail => ({
   watchProviders: [],
   recommendations: [],
   seasons: [],
+  overview: "",
 });
 
 // libraryEnrichmentResponse answers Discover's trailer/detail/description
@@ -259,6 +260,32 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Inception" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("shows TMDB overview under tags and does not render Crew", async () => {
+    stubFetch((url, init) => {
+      const extra = libraryEnrichmentResponse(url);
+      if (url.includes("/discover/detail")) {
+        return jsonResponse({
+          ...emptyTitleDetail(),
+          keywords: ["dream"],
+          overview: "A thief who steals corporate secrets through dream-sharing.",
+          crew: [{ name: "Dir One", job: "Director", profilePath: "" }],
+        });
+      }
+      if (extra) return extra;
+      return makeHandler([inception()])(url, init);
+    });
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    expect(
+      await screen.findByText(
+        "A thief who steals corporate secrets through dream-sharing.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("dream")).toBeInTheDocument();
+    expect(screen.queryByText("Crew")).toBeNull();
+    expect(screen.queryByText("Dir One")).toBeNull();
   });
 
   it("adds a tag from the detail panel via the GENERIC /items/{id}/tags route", async () => {

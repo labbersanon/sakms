@@ -1073,6 +1073,9 @@ type TitleDetail struct {
 	WatchProviders        []WatchProviderDTO `json:"watchProviders"`
 	Recommendations       []DiscoverItem     `json:"recommendations"`
 	Seasons               []SeasonSummary    `json:"seasons"`
+	// Overview is the TMDB synopsis. The popup renders it under the keyword
+	// chips (Library tracked rows do not carry overview on GET /tracked).
+	Overview string `json:"overview"`
 }
 
 // --- Request-status worklist (Feature 4, derive-on-read) -------------------

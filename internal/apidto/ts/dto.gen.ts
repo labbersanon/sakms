@@ -1072,6 +1072,11 @@ export interface TitleDetail {
   watchProviders: WatchProviderDTO[];
   recommendations: DiscoverItem[];
   seasons: SeasonSummary[];
+  /**
+   * Overview is the TMDB synopsis. The popup renders it under the keyword
+   * chips (Library tracked rows do not carry overview on GET /tracked).
+   */
+  overview: string;
 }
 /**
  * RequestStatusItem is one title's cross-mode status. Status is "In Library"

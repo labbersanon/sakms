@@ -7646,3 +7646,16 @@ Discover's own grab path is unchanged: omitted `allowGrab` defaults to true,
 including the "In your library" row on Discover. Recommendation clicks from
 a Library popup stay `allowGrab={false}`.
 
+## 2026-08-14 (later, same day) — Detail popup: synopsis under tags, Crew removed
+
+Movies/Series `TitleDetail` now carries TMDB `overview`, rendered under the
+keyword chips (before Status/Runtime/…). Library tracked rows still have no
+overview on GET /tracked, so the synopsis comes from the same
+`/discover/detail` fetch the popup already made. Discover card overview is
+not duplicated in the header next to the poster.
+
+The Crew grid (directors/writers/producers) is no longer rendered — it
+crowded the modal on titles with long credit lists. Cast is unchanged. Crew
+still arrives on the wire.
+
+

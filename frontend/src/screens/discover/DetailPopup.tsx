@@ -438,8 +438,9 @@ const RatingGauge: Component<{ value: number }> = (props) => {
 };
 
 // SectionHeading is the small uppercase label above each DetailPopup detail
-// section (Crew / Cast / Currently Streaming On / More like this) — one place so
+// section (Cast / Currently Streaming On / More like this) — one place so
 // the four read identically.
+// Crew was a fourth heading until 2026-08-14 (commented out in the F1 block).
 const SectionHeading: Component<{ children: string }> = (props) => (
   <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
     {props.children}
@@ -678,6 +679,10 @@ export const DetailPopup: Component<{
   // the only place a scene's studio and date appear at all — the Modal title is
   // bare item().title. The two coexist; neither replaces the other.
   //
+  // Movies/Series synopsis lives under the keyword chips (titleOverview), not
+  // here: Library tracked rows send overview "" and Discover's card overview
+  // would otherwise duplicate the TMDB detail text.
+  //
   // Neither branch has a placeholder fallback any more (AC5): an item with
   // nothing to say renders no <p> at all, not "No description available." —
   // deliberately across all three modes, so a TMDB title with an empty overview
@@ -695,7 +700,7 @@ export const DetailPopup: Component<{
         ]
           .filter(Boolean)
           .join(" · ")
-      : (item() as DiscoverItem).overview;
+      : "";
   const ratingValue = () =>
     mode() === "adult"
       ? (item() as AdultDiscoverItem).rating
@@ -1005,6 +1010,23 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
+                {/* Claude 2026-08-14: synopsis under keyword chips.
+                    Reason: Library tracked rows have no overview; the header
+                    line next to the poster was empty. Discover card overview
+                    is the same TMDB text, so it is not also shown up top.
+                    Review if: GET /tracked starts carrying overview. */}
+                <Show
+                  when={
+                    (d().overview ?? "").trim() ||
+                    ((item() as DiscoverItem).overview ?? "").trim()
+                  }
+                >
+                  <p class="mb-3 text-sm text-muted">
+                    {(d().overview ?? "").trim() ||
+                      ((item() as DiscoverItem).overview ?? "").trim()}
+                  </p>
+                </Show>
+
                 {/* Structured metadata sidebar — Status/Runtime/Language/Country
                     scalars here; Networks, Studios, and the full release-date
                     list below. Explicitly NO Revenue/Budget. */}
@@ -1059,6 +1081,12 @@ export const DetailPopup: Component<{
                   </Show>
                 </Show>
 
+                {/* Claude 2026-08-14: Crew section not rendered.
+                    Reason: the popup's director/writer grid crowded Library
+                    and Discover detail (Arrested Development had a long
+                    director list above Cast). Credits still arrive on the
+                    wire; Cast is unchanged.
+                    Review if: a compact crew row is wanted again.
                 <Show when={d().crew?.length}>
                   <div class="mt-4">
                     <SectionHeading>Crew</SectionHeading>
@@ -1081,6 +1109,7 @@ export const DetailPopup: Component<{
                     </div>
                   </div>
                 </Show>
+                */}
 
                 <Show when={d().cast?.length}>
                   <div class="mt-4">

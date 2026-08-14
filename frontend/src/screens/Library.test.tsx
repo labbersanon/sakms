@@ -288,7 +288,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     ).toBeInTheDocument();
     expect(within(dialog).getByText("dream")).toBeInTheDocument();
     expect(within(dialog).getByText("Sci-Fi")).toBeInTheDocument();
-    expect(within(dialog).getByText("2010")).toBeInTheDocument();
+    expect(within(dialog).getAllByText("2010")).toHaveLength(1);
     expect(within(dialog).queryByText("Genres")).toBeNull();
     expect(within(dialog).queryByText("Leonardo DiCaprio")).toBeNull();
     expect(screen.queryByText("Crew")).toBeNull();

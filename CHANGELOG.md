@@ -7695,4 +7695,11 @@ That year now leads the same highlighted pill row as genres and keywords
 Nested DetailPanel omits the duplicate year; the no-tmdbId fallback modal
 still shows it.
 
+## 2026-08-14 (later, same day) — Drop empty nested year/collection subtitle
+
+After year moved to the chip row, nested DetailPanel's MediaDetailShell
+subtitle was an empty muted block (collection already has DetailPopup's
+"Part of …" banner). Nested panel no longer passes a subtitle. The
+no-tmdbId fallback modal still shows year + collection there.
+
 

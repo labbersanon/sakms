@@ -517,20 +517,30 @@ const DetailPanel: Component<{
     );
   };
 
+  // Claude 2026-08-14: nested DetailPanel (showTrackedCredits=false) has no
+  // year/collection subtitle. Year is in the chip row; collection is DetailPopup's
+  // "Part of …" banner. An empty subtitle still reserved a muted block + mt-4.
+  // Review if: the no-tmdbId fallback modal is retired.
+  const subtitle = () => {
+    if (!showTrackedCredits()) return undefined;
+    if (!props.item.year && !props.item.collectionName) return undefined;
+    return (
+      <div class="flex flex-col gap-0.5">
+        <Show when={props.item.year}>
+          <span>{props.item.year}</span>
+        </Show>
+        <Show when={props.item.collectionName}>
+          <span class="italic">{props.item.collectionName}</span>
+        </Show>
+      </div>
+    );
+  };
+
   return (
     <MediaDetailShell
       poster={media()}
       chromeless
-      subtitle={
-        <div class="flex flex-col gap-0.5">
-          <Show when={showTrackedCredits() && props.item.year}>
-            <span>{props.item.year}</span>
-          </Show>
-          <Show when={props.item.collectionName}>
-            <span class="italic">{props.item.collectionName}</span>
-          </Show>
-        </div>
-      }
+      subtitle={subtitle()}
     >
       {/* Genres — read-only. Nested under DetailPopup these live in the
           keyword chip row instead (showTrackedCredits=false). */}

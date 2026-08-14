@@ -239,10 +239,10 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     );
     const dialog = screen.getByRole("dialog", { name: "Inception" });
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByText("Genres")).toBeInTheDocument();
-    expect(screen.getByText("Cast")).toBeInTheDocument();
-    expect(screen.getByText("Leonardo DiCaprio")).toBeInTheDocument();
-    expect(screen.getByText("Tom Hardy")).toBeInTheDocument();
+    expect(screen.queryByText("Genres")).toBeNull();
+    expect(screen.queryByText("Leonardo DiCaprio")).toBeNull();
+    expect(screen.queryByText("Tom Hardy")).toBeNull();
+    expect(screen.getByText("Tags")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Grab" })).toBeNull();
     expect(screen.queryByText("Checking availability…")).toBeNull();
     expect(calls.some((c) => c.url.includes("/discover/detail"))).toBe(true);
@@ -270,6 +270,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
         return jsonResponse({
           ...emptyTitleDetail(),
           keywords: ["dream"],
+          genres: ["Sci-Fi"],
           overview: "A thief who steals corporate secrets through dream-sharing.",
           crew: [{ name: "Dir One", job: "Director", profilePath: "" }],
         });
@@ -279,12 +280,16 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     });
     renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
     expect(
       await screen.findByText(
         "A thief who steals corporate secrets through dream-sharing.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("dream")).toBeInTheDocument();
+    expect(within(dialog).getByText("dream")).toBeInTheDocument();
+    expect(within(dialog).getByText("Sci-Fi")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Genres")).toBeNull();
+    expect(within(dialog).queryByText("Leonardo DiCaprio")).toBeNull();
     expect(screen.queryByText("Crew")).toBeNull();
     expect(screen.queryByText("Dir One")).toBeNull();
   });

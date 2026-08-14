@@ -383,6 +383,22 @@ function formatRuntime(min: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+// mergeGenreKeywords puts TMDB genres ahead of keywords in the chip row.
+// The same label (case-insensitive, trimmed) appears once so a genre that
+// TMDB also lists as a keyword does not render two pills.
+function mergeGenreKeywords(genres: string[], keywords: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...genres, ...keywords]) {
+    const label = raw.trim();
+    const key = label.toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out;
+}
+
 // flagEmoji maps a 2-letter ISO country code to its regional-indicator flag
 // emoji (the "if easy" flag the plan allows next to Production Country). Returns
 // "" for anything that isn't a clean 2-letter code, so the label falls back to
@@ -1003,6 +1019,8 @@ export const DetailPopup: Component<{
             doesn't render — a partial bundle never breaks the popup. */}
         <Show when={mode() !== "adult" && detail()}>
           {(d) => {
+            const chips = () =>
+              mergeGenreKeywords(d().genres ?? [], d().keywords ?? []);
             const meta = () =>
               [
                 ["Status", d().status] as const,
@@ -1024,9 +1042,14 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
-                <Show when={d().keywords?.length}>
+                {/* Claude 2026-08-14: genres share the keyword chip row.
+                    Reason: Library DetailPanel had a second Genres block
+                    below this row; moving TMDB genres here is one highlighted
+                    pill strip. Keywords still follow, de-duplicated.
+                    Review if: genres get their own labeled row again. */}
+                <Show when={chips().length}>
                   <div class="mb-3 flex flex-wrap gap-1">
-                    <For each={d().keywords}>
+                    <For each={chips()}>
                       {(k) => (
                         <span class="inline-block rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
                           {k}

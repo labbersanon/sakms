@@ -7678,4 +7678,13 @@ its poster (`showPoster={false}`) so the modal has one art slot. The
 no-tmdbId fallback modal still renders DetailPanel's poster, since that
 path has no DetailPopup header tile.
 
+## 2026-08-14 (later, same day) — Genres in the chip row, one Cast list
+
+Library's nested DetailPanel still rendered a tracked-item Genres block and
+a names-only Cast list (first 5) under DetailPopup's F1 sections. Nested
+panel now omits those (`showTrackedCredits={false}`). TMDB genres join the
+existing keyword chip row (genres first, case-insensitive de-dupe). The
+photo Cast grid is the remaining Cast list. The no-tmdbId fallback modal
+still shows DetailPanel Genres/Cast.
+
 

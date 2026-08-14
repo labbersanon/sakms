@@ -453,8 +453,15 @@ const DetailPanel: Component<{
   // Review if: the no-tmdbId fallback modal is retired and this panel is
   // children-only.
   showPoster?: boolean;
+  // Claude 2026-08-14: omit tracked Genres/Cast chips when DetailPopup
+  // already shows F1 Cast photos and genre pills in the keyword row.
+  // Reason: Library nested a second Cast list (names-only, first 5) and a
+  // Genres block under the Discover sections.
+  // Review if: the no-tmdbId fallback modal is retired.
+  showTrackedCredits?: boolean;
 }> = (props) => {
   const showPoster = () => props.showPoster !== false;
+  const showTrackedCredits = () => props.showTrackedCredits !== false;
   const [posterPath] = createResource(
     () =>
       showPoster() && props.mode !== "adult" && props.item.tmdbId
@@ -525,8 +532,9 @@ const DetailPanel: Component<{
         </div>
       }
     >
-      {/* Genres — read-only */}
-      <Show when={(props.item.genres ?? []).length > 0}>
+      {/* Genres — read-only. Nested under DetailPopup these live in the
+          keyword chip row instead (showTrackedCredits=false). */}
+      <Show when={showTrackedCredits() && (props.item.genres ?? []).length > 0}>
         <div class="mb-3">
           <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Genres</p>
           <div class="flex flex-wrap gap-1">
@@ -541,8 +549,9 @@ const DetailPanel: Component<{
         </div>
       </Show>
 
-      {/* Cast — read-only, first 5 */}
-      <Show when={(props.item.cast ?? []).length > 0}>
+      {/* Cast — read-only, first 5. Nested under DetailPopup the F1 photo
+          Cast section is the one list (showTrackedCredits=false). */}
+      <Show when={showTrackedCredits() && (props.item.cast ?? []).length > 0}>
         <div class="mb-3">
           <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Cast</p>
           <div class="flex flex-wrap gap-1">
@@ -996,6 +1005,7 @@ const LibraryView: Component<{
                             mode={props.mode}
                             posterAspect={props.posterAspect}
                             showPoster={false}
+                            showTrackedCredits={false}
                             datalistId={datalistId()}
                             draft={detailDraft()}
                             onDraftChange={setDetailDraft}

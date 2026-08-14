@@ -1261,6 +1261,7 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     // Collection banner + keyword chips + synopsis under tags + metadata sidebar.
     expect(await screen.findByText("Hero Collection")).toBeInTheDocument();
     expect(screen.getByText("heist")).toBeInTheDocument();
+    expect(screen.getByText("Action")).toBeInTheDocument();
     expect(screen.getByText("A hero saves the day.")).toBeInTheDocument();
     expect(screen.getByText("Released")).toBeInTheDocument();
     expect(screen.getByText("2h 5m")).toBeInTheDocument();
@@ -1285,6 +1286,16 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     // Revenue/Budget are explicitly excluded.
     expect(screen.queryByText(/Revenue/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Budget/i)).not.toBeInTheDocument();
+  });
+
+  it("puts genres in the keyword chip row and de-duplicates overlapping labels", async () => {
+    stubWithDetail(
+      titleDetail({ genres: ["Action"], keywords: ["Action", "spy"] }),
+    );
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+    expect(await screen.findByText("spy")).toBeInTheDocument();
+    expect(screen.getAllByText("Action")).toHaveLength(1);
   });
 
   it("renders the poster from TitleDetail when the item posterPath is empty", async () => {

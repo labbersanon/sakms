@@ -329,6 +329,12 @@ func TestScanLibrarySeries_NoSizeOrTierRules_DoesNotQueryEpisodes(t *testing.T) 
 		nil,
 		{{Name: "Stale shows", Mode: string(mode.Series), AgeDays: 365, Enabled: true}},
 		{{Name: "Junk shows", Mode: string(mode.Series), Tags: []string{"junk"}, Enabled: true}},
+		{{Name: "Criteria age", Mode: string(mode.Series), Enabled: true, Criteria: []pruning.Criterion{
+			{Field: pruning.FieldAge, Op: pruning.OpGT, Value: "365", Unit: pruning.UnitDays},
+		}}},
+		{{Name: "Criteria tag", Mode: string(mode.Series), Enabled: true, Criteria: []pruning.Criterion{
+			{Field: pruning.FieldTag, Op: pruning.OpContains, Value: "junk"},
+		}}},
 	} {
 		if _, err := ScanLibrarySeries(ctx, libStore, rules); err != nil {
 			t.Fatalf("a scan needing no size/tier aggregation queried library_episodes: %v", err)
@@ -342,6 +348,12 @@ func TestScanLibrarySeries_NoSizeOrTierRules_DoesNotQueryEpisodes(t *testing.T) 
 		Name: "Big shows", Mode: string(mode.Series), SizeBytes: 1, Enabled: true,
 	}}); err == nil {
 		t.Fatal("expected a size rule to query library_episodes (the control half of this test is broken)")
+	}
+	if _, err := ScanLibrarySeries(ctx, libStore, []pruning.Rule{{
+		Name: "Criteria size", Mode: string(mode.Series), Enabled: true,
+		Criteria: []pruning.Criterion{{Field: pruning.FieldSize, Op: pruning.OpGT, Value: "1", Unit: pruning.UnitGB}},
+	}}); err == nil {
+		t.Fatal("expected a size criterion to query library_episodes")
 	}
 }
 

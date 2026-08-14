@@ -522,3 +522,138 @@ func TestReason_FragmentOrderIsAgeSizeTierTagsRating(t *testing.T) {
 		t.Errorf("reason = %q, want %q (fragment order must be age, size, tier, tags, rating)", reason, want)
 	}
 }
+
+// --- Criteria list (AND'd rows; takes over when non-empty) -----------------
+
+func TestMatch_Criteria_TwoAgesAND(t *testing.T) {
+	r := Rule{Name: "Window", Criteria: []Criterion{
+		{Field: FieldAge, Op: OpGT, Value: "30", Unit: UnitDays},
+		{Field: FieldAge, Op: OpLT, Value: "365", Unit: UnitDays},
+	}}
+	ok, reason := Match(r, Subject{CreatedAt: daysAgo(100)}, fixedNow)
+	if !ok {
+		t.Fatalf("expected 100-day item to match >30 AND <365, got false (reason=%q)", reason)
+	}
+	if want := "Matched rule 'Window': 100 days old, 100 days old"; reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+	if ok, _ := Match(r, Subject{CreatedAt: daysAgo(10)}, fixedNow); ok {
+		t.Error("10 days must fail the >30 row")
+	}
+	if ok, _ := Match(r, Subject{CreatedAt: daysAgo(400)}, fixedNow); ok {
+		t.Error("400 days must fail the <365 row")
+	}
+}
+
+func TestMatch_Criteria_TagContainsAndNotContains(t *testing.T) {
+	r := Rule{Name: "BDSM not Pee", Criteria: []Criterion{
+		{Field: FieldTag, Op: OpContains, Value: "BDSM"},
+		{Field: FieldTag, Op: OpNotContains, Value: "Pee"},
+	}}
+	ok, reason := Match(r, Subject{Tags: []string{"BDSM", "Rope"}}, fixedNow)
+	if !ok {
+		t.Fatalf("expected match, got false (reason=%q)", reason)
+	}
+	if want := "Matched rule 'BDSM not Pee': tags: BDSM, tags: not Pee"; reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+	if ok, _ := Match(r, Subject{Tags: []string{"BDSM", "Pee"}}, fixedNow); ok {
+		t.Error("Pee must fail notContains")
+	}
+	if ok, _ := Match(r, Subject{Tags: []string{"Rope"}}, fixedNow); ok {
+		t.Error("missing BDSM must fail contains")
+	}
+}
+
+func TestMatch_Criteria_NotContainsMatchesEmptyTags(t *testing.T) {
+	r := Rule{Name: "No Pee", Criteria: []Criterion{
+		{Field: FieldTag, Op: OpNotContains, Value: "Pee"},
+	}}
+	if ok, _ := Match(r, Subject{Tags: nil}, fixedNow); !ok {
+		t.Fatal("an item with no tags does not contain Pee")
+	}
+	if ok, _ := Match(r, Subject{Tags: []string{}}, fixedNow); !ok {
+		t.Fatal("an empty tag list does not contain Pee")
+	}
+}
+
+func TestMatch_Criteria_ContainsFailsClosedOnEmptyTags(t *testing.T) {
+	r := Rule{Name: "BDSM", Criteria: []Criterion{
+		{Field: FieldTag, Op: OpContains, Value: "BDSM"},
+	}}
+	if ok, _ := Match(r, Subject{Tags: nil}, fixedNow); ok {
+		t.Error("contains must fail-closed on untagged items")
+	}
+}
+
+func TestMatch_Criteria_SizeUncapturedFailsClosedForLT(t *testing.T) {
+	r := Rule{Name: "Small", Criteria: []Criterion{
+		{Field: FieldSize, Op: OpLT, Value: "1", Unit: UnitGB},
+	}}
+	if ok, _ := Match(r, Subject{SizeBytes: 0}, fixedNow); ok {
+		t.Error("uncaptured size 0 must not match size lt")
+	}
+	ok, _ := Match(r, Subject{SizeBytes: 1024}, fixedNow)
+	if !ok {
+		t.Fatal("1KB should match less than 1GB")
+	}
+}
+
+func TestMatch_Criteria_RatingUnratedFailsClosedForLT(t *testing.T) {
+	r := Rule{Name: "Junk", Criteria: []Criterion{
+		{Field: FieldRating, Op: OpLT, Value: "3", Unit: UnitStars},
+	}}
+	if ok, _ := Match(r, Subject{Rating: 0}, fixedNow); ok {
+		t.Error("unrated must not match rating lt")
+	}
+	if ok, _ := Match(r, Subject{Rating: 1}, fixedNow); !ok {
+		t.Fatal("1 star should match less than 3")
+	}
+	if ok, _ := Match(r, Subject{Rating: 3}, fixedNow); ok {
+		t.Error("eq 3 must not match lt 3")
+	}
+}
+
+func TestMatch_Criteria_QualityUnknownFailsClosed(t *testing.T) {
+	r := Rule{Name: "Low", Criteria: []Criterion{
+		{Field: FieldQuality, Op: OpEQ, Value: "low"},
+	}}
+	if ok, _ := Match(r, Subject{QualityTier: ""}, fixedNow); ok {
+		t.Error("empty tier must not match")
+	}
+	if ok, _ := Match(r, Subject{QualityTier: "unknown"}, fixedNow); ok {
+		t.Error("unknown tier must not match")
+	}
+	if ok, _ := Match(r, Subject{QualityTier: "low"}, fixedNow); !ok {
+		t.Fatal("low should match eq low")
+	}
+}
+
+func TestMatch_Criteria_TakesPrecedenceOverLegacyScalars(t *testing.T) {
+	// Criteria is a tags-only contains; leftover AgeDays: 10000 would miss.
+	r := Rule{
+		Name:    "Tags win",
+		AgeDays: 10000,
+		Criteria: []Criterion{
+			{Field: FieldTag, Op: OpContains, Value: "BDSM"},
+		},
+	}
+	ok, reason := Match(r, Subject{CreatedAt: daysAgo(1), Tags: []string{"BDSM"}}, fixedNow)
+	if !ok {
+		t.Fatalf("expected criteria path to ignore AgeDays, got false (reason=%q)", reason)
+	}
+	if want := "Matched rule 'Tags win': tags: BDSM"; reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+}
+
+func TestMatch_Criteria_EmptyListFallsBackToLegacy(t *testing.T) {
+	r := Rule{Name: "Stale", AgeDays: 100}
+	ok, reason := Match(r, Subject{CreatedAt: daysAgo(200)}, fixedNow)
+	if !ok {
+		t.Fatalf("empty criteria must use the scalar path, got false (reason=%q)", reason)
+	}
+	if want := "Matched rule 'Stale': 200 days old"; reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+}

@@ -171,10 +171,20 @@ func ScanLibrarySeries(ctx context.Context, libStore *library.Store, rules []pru
 
 // anyRuleNeedsEpisodeAggregation reports whether any rule configures a size
 // or tier condition — the only two a Series row cannot answer by itself.
+//
+// Claude 2026-08-14: also true when any Criteria row is field size or
+// quality. A criteria-only Series rule would otherwise skip episode
+// aggregation and fail-closed on uncaptured 0/"".
+// Review if: Series rows gain their own size/tier columns.
 func anyRuleNeedsEpisodeAggregation(rules []pruning.Rule) bool {
 	for _, r := range rules {
 		if r.SizeBytes != 0 || r.QualityTierFloor != "" {
 			return true
+		}
+		for _, c := range r.Criteria {
+			if c.Field == pruning.FieldSize || c.Field == pruning.FieldQuality {
+				return true
+			}
 		}
 	}
 	return false

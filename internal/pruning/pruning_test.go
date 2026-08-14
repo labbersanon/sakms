@@ -335,3 +335,55 @@ func TestUpdate_EmptyTagsClearsStoredTags(t *testing.T) {
 		t.Errorf("clearing tags must not disturb the other conditions, got %+v", after[0])
 	}
 }
+
+func TestCreate_CriteriaOnlyRuleIsValid(t *testing.T) {
+	s := newTestStore(t)
+	created, err := s.Create(context.Background(), Rule{
+		Name: "Window", Mode: string(mode.Movies), Enabled: true,
+		Criteria: []Criterion{
+			{Field: FieldAge, Op: OpGT, Value: "30", Unit: UnitDays},
+			{Field: FieldAge, Op: OpLT, Value: "365", Unit: UnitDays},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a criteria-only rule must be valid, got %v", err)
+	}
+	if created.AgeDays != 0 || created.MinRating != 0 {
+		t.Errorf("expected scalars unset, got %+v", created)
+	}
+	list, err := s.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || len(list[0].Criteria) != 2 {
+		t.Fatalf("List criteria = %+v, want 2 rows", list)
+	}
+	if list[0].Criteria[0] != (Criterion{Field: FieldAge, Op: OpGT, Value: "30", Unit: UnitDays}) {
+		t.Errorf("criteria[0] = %+v", list[0].Criteria[0])
+	}
+	if list[0].Criteria[1] != (Criterion{Field: FieldAge, Op: OpLT, Value: "365", Unit: UnitDays}) {
+		t.Errorf("criteria[1] = %+v", list[0].Criteria[1])
+	}
+}
+
+func TestCreate_RejectsInvalidCriterion(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.Create(context.Background(), Rule{
+		Name: "Bogus", Mode: string(mode.Movies), Enabled: true,
+		Criteria: []Criterion{{Field: "nope", Op: OpGT, Value: "1", Unit: UnitDays}},
+	})
+	if !errors.Is(err, ErrInvalidCriterion) {
+		t.Fatalf("expected ErrInvalidCriterion, got %v", err)
+	}
+}
+
+func TestCreate_RejectsTagCompareOp(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.Create(context.Background(), Rule{
+		Name: "Bogus", Mode: string(mode.Movies), Enabled: true,
+		Criteria: []Criterion{{Field: FieldTag, Op: OpGT, Value: "BDSM"}},
+	})
+	if !errors.Is(err, ErrInvalidCriterion) {
+		t.Fatalf("expected ErrInvalidCriterion, got %v", err)
+	}
+}

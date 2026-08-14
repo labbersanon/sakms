@@ -2,6 +2,7 @@ package pruning
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -57,12 +58,23 @@ var tierRank = map[string]int{"low": 0, "medium": 1, "high": 2, "lossless": 3}
 
 // Match reports whether subj satisfies EVERY configured condition on r
 // (AND-within-rule), and returns the human-readable Reason fragment for a
-// match. Reason fragments are emitted in a fixed order — age, size, tier,
-// tags, rating — which the rule form's own field order mirrors. A rule with
-// no configured conditions can never reach here in
-// practice (the store rejects it at Create/Update), but Match returns
-// false for one anyway rather than vacuously matching everything.
+// match.
+//
+// Claude 2026-08-14: when Criteria is non-empty, only those rows are
+// evaluated (AND, in row order). The five scalar fields are ignored so two
+// age rows or contains+notContains tags are expressible. Empty Criteria
+// keeps the pre-0014 five-field path so Go tests that construct
+// Rule{AgeDays: 365} stay green.
+// Review if: the scalar columns are dropped or the frontend stops sending
+// criteria.
 func Match(r Rule, subj Subject, now time.Time) (bool, string) {
+	if len(r.Criteria) > 0 {
+		return matchCriteria(r, subj, now)
+	}
+	return matchLegacy(r, subj, now)
+}
+
+func matchLegacy(r Rule, subj Subject, now time.Time) (bool, string) {
 	hasAge := r.AgeDays != 0
 	hasSize := r.SizeBytes != 0
 	hasTier := r.QualityTierFloor != ""
@@ -130,6 +142,152 @@ func Match(r Rule, subj Subject, now time.Time) (bool, string) {
 	}
 
 	return true, fmt.Sprintf("Matched rule '%s': %s", r.Name, strings.Join(parts, ", "))
+}
+
+// matchCriteria ANDs every Criteria row in order. One miss fails the rule.
+// Fragments follow row order (the operator-authored order), not the legacy
+// age/size/tier/tags/rating fixed order.
+func matchCriteria(r Rule, subj Subject, now time.Time) (bool, string) {
+	var parts []string
+	for _, c := range r.Criteria {
+		ok, fragment := matchCriterion(c, subj, now)
+		if !ok {
+			return false, ""
+		}
+		parts = append(parts, fragment)
+	}
+	if len(parts) == 0 {
+		return false, ""
+	}
+	return true, fmt.Sprintf("Matched rule '%s': %s", r.Name, strings.Join(parts, ", "))
+}
+
+func matchCriterion(c Criterion, subj Subject, now time.Time) (bool, string) {
+	switch c.Field {
+	case FieldAge:
+		ageDays, ok := subjectAgeDays(subj.CreatedAt, now)
+		if !ok {
+			return false, ""
+		}
+		threshold, err := parseNonNegInt(c.Value)
+		if err != nil || !compareInt(ageDays, threshold, c.Op) {
+			return false, ""
+		}
+		return true, fmt.Sprintf("%d days old", ageDays)
+	case FieldSize:
+		// Uncaptured size (0) never matches any size op, including lt —
+		// otherwise every not-yet-backfilled row would match "less than 1 GB".
+		if subj.SizeBytes == 0 {
+			return false, ""
+		}
+		threshold, ok := criterionSizeBytes(c.Value, c.Unit)
+		if !ok || !compareInt64(subj.SizeBytes, threshold, c.Op) {
+			return false, ""
+		}
+		return true, humanBytes(subj.SizeBytes)
+	case FieldQuality:
+		subjRank, ok := tierRank[strings.ToLower(subj.QualityTier)]
+		if !ok {
+			return false, ""
+		}
+		wantRank, ok := tierRank[strings.ToLower(strings.TrimSpace(c.Value))]
+		if !ok || !compareInt(subjRank, wantRank, c.Op) {
+			return false, ""
+		}
+		return true, fmt.Sprintf("tier: %s", subj.QualityTier)
+	case FieldTag:
+		hit := hasExactTag(subj.Tags, c.Value)
+		switch c.Op {
+		case OpContains:
+			if !hit {
+				return false, ""
+			}
+			return true, fmt.Sprintf("tags: %s", c.Value)
+		case OpNotContains:
+			if hit {
+				return false, ""
+			}
+			return true, fmt.Sprintf("tags: not %s", c.Value)
+		default:
+			return false, ""
+		}
+	case FieldRating:
+		// Unrated (0) never matches any rating op, including lt.
+		if subj.Rating <= 0 {
+			return false, ""
+		}
+		threshold, err := parseNonNegInt(c.Value)
+		if err != nil || !compareInt(subj.Rating, threshold, c.Op) {
+			return false, ""
+		}
+		return true, fmt.Sprintf("rated %d/5", subj.Rating)
+	default:
+		return false, ""
+	}
+}
+
+func hasExactTag(itemTags []string, want string) bool {
+	return len(matchedTags([]string{want}, itemTags)) > 0
+}
+
+func compareInt(actual, threshold int, op string) bool {
+	switch op {
+	case OpGT:
+		return actual > threshold
+	case OpLT:
+		return actual < threshold
+	case OpEQ:
+		return actual == threshold
+	default:
+		return false
+	}
+}
+
+func compareInt64(actual, threshold int64, op string) bool {
+	switch op {
+	case OpGT:
+		return actual > threshold
+	case OpLT:
+		return actual < threshold
+	case OpEQ:
+		return actual == threshold
+	default:
+		return false
+	}
+}
+
+func subjectAgeDays(createdAt string, now time.Time) (int, bool) {
+	if createdAt == "" {
+		return 0, false
+	}
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return 0, false
+	}
+	return int(now.Sub(t) / (24 * time.Hour)), true
+}
+
+// criterionSizeBytes converts a free-fill size value + unit into bytes
+// (1024-based, matching humanBytes / GB_BYTES). Used by Validate and Match.
+func criterionSizeBytes(value, unit string) (int64, bool) {
+	n, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || n <= 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, false
+	}
+	var mul float64
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case UnitKB:
+		mul = 1024
+	case UnitMB:
+		mul = 1024 * 1024
+	case UnitGB:
+		mul = 1024 * 1024 * 1024
+	case UnitTB:
+		mul = 1024 * 1024 * 1024 * 1024
+	default:
+		return 0, false
+	}
+	return int64(math.Round(n * mul)), true
 }
 
 // MatchAny evaluates rules against subj with OR semantics and returns the

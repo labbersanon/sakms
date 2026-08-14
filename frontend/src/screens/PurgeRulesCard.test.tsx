@@ -1,23 +1,18 @@
 // PurgeRulesCard tests — the Clean-up screen's collapsible Rules card.
 //
 // Claude 2026-08-11: MOVED here from settings/PruningRules.test.tsx when the
-// rules builder relocated off the (now deleted) Settings "Pruning" tab. Every
-// block below except the retired scan-interval one is carried forward, adapted
-// for the `mode` prop and the removed Mode <select>, and extended for the new
-// tags condition.
-// Reason: the card is the only rules UI now, so its coverage has to move with
-// it rather than be rewritten from scratch.
+// rules builder relocated off the (now deleted) Settings "Pruning" tab.
+// Claude 2026-08-14: checkbox conditions replaced by AND-criteria rows
+// (field / operator / value / unit). POST/PUT bodies send `criteria` and
+// zero the five scalar fields. Filling the empty row appends another;
+// an in-progress row does not.
 // Review if: the rules builder ever moves back into Settings.
-//
-// Conventions mirror RssFeedAdmin.test.tsx/SliderAdmin.test.tsx
-// (stubFetch/jsonResponse/Call harness re-declared per test file, not shared).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { PurgeRulesCard } from "./PurgeRulesCard";
-import type { PruningRule } from "../api/pruningRules";
+import type { PruningCriterion, PruningRule } from "../api/pruningRules";
 import { jsonResponse, noContent } from "../testing/http";
-
 
 const errorResponse = (status: number, msg: string): Response =>
   new Response(msg, { status });
@@ -27,6 +22,13 @@ type Override = (
   url: string,
   init?: RequestInit,
 ) => Response | undefined | Promise<Response | undefined>;
+
+const ageRow = (value: string): PruningCriterion => ({
+  field: "age",
+  op: "gt",
+  value,
+  unit: "days",
+});
 
 const rule = (over: Partial<PruningRule> = {}): PruningRule => ({
   id: 1,
@@ -41,9 +43,45 @@ const rule = (over: Partial<PruningRule> = {}): PruningRule => ({
   ...over,
 });
 
-// isRuleList matches exactly GET/POST /api/pruning-rules — never the
-// per-id PUT/DELETE (/api/pruning-rules/{id}) nor /preview.
+const upsertBody = (over: Record<string, unknown>) => ({
+  name: "",
+  mode: "movies",
+  ageDays: 0,
+  sizeBytes: 0,
+  qualityTierFloor: "",
+  tags: [],
+  minRating: 0,
+  criteria: [],
+  enabled: true,
+  ...over,
+});
+
 const isRuleList = (url: string) => url.endsWith("/api/pruning-rules");
+
+const fillCriterion = (
+  n: number,
+  field: string,
+  value: string,
+  op?: string,
+  unit?: string,
+) => {
+  fireEvent.change(screen.getByLabelText(`Criterion ${n} field`), {
+    target: { value: field },
+  });
+  if (op) {
+    fireEvent.change(screen.getByLabelText(`Criterion ${n} operator`), {
+      target: { value: op },
+    });
+  }
+  fireEvent.input(screen.getByLabelText(`Criterion ${n} value`), {
+    target: { value },
+  });
+  if (unit) {
+    fireEvent.change(screen.getByLabelText(`Criterion ${n} unit`), {
+      target: { value: unit },
+    });
+  }
+};
 
 const stubFetch = (override?: Override) => {
   const calls: Call[] = [];
@@ -60,8 +98,6 @@ const stubFetch = (override?: Override) => {
       if (r) return r;
     }
     if (method === "GET" && isRuleList(url)) return jsonResponse([]);
-    // No purge-scan-interval branch: this tab no longer fetches it (moved to
-    // Settings -> Organize), and the absence test below asserts exactly that.
     if (method === "POST" && url.endsWith("/api/pruning-rules/preview"))
       return jsonResponse({ matchCount: 0 });
     return noContent();
@@ -87,11 +123,13 @@ describe("PurgeRulesCard — list", () => {
 });
 
 describe("PurgeRulesCard — create", () => {
-  it("creates a rule with a single age condition", async () => {
+  it("creates a rule with a single age criterion", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && isRuleList(url))
-        return jsonResponse(rule({ id: 5, name: "Stale movies", ageDays: 400 }));
+        return jsonResponse(
+          rule({ id: 5, name: "Stale movies", criteria: [ageRow("400")] }),
+        );
       return undefined;
     });
     render(() => <PurgeRulesCard mode="movies" />);
@@ -100,10 +138,7 @@ describe("PurgeRulesCard — create", () => {
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "Stale movies" },
     });
-    fireEvent.click(screen.getByLabelText("Enable age condition"));
-    fireEvent.input(screen.getByLabelText("Age in days"), {
-      target: { value: "400" },
-    });
+    fillCriterion(1, "age", "400");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -112,23 +147,19 @@ describe("PurgeRulesCard — create", () => {
       ),
     );
     const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
-    expect(post.body).toEqual({
-      name: "Stale movies",
-      mode: "movies",
-      ageDays: 400,
-      sizeBytes: 0,
-      qualityTierFloor: "",
-      tags: [],
-      minRating: 0,
-      enabled: true,
-    });
+    expect(post.body).toEqual(
+      upsertBody({
+        name: "Stale movies",
+        criteria: [ageRow("400")],
+      }),
+    );
   });
 
-  it("creates a rule with a minimum rating condition", async () => {
+  it("creates a rule with a rating-less-than criterion", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && isRuleList(url))
-        return jsonResponse(rule({ id: 11, name: "One-star junk", minRating: 3 }));
+        return jsonResponse(rule({ id: 11, name: "One-star junk" }));
       return undefined;
     });
     render(() => <PurgeRulesCard mode="movies" />);
@@ -137,10 +168,7 @@ describe("PurgeRulesCard — create", () => {
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "One-star junk" },
     });
-    fireEvent.click(screen.getByLabelText("Enable minimum rating condition"));
-    fireEvent.change(screen.getByLabelText("Minimum rating"), {
-      target: { value: "3" },
-    });
+    fillCriterion(1, "rating", "3", "lt");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -149,25 +177,19 @@ describe("PurgeRulesCard — create", () => {
       ),
     );
     const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
-    expect(post.body).toEqual({
-      name: "One-star junk",
-      mode: "movies",
-      ageDays: 0,
-      sizeBytes: 0,
-      qualityTierFloor: "",
-      tags: [],
-      minRating: 3,
-      enabled: true,
-    });
+    expect(post.body).toEqual(
+      upsertBody({
+        name: "One-star junk",
+        criteria: [{ field: "rating", op: "lt", value: "3", unit: "stars" }],
+      }),
+    );
   });
 
-  it("converts the size input from GB to bytes in the POST body", async () => {
+  it("sends size as a free-fill value plus GB unit, not precomputed bytes", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && isRuleList(url))
-        return jsonResponse(
-          rule({ id: 6, name: "Big movies", sizeBytes: 2147483648 }),
-        );
+        return jsonResponse(rule({ id: 6, name: "Big movies" }));
       return undefined;
     });
     render(() => <PurgeRulesCard mode="movies" />);
@@ -176,10 +198,7 @@ describe("PurgeRulesCard — create", () => {
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "Big movies" },
     });
-    fireEvent.click(screen.getByLabelText("Enable size condition"));
-    fireEvent.input(screen.getByLabelText("Size in GB"), {
-      target: { value: "2" },
-    });
+    fillCriterion(1, "size", "2");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -188,28 +207,81 @@ describe("PurgeRulesCard — create", () => {
       ),
     );
     const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
-    // 2 GiB, 1024-based — matches internal/pruning's humanBytes convention.
-    expect(post.body).toEqual({
-      name: "Big movies",
-      mode: "movies",
-      ageDays: 0,
-      sizeBytes: 2147483648,
-      qualityTierFloor: "",
-      tags: [],
-      minRating: 0,
-      enabled: true,
+    expect(post.body).toEqual(
+      upsertBody({
+        name: "Big movies",
+        criteria: [{ field: "size", op: "gt", value: "2", unit: "gb" }],
+      }),
+    );
+  });
+
+  it("ANDs two complete rows on the same rule", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && isRuleList(url))
+        return jsonResponse(rule({ id: 12, name: "Old and tagged" }));
+      return undefined;
     });
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "Old and tagged" },
+    });
+    fillCriterion(1, "age", "30");
+    fillCriterion(2, "tag", "BDSM");
+    fireEvent.click(screen.getByText("Create rule"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+        true,
+      ),
+    );
+    const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
+    expect(post.body).toEqual(
+      upsertBody({
+        name: "Old and tagged",
+        criteria: [
+          ageRow("30"),
+          { field: "tag", op: "contains", value: "BDSM" },
+        ],
+      }),
+    );
+  });
+});
+
+describe("PurgeRulesCard — dynamic rows", () => {
+  it("starts with one empty row and appends another only after it is complete", async () => {
+    stubFetch();
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+
+    expect(screen.getByLabelText("Criterion 1 field")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Criterion 2 field")).toBeNull();
+
+    fillCriterion(1, "age", "10");
+    expect(screen.getByLabelText("Criterion 2 field")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Criterion 3 field")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Criterion 2 field"), {
+      target: { value: "tag" },
+    });
+    expect(screen.queryByLabelText("Criterion 3 field")).toBeNull();
   });
 });
 
 describe("PurgeRulesCard — edit", () => {
-  it("edits an existing rule", async () => {
+  it("edits an existing rule and keeps its criteria", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "GET" && isRuleList(url))
-        return jsonResponse([rule({ id: 7, name: "Old", ageDays: 200 })]);
+        return jsonResponse([
+          rule({ id: 7, name: "Old", criteria: [ageRow("200")] }),
+        ]);
       if (method === "PUT" && url.endsWith("/api/pruning-rules/7"))
-        return jsonResponse(rule({ id: 7, name: "Renamed", ageDays: 200 }));
+        return jsonResponse(
+          rule({ id: 7, name: "Renamed", criteria: [ageRow("200")] }),
+        );
       return undefined;
     });
     render(() => <PurgeRulesCard mode="movies" />);
@@ -232,16 +304,12 @@ describe("PurgeRulesCard — edit", () => {
     const put = calls.find(
       (c) => c.method === "PUT" && c.url.endsWith("/api/pruning-rules/7"),
     )!;
-    expect(put.body).toEqual({
-      name: "Renamed",
-      mode: "movies",
-      ageDays: 200,
-      sizeBytes: 0,
-      qualityTierFloor: "",
-      tags: [],
-      minRating: 0,
-      enabled: true,
-    });
+    expect(put.body).toEqual(
+      upsertBody({
+        name: "Renamed",
+        criteria: [ageRow("200")],
+      }),
+    );
   });
 });
 
@@ -250,7 +318,9 @@ describe("PurgeRulesCard — delete", () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "GET" && isRuleList(url))
-        return jsonResponse([rule({ id: 8, name: "Doomed", ageDays: 30 })]);
+        return jsonResponse([
+          rule({ id: 8, name: "Doomed", criteria: [ageRow("30")] }),
+        ]);
       return undefined;
     });
     render(() => <PurgeRulesCard mode="movies" />);
@@ -267,10 +337,8 @@ describe("PurgeRulesCard — delete", () => {
   });
 });
 
-// --- AC1's client half ------------------------------------------------------
-
 describe("PurgeRulesCard — client-side validation (AC1)", () => {
-  it("blocks submit when no condition is enabled", async () => {
+  it("blocks submit when no criterion is complete", async () => {
     const calls = stubFetch();
     render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
@@ -289,10 +357,7 @@ describe("PurgeRulesCard — client-side validation (AC1)", () => {
     const calls = stubFetch();
     render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
-    fireEvent.click(screen.getByLabelText("Enable age condition"));
-    fireEvent.input(screen.getByLabelText("Age in days"), {
-      target: { value: "10" },
-    });
+    fillCriterion(1, "age", "10");
     fireEvent.click(screen.getByText("Create rule"));
 
     await screen.findByText("name is required");
@@ -303,12 +368,17 @@ describe("PurgeRulesCard — client-side validation (AC1)", () => {
 });
 
 describe("PurgeRulesCard — enabled toggle", () => {
-  it("toggling enabled fires an immediate update", async () => {
+  it("toggling enabled fires an immediate update that carries criteria", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "GET" && isRuleList(url))
         return jsonResponse([
-          rule({ id: 9, name: "Toggle me", ageDays: 100, enabled: true }),
+          rule({
+            id: 9,
+            name: "Toggle me",
+            criteria: [ageRow("100")],
+            enabled: true,
+          }),
         ]);
       return undefined;
     });
@@ -329,16 +399,13 @@ describe("PurgeRulesCard — enabled toggle", () => {
     const put = calls.find(
       (c) => c.method === "PUT" && c.url.endsWith("/api/pruning-rules/9"),
     )!;
-    expect(put.body).toEqual({
-      name: "Toggle me",
-      mode: "movies",
-      ageDays: 100,
-      sizeBytes: 0,
-      qualityTierFloor: "",
-      tags: [],
-      minRating: 0,
-      enabled: false,
-    });
+    expect(put.body).toEqual(
+      upsertBody({
+        name: "Toggle me",
+        criteria: [ageRow("100")],
+        enabled: false,
+      }),
+    );
   });
 });
 
@@ -347,7 +414,9 @@ describe("PurgeRulesCard — row mutation error", () => {
     stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "GET" && isRuleList(url))
-        return jsonResponse([rule({ id: 10, name: "Fragile", ageDays: 50 })]);
+        return jsonResponse([
+          rule({ id: 10, name: "Fragile", criteria: [ageRow("50")] }),
+        ]);
       if (method === "PUT" && url.endsWith("/api/pruning-rules/10"))
         return errorResponse(500, "database is locked");
       return undefined;
@@ -357,32 +426,27 @@ describe("PurgeRulesCard — row mutation error", () => {
     fireEvent.click(toggle);
 
     expect(await screen.findByText("database is locked")).toBeInTheDocument();
-    // The row survives the failed mutation — the list is never cleared.
     expect(screen.getByText(/Fragile/)).toBeInTheDocument();
   });
 });
 
-// --- §13.1 soft preview banner ----------------------------------------------
-
 describe("PurgeRulesCard — soft preview banner (§13.1)", () => {
-  it("shows a debounced match-count banner once a condition is configured, and never blocks a large-count save", async () => {
+  it("shows a debounced match-count banner once a criterion is complete, and never blocks a large-count save", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && url.endsWith("/api/pruning-rules/preview"))
         return jsonResponse({ matchCount: 142 });
       if (method === "POST" && isRuleList(url))
-        return jsonResponse(rule({ id: 11, name: "Stale", ageDays: 400 }));
+        return jsonResponse(
+          rule({ id: 11, name: "Stale", criteria: [ageRow("400")] }),
+        );
       return undefined;
     });
     render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
-    fireEvent.click(screen.getByLabelText("Enable age condition"));
-    fireEvent.input(screen.getByLabelText("Age in days"), {
-      target: { value: "400" },
-    });
+    fillCriterion(1, "age", "400");
 
-    // Nothing fires until the debounce elapses.
     expect(
       calls.some((c) => c.url.endsWith("/api/pruning-rules/preview")),
     ).toBe(false);
@@ -395,7 +459,6 @@ describe("PurgeRulesCard — soft preview banner (§13.1)", () => {
     );
     vi.useRealTimers();
 
-    // A high count is a soft warning, never a hard block — Save still works.
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "Stale" },
     });
@@ -408,8 +471,6 @@ describe("PurgeRulesCard — soft preview banner (§13.1)", () => {
   });
 });
 
-// --- The card shell, mode scoping, and the tags condition (2026-08-11) ------
-
 describe("PurgeRulesCard — the card shell", () => {
   it("is a collapsed <details> with a Rules summary", async () => {
     stubFetch();
@@ -418,7 +479,6 @@ describe("PurgeRulesCard — the card shell", () => {
 
     const details = container.querySelector("details");
     expect(details).not.toBeNull();
-    // Collapsed by default — same as OrganizeChrome's Activity log panel.
     expect((details as HTMLDetailsElement).open).toBe(false);
     expect(details!.querySelector("summary")!.textContent).toBe("Rules");
   });
@@ -430,9 +490,24 @@ describe("PurgeRulesCard — mode scoping", () => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "GET" && isRuleList(url))
         return jsonResponse([
-          rule({ id: 20, name: "Movies rule", mode: "movies", ageDays: 10 }),
-          rule({ id: 21, name: "Series rule", mode: "series", ageDays: 10 }),
-          rule({ id: 22, name: "Adult rule", mode: "adult", ageDays: 10 }),
+          rule({
+            id: 20,
+            name: "Movies rule",
+            mode: "movies",
+            criteria: [ageRow("10")],
+          }),
+          rule({
+            id: 21,
+            name: "Series rule",
+            mode: "series",
+            criteria: [ageRow("10")],
+          }),
+          rule({
+            id: 22,
+            name: "Adult rule",
+            mode: "adult",
+            criteria: [ageRow("10")],
+          }),
         ]);
       return undefined;
     });
@@ -453,17 +528,12 @@ describe("PurgeRulesCard — mode scoping", () => {
     render(() => <PurgeRulesCard mode="series" />);
     fireEvent.click(await screen.findByText("+ New rule"));
 
-    // The dropdown is gone: the card is mounted per-mode, so a rule can no
-    // longer be created into a mode whose list is not on screen.
     expect(screen.queryByLabelText("Rule mode")).toBeNull();
 
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "S" },
     });
-    fireEvent.click(screen.getByLabelText("Enable age condition"));
-    fireEvent.input(screen.getByLabelText("Age in days"), {
-      target: { value: "5" },
-    });
+    fillCriterion(1, "age", "5");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -477,7 +547,7 @@ describe("PurgeRulesCard — mode scoping", () => {
 });
 
 describe("PurgeRulesCard — the tags condition", () => {
-  it("adds and removes tags one at a time, firing NO request until Save", async () => {
+  it("sends a tag-contains criterion, firing NO request until Save", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && isRuleList(url))
@@ -486,30 +556,11 @@ describe("PurgeRulesCard — the tags condition", () => {
     });
     render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
-    fireEvent.click(screen.getByLabelText("Enable tags condition"));
+    fillCriterion(1, "tag", "BDSM");
 
-    const addTag = (value: string) => {
-      fireEvent.input(screen.getByLabelText("New tag"), { target: { value } });
-      fireEvent.click(screen.getByText("Add"));
-    };
-    addTag("BDSM");
-    addTag("Rope");
-    // A duplicate is a no-op, not an error — and case-insensitively so, matching
-    // pruning.matchedTags' own comparison.
-    addTag("bdsm");
-
-    expect(await screen.findByText("BDSM")).toBeInTheDocument();
-    expect(screen.getByText("Rope")).toBeInTheDocument();
-    expect(screen.queryByText("bdsm")).toBeNull();
-
-    // Add is CLIENT-SIDE ONLY: unlike the retired allowlist's Add, nothing is
-    // persisted until the rule itself is saved.
     expect(
       calls.some((c) => c.method === "POST" && isRuleList(c.url)),
     ).toBe(false);
-
-    fireEvent.click(screen.getByLabelText("Remove Rope"));
-    expect(screen.queryByText("Rope")).toBeNull();
 
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "Tagged" },
@@ -522,43 +573,50 @@ describe("PurgeRulesCard — the tags condition", () => {
       ),
     );
     const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
-    expect(post.body).toEqual({
-      name: "Tagged",
-      mode: "movies",
-      ageDays: 0,
-      sizeBytes: 0,
-      qualityTierFloor: "",
-      tags: ["BDSM"],
-      minRating: 0,
-      enabled: true,
-    });
+    expect(post.body).toEqual(
+      upsertBody({
+        name: "Tagged",
+        criteria: [{ field: "tag", op: "contains", value: "BDSM" }],
+      }),
+    );
   });
 
-  // The tag chip input is the retired Allowlist's AC6 no-bulk invariant in its
-  // new home: one × per chip, one Add per input, no clear-all/remove-all.
-  it("offers no bulk affordance — one × per chip, one Add, no clear-all", async () => {
-    stubFetch();
+  it("ANDs two tag rows (contains and does-not-contain)", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && isRuleList(url))
+        return jsonResponse(rule({ id: 31, name: "BDSM not Pee" }));
+      return undefined;
+    });
     render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
-    fireEvent.click(screen.getByLabelText("Enable tags condition"));
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "BDSM not Pee" },
+    });
+    fillCriterion(1, "tag", "BDSM");
+    fillCriterion(2, "tag", "Pee", "notContains");
+    fireEvent.click(screen.getByText("Create rule"));
 
-    for (const value of ["BDSM", "Rope"]) {
-      fireEvent.input(screen.getByLabelText("New tag"), { target: { value } });
-      fireEvent.click(screen.getByText("Add"));
-    }
-    await screen.findByText("BDSM");
-
-    expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
-    expect(screen.getAllByLabelText("New tag")).toHaveLength(1);
-    expect(screen.getAllByText("Add")).toHaveLength(1);
-    for (const bulk of [/clear all/i, /remove all/i, /select all/i]) {
-      expect(screen.queryByText(bulk)).toBeNull();
-    }
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+        true,
+      ),
+    );
+    const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
+    expect(post.body).toEqual(
+      upsertBody({
+        name: "BDSM not Pee",
+        criteria: [
+          { field: "tag", op: "contains", value: "BDSM" },
+          { field: "tag", op: "notContains", value: "Pee" },
+        ],
+      }),
+    );
   });
 });
 
 describe("PurgeRulesCard — client-side validation, tags-only", () => {
-  it("accepts a rule whose ONLY condition is tags (the four-way AC1 rule)", async () => {
+  it("accepts a rule whose ONLY criterion is a tag", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && isRuleList(url))
@@ -570,11 +628,7 @@ describe("PurgeRulesCard — client-side validation, tags-only", () => {
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "Legacy allowlist" },
     });
-    fireEvent.click(screen.getByLabelText("Enable tags condition"));
-    fireEvent.input(screen.getByLabelText("New tag"), {
-      target: { value: "Trailer" },
-    });
-    fireEvent.click(screen.getByText("Add"));
+    fillCriterion(1, "tag", "Trailer");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -586,11 +640,8 @@ describe("PurgeRulesCard — client-side validation, tags-only", () => {
   });
 });
 
-describe("PurgeRulesCard — the enabled toggle preserves tags", () => {
-  // The single most likely silent data-loss bug in this feature: toggleEnabled
-  // builds a WHOLE-RULE upsert body, so omitting tags would clear a rule's tags
-  // every time an operator flipped its enabled checkbox.
-  it("carries tags through an enable/disable toggle", async () => {
+describe("PurgeRulesCard — the enabled toggle preserves criteria", () => {
+  it("carries criteria through an enable/disable toggle", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "GET" && isRuleList(url))
@@ -598,7 +649,10 @@ describe("PurgeRulesCard — the enabled toggle preserves tags", () => {
           rule({
             id: 32,
             name: "Tagged toggle",
-            tags: ["BDSM", "Rope"],
+            criteria: [
+              { field: "tag", op: "contains", value: "BDSM" },
+              { field: "tag", op: "contains", value: "Rope" },
+            ],
             enabled: true,
           }),
         ]);
@@ -617,15 +671,15 @@ describe("PurgeRulesCard — the enabled toggle preserves tags", () => {
     const put = calls.find(
       (c) => c.method === "PUT" && c.url.endsWith("/api/pruning-rules/32"),
     )!;
-    expect(put.body).toEqual({
-      name: "Tagged toggle",
-      mode: "movies",
-      ageDays: 0,
-      sizeBytes: 0,
-      qualityTierFloor: "",
-      tags: ["BDSM", "Rope"],
-      minRating: 0,
-      enabled: false,
-    });
+    expect(put.body).toEqual(
+      upsertBody({
+        name: "Tagged toggle",
+        criteria: [
+          { field: "tag", op: "contains", value: "BDSM" },
+          { field: "tag", op: "contains", value: "Rope" },
+        ],
+        enabled: false,
+      }),
+    );
   });
 });

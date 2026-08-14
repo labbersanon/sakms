@@ -39,10 +39,22 @@ func toDTOPruningRule(r pruning.Rule) apidto.PruningRule {
 		QualityTierFloor: r.QualityTierFloor,
 		Tags:             r.Tags,
 		MinRating:        r.MinRating,
+		Criteria:         toDTOCriteria(r.Criteria),
 		Enabled:          r.Enabled,
 		CreatedAt:        r.CreatedAt,
 		UpdatedAt:        r.UpdatedAt,
 	}
+}
+
+func toDTOCriteria(cc []pruning.Criterion) []apidto.PruningCriterion {
+	if len(cc) == 0 {
+		return nil
+	}
+	out := make([]apidto.PruningCriterion, len(cc))
+	for i, c := range cc {
+		out[i] = apidto.PruningCriterion{Field: c.Field, Op: c.Op, Value: c.Value, Unit: c.Unit}
+	}
+	return out
 }
 
 func toDTOPruningRules(rules []pruning.Rule) []apidto.PruningRule {
@@ -65,8 +77,20 @@ func ruleFromUpsert(id int64, req apidto.PruningRuleUpsertRequest) pruning.Rule 
 		QualityTierFloor: req.QualityTierFloor,
 		Tags:             req.Tags,
 		MinRating:        req.MinRating,
+		Criteria:         criteriaFromDTO(req.Criteria),
 		Enabled:          req.Enabled,
 	}
+}
+
+func criteriaFromDTO(cc []apidto.PruningCriterion) []pruning.Criterion {
+	if len(cc) == 0 {
+		return nil
+	}
+	out := make([]pruning.Criterion, len(cc))
+	for i, c := range cc {
+		out[i] = pruning.Criterion{Field: c.Field, Op: c.Op, Value: c.Value, Unit: c.Unit}
+	}
+	return out
 }
 
 // pruningRuleStoreError maps a pruning.Store validation/lookup error onto an
@@ -85,7 +109,8 @@ func pruningRuleStoreError(w http.ResponseWriter, err error) {
 		errors.Is(err, pruning.ErrInvalidTierFloor),
 		errors.Is(err, pruning.ErrNegativeThreshold),
 		errors.Is(err, pruning.ErrBlankTag),
-		errors.Is(err, pruning.ErrInvalidMinRating):
+		errors.Is(err, pruning.ErrInvalidMinRating),
+		errors.Is(err, pruning.ErrInvalidCriterion):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, err.Error(), http.StatusInternalServerError)

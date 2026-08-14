@@ -564,3 +564,56 @@ func TestPruningRules_MinRatingSurvivesTheCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("PUT left minRating %d, want 0 (cleared)", updated.MinRating)
 	}
 }
+
+func TestPruningRules_CriteriaSurviveTheCRUDRoundTrip(t *testing.T) {
+	env := newPruningEnv(t)
+
+	req := apidto.PruningRuleUpsertRequest{
+		Name: "Window", Mode: string(mode.Movies), Enabled: true,
+		Criteria: []apidto.PruningCriterion{
+			{Field: "age", Op: "gt", Value: "30", Unit: "days"},
+			{Field: "tag", Op: "contains", Value: "BDSM"},
+		},
+	}
+	status, body := env.do(t, http.MethodPost, "/api/pruning-rules", req)
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("POST = %d (%s), want 200/201", status, body)
+	}
+	var created apidto.PruningRule
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decoding create: %v", err)
+	}
+	if len(created.Criteria) != 2 || created.Criteria[0].Field != "age" || created.Criteria[1].Value != "BDSM" {
+		t.Fatalf("POST returned criteria %+v", created.Criteria)
+	}
+
+	path := "/api/pruning-rules/" + strconv.FormatInt(created.ID, 10)
+	cleared := apidto.PruningRuleUpsertRequest{
+		Name: "Window", Mode: string(mode.Movies), AgeDays: 30, Enabled: true,
+		Criteria: []apidto.PruningCriterion{
+			{Field: "age", Op: "gt", Value: "30", Unit: "days"},
+		},
+	}
+	status, body = env.do(t, http.MethodPut, path, cleared)
+	if status != http.StatusOK {
+		t.Fatalf("PUT = %d (%s), want 200", status, body)
+	}
+	var updated apidto.PruningRule
+	if err := json.Unmarshal(body, &updated); err != nil {
+		t.Fatalf("decoding update: %v", err)
+	}
+	if len(updated.Criteria) != 1 || updated.Criteria[0].Value != "30" {
+		t.Fatalf("PUT left criteria %+v, want one age row", updated.Criteria)
+	}
+}
+
+func TestPruningRules_RejectsInvalidCriterion_400(t *testing.T) {
+	env := newPruningEnv(t)
+	status, body := env.do(t, http.MethodPost, "/api/pruning-rules", apidto.PruningRuleUpsertRequest{
+		Name: "Bogus", Mode: string(mode.Movies), Enabled: true,
+		Criteria: []apidto.PruningCriterion{{Field: "nope", Op: "gt", Value: "1", Unit: "days"}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("POST invalid criterion = %d (%s), want 400", status, body)
+	}
+}

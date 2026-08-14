@@ -7772,4 +7772,27 @@ Clean-up rules gained a fifth AND condition, `minRating` (1–5): match
 when the title is rated **below** that floor. Unrated titles never
 match (fail-closed, same as tags).
 
+## 2026-08-14 (later, same day) — Clean-up rules are AND'd criteria rows
+
+Each Clean-up rule is now an ordered list of criteria rows (field,
+operator, value, unit) AND'd together. Rules stay OR'd across the list.
+The Rules form is a dynamic row builder: one empty trailing row; filling
+it complete appends another. Fields: age, size, quality, tag, rating.
+Operators: greater/less/equal for the numeric fields; contains / does
+not contain for tags (exact, case-insensitive).
+
+Stored as `pruning_rules.criteria` JSON (migration 0014). The five
+scalar columns stay; Match uses criteria when the list is non-empty and
+falls back to the scalars otherwise. New saves send criteria and zero
+the old fields.
+
+**Tag backfill is AND, not OR.** A pre-0014 rule with tags
+`[BDSM, Pee]` becomes two `contains` rows, so an item must have both.
+Split into separate rules to keep OR. Quality floor `lossless` cannot
+be expressed with only gt/lt/eq and is left on the legacy path.
+Age/size backfill use strict `gt` (old matching was `>=`).
+Unrated titles and uncaptured sizes still fail-closed, including for
+`less than`.
+
+
 

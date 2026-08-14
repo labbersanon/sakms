@@ -10,12 +10,18 @@
 
 import { api } from "./client";
 import type {
+  PruningCriterion,
   PruningRule,
   PruningRulePreviewResponse,
   PruningRuleUpsertRequest,
 } from "@dto";
 
-export type { PruningRule, PruningRulePreviewResponse, PruningRuleUpsertRequest };
+export type {
+  PruningCriterion,
+  PruningRule,
+  PruningRulePreviewResponse,
+  PruningRuleUpsertRequest,
+};
 
 // PRUNING_TIER_FLOORS mirrors internal/pruning's tierRank ladder (low ->
 // lossless) — the only four values the backend's ErrInvalidTierFloor accepts

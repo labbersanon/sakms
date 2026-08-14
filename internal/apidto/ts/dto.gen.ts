@@ -3017,6 +3017,16 @@ export interface SectionLockSectionsRequest {
   sections: string[];
 }
 /**
+ * PruningCriterion is one AND'd row on a pruning rule: field + operator +
+ * free-fill value, plus unit when the field needs one (age/size/rating).
+ */
+export interface PruningCriterion {
+  field: string;
+  op: string;
+  value: string;
+  unit?: string;
+}
+/**
  * PruningRule is the full read shape for GET /api/pruning-rules and its
  * per-id counterpart — one operator-authored rule for the Purge workflow.
  */
@@ -3029,6 +3039,7 @@ export interface PruningRule {
   qualityTierFloor?: string;
   tags?: string[];
   minRating?: number /* int */;
+  criteria?: PruningCriterion[];
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -3038,7 +3049,8 @@ export interface PruningRule {
  * and PUT /api/pruning-rules/{id} (update) — every editable field, mirroring
  * SliderUpsertRequest's plain-non-pointer shape: nothing here is a secret, so
  * a save always sends the full rule rather than a partial "preserve
- * unchanged" update.
+ * unchanged" update. The frontend always sends Criteria and zeros the five
+ * scalars; empty Criteria still accepts the scalars (legacy / Go tests).
  */
 export interface PruningRuleUpsertRequest {
   name: string;
@@ -3048,6 +3060,7 @@ export interface PruningRuleUpsertRequest {
   qualityTierFloor: string;
   tags: string[];
   minRating: number /* int */;
+  criteria: PruningCriterion[];
   enabled: boolean;
 }
 /**

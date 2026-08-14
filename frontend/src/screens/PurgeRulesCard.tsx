@@ -17,6 +17,17 @@
 // Still follows SliderAdmin's inline-form create/edit pattern (one form,
 // seeded from an optional `rule` prop) rather than RowEditor — rules have no
 // meaningful display order, so drag-and-drop reorder does not apply here.
+//
+// Claude 2026-08-14: RuleForm is a dynamic AND-criteria row builder
+// (field / operator / value / unit) instead of five checkboxes. One empty
+// trailing row at a time; completing it appends another. Multiple complete
+// rows are AND'd within the rule; rules stay OR'd across the list.
+// Reason: two ages, contains + does-not-contain tags, etc. cannot fit in
+// five scalars. The form always POSTs `criteria` and zeros the old fields.
+// Troubleshooting: do not put aria-pressed on these controls — Library
+// sort tests select button[aria-pressed] as card shells. Seed from
+// rule.criteria, falling back to the five scalars for pre-0014 payloads.
+// Review if: gte/lte operators or OR-within-rule tags are added.
 
 import {
   type Component,
@@ -32,16 +43,14 @@ import Pencil from "lucide-solid/icons/pencil";
 import type { Mode } from "../api/discover";
 import {
   GB_BYTES,
-  PRUNING_TIER_FLOORS,
-  PRUNING_TIER_FLOOR_LABELS,
   createPruningRule,
   deletePruningRule,
   fetchPruningRules,
   previewPruningRule,
   updatePruningRule,
+  type PruningCriterion,
   type PruningRule,
   type PruningRuleUpsertRequest,
-  type PruningTierFloor,
 } from "../api/pruningRules";
 import {
   Button,
@@ -53,14 +62,28 @@ import {
   useSaveStatus,
 } from "../components/ui";
 
-// PREVIEW_DEBOUNCE_MS mirrors FolderPicker's as-you-type debounce
-// (components/FolderPicker.tsx) — a keystroke in an age/size field, or a
-// condition/tier/tag change, doesn't fire a preview request until it settles.
 const PREVIEW_DEBOUNCE_MS = 300;
 
-// gbToBytes/bytesToGB are the size condition's GB<->bytes conversion, 1024
-// -based to match internal/pruning's humanBytes convention (the DTO's
-// sizeBytes is always whole bytes; the form only ever shows GB).
+const CRITERION_FIELDS = ["age", "size", "quality", "tag", "rating"] as const;
+type CriterionField = (typeof CRITERION_FIELDS)[number];
+
+const COMPARE_OPS = [
+  { value: "gt", label: "greater than" },
+  { value: "lt", label: "less than" },
+  { value: "eq", label: "equal to" },
+] as const;
+const TAG_OPS = [
+  { value: "contains", label: "contains" },
+  { value: "notContains", label: "does not contain" },
+] as const;
+
+type CriterionDraft = {
+  field: CriterionField | "";
+  op: string;
+  value: string;
+  unit: string;
+};
+
 export function gbToBytes(gb: number): number {
   return Math.round(gb * GB_BYTES);
 }
@@ -68,12 +91,27 @@ export function bytesToGB(bytes: number): number {
   return Math.round((bytes / GB_BYTES) * 100) / 100;
 }
 
+const OP_LABEL: Record<string, string> = {
+  gt: ">",
+  lt: "<",
+  eq: "=",
+  contains: "contains",
+  notContains: "does not contain",
+};
+
+function summarizeCriterion(c: PruningCriterion): string {
+  const op = OP_LABEL[c.op] ?? c.op;
+  const unit = c.unit ? ` ${c.unit}` : "";
+  return `${c.field} ${op} ${c.value}${unit}`;
+}
+
 // summarizeConditions renders a rule's configured conditions for the list
-// row — the client-side mirror of the (actual-value) Reason text the backend
-// generates at match time, but here it echoes the rule's THRESHOLDS, not an
-// item's triggering values, since no item is in scope. Fragment order matches
-// pruning.Match's own: age, size, tier, tags, rating.
+// row. Prefers criteria (AND, row order). Falls back to the five scalars for
+// any leftover pre-0014 payload.
 export function summarizeConditions(rule: PruningRule): string {
+  if (rule.criteria?.length) {
+    return rule.criteria.map(summarizeCriterion).join(" AND ");
+  }
   const parts: string[] = [];
   if (rule.ageDays) parts.push(`${rule.ageDays}+ days old`);
   if (rule.sizeBytes) parts.push(`${bytesToGB(rule.sizeBytes)}+ GB`);
@@ -83,15 +121,136 @@ export function summarizeConditions(rule: PruningRule): string {
   return parts.length ? parts.join(", ") : "no conditions";
 }
 
-// RuleForm creates a new rule (rule prop undefined) or edits an existing one
-// (rule prop present) — the same form either way, following SliderForm's
-// seed-from-props-at-mount pattern (SliderAdmin.tsx).
-//
-// There is deliberately NO Mode select: the card is mounted per-mode from the
-// Clean-up screen's own mode tab, so the rule's mode comes from the prop. The
-// old Settings tab was mode-agnostic and needed the dropdown; keeping it here
-// would let an operator create a Series rule from the Movies tab and watch it
-// vanish from the list it was created in.
+function emptyCriterion(): CriterionDraft {
+  return { field: "", op: "", value: "", unit: "" };
+}
+
+function isBlankCriterion(row: CriterionDraft): boolean {
+  return !row.field && !row.op && !row.value.trim() && !row.unit;
+}
+
+function isCompleteCriterion(row: CriterionDraft): boolean {
+  if (!row.field || !row.op || !row.value.trim()) return false;
+  if (row.field === "age" || row.field === "size" || row.field === "rating") {
+    return !!row.unit;
+  }
+  return true;
+}
+
+// Keep every non-blank row, then exactly one trailing empty slot when the
+// last kept row is complete (or the list is empty). An in-progress row
+// (field chosen, value empty) is the working row — do not also show a blank.
+function normalizeCriterionRows(rows: CriterionDraft[]): CriterionDraft[] {
+  const kept = rows.filter((r) => !isBlankCriterion(r));
+  const last = kept[kept.length - 1];
+  if (!last || isCompleteCriterion(last)) {
+    kept.push(emptyCriterion());
+  }
+  return kept;
+}
+
+function defaultOp(field: CriterionField): string {
+  return field === "tag" ? "contains" : "gt";
+}
+
+function defaultUnit(field: CriterionField): string {
+  if (field === "age") return "days";
+  if (field === "size") return "gb";
+  if (field === "rating") return "stars";
+  return "";
+}
+
+function opsFor(field: CriterionField | ""): readonly { value: string; label: string }[] {
+  if (field === "tag") return TAG_OPS;
+  return COMPARE_OPS;
+}
+
+function unitsFor(field: CriterionField | ""): { value: string; label: string }[] {
+  if (field === "age") return [{ value: "days", label: "days" }];
+  if (field === "size") {
+    return [
+      { value: "kb", label: "KB" },
+      { value: "mb", label: "MB" },
+      { value: "gb", label: "GB" },
+      { value: "tb", label: "TB" },
+    ];
+  }
+  if (field === "rating") return [{ value: "stars", label: "stars" }];
+  return [];
+}
+
+function legacyTierCriterion(floor: string): CriterionDraft | null {
+  switch (floor) {
+    case "low":
+      return { field: "quality", op: "eq", value: "low", unit: "" };
+    case "medium":
+      return { field: "quality", op: "lt", value: "high", unit: "" };
+    case "high":
+      return { field: "quality", op: "lt", value: "lossless", unit: "" };
+    default:
+      return null;
+  }
+}
+
+function rowsFromRule(rule?: PruningRule): CriterionDraft[] {
+  const rows: CriterionDraft[] = [];
+  if (rule?.criteria?.length) {
+    for (const c of rule.criteria) {
+      rows.push({
+        field: (CRITERION_FIELDS as readonly string[]).includes(c.field)
+          ? (c.field as CriterionField)
+          : "",
+        op: c.op,
+        value: c.value,
+        unit: c.unit ?? "",
+      });
+    }
+    return normalizeCriterionRows(rows);
+  }
+  if (rule?.ageDays) {
+    rows.push({
+      field: "age",
+      op: "gt",
+      value: String(rule.ageDays),
+      unit: "days",
+    });
+  }
+  if (rule?.sizeBytes) {
+    rows.push({
+      field: "size",
+      op: "gt",
+      value: String(bytesToGB(rule.sizeBytes)),
+      unit: "gb",
+    });
+  }
+  if (rule?.qualityTierFloor) {
+    const mapped = legacyTierCriterion(rule.qualityTierFloor);
+    if (mapped) rows.push(mapped);
+  }
+  for (const tag of rule?.tags ?? []) {
+    rows.push({ field: "tag", op: "contains", value: tag, unit: "" });
+  }
+  if (rule?.minRating) {
+    rows.push({
+      field: "rating",
+      op: "lt",
+      value: String(rule.minRating),
+      unit: "stars",
+    });
+  }
+  return normalizeCriterionRows(rows);
+}
+
+function draftToCriterion(row: CriterionDraft): PruningCriterion {
+  const out: PruningCriterion = {
+    field: row.field,
+    op: row.op,
+    value: row.value.trim(),
+  };
+  if (row.unit) out.unit = row.unit;
+  return out;
+}
+
 const RuleForm: Component<{
   mode: Mode;
   rule?: PruningRule;
@@ -99,80 +258,54 @@ const RuleForm: Component<{
   onCancel: () => void;
 }> = (props) => {
   const [name, setName] = createSignal(props.rule?.name ?? "");
-  const [ageEnabled, setAgeEnabled] = createSignal(
-    (props.rule?.ageDays ?? 0) > 0,
-  );
-  const [ageDays, setAgeDays] = createSignal(props.rule?.ageDays ?? 0);
-  const [sizeEnabled, setSizeEnabled] = createSignal(
-    (props.rule?.sizeBytes ?? 0) > 0,
-  );
-  const [sizeGB, setSizeGB] = createSignal(
-    props.rule?.sizeBytes ? bytesToGB(props.rule.sizeBytes) : 0,
-  );
-  const [tierEnabled, setTierEnabled] = createSignal(
-    !!props.rule?.qualityTierFloor,
-  );
-  const [tier, setTier] = createSignal<PruningTierFloor>(
-    (props.rule?.qualityTierFloor as PruningTierFloor) || "low",
-  );
-  const [tagsEnabled, setTagsEnabled] = createSignal(
-    (props.rule?.tags ?? []).length > 0,
-  );
-  const [tags, setTags] = createSignal<string[]>(props.rule?.tags ?? []);
-  const [newTag, setNewTag] = createSignal("");
-  const [ratingEnabled, setRatingEnabled] = createSignal(
-    (props.rule?.minRating ?? 0) > 0,
-  );
-  const [minRating, setMinRating] = createSignal(props.rule?.minRating ?? 3);
+  const [rows, setRows] = createSignal<CriterionDraft[]>(rowsFromRule(props.rule));
   const [enabled, setEnabled] = createSignal(props.rule?.enabled ?? true);
   const status = useSaveStatus();
 
-  // Add/remove are CLIENT-SIDE ONLY — they mutate the local signal and fire no
-  // request. This is a real behavior change from the retired allowlist, whose
-  // Add POSTed immediately: a tag is now part of the rule and is persisted by
-  // the form's own Save, so an abandoned edit changes nothing.
-  const addTag = () => {
-    const tag = newTag().trim();
-    if (!tag) return;
-    // Adding a tag already present is a no-op, not an error — preserving the
-    // retired allowlist.Store.Add's documented semantic. De-duped
-    // case-insensitively to match pruning.matchedTags' own comparison.
-    if (!tags().some((t) => t.toLowerCase() === tag.toLowerCase())) {
-      setTags([...tags(), tag]);
-    }
-    setNewTag("");
-  };
-  const removeTag = (tag: string) => setTags(tags().filter((t) => t !== tag));
+  const completeRows = () => rows().filter(isCompleteCriterion);
+  const hasCondition = () => completeRows().length > 0;
 
-  // hasCondition is AC1's "at least one condition configured" — mirrors
-  // internal/pruning.ErrNoConditions client-side, which went four-way in the
-  // same change (both the submit guard and the preview gate below share it,
-  // since the preview endpoint 400s on a conditionless draft too).
-  const hasCondition = () =>
-    ageEnabled() ||
-    sizeEnabled() ||
-    tierEnabled() ||
-    tags().length > 0 ||
-    (ratingEnabled() && minRating() > 0);
+  const patchRow = (index: number, patch: Partial<CriterionDraft>) => {
+    setRows((prev) =>
+      normalizeCriterionRows(
+        prev.map((r, i) => (i === index ? { ...r, ...patch } : r)),
+      ),
+    );
+  };
+
+  const onFieldChange = (index: number, field: CriterionField | "") => {
+    setRows((prev) =>
+      normalizeCriterionRows(
+        prev.map((r, i) => {
+          if (i !== index) return r;
+          if (!field) return emptyCriterion();
+          return {
+            field,
+            op: defaultOp(field),
+            value: r.field === field ? r.value : "",
+            unit: defaultUnit(field),
+          };
+        }),
+      ),
+    );
+  };
+
+  const removeRow = (index: number) => {
+    setRows((prev) => normalizeCriterionRows(prev.filter((_, i) => i !== index)));
+  };
 
   const buildBody = (): PruningRuleUpsertRequest => ({
     name: name().trim(),
     mode: props.mode,
-    ageDays: ageEnabled() ? Math.max(0, Math.round(ageDays())) : 0,
-    sizeBytes: sizeEnabled() ? Math.max(0, gbToBytes(sizeGB())) : 0,
-    qualityTierFloor: tierEnabled() ? tier() : "",
-    tags: tagsEnabled() ? tags() : [],
-    minRating: ratingEnabled() ? Math.min(5, Math.max(1, Math.round(minRating()))) : 0,
+    ageDays: 0,
+    sizeBytes: 0,
+    qualityTierFloor: "",
+    tags: [],
+    minRating: 0,
+    criteria: completeRows().map(draftToCriterion),
     enabled: enabled(),
   });
 
-  // --- soft preview banner ---------------------------------------------
-  // Debounced re-fetch whenever a condition (or its value) changes. Skipped
-  // entirely while no condition is enabled — a blank name is fine (the
-  // backend previews unnamed drafts), but a conditionless draft is not, so
-  // firing it anyway would just paint an error where the form should stay
-  // quiet. Save/Update is NEVER gated on this — a large or errored count
-  // changes nothing about whether the submit button is enabled.
   const [previewCount, setPreviewCount] = createSignal<number | null>(null);
   const [previewError, setPreviewError] = createSignal("");
   let previewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -189,33 +322,15 @@ const RuleForm: Component<{
   };
 
   createEffect(
-    on(
-      // tags/tagsEnabled are in the dependency list deliberately: without
-      // them, adding a tag would leave a stale match count on screen, which is
-      // worse than showing none.
-      [
-        name,
-        ageEnabled,
-        ageDays,
-        sizeEnabled,
-        sizeGB,
-        tierEnabled,
-        tier,
-        tagsEnabled,
-        tags,
-        ratingEnabled,
-        minRating,
-      ],
-      () => {
-        if (previewTimer !== undefined) clearTimeout(previewTimer);
-        if (!hasCondition()) {
-          setPreviewCount(null);
-          setPreviewError("");
-          return;
-        }
-        previewTimer = setTimeout(() => void runPreview(), PREVIEW_DEBOUNCE_MS);
-      },
-    ),
+    on([name, rows], () => {
+      if (previewTimer !== undefined) clearTimeout(previewTimer);
+      if (!hasCondition()) {
+        setPreviewCount(null);
+        setPreviewError("");
+        return;
+      }
+      previewTimer = setTimeout(() => void runPreview(), PREVIEW_DEBOUNCE_MS);
+    }),
   );
   onCleanup(() => {
     if (previewTimer !== undefined) clearTimeout(previewTimer);
@@ -256,160 +371,88 @@ const RuleForm: Component<{
           />
         </label>
 
-        <div class="mb-2 rounded border border-border p-2">
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              aria-label="Enable age condition"
-              checked={ageEnabled()}
-              onChange={(e) => setAgeEnabled(e.currentTarget.checked)}
-            />
-            <span class="text-sm text-fg">Older than N days</span>
-          </label>
-          <Show when={ageEnabled()}>
-            <input
-              type="number"
-              min="0"
-              class={`${inputClass} mt-1`}
-              aria-label="Age in days"
-              value={ageDays()}
-              onInput={(e) => setAgeDays(Number(e.currentTarget.value))}
-            />
-          </Show>
-        </div>
-
-        <div class="mb-2 rounded border border-border p-2">
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              aria-label="Enable size condition"
-              checked={sizeEnabled()}
-              onChange={(e) => setSizeEnabled(e.currentTarget.checked)}
-            />
-            <span class="text-sm text-fg">Larger than N GB</span>
-          </label>
-          <Show when={sizeEnabled()}>
-            <input
-              type="number"
-              min="0"
-              step="0.1"
-              class={`${inputClass} mt-1`}
-              aria-label="Size in GB"
-              value={sizeGB()}
-              onInput={(e) => setSizeGB(Number(e.currentTarget.value))}
-            />
-          </Show>
-        </div>
-
-        <div class="mb-2 rounded border border-border p-2">
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              aria-label="Enable quality tier condition"
-              checked={tierEnabled()}
-              onChange={(e) => setTierEnabled(e.currentTarget.checked)}
-            />
-            <span class="text-sm text-fg">Quality tier at or below</span>
-          </label>
-          <Show when={tierEnabled()}>
-            <select
-              class={`${inputClass} mt-1`}
-              aria-label="Quality tier floor"
-              value={tier()}
-              onChange={(e) => setTier(e.currentTarget.value as PruningTierFloor)}
-            >
-              <For each={PRUNING_TIER_FLOORS}>
-                {(t) => <option value={t}>{PRUNING_TIER_FLOOR_LABELS[t]}</option>}
-              </For>
-            </select>
-          </Show>
-        </div>
-
-        {/* Tags — the fourth condition. Rating is fifth, last, so form order
-            matches pruning.Match's fragment order. Plain chip input, the
-            retired Allowlist's own markup: one × per chip, one Add per input,
-            no clear-all and no picker/autocomplete. */}
-        <div class="mb-2 rounded border border-border p-2">
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              aria-label="Enable tags condition"
-              checked={tagsEnabled()}
-              onChange={(e) => setTagsEnabled(e.currentTarget.checked)}
-            />
-            <span class="text-sm text-fg">Tagged with any of</span>
-          </label>
-          <Show when={tagsEnabled()}>
-            <div class="mt-2 flex flex-wrap items-center gap-2">
-              <For each={tags()}>
-                {(tag) => (
-                  <span class="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-fg">
-                    {tag}
-                    <button
+        <p class="mb-2 text-xs text-muted">
+          Each row is AND'd with the others. Completing a row adds another.
+        </p>
+        <div class="mb-2 space-y-2">
+          <For each={rows()}>
+            {(row, i) => {
+              const n = () => i() + 1;
+              const fieldSet = () => !!row.field;
+              const unitOptions = () => unitsFor(row.field);
+              const canRemove = () => !isBlankCriterion(row);
+              return (
+                <div class="flex flex-wrap items-center gap-2">
+                  <select
+                    class={`${inputClass} min-w-[7rem] !w-auto`}
+                    aria-label={`Criterion ${n()} field`}
+                    value={row.field}
+                    onChange={(e) =>
+                      onFieldChange(i(), e.currentTarget.value as CriterionField | "")
+                    }
+                  >
+                    <option value="">field</option>
+                    <For each={CRITERION_FIELDS}>
+                      {(f) => <option value={f}>{f}</option>}
+                    </For>
+                  </select>
+                  <select
+                    class={`${inputClass} min-w-[9rem] !w-auto`}
+                    aria-label={`Criterion ${n()} operator`}
+                    value={row.op}
+                    disabled={!fieldSet()}
+                    onChange={(e) => patchRow(i(), { op: e.currentTarget.value })}
+                  >
+                    <Show when={!row.op}>
+                      <option value="">operator</option>
+                    </Show>
+                    <For each={opsFor(row.field)}>
+                      {(op) => <option value={op.value}>{op.label}</option>}
+                    </For>
+                  </select>
+                  <input
+                    type={
+                      row.field === "tag" || row.field === "quality" || !row.field
+                        ? "text"
+                        : "number"
+                    }
+                    min={row.field === "rating" ? 1 : 0}
+                    max={row.field === "rating" ? 5 : undefined}
+                    step={row.field === "size" ? "0.1" : "1"}
+                    class={`${inputClass} min-w-[7rem] flex-1`}
+                    aria-label={`Criterion ${n()} value`}
+                    placeholder="value"
+                    value={row.value}
+                    disabled={!fieldSet()}
+                    onInput={(e) => patchRow(i(), { value: e.currentTarget.value })}
+                  />
+                  <select
+                    class={`${inputClass} min-w-[5rem] !w-auto`}
+                    aria-label={`Criterion ${n()} unit`}
+                    value={row.unit}
+                    disabled={!fieldSet() || unitOptions().length === 0}
+                    onChange={(e) => patchRow(i(), { unit: e.currentTarget.value })}
+                  >
+                    <Show when={unitOptions().length === 0}>
+                      <option value=""></option>
+                    </Show>
+                    <For each={unitOptions()}>
+                      {(u) => <option value={u.value}>{u.label}</option>}
+                    </For>
+                  </select>
+                  <Show when={canRemove()}>
+                    <Button
                       type="button"
-                      class="text-muted hover:text-danger"
-                      aria-label={`Remove ${tag}`}
-                      onClick={() => removeTag(tag)}
+                      aria-label={`Remove criterion ${n()}`}
+                      onClick={() => removeRow(i())}
                     >
                       ×
-                    </button>
-                  </span>
-                )}
-              </For>
-              <div class="flex items-center gap-2">
-                <input
-                  class="w-40 rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg outline-none focus:border-accent"
-                  placeholder="tag name"
-                  value={newTag()}
-                  onInput={(e) => setNewTag(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    // Enter adds the tag rather than submitting the whole
-                    // form — the rule almost never wants saving mid-tag-entry.
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      addTag();
-                    }
-                  }}
-                  aria-label="New tag"
-                />
-                <Button type="button" onClick={() => addTag()}>
-                  Add
-                </Button>
-              </div>
-            </div>
-          </Show>
-        </div>
-
-        <div class="mb-2 rounded border border-border p-2">
-          <label class="flex items-center gap-2">
-            <input
-              type="checkbox"
-              aria-label="Enable minimum rating condition"
-              checked={ratingEnabled()}
-              onChange={(e) => setRatingEnabled(e.currentTarget.checked)}
-            />
-            <span class="text-sm text-fg">Rated below N stars</span>
-          </label>
-          <Show when={ratingEnabled()}>
-            <select
-              class={`${inputClass} mt-1`}
-              aria-label="Minimum rating"
-              value={String(minRating())}
-              onChange={(e) => setMinRating(Number(e.currentTarget.value))}
-            >
-              <For each={[1, 2, 3, 4, 5]}>
-                {(n) => (
-                  <option value={n}>
-                    {n} star{n === 1 ? "" : "s"}
-                  </option>
-                )}
-              </For>
-            </select>
-            <p class="mt-1 text-xs text-muted">
-              Propose deletion for titles rated below this. Unrated titles never
-              match.
-            </p>
-          </Show>
+                    </Button>
+                  </Show>
+                </div>
+              );
+            }}
+          </For>
         </div>
 
         <label class="mb-2 flex items-center gap-2">
@@ -422,8 +465,6 @@ const RuleForm: Component<{
           <span class="text-sm text-fg">Enabled</span>
         </label>
 
-        {/* Soft preview — a non-blocking count. Save/Update above stays
-            enabled no matter what this shows, including a large N. */}
         <Show when={hasCondition()}>
           <div class="mb-2 text-sm text-muted" data-testid="pruning-preview">
             <Show when={previewError()}>
@@ -448,8 +489,6 @@ const RuleForm: Component<{
   );
 };
 
-// PurgeRulesCard is the Clean-up screen's collapsible rules panel: the rules
-// CRUD list/form, scoped to one mode.
 export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
   const [rules, { refetch }] = createResource(fetchPruningRules, {
     initialValue: [],
@@ -457,9 +496,6 @@ export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
   const [editing, setEditing] = createSignal<number | "new" | null>(null);
   const [listError, setListError] = createSignal("");
 
-  // The endpoint is deliberately not mode-scoped (a rule carries its own
-  // single mode in the BODY, and /api/pruning-rules has no mode segment), so
-  // the card filters client-side rather than growing a query param.
   const modeRules = () => (rules() ?? []).filter((r) => r.mode === props.mode);
 
   const closeForm = () => setEditing(null);
@@ -475,26 +511,20 @@ export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
   };
 
   // toggleEnabled is an immediate full update — the upsert body is
-  // deliberately whole-rule (mirrors updatePruningRuleHandler's own doc
-  // comment: it overwrites every editable field), so every condition is
-  // carried over from the current row and only `enabled` flips.
+  // deliberately whole-rule. criteria MUST be carried: omitting it would
+  // send [] and wipe every AND row on a mere enable flip.
   const toggleEnabled = async (rule: PruningRule) => {
     setListError("");
     try {
       await updatePruningRule(rule.id, {
         name: rule.name,
         mode: rule.mode,
-        // ageDays/sizeBytes/qualityTierFloor/tags carry `omitempty` on the
-        // wire (@dto marks them optional), so a rule at its unset sentinel
-        // comes back as undefined rather than 0/""/[] — default it back to the
-        // sentinel the upsert body requires. `tags` is the dangerous one:
-        // omitting it here would silently CLEAR a rule's tags on every
-        // enable/disable toggle, since the body is whole-rule.
         ageDays: rule.ageDays ?? 0,
         sizeBytes: rule.sizeBytes ?? 0,
         qualityTierFloor: rule.qualityTierFloor ?? "",
         tags: rule.tags ?? [],
         minRating: rule.minRating ?? 0,
+        criteria: rule.criteria ?? [],
         enabled: !rule.enabled,
       });
       await refetch();
@@ -519,10 +549,10 @@ export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
     <details class="mt-6 rounded border border-border p-3">
       <summary class="cursor-pointer text-sm font-medium">Rules</summary>
       <Muted class="mb-3 mt-3 block">
-        Operator-authored rules that flag library items for Clean-up review by
-        age, size, quality tier, tags and/or minimum rating — AND'd within one rule, OR'd
-        across rules. A rule only ever PROPOSES: nothing is deleted until an
-        operator explicitly Applies it from the review queue below.
+        Operator-authored rules that flag library items for Clean-up review.
+        Criteria are AND'd within one rule, OR'd across rules. A rule only ever
+        PROPOSES: nothing is deleted until an operator explicitly Applies it
+        from the review queue below.
       </Muted>
       <Show when={rules.error}>
         <ErrorText>{(rules.error as Error)?.message}</ErrorText>

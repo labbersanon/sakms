@@ -7702,4 +7702,13 @@ subtitle was an empty muted block (collection already has DetailPopup's
 "Part of …" banner). Nested panel no longer passes a subtitle. The
 no-tmdbId fallback modal still shows year + collection there.
 
+## 2026-08-14 (later, same day) — Season monitors disabled until auto-grab is on
+
+Library Series detail always showed two honesty paragraphs under the
+season switches. Those switches also stayed clickable while usenet
+auto-grab was off, so flipping them did nothing. Switches are now
+disabled until Settings → Download → Usenet → Enable auto-grab is on.
+The two sentences live behind an info icon (tap to expand) instead of
+on the card. A failed auto-grab fetch is treated as off.
+
 

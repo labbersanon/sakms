@@ -45,6 +45,7 @@ import {
   putAllSeasonsMonitored,
   putSeasonMonitored,
 } from "../api/seasons";
+import { fetchUsenetAutoGrabEnabled } from "../api/usenet";
 import {
   type TrackedItem,
   addTag,
@@ -68,6 +69,7 @@ import {
   FILTER_BAR_FIELDS_CLASS,
   yearOf,
 } from "../components/ui";
+import Info from "lucide-solid/icons/info";
 import {
   MediaCardShell,
   MediaBadge,
@@ -299,11 +301,12 @@ const PosterCard: Component<{
   );
 };
 
-// SEASON_UNMONITORED_COPY / SEASON_AUTOGRAB_COPY are the two required honesty
-// lines for per-season monitoring. Each renders as its OWN paragraph and as a
-// single unbroken text node — no <strong>, no nested span, no <br> — because
-// interleaving an element child would split the sentence across nodes and make
-// it unfindable by its own text.
+// SEASON_UNMONITORED_COPY / SEASON_AUTOGRAB_COPY are the two honesty lines for
+// per-season monitoring. They used to render as always-visible paragraphs on
+// the card; they now live behind the info icon when auto-grab is off. Each
+// still renders as its OWN paragraph and as a single unbroken text node — no
+// <strong>, no nested span, no <br> — because interleaving an element child
+// would split the sentence across nodes and make it unfindable by its own text.
 const SEASON_UNMONITORED_COPY =
   "An unmonitored season is never searched automatically, no matter how long ago it aired.";
 const SEASON_AUTOGRAB_COPY =
@@ -331,8 +334,21 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
     () => props.seriesID,
     fetchSeasonStates,
   );
+  const [autoGrab] = createResource(() =>
+    fetchUsenetAutoGrabEnabled().catch(() => false),
+  );
   const [busy, setBusy] = createSignal(false);
   const [writeError, setWriteError] = createSignal("");
+  const [helpOpen, setHelpOpen] = createSignal(false);
+
+  // Claude 2026-08-14: switches stay off until Settings auto-grab is on.
+  // Reason: monitoring a season does nothing while usenet auto-grab is off,
+  // and the two honesty paragraphs crowded the Library card.
+  // Troubleshooting: operators flipped season monitors and nothing searched.
+  // Review if: auto-grab grows a live (no-restart) path.
+  const autoGrabOn = () => autoGrab() === true;
+  const switchesDisabled = () => busy() || !autoGrabOn();
+  const showEnableHelp = () => !autoGrab.loading && !autoGrabOn();
 
   // Only the PUT is wrapped. A refetch that fails AFTER a successful write is
   // not a failed write, and reporting it as one would tell the operator their
@@ -368,9 +384,26 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
 
   return (
     <div class="mb-3 border-t border-border pt-3">
-      <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
-        Seasons
-      </p>
+      <div class="mb-1 flex items-center gap-1">
+        <p class="text-[11px] font-medium uppercase tracking-wide text-muted">
+          Seasons
+        </p>
+        <Show when={showEnableHelp()}>
+          <button
+            type="button"
+            class="rounded p-0.5 text-muted hover:text-fg"
+            aria-label="How to enable season monitoring"
+            aria-expanded={helpOpen()}
+            onClick={() => setHelpOpen((open) => !open)}
+          >
+            <Info class="h-3.5 w-3.5" />
+          </button>
+        </Show>
+      </div>
+      <Show when={showEnableHelp() && helpOpen()}>
+        <Muted class="mt-1">{SEASON_UNMONITORED_COPY}</Muted>
+        <Muted class="mt-1">{SEASON_AUTOGRAB_COPY}</Muted>
+      </Show>
       <Show when={seasons.error}>
         <ErrorText>{(seasons.error as Error)?.message}</ErrorText>
       </Show>
@@ -389,7 +422,7 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
           <span class="text-xs font-medium text-fg">All seasons</span>
           <Switch
             checked={allMonitored()}
-            disabled={busy()}
+            disabled={switchesDisabled()}
             ariaLabel="Monitor all seasons"
             onChange={(next) =>
               void write(() => putAllSeasonsMonitored(props.seriesID, next))
@@ -413,7 +446,7 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
               </div>
               <Switch
                 checked={s.monitored}
-                disabled={busy()}
+                disabled={switchesDisabled()}
                 ariaLabel={`Monitor ${seasonLabel(s.seasonNumber)}`}
                 onChange={(next) =>
                   void write(() =>
@@ -425,8 +458,6 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
           )}
         </For>
       </Show>
-      <Muted class="mt-2">{SEASON_UNMONITORED_COPY}</Muted>
-      <Muted class="mt-1">{SEASON_AUTOGRAB_COPY}</Muted>
     </div>
   );
 };

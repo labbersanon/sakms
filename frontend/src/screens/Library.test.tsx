@@ -90,6 +90,8 @@ const libraryEnrichmentResponse = (url: string): Response | null => {
   if (url.includes("/discover/detail")) return jsonResponse(emptyTitleDetail());
   if (url.includes("/discover/description"))
     return jsonResponse({ text: "", source: "" });
+  if (url.includes("/usenet-autograb-enabled"))
+    return jsonResponse({ enabled: false });
   return null;
 };
 
@@ -758,14 +760,48 @@ describe("Library — per-season monitoring (Series only)", () => {
     expect(switchOf("Monitor all seasons").getAttribute("aria-checked")).toBe(
       "false",
     );
+    expect(switchOf("Monitor Season 1")).toBeDisabled();
+    expect(switchOf("Monitor Specials")).toBeDisabled();
+    expect(switchOf("Monitor all seasons")).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: "How to enable season monitoring" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(UNMONITORED_COPY)).toBeNull();
+    expect(screen.queryByText(AUTOGRAB_COPY)).toBeNull();
   });
 
-  it("carries both required monitoring copy lines", async () => {
+  it("hides the honesty copy behind the info icon when auto-grab is off", async () => {
     stubFetch(makeHandler([], { series: [breakingBad], seasons }));
     await openSeriesDetail();
 
-    expect(await screen.findByText(UNMONITORED_COPY)).toBeInTheDocument();
+    const info = await screen.findByRole("button", {
+      name: "How to enable season monitoring",
+    });
+    expect(screen.queryByText(UNMONITORED_COPY)).toBeNull();
+    expect(screen.queryByText(AUTOGRAB_COPY)).toBeNull();
+    fireEvent.click(info);
+    expect(screen.getByText(UNMONITORED_COPY)).toBeInTheDocument();
     expect(screen.getByText(AUTOGRAB_COPY)).toBeInTheDocument();
+  });
+
+  it("enables the monitor switches when auto-grab is on and does not show the info icon", async () => {
+    stubFetch((url, init) => {
+      if (url.includes("/usenet-autograb-enabled"))
+        return jsonResponse({ enabled: true });
+      return makeHandler([], { series: [breakingBad], seasons })(url, init);
+    });
+    await openSeriesDetail();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Monitor Season 1")).not.toBeDisabled(),
+    );
+    expect(switchOf("Monitor Specials")).not.toBeDisabled();
+    expect(switchOf("Monitor all seasons")).not.toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "How to enable season monitoring" }),
+    ).toBeNull();
+    expect(screen.queryByText(UNMONITORED_COPY)).toBeNull();
+    expect(screen.queryByText(AUTOGRAB_COPY)).toBeNull();
   });
 
   it("renders nothing season-related for a MOVIES item, and never calls /seasons", async () => {
@@ -792,6 +828,8 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
       if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/usenet-autograb-enabled"))
+        return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
         if (method === "PUT") {
           specialsMonitored = (
@@ -814,7 +852,9 @@ describe("Library — per-season monitoring (Series only)", () => {
     });
 
     await openSeriesDetail();
-    await screen.findByLabelText("Monitor Specials");
+    await waitFor(() =>
+      expect(switchOf("Monitor Specials")).not.toBeDisabled(),
+    );
     fireEvent.click(switchOf("Monitor Specials"));
 
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
@@ -842,6 +882,8 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
       if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/usenet-autograb-enabled"))
+        return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
         if (method === "PUT") {
           allMonitored = (
@@ -859,7 +901,9 @@ describe("Library — per-season monitoring (Series only)", () => {
     });
 
     await openSeriesDetail();
-    await screen.findByLabelText("Monitor all seasons");
+    await waitFor(() =>
+      expect(switchOf("Monitor all seasons")).not.toBeDisabled(),
+    );
     fireEvent.click(switchOf("Monitor all seasons"));
 
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
@@ -888,6 +932,8 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
       if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/usenet-autograb-enabled"))
+        return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
         if (method === "PUT") {
           allMonitored = (
@@ -905,7 +951,9 @@ describe("Library — per-season monitoring (Series only)", () => {
     });
 
     await openSeriesDetail();
-    await screen.findByLabelText("Monitor all seasons");
+    await waitFor(() =>
+      expect(switchOf("Monitor all seasons")).not.toBeDisabled(),
+    );
     // Every season is monitored, so the bulk switch reads on and one click
     // un-monitors the lot.
     await waitFor(() =>
@@ -935,6 +983,8 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
       if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/usenet-autograb-enabled"))
+        return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
         if (method === "PUT")
           return new Response("no tracked series with that id", { status: 404 });
@@ -946,7 +996,9 @@ describe("Library — per-season monitoring (Series only)", () => {
     });
 
     await openSeriesDetail();
-    await screen.findByLabelText("Monitor Specials");
+    await waitFor(() =>
+      expect(switchOf("Monitor Specials")).not.toBeDisabled(),
+    );
     fireEvent.click(switchOf("Monitor Specials"));
 
     await waitFor(() =>

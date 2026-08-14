@@ -32,6 +32,11 @@ type CatalogTagSource interface {
 	TagsByID(ctx context.Context, box, sceneID string) ([]string, error)
 }
 
+// catalogTagBackfillBudget is how long ScanLibraryAdult may spend filling
+// empty library_scene_tags from the catalog. Matching runs after this and
+// must not share the deadline. Tests shrink it.
+var catalogTagBackfillBudget = 90 * time.Second
+
 // ScanLibraryAdult is Purge's Adult-library counterpart to ScanLibrary — used
 // once Adult stops requiring Whisparr (see the plan this was built from,
 // Stage 2). A scene is a flat one-file-done-once thing like a Movie Item, so
@@ -67,8 +72,20 @@ func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []prun
 	}
 
 	if catalogTags != nil && rulesHaveTags(rules) {
-		if err := backfillSceneCatalogTags(ctx, libStore, scenes, catalogTags); err != nil {
-			return nil, err
+		// Claude 2026-08-14: catalogTagBackfillBudget cap, child ctx.
+		// Reason: VPS nginx proxy_read_timeout is 300s; 1s/host identify
+		//   throttle × 250 SceneByID overran it (504 + Traefik 499). Matching
+		//   stays on ctx so a deadline here cannot fail SceneTags afterwards.
+		// Review if: backfill is batched or moved off the request path.
+		backfillCtx, cancel := context.WithTimeout(ctx, catalogTagBackfillBudget)
+		err := backfillSceneCatalogTags(backfillCtx, libStore, scenes, catalogTags)
+		cancel()
+		if err != nil {
+			if backfillCtx.Err() != nil {
+				log.Printf("purge: catalog tag backfill stopped early: %v", err)
+			} else {
+				return nil, err
+			}
 		}
 	}
 
@@ -171,8 +188,16 @@ func backfillSceneCatalogTags(ctx context.Context, libStore *library.Store, scen
 		if filled[sc.ID] {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			log.Printf("purge: catalog tag backfill stopped after fingerprint fill (%d scenes): %v", len(filled), err)
+			break
+		}
 		tags, err := src.TagsByID(ctx, sc.Box, sc.SceneID)
 		if err != nil {
+			if ctx.Err() != nil {
+				log.Printf("purge: catalog tag backfill stopped: %v", err)
+				break
+			}
 			log.Printf("purge: catalog tag lookup for %s/%s failed: %v", sc.Box, sc.SceneID, err)
 			continue
 		}

@@ -250,6 +250,7 @@ func previewPruningRuleHandler(httpClient *http.Client, connStore *connections.S
 			list, scanErr := purge.ScanLibrarySeries(ctx, libStore, rules)
 			matched, err = len(list), scanErr
 		case mode.Adult:
+			ctx = adultPurgeScanContext(ctx)
 			list, scanErr := purge.ScanLibraryAdult(ctx, libStore, rules, "", adultPurgeCatalogTags(ctx, httpClient, connStore, scStore, settingsStore))
 			matched, err = len(list), scanErr
 		}

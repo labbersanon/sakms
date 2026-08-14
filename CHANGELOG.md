@@ -7742,4 +7742,17 @@ only when the phash hit is a different catalog identity). Local
 (unidentified) scenes stay untagged. GET `/tracked` still does not look
 up the catalog.
 
+## 2026-08-14 (later, same day) — Clean-up Scan no longer 504s on tag backfill
+
+The first Adult Clean-up Scan after catalog-tag persist hit VPS nginx's
+300s `proxy_read_timeout`. Scene-by-id backfill used Identify's 1s/host
+throttle (~250 lookups), Traefik recorded 499, and `ReplacePending` ran
+on the canceled request context so the queue stayed empty even though
+126 scenes already had tags (including Bondage/Pee).
+
+Scene-by-id backfill no longer waits on that throttle. Backfill is
+capped at 90s on a child context; matching and queue replace use
+`WithoutCancel` so a proxy abort cannot drop the results. A later Scan
+still fill-if-empty remaining untagged identified scenes.
+
 

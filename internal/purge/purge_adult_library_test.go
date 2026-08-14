@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -320,5 +321,52 @@ func TestScanLibraryAdult_DoesNotLookupWhenNoTagRules(t *testing.T) {
 	}
 	if len(tags) != 0 {
 		t.Errorf("size-only rule must not backfill catalog tags, got %v", tags)
+	}
+}
+
+type blockingCatalogTags struct{}
+
+func (blockingCatalogTags) TagsByPHash(ctx context.Context, _ []string) (map[string]CatalogTagHit, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (blockingCatalogTags) TagsByID(ctx context.Context, _, _ string) ([]string, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestScanLibraryAdult_BackfillDeadlineStillMatchesTaggedScenes(t *testing.T) {
+	prev := catalogTagBackfillBudget
+	catalogTagBackfillBudget = 20 * time.Millisecond
+	t.Cleanup(func() { catalogTagBackfillBudget = prev })
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	tagged, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s-tagged", Title: "Already Tagged", RootFolderPath: "/media/Adult",
+		PHash: "phash-tagged",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := libStore.AddSceneTag(ctx, tagged.ID, "Bondage"); err != nil {
+		t.Fatalf("AddSceneTag: %v", err)
+	}
+	if _, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s-slow", Title: "Needs Lookup", RootFolderPath: "/media/Adult",
+		PHash: "phash-slow",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibraryAdult(ctx, libStore, []pruning.Rule{
+		{Name: "BDSM", Mode: string(mode.Adult), Tags: []string{"Bondage"}, Enabled: true},
+	}, "", blockingCatalogTags{})
+	if err != nil {
+		t.Fatalf("scan must not fail when backfill hits its budget, got %v", err)
+	}
+	if len(got) != 1 || got[0].TrackedID != int(tagged.ID) {
+		t.Fatalf("got %+v, want the already-tagged scene %d", got, tagged.ID)
 	}
 }

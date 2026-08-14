@@ -18,6 +18,12 @@ import (
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
+func adultPurgeScanContext(parent context.Context) context.Context {
+	// WithoutCancel: a proxy/client abort must not cancel ReplacePending after
+	// tags were already written (live 499 left the queue empty).
+	return context.WithoutCancel(parent)
+}
+
 // identifyCatalogTags adapts *identify.Identifier to purge.CatalogTagSource
 // so Adult Clean-up can fill-if-empty library_scene_tags from the catalog.
 type identifyCatalogTags struct {
@@ -52,11 +58,14 @@ func (t identifyCatalogTags) TagsByID(ctx context.Context, box, sceneID string) 
 	if t.id.Boxes == nil {
 		return nil, nil
 	}
-	if t.id.Throttle != nil {
-		if err := t.id.Throttle.Wait(ctx, box); err != nil {
-			return nil, err
-		}
-	}
+	// Claude 2026-08-14: do NOT Wait on Identify.Throttle here.
+	// Reason: Adult Clean-up backfill is one FindScene per untagged scene.
+	//   Throttle is 1s/host (identify's interactive cascade). 250 leftovers
+	//   took ~5 min; VPS nginx proxy_read_timeout is 300s, so the scan 504'd
+	//   and Traefik canceled the request (499) before ReplacePending.
+	// Troubleshooting: POST /api/modes/adult/purge/scan returned nginx 504
+	//   HTML in the Clean-up page; 126/250 scenes were tagged, queue empty.
+	// Review if: backfill is a batched GraphQL lookup or runs off the request.
 	res, err := t.id.Boxes.ResolveCatalogRef(ctx, box, sceneID, false)
 	if err != nil || res == nil {
 		return nil, err
@@ -129,6 +138,7 @@ func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, scS
 		case mode.Series:
 			found, err = purge.ScanLibrarySeries(ctx, libStore, rules)
 		case mode.Adult:
+			ctx = adultPurgeScanContext(ctx)
 			found, err = purge.ScanLibraryAdult(ctx, libStore, rules, aspect, adultPurgeCatalogTags(ctx, httpClient, connStore, scStore, settingsStore))
 		default:
 			http.Error(w, fmt.Sprintf("unknown mode %q", m), http.StatusBadRequest)

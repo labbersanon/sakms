@@ -731,7 +731,7 @@ describe("PurgeRulesCard — the tags condition", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Add tag to criterion 1" }),
     );
-    expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(1);
+    expect(screen.getAllByLabelText("Remove Bondage")).toHaveLength(1);
   });
 });
 

@@ -67,7 +67,7 @@ describe("TmdbRowView", () => {
     expect(screen.getByText("Trend Movie").closest(".grid-cols-2")).not.toBeNull();
     const poster = screen.getByRole("button", { name: "Trend Movie" });
     expect(poster.parentElement?.className).toContain("w-full");
-    expect(poster.parentElement?.className).not.toContain("w-[220px]");
+    expect(poster.parentElement?.className).not.toContain("w-[140px]");
     const back = screen.getByText("Back to Discover");
     expect(back).toBeInTheDocument();
     expect(back.className).toContain("bg-surface/95");
@@ -131,7 +131,7 @@ describe("AdultNewestRowView", () => {
     ).toContain("w-full");
     expect(
       screen.getByRole("button", { name: "View All Scene" }).className,
-    ).not.toContain("w-[240px]");
+    ).not.toContain("w-[160px]");
     expect(screen.queryByText("View all")).not.toBeInTheDocument();
   });
 

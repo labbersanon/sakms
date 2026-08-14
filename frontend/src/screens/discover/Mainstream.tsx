@@ -74,7 +74,7 @@ import {
   updateRssFeed,
 } from "../../api/rssFeeds";
 import { TraktWatchlistRow } from "../../components/TraktWatchlistRow";
-import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS } from "../../components/media";
+import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS, MEDIA_CAROUSEL_POSTER_CLASS } from "../../components/media";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
@@ -405,7 +405,7 @@ export const PosterCard: Component<{
     props.onDetail({ mode: props.mode, item: props.item });
   };
   return (
-    <div class={props.layout === "grid" ? "min-w-0 w-full" : "w-[220px] shrink-0"}>
+    <div class={props.layout === "grid" ? "min-w-0 w-full" : MEDIA_CAROUSEL_POSTER_CLASS}>
       {/* Claude 2026-08-13: outer wrapper stays for SeriesSeasonSelect
           siblings (nested buttons cannot live inside MediaCardShell).
           AdultCard/LibraryCard collapsed their wrappers onto the shell;
@@ -593,7 +593,7 @@ const LibraryCard: Component<{
 
   return (
     <MediaCardShell
-      class="w-[220px] shrink-0"
+      class={MEDIA_CAROUSEL_POSTER_CLASS}
       label={props.item.title}
       title={props.item.title}
       disabled={!clickable()}

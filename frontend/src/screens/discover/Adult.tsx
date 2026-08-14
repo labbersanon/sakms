@@ -55,7 +55,7 @@ import {
   fetchPerformerGenders,
   updateAdultNewestRow,
 } from "../../api/adultNewestRows";
-import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS } from "../../components/media";
+import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS, MEDIA_CAROUSEL_ADULT_CLASS, MEDIA_CAROUSEL_ENTITY_CLASS } from "../../components/media";
 import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
 import {
   type GrabTarget,
@@ -141,9 +141,10 @@ export const AdultCard: Component<{
   // keeps Scenes at 16:9. Width lives on MediaCardShell (wrapper collapsed).
   // Review if: a third Adult card geometry is added.
   aspect?: "video" | "poster";
-  // Claude 2026-08-13: "grid" fills wrap cells; default keeps 240px carousel.
-  // Reason: same mobile wrap overflow as PosterCard. Tests that climb
-  // .w-[240px] are carousel/browse rows (layout omitted).
+  // Claude 2026-08-13: "grid" fills wrap cells; default keeps carousel width.
+  // Claude 2026-08-14: carousel uses MEDIA_CAROUSEL_ADULT_CLASS (160→240).
+  // Reason: a phone showed one 240px poster per home row. Tests climb
+  // .w-[160px] on browse rows (layout omitted).
   // Review if: EntityCard wrap grids appear (they do not today).
   layout?: "row" | "grid";
 }> = (props) => {
@@ -225,20 +226,21 @@ export const AdultCard: Component<{
   // conservative end of the spec's 230-260 band — see
   // .omc/plans/autopilot-impl-discover-card-cleanup.md §3.1. aspect-video is
   // deliberately unchanged (AC7).
-  // Troubleshooting: EntityCard's two w-[200px] tiles below are a DIFFERENT
-  // component and stay at 200px — never find/replace this width in this file.
+  // Troubleshooting: EntityCard uses MEDIA_CAROUSEL_ENTITY_CLASS — never
+  // find/replace AdultCard's width onto EntityCard.
   // Review if: the carousel's visible-card count drops below 3 on desktop.
   //
   // Claude 2026-08-13: width moved onto MediaCardShell (wrapper collapsed).
-  // Reason: leftover cinematic after Slice 3; tests climb .w-[240px] on the
-  // button. SelectCheckbox stays display-only inside the shell.
+  // Claude 2026-08-14: tests climb .w-[160px] (mobile carousel token).
+  // Reason: leftover cinematic after Slice 3; SelectCheckbox stays
+  // display-only inside the shell.
   // Review if: a nested interactive control is added inside the poster frame.
   return (
     <MediaCardShell
       class={
         props.layout === "grid"
           ? "group min-w-0 w-full"
-          : "group w-[240px] shrink-0"
+          : `group ${MEDIA_CAROUSEL_ADULT_CLASS}`
       }
       label={props.item.title}
       onClick={onBody}
@@ -371,14 +373,14 @@ const EntityCard: Component<{
     <Show
       when={props.onSelect}
       fallback={
-        <div class="w-[200px] shrink-0 text-left" title={hoverTitle()}>
+        <div class={`${MEDIA_CAROUSEL_ENTITY_CLASS} text-left`} title={hoverTitle()}>
           {artwork()}
         </div>
       }
     >
       {(onSelect) => (
         <MediaCardShell
-          class="w-[200px] shrink-0"
+          class={MEDIA_CAROUSEL_ENTITY_CLASS}
           label={props.name}
           title={hoverTitle()}
           onClick={() => onSelect()()}

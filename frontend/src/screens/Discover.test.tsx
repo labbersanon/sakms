@@ -323,7 +323,7 @@ describe("Discover — custom slider rows", () => {
     // Review if: sliders ever gain a mode-independent grab path.
     const movieCard = screen
       .getByText("Mixed Movie Item")
-      .closest("div.w-\\[220px\\]") as HTMLElement;
+      .closest("div.w-\\[140px\\]") as HTMLElement;
     fireEvent.click(within(movieCard).getByText("Mixed Movie Item"));
     // Movies are ungated: the popup's resolution selector renders immediately
     // and no season grid is offered.
@@ -341,7 +341,7 @@ describe("Discover — custom slider rows", () => {
 
     const showCard = screen
       .getByText("Mixed Show Item")
-      .closest("div.w-\\[220px\\]") as HTMLElement;
+      .closest("div.w-\\[140px\\]") as HTMLElement;
     fireEvent.click(within(showCard).getByText("Mixed Show Item"));
     // Series are gated: the two-level poster GRID renders first (not the
     // free-text S/E inputs it replaced), and the availability grid stays
@@ -386,7 +386,7 @@ describe("Discover — custom slider rows", () => {
 
     render(() => <DiscoverMainstream />);
     const card = (await screen.findByText("Gridded Show")).closest(
-      "div.w-\\[220px\\]",
+      "div.w-\\[140px\\]",
     ) as HTMLElement;
 
     fireEvent.click(within(card).getByText("Gridded Show"));
@@ -529,7 +529,7 @@ describe("Discover — existing-library row", () => {
     // AC2: the inline Grab button is gone; the body click replaced it.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
     expect(card).toHaveClass("cursor-pointer");
-    expect(card).toHaveClass("w-[220px]");
+    expect(card).toHaveClass("w-[140px]");
 
     fireEvent.click(card);
     // The popup's own resolution selector — markup a LibraryCard never renders.
@@ -1045,13 +1045,13 @@ describe("Discover — Adult stash-box provenance (no stash-box rows)", () => {
 
     // The TPDB scene's subtitle has no source label. getByText("Plain TPDB
     // Scene") returns the title <div> itself (Element.closest matches self),
-    // so climb to the card's outer wrapper (the "w-[240px]" card root, a sibling
+    // so climb to the card's outer wrapper (the carousel card root, a sibling
     // container of the subtitle <div>) before scoping the query. Scoped to
     // the dedicated subtitle line (.text-xs.text-muted), not the whole card —
     // the card's CSS-only hover overlay (DetailPopup wiring) also renders the
     // same "Tushy · 2023" text for its truncated preview, which a bare
     // within(card).getByText match would ambiguously match twice.
-    const tpdbCard = screen.getByText("Plain TPDB Scene").closest(".w-\\[240px\\]");
+    const tpdbCard = screen.getByText("Plain TPDB Scene").closest(".w-\\[160px\\]");
     const tpdbSubtitle = (tpdbCard as HTMLElement).querySelector(
       ".text-xs.text-muted",
     );
@@ -1063,7 +1063,7 @@ describe("Discover — Adult stash-box provenance (no stash-box rows)", () => {
     // rather than a text match, since the title itself ("Merged StashDB
     // Scene") also contains the substring "StashDB" and the subtitle also
     // carries a year segment (studio · year · source).
-    const stashCard = screen.getByText("Merged StashDB Scene").closest(".w-\\[240px\\]");
+    const stashCard = screen.getByText("Merged StashDB Scene").closest(".w-\\[160px\\]");
     const stashSubtitle = (stashCard as HTMLElement).querySelector(
       ".text-xs.text-muted",
     );
@@ -1150,12 +1150,12 @@ describe("Discover — Adult admin newest rows", () => {
     // time — AdultCard went 200px → 240px, EntityCard deliberately stayed at
     // 200px (a studio/performer tile is not a scene card).
     // Review if: EntityCard is ever resized to match AdultCard.
-    const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[240px\\]") as HTMLElement;
+    const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[160px\\]") as HTMLElement;
     fireEvent.click(within(sceneCard).getByText("Fresh Scene"));
     expect(await screen.findByText("480p")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Close"));
 
-    const perfCard = screen.getByText("Fresh Performer").closest(".w-\\[200px\\]") as HTMLElement;
+    const perfCard = screen.getByText("Fresh Performer").closest(".w-\\[140px\\]") as HTMLElement;
     // This null check IS the 200px/240px divergence guard — without it, an
     // EntityCard resized to 240px makes .closest() return null and every
     // assertion below silently passes against nothing.
@@ -1437,7 +1437,7 @@ describe("Discover — Adult Movies tab", () => {
 
     expect(await screen.findByText("Fresh Scene")).toBeInTheDocument();
     expect(screen.queryByText("Catalog Movie Title")).not.toBeInTheDocument();
-    const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[240px\\]") as HTMLElement;
+    const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[160px\\]") as HTMLElement;
     expect(sceneCard.querySelector(".aspect-video")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View all Newest Scenes" })).toHaveAttribute(
       "href",
@@ -1450,7 +1450,7 @@ describe("Discover — Adult Movies tab", () => {
     expect(screen.queryByText("Fresh Scene")).not.toBeInTheDocument();
     const movieCard = screen
       .getByText("Catalog Movie Title")
-      .closest(".w-\\[240px\\]") as HTMLElement;
+      .closest(".w-\\[160px\\]") as HTMLElement;
     expect(movieCard.querySelector(".aspect-\\[2\\/3\\]")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View all Newest Movies" })).toHaveAttribute(
       "href",
@@ -1745,7 +1745,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     clickMoviesTab();
     await screen.findByText("Hover Movie");
 
-    const card = screen.getByText("Hover Movie").closest("div.w-\\[220px\\]") as HTMLElement;
+    const card = screen.getByText("Hover Movie").closest("div.w-\\[140px\\]") as HTMLElement;
     // The old title=overview tooltip is gone from the card's outer wrapper.
     expect(card.getAttribute("title")).toBeNull();
 
@@ -1778,7 +1778,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     render(() => <DiscoverMainstream />);
     clickMoviesTab();
     await screen.findByText("Click Movie");
-    const card = screen.getByText("Click Movie").closest("div.w-\\[220px\\]") as HTMLElement;
+    const card = screen.getByText("Click Movie").closest("div.w-\\[140px\\]") as HTMLElement;
 
     // AC1: no inline Grab button survives on the card itself.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
@@ -1813,7 +1813,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     render(() => <DiscoverAdult />);
     await screen.findByText("Hover Scene");
 
-    const card = screen.getByText("Hover Scene").closest(".w-\\[240px\\]") as HTMLElement;
+    const card = screen.getByText("Hover Scene").closest(".w-\\[160px\\]") as HTMLElement;
     expect(card.getAttribute("title")).toBeNull();
 
     const overlay = within(card).getByText("Tushy · 2023", { selector: "p" });
@@ -1852,7 +1852,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
 
     render(() => <DiscoverAdult />);
     await screen.findByText("Click Scene");
-    const card = screen.getByText("Click Scene").closest(".w-\\[240px\\]") as HTMLElement;
+    const card = screen.getByText("Click Scene").closest(".w-\\[160px\\]") as HTMLElement;
 
     // AC3: no inline Grab button survives on the scene card itself.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();

@@ -29,7 +29,7 @@ import type { RssFeedItem } from "@dto";
 import { libraryRootFolder, manualGrab } from "../../api/grab";
 import { proxyImage } from "../../api/discover";
 import { Button, ErrorText } from "../../components/ui";
-import { MediaFallbackTile } from "../../components/media";
+import { MediaFallbackTile, MEDIA_CAROUSEL_POSTER_CLASS } from "../../components/media";
 
 // formatSize renders a byte count as a short human-readable size — "" when
 // absent (SizeBytes is 0/omitted for a malformed/no-enclosure item).
@@ -95,7 +95,7 @@ export const RssFeedCard: Component<{
   };
 
   return (
-    <div class="w-[220px] shrink-0">
+    <div class={MEDIA_CAROUSEL_POSTER_CLASS}>
       <Show
         when={resolved()}
         fallback={

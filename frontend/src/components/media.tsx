@@ -8,6 +8,20 @@ import { type Component, type JSX, Index, Show } from "solid-js";
 export const MEDIA_POSTER_GRID_CLASS =
   "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6";
 
+// Claude 2026-08-14: Discover HOME carousel cards shrink on a phone so ~2
+// posters peek instead of one 220/240px tile filling the row.
+// Reason: wrap/search/View All already use MEDIA_POSTER_GRID_CLASS; home
+// carousels kept a desktop-only width. Calendar month cells stay 220px.
+// Troubleshooting: tests climb the mobile token (w-[140px]/w-[160px]); md:
+// restores the previous desktop size.
+// Review if: home rows switch to a snap-scroll library.
+export const MEDIA_CAROUSEL_POSTER_CLASS =
+  "w-[140px] shrink-0 sm:w-[180px] md:w-[220px]";
+export const MEDIA_CAROUSEL_ADULT_CLASS =
+  "w-[160px] shrink-0 sm:w-[200px] md:w-[240px]";
+export const MEDIA_CAROUSEL_ENTITY_CLASS =
+  "w-[140px] shrink-0 sm:w-[170px] md:w-[200px]";
+
 type MediaGridSkeletonProps = {
   count?: number;
   // Claude 2026-08-13: aspect is CSS aspect-ratio, default 2 / 3.
@@ -63,7 +77,7 @@ export const MediaCardShell: Component<{
     type="button"
     // Claude 2026-08-13: width is caller-owned (default w-full for Library
     // grid). Reason: Discover carousel cards collapse their extra wrapper onto
-    // this button (w-[220px]/w-[240px]/w-[200px]); a hardcoded w-full fights
+    // this button (MEDIA_CAROUSEL_* or w-full); a hardcoded w-full fights
     // those classes in Tailwind.
     // Review if: every caller passes an explicit width class.
     class={`flex cursor-pointer flex-col overflow-hidden rounded-lg border-2 bg-surface text-left transition focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-default ${props.class ?? "w-full"}`}

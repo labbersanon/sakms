@@ -544,9 +544,7 @@ describe("Discover search — a searched Series result opens the release picker 
       screen.getByPlaceholderText("Search movies & shows…").closest("form")!,
     );
 
-    const card = (await screen.findByText("Searched Series")).closest(
-      "div.w-\\[220px\\]",
-    ) as HTMLElement;
+    const card = await screen.findByRole("button", { name: "Searched Series" });
     // These four checks used to discriminate a searched card (no Grab, no
     // season picker) from a browse card (had both, inline). Since the Discover
     // card cleanup removed the inline Grab button — and the season/episode
@@ -566,7 +564,7 @@ describe("Discover search — a searched Series result opens the release picker 
     ).not.toBeInTheDocument();
 
     // Clicking the card body opens the picker; exactly one /search fired, no auto-grab.
-    fireEvent.click(within(card).getByText("Searched Series"));
+    fireEvent.click(card);
     expect(
       await screen.findByText("Searched.Series.S01.1080p-GRP"),
     ).toBeInTheDocument();

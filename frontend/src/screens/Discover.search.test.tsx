@@ -147,9 +147,8 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       screen.getByPlaceholderText("Search movies & shows…").closest("form")!,
     );
 
-    const card = (await screen.findByText("Catalog Movie")).closest(
-      "div.w-\\[220px\\]",
-    ) as HTMLElement;
+    // Search results use layout="grid" (w-full), not the carousel 220px width.
+    const card = await screen.findByRole("button", { name: "Catalog Movie" });
     // Catalog step: tmdb-search fired, ZERO Prowlarr release-picker /search.
     expect(calls.some((c) => c.url.includes("/api/modes/movies/tmdb-search"))).toBe(true);
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
@@ -160,7 +159,7 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
 
     // Click the card body → exactly one /search; picker lists BOTH quality
     // variants (dedupeReleases keeps distinct variants selectable).
-    fireEvent.click(within(card).getByText("Catalog Movie"));
+    fireEvent.click(card);
     expect(await screen.findByText("Catalog.Movie.2160p-GRP")).toBeInTheDocument();
     expect(screen.getByText("Catalog.Movie.1080p-GRP")).toBeInTheDocument();
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(1);
@@ -198,10 +197,8 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       screen.getByPlaceholderText("Search movies & shows…").closest("form")!,
     );
 
-    const card = (await screen.findByText("Pick Movie")).closest(
-      "div.w-\\[220px\\]",
-    ) as HTMLElement;
-    fireEvent.click(within(card).getByText("Pick Movie"));
+    const card = await screen.findByRole("button", { name: "Pick Movie" });
+    fireEvent.click(card);
     fireEvent.click(await screen.findByText("Pick.Movie.1080p-GRP")); // ensure open
     fireEvent.click(screen.getByText("Grab")); // the picker row's grab
 
@@ -238,10 +235,8 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       screen.getByPlaceholderText("Search movies & shows…").closest("form")!,
     );
 
-    const card = (await screen.findByText("Empty Movie")).closest(
-      "div.w-\\[220px\\]",
-    ) as HTMLElement;
-    fireEvent.click(within(card).getByText("Empty Movie"));
+    const card = await screen.findByRole("button", { name: "Empty Movie" });
+    fireEvent.click(card);
     expect(
       await screen.findByText("No releases found for this title."),
     ).toBeInTheDocument();
@@ -298,9 +293,7 @@ describe("Discover search — Adult one-shot", () => {
       screen.getByPlaceholderText("Search scenes by title…").closest("form")!,
     );
 
-    const card = (await screen.findByText("Adult Search Scene")).closest(
-      ".w-\\[240px\\]",
-    ) as HTMLElement;
+    const card = await screen.findByRole("button", { name: "Adult Search Scene" });
     expect(calls.filter((c) => isAdultSearchCall(c.url))).toHaveLength(1);
     // No inline Grab button on this searched scene card — no longer
     // M3-discriminating on its own (see the CORRECTED header note above); the
@@ -310,7 +303,7 @@ describe("Discover search — Adult one-shot", () => {
 
     // Opening the picker consumes the inline variants — zero further network calls.
     const before = calls.length;
-    fireEvent.click(within(card).getByText("Adult Search Scene"));
+    fireEvent.click(card);
     expect(await screen.findByText("Adult.Scene.XXX.2160p-GRP")).toBeInTheDocument();
     expect(screen.getByText("Adult.Scene.XXX.1080p-GRP")).toBeInTheDocument();
     expect(calls.length).toBe(before);
@@ -348,10 +341,8 @@ describe("Discover search — Adult one-shot", () => {
       screen.getByPlaceholderText("Search scenes by title…").closest("form")!,
     );
 
-    const card = (await screen.findByText("Grab Scene")).closest(
-      ".w-\\[240px\\]",
-    ) as HTMLElement;
-    fireEvent.click(within(card).getByText("Grab Scene"));
+    const card = await screen.findByRole("button", { name: "Grab Scene" });
+    fireEvent.click(card);
     fireEvent.click(await screen.findByText("Grab.Scene.1080p"));
     fireEvent.click(screen.getByText("Grab"));
 
@@ -416,11 +407,9 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
 
     render(() => <DiscoverMainstream />);
     clickMoviesTab();
-    const card = (await screen.findByText("Browse Movie")).closest(
-      "div.w-\\[220px\\]",
-    ) as HTMLElement;
+    const card = await screen.findByRole("button", { name: "Browse Movie" });
     // Clicking the body opens DetailPopup (popup-only "480p" markup), not the picker.
-    fireEvent.click(within(card).getByText("Browse Movie"));
+    fireEvent.click(card);
     expect(await screen.findByText("480p")).toBeInTheDocument();
     // Zero release-picker /search calls ever fired.
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
@@ -444,11 +433,9 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
     });
 
     render(() => <DiscoverAdult />);
-    const card = (await screen.findByText("Browse Scene")).closest(
-      ".w-\\[240px\\]",
-    ) as HTMLElement;
+    const card = await screen.findByRole("button", { name: "Browse Scene" });
     // Clicking the body opens DetailPopup, not the picker.
-    fireEvent.click(within(card).getByText("Browse Scene"));
+    fireEvent.click(card);
     expect(await screen.findByText("480p")).toBeInTheDocument();
     expect(calls.filter((c) => isAdultSearchCall(c.url))).toHaveLength(0);
   });

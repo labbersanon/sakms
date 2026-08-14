@@ -484,10 +484,16 @@ describe("Discover — existing-library row", () => {
     expect(await screen.findByText("In your library")).toBeInTheDocument();
     expect(await screen.findByText("Owned Show")).toBeInTheDocument();
     expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "View all In your library" }),
+    ).toHaveAttribute("href", "/library/mainstream?tab=series");
 
     clickMoviesTab();
     expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
     expect(screen.queryByText("Owned Show")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "View all In your library" }),
+    ).toHaveAttribute("href", "/library/mainstream?tab=movies");
 
     // The lazily-resolved library poster renders through the proxy.
     const img = await screen.findByRole("img", { name: "Owned Movie" });

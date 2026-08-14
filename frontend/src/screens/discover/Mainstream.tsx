@@ -686,10 +686,14 @@ const LibraryRow: Component<{
         )}
         onLoadMore={() => setVisible((n) => n + LIBRARY_PAGE_SIZE)}
         hasMore={hasMore()}
+        // Claude 2026-08-14: View all opens Library, not /discover/row/library.
+        // Reason: Library is the mode-tab catalog (search/filter/tags). Discover
+        //   Movies → ?tab=movies, Series → ?tab=series — same tab keys Dashboard
+        //   already uses. Adult Discover has no In your library row.
+        // Troubleshooting: wrong Library tab → LibraryRow did not get contentType.
+        // Review if: Adult Discover gains an In your library row (/library/adult).
         viewAll={{
-          href: props.mode
-            ? `/discover/row/library/${props.mode}`
-            : "/discover/row/library",
+          href: `/library/mainstream?tab=${props.mode === "series" ? "series" : "movies"}`,
         }}
       />
     </Show>

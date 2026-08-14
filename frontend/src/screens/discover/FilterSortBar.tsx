@@ -252,19 +252,29 @@ const ADULT_SORT_LABELS: Record<AdultSortValue, string> = {
 export const AdultSortBar: Component<{
   value: () => AdultSortValue;
   onChange: (v: AdultSortValue) => void;
-}> = (props) => (
-  <div class="mb-4 rounded-xl border border-border bg-surface p-4">
-    <div class={FILTER_BAR_FIELDS_CLASS}>
-      <SelectField
-        id="discover-adult-sort"
-        label="Sort"
-        value={props.value()}
-        onChange={(v) => props.onChange(v as AdultSortValue)}
-      >
-        <For each={ADULT_SORT_OPTIONS}>
-          {(opt) => <option value={opt}>{ADULT_SORT_LABELS[opt]}</option>}
-        </For>
-      </SelectField>
+  // Claude 2026-08-13: Movies has no TPDB BrowseMovies (1A). Omit recently_*.
+  // Reason: 2.0b unpark — Movies sort is the pooled Newest Releases feed only.
+  // Review if: a movie catalog browse lands.
+  includeCatalogBrowse?: boolean;
+}> = (props) => {
+  const options = () =>
+    props.includeCatalogBrowse === false
+      ? ADULT_SORT_OPTIONS.filter((o) => o === "default" || o === "newest")
+      : ADULT_SORT_OPTIONS;
+  return (
+    <div class="mb-4 rounded-xl border border-border bg-surface p-4">
+      <div class={FILTER_BAR_FIELDS_CLASS}>
+        <SelectField
+          id="discover-adult-sort"
+          label="Sort"
+          value={props.value()}
+          onChange={(v) => props.onChange(v as AdultSortValue)}
+        >
+          <For each={options()}>
+            {(opt) => <option value={opt}>{ADULT_SORT_LABELS[opt]}</option>}
+          </For>
+        </SelectField>
+      </div>
     </div>
-  </div>
-);
+  );
+};

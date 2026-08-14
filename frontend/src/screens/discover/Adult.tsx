@@ -428,10 +428,15 @@ export const AdultDiscover: Component<{
   // Claude 2026-08-13: "movie" is Discover Adult Movies (1A). Default "scene"
   // keeps every existing mount on Scenes. One component, two Show-swapped
   // mounts — per-tab state reset is expected.
-  // Review if: Movies gains search/sort (blocked: no movie-scoped backend).
+  // Claude 2026-08-13: 2.0b unparked — Movies gets search, sort (pool Newest
+  // only), and RowEditor. Same search/recent pool as Scenes (2.0a). TPDB
+  // recently_* browse stays Scenes-only (no BrowseMovies, 1A). Entity
+  // studio/performer rows stay Scenes-only (1A).
+  // Review if: a movie-scoped search SQL lands and 2.0a can split the pool.
   kind?: "scene" | "movie";
 }> = (props) => {
   const kind = () => props.kind ?? "scene";
+  const cardAspect = () => (kind() === "movie" ? "poster" : "video");
   // Claude 2026-08-02: the grabTarget signal (and the <GrabDialog> it drove)
   // was removed along with AdultCard's inline Grab button — AdultCard was its
   // only writer, so both became unreachable.
@@ -800,7 +805,6 @@ export const AdultDiscover: Component<{
 
   return (
     <div>
-      <Show when={kind() === "scene"}>
       <form
         class="mb-4 flex gap-2"
         onSubmit={(e) => {
@@ -814,7 +818,11 @@ export const AdultDiscover: Component<{
       >
         <input
           class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-          placeholder="Search scenes by title…"
+          placeholder={
+            kind() === "movie"
+              ? "Search movies by title…"
+              : "Search scenes by title…"
+          }
           value={draft()}
           onInput={(e) => setDraft(e.currentTarget.value)}
         />
@@ -822,10 +830,13 @@ export const AdultDiscover: Component<{
           <Button onClick={clearSearch}>Clear</Button>
         </Show>
       </form>
-      </Show>
 
-      <Show when={kind() === "scene" && !searching() && !drill()}>
-        <AdultSortBar value={adultSort} onChange={applyAdultSort} />
+      <Show when={!searching() && !drill()}>
+        <AdultSortBar
+          value={adultSort}
+          onChange={applyAdultSort}
+          includeCatalogBrowse={kind() !== "movie"}
+        />
       </Show>
 
       <Show when={setupError()}>
@@ -857,7 +868,7 @@ export const AdultDiscover: Component<{
                 when={sorting()}
                 fallback={
                   <>
-                <Show when={kind() === "scene" && props.editMode?.()}>
+                <Show when={props.editMode?.()}>
                   <RowEditor
                     rows={rowDescriptors()}
                     onReorder={(keys) => {
@@ -907,7 +918,12 @@ export const AdultDiscover: Component<{
                   containerClass={MEDIA_POSTER_GRID_CLASS}
                 >
                   {(item) => (
-                    <AdultCard item={item} onDetail={setDetailTarget} layout="grid" />
+                    <AdultCard
+                      item={item}
+                      onDetail={setDetailTarget}
+                      aspect={cardAspect()}
+                      layout="grid"
+                    />
                   )}
                 </PaginatedStrip>
               </Show>
@@ -1025,7 +1041,7 @@ export const AdultDiscover: Component<{
           <Show when={!results.loading} fallback={<Muted>Searching…</Muted>}>
             <Show
               when={(results()?.items?.length ?? 0) > 0}
-              fallback={<Muted>No scenes found.</Muted>}
+              fallback={<Muted>No {kind() === "movie" ? "movies" : "scenes"} found.</Muted>}
             >
               <div class={MEDIA_POSTER_GRID_CLASS}>
                 <For each={results()?.items}>
@@ -1033,6 +1049,7 @@ export const AdultDiscover: Component<{
                     <AdultCard
                       item={s.scene}
                       onDetail={setDetailTarget}
+                      aspect={cardAspect()}
                       layout="grid"
                       onOpenReleases={() =>
                         setReleasePicker({

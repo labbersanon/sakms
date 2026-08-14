@@ -249,15 +249,13 @@ export const DiscoverAdult: Component = () => {
       <Button class="!px-3 !py-1.5 !text-sm" onClick={toggleSelect}>
         {selection.selectMode() ? "Done selecting" : "Select"}
       </Button>
-      <Show when={tab() === "scenes"}>
-        <Button
-          class="!px-3 !py-1.5 !text-sm"
-          disabled={adultSorting()}
-          onClick={toggleEdit}
-        >
-          {editMode() ? "Done" : "Edit"}
-        </Button>
-      </Show>
+      <Button
+        class="!px-3 !py-1.5 !text-sm"
+        disabled={adultSorting()}
+        onClick={toggleEdit}
+      >
+        {editMode() ? "Done" : "Edit"}
+      </Button>
     </div>
   );
 

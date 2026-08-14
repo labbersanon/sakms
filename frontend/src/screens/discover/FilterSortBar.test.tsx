@@ -226,4 +226,18 @@ describe("AdultSortBar", () => {
     renderSort();
     expect(screen.queryByText("Recently Released")).not.toBeInTheDocument();
   });
+
+  it("omits TPDB catalog browse sorts when includeCatalogBrowse is false", () => {
+    const [value, setValue] = createSignal<AdultSortValue>("default");
+    render(() => (
+      <AdultSortBar
+        value={value}
+        onChange={setValue}
+        includeCatalogBrowse={false}
+      />
+    ));
+    expect(screen.getByText("Newest Releases")).toBeInTheDocument();
+    expect(screen.queryByText("Recently Added")).not.toBeInTheDocument();
+    expect(screen.queryByText("Recently Updated")).not.toBeInTheDocument();
+  });
 });

@@ -147,9 +147,11 @@ describe("Discover — route-specific media tabs", () => {
 
     expect(await screen.findByPlaceholderText("Search scenes by title…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Movies" }));
-    expect(screen.queryByPlaceholderText("Search scenes by title…")).toBeNull();
-    expect(screen.queryByText("Edit")).toBeNull();
+    expect(screen.getByPlaceholderText("Search movies by title…")).toBeInTheDocument();
+    expect(screen.getByText("Edit")).toBeInTheDocument();
     expect(screen.getByText("Select")).toBeInTheDocument();
+    expect(screen.getByLabelText("Sort")).toBeInTheDocument();
+    expect(screen.queryByText("Recently Added")).toBeNull();
   });
 });
 
@@ -1454,8 +1456,8 @@ describe("Discover — Adult Movies tab", () => {
       "href",
       "/discover/row/adult-newest/2",
     );
-    expect(screen.queryByPlaceholderText("Search scenes by title…")).toBeNull();
-    expect(screen.queryByText("Edit")).toBeNull();
+    expect(screen.getByPlaceholderText("Search movies by title…")).toBeInTheDocument();
+    expect(screen.getByText("Edit")).toBeInTheDocument();
     expect(screen.getByText("Select")).toBeInTheDocument();
   });
 
@@ -1477,6 +1479,67 @@ describe("Discover — Adult Movies tab", () => {
     fireEvent.click(screen.getByText("Select"));
     fireEvent.click(screen.getByText("Catalog Movie Title"));
     expect(await screen.findByText("1 selected")).toBeInTheDocument();
+  });
+
+  it("Movies Edit lists every newest row so a reorder still POSTs the full id set", async () => {
+    stubFetch((url) => {
+      if (url.includes("/newest-rows/1/resolve")) return jsonResponse([sceneRelease]);
+      if (url.includes("/newest-rows/2/resolve")) return jsonResponse([movieRelease]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 1, title: "Newest Scenes", rowType: "scene", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+          { id: 2, title: "Newest Movies", rowType: "movie", sortOrder: 1, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <DiscoverAdult />);
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    expect(await screen.findByText("Catalog Movie Title")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Edit"));
+    expect(await screen.findByLabelText("Drag Newest Movies")).toBeTruthy();
+    expect(screen.getByLabelText("Drag Newest Scenes")).toBeTruthy();
+  });
+
+  it("Movies search hits /api/modes/adult/search and renders 2:3 cards", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/adult/search?"))
+        return jsonResponse({
+          items: [
+            {
+              scene: {
+                id: "mh1",
+                title: "Search Movie Hit",
+                studio: "Vixen",
+                date: "2026-01-01",
+                image: "https://cdn.theporndb.net/movies/h.jpg",
+                source: "tpdb",
+              },
+              releases: [],
+            },
+          ],
+          hasMore: false,
+        });
+      if (url.includes("/newest-rows/2/resolve")) return jsonResponse([movieRelease]);
+      if (url.includes("/newest-rows"))
+        return jsonResponse([
+          { id: 2, title: "Newest Movies", rowType: "movie", sortOrder: 0, enabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <DiscoverAdult />);
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    const box = await screen.findByPlaceholderText("Search movies by title…");
+    fireEvent.input(box, { target: { value: "hit" } });
+    fireEvent.submit(box.closest("form")!);
+    expect(await screen.findByText("Search Movie Hit")).toBeInTheDocument();
+    const card = screen.getByRole("button", { name: "Search Movie Hit" });
+    expect(card.querySelector(".aspect-\\[2\\/3\\]")).toBeTruthy();
   });
 });
 

@@ -99,7 +99,6 @@ import {
   ActivityLogPanel,
   AdultOrganizeAspectBar,
   loadAdultOrganizeAspect,
-  saveAdultOrganizeAspect,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -1126,10 +1125,7 @@ export const Dedup: Component = () => {
       <Show when={mode() === "adult"}>
         <AdultOrganizeAspectBar
           value={adultAspect()}
-          onChange={(next) => {
-            setAdultAspect(next);
-            saveAdultOrganizeAspect(next);
-          }}
+          onChange={setAdultAspect}
         />
       </Show>
       <DedupView mode={mode()} adultAspect={adultAspect()} />

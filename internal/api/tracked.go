@@ -189,12 +189,6 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 			// — served straight from libStore, same {id, title, tags} shape as
 			// Movies/Series, keyed on a library_scenes row instead of an
 			// item/series row.
-			//
-			// Claude 2026-08-13: optional ?aspect=vertical|horizontal SQL filter.
-			// Reason: Adult Library Movies vs Scenes share library_scenes;
-			//   classification is write-once at import, this handler must not
-			//   probe images. Omit aspect → unfiltered (Organize All / Tag / legacy).
-			// Review if: frontend Library tabs consume this param.
 			aspect, aerr := parseAdultAspectQuery(r)
 			if aerr != nil {
 				http.Error(w, aerr.Error(), http.StatusBadRequest)
@@ -300,8 +294,6 @@ func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
 	}
 }
 
-// parseAdultAspectQuery reads optional ?aspect=vertical|horizontal for Adult
-// Library and Organize scans. Empty is unfiltered. Invalid values are 400.
 func parseAdultAspectQuery(r *http.Request) (string, error) {
 	return library.ParsePosterAspectFilter(r.URL.Query().Get("aspect"))
 }

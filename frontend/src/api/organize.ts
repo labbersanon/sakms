@@ -7,10 +7,6 @@ import type { Mode } from "./discover";
 
 export type OrganizeWorkflow = "rename" | "dedup" | "purge";
 
-// Claude 2026-08-14: Adult Organize Movies/Scenes chip.
-// Reason: Library tabs already filter ?aspect=; Organize scans default All.
-//   vertical = Movies, horizontal = Scenes. Omitted query = every row.
-// Review if: Organize splits into dedicated Movies/Scenes workflows.
 export type AdultOrganizeAspect = "" | "vertical" | "horizontal";
 
 export function adultAspectQuery(aspect?: string): string {

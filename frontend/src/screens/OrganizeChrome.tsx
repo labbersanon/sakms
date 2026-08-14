@@ -141,7 +141,7 @@ export function loadAdultOrganizeAspect(): AdultOrganizeAspect {
   return "";
 }
 
-export function saveAdultOrganizeAspect(value: AdultOrganizeAspect): void {
+function persistAdultOrganizeAspect(value: AdultOrganizeAspect): void {
   try {
     localStorage.setItem(ADULT_ASPECT_KEY, value);
   } catch {
@@ -173,7 +173,10 @@ export const AdultOrganizeAspectBar: Component<{
             "bg-accent text-accent-fg": props.value === t.id,
             "bg-surface-2 text-muted hover:text-fg": props.value !== t.id,
           }}
-          onClick={() => props.onChange(t.id)}
+          onClick={() => {
+            persistAdultOrganizeAspect(t.id);
+            props.onChange(t.id);
+          }}
         >
           {t.label}
         </button>

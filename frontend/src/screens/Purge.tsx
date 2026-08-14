@@ -74,7 +74,6 @@ import {
   ActivityLogPanel,
   AdultOrganizeAspectBar,
   loadAdultOrganizeAspect,
-  saveAdultOrganizeAspect,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -379,10 +378,7 @@ export const Purge: Component = () => {
       <Show when={mode() === "adult"}>
         <AdultOrganizeAspectBar
           value={adultAspect()}
-          onChange={(next) => {
-            setAdultAspect(next);
-            saveAdultOrganizeAspect(next);
-          }}
+          onChange={setAdultAspect}
         />
       </Show>
       <PurgeView mode={mode()} adultAspect={adultAspect()} />

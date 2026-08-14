@@ -121,10 +121,6 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 	return out, nil
 }
 
-// keepAdultOrganizeProposal is Organize's Adult Movies/Scenes chip.
-// Empty aspect keeps every proposal. Tracked (alternate) rows use the stored
-// write-once class; unmatched files probe MatchResult.Image the same way
-// grab-import does (failed/missing → horizontal / Scenes).
 func keepAdultOrganizeProposal(ctx context.Context, libStore *library.Store, aspect string, p proposals.Proposal, id adultIdentification) bool {
 	if aspect == "" {
 		return true

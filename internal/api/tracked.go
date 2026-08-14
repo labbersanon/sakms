@@ -193,20 +193,19 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 			// Claude 2026-08-13: optional ?aspect=vertical|horizontal SQL filter.
 			// Reason: Adult Library Movies vs Scenes share library_scenes;
 			//   classification is write-once at import, this handler must not
-			//   probe images. Omit aspect → unfiltered (Dedup/Tag/legacy clients).
-			//   Frontend does not send aspect until Slice 3.
+			//   probe images. Omit aspect → unfiltered (Organize All / Tag / legacy).
 			// Review if: frontend Library tabs consume this param.
-			aspect := strings.TrimSpace(r.URL.Query().Get("aspect"))
+			aspect, aerr := parseAdultAspectQuery(r)
+			if aerr != nil {
+				http.Error(w, aerr.Error(), http.StatusBadRequest)
+				return
+			}
 			var scenes []library.Scene
 			var err error
-			switch aspect {
-			case "":
+			if aspect == "" {
 				scenes, err = libStore.ListScenes(ctx)
-			case library.PosterAspectVertical, library.PosterAspectHorizontal:
+			} else {
 				scenes, err = libStore.ListScenesByAspect(ctx, aspect)
-			default:
-				http.Error(w, "aspect must be vertical or horizontal", http.StatusBadRequest)
-				return
 			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -299,4 +298,10 @@ func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "private, max-age=3600")
 		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 	}
+}
+
+// parseAdultAspectQuery reads optional ?aspect=vertical|horizontal for Adult
+// Library and Organize scans. Empty is unfiltered. Invalid values are 400.
+func parseAdultAspectQuery(r *http.Request) (string, error) {
+	return library.ParsePosterAspectFilter(r.URL.Query().Get("aspect"))
 }

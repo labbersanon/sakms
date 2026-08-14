@@ -35,7 +35,7 @@ import (
 // (box, scene_id) is skipped up front via GetScene, rather than punting
 // duplicate detection to "Whisparr's own foreignId uniqueness rejection at
 // Apply time" the way the Servarr-backed Adult path had to.
-func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, hasher PHasher, prober Prober, rootFolderPath string) ([]proposals.Proposal, error) {
+func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, hasher PHasher, prober Prober, rootFolderPath, aspect string) ([]proposals.Proposal, error) {
 	if sess.Identify == nil {
 		return nil, fmt.Errorf("adult identification isn't configured — add a connection for your chosen AI provider and set the AI model in Settings, plus at least one of StashDB/FansDB/TPDB")
 	}
@@ -112,9 +112,33 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 	ids := identifyAdultFiles(ctx, sess, hasher, prober, files)
 
 	for i, c := range candidates {
-		out = append(out, buildAdultLibraryProposal(ctx, libStore, rootFolderPath, c.entry, c.videoPath, ids[i]))
+		p := buildAdultLibraryProposal(ctx, libStore, rootFolderPath, c.entry, c.videoPath, ids[i])
+		if !keepAdultOrganizeProposal(ctx, libStore, aspect, p, ids[i]) {
+			continue
+		}
+		out = append(out, p)
 	}
 	return out, nil
+}
+
+// keepAdultOrganizeProposal is Organize's Adult Movies/Scenes chip.
+// Empty aspect keeps every proposal. Tracked (alternate) rows use the stored
+// write-once class; unmatched files probe MatchResult.Image the same way
+// grab-import does (failed/missing → horizontal / Scenes).
+func keepAdultOrganizeProposal(ctx context.Context, libStore *library.Store, aspect string, p proposals.Proposal, id adultIdentification) bool {
+	if aspect == "" {
+		return true
+	}
+	if p.GiveBackBox != "" && p.GiveBackSceneID != "" {
+		if sc, err := libStore.GetScene(ctx, p.GiveBackBox, p.GiveBackSceneID); err == nil {
+			return library.MatchesPosterAspect(sc.PosterAspectClass, aspect)
+		}
+	}
+	img := ""
+	if id.match != nil {
+		img = id.match.Image
+	}
+	return library.ProbePosterAspect(ctx, img) == aspect
 }
 
 // buildAdultLibraryProposal assembles one library-backed Adult proposal from

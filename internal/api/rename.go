@@ -82,6 +82,12 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, sc
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 
+		aspect, aerr := parseAdultAspectQuery(r)
+		if aerr != nil {
+			http.Error(w, aerr.Error(), http.StatusBadRequest)
+			return
+		}
+
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -148,7 +154,7 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, sc
 			} else if len(upgradeChanges) > 0 {
 				sess.NotifyPlayers(ctx, upgradeChanges)
 			}
-			found, err = rename.ScanLibraryAdult(ctx, sess, libStore, videoHasher, prober, rootPath)
+			found, err = rename.ScanLibraryAdult(ctx, sess, libStore, videoHasher, prober, rootPath, aspect)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

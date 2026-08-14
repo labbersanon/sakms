@@ -189,10 +189,10 @@ func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 	return out, nil
 }
 
-// ListScenesByAspect is ListScenes filtered by poster_aspect_class. Dedup,
-// Purge, Rename, and Upgrade keep using ListScenes (every row). Invalid
-// aspect is the caller's problem — the HTTP layer maps it to 400 before
-// calling this.
+// ListScenesByAspect is ListScenes filtered by poster_aspect_class.
+// Invalid aspect is the caller's problem — ParsePosterAspectFilter maps it
+// to 400 before this runs. Dedup/Purge/Rename scheduled scans still pass
+// empty (every row); operator Organize chips pass vertical or horizontal.
 func (s *Store) ListScenesByAspect(ctx context.Context, aspect string) ([]Scene, error) {
 	out, err := s.queryScenes(ctx, `
 		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url

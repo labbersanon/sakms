@@ -37,7 +37,7 @@ func TestScanLibraryAdult_ProposesOnlyScenesMatchingATagsRule(t *testing.T) {
 
 	got, err := ScanLibraryAdult(ctx, libStore, []pruning.Rule{
 		{Name: "Flagged", Mode: string(mode.Adult), Tags: []string{"BDSM"}, Enabled: true},
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,12 +64,58 @@ func TestScanLibraryAdult_NoRulesMatchNothing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := ScanLibraryAdult(ctx, libStore, nil)
+	got, err := ScanLibraryAdult(ctx, libStore, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected no proposals with no rules configured, got %+v", got)
+	}
+}
+
+func TestScanLibraryAdult_AspectFilterSkipsOtherClass(t *testing.T) {
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	vert, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "movie-1", Title: "Movie", RootFolderPath: "/media/Adult",
+		PosterAspectClass: library.PosterAspectVertical,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	horiz, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "scene-1", Title: "Scene", RootFolderPath: "/media/Adult",
+		PosterAspectClass: library.PosterAspectHorizontal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := libStore.AddSceneTag(ctx, vert.ID, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := libStore.AddSceneTag(ctx, horiz.ID, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	rules := []pruning.Rule{
+		{Name: "Drop", Mode: string(mode.Adult), Tags: []string{"gone"}, Enabled: true},
+	}
+	all, err := ScanLibraryAdult(ctx, libStore, rules, "")
+	if err != nil || len(all) != 2 {
+		t.Fatalf("all = %d err=%v, want 2", len(all), err)
+	}
+	movies, err := ScanLibraryAdult(ctx, libStore, rules, library.PosterAspectVertical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(movies) != 1 || movies[0].TrackedID != int(vert.ID) {
+		t.Fatalf("vertical = %+v", movies)
+	}
+	scenes, err := ScanLibraryAdult(ctx, libStore, rules, library.PosterAspectHorizontal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenes) != 1 || scenes[0].TrackedID != int(horiz.ID) {
+		t.Fatalf("horizontal = %+v", scenes)
 	}
 }
 

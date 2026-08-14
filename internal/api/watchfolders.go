@@ -273,7 +273,7 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 		} else if len(upgradeChanges) > 0 {
 			sess.NotifyPlayers(ctx, upgradeChanges)
 		}
-		found, err = rename.ScanLibraryAdult(ctx, sess, libStore, videoHasher, prober, rootPath)
+		found, err = rename.ScanLibraryAdult(ctx, sess, libStore, videoHasher, prober, rootPath, "")
 		if err != nil {
 			log.Printf("watchfolders: scan adult: %v", err)
 			return

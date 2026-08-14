@@ -42,6 +42,12 @@ func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, set
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 
+		aspect, aerr := parseAdultAspectQuery(r)
+		if aerr != nil {
+			http.Error(w, aerr.Error(), http.StatusBadRequest)
+			return
+		}
+
 		var rules []pruning.Rule
 		var err error
 		if pruningStore != nil {
@@ -61,7 +67,7 @@ func purgeScanHandler(httpClient *http.Client, connStore *connections.Store, set
 		case mode.Adult:
 			// Adult owns its own library now too (Whisparr eliminated, Stage 4)
 			// — served straight from libStore, no *arr app to ask.
-			found, err = purge.ScanLibraryAdult(ctx, libStore, rules)
+			found, err = purge.ScanLibraryAdult(ctx, libStore, rules, aspect)
 		default:
 			http.Error(w, fmt.Sprintf("unknown mode %q", m), http.StatusBadRequest)
 			return

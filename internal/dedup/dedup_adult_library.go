@@ -84,7 +84,7 @@ func attachPHashesScene(ctx context.Context, hasher PHasher, libStore *library.S
 //
 // Both guards live inside this function, mirroring ScanLibrary's own two
 // in-function guards.
-func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
+func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc, aspect string) ([]proposals.Proposal, error) {
 	if sess.Identify == nil {
 		return nil, fmt.Errorf("adult identification isn't configured — add an Ollama connection and set the Ollama model in Settings, plus at least one of StashDB/FansDB/TPDB")
 	}
@@ -164,6 +164,19 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 		trackedScene, isTracked := trackedByKey[key]
 		if !isTracked && len(orphans) < 2 {
 			continue // a single new, untracked scene — nothing to dedup
+		}
+		// Claude 2026-08-14: Organize Adult Movies/Scenes chips.
+		// Reason: poster_aspect_class is write-once on tracked rows. Known
+		//   paths stay unfiltered so a Scenes scan cannot re-discover a movie
+		//   file as an orphan. Untracked multi-orphan groups have no class —
+		//   they only appear on All.
+		// Review if: unmatched groups gain a probe-at-scan class.
+		if isTracked {
+			if !library.MatchesPosterAspect(trackedScene.PosterAspectClass, aspect) {
+				continue
+			}
+		} else if aspect != "" {
+			continue
 		}
 
 		title, studio, date := orphans[0].title, orphans[0].studio, orphans[0].date

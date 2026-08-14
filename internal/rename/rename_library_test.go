@@ -980,7 +980,7 @@ func TestScanLibrary_TrackedPathsNeverBecomeRenameProposals(t *testing.T) {
 			t.Fatalf("seeding tracked scene: %v", err)
 		}
 
-		got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root)
+		got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

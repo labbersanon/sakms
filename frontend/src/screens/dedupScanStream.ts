@@ -86,6 +86,8 @@ export interface DedupScanStreamOptions {
    * liveness backstop's finished-branch — the ONLY places the resolved list is
    * fetched. Dedup wraps its own per-scan state resets into this. */
   refetch: () => unknown | Promise<unknown>;
+  /** Adult Organize chip: vertical/horizontal query on the scan POST. */
+  aspect?: () => string | undefined;
 }
 
 export function useDedupScanStream(
@@ -234,7 +236,7 @@ export function useDedupScanStream(
     setProgress(null);
     setScanning(true);
     armQuietTimer(m);
-    void scanDedup(m).catch((e: unknown) => {
+    void scanDedup(m, m === "adult" ? opts.aspect?.() : undefined).catch((e: unknown) => {
       // A rejected POST (400 bad root, 409 already running, 401 auth) means the
       // scan never started — surface it and reset so the UI is not left stuck.
       setScanning(false);

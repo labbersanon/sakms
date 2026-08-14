@@ -7,6 +7,19 @@ import type { Mode } from "./discover";
 
 export type OrganizeWorkflow = "rename" | "dedup" | "purge";
 
+// Claude 2026-08-14: Adult Organize Movies/Scenes chip.
+// Reason: Library tabs already filter ?aspect=; Organize scans default All.
+//   vertical = Movies, horizontal = Scenes. Omitted query = every row.
+// Review if: Organize splits into dedicated Movies/Scenes workflows.
+export type AdultOrganizeAspect = "" | "vertical" | "horizontal";
+
+export function adultAspectQuery(aspect?: string): string {
+  if (aspect === "vertical" || aspect === "horizontal") {
+    return `?aspect=${aspect}`;
+  }
+  return "";
+}
+
 // Claude 2026-08-05: live vs history list views (deep-interview-organize-hide-applied).
 export type ProposalListView = "live" | "history";
 

@@ -163,7 +163,7 @@ func (a *scanAdapter) ScanRename(ctx context.Context, m mode.Mode) error {
 		if _, upgradeErr := rename.UpgradeLocalAdultScenes(ctx, sess, a.libStore, a.prober); upgradeErr != nil {
 			log.Printf("scan: upgrade local adult scenes: %v", upgradeErr)
 		}
-		found, err = rename.ScanLibraryAdult(ctx, sess, a.libStore, a.videoHasher, a.prober, rootPath)
+		found, err = rename.ScanLibraryAdult(ctx, sess, a.libStore, a.videoHasher, a.prober, rootPath, "")
 	default:
 		return nil
 	}
@@ -200,7 +200,7 @@ func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
 	case mode.Series:
 		found, err = purge.ScanLibrarySeries(ctx, a.libStore, rules)
 	case mode.Adult:
-		found, err = purge.ScanLibraryAdult(ctx, a.libStore, rules)
+		found, err = purge.ScanLibraryAdult(ctx, a.libStore, rules, "")
 	default:
 		return nil
 	}
@@ -259,7 +259,7 @@ func (a *scanAdapter) ScanDedup(ctx context.Context, m mode.Mode, eagerVMAF bool
 	case mode.Series:
 		found, err = dedup.ScanLibrarySeriesPHash(ctx, sess, a.libStore, rootPath, a.prober, a.phashHasher, threshold, nil)
 	case mode.Adult:
-		found, err = dedup.ScanLibraryAdult(ctx, sess, a.libStore, rootPath, a.prober, a.phashHasher, threshold, nil)
+		found, err = dedup.ScanLibraryAdult(ctx, sess, a.libStore, rootPath, a.prober, a.phashHasher, threshold, nil, "")
 	default:
 		return nil
 	}

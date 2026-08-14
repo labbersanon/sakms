@@ -45,6 +45,7 @@ import {
 } from "solid-js";
 import type { ApplyBatchItem, ApplyBatchResponse } from "@dto";
 import type { Mode } from "../api/discover";
+import type { AdultOrganizeAspect } from "../api/organize";
 import {
   type Proposal,
   type ProposalStatus,
@@ -71,6 +72,9 @@ import {
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
 import {
   ActivityLogPanel,
+  AdultOrganizeAspectBar,
+  loadAdultOrganizeAspect,
+  saveAdultOrganizeAspect,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -79,7 +83,7 @@ import { PurgeRulesCard } from "./PurgeRulesCard";
 
 // PurgeView is one mode's Rules card + delete-review queue. Keyed on
 // props.mode so both refetch when the shell switches tabs.
-const PurgeView: Component<{ mode: Mode }> = (props) => {
+const PurgeView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (props) => {
   const [pageSize, setPageSize] = createSignal(loadPageSize("purge"));
   const [offset, setOffset] = createSignal(0);
   const [logKey, setLogKey] = createSignal(0);
@@ -128,7 +132,8 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
         setOffset(0);
         setApplyProgress("");
       },
-      scanFn: scanPurge,
+      scanFn: (m) =>
+        scanPurge(m, m === "adult" ? props.adultAspect : undefined),
       resetAfterScan: () => {
         selection.clear();
         setBatchResult(null);
@@ -365,10 +370,22 @@ const PurgeView: Component<{ mode: Mode }> = (props) => {
 // matching Rules card + delete queue.
 export const Purge: Component = () => {
   const [mode, setMode] = createSignal<Mode>("movies");
+  const [adultAspect, setAdultAspect] = createSignal<AdultOrganizeAspect>(
+    loadAdultOrganizeAspect(),
+  );
   return (
     <div>
       <ModeTabs current={mode} onSelect={setMode} />
-      <PurgeView mode={mode()} />
+      <Show when={mode() === "adult"}>
+        <AdultOrganizeAspectBar
+          value={adultAspect()}
+          onChange={(next) => {
+            setAdultAspect(next);
+            saveAdultOrganizeAspect(next);
+          }}
+        />
+      </Show>
+      <PurgeView mode={mode()} adultAspect={adultAspect()} />
     </div>
   );
 };

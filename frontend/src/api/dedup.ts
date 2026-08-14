@@ -38,7 +38,7 @@ import type {
   ProposalPage,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
-import { fetchProposalPage, type ProposalListView } from "./organize";
+import { fetchProposalPage, adultAspectQuery, type ProposalListView } from "./organize";
 // Dedup is structurally different from Rename (see the header comment above)
 // and the two API surfaces must not be aligned into a shared module for just
 // two callers — so this is a plain re-export, not a new abstraction.
@@ -62,8 +62,11 @@ export type { ProposalStatus };
 // (see useDedupScanStream); the refetch that repopulates the queue happens in
 // that stream's `done` handler, never right after this POST. A 4xx (400 bad
 // root, 409 already scanning, 401 auth) still rejects synchronously here.
-export function scanDedup(mode: Mode): Promise<void> {
-  return api<void>(`/api/modes/${mode}/dedup/scan`, { method: "POST" });
+export function scanDedup(mode: Mode, aspect?: string): Promise<void> {
+  return api<void>(
+    `/api/modes/${mode}/dedup/scan${adultAspectQuery(aspect)}`,
+    { method: "POST" },
+  );
 }
 
 // DedupScanStatus is the shape of GET /api/modes/{mode}/dedup/scan/status. There

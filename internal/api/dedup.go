@@ -77,6 +77,12 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, scS
 			return
 		}
 
+		aspect, aerr := parseAdultAspectQuery(r)
+		if aerr != nil {
+			http.Error(w, aerr.Error(), http.StatusBadRequest)
+			return
+		}
+
 		// --- concurrent-same-mode guard (also seeds the "starting" priming
 		//     state). A second scan of the SAME mode while one is running is 409;
 		//     different modes may run concurrently (each is independently keyed).
@@ -120,7 +126,7 @@ func dedupScanHandler(httpClient *http.Client, connStore *connections.Store, scS
 			case mode.Series:
 				found, scanErr = dedup.ScanLibrarySeriesPHash(bg, sess, libStore, rootPath, prober, hasher, threshold, progress)
 			default:
-				found, scanErr = dedup.ScanLibraryAdult(bg, sess, libStore, rootPath, prober, hasher, threshold, progress)
+				found, scanErr = dedup.ScanLibraryAdult(bg, sess, libStore, rootPath, prober, hasher, threshold, progress, aspect)
 			}
 			if scanErr != nil {
 				hub.PublishTerminal(dedupscan.Event{Type: "error", Mode: string(m), Error: scanErr.Error()})

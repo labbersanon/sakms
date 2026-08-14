@@ -8,7 +8,7 @@
 //   - embedded ModeTabs never register with the shell tab slot (shadow provider).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@solidjs/testing-library";
+import { render, screen, waitFor, fireEvent } from "@solidjs/testing-library";
 import { createSignal, Show } from "solid-js";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import {
@@ -170,5 +170,38 @@ describe("Organize — embedded ModeTabs do not hijack the shell tab slot", () =
     expect(queryByTestId("shell-slot")).toBeNull();
     // Movies mode tab is inline in the body.
     expect(screen.getByRole("button", { name: "Movies" })).toBeInTheDocument();
+  });
+});
+
+describe("Organize — Adult Movies/Scenes chips", () => {
+  it("scans Adult Rename with aspect=vertical after Adult Movies is selected", async () => {
+    const calls: { url: string; method: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, method: (init?.method ?? "GET").toUpperCase() });
+        if (url.includes("/proposals")) {
+          return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+        }
+        return jsonResponse([]);
+      }),
+    );
+    renderOrganize("/organize?tab=rename");
+    await screen.findByText("No proposals yet — click Scan.");
+    fireEvent.click(screen.getByRole("button", { name: "Adult" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Adult Movies" }));
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.url.includes("/api/modes/adult/rename/scan?aspect=vertical"),
+        ),
+      ).toBe(true),
+    );
+    expect(screen.queryByRole("button", { name: "Adult All" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Adult Scenes" })).toBeTruthy();
   });
 });

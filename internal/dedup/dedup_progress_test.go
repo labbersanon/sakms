@@ -177,7 +177,7 @@ func TestScanLibraryAdult_ReportsIdentifyProgress(t *testing.T) {
 	}}
 
 	onProgress, events := collectProgress()
-	if _, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, matchingPHasher(trackedFile, orphanFile), 10, onProgress); err != nil {
+	if _, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, matchingPHasher(trackedFile, orphanFile), 10, onProgress, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

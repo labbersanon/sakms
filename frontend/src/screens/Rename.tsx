@@ -21,6 +21,7 @@ import {
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
+import type { AdultOrganizeAspect } from "../api/organize";
 import type { ApplyBatchResponse, ApplyBatchResultItem } from "@dto";
 import { ApiError } from "../api/client";
 import {
@@ -70,6 +71,9 @@ import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
 import { otherModes } from "./moveTargets";
 import {
   ActivityLogPanel,
+  AdultOrganizeAspectBar,
+  loadAdultOrganizeAspect,
+  saveAdultOrganizeAspect,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -985,7 +989,7 @@ type TakeoverState =
   | { kind: "repick"; proposal: Proposal }
   | { kind: "move"; proposal: Proposal; target: Mode };
 
-const RenameQueue: Component<{ mode: Mode }> = (props) => {
+const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (props) => {
   const [pageSize, setPageSize] = createSignal(loadPageSize("rename"));
   const [offset, setOffset] = createSignal(0);
   const [logKey, setLogKey] = createSignal(0);
@@ -1303,7 +1307,8 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
         setUndoResult(null);
         setUndoError("");
       },
-      scanFn: scanRename,
+      scanFn: (m) =>
+        scanRename(m, m === "adult" ? props.adultAspect : undefined),
       resetAfterScan: () => {
         setBatchResult(null);
         setApplyAllPlan(null);
@@ -1859,10 +1864,22 @@ const RenameQueue: Component<{ mode: Mode }> = (props) => {
 
 export const Rename: Component = () => {
   const [mode, setMode] = createSignal<Mode>("movies");
+  const [adultAspect, setAdultAspect] = createSignal<AdultOrganizeAspect>(
+    loadAdultOrganizeAspect(),
+  );
   return (
     <div>
       <ModeTabs current={mode} onSelect={setMode} />
-      <RenameQueue mode={mode()} />
+      <Show when={mode() === "adult"}>
+        <AdultOrganizeAspectBar
+          value={adultAspect()}
+          onChange={(next) => {
+            setAdultAspect(next);
+            saveAdultOrganizeAspect(next);
+          }}
+        />
+      </Show>
+      <RenameQueue mode={mode()} adultAspect={adultAspect()} />
     </div>
   );
 };

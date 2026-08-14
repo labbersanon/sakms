@@ -245,7 +245,7 @@ func previewPruningRuleHandler(store *pruning.Store, libStore *library.Store) ht
 			list, scanErr := purge.ScanLibrarySeries(ctx, libStore, rules)
 			matched, err = len(list), scanErr
 		case mode.Adult:
-			list, scanErr := purge.ScanLibraryAdult(ctx, libStore, rules)
+			list, scanErr := purge.ScanLibraryAdult(ctx, libStore, rules, "")
 			matched, err = len(list), scanErr
 		}
 		if err != nil {

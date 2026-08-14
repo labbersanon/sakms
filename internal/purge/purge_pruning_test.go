@@ -192,7 +192,7 @@ func TestScanLibraryAdult_RuleMatch_ProducesProposalWithRuleReason(t *testing.T)
 
 	got, err := ScanLibraryAdult(ctx, libStore, []pruning.Rule{{
 		Name: "Big scenes", Mode: string(mode.Adult), SizeBytes: 1 << 30, Enabled: true,
-	}})
+	}}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

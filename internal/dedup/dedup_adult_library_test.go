@@ -41,14 +41,14 @@ func newAdultLibraryScanSession(t *testing.T, stashboxHandler http.HandlerFunc) 
 
 func TestScanLibraryAdult_RequiresIdentifyConfigured(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Adult}
-	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), &fakeProber{}, &fakePHasher{}, 10, nil); err == nil {
+	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), t.TempDir(), &fakeProber{}, &fakePHasher{}, 10, nil, ""); err == nil {
 		t.Fatal("expected an error when Identify isn't configured")
 	}
 }
 
 func TestScanLibraryAdult_RequiresRootFolderPath(t *testing.T) {
 	sess := newAdultLibraryScanSession(t, fakeStashboxByID(t, nil))
-	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), "", &fakeProber{}, &fakePHasher{}, 10, nil); err == nil {
+	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), "", &fakeProber{}, &fakePHasher{}, 10, nil, ""); err == nil {
 		t.Fatal("expected an error when no root folder path is configured")
 	}
 }
@@ -80,7 +80,7 @@ func TestScanLibraryAdult_TrackedScenePlusOrphan_ProposesWithCorrectWinner(t *te
 		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
 	}}
 
-	got, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, matchingPHasher(trackedFile, orphanFile), 10, nil)
+	got, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, matchingPHasher(trackedFile, orphanFile), 10, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -114,6 +114,46 @@ func TestScanLibraryAdult_TrackedScenePlusOrphan_ProposesWithCorrectWinner(t *te
 	}
 }
 
+func TestScanLibraryAdult_AspectFilterSkipsOtherClass(t *testing.T) {
+	dir := t.TempDir()
+	trackedDir := filepath.Join(dir, "Studio", "Some Scene")
+	orphanName := "Some.Scene." + sceneUUIDA
+	orphanDir := filepath.Join(dir, "Studio", orphanName)
+	trackedFile := writeVideoFile(t, trackedDir, "scene.mkv", 100)
+	orphanFile := writeVideoFile(t, orphanDir, "scene.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	if _, err := libStore.UpsertScene(context.Background(), library.Scene{
+		Box: "stashdb", SceneID: sceneUUIDA, Title: "Some Scene", Studio: "Some Studio",
+		FilePath: trackedFile, RootFolderPath: dir,
+		PosterAspectClass: library.PosterAspectVertical,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sess := newAdultLibraryScanSession(t, fakeStashboxByID(t, map[string]string{sceneUUIDA: "Some Scene"}))
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		trackedFile: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+		orphanFile:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
+	}}
+	hasher := matchingPHasher(trackedFile, orphanFile)
+
+	scenes, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, hasher, 10, nil, library.PosterAspectHorizontal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenes) != 0 {
+		t.Fatalf("horizontal filter should skip the vertical tracked group, got %+v", scenes)
+	}
+	movies, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, hasher, 10, nil, library.PosterAspectVertical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(movies) != 1 {
+		t.Fatalf("vertical filter = %d, want 1", len(movies))
+	}
+}
+
 func TestScanLibraryAdult_SingleNewOrphanIsNotADuplicate(t *testing.T) {
 	dir := t.TempDir()
 	orphanName := "Some.Scene." + sceneUUIDA
@@ -121,7 +161,7 @@ func TestScanLibraryAdult_SingleNewOrphanIsNotADuplicate(t *testing.T) {
 
 	sess := newAdultLibraryScanSession(t, fakeStashboxByID(t, map[string]string{sceneUUIDA: "Some Scene"}))
 
-	got, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), dir, &fakeProber{}, &fakePHasher{}, 10, nil)
+	got, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), dir, &fakeProber{}, &fakePHasher{}, 10, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -163,7 +203,7 @@ func TestScanLibraryAdult_PHashCacheHitAvoidsRehashingTrackedFile(t *testing.T) 
 	// The orphan hashes to the same cached value so the group stays a duplicate.
 	hasher := &fakePHasher{byPath: map[string]string{orphanFile: cachedHash}}
 
-	got, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, hasher, 10, nil)
+	got, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, hasher, 10, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +245,7 @@ func TestScanLibraryAdult_PHashCacheMissComputesAndCaches(t *testing.T) {
 	}}
 	hasher := matchingPHasher(trackedFile, orphanFile)
 
-	got, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, hasher, 10, nil)
+	got, err := ScanLibraryAdult(context.Background(), sess, libStore, dir, prober, hasher, 10, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

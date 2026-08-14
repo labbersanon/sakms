@@ -34,7 +34,7 @@ import type {
   ProposalPage,
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
-import { fetchProposalPage, type ProposalListView } from "./organize";
+import { fetchProposalPage, adultAspectQuery, type ProposalListView } from "./organize";
 
 export type { Proposal };
 // ProposalStatus is the single shared narrowing (see discover.ts); re-exported
@@ -46,8 +46,11 @@ export type { ProposalStatus };
 // the mode's enabled pruning rules against every tracked item and replaces the
 // mode's pending queue with what it finds. One POST, no body; the caller
 // re-fetches.
-export function scanPurge(mode: Mode): Promise<void> {
-  return api<void>(`/api/modes/${mode}/purge/scan`, { method: "POST" });
+export function scanPurge(mode: Mode, aspect?: string): Promise<void> {
+  return api<void>(
+    `/api/modes/${mode}/purge/scan${adultAspectQuery(aspect)}`,
+    { method: "POST" },
+  );
 }
 
 // fetchPurgeProposals lists one Purge queue page (view=live|history).

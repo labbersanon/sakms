@@ -73,6 +73,30 @@ func normalizePosterAspect(class string) string {
 	return PosterAspectHorizontal
 }
 
+// ParsePosterAspectFilter accepts "", "vertical", or "horizontal". Empty means
+// unfiltered (every library_scenes row). Anything else is an error the HTTP
+// layer maps to 400.
+func ParsePosterAspectFilter(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	switch raw {
+	case "":
+		return "", nil
+	case PosterAspectVertical, PosterAspectHorizontal:
+		return raw, nil
+	default:
+		return "", ErrInvalidPosterAspect
+	}
+}
+
+// MatchesPosterAspect is true when want is empty (All) or class normalizes
+// to want. Empty/unknown stored class is horizontal, matching ProbePosterAspect.
+func MatchesPosterAspect(class, want string) bool {
+	if strings.TrimSpace(want) == "" {
+		return true
+	}
+	return normalizePosterAspect(class) == want
+}
+
 // ProbePosterAspect classifies a catalog poster URL. Empty URL, failed
 // imageproxy.Validate (non-https, private/loopback, malformed), fetch
 // failure, or undecodable bytes (including WebP until a decoder is added)
@@ -123,3 +147,7 @@ func fetchPosterBytes(ctx context.Context, imageURL string) ([]byte, error) {
 }
 
 var errNoPosterProxy = errors.New("poster proxy not configured")
+
+// ErrInvalidPosterAspect is returned by ParsePosterAspectFilter for any value
+// other than "", "vertical", or "horizontal".
+var ErrInvalidPosterAspect = errors.New("aspect must be vertical or horizontal")

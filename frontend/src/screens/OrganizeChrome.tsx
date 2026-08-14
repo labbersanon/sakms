@@ -1,6 +1,7 @@
 // Shared Organize chrome: page size, pagination, activity log panel.
 import { type Component, createResource, For, onCleanup, Show } from "solid-js";
 import {
+  type AdultOrganizeAspect,
   type OrganizeWorkflow,
   PAGE_SIZE_OPTIONS,
   fetchOrganizeEvents,
@@ -121,3 +122,62 @@ export const ActivityLogPanel: Component<{
     </details>
   );
 };
+
+const ADULT_ASPECT_KEY = "sakms.organize.adultAspect";
+
+const ADULT_ASPECT_CHIPS: { id: AdultOrganizeAspect; label: string }[] = [
+  { id: "", label: "All" },
+  { id: "horizontal", label: "Scenes" },
+  { id: "vertical", label: "Movies" },
+];
+
+export function loadAdultOrganizeAspect(): AdultOrganizeAspect {
+  try {
+    const raw = localStorage.getItem(ADULT_ASPECT_KEY);
+    if (raw === "vertical" || raw === "horizontal") return raw;
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+export function saveAdultOrganizeAspect(value: AdultOrganizeAspect): void {
+  try {
+    localStorage.setItem(ADULT_ASPECT_KEY, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+// Claude 2026-08-14: Adult Organize All/Scenes/Movies chips.
+// Reason: Library already splits by poster_aspect_class; Rename/Dedup/Clean-up
+//   still scanned every library_scenes row. Visible labels stay All/Scenes/
+//   Movies; aria-label prefixes Adult so they do not collide with ModeTabs.
+// Review if: Organize splits into dedicated Movies/Scenes workflows.
+export const AdultOrganizeAspectBar: Component<{
+  value: AdultOrganizeAspect;
+  onChange: (next: AdultOrganizeAspect) => void;
+}> = (props) => (
+  <div
+    class="mb-4 flex items-center gap-1"
+    role="group"
+    aria-label="Adult library filter"
+  >
+    <For each={ADULT_ASPECT_CHIPS}>
+      {(t) => (
+        <button
+          type="button"
+          aria-label={`Adult ${t.label}`}
+          class="rounded-md px-3 py-1.5 text-sm font-medium transition"
+          classList={{
+            "bg-accent text-accent-fg": props.value === t.id,
+            "bg-surface-2 text-muted hover:text-fg": props.value !== t.id,
+          }}
+          onClick={() => props.onChange(t.id)}
+        >
+          {t.label}
+        </button>
+      )}
+    </For>
+  </div>
+);

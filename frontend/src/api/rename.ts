@@ -35,6 +35,7 @@ import type {
 } from "@dto";
 import type { Mode, ProposalStatus } from "./discover";
 import {
+  adultAspectQuery,
   applyBatchStreaming,
   fetchProposalPage,
   type ProposalListView,
@@ -49,8 +50,11 @@ export type {
 };
 export type { ProposalStatus };
 
-export function scanRename(mode: Mode): Promise<void> {
-  return api<void>(`/api/modes/${mode}/rename/scan`, { method: "POST" });
+export function scanRename(mode: Mode, aspect?: string): Promise<void> {
+  return api<void>(
+    `/api/modes/${mode}/rename/scan${adultAspectQuery(aspect)}`,
+    { method: "POST" },
+  );
 }
 
 export function fetchProposals(

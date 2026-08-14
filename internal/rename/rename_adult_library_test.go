@@ -1,7 +1,10 @@
 package rename
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +43,7 @@ func TestScanLibraryAdult_ProducesPendingProposalForNewScene(t *testing.T) {
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root)
+	got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,16 +65,63 @@ func TestScanLibraryAdult_ProducesPendingProposalForNewScene(t *testing.T) {
 	}
 }
 
+func TestScanLibraryAdult_AspectFilterKeepsMatchingCatalogArt(t *testing.T) {
+	root := t.TempDir()
+	moviePath := writeSceneFile(t, root, "movie1.mp4")
+	scenePath := writeSceneFile(t, root, "scene1.mp4")
+	posterURL := "https://1.1.1.1/portrait.png"
+	library.SetPosterFetchOverride(func(_ context.Context, rawURL string) ([]byte, error) {
+		if rawURL != posterURL {
+			t.Fatalf("unexpected fetch %q", rawURL)
+		}
+		img := image.NewRGBA(image.Rect(0, 0, 200, 300))
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes(), nil
+	})
+	t.Cleanup(func() { library.SetPosterFetchOverride(nil) })
+
+	hasher := &fakeHasher{hashes: map[string]string{moviePath: "hash-movie", scenePath: "hash-scene"}}
+	prober := &fakeProber{durations: map[string]float64{moviePath: 1800, scenePath: 900}}
+	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+		"hash-movie": {id: "movie-1", title: "Catalog Movie", image: posterURL},
+		"hash-scene": {id: "scene-1", title: "Catalog Scene"},
+	}, nil, nil)
+	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
+	libStore := newTestLibraryStore(t)
+
+	all, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, "")
+	if err != nil || len(all) != 2 {
+		t.Fatalf("all = %d err=%v, want 2", len(all), err)
+	}
+	movies, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, library.PosterAspectVertical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(movies) != 1 || movies[0].Title != "Catalog Movie" {
+		t.Fatalf("vertical = %+v", movies)
+	}
+	scenes, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, library.PosterAspectHorizontal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scenes) != 1 || scenes[0].Title != "Catalog Scene" {
+		t.Fatalf("horizontal = %+v", scenes)
+	}
+}
+
 func TestScanLibraryAdult_RequiresIdentifyConfigured(t *testing.T) {
 	sess := &mode.Session{Mode: mode.Adult}
-	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), &fakeHasher{}, &fakeProber{}, t.TempDir()); err == nil {
+	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), &fakeHasher{}, &fakeProber{}, t.TempDir(), ""); err == nil {
 		t.Fatal("expected an error when identification isn't configured")
 	}
 }
 
 func TestScanLibraryAdult_RequiresRootFolderPath(t *testing.T) {
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{})
-	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), &fakeHasher{}, &fakeProber{}, ""); err == nil {
+	if _, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), &fakeHasher{}, &fakeProber{}, "", ""); err == nil {
 		t.Fatal("expected an error when no root folder path is configured")
 	}
 }
@@ -103,7 +153,7 @@ func TestScanLibraryAdult_AlreadyTrackedIsPendingAlternate(t *testing.T) {
 		t.Fatalf("seeding tracked scene: %v", err)
 	}
 
-	got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root)
+	got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,7 +195,7 @@ func TestScanLibraryAdult_SkipsAlreadyConformantName(t *testing.T) {
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
 
-	got, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), hasher, prober, root)
+	got, err := ScanLibraryAdult(context.Background(), sess, newTestLibraryStore(t), hasher, prober, root, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -274,7 +324,7 @@ func TestScanLibraryAdult_ThenApply_RoundTrip(t *testing.T) {
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
 	libStore := newTestLibraryStore(t)
 
-	got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root)
+	got, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, "")
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -298,7 +348,7 @@ func TestScanLibraryAdult_ThenApply_RoundTrip(t *testing.T) {
 	// tracked and schema-conformant, so nothing new is proposed.
 	hasher.hashes[wantDest] = "hash1"
 	prober.durations[wantDest] = 1800
-	again, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root)
+	again, err := ScanLibraryAdult(context.Background(), sess, libStore, hasher, prober, root, "")
 	if err != nil {
 		t.Fatalf("re-scan: %v", err)
 	}

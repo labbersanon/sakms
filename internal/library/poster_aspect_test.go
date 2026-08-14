@@ -3,6 +3,7 @@ package library
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/png"
 	"sync/atomic"
@@ -115,4 +116,30 @@ func TestProbePosterAspect(t *testing.T) {
 			t.Fatalf("got %q", got)
 		}
 	})
+}
+
+func TestParsePosterAspectFilter(t *testing.T) {
+	got, err := ParsePosterAspectFilter("")
+	if err != nil || got != "" {
+		t.Fatalf("empty = %q err=%v", got, err)
+	}
+	got, err = ParsePosterAspectFilter(" vertical ")
+	if err != nil || got != PosterAspectVertical {
+		t.Fatalf("vertical = %q err=%v", got, err)
+	}
+	if _, err = ParsePosterAspectFilter("movie"); !errors.Is(err, ErrInvalidPosterAspect) {
+		t.Fatalf("movie err=%v, want ErrInvalidPosterAspect", err)
+	}
+}
+
+func TestMatchesPosterAspect(t *testing.T) {
+	if !MatchesPosterAspect(PosterAspectVertical, "") {
+		t.Fatal("empty want matches any class")
+	}
+	if !MatchesPosterAspect("", PosterAspectHorizontal) {
+		t.Fatal("empty stored class is horizontal")
+	}
+	if MatchesPosterAspect(PosterAspectHorizontal, PosterAspectVertical) {
+		t.Fatal("horizontal must not match vertical want")
+	}
 }

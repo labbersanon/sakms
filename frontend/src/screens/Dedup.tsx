@@ -62,6 +62,7 @@ import {
 } from "solid-js";
 import type { ApplyBatchItem, ApplyBatchResponse } from "@dto";
 import type { Mode } from "../api/discover";
+import type { AdultOrganizeAspect } from "../api/organize";
 import {
   type Candidate,
   type Proposal,
@@ -96,6 +97,9 @@ import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
 import {
   ActivityLogPanel,
+  AdultOrganizeAspectBar,
+  loadAdultOrganizeAspect,
+  saveAdultOrganizeAspect,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -336,7 +340,7 @@ const CandidateMeta: Component<{ c: Candidate }> = (props) => (
 
 // DedupView is one mode's duplicate-group review queue. Keyed on props.mode so
 // the resource refetches when the shell switches tabs.
-const DedupView: Component<{ mode: Mode }> = (props) => {
+const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (props) => {
   const [pageSize, setPageSize] = createSignal(loadPageSize("dedup"));
   const [offset, setOffset] = createSignal(0);
   const [logKey, setLogKey] = createSignal(0);
@@ -456,6 +460,8 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
       setLogKey((k) => k + 1);
       await refetch();
     },
+    aspect: () =>
+      props.mode === "adult" ? props.adultAspect : undefined,
   });
 
   // Prune the skipped-id set against the live Pending ids on every load (AC7):
@@ -1111,10 +1117,22 @@ const DedupView: Component<{ mode: Mode }> = (props) => {
 // matching duplicate-group review queue.
 export const Dedup: Component = () => {
   const [mode, setMode] = createSignal<Mode>("movies");
+  const [adultAspect, setAdultAspect] = createSignal<AdultOrganizeAspect>(
+    loadAdultOrganizeAspect(),
+  );
   return (
     <div>
       <ModeTabs current={mode} onSelect={setMode} />
-      <DedupView mode={mode()} />
+      <Show when={mode() === "adult"}>
+        <AdultOrganizeAspectBar
+          value={adultAspect()}
+          onChange={(next) => {
+            setAdultAspect(next);
+            saveAdultOrganizeAspect(next);
+          }}
+        />
+      </Show>
+      <DedupView mode={mode()} adultAspect={adultAspect()} />
     </div>
   );
 };

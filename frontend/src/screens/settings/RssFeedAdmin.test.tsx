@@ -35,13 +35,9 @@ import {
 import { RssFeedAdminSection, reorderAdultFeedIds } from "./RssFeedAdmin";
 import { reorderKeys } from "../discover/RowEditor";
 import type { RssFeed } from "../../api/rssFeeds";
+import { jsonResponse, noContent } from "../../testing/http";
 
-const jsonResponse = (obj: unknown, status = 200): Response =>
-  new Response(JSON.stringify(obj), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-const noContent = (): Response => new Response(null, { status: 204 });
+
 const undetected = (): Response =>
   jsonResponse({ error: "protocol_undetected" }, 422);
 

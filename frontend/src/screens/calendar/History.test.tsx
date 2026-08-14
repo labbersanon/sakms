@@ -10,12 +10,8 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import type { Grab } from "@dto";
 import { History } from "./History";
 import { cells } from "./grid";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const grab = (over: Partial<Grab>): Grab => ({
   id: 1,

@@ -32,16 +32,10 @@ import {
 } from "@solidjs/testing-library";
 import type { DiscoverItem, Proposal, SeasonSummary } from "@dto";
 import { Rename } from "./Rename";
+import { jsonResponse, noContent } from "../testing/http";
 
 type RawCall = { url: string; method: string; body?: string };
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const noContent = (): Response => new Response(null, { status: 204 });
 
 const pageOf = (items: Proposal[]) => ({
   items,

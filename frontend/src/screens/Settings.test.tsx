@@ -31,13 +31,9 @@ import {
   secondsToUnitAmount,
 } from "./settings/Advanced";
 import { SectionSave } from "./settings/shared";
+import { jsonResponse, noContent } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-const noContent = (): Response => new Response(null, { status: 204 });
+
 const errorResponse = (status: number, msg: string): Response =>
   new Response(msg, { status });
 

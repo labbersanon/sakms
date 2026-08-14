@@ -26,6 +26,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { DiscoverItem, Proposal } from "@dto";
 import { Rename } from "./Rename";
+import { jsonResponse, noContent } from "../testing/http";
 
 const runRowAction = async (
   sourceName: string,
@@ -53,13 +54,6 @@ const clickRowApply = async (sourceName: string) => {
   );
 };
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const noContent = (): Response => new Response(null, { status: 204 });
 
 const proposal = (over: Partial<Proposal>): Proposal => ({
   id: 1,

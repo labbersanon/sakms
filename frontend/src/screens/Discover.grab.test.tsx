@@ -27,12 +27,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { AdultNewestReleaseItem, DiscoverItem } from "@dto";
 import { DiscoverAdult, DiscoverMainstream } from "./Discover";
+import { jsonResponse } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const movie = (over: Partial<DiscoverItem>): DiscoverItem => ({
   id: 1,

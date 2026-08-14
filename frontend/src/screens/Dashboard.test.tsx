@@ -15,6 +15,7 @@ import { render, screen } from "@solidjs/testing-library";
 import { Route, Router } from "@solidjs/router";
 import type { StorageAllocation, SysinfoSnapshot } from "@dto";
 import { Dashboard } from "./Dashboard";
+import { jsonResponse } from "../testing/http";
 
 // MockEventSource is a minimal, controllable EventSource stand-in. The most
 // recently constructed instance is captured so a test can fire events at it.
@@ -132,11 +133,6 @@ const allocation = (): StorageAllocation => ({
   grandTotalBytes: 17 * TB,
 });
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // renderDashboard mounts the screen inside a <Router>: the Storage Allocation
 // cells use <A>, which throws outside router context.

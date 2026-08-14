@@ -26,12 +26,8 @@ import {
   externalDetailURL,
   sourceLabel,
 } from "./DetailPopup";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const candidate = (over: Partial<AvailabilityCandidate> = {}): AvailabilityCandidate => ({
   guid: "g1",

@@ -19,12 +19,8 @@ import {
   fetchDiscoverFiltered,
 } from "../api/discover";
 import { AdultModeContext } from "../components/ui";
+import { jsonResponse } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const movie = (over: Partial<DiscoverItem>): DiscoverItem => ({
   id: 1,

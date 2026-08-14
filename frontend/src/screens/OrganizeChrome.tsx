@@ -1,12 +1,14 @@
 // Shared Organize chrome: page size, pagination, activity log panel.
-import { type Component, createResource, For, onCleanup, Show } from "solid-js";
+import { type Component, createResource, createSignal, For, onCleanup, Show } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import type { Mode } from "../api/discover";
 import {
   type AdultOrganizeAspect,
   type OrganizeWorkflow,
   PAGE_SIZE_OPTIONS,
   fetchOrganizeEvents,
 } from "../api/organize";
-import { Button, Muted } from "../components/ui";
+import { Button, ModeTabs, Muted } from "../components/ui";
 import type { OrganizeEvent } from "@dto";
 
 export const PageSizeSelect: Component<{
@@ -184,3 +186,37 @@ export const AdultOrganizeAspectBar: Component<{
     </For>
   </div>
 );
+
+// Claude 2026-08-14: OrganizeModeShell owns ModeTabs + Adult chips for
+//   Rename/Dedup/Clean-up. The view is a stable Component passed through
+//   Dynamic so chip/tab changes update props without remounting the queue
+//   (remount would wipe pagination and selection).
+// Reason: the three screens had identical shells; History is ModeTabs-only
+//   and stays out.
+// Troubleshooting: queue jumps to page 1 on All/Scenes/Movies click → the
+//   view remounted; keep Dynamic + stable component reference.
+// Review if: Organize splits into dedicated Movies/Scenes workflows.
+export const OrganizeModeShell: Component<{
+  view: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }>;
+}> = (props) => {
+  const [mode, setMode] = createSignal<Mode>("movies");
+  const [adultAspect, setAdultAspect] = createSignal<AdultOrganizeAspect>(
+    loadAdultOrganizeAspect(),
+  );
+  return (
+    <div>
+      <ModeTabs current={mode} onSelect={setMode} />
+      <Show when={mode() === "adult"}>
+        <AdultOrganizeAspectBar
+          value={adultAspect()}
+          onChange={setAdultAspect}
+        />
+      </Show>
+      <Dynamic
+        component={props.view}
+        mode={mode()}
+        adultAspect={adultAspect()}
+      />
+    </div>
+  );
+};

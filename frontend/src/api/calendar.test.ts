@@ -11,14 +11,10 @@ import {
   requestPreRelease,
 } from "./calendar";
 import type { UpcomingMovieEntry, UpcomingSeriesEntry } from "./calendar";
+import { jsonResponse } from "../testing/http";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const captureFetch = (body: unknown, status = 200) => {
   const fetchMock = vi.fn(

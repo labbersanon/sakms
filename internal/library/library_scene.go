@@ -204,6 +204,16 @@ func (s *Store) ListScenesByAspect(ctx context.Context, aspect string) ([]Scene,
 	return out, nil
 }
 
+// ListScenesFiltered is ListScenes when aspect is empty, else ListScenesByAspect.
+// Tracked-item listing and Purge Adult scans share this so scheduled scans
+// (empty aspect) still load every row and operator chips pass vertical/horizontal.
+func (s *Store) ListScenesFiltered(ctx context.Context, aspect string) ([]Scene, error) {
+	if aspect == "" {
+		return s.ListScenes(ctx)
+	}
+	return s.ListScenesByAspect(ctx, aspect)
+}
+
 // DeleteScene permanently removes scene id and its tags. Explicit two-
 // statement delete rather than relying on the schema's declared foreign
 // keys — same reasoning as Store.Delete: SQLite only enforces them when a

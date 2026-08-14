@@ -29,6 +29,7 @@
 
 import { api } from "./client";
 import type { TagEntry, TrackedItem } from "@dto";
+import { adultAspectQuery } from "./aspect";
 import type { Mode } from "./discover";
 
 export type { TagEntry, TrackedItem };
@@ -47,20 +48,15 @@ export function fetchTagVocabulary(mode: Mode): Promise<TagEntry[]> {
 // fetchTrackedItems lists what the mode currently tracks (items/series/scenes),
 // each with its current tags — Library's item picker. One shared route
 // for every mode; for Adult the returned id is a library_scenes.id.
-//
-// Claude 2026-08-13: optional aspect appends ?aspect= for Adult Library tabs.
-// Reason: Slice 1 shipped the query param unconsumed; Library Scenes/Movies
-// filter by poster_aspect_class. Omit aspect (Mainstream library row,
-// default) so the handler's empty-case returns every row.
-// Troubleshooting: invalid values 400 on the server — only pass vertical or
-// horizontal from LibraryAdult.
-// Review if: Organize needs the same filter (3A says it does not).
+// Optional aspect appends ?aspect= for Adult Library tabs; omit it so the
+// handler's empty-case returns every row.
 export function fetchTrackedItems(
   mode: Mode,
   aspect?: "vertical" | "horizontal",
 ): Promise<TrackedItem[]> {
-  const q = aspect ? `?aspect=${aspect}` : "";
-  return api<TrackedItem[]>(`/api/modes/${mode}/tracked${q}`);
+  return api<TrackedItem[]>(
+    `/api/modes/${mode}/tracked${adultAspectQuery(aspect)}`,
+  );
 }
 
 // addTag assigns one label to one tracked item — immediate, not staged. Adult

@@ -7,12 +7,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { SetupWizard } from "./SetupWizard";
+import { jsonResponse } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 afterEach(() => {
   vi.unstubAllGlobals();

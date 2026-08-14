@@ -194,13 +194,7 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 				http.Error(w, aerr.Error(), http.StatusBadRequest)
 				return
 			}
-			var scenes []library.Scene
-			var err error
-			if aspect == "" {
-				scenes, err = libStore.ListScenes(ctx)
-			} else {
-				scenes, err = libStore.ListScenesByAspect(ctx, aspect)
-			}
+			scenes, err := libStore.ListScenesFiltered(ctx, aspect)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return

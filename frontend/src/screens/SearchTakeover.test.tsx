@@ -57,14 +57,10 @@ import type { AdultSceneCandidate, DiscoverItem } from "@dto";
 import { moveProposalMode, repickProposal } from "../api/rename";
 import { SourcePreviewDisclosure } from "../components/SourcePreview";
 import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
+import { jsonResponse } from "../testing/http";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // Every fixture carries real art. TextPoster renders the same label the card
 // footer does, so an art-less card puts its title in the DOM TWICE and every

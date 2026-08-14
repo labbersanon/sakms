@@ -53,12 +53,8 @@ import type { AutoGrabBatchItem } from "@dto";
 import { AdultDiscover } from "./Adult";
 import { BulkBar } from "./BulkBar";
 import { SelectionProvider, createSelection } from "./selection";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 type Call = { url: string; method: string; body: unknown };
 type Override = (

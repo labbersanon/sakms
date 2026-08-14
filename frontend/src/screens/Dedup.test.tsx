@@ -32,6 +32,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { Candidate, Proposal } from "@dto";
 import { Dedup } from "./Dedup";
+import { jsonResponse, asPage, noContent } from "../testing/http";
 
 // MockEventSource mirrors Dashboard.test.tsx / BrowserNotifications.test.tsx:
 // jsdom has no EventSource, and Dedup now opens one on mount (the scan-progress
@@ -62,20 +63,6 @@ class MockEventSource {
   }
 }
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const asPage = (items: unknown[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
-
-const noContent = (): Response => new Response(null, { status: 204 });
 
 // accepted mirrors the scan POST's new 202 (no body) contract.
 const accepted = (): Response => new Response(null, { status: 202 });

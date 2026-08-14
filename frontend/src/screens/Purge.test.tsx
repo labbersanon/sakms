@@ -30,21 +30,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { Proposal } from "@dto";
 import { Purge } from "./Purge";
+import { jsonResponse, asPage, noContent } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const asPage = (items: unknown[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
-
-const noContent = (): Response => new Response(null, { status: 204 });
 
 const proposal = (over: Partial<Proposal>): Proposal => ({
   id: 1,

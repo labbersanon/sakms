@@ -7,12 +7,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { AddRssFeedModal } from "./AddRssFeedModal";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 type Call = { url: string; method: string; body: unknown };
 

@@ -24,17 +24,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { Calendar } from "./index";
+import { jsonResponse } from "../../testing/http";
 
 const VIEW_KEY = "sakms.calendar.view";
 const DISPLAY_KEY = "sakms.calendar.display";
 
 const HISTORY_LIST_EMPTY = "No completed or imported grabs this month.";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // stubFetch answers every endpoint the two children hit at mount with an empty
 // result, so each lands in its "nothing yet" state, and records the URLs so the

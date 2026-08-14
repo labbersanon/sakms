@@ -11,12 +11,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { TraktWatchlistRow } from "./TraktWatchlistRow";
 import type { GrabTarget } from "../screens/discover/shared";
+import { jsonResponse } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // seasonFixture is the season-grid data a show card's picker enumerates once
 // opened. Non-empty art paths keep each tile on an <img> rather than the

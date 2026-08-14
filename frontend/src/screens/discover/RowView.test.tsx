@@ -12,12 +12,8 @@ import {
   type SectionLockControl,
 } from "../../components/ui";
 import { ADULT_CONTENT_SECTION } from "../../api/sectionLock";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 type Handler = (url: string) => Response | Promise<Response>;
 const stubFetch = (handler: Handler) => {

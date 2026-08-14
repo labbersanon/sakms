@@ -29,16 +29,12 @@ import (
 //
 // Claude 2026-08-14: optional aspect filters ListScenesByAspect.
 // Reason: Organize Adult Movies chips (vertical) vs Scenes (horizontal).
-//   Empty aspect is every row — scheduled scans and pruning preview stay All.
+//
+//	Empty aspect is every row — scheduled scans and pruning preview stay All.
+//
 // Review if: Organize gains a dedicated Movies workflow.
 func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []pruning.Rule, aspect string) ([]proposals.Proposal, error) {
-	var scenes []library.Scene
-	var err error
-	if aspect == "" {
-		scenes, err = libStore.ListScenes(ctx)
-	} else {
-		scenes, err = libStore.ListScenesByAspect(ctx, aspect)
-	}
+	scenes, err := libStore.ListScenesFiltered(ctx, aspect)
 	if err != nil {
 		return nil, fmt.Errorf("loading scenes: %w", err)
 	}

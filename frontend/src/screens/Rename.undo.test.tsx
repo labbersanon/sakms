@@ -20,12 +20,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { Proposal, RecentlyAppliedEntry } from "@dto";
 import { Rename, formatAppliedAt } from "./Rename";
+import { jsonResponse } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // textError mirrors the backend exactly: internal/api/rename_undo.go refuses
 // through http.Error, which writes PLAIN TEXT (plus a trailing newline), not

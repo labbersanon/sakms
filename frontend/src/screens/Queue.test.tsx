@@ -30,6 +30,7 @@ import {
   type ScreenTabsRegistration,
 } from "../components/ui";
 import { Queue } from "./Queue";
+import { jsonResponse } from "../testing/http";
 
 const QUEUE_TAB_KEY = "sakms.queue.tab";
 
@@ -46,11 +47,6 @@ class MockEventSource {
   close() {}
 }
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // stubFetch answers the mount GETs the embedded screens fire with empty arrays
 // so each lands in its "nothing yet" empty state. The one exception is

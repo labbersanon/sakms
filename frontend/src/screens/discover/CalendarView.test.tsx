@@ -6,12 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import type { DiscoverItem } from "@dto";
 import { CalendarView } from "./CalendarView";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 

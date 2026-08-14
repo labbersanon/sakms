@@ -15,12 +15,8 @@ import type { DiscoverItem, EpisodeSummary, SeasonSummary } from "@dto";
 import { DiscoverMainstream } from "./index";
 import { PosterCard } from "./Mainstream";
 import { SelectionProvider, createSelection } from "./selection";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const movie = (over: Partial<DiscoverItem> = {}): DiscoverItem => ({
   id: 1,

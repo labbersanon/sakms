@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/bravesearch"
-	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/library/librarytest"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/naming"
 	"github.com/labbersanon/sakms/internal/ollama"
@@ -26,8 +26,7 @@ import (
 
 func newTestLibraryStore(t *testing.T) *library.Store {
 	t.Helper()
-	sqlDB := dbtest.New(t)
-	return library.New(sqlDB)
+	return librarytest.New(t)
 }
 
 // fakeTMDBSearch returns a *tmdb.Client whose /search/movie endpoint returns

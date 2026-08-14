@@ -8,14 +8,14 @@ import (
 
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/library/librarytest"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 func newTestLibraryStore(t *testing.T) *library.Store {
 	t.Helper()
-	sqlDB := dbtest.New(t)
-	return library.New(sqlDB)
+	return librarytest.New(t)
 }
 
 func TestApplyLibrary_KeepsWinnerByDefault_DeletesOrphanLoser(t *testing.T) {

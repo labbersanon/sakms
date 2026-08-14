@@ -6,16 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { RequestStatusItem, RequestStatusResponse } from "@dto";
 import { Requests } from "./Requests";
+import { jsonResponse, noContent } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // noContent mirrors the real POST /api/requests/exclude → 204 (api() returns
 // null on a 204, which excludeTitle types as void).
-const noContent = (): Response => new Response(null, { status: 204 });
+
 
 type Call = { url: string; method: string; body: unknown };
 

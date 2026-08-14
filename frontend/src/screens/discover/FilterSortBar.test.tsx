@@ -17,12 +17,8 @@ import {
   MainstreamFilterSortBar,
   isMainstreamFilterActive,
 } from "./FilterSortBar";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 type Genre = { id: number; name: string };
 // stubGenres answers the genre resource's fetch per content type — the bar

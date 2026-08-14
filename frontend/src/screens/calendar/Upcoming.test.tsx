@@ -28,12 +28,8 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { UpcomingMovieEntry, UpcomingSeriesEntry } from "@dto";
 import { Upcoming } from "./Upcoming";
 import { cells } from "./grid";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 type Recorded = { url: string; method: string; body: unknown };
 

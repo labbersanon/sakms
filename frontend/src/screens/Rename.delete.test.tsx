@@ -30,14 +30,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { Proposal } from "@dto";
 import { Rename, planActionForRow } from "./Rename";
+import { jsonResponse, noContent } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const noContent = (): Response => new Response(null, { status: 204 });
 
 // sourcePath is set by default (unlike Rename.test.tsx's builder) — the
 // confirm modal's delete detail and the delete-batch request body both

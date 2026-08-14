@@ -20,17 +20,11 @@ import {
   waitFor,
 } from "@solidjs/testing-library";
 import { QualityPrefsSection, SeriesNewSeasonDiscoverySection } from "./Library";
+import { jsonResponse, noContent } from "../../testing/http";
 
 const DISCOVERY_COPY =
   "With new-season discovery on, a brand-new season is monitored automatically — even if every existing season of that series is unmonitored.";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const noContent = (): Response => new Response(null, { status: 204 });
 
 type Call = { url: string; method: string; body: unknown };
 

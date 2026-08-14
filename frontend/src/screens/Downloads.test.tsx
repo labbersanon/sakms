@@ -9,14 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { Download } from "@dto";
 import { Downloads } from "./Downloads";
+import { jsonResponse, noContent } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const noContent = (): Response => new Response(null, { status: 204 });
 
 const dl = (over: Partial<Download> = {}): Download => ({
   gid: "g1",

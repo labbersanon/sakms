@@ -21,12 +21,8 @@ import {
 } from "@solidjs/testing-library";
 import type { EpisodeSummary, SeasonSummary, TitleDetail } from "@dto";
 import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const stubFetch = (handler: (url: string) => Response | Promise<Response>) => {
   const fn = vi.fn(async (input: RequestInfo | URL) => handler(String(input)));

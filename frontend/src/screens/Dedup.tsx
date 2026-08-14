@@ -87,7 +87,6 @@ import {
   Button,
   ErrorText,
   modeLabel,
-  ModeTabs,
   Muted,
   StatusPill,
 } from "../components/ui";
@@ -97,8 +96,7 @@ import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
 import {
   ActivityLogPanel,
-  AdultOrganizeAspectBar,
-  loadAdultOrganizeAspect,
+  OrganizeModeShell,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -1114,21 +1112,4 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
 
 // Dedup is the mode-switching shell: tab bar (Movies/Series/Adult) over the
 // matching duplicate-group review queue.
-export const Dedup: Component = () => {
-  const [mode, setMode] = createSignal<Mode>("movies");
-  const [adultAspect, setAdultAspect] = createSignal<AdultOrganizeAspect>(
-    loadAdultOrganizeAspect(),
-  );
-  return (
-    <div>
-      <ModeTabs current={mode} onSelect={setMode} />
-      <Show when={mode() === "adult"}>
-        <AdultOrganizeAspectBar
-          value={adultAspect()}
-          onChange={setAdultAspect}
-        />
-      </Show>
-      <DedupView mode={mode()} adultAspect={adultAspect()} />
-    </div>
-  );
-};
+export const Dedup: Component = () => <OrganizeModeShell view={DedupView} />;

@@ -23,13 +23,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { NodesSection } from "./Nodes";
+import { jsonResponse, noContent } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-const noContent = (): Response => new Response(null, { status: 204 });
 
 type Call = { url: string; method: string; body: unknown };
 

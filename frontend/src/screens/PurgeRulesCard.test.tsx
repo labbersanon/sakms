@@ -16,13 +16,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { PurgeRulesCard } from "./PurgeRulesCard";
 import type { PruningRule } from "../api/pruningRules";
+import { jsonResponse, noContent } from "../testing/http";
 
-const jsonResponse = (obj: unknown, status = 200): Response =>
-  new Response(JSON.stringify(obj), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-const noContent = (): Response => new Response(null, { status: 204 });
+
 const errorResponse = (status: number, msg: string): Response =>
   new Response(msg, { status });
 

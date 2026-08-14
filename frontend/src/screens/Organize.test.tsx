@@ -18,6 +18,7 @@ import {
 } from "../components/ui";
 import { Organize } from "./Organize";
 import { ORGANIZE_TAB_KEY } from "./organizeTabs";
+import { jsonResponse } from "../testing/http";
 
 class MockEventSource {
   onmessage: ((ev: MessageEvent) => void) | null = null;
@@ -29,11 +30,6 @@ class MockEventSource {
   close() {}
 }
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const stubFetch = () => {
   const fn = vi.fn(async (input: RequestInfo | URL) => {

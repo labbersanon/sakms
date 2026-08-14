@@ -370,6 +370,14 @@ func TestListScenesByAspect(t *testing.T) {
 	if len(horiz) != 1 || horiz[0].SceneID != "h" {
 		t.Fatalf("horizontal = %+v", horiz)
 	}
+	filteredAll, err := s.ListScenesFiltered(ctx, "")
+	if err != nil || len(filteredAll) != 2 {
+		t.Fatalf("ListScenesFiltered empty = %d err=%v, want 2", len(filteredAll), err)
+	}
+	filteredVert, err := s.ListScenesFiltered(ctx, PosterAspectVertical)
+	if err != nil || len(filteredVert) != 1 || filteredVert[0].SceneID != "v" {
+		t.Fatalf("ListScenesFiltered vertical = %+v err=%v", filteredVert, err)
+	}
 }
 
 func TestRestoreScene_MissingPosterAspectDefaultsHorizontal(t *testing.T) {

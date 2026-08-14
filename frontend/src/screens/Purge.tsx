@@ -65,15 +65,13 @@ import {
   BatchResultSummary,
   Button,
   ErrorText,
-  ModeTabs,
   Muted,
   StatusPill,
 } from "../components/ui";
 import { useBulkSelection, useWorkflowActions } from "./workflowHooks";
 import {
   ActivityLogPanel,
-  AdultOrganizeAspectBar,
-  loadAdultOrganizeAspect,
+  OrganizeModeShell,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -367,21 +365,4 @@ const PurgeView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
 
 // Purge is the mode-switching shell: tab bar (Movies/Series/Adult) over the
 // matching Rules card + delete queue.
-export const Purge: Component = () => {
-  const [mode, setMode] = createSignal<Mode>("movies");
-  const [adultAspect, setAdultAspect] = createSignal<AdultOrganizeAspect>(
-    loadAdultOrganizeAspect(),
-  );
-  return (
-    <div>
-      <ModeTabs current={mode} onSelect={setMode} />
-      <Show when={mode() === "adult"}>
-        <AdultOrganizeAspectBar
-          value={adultAspect()}
-          onChange={setAdultAspect}
-        />
-      </Show>
-      <PurgeView mode={mode()} adultAspect={adultAspect()} />
-    </div>
-  );
-};
+export const Purge: Component = () => <OrganizeModeShell view={PurgeView} />;

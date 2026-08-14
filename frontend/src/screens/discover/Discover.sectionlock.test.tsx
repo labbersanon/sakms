@@ -21,12 +21,8 @@ import {
   type SectionLockControl,
 } from "../../components/ui";
 import { ADULT_CONTENT_SECTION } from "../../api/sectionLock";
+import { jsonResponse } from "../../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 // adultLockedControl is the exact scenario under test: ONLY adult-content is
 // locked. `discover` itself is not, so the screen mounts normally.

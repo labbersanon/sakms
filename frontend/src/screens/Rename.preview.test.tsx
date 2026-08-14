@@ -36,12 +36,8 @@ import {
 } from "@solidjs/testing-library";
 import type { Proposal } from "@dto";
 import { Rename } from "./Rename";
+import { jsonResponse } from "../testing/http";
 
-const jsonResponse = (obj: unknown): Response =>
-  new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 const proposal = (over: Partial<Proposal>): Proposal => ({
   id: 1,

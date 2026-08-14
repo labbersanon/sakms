@@ -7,14 +7,8 @@ import type { Mode } from "./discover";
 
 export type OrganizeWorkflow = "rename" | "dedup" | "purge";
 
-export type AdultOrganizeAspect = "" | "vertical" | "horizontal";
-
-export function adultAspectQuery(aspect?: string): string {
-  if (aspect === "vertical" || aspect === "horizontal") {
-    return `?aspect=${aspect}`;
-  }
-  return "";
-}
+export type { AdultOrganizeAspect } from "./aspect";
+export { adultAspectQuery } from "./aspect";
 
 // Claude 2026-08-05: live vs history list views (deep-interview-organize-hide-applied).
 export type ProposalListView = "live" | "history";

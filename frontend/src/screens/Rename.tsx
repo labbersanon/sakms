@@ -63,7 +63,6 @@ import {
   Button,
   ErrorText,
   modeLabel,
-  ModeTabs,
   Muted,
 } from "../components/ui";
 import { useWorkflowActions } from "./workflowHooks";
@@ -71,8 +70,7 @@ import { SearchTakeover, type TakeoverPick } from "./SearchTakeover";
 import { otherModes } from "./moveTargets";
 import {
   ActivityLogPanel,
-  AdultOrganizeAspectBar,
-  loadAdultOrganizeAspect,
+  OrganizeModeShell,
   PageSizeSelect,
   PaginationBar,
   ShowHistoryToggle,
@@ -1861,21 +1859,4 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
   );
 };
 
-export const Rename: Component = () => {
-  const [mode, setMode] = createSignal<Mode>("movies");
-  const [adultAspect, setAdultAspect] = createSignal<AdultOrganizeAspect>(
-    loadAdultOrganizeAspect(),
-  );
-  return (
-    <div>
-      <ModeTabs current={mode} onSelect={setMode} />
-      <Show when={mode() === "adult"}>
-        <AdultOrganizeAspectBar
-          value={adultAspect()}
-          onChange={setAdultAspect}
-        />
-      </Show>
-      <RenameQueue mode={mode()} adultAspect={adultAspect()} />
-    </div>
-  );
-};
+export const Rename: Component = () => <OrganizeModeShell view={RenameQueue} />;

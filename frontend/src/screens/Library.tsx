@@ -432,7 +432,9 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
 };
 
 // DetailPanel shows full metadata + editable tags for the selected item.
-// Poster is lazy-fetched again (same endpoint, browser caches the image).
+// Poster is lazy-fetched again (same endpoint, browser caches the image)
+// unless showPoster is false — nested under DetailPopup the header tile is
+// the one poster (Library enrichment 2026-08-14).
 // Genres and cast are READ-ONLY. Tags are mutable via act() from the parent.
 const DetailPanel: Component<{
   item: TrackedItem;
@@ -443,10 +445,19 @@ const DetailPanel: Component<{
   onAdd: () => void;
   onRemoveTag: (tag: string) => void;
   posterAspect?: string;
+  // Claude 2026-08-14: omit the panel poster when DetailPopup already shows one.
+  // Reason: Library nested the original MediaDetailShell poster under the
+  // Discover header tile, so the modal had two poster columns.
+  // Troubleshooting: letter-tile + large poster, then two real posters after
+  // TitleDetail.posterPath landed.
+  // Review if: the no-tmdbId fallback modal is retired and this panel is
+  // children-only.
+  showPoster?: boolean;
 }> = (props) => {
+  const showPoster = () => props.showPoster !== false;
   const [posterPath] = createResource(
     () =>
-      props.mode !== "adult" && props.item.tmdbId
+      showPoster() && props.mode !== "adult" && props.item.tmdbId
         ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
         : undefined,
     ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId).catch(() => ""),
@@ -467,6 +478,7 @@ const DetailPanel: Component<{
   createEffect(on(() => props.item.id, () => setVideoError(false)));
 
   const media = () => {
+    if (!showPoster()) return undefined;
     if (posterUrl()) {
       return (
         <img
@@ -983,6 +995,7 @@ const LibraryView: Component<{
                             item={item()}
                             mode={props.mode}
                             posterAspect={props.posterAspect}
+                            showPoster={false}
                             datalistId={datalistId()}
                             draft={detailDraft()}
                             onDraftChange={setDetailDraft}

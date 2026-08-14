@@ -7669,4 +7669,13 @@ path. `/poster` is only a fallback when that field is also empty
 catch a failed `/poster` the same way Discover's `LibraryCard` already
 did, so a 5xx does not leave the Solid resource in an error state.
 
+## 2026-08-14 (later, same day) — One poster in the Library detail modal
+
+Opening a Library card stacked two poster columns: DetailPopup's header
+tile (More on TMDB / Watch Trailer) and DetailPanel's original
+MediaDetailShell poster below the divider. Nested DetailPanel now omits
+its poster (`showPoster={false}`) so the modal has one art slot. The
+no-tmdbId fallback modal still renders DetailPanel's poster, since that
+path has no DetailPopup header tile.
+
 

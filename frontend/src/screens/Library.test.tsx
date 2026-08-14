@@ -298,17 +298,25 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
           posterPath: "/inception.jpg",
         });
       }
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "/grid.jpg" });
       if (extra) return extra;
       return makeHandler([inception()])(url, init);
     });
     renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
     const img = await screen.findByAltText("Inception");
     expect(img).toHaveAttribute(
       "src",
       "/api/images/proxy?url=" +
         encodeURIComponent("https://image.tmdb.org/t/p/w342/inception.jpg"),
     );
+    expect(
+      within(dialog)
+        .queryAllByRole("img")
+        .filter((el) => el.getAttribute("alt") === ""),
+    ).toHaveLength(0);
+    expect(dialog.querySelector(".w-32")).toBeNull();
   });
 
   it("adds a tag from the detail panel via the GENERIC /items/{id}/tags route", async () => {

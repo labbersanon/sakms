@@ -94,6 +94,7 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	ctx := context.Background()
 	scene, err := libStore.UpsertScene(ctx, library.Scene{
 		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
+		Studio: "Studio A", Date: "2024-01-02",
 		FilePath: "/media/Adult/Some Scene.mp4", RootFolderPath: "/media/Adult",
 		QualityTier: "high",
 		PosterURL:   "https://1.1.1.1/scene.jpg",
@@ -134,6 +135,12 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	}
 	if got[0].PosterURL != "https://1.1.1.1/scene.jpg" {
 		t.Fatalf("expected catalog poster URL, got %q", got[0].PosterURL)
+	}
+	if got[0].Box != "stashdb" || got[0].SceneID != "s1" {
+		t.Fatalf("expected stored box/sceneId stashdb/s1, got %q/%q", got[0].Box, got[0].SceneID)
+	}
+	if got[0].Studio != "Studio A" || got[0].Date != "2024-01-02" {
+		t.Fatalf("expected stored studio/date, got %q/%q", got[0].Studio, got[0].Date)
 	}
 }
 

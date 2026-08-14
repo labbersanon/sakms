@@ -1218,30 +1218,30 @@ type Candidate struct {
 // Winner (the keeper); Rename/Purge never populate it (it's absent from their
 // wire rows, so the shared TS type carries it as optional).
 type Proposal struct {
-	ID                  int64       `json:"id"`
-	Status              string      `json:"status"`
-	SourceName          string      `json:"sourceName"`
-	SourcePath          string      `json:"sourcePath,omitempty"`
-	RootFolderPath      string      `json:"rootFolderPath"`
-	Title               string      `json:"title,omitempty"`
-	Year                int         `json:"year,omitempty"`
-	SeasonNumber        int         `json:"seasonNumber,omitempty"`
-	EpisodeNumber       int         `json:"episodeNumber,omitempty"`
-	ExtraEpisodeNumbers []int       `json:"extraEpisodeNumbers,omitempty"`
-	Studio              string      `json:"studio,omitempty"`
-	Date                string      `json:"date,omitempty"`
-	PHash               string      `json:"phash,omitempty"`
+	ID                  int64  `json:"id"`
+	Status              string `json:"status"`
+	SourceName          string `json:"sourceName"`
+	SourcePath          string `json:"sourcePath,omitempty"`
+	RootFolderPath      string `json:"rootFolderPath"`
+	Title               string `json:"title,omitempty"`
+	Year                int    `json:"year,omitempty"`
+	SeasonNumber        int    `json:"seasonNumber,omitempty"`
+	EpisodeNumber       int    `json:"episodeNumber,omitempty"`
+	ExtraEpisodeNumbers []int  `json:"extraEpisodeNumbers,omitempty"`
+	Studio              string `json:"studio,omitempty"`
+	Date                string `json:"date,omitempty"`
+	PHash               string `json:"phash,omitempty"`
 	// GiveBackBox/GiveBackSceneID mirror the wire fields that proposals.go
 	// already carries (proposals.go:167-168). The frontend uses the ABSENCE of
 	// GiveBackSceneID (with a non-empty Title) as the structural signal that an
 	// Adult Unmatched row is web-identified — enabling the Review action without
 	// matching on the reason string (a fragility the old reason-substring checks
 	// all had). Added 2026-08-12 for adult-rename-review-alts E2.
-	GiveBackBox     string `json:"giveBackBox,omitempty"`
-	GiveBackSceneID string `json:"giveBackSceneId,omitempty"`
-	Reason          string `json:"reason,omitempty"`
-	DraftID             string      `json:"draftId,omitempty"`
-	Candidates          []Candidate `json:"candidates,omitempty"`
+	GiveBackBox     string      `json:"giveBackBox,omitempty"`
+	GiveBackSceneID string      `json:"giveBackSceneId,omitempty"`
+	Reason          string      `json:"reason,omitempty"`
+	DraftID         string      `json:"draftId,omitempty"`
+	Candidates      []Candidate `json:"candidates,omitempty"`
 	// PHashSimilarity is the minimum pairwise phash similarity across the
 	// duplicate group [0.0–1.0], populated only by phash-primary scans
 	// (Movies/Series). Zero means the proposal was produced by the legacy
@@ -1652,10 +1652,16 @@ type TagEntry struct {
 // auto-grab; Year is display-only. The Tag picker (this type's original
 // caller) ignores both.
 //
-// CreatedAt is another additive field, present only for Movies/Series so the
-// frontend's Library screen can offer an added-date sort. It is absent for
-// Adult scenes — Adult has no Library grid to sort, and omitting it keeps
-// Adult's wire response byte-identical to before this field existed.
+// CreatedAt is additive for every mode so the Library screen can sort by
+// added date. Adult scenes used to omit it (there was no Adult Library grid);
+// that grid now exists, and the Adult tracked handler always sends it.
+//
+// Box/SceneID/Studio/Date are Adult-only stored catalog identity, copied from
+// library_scenes. They let Library cards open Discover's DetailPopup
+// (allowGrab=false) and show a studio/date hover overlay without a live
+// catalog lookup on GET /tracked. Box is AdultDiscoverItem.source; SceneID is
+// the catalog UUID, not library_scenes.id (that stays on ID). Empty for
+// Movies/Series.
 type TrackedItem struct {
 	ID             int64             `json:"id"`
 	Title          string            `json:"title"`
@@ -1670,6 +1676,10 @@ type TrackedItem struct {
 	Files          []TrackedItemFile `json:"files,omitempty"`
 	VideoURL       string            `json:"videoUrl,omitempty"`
 	PosterURL      string            `json:"posterUrl,omitempty"`
+	Box            string            `json:"box,omitempty"`
+	SceneID        string            `json:"sceneId,omitempty"`
+	Studio         string            `json:"studio,omitempty"`
+	Date           string            `json:"date,omitempty"`
 }
 
 // TrackedItemFile is one primary or alternate video under a Movies tracked

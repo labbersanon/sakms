@@ -5,7 +5,13 @@
 // panel — not on a separate sidebar tab.
 //
 // Layout, top to bottom: a Movies/Series/Adult tab bar over a filter row (title search
-// | genre | quality tier | sort) and a poster grid; selecting a card slides a
+// | genre | quality tier | sort) and a poster grid.
+// Claude 2026-08-14: card click opens DetailPopup (allowGrab=false) with
+// DetailPanel (tags/files/seasons) as children of the same Modal. Tag
+// mutations still go through addTag/removeTag + act().
+// Reason: Library enrichment matches Discover minus grab.
+// Review if: Library grows a grab path or a side panel returns.
+// selecting a card slides a
 // DetailPanel in at w-72 showing genres/cast/tags — plus, for Series only, the
 // per-season monitoring panel (SeasonsPanel). Tag mutations in the panel go
 // through addTag/removeTag + act().
@@ -32,7 +38,7 @@ import {
   Show,
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
-import type { Mode } from "../api/discover";
+import type { AdultDiscoverItem, DiscoverItem, Mode } from "../api/discover";
 import { fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
 import {
   fetchSeasonStates,
@@ -60,6 +66,7 @@ import {
   inputClass,
   labelClass,
   FILTER_BAR_FIELDS_CLASS,
+  yearOf,
 } from "../components/ui";
 import {
   MediaCardShell,
@@ -77,6 +84,7 @@ import {
   type MainstreamMediaTab,
 } from "./mediaNav";
 import { Modal } from "./discover/shared";
+import { DetailPopup, type DetailTarget } from "./discover/DetailPopup";
 import { useWorkflowActions } from "./workflowHooks";
 
 type PosterMode = Exclude<Mode, "adult">;
@@ -101,6 +109,59 @@ const selectClass =
 // the start and paints that frame as the still. Without the fragment a
 // preload="metadata" <video> stays blank until playback begins.
 const firstFrameSrc = (videoUrl: string) => `${videoUrl}#t=0.1`;
+
+// trackedToDiscoverItem is the same synthetic DiscoverItem Discover's
+// LibraryCard builds so DetailPopup can resolve trailer/title-detail by tmdbId.
+// overview/voteAverage stay empty: GET /tracked does not carry them, and this
+// mapper must not fetch TMDB per card.
+const trackedToDiscoverItem = (
+  item: TrackedItem,
+  mode: PosterMode,
+): DiscoverItem => ({
+  id: item.tmdbId ?? 0,
+  title: item.title,
+  posterPath: "",
+  overview: "",
+  releaseDate: item.year ? String(item.year) : "",
+  voteAverage: 0,
+  mediaType: mode === "series" ? "tv" : "movie",
+});
+
+// trackedToAdultDiscoverItem maps stored library_scenes identity onto the
+// AdultDiscoverItem DetailPopup already knows. Box/sceneId/studio/date are
+// on the tracked payload (copied at list time); no live catalog lookup.
+const trackedToAdultDiscoverItem = (item: TrackedItem): AdultDiscoverItem => ({
+  id: item.sceneId ?? "",
+  title: item.title,
+  studio: item.studio ?? "",
+  date: item.date ?? "",
+  image: item.posterUrl ?? "",
+  durationSeconds: 0,
+  rating: 0,
+  source: item.box ?? "",
+  slug: "",
+  genres: item.genres ?? [],
+  performers: item.cast ?? [],
+});
+
+// trackedToDetailTarget is undefined for a Movies/Series row with no tmdbId
+// (DetailPopup would fetch against id 0). Adult always has a target: local
+// scenes simply skip the catalog description fetch via CATALOG_SOURCES.
+const trackedToDetailTarget = (
+  mode: Mode,
+  item: TrackedItem,
+): DetailTarget | undefined => {
+  if (mode === "adult") {
+    return { mode: "adult", item: trackedToAdultDiscoverItem(item) };
+  }
+  if ((item.tmdbId ?? 0) <= 0) return undefined;
+  return { mode, item: trackedToDiscoverItem(item, mode) };
+};
+
+// adultHoverText matches AdultCard's studio/date overlay. Movies/Series have
+// no overview on the tracked payload, so those cards skip the overlay.
+const adultHoverText = (item: TrackedItem): string =>
+  [item.studio, yearOf(item.date ?? "")].filter(Boolean).join(" · ");
 
 // PosterCard is one grid cell. It lazily fetches the item's TMDB poster and
 // renders it; with no poster it falls back to the Adult scene's own video still
@@ -165,6 +226,7 @@ const PosterCard: Component<{
 
   return (
     <MediaCardShell
+      class="group w-full"
       label={props.item.title}
       selected={props.selected}
       onClick={props.onClick}
@@ -204,6 +266,17 @@ const PosterCard: Component<{
             loading="lazy"
             class="h-full w-full object-cover"
           />
+        </Show>
+        {/* Claude 2026-08-14: Discover-style hover overlay for Adult
+            (studio/date). Movies/Series have no overview on tracked rows.
+            Reason: enrichment same as Discover minus grab; overlay is CSS-only
+            like AdultCard. Review if: overview is stored on library items. */}
+        <Show when={props.mode === "adult"}>
+          <div class="absolute inset-0 flex items-end bg-black/70 p-2 opacity-0 transition-opacity group-hover:opacity-100">
+            <p class="line-clamp-4 text-xs text-white">
+              {adultHoverText(props.item) || props.item.title}
+            </p>
+          </div>
         </Show>
       </div>
       {/* Card footer */}
@@ -587,6 +660,10 @@ const LibraryView: Component<{
 
   // selectedId is the item currently shown in the DetailPanel.
   const [selectedId, setSelectedId] = createSignal<number | null>(null);
+  // Claude 2026-08-14: DetailPopup target, stable until a rec click or close.
+  // Reason: deriving a new object each render would remount a keyed popup.
+  // Review if: Library stops using DetailPopup.
+  const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   // search filters the grid by title (client-side).
   const [search, setSearch] = createSignal("");
   // genre filters the grid to one genre; "" means all genres.
@@ -620,6 +697,7 @@ const LibraryView: Component<{
     {
       resetOnModeChange: () => {
         setSelectedId(null);
+        setDetailTarget(null);
         setSearch("");
         setDetailDraft("");
         setGenre("");
@@ -690,6 +768,35 @@ const LibraryView: Component<{
     return (tracked() ?? []).find((item) => item.id === id) ?? null;
   };
 
+  const closeDetail = () => {
+    setSelectedId(null);
+    setDetailTarget(null);
+    setDetailDraft("");
+  };
+
+  const openCard = (item: TrackedItem) => {
+    setSelectedId((prev) => {
+      if (prev === item.id) {
+        setDetailTarget(null);
+        setDetailDraft("");
+        return null;
+      }
+      setDetailTarget(trackedToDetailTarget(props.mode, item) ?? null);
+      setDetailDraft("");
+      return item.id;
+    });
+  };
+
+  // isLibraryTarget is true while the popup is still the clicked library row,
+  // false after a "More like this" rec retarget (no tags/files/seasons there).
+  const isLibraryTarget = () => {
+    const t = detailTarget();
+    const item = selectedItem();
+    if (!t || !item) return false;
+    if (t.mode === "adult") return t.item.id === (item.sceneId ?? "");
+    return t.item.id === (item.tmdbId ?? 0);
+  };
+
   return (
     <div>
       <Show when={actionError()}>
@@ -744,6 +851,7 @@ const LibraryView: Component<{
                 onInput={(e) => {
                   setSearch(e.currentTarget.value);
                   setSelectedId(null);
+                  setDetailTarget(null);
                 }}
               />
             </div>
@@ -758,6 +866,7 @@ const LibraryView: Component<{
                 onChange={(e) => {
                   setGenre(e.currentTarget.value);
                   setSelectedId(null);
+                  setDetailTarget(null);
                 }}
               >
                 <option value="">All genres</option>
@@ -783,6 +892,7 @@ const LibraryView: Component<{
                 onChange={(e) => {
                   setTier(e.currentTarget.value);
                   setSelectedId(null);
+                  setDetailTarget(null);
                 }}
               >
                 <option value="">All tiers</option>
@@ -830,11 +940,7 @@ const LibraryView: Component<{
                         mode={props.mode}
                         posterAspect={props.posterAspect}
                         selected={selectedId() === item.id}
-                        onClick={() =>
-                          setSelectedId((prev) =>
-                            prev === item.id ? null : item.id,
-                          )
-                        }
+                        onClick={() => openCard(item)}
                       />
                     )}
                   </For>
@@ -844,20 +950,54 @@ const LibraryView: Component<{
 
             <Show when={selectedItem()}>
               {(item) => (
-                <Modal title={item().title} onClose={() => setSelectedId(null)}>
-                  <DetailPanel
-                    item={item()}
-                    mode={props.mode}
-                    posterAspect={props.posterAspect}
-                    datalistId={datalistId()}
-                    draft={detailDraft()}
-                    onDraftChange={setDetailDraft}
-                    onAdd={() => submitDetailAdd(item())}
-                    onRemoveTag={(tag) =>
-                      void act(() => removeTag(props.mode, item().id, tag))
-                    }
-                  />
-                </Modal>
+                <Show
+                  when={detailTarget()}
+                  fallback={
+                    <Modal title={item().title} onClose={closeDetail}>
+                      <DetailPanel
+                        item={item()}
+                        mode={props.mode}
+                        posterAspect={props.posterAspect}
+                        datalistId={datalistId()}
+                        draft={detailDraft()}
+                        onDraftChange={setDetailDraft}
+                        onAdd={() => submitDetailAdd(item())}
+                        onRemoveTag={(tag) =>
+                          void act(() => removeTag(props.mode, item().id, tag))
+                        }
+                      />
+                    </Modal>
+                  }
+                  keyed
+                >
+                  {(target) => (
+                    <DetailPopup
+                      target={target}
+                      allowGrab={false}
+                      onClose={closeDetail}
+                      onSelectRecommendation={setDetailTarget}
+                    >
+                      <Show when={isLibraryTarget()}>
+                        <div class="mt-4 border-t border-border pt-4">
+                          <DetailPanel
+                            item={item()}
+                            mode={props.mode}
+                            posterAspect={props.posterAspect}
+                            datalistId={datalistId()}
+                            draft={detailDraft()}
+                            onDraftChange={setDetailDraft}
+                            onAdd={() => submitDetailAdd(item())}
+                            onRemoveTag={(tag) =>
+                              void act(() =>
+                                removeTag(props.mode, item().id, tag),
+                              )
+                            }
+                          />
+                        </div>
+                      </Show>
+                    </DetailPopup>
+                  )}
+                </Show>
               )}
             </Show>
           </div>

@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { type Component, createSignal, Show } from "solid-js";
-import type { SeasonState, TagEntry, TrackedItem } from "@dto";
+import type { SeasonState, TagEntry, TitleDetail, TrackedItem } from "@dto";
 import {
   AdultModeContext,
   ScreenTabBar,
@@ -59,6 +59,37 @@ const stubFetch = (handler: Handler) => {
 
 const vocab = (labels: string[]): TagEntry[] =>
   labels.map((l) => ({ id: l, label: l }));
+
+const emptyTitleDetail = (): TitleDetail => ({
+  status: "",
+  originalLanguage: "",
+  productionCountry: "",
+  productionCountryCode: "",
+  collectionName: "",
+  collectionId: 0,
+  networks: [],
+  studios: [],
+  runtime: 0,
+  releaseDates: [],
+  genres: [],
+  keywords: [],
+  cast: [],
+  crew: [],
+  watchProviders: [],
+  recommendations: [],
+  seasons: [],
+});
+
+// libraryEnrichmentResponse answers Discover's trailer/detail/description
+// fetches that Library now fires on card click. Availability and quality-prefs
+// are deliberately NOT stubbed: a Grab-path leak must fail as unexpected fetch.
+const libraryEnrichmentResponse = (url: string): Response | null => {
+  if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+  if (url.includes("/discover/detail")) return jsonResponse(emptyTitleDetail());
+  if (url.includes("/discover/description"))
+    return jsonResponse({ text: "", source: "" });
+  return null;
+};
 
 const item = (over: Partial<TrackedItem>): TrackedItem => ({
   id: 1,
@@ -157,6 +188,8 @@ const makeHandler = (
       return jsonResponse(overrides.adult ?? []);
     }
     if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+    const enrichment = libraryEnrichmentResponse(url);
+    if (enrichment) return enrichment;
     // Season state — only ever reached from a SERIES detail panel. Answered
     // unconditionally rather than gated on overrides.seasons so the negative
     // (Movies) case still fails loudly on the calls[] assertion instead of
@@ -208,6 +241,14 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(screen.getByText("Cast")).toBeInTheDocument();
     expect(screen.getByText("Leonardo DiCaprio")).toBeInTheDocument();
     expect(screen.getByText("Tom Hardy")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Grab" })).toBeNull();
+    expect(screen.queryByText("Checking availability…")).toBeNull();
+    expect(calls.some((c) => c.url.includes("/discover/detail"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/discover/trailer"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.url.includes("/quality-prefs"))).toBe(false);
     fireEvent.click(dialog.parentElement!);
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument(),
@@ -232,6 +273,8 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
         added = true;
         return noContent();
       }
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -701,6 +744,8 @@ describe("Library — per-season monitoring (Series only)", () => {
           },
         ] satisfies SeasonState[]);
       }
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -744,6 +789,8 @@ describe("Library — per-season monitoring (Series only)", () => {
           seasons.map((s) => ({ ...s, monitored: allMonitored })),
         );
       }
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -788,6 +835,8 @@ describe("Library — per-season monitoring (Series only)", () => {
           seasons.map((s) => ({ ...s, monitored: allMonitored })),
         );
       }
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -827,6 +876,8 @@ describe("Library — per-season monitoring (Series only)", () => {
           return new Response("no tracked series with that id", { status: 404 });
         return jsonResponse(seasons);
       }
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -853,6 +904,8 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
       if (url.includes("/seasons"))
         return new Response("seasons unavailable", { status: 500 });
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -914,6 +967,34 @@ describe("Library — Adult catalog", () => {
     expect(
       calls.some((c) => c.url.includes("/api/modes/adult/items/50/tags")),
     ).toBe(false);
+    expect(screen.queryByRole("button", { name: "Grab" })).toBeNull();
+    expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.url.includes("/quality-prefs"))).toBe(false);
+  });
+
+  it("Adult cards show a studio/date hover overlay like Discover", async () => {
+    stubFetch(
+      makeHandler([], {
+        adult: [
+          item({
+            id: 50,
+            title: "Adult Scene",
+            studio: "Studio A",
+            date: "2024-01-02",
+            box: "stashdb",
+            sceneId: "s1",
+            qualityTiers: ["high"],
+          }),
+        ],
+      }),
+    );
+    renderLibrary("/library/adult");
+    const card = await screen.findByRole("button", { name: "Adult Scene" });
+    expect(card.className).toContain("group");
+    const overlay = screen.getByText("Studio A · 2024");
+    expect(overlay.parentElement?.className).toContain("group-hover:opacity-100");
   });
 
   it("prefers a catalog poster URL over the video still", async () => {
@@ -1051,6 +1132,8 @@ describe("Library — Adult catalog", () => {
       if (url.includes("/api/modes/adult/scenes/tags")) return jsonResponse(vocab(["reviewed"]));
       if (url.includes("/api/modes/adult/tracked")) return trackedPending;
       if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
     renderLibrary("/library/adult");

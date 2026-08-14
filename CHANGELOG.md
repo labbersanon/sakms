@@ -7623,3 +7623,26 @@ New files: `internal/adultnewest/protocolttl.go`,
 `internal/api/adultreleases_test.go`,
 `internal/db/migration_adult_release_cache_test.go`,
 `internal/db/migrations/0009_adult_release_cache.sql`.
+
+## 2026-08-14 — Library cards: Discover enrichment minus grab
+
+Library grid cards now open Discover's `DetailPopup` for the same F1 metadata
+(trailer, title-detail bundle, Adult catalog description) a Discover card
+gets, with `allowGrab={false}` so the popup never calls Prowlarr, never
+renders resolution/tier/protocol pills, and never shows Grab. Library-only
+affordances (tags, Movies files, Series season monitoring) stay in the same
+modal as `DetailPopup` children. A Movies/Series row with no `tmdbId` still
+opens the previous tags-only modal.
+
+Adult `GET /api/modes/adult/tracked` now includes stored `box`, `sceneId`,
+`studio`, and `date` copied from `library_scenes`. That is list-time identity
+already on disk — not a live TPDB/StashDB/FansDB lookup, which remains
+forbidden on this endpoint. Those fields feed the Adult hover overlay
+(studio · year, same CSS-only convention as Discover `AdultCard`) and the
+description fetch on popup open. Movies/Series tracked rows still have no
+overview, so they do not grow a hover overlay.
+
+Discover's own grab path is unchanged: omitted `allowGrab` defaults to true,
+including the "In your library" row on Discover. Recommendation clicks from
+a Library popup stay `allowGrab={false}`.
+

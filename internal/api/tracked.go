@@ -56,6 +56,18 @@ type libraryTrackedItem struct {
 	Files          []libraryTrackedFile `json:"files,omitempty"`
 	VideoURL       string               `json:"videoUrl,omitempty"`
 	PosterURL      string               `json:"posterUrl,omitempty"`
+	// Claude 2026-08-14: stored Adult catalog identity for Library
+	// enrichment (Discover-minus-grab). Box/SceneID/Studio/Date are copied
+	// from library_scenes at list time — GET /tracked still must not call
+	// TPDB/StashDB/FansDB. Box is AdultDiscoverItem.source; SceneID is the
+	// catalog UUID (not library_scenes.id, which stays on ID).
+	// Reason: Library cards open DetailPopup with allowGrab=false; the
+	// description fetch needs source+id, and the hover overlay needs
+	// studio/date. Review if: a live catalog lookup is ever added here.
+	Box     string `json:"box,omitempty"`
+	SceneID string `json:"sceneId,omitempty"`
+	Studio  string `json:"studio,omitempty"`
+	Date    string `json:"date,omitempty"`
 }
 
 // libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
@@ -214,6 +226,8 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 					ID: sc.ID, Title: sc.Title, Tags: tags,
 					CreatedAt: sc.CreatedAt, QualityTiers: []string{tier},
 					PosterURL: sc.PosterURL,
+					Box:       sc.Box, SceneID: sc.SceneID,
+					Studio: sc.Studio, Date: sc.Date,
 				}
 				if sc.FilePath != "" && browserPlayableVideo(sc.FilePath) {
 					out[i].VideoURL = fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID)

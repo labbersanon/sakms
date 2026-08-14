@@ -1413,3 +1413,85 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     ).toBe(true);
   });
 });
+
+describe("DetailPopup — allowGrab=false (Library enrichment)", () => {
+  it("Movies fetches trailer and title detail, never availability or quality-prefs, and renders no Grab", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/trailer"))
+        return jsonResponse({ url: "https://www.youtube.com/watch?v=abc" });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42 }) }}
+        allowGrab={false}
+        onClose={() => {}}
+      />
+    ));
+
+    expect(await screen.findByText("Watch Trailer →")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Grab" })).toBeNull();
+    expect(screen.queryByText("Checking availability…")).toBeNull();
+    expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.url.includes("/quality-prefs"))).toBe(false);
+    expect(calls.some((c) => c.url.includes("/discover/detail"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/discover/trailer"))).toBe(true);
+  });
+
+  it("Series skips the season/episode gate and never fetches availability", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "series",
+          item: movie({ id: 1396, title: "Breaking Bad", mediaType: "tv" }),
+        }}
+        allowGrab={false}
+        onClose={() => {}}
+      />
+    ));
+
+    expect(await screen.findByText(/More on TMDB/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Pick a season (and optionally an episode) to check availability.",
+      ),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Grab" })).toBeNull();
+    expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(
+      false,
+    );
+  });
+
+  it("Adult still fetches description for catalog scenes and never availability", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/description"))
+        return jsonResponse({ text: "A catalog synopsis.", source: "stashdb" });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "adult",
+          item: adultScene({ source: "stashdb", id: "s1", slug: "" }),
+        }}
+        allowGrab={false}
+        onClose={() => {}}
+      />
+    ));
+
+    expect(await screen.findByText("A catalog synopsis.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Grab" })).toBeNull();
+    expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.url.includes("/quality-prefs"))).toBe(false);
+  });
+});

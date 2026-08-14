@@ -1613,10 +1613,15 @@ export interface TagEntry {
  * TmdbId to lazily fetch each card's poster + availability and to drive
  * auto-grab; Year is display-only. The Tag picker (this type's original
  * caller) ignores both.
- * CreatedAt is another additive field, present only for Movies/Series so the
- * frontend's Library screen can offer an added-date sort. It is absent for
- * Adult scenes — Adult has no Library grid to sort, and omitting it keeps
- * Adult's wire response byte-identical to before this field existed.
+ * CreatedAt is additive for every mode so the Library screen can sort by
+ * added date. Adult scenes used to omit it (there was no Adult Library grid);
+ * that grid now exists, and the Adult tracked handler always sends it.
+ * Box/SceneID/Studio/Date are Adult-only stored catalog identity, copied from
+ * library_scenes. They let Library cards open Discover's DetailPopup
+ * (allowGrab=false) and show a studio/date hover overlay without a live
+ * catalog lookup on GET /tracked. Box is AdultDiscoverItem.source; SceneID is
+ * the catalog UUID, not library_scenes.id (that stays on ID). Empty for
+ * Movies/Series.
  */
 export interface TrackedItem {
   id: number /* int64 */;
@@ -1632,6 +1637,10 @@ export interface TrackedItem {
   files?: TrackedItemFile[];
   videoUrl?: string;
   posterUrl?: string;
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
 }
 /**
  * TrackedItemFile is one primary or alternate video under a Movies tracked

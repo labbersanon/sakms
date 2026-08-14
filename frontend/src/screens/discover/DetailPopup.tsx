@@ -52,6 +52,7 @@
 
 import {
   type Component,
+  type JSX,
   createEffect,
   createResource,
   createSignal,
@@ -448,6 +449,16 @@ const SectionHeading: Component<{ children: string }> = (props) => (
 export const DetailPopup: Component<{
   target: DetailTarget;
   onClose: () => void;
+  // Claude 2026-08-14: Library opens this popup for F1 enrichment without
+  // grab. Default (omitted) stays Discover's grab path. false skips the
+  // season/episode gate, quality-prefs, availability/Prowlarr, pills, and
+  // Grab; trailer + title-detail + Adult description still run.
+  // Reason: "Library cards need enrichment the same as discover minus grab."
+  // Review if: Library ever grows a grab affordance of its own.
+  allowGrab?: boolean;
+  // Library-only footer (tags / seasons / files) inside this Modal so one
+  // click does not drop Library-owned affordances. Discover omits it.
+  children?: JSX.Element;
   // onSelectRecommendation re-targets THIS popup to a clicked "More like this"
   // card: the parent (Mainstream.tsx) swaps its detailTarget, and — because the
   // popup is rendered <Show keyed> — the whole popup remounts, resetting every
@@ -470,23 +481,31 @@ export const DetailPopup: Component<{
 }> = (props) => {
   const mode = () => props.target.mode;
   const item = () => props.target.item;
+  const allowGrab = () => props.allowGrab !== false;
 
   // Series needs season/episode BEFORE the availability fetch can run.
+  // Library (allowGrab=false) skips that gate so F1 metadata is immediate.
   const [seasonEpisode, setSeasonEpisode] = createSignal<
     { season: number; episode: number } | null
   >(null);
-  const ready = () => mode() !== "series" || seasonEpisode() !== null;
+  const ready = () =>
+    !allowGrab() || mode() !== "series" || seasonEpisode() !== null;
 
   // Configured quality-tier/max-resolution/protocol prefs seed the default
   // selection — Movies, Series, and Adult all have a real quality-prefs
   // endpoint now (see internal/apidto/dto.go's updated doc comment).
-  const [prefs] = createResource(mode, async (m) => {
-    try {
-      return await fetchQualityPrefs(m);
-    } catch {
-      return undefined;
-    }
-  });
+  // Skipped entirely when allowGrab is false — Library must not hit Prowlarr
+  // or the grab-prefs path.
+  const [prefs] = createResource(
+    () => (allowGrab() ? mode() : null),
+    async (m) => {
+      try {
+        return await fetchQualityPrefs(m);
+      } catch {
+        return undefined;
+      }
+    },
+  );
 
   // trailer resolves this title's YouTube trailer URL once per title —
   // Movies/Series only, skipped entirely for Adult (no TMDB id to resolve
@@ -549,7 +568,10 @@ export const DetailPopup: Component<{
   const sceneDescription = () => description()?.text ?? "";
 
   const [preview] = createResource(
-    () => (ready() ? { m: mode(), i: item(), se: seasonEpisode() } : null),
+    () =>
+      allowGrab() && ready()
+        ? { m: mode(), i: item(), se: seasonEpisode() }
+        : null,
     ({ m, i, se }) => {
       if (m === "adult") {
         const scene = i as AdultDiscoverItem;
@@ -859,6 +881,7 @@ export const DetailPopup: Component<{
           </div>
         </Show>
 
+        <Show when={allowGrab()}>
         <Show
           when={!preview.loading}
           fallback={<Muted class="mt-3">Checking availability…</Muted>}
@@ -939,6 +962,7 @@ export const DetailPopup: Component<{
               </div>
             </div>
           </Show>
+        </Show>
         </Show>
 
         {/* F1 rich detail (Movies/Series only). Every image below resolves via
@@ -1151,6 +1175,7 @@ export const DetailPopup: Component<{
             );
           }}
         </Show>
+        {props.children}
       </Show>
     </Modal>
   );

@@ -70,6 +70,7 @@ import {
   yearOf,
 } from "../components/ui";
 import Info from "lucide-solid/icons/info";
+import { TrackedPlayback } from "../components/TrackedPlayback";
 import {
   MediaCardShell,
   MediaBadge,
@@ -608,6 +609,11 @@ const DetailPanel: Component<{
       </Show>
 
       {/* Files — Movies primary + alternates (bitrate/codec/resolution) */}
+      {/* Claude 2026-08-14: Play + Fullscreen live on each playable file row.
+          Reason: GET /tracked/{id}/video now serves movies; the player is
+          inline (Library detail is already a Modal — no nested SourcePreviewPopout).
+          mkv/avi/wmv omit videoUrl and get a format note instead of a broken <video>.
+          Review if: transcoding lands or Series episode playback is added. */}
       <Show when={props.mode === "movies" && (props.item.files ?? []).length > 0}>
         <div class="mb-3">
           <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Files</p>
@@ -626,6 +632,7 @@ const DetailPanel: Component<{
                   .filter(Boolean)
                   .join(" · ");
                 const name = f.filePath.split("/").pop() || f.filePath;
+                const playLabel = f.isPrimary ? props.item.title : name;
                 return (
                   <li class="rounded bg-surface-2 px-2 py-1.5 text-xs text-fg">
                     <p class="truncate font-medium">
@@ -635,6 +642,16 @@ const DetailPanel: Component<{
                     <p class="truncate text-muted" title={f.filePath}>
                       {name}
                     </p>
+                    <Show
+                      when={f.videoUrl}
+                      fallback={
+                        <p class="mt-1 text-muted">
+                          This format cannot play in the browser
+                        </p>
+                      }
+                    >
+                      <TrackedPlayback src={f.videoUrl ?? ""} label={playLabel} />
+                    </Show>
                   </li>
                 );
               }}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,12 +83,19 @@ type libraryTrackedFile struct {
 	VideoCodec  string  `json:"videoCodec,omitempty"`
 	BitRate     int64   `json:"bitrate,omitempty"`
 	DurationSec float64 `json:"durationSec,omitempty"`
+	// Claude 2026-08-14: per-file in-app playback URL for Library Movies.
+	// Reason: GET /tracked/{id}/video now serves movies; the list must say
+	// which files a <video> element can actually decode (same omit-when-mkv
+	// rule as Adult's item-level videoUrl).
+	// Review if: transcoding lands and every container becomes playable.
+	VideoURL string `json:"videoUrl,omitempty"`
 }
 
 // browserPlayableVideo reports whether a <video> element can decode the file at
-// path. An Adult scene in a container no browser plays (mkv, avi, wmv…) gets no
-// videoUrl at all rather than one that renders as a broken element — the poster
-// falls back to the title tile instead.
+// path. A tracked Adult scene or Movies file in a container no browser plays
+// (mkv, avi, wmv…) gets no videoUrl at all rather than one that renders as a
+// broken element — Adult falls back to the title tile; Movies shows a format
+// note in the Files list instead of a Play control.
 func browserPlayableVideo(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".mp4", ".m4v", ".webm", ".mov":
@@ -147,6 +155,9 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 						QualityTier: ft, Size: f.Size, Width: f.Width, Height: f.Height,
 						VideoCodec: f.VideoCodec, BitRate: f.BitRate, DurationSec: f.DurationSec,
 					}
+					if browserPlayableVideo(f.FilePath) {
+						trackedFiles[j].VideoURL = fmt.Sprintf("/api/modes/movies/tracked/%d/video?fileId=%d", item.ID, f.ID)
+					}
 					if !seenTier[ft] {
 						seenTier[ft] = true
 						tiers = append(tiers, ft)
@@ -155,10 +166,22 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 				if len(tiers) == 0 {
 					tiers = []string{tier}
 				}
+				primaryPath := item.FilePath
+				for _, f := range files {
+					if f.IsPrimary && strings.TrimSpace(f.FilePath) != "" {
+						primaryPath = f.FilePath
+						break
+					}
+				}
+				itemVideoURL := ""
+				if primaryPath != "" && browserPlayableVideo(primaryPath) {
+					itemVideoURL = fmt.Sprintf("/api/modes/movies/tracked/%d/video", item.ID)
+				}
 				out[i] = libraryTrackedItem{
 					ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year,
 					CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast,
 					CreatedAt: item.CreatedAt, QualityTiers: tiers, Files: trackedFiles,
+					VideoURL: itemVideoURL,
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -242,64 +265,153 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 	}
 }
 
-// trackedVideoHandler streams one tracked scene's own video file, which the
-// Library grid uses as the poster still — an Adult scene has no tmdbId and so no
-// poster artwork to fetch. The path never crosses the wire: the client addresses
-// a library row id and the file path is resolved here.
+// trackedVideoHandler streams one tracked item's own video file. Adult uses it
+// as the Library poster still (no tmdbId, so no artwork). Movies uses it for
+// in-app playback in the Library detail panel. The path never crosses the
+// wire: the client addresses a library row id (and optional fileId) and the
+// file path is resolved here.
 //
 // The Adult section-lock check runs BEFORE the file is opened, so a locked
 // request answers 403 without a byte of the scene reaching the client
 // (TestTrackedVideoHandler_AdultLockedRefusesBeforeAnyBytes pins that ordering).
+// Movies does not run that check — locking Adult must not blank movie playback
+// (TestTrackedVideoHandler_MoviesServesWhileAdultLocked).
 func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
-		if m != mode.Adult {
-			http.Error(w, "tracked video is only supported for adult scenes right now", http.StatusBadRequest)
-			return
+		switch m {
+		case mode.Adult:
+			serveAdultTrackedVideo(w, r, libStore)
+		case mode.Movies:
+			serveMoviesTrackedVideo(w, r, libStore)
+		default:
+			http.Error(w, "tracked video is only supported for adult scenes and movies right now", http.StatusBadRequest)
 		}
-		if denyIfAdultLocked(w, r) {
-			return
-		}
-		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-		if err != nil {
-			http.Error(w, "invalid tracked id", http.StatusBadRequest)
-			return
-		}
-		scene, err := libStore.GetSceneByID(r.Context(), id)
-		if err != nil {
-			if errors.Is(err, library.ErrNotFound) {
-				http.Error(w, "no tracked scene with that id", http.StatusNotFound)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if scene.FilePath == "" {
-			http.Error(w, "tracked scene has no video file", http.StatusNotFound)
-			return
-		}
-		f, err := os.Open(scene.FilePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				http.Error(w, "tracked scene video file not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, "tracked scene video file is not accessible", http.StatusInternalServerError)
-			return
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil {
-			http.Error(w, "tracked scene video file is not accessible", http.StatusInternalServerError)
-			return
-		}
-		if info.IsDir() {
-			http.Error(w, "tracked scene video path is a directory", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Cache-Control", "private, max-age=3600")
-		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 	}
+}
+
+func serveAdultTrackedVideo(w http.ResponseWriter, r *http.Request, libStore *library.Store) {
+	if denyIfAdultLocked(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid tracked id", http.StatusBadRequest)
+		return
+	}
+	scene, err := libStore.GetSceneByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, library.ErrNotFound) {
+			http.Error(w, "no tracked scene with that id", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	serveLocalVideoFile(w, r, scene.FilePath, "scene")
+}
+
+func serveMoviesTrackedVideo(w http.ResponseWriter, r *http.Request, libStore *library.Store) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid tracked id", http.StatusBadRequest)
+		return
+	}
+	fileID, ok := parseOptionalFileID(w, r)
+	if !ok {
+		return
+	}
+	path, err := movieTrackedVideoPath(r.Context(), libStore, id, fileID)
+	if err != nil {
+		if errors.Is(err, library.ErrNotFound) {
+			http.Error(w, "no tracked movie video with that id", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	serveLocalVideoFile(w, r, path, "movie")
+}
+
+// parseOptionalFileID reads ?fileId= from the query. Missing/empty means
+// "primary file". Invalid values 400 and return ok=false so the caller
+// returns without a second write.
+func parseOptionalFileID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("fileId"))
+	if raw == "" {
+		return 0, true
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 1 {
+		http.Error(w, "invalid fileId", http.StatusBadRequest)
+		return 0, false
+	}
+	return id, true
+}
+
+// movieTrackedVideoPath resolves the on-disk path for a Movies tracked row.
+// fileID 0 means the primary (then first listed file, then the denormalized
+// item.FilePath). A non-zero fileID must belong to this item — ListFiles is
+// scoped to itemID, so a sibling title's file id is a 404, not a path leak.
+func movieTrackedVideoPath(ctx context.Context, libStore *library.Store, itemID, fileID int64) (string, error) {
+	item, err := libStore.Get(ctx, itemID)
+	if err != nil {
+		return "", err
+	}
+	if item.Mode != mode.Movies {
+		return "", library.ErrNotFound
+	}
+	files, err := libStore.ListFiles(ctx, itemID)
+	if err != nil {
+		return "", err
+	}
+	if fileID > 0 {
+		for _, f := range files {
+			if f.ID == fileID {
+				return f.FilePath, nil
+			}
+		}
+		return "", library.ErrNotFound
+	}
+	for _, f := range files {
+		if f.IsPrimary && strings.TrimSpace(f.FilePath) != "" {
+			return f.FilePath, nil
+		}
+	}
+	if len(files) > 0 && strings.TrimSpace(files[0].FilePath) != "" {
+		return files[0].FilePath, nil
+	}
+	return item.FilePath, nil
+}
+
+// serveLocalVideoFile opens path and hands it to http.ServeContent (Range/seek
+// works). kind is only for the error string ("scene" / "movie").
+func serveLocalVideoFile(w http.ResponseWriter, r *http.Request, path, kind string) {
+	if path == "" {
+		http.Error(w, "tracked "+kind+" has no video file", http.StatusNotFound)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "tracked "+kind+" video file not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "tracked "+kind+" video file is not accessible", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "tracked "+kind+" video file is not accessible", http.StatusInternalServerError)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "tracked "+kind+" video path is a directory", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
 func parseAdultAspectQuery(r *http.Request) (string, error) {

@@ -587,3 +587,230 @@ func TestListTracked_CreatedAt_IsLexicographicallySortable(t *testing.T) {
 		t.Fatalf("expected first-inserted item's createdAt (%q) to sort <= second-inserted item's createdAt (%q)", firstCreatedAt, secondCreatedAt)
 	}
 }
+
+func seedMovie(t *testing.T, libStore *library.Store, item library.Item) library.Item {
+	t.Helper()
+	out, err := libStore.Upsert(context.Background(), item)
+	if err != nil {
+		t.Fatalf("seeding movie: %v", err)
+	}
+	return out
+}
+
+func getModeTrackedVideo(t *testing.T, srv *httptest.Server, m string, id int64, query string) (*http.Response, []byte) {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/%s/tracked/%d/video%s", srv.URL, m, id, query))
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	return resp, body
+}
+
+func TestListTracked_Movies_SetsVideoURLWhenPlayable(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 27205, Title: "Inception", Year: 2010,
+		FilePath: "/movies/Inception/Inception.mp4", RootFolderPath: "/movies",
+	})
+	files, err := libStore.ListFiles(ctx, item.ID)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("expected 1 synced primary file, got %v err=%v", files, err)
+	}
+
+	got := getTrackedItems(t, srv, "movies")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 item, got %+v", got)
+	}
+	wantItem := fmt.Sprintf("/api/modes/movies/tracked/%d/video", item.ID)
+	if got[0].VideoURL != wantItem {
+		t.Fatalf("item videoUrl = %q, want %q", got[0].VideoURL, wantItem)
+	}
+	wantFile := fmt.Sprintf("/api/modes/movies/tracked/%d/video?fileId=%d", item.ID, files[0].ID)
+	if len(got[0].Files) != 1 || got[0].Files[0].VideoURL != wantFile {
+		t.Fatalf("file videoUrl = %+v, want %q", got[0].Files, wantFile)
+	}
+}
+
+func TestListTracked_Movies_OmitsVideoURLForMkv(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 27205, Title: "Inception", Year: 2010,
+		FilePath: "/movies/Inception/Inception.mkv", RootFolderPath: "/movies",
+	})
+
+	got := getTrackedItems(t, srv, "movies")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 item, got %+v", got)
+	}
+	if got[0].VideoURL != "" {
+		t.Fatalf("expected item videoUrl omitted for mkv, got %q", got[0].VideoURL)
+	}
+	if len(got[0].Files) != 1 || got[0].Files[0].VideoURL != "" {
+		t.Fatalf("expected file videoUrl omitted for mkv, got %+v", got[0].Files)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesServesPrimaryFile(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	path := filepath.Join(t.TempDir(), "movie.mp4")
+	if err := os.WriteFile(path, []byte("movie-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+
+	resp, body := getModeTrackedVideo(t, srv, "movies", item.ID, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.StatusCode, body)
+	}
+	if string(body) != "movie-bytes" {
+		t.Fatalf("body = %q, want movie-bytes", body)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=3600" {
+		t.Fatalf("Cache-Control = %q, want private max-age", got)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesServesFileId(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	dir := t.TempDir()
+	primary := filepath.Join(dir, "primary.mp4")
+	alt := filepath.Join(dir, "alt.mp4")
+	if err := os.WriteFile(primary, []byte("primary-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(alt, []byte("alt-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: primary, RootFolderPath: dir,
+	})
+	altFile, err := libStore.UpsertFile(context.Background(), library.ItemFile{
+		ItemID: item.ID, FilePath: alt, IsPrimary: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, body := getModeTrackedVideo(t, srv, "movies", item.ID, fmt.Sprintf("?fileId=%d", altFile.ID))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.StatusCode, body)
+	}
+	if string(body) != "alt-bytes" {
+		t.Fatalf("body = %q, want alt-bytes", body)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesFileIdMustBelongToItem(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	dir := t.TempDir()
+	aPath := filepath.Join(dir, "a.mp4")
+	bPath := filepath.Join(dir, "b.mp4")
+	if err := os.WriteFile(aPath, []byte("aaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte("bbb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "A", Year: 2020,
+		FilePath: aPath, RootFolderPath: dir,
+	})
+	b := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 2, Title: "B", Year: 2021,
+		FilePath: bPath, RootFolderPath: dir,
+	})
+	bFiles, err := libStore.ListFiles(context.Background(), b.ID)
+	if err != nil || len(bFiles) != 1 {
+		t.Fatalf("b files: %v err=%v", bFiles, err)
+	}
+
+	resp, body := getModeTrackedVideo(t, srv, "movies", a.ID, fmt.Sprintf("?fileId=%d", bFiles[0].ID))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for sibling fileId, got %d body=%q", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "bbb") {
+		t.Fatalf("sibling file bytes leaked: %q", body)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesRejectsDirectory(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	dir := t.TempDir()
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: dir, RootFolderPath: dir,
+	})
+
+	resp, _ := getModeTrackedVideo(t, srv, "movies", item.ID, "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for directory path, got %d", resp.StatusCode)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesRejectsEmptyPath(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		RootFolderPath: "/movies",
+	})
+
+	resp, _ := getModeTrackedVideo(t, srv, "movies", item.ID, "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for empty path, got %d", resp.StatusCode)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesInvalidFileId(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		RootFolderPath: "/movies",
+	})
+
+	resp, _ := getModeTrackedVideo(t, srv, "movies", item.ID, "?fileId=abc")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-numeric fileId, got %d", resp.StatusCode)
+	}
+}
+
+func TestTrackedVideoHandler_SeriesStillUnsupported(t *testing.T) {
+	_, srv := newTrackedTestServer(t)
+	resp, _ := getModeTrackedVideo(t, srv, "series", 1, "")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for series tracked video, got %d", resp.StatusCode)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesServesWhileAdultLocked(t *testing.T) {
+	const marker = "MOVIE-TRACKED-VIDEO-BYTES"
+	libStore, mux := newTrackedMux(t)
+	path := filepath.Join(t.TempDir(), "movie.mp4")
+	if err := os.WriteFile(path, []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+
+	srv := httptest.NewServer(withLockedAdult(mux))
+	defer srv.Close()
+
+	resp, body := getModeTrackedVideo(t, srv, "movies", item.ID, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 while Adult is locked, got %d body=%q", resp.StatusCode, body)
+	}
+	if string(body) != marker {
+		t.Fatalf("body = %q, want marker", body)
+	}
+}

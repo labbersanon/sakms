@@ -7711,4 +7711,19 @@ disabled until Settings → Download → Usenet → Enable auto-grab is on.
 The two sentences live behind an info icon (tap to expand) instead of
 on the card. A failed auto-grab fetch is treated as off.
 
+## 2026-08-14 (later, same day) — In-app movie playback with fullscreen
+
+Library Movies detail had file metadata (path, codec, bitrate) but no
+way to watch the file. `GET /api/modes/{mode}/tracked/{id}/video` only
+served Adult scenes (poster stills). That route now serves Movies too:
+primary file by default, `?fileId=` for an alternate that belongs to
+the same title. The Movies tracked list sets `videoUrl` on the item and
+on each browser-playable file (mp4/m4v/webm/mov). mkv/avi/wmv omit it.
+
+The Files section gained Play (inline `<video controls>`, not a nested
+modal) and an explicit Fullscreen button (`requestFullscreen` /
+`webkitEnterFullscreen`). Native controls still include fullscreen.
+Series episode playback is not in this change. No transcoding — formats
+the browser cannot decode show "This format cannot play in the browser".
+
 

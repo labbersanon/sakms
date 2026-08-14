@@ -1668,6 +1668,13 @@ export interface TrackedItemFile {
   videoCodec?: string;
   bitrate?: number /* int64 */;
   durationSec?: number /* float64 */;
+  /**
+   * VideoURL is set only when the file's container is one a <video>
+   * element can decode (mp4/m4v/webm/mov). mkv/avi/wmv omit it so the
+   * Library player does not mount a broken element. GET the URL for
+   * bytes; optional fileId is already in the path's query when present.
+   */
+  videoUrl?: string;
 }
 /**
  * CollectionSummary is one entry from GET /api/modes/movies/collections —

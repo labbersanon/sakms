@@ -1261,3 +1261,73 @@ describe("Library — Adult catalog", () => {
     expect(await screen.findByText("Nothing tracked yet.")).toBeInTheDocument();
   });
 });
+
+describe("Library — in-app movie playback", () => {
+  const playable = (): TrackedItem =>
+    inception({
+      videoUrl: "/api/modes/movies/tracked/10/video",
+      files: [
+        {
+          id: 3,
+          filePath: "/movies/Inception/Inception.mp4",
+          isPrimary: true,
+          videoUrl: "/api/modes/movies/tracked/10/video?fileId=3",
+        },
+      ],
+    });
+
+  it("shows Play and Fullscreen in the detail panel for a browser-playable file", async () => {
+    stubFetch(makeHandler([playable()]));
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
+    expect(within(dialog).getByText("Files")).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Play Inception" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Play Inception fullscreen" }),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Video player for Inception")).toBeNull();
+  });
+
+  it("Play mounts the video inside the existing dialog, not a nested modal", async () => {
+    stubFetch(makeHandler([playable()]));
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Play Inception" }));
+    const video = within(dialog).getByLabelText(
+      "Video player for Inception",
+    ) as HTMLVideoElement;
+    expect(video.getAttribute("src")).toBe(
+      "/api/modes/movies/tracked/10/video?fileId=3",
+    );
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+
+  it("mkv files get a format note and no Play control", async () => {
+    stubFetch(
+      makeHandler([
+        inception({
+          files: [
+            {
+              id: 4,
+              filePath: "/movies/Inception/Inception.mkv",
+              isPrimary: true,
+            },
+          ],
+        }),
+      ]),
+    );
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
+    expect(
+      within(dialog).getByText("This format cannot play in the browser"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: "Play Inception" }),
+    ).toBeNull();
+  });
+});

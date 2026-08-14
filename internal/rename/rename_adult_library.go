@@ -264,14 +264,16 @@ func buildAdultLibraryProposal(
 // premature abstraction CLAUDE.md bans.
 // Claude 2026-08-12: added prober parameter; added alternate-fold gate.
 // Reason: deep-interview-adult-rename-review-alts C6 — ApplyLibraryAdult now has
-//   a promote/demote branch (applyAdultAlternate). prober is required for quality
-//   ranking; the fold gate fires when the target (box, scene_id) is already tracked
-//   with a live file. viaAlternateFold is promoted, NEVER true — undo_apply.go:190-193
-//   short-circuits the file move on that flag and blanket-setting it would make
-//   every lose/tie Adult Apply un-undoable. The stale Claude block below
-//   ("viaAlternateFold is ALWAYS false for Adult — no promote/demote branch") has
-//   been met (Review if: ApplyLibraryAdult gains an alternate/promote branch) and
-//   is removed and replaced with this one.
+//
+//	a promote/demote branch (applyAdultAlternate). prober is required for quality
+//	ranking; the fold gate fires when the target (box, scene_id) is already tracked
+//	with a live file. viaAlternateFold is promoted, NEVER true — undo_apply.go:190-193
+//	short-circuits the file move on that flag and blanket-setting it would make
+//	every lose/tie Adult Apply un-undoable. The stale Claude block below
+//	("viaAlternateFold is ALWAYS false for Adult — no promote/demote branch") has
+//	been met (Review if: ApplyLibraryAdult gains an alternate/promote branch) and
+//	is removed and replaced with this one.
+//
 // Review if: the alternate fold is removed or quality ranking moves off prober.
 func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, p proposals.Proposal, tier string, prober Prober) (sceneID int64, fingerprintSubmitted bool, changes []mode.PathChange, err error) {
 	if p.Status != proposals.Pending {
@@ -317,6 +319,7 @@ func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *librar
 		if altErr != nil {
 			return altSceneID, false, altChanges, altErr
 		}
+		persistAdultSceneCatalogTags(ctx, sess, libStore, altSceneID, p.GiveBackBox, p.GiveBackSceneID, "")
 		submitted := submitFingerprintGiveBack(ctx, sess, p)
 		landed := lastCreatedPath(altChanges, videoPath)
 		recordUndoArchive(ctx, mode.Adult, p, videoPath,
@@ -360,6 +363,7 @@ func ApplyLibraryAdult(ctx context.Context, sess *mode.Session, libStore *librar
 	if err != nil {
 		return 0, false, changes, fmt.Errorf("recording scene %q in the library: %w", p.Title, err)
 	}
+	persistAdultSceneCatalogTags(ctx, sess, libStore, scene.ID, p.GiveBackBox, p.GiveBackSceneID, "")
 
 	submitted := submitFingerprintGiveBack(ctx, sess, p)
 	// Claude 2026-08-12: simple path — viaAlternateFold is false because no
@@ -461,7 +465,7 @@ func OrganizeImportedAdult(ctx context.Context, sess *mode.Session, libStore *li
 		fileMTime = info.ModTime().UTC().Format(time.RFC3339Nano)
 	}
 	aspect := library.ProbePosterAspect(ctx, id.match.Image)
-	if _, err := libStore.UpsertScene(ctx, library.Scene{
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
 		Box: id.match.Box, SceneID: id.match.SceneID,
 		Title: id.match.Title, Studio: id.match.Studio, Date: id.match.Date,
 		FilePath: destPath, RootFolderPath: rootFolderPath,
@@ -469,8 +473,61 @@ func OrganizeImportedAdult(ctx context.Context, sess *mode.Session, libStore *li
 		PHash: phash, PHashFileSize: fileSize, PHashFileMTime: fileMTime,
 		PosterAspectClass: aspect,
 		PosterURL:         id.match.Image,
-	}); err != nil {
+	})
+	if err != nil {
 		return destPath, changes, fmt.Errorf("recording organized scene: %w", err)
 	}
+	// Claude 2026-08-14: persist catalog tags at grab-import.
+	// Reason: Clean-up matches library_scene_tags only; MatchResult.Tags was
+	//   populated at identify time and never written, so tags-only rules
+	//   scanned 0 hits against a fully identified Adult library.
+	// Troubleshooting: BDSM Clean-up rule (Bondage/Bound/Dungeon/Pee/Peeing)
+	//   previewed and scanned empty while 250 stashdb/tpdb scenes existed.
+	// Review if: UpsertScene itself writes tags from a Scene.Tags field.
+	if err := libStore.ApplyCatalogTags(ctx, scene.ID, id.match.Tags); err != nil {
+		return destPath, changes, fmt.Errorf("recording catalog tags for %q: %w", id.match.Title, err)
+	}
 	return destPath, changes, nil
+}
+
+// persistAdultSceneCatalogTags fill-if-empty writes catalog genre names onto
+// library_scene_tags. Best-effort: a lookup or insert failure is logged, never
+// turned into an Apply error — the file is already in the library.
+func persistAdultSceneCatalogTags(ctx context.Context, sess *mode.Session, libStore *library.Store, sceneID int64, box, catalogID, joined string) {
+	if sceneID == 0 {
+		return
+	}
+	existing, err := libStore.SceneTags(ctx, sceneID)
+	if err != nil {
+		log.Printf("rename: listing tags for scene %d: %v", sceneID, err)
+		return
+	}
+	if len(existing) > 0 {
+		return
+	}
+	if joined == "" {
+		joined = catalogTagsByID(ctx, sess, box, catalogID)
+	}
+	if joined == "" {
+		return
+	}
+	if err := libStore.ApplyCatalogTags(ctx, sceneID, joined); err != nil {
+		log.Printf("rename: persisting catalog tags for scene %d: %v", sceneID, err)
+	}
+}
+
+func catalogTagsByID(ctx context.Context, sess *mode.Session, box, catalogID string) string {
+	if sess == nil || sess.Identify == nil || sess.Identify.Boxes == nil || box == "" || catalogID == "" {
+		return ""
+	}
+	if sess.Identify.Throttle != nil {
+		if err := sess.Identify.Throttle.Wait(ctx, box); err != nil {
+			return ""
+		}
+	}
+	res, err := sess.Identify.Boxes.ResolveCatalogRef(ctx, box, catalogID, false)
+	if err != nil || res == nil {
+		return ""
+	}
+	return res.Tags
 }

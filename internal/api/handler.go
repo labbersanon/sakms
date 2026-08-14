@@ -236,7 +236,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/{mode}/rename/proposals/{id}/review", adultReviewPreviewHandler(connStore, scStore, settingsStore, propStore, libStore, httpClient, videoHasher, prober))
 	mux.HandleFunc("POST /api/modes/{mode}/rename/proposals/{id}/review-confirm", adultReviewConfirmHandler(connStore, scStore, settingsStore, propStore, libStore, httpClient, videoHasher, prober))
 
-	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, settingsStore, propStore, libStore, pruningStore))
+	mux.HandleFunc("POST /api/modes/{mode}/purge/scan", purgeScanHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, pruningStore))
 	mux.HandleFunc("GET /api/modes/{mode}/purge/proposals", listProposalsHandler(propStore, proposals.Purge))
 
 	// Operator-authored propose-only pruning rules for the Purge workflow
@@ -254,7 +254,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// read as an ordering hint only — Go 1.22's mux resolves this by method
 	// and specificity, and "preview" is a literal segment so it wins over
 	// {id} regardless.
-	mux.HandleFunc("POST /api/pruning-rules/preview", previewPruningRuleHandler(pruningStore, libStore))
+	mux.HandleFunc("POST /api/pruning-rules/preview", previewPruningRuleHandler(httpClient, connStore, scStore, settingsStore, pruningStore, libStore))
 
 	// Claude 2026-08-04: stash-box database registry routes (Stage 5 Wave 2,
 	// plan .omc/plans/autopilot-impl-stage5-stashboxdb-ui.md).

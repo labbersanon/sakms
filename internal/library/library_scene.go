@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Scene is one tracked Adult scene — a flat, one-row-per-file thing like
@@ -328,6 +329,34 @@ func (s *Store) SceneTags(ctx context.Context, sceneID int64) ([]string, error) 
 		out = append(out, tag)
 	}
 	return out, rows.Err()
+}
+
+// SplitCatalogTags splits identify.MatchResult.Tags (comma-joined, no space)
+// into individual names. Empty input and empty pieces are dropped.
+func SplitCatalogTags(joined string) []string {
+	if joined == "" {
+		return nil
+	}
+	parts := strings.Split(joined, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ApplyCatalogTags assigns each catalog tag in joined to sceneID. Empty input
+// is a no-op. AddSceneTag is idempotent, so a later grab/scan cannot duplicate
+// a tag the operator already assigned.
+func (s *Store) ApplyCatalogTags(ctx context.Context, sceneID int64, joined string) error {
+	for _, tag := range SplitCatalogTags(joined) {
+		if err := s.AddSceneTag(ctx, sceneID, tag); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // AddSceneTag assigns tag to sceneID. A no-op (not an error) if already assigned.

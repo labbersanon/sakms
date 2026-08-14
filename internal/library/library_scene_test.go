@@ -168,6 +168,38 @@ func TestSceneTags_AddIsIdempotentAndRemoveWorks(t *testing.T) {
 	}
 }
 
+func TestSplitCatalogTags_DropsEmptiesAndTrims(t *testing.T) {
+	if got := SplitCatalogTags(""); got != nil {
+		t.Errorf("empty = %v, want nil", got)
+	}
+	got := SplitCatalogTags("Bondage, Dungeon,,Pee")
+	if len(got) != 3 || got[0] != "Bondage" || got[1] != "Dungeon" || got[2] != "Pee" {
+		t.Errorf("SplitCatalogTags = %v", got)
+	}
+}
+
+func TestApplyCatalogTags_PersistsJoinedNames(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	scene, err := s.UpsertScene(ctx, Scene{Box: "stashdb", SceneID: "uuid-tags", Title: "Scene", RootFolderPath: "/adult"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := s.ApplyCatalogTags(ctx, scene.ID, "Bondage,Dungeon"); err != nil {
+		t.Fatalf("ApplyCatalogTags: %v", err)
+	}
+	if err := s.ApplyCatalogTags(ctx, scene.ID, "Bondage"); err != nil {
+		t.Fatalf("second ApplyCatalogTags: %v", err)
+	}
+	tags, err := s.SceneTags(ctx, scene.ID)
+	if err != nil {
+		t.Fatalf("SceneTags: %v", err)
+	}
+	if len(tags) != 2 || tags[0] != "Bondage" || tags[1] != "Dungeon" {
+		t.Fatalf("tags = %v, want [Bondage Dungeon]", tags)
+	}
+}
+
 func TestSceneTagVocabulary_DistinctAcrossScenes(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

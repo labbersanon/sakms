@@ -17,10 +17,13 @@ import (
 	"strconv"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/purge"
+	"github.com/labbersanon/sakms/internal/serviceconn"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // toDTOPruningRule maps an internal pruning.Rule onto the exported
@@ -195,8 +198,10 @@ func deletePruningRuleHandler(store *pruning.Store) http.HandlerFunc {
 // guarantees the count uses the identical Subject projection and Series
 // episode aggregation the actual Scan uses (plan §2.4), which a second
 // hand-written projection here would drift from the first time either changed.
-// The Scan functions are pure — they return proposals, they never persist — so
-// nothing is staged and no Apply becomes possible from this endpoint.
+// The Scan functions never persist proposals — preview stages nothing. Adult
+// tag backfill may fill-if-empty library_scene_tags (same class as Dedup
+// caching phash mid-scan) so a tags-only draft counts catalog genres that
+// grab-import never wrote locally.
 //
 // Claude 2026-08-11: the `nil` allowlist argument these three calls used to
 // carry is gone with the mechanism, and the per-item tag read it made pointless
@@ -206,7 +211,7 @@ func deletePruningRuleHandler(store *pruning.Store) http.HandlerFunc {
 // Enabled is forced true regardless of the body: the operator is asking what
 // the conditions match, and a draft still toggled off would otherwise always
 // answer 0.
-func previewPruningRuleHandler(store *pruning.Store, libStore *library.Store) http.HandlerFunc {
+func previewPruningRuleHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, store *pruning.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pruningStoreUnavailable(w, store) {
 			return
@@ -245,7 +250,7 @@ func previewPruningRuleHandler(store *pruning.Store, libStore *library.Store) ht
 			list, scanErr := purge.ScanLibrarySeries(ctx, libStore, rules)
 			matched, err = len(list), scanErr
 		case mode.Adult:
-			list, scanErr := purge.ScanLibraryAdult(ctx, libStore, rules, "")
+			list, scanErr := purge.ScanLibraryAdult(ctx, libStore, rules, "", adultPurgeCatalogTags(ctx, httpClient, connStore, scStore, settingsStore))
 			matched, err = len(list), scanErr
 		}
 		if err != nil {

@@ -95,6 +95,11 @@ type textMatchScene struct {
 	id, title, studio string
 }
 
+type fakeAdultScene struct {
+	id, title, image string
+	tags             []string
+}
+
 // newFakeAdultBox stands in for one stash-box's fingerprint + text-search
 // endpoints. It serves the cascade lookup (findScenesBySceneFingerprints, keyed
 // by phash — a missing key means no match); when rec is non-nil, the give-back
@@ -103,7 +108,7 @@ type textMatchScene struct {
 // AI/text identification fallback. Reimplemented here (rather than shared with
 // internal/identify's own fingerprint test fake) since that one is unexported
 // to its own package.
-func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title, image string }, rec *giveBackRecord, textMatch *textMatchScene) *stashbox.Client {
+func newFakeAdultBox(t *testing.T, results map[string]fakeAdultScene, rec *giveBackRecord, textMatch *textMatchScene) *stashbox.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -154,6 +159,13 @@ func newFakeAdultBox(t *testing.T, results map[string]struct{ id, title, image s
 					row := map[string]any{"id": scene.id, "title": scene.title, "release_date": "", "studio": map[string]any{"name": ""}}
 					if scene.image != "" {
 						row["images"] = []map[string]any{{"url": scene.image}}
+					}
+					if len(scene.tags) > 0 {
+						tagObjs := make([]map[string]any, len(scene.tags))
+						for i, name := range scene.tags {
+							tagObjs[i] = map[string]any{"name": name}
+						}
+						row["tags"] = tagObjs
 					}
 					matches[i] = []map[string]any{row}
 				} else {

@@ -24,8 +24,8 @@ func TestOrganizeImportedAdult_RenamesAndTracks(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
-		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
+		"hash1": {id: "box-scene-1", title: "Cascade Scene", tags: []string{"Bondage", "Dungeon"}},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
 	libStore := newTestLibraryStore(t)
@@ -59,6 +59,13 @@ func TestOrganizeImportedAdult_RenamesAndTracks(t *testing.T) {
 	if sc.PosterAspectClass != library.PosterAspectHorizontal {
 		t.Errorf("missing catalog image should store horizontal, got %q", sc.PosterAspectClass)
 	}
+	tags, err := libStore.SceneTags(context.Background(), sc.ID)
+	if err != nil {
+		t.Fatalf("SceneTags: %v", err)
+	}
+	if len(tags) != 2 || tags[0] != "Bondage" || tags[1] != "Dungeon" {
+		t.Errorf("catalog tags = %v, want [Bondage Dungeon]", tags)
+	}
 }
 
 func TestOrganizeImportedAdult_PersistsVerticalPosterAspect(t *testing.T) {
@@ -81,7 +88,7 @@ func TestOrganizeImportedAdult_PersistsVerticalPosterAspect(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene", image: posterURL},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
@@ -108,7 +115,7 @@ func TestOrganizeImportedAdult_SoftSkipWhenUnmatched(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "nope"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 100}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{}, nil, nil)
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
 	libStore := newTestLibraryStore(t)
 

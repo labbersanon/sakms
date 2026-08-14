@@ -3,6 +3,7 @@ package purge
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,24 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/pruning"
 )
+
+// CatalogTagHit is one fingerprint-resolved catalog scene's identity plus
+// its genre names. ScanLibraryAdult only persists the tags when Box and
+// SceneID match the library row, so a rematched phash cannot retag the
+// wrong scene.
+type CatalogTagHit struct {
+	Box     string
+	SceneID string
+	Tags    []string
+}
+
+// CatalogTagSource looks up catalog genre names for identified Adult scenes
+// that have no local library_scene_tags yet. Nil on ScanLibraryAdult skips
+// the backfill (tests, or identify not configured).
+type CatalogTagSource interface {
+	TagsByPHash(ctx context.Context, phashes []string) (map[string]CatalogTagHit, error)
+	TagsByID(ctx context.Context, box, sceneID string) ([]string, error)
+}
 
 // ScanLibraryAdult is Purge's Adult-library counterpart to ScanLibrary — used
 // once Adult stops requiring Whisparr (see the plan this was built from,
@@ -33,10 +52,24 @@ import (
 //	Empty aspect is every row — scheduled scans and pruning preview stay All.
 //
 // Review if: Organize gains a dedicated Movies workflow.
-func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []pruning.Rule, aspect string) ([]proposals.Proposal, error) {
+// Claude 2026-08-14: catalogTags backfills library_scene_tags fill-if-empty.
+// Reason: grab-import never wrote MatchResult.Tags, so a tags-only Clean-up
+//
+//	rule matched nothing against 250 identified scenes. Same class of Scan
+//	side-write as Dedup caching phash — GET /tracked never looks up.
+//
+// Troubleshooting: BDSM rule (Bondage/Bound/Dungeon/Pee/Peeing) scanned [].
+// Review if: every grab path writes tags and a one-shot backfill has run.
+func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []pruning.Rule, aspect string, catalogTags CatalogTagSource) ([]proposals.Proposal, error) {
 	scenes, err := libStore.ListScenesFiltered(ctx, aspect)
 	if err != nil {
 		return nil, fmt.Errorf("loading scenes: %w", err)
+	}
+
+	if catalogTags != nil && rulesHaveTags(rules) {
+		if err := backfillSceneCatalogTags(ctx, libStore, scenes, catalogTags); err != nil {
+			return nil, err
+		}
 	}
 
 	now := time.Now().UTC()
@@ -62,6 +95,106 @@ func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []prun
 	}
 	return out, nil
 }
+
+func rulesHaveTags(rules []pruning.Rule) bool {
+	for _, r := range rules {
+		if len(r.Tags) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// backfillSceneCatalogTags writes catalog genres onto identified scenes that
+// have no local tags. Fingerprint batch first (every live identified scene
+// already has a phash); SceneByID only for leftovers whose phash did not
+// resolve to the same (box, scene_id). Local scenes and lookup failures are
+// skipped — fail-closed, same as Match's empty-tags handling.
+func backfillSceneCatalogTags(ctx context.Context, libStore *library.Store, scenes []library.Scene, src CatalogTagSource) error {
+	var need []library.Scene
+	for _, sc := range scenes {
+		if library.IsLocalScene(sc.Box) || sc.Box == "" || sc.SceneID == "" {
+			continue
+		}
+		tags, err := libStore.SceneTags(ctx, sc.ID)
+		if err != nil {
+			return fmt.Errorf("loading tags for %q: %w", sc.Title, err)
+		}
+		if len(tags) > 0 {
+			continue
+		}
+		need = append(need, sc)
+	}
+	if len(need) == 0 {
+		return nil
+	}
+
+	phashes := make([]string, 0, len(need))
+	seenHash := map[string]bool{}
+	for _, sc := range need {
+		if sc.PHash == "" || seenHash[sc.PHash] {
+			continue
+		}
+		seenHash[sc.PHash] = true
+		phashes = append(phashes, sc.PHash)
+	}
+
+	var hits map[string]CatalogTagHit
+	if len(phashes) > 0 {
+		var err error
+		hits, err = src.TagsByPHash(ctx, phashes)
+		if err != nil {
+			log.Printf("purge: catalog tag fingerprint lookup failed: %v", err)
+			hits = nil
+		}
+	}
+
+	filled := map[int64]bool{}
+	for _, sc := range need {
+		if sc.PHash == "" {
+			continue
+		}
+		hit, ok := hits[sc.PHash]
+		if !ok || len(hit.Tags) == 0 {
+			continue
+		}
+		if !strings.EqualFold(hit.Box, sc.Box) || hit.SceneID != sc.SceneID {
+			continue
+		}
+		if err := libStore.ApplyCatalogTags(ctx, sc.ID, strings.Join(hit.Tags, ",")); err != nil {
+			return fmt.Errorf("persisting catalog tags for %q: %w", sc.Title, err)
+		}
+		filled[sc.ID] = true
+	}
+
+	for _, sc := range need {
+		if filled[sc.ID] {
+			continue
+		}
+		tags, err := src.TagsByID(ctx, sc.Box, sc.SceneID)
+		if err != nil {
+			log.Printf("purge: catalog tag lookup for %s/%s failed: %v", sc.Box, sc.SceneID, err)
+			continue
+		}
+		if len(tags) == 0 {
+			continue
+		}
+		if err := libStore.ApplyCatalogTags(ctx, sc.ID, strings.Join(tags, ",")); err != nil {
+			return fmt.Errorf("persisting catalog tags for %q: %w", sc.Title, err)
+		}
+	}
+	return nil
+}
+
+// Claude 2026-08-14: previous ScanLibraryAdult (no catalogTags param) is
+// replaced by the signature above. Commented out rather than deleted.
+// Reason: grab-import never persisted catalog tags; Scan now backfills them.
+// Review if: every grab path writes tags and the one-shot backfill has run.
+//
+// func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []pruning.Rule, aspect string) ([]proposals.Proposal, error) {
+// 	scenes, err := libStore.ListScenesFiltered(ctx, aspect)
+// 	...
+// }
 
 // ApplyLibraryAdult is Purge's Adult-library counterpart to ApplyLibrary —
 // removes the scene's file directly (no *arr app to ask) and deletes its

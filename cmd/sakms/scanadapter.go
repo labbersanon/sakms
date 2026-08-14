@@ -176,8 +176,10 @@ func (a *scanAdapter) ScanRename(ctx context.Context, m mode.Mode) error {
 }
 
 // ScanPurge runs the Purge propose-phase for m and replaces its Purge queue —
-// identical to purgeScanHandler, minus the HTTP shell. Purge needs no session,
-// root folder, or hasher: it reads the tracked library directly. Never Applies.
+// identical to purgeScanHandler, minus the HTTP shell. Movies/Series read the
+// tracked library directly. Adult builds an Identify session only to backfill
+// catalog tags onto library_scene_tags (fill-if-empty) before matching; it
+// still never Applies.
 func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
 	var rules []pruning.Rule
 	// `var err error` at FUNCTION scope, deliberately OUTSIDE the if below.
@@ -200,7 +202,14 @@ func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
 	case mode.Series:
 		found, err = purge.ScanLibrarySeries(ctx, a.libStore, rules)
 	case mode.Adult:
-		found, err = purge.ScanLibraryAdult(ctx, a.libStore, rules, "")
+		var catalog purge.CatalogTagSource
+		sess, berr := mode.Build(ctx, a.connStore, a.scStore, a.settingsStore, a.httpClient, nil, mode.Adult)
+		if berr != nil {
+			log.Printf("scan: adult identify for purge tags: %v", berr)
+		} else if sess != nil {
+			catalog = api.NewAdultCatalogTags(sess.Identify)
+		}
+		found, err = purge.ScanLibraryAdult(ctx, a.libStore, rules, "", catalog)
 	default:
 		return nil
 	}

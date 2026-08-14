@@ -104,6 +104,7 @@ func UpgradeLocalAdultScenes(
 			log.Printf("rename: upgrade local adult scene %q: %v", ls.scene.Title, upgradeErr)
 			continue
 		}
+		persistAdultSceneCatalogTags(ctx, sess, libStore, ls.scene.ID, match.Box, match.SceneID, match.Tags)
 		changes = append(changes, newChanges...)
 	}
 	return changes, nil

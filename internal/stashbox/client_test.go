@@ -53,6 +53,48 @@ func TestFindScenesByFingerprints_AlignsWithInput(t *testing.T) {
 	}
 }
 
+func TestFindScenesByFingerprints_QuerySelectsTags(t *testing.T) {
+	var gotQuery string
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotQuery = req.Query
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"findScenesBySceneFingerprints":[[]]}}`))
+	})
+	defer closeSrv()
+
+	if _, err := c.FindScenesByFingerprints(context.Background(), []string{"phash1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "tags { name }") {
+		t.Errorf("expected the fingerprint GraphQL query to select \"tags { name }\", got %q", gotQuery)
+	}
+}
+
+func TestFindScenesByFingerprints_DecodesTags(t *testing.T) {
+	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"findScenesBySceneFingerprints":[
+			[{"id":"1","title":"Found","release_date":"2024-01-01","studio":{"name":"Studio A","parent":null},"tags":[{"name":"Bondage"},{"name":"Dungeon"}]}]
+		]}}`))
+	})
+	defer closeSrv()
+
+	out, err := c.FindScenesByFingerprints(context.Background(), []string{"phash1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 1 || out[0] == nil {
+		t.Fatalf("out = %+v, want 1 match", out)
+	}
+	if len(out[0].Tags) != 2 || out[0].Tags[0] != "Bondage" || out[0].Tags[1] != "Dungeon" {
+		t.Errorf("Tags = %v, want [Bondage Dungeon]", out[0].Tags)
+	}
+}
+
 func TestScene_StudioFallsBackToParent(t *testing.T) {
 	c, closeSrv := newTestClient(t, Config{APIKey: "k"}, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

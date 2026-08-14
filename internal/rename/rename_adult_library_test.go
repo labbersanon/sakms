@@ -37,7 +37,7 @@ func TestScanLibraryAdult_ProducesPendingProposalForNewScene(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
@@ -85,7 +85,7 @@ func TestScanLibraryAdult_AspectFilterKeepsMatchingCatalogArt(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{moviePath: "hash-movie", scenePath: "hash-scene"}}
 	prober := &fakeProber{durations: map[string]float64{moviePath: 1800, scenePath: 900}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
 		"hash-movie": {id: "movie-1", title: "Catalog Movie", image: posterURL},
 		"hash-scene": {id: "scene-1", title: "Catalog Scene"},
 	}, nil, nil)
@@ -137,7 +137,7 @@ func TestScanLibraryAdult_AlreadyTrackedIsPendingAlternate(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "newhash"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
 		"newhash": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
@@ -190,7 +190,7 @@ func TestScanLibraryAdult_SkipsAlreadyConformantName(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{fresh: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{fresh: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})
@@ -318,7 +318,7 @@ func TestScanLibraryAdult_ThenApply_RoundTrip(t *testing.T) {
 
 	hasher := &fakeHasher{hashes: map[string]string{scenePath: "hash1"}}
 	prober := &fakeProber{durations: map[string]float64{scenePath: 1800}}
-	stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+	stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
 		"hash1": {id: "box-scene-1", title: "Cascade Scene"},
 	}, nil, nil)
 	sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})

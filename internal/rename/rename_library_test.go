@@ -967,7 +967,7 @@ func TestScanLibrary_TrackedPathsNeverBecomeRenameProposals(t *testing.T) {
 
 		hasher := &fakeHasher{hashes: map[string]string{sibling: "hash-new"}}
 		prober := &fakeProber{durations: map[string]float64{sibling: 1800}}
-		stashdb := newFakeAdultBox(t, map[string]struct{ id, title, image string }{
+		stashdb := newFakeAdultBox(t, map[string]fakeAdultScene{
 			"hash-new": {id: "box-scene-new", title: "Fresh Scene"},
 		}, nil, nil)
 		sess := adultTestSession(t, &countingAI{}, map[string]*stashbox.Client{"stashdb": stashdb})

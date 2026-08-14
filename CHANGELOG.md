@@ -7726,4 +7726,20 @@ modal) and an explicit Fullscreen button (`requestFullscreen` /
 Series episode playback is not in this change. No transcoding — formats
 the browser cannot decode show "This format cannot play in the browser".
 
+## 2026-08-14 (later, same day) — Clean-up tags match catalog genres
+
+A tags-only Adult Clean-up rule (e.g. Bondage/Dungeon) scanned and
+previewed zero hits even with hundreds of identified stash-box scenes
+in the library. Catalog genre names were on `MatchResult.Tags` at
+identify/grab time and never written to `library_scene_tags`. Clean-up
+matches local tags only (exact, case-insensitive, fail-closed).
+
+Grab-import now persists those catalog tags. The fingerprint lookup
+that identifies most Adult grabs also requests `tags { name }` and
+copies them onto `MatchResult`. Adult Clean-up Scan/preview fill-if-empty
+backfills existing identified scenes (fingerprint batch first, scene-by-id
+only when the phash hit is a different catalog identity). Local
+(unidentified) scenes stay untagged. GET `/tracked` still does not look
+up the catalog.
+
 

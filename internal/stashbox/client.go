@@ -80,17 +80,28 @@ type Scene struct {
 	// FindScene), all of which request images/tags/duration for display +
 	// matching. The fingerprint path (FindScenesByFingerprints) now also
 	// requests images { url } so grab/import can classify poster aspect
-	// write-once (Adult Movies vs Scenes). Tags/Duration stay omitted on
-	// that path — that's expected, not a bug.
+	// write-once (Adult Movies vs Scenes), and tags { name } so Clean-up
+	// can match catalog genres on library_scene_tags without a second
+	// SceneByID round trip per grab.
+	// Duration stays omitted on that path — that's expected, not a bug.
 	// Claude 2026-08-13: fingerprint selection gained images { url }.
 	// Reason: OrganizeImportedAdult classifies from MatchResult.Image; the
 	//   previous minimal selection left ImageURL empty on every fingerprint
 	//   hit, so every grab would store horizontal.
 	// Review if: a dedicated scene-by-id fetch is used instead of widening
 	//   the fingerprint selection.
+	// Claude 2026-08-14: fingerprint selection gained tags { name }.
+	// Reason: Clean-up matches local library_scene_tags only; grab-import
+	//   never persisted catalog genres, so Scan of a tags rule matched nothing
+	//   (0 rows in library_scene_tags against 250 identified scenes).
+	// Troubleshooting: a tags-only Clean-up rule previewed/scanned 0 hits
+	//   even though StashDB scenes carried Bondage/Dungeon/etc.
+	// Review if: catalog tags are written from a dedicated FindScene instead.
 	// Prior claim (no longer true for ImageURL): "The fingerprint path
 	//   (FindScenesByFingerprints) keeps a minimal hash-matching selection
 	//   that omits them, so scenes it returns leave these zero-valued."
+	// Prior claim (no longer true for Tags): "Tags/Duration stay omitted on
+	//   that path — that's expected, not a bug." Duration remains omitted.
 	// Duration was added to SearchScene/FindScene's selections after a live
 	// bug: a caller (internal/adultnewest) building a grab request from a
 	// match with no runtime silently failed to auto-qualify anything against
@@ -224,7 +235,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 
 const fpQuery = `query FindByFingerprints($fps: [[FingerprintQueryInput!]!]!) {
   findScenesBySceneFingerprints(fingerprints: $fps) {
-    id title release_date studio { name parent { name } } images { url }
+    id title release_date studio { name parent { name } } images { url } tags { name }
   }
 }`
 

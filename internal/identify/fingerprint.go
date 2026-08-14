@@ -1,6 +1,9 @@
 package identify
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Claude 2026-08-04: fingerprintCascadeOrder is gone — the order is now
 // id.fingerprintBoxes() (cascade.go), which is the configured databases in
@@ -51,11 +54,15 @@ func (id *Identifier) LookupFingerprints(ctx context.Context, phashes []string) 
 			}
 			for i, phash := range chunk {
 				if i < len(scenes) && scenes[i] != nil {
-			results[phash] = &MatchResult{
-				Title: scenes[i].Title, Studio: scenes[i].StudioName, Date: scenes[i].ReleaseDate,
-				Type: "scene", Source: box + "_fingerprint", SceneID: scenes[i].ID, Box: box,
-				Image: scenes[i].ImageURL,
-			}
+					results[phash] = &MatchResult{
+						Title: scenes[i].Title, Studio: scenes[i].StudioName, Date: scenes[i].ReleaseDate,
+						Type: "scene", Source: box + "_fingerprint", SceneID: scenes[i].ID, Box: box,
+						// Claude 2026-08-14: Tags copied from the fingerprint hit.
+						// Reason: OrganizeImportedAdult persists MatchResult.Tags onto
+						//   library_scene_tags; leaving this blank kept Clean-up empty.
+						// Review if: a dedicated FindScene fetch supplies tags instead.
+						Image: scenes[i].ImageURL, Tags: strings.Join(scenes[i].Tags, ","),
+					}
 				}
 			}
 		}

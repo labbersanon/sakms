@@ -547,7 +547,7 @@ const PaginatedRow: Component<{
 // Series still gets its season/episode picker, now as the popup's inline
 // gating step rather than a modal off an inline Grab button (removed
 // 2026-08-02). The card is click-inert when tmdbId is 0 — see openDetail.
-const LibraryCard: Component<{
+export const LibraryCard: Component<{
   mode: "movies" | "series";
   item: TrackedItem;
   // onGrab is no longer read by this card (its inline Grab button was removed
@@ -557,6 +557,8 @@ const LibraryCard: Component<{
   // prop nothing reads.
   onGrab?: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
+  // Claude 2026-08-14: "grid" fills View All cells; default keeps the carousel.
+  layout?: "row" | "grid";
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
@@ -593,7 +595,9 @@ const LibraryCard: Component<{
 
   return (
     <MediaCardShell
-      class={MEDIA_CAROUSEL_POSTER_CLASS}
+      class={
+        props.layout === "grid" ? "min-w-0 w-full" : MEDIA_CAROUSEL_POSTER_CLASS
+      }
       label={props.item.title}
       title={props.item.title}
       disabled={!clickable()}
@@ -682,6 +686,11 @@ const LibraryRow: Component<{
         )}
         onLoadMore={() => setVisible((n) => n + LIBRARY_PAGE_SIZE)}
         hasMore={hasMore()}
+        viewAll={{
+          href: props.mode
+            ? `/discover/row/library/${props.mode}`
+            : "/discover/row/library",
+        }}
       />
     </Show>
   );
@@ -756,6 +765,7 @@ const SliderRow: Component<{
       onLoadMore={() => void load(false)}
       hasMore={!exhausted()}
       loading={loading()}
+      viewAll={{ href: `/discover/row/slider/${props.slider.id}` }}
     />
   );
 };

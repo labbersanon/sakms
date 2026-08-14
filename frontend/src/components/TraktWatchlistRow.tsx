@@ -34,9 +34,10 @@ import { MediaFallbackTile } from "./media";
 // gives only (type, title, year, tmdbId) — no poster — so art is resolved the
 // same on-demand way LibraryCard resolves it for the existing-library row:
 // one bounded fetchTitlePoster call per rendered card, by tmdbId.
-const WatchlistCard: Component<{
+export const WatchlistCard: Component<{
   item: TraktWatchlistItem;
   onGrab: (t: GrabTarget) => void;
+  layout?: "row" | "grid";
 }> = (props) => {
   const mode = (): "movies" | "series" =>
     props.item.type === "show" ? "series" : "movies";
@@ -56,7 +57,10 @@ const WatchlistCard: Component<{
   });
 
   return (
-    <div class="w-36 shrink-0" title={props.item.title}>
+    <div
+      class={props.layout === "grid" ? "min-w-0 w-full" : "w-36 shrink-0"}
+      title={props.item.title}
+    >
       <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
         <Show when={src()} fallback={<MediaFallbackTile title={props.item.title} />}>
           <img
@@ -107,6 +111,11 @@ export const TraktWatchlistRow: Component<{
           loading={items.loading}
           emptyText="Your Trakt watchlist is empty."
           renderItem={(item) => <WatchlistCard item={item} onGrab={props.onGrab} />}
+          viewAll={{
+            href: props.contentType
+              ? `/discover/row/trakt-watchlist/${props.contentType}`
+              : "/discover/row/trakt-watchlist",
+          }}
         />
       </Show>
     </Show>

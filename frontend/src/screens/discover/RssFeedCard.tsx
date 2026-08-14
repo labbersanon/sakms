@@ -48,6 +48,7 @@ function formatSize(bytes: number | undefined): string {
 export const RssFeedCard: Component<{
   item: RssFeedItem;
   mode: "movies" | "series" | "adult";
+  layout?: "row" | "grid";
 }> = (props) => {
   const [grabbing, setGrabbing] = createSignal(false);
   const [grabbed, setGrabbed] = createSignal(false);
@@ -95,7 +96,7 @@ export const RssFeedCard: Component<{
   };
 
   return (
-    <div class={MEDIA_CAROUSEL_POSTER_CLASS}>
+    <div class={props.layout === "grid" ? "min-w-0 w-full" : MEDIA_CAROUSEL_POSTER_CLASS}>
       <Show
         when={resolved()}
         fallback={

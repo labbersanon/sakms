@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
-import { AdultNewestRowView, TmdbRowView } from "./RowView";
+import { AdultNewestRowView, LibraryRowView, SliderRowView, TmdbRowView } from "./RowView";
 import {
   AdultModeContext,
   SectionLockContext,
@@ -216,5 +216,67 @@ describe("AdultNewestRowView", () => {
       await screen.findByText("Adult content is locked"),
     ).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("SliderRowView", () => {
+  it("pages slider resolve into the poster grid", async () => {
+    stubFetch((url) => {
+      if (url === "/api/discover/sliders")
+        return jsonResponse([
+          { id: 9, title: "80s Action", target: "movie", enabled: true, sortOrder: 0 },
+        ]);
+      if (url.includes("/api/discover/sliders/9/resolve"))
+        return jsonResponse([
+          {
+            id: 11,
+            title: "Slider Movie",
+            posterPath: "/s.jpg",
+            overview: "",
+            releaseDate: "1985-01-01",
+            voteAverage: 8,
+            mediaType: "movie",
+          },
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+    const history = createMemoryHistory();
+    history.set({ value: "/discover/row/slider/9", replace: true });
+    render(() => (
+      <MemoryRouter history={history}>
+        <Route path="/discover/row/slider/:id" component={SliderRowView} />
+      </MemoryRouter>
+    ));
+    expect(await screen.findByText("Slider Movie")).toBeInTheDocument();
+    expect(screen.getByText("80s Action")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Slider Movie" }).className,
+    ).not.toContain("w-[140px]");
+  });
+});
+
+describe("LibraryRowView", () => {
+  it("loads tracked movies into the poster grid", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([
+          { id: 1, title: "Owned Movie", tmdbId: 50, year: 2020 },
+        ]);
+      if (url.includes("/api/modes/movies/poster"))
+        return jsonResponse({ posterPath: "/lib.jpg" });
+      throw new Error("unexpected fetch: " + url);
+    });
+    const history = createMemoryHistory();
+    history.set({ value: "/discover/row/library/movies", replace: true });
+    render(() => (
+      <MemoryRouter history={history}>
+        <Route path="/discover/row/library/:mode" component={LibraryRowView} />
+      </MemoryRouter>
+    ));
+    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
+    expect(screen.getByText("In your library")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Owned Movie" }).className,
+    ).toContain("w-full");
   });
 });

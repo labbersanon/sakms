@@ -65,7 +65,7 @@ import {
   sectionLabel,
 } from "../api/sectionLock";
 import { Dashboard } from "./Dashboard";
-import { AdultNewestRowView, DiscoverAdult, DiscoverMainstream, TmdbRowView } from "./Discover";
+import { AdultNewestRowView, DiscoverAdult, DiscoverMainstream, LibraryRowView, RssFeedRowView, SliderRowView, TmdbRowView, TraktWatchlistRowView } from "./Discover";
 import { LibraryAdult, LibraryMainstream } from "./Library";
 import { Queue } from "./Queue";
 import { Organize } from "./Organize";
@@ -79,9 +79,9 @@ import { BrowserNotifications } from "../components/BrowserNotifications";
 // route). A unit test asserts none of these start with "/api".
 //
 // Claude 2026-08-13: /discover/row/tmdb/:key and /discover/row/adult-newest/:rowId
-// are Discover View All (Slice 4). Reason: signed-off families — TMDB keys from
-// MAINSTREAM_ROWS, adult newest scene/movie only; studio/performer skipped
-// because drill-down already is view-all. Do not widen sectionForPath.
+// are Discover View All (Slice 4). Claude 2026-08-14: slider/library/trakt/rssfeed
+// families added (widen parked 4B). Calendar, search/filter, and Adult entity
+// drill-down stay out. Do not widen sectionForPath.
 // Review if: entity rows lose drill-down and need ?gender= fan-out.
 export const APP_ROUTES = [
   "/dashboard",
@@ -91,6 +91,12 @@ export const APP_ROUTES = [
   "/discover/adult",
   "/discover/row/tmdb/:key",
   "/discover/row/adult-newest/:rowId",
+  "/discover/row/slider/:id",
+  "/discover/row/library",
+  "/discover/row/library/:mode",
+  "/discover/row/trakt-watchlist",
+  "/discover/row/trakt-watchlist/:type",
+  "/discover/row/rssfeed/:id",
   "/library",
   "/library/mainstream",
   "/library/adult",
@@ -1021,6 +1027,12 @@ export const AppShell: Component<{
       <Route path="/discover/adult" component={DiscoverAdult} />
       <Route path="/discover/row/tmdb/:key" component={TmdbRowView} />
       <Route path="/discover/row/adult-newest/:rowId" component={AdultNewestRowView} />
+      <Route path="/discover/row/slider/:id" component={SliderRowView} />
+      <Route path="/discover/row/library" component={LibraryRowView} />
+      <Route path="/discover/row/library/:mode" component={LibraryRowView} />
+      <Route path="/discover/row/trakt-watchlist" component={TraktWatchlistRowView} />
+      <Route path="/discover/row/trakt-watchlist/:type" component={TraktWatchlistRowView} />
+      <Route path="/discover/row/rssfeed/:id" component={RssFeedRowView} />
       <Route path="/library" component={LibraryMainstream} />
       <Route path="/library/mainstream" component={LibraryMainstream} />
       <Route path="/library/adult" component={LibraryAdult} />

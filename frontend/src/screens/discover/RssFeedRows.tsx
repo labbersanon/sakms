@@ -63,6 +63,7 @@ export const RssFeedRow: Component<{
         />
       )}
       loading={loading()}
+      viewAll={{ href: `/discover/row/rssfeed/${props.feed.id}` }}
     />
   );
 };

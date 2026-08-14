@@ -787,9 +787,8 @@ export function PaginatedStrip<T>(props: {
   infiniteScroll?: boolean;
   // Claude 2026-08-13: opt-in View All header link (Slice 4). Omitted = today's
   // heading. In-row "Show more" is unchanged.
-  // Reason: 4B — only PaginatedStrip + Mainstream PaginatedRow. Callers that
-  // must not grow View All (Trakt, library, sliders, calendar, search/filter)
-  // simply omit this.
+  // Claude 2026-08-14: 4B widened — sliders, library, Trakt, RSS now pass this.
+  // Calendar, search/filter, and Adult entity drill-down still omit it.
   // Review if: entity rows (studio/performer) ever lose their drill-down.
   viewAll?: { href: string };
 }): JSX.Element {

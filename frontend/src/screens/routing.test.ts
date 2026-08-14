@@ -21,6 +21,12 @@ describe("client-side router scope (Guardrail #2 / requirement #7)", () => {
   it("registers Discover View All route families", () => {
     expect(APP_ROUTES).toContain("/discover/row/tmdb/:key");
     expect(APP_ROUTES).toContain("/discover/row/adult-newest/:rowId");
+    expect(APP_ROUTES).toContain("/discover/row/slider/:id");
+    expect(APP_ROUTES).toContain("/discover/row/library");
+    expect(APP_ROUTES).toContain("/discover/row/library/:mode");
+    expect(APP_ROUTES).toContain("/discover/row/trakt-watchlist");
+    expect(APP_ROUTES).toContain("/discover/row/trakt-watchlist/:type");
+    expect(APP_ROUTES).toContain("/discover/row/rssfeed/:id");
   });
 
   it("no longer serves the removed /tag route", () => {

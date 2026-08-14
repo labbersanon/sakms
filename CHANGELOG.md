@@ -7658,4 +7658,15 @@ The Crew grid (directors/writers/producers) is no longer rendered — it
 crowded the modal on titles with long credit lists. Cast is unchanged. Crew
 still arrives on the wire.
 
+## 2026-08-14 (later, same day) — Detail popup poster from TitleDetail
+
+Library tracked rows still send `posterPath: ""` into `DetailPopup` (GET
+`/tracked` caches no art). The popup now prefers `TitleDetail.posterPath`
+from the `/discover/detail` bundle already in flight — the same TMDB
+details call that supplies overview, so no extra lookup on the happy
+path. `/poster` is only a fallback when that field is also empty
+(soft-failed details). Library grid `PosterCard` / `DetailPanel` now
+catch a failed `/poster` the same way Discover's `LibraryCard` already
+did, so a 5xx does not leave the Solid resource in an error state.
+
 

@@ -66,6 +66,7 @@ import {
   fetchAdultDescription,
   fetchAvailabilityPreview,
   fetchTitleDetail,
+  fetchTitlePoster,
   fetchTrailer,
   proxyImage,
   tmdbLogo,
@@ -536,6 +537,25 @@ export const DetailPopup: Component<{
       fetchTitleDetail(m, tmdbId).catch(() => undefined as TitleDetail | undefined),
   );
 
+  // Claude 2026-08-14: Library tracked rows pass posterPath "".
+  // Reason: GET /tracked caches no art; TitleDetail.posterPath rides the
+  // /discover/detail call already in flight. /poster runs only after that
+  // field is also empty (soft-failed details), so Discover cards with a
+  // list-payload path never pay a second round-trip.
+  // Troubleshooting: popup showed MediaFallbackTile next to More on TMDB.
+  // Review if: tracked list starts carrying poster paths.
+  const [lazyPoster] = createResource(
+    () => {
+      if (mode() === "adult") return null;
+      const it = item() as DiscoverItem;
+      if (!it.id || it.posterPath) return null;
+      if (detail.loading) return null;
+      if (detail()?.posterPath) return null;
+      return { m: mode() as "movies" | "series", tmdbId: it.id };
+    },
+    ({ m, tmdbId }) => fetchTitlePoster(m, tmdbId).catch(() => ""),
+  );
+
   // Adult scene description — the dedicated endpoint (AC3/AC4), fired once per
   // popup open. The source accessor returns `null` for Movies/Series so Solid never
   // runs the fetcher there — `null` rather than `false` to match this file's own
@@ -688,10 +708,16 @@ export const DetailPopup: Component<{
   // deliberately across all three modes, so a TMDB title with an empty overview
   // now renders no line either. The guard is on the <p> itself, since an empty
   // one still contributes margin and a line box.
-  const posterSrc = () =>
-    mode() === "adult"
-      ? proxyImage((item() as AdultDiscoverItem).image)
-      : tmdbPoster((item() as DiscoverItem).posterPath);
+  const posterSrc = () => {
+    if (mode() === "adult") {
+      return proxyImage((item() as AdultDiscoverItem).image);
+    }
+    const path =
+      (item() as DiscoverItem).posterPath ||
+      (detail()?.posterPath ?? "") ||
+      (lazyPoster() ?? "");
+    return tmdbPoster(path);
+  };
   const overviewText = () =>
     mode() === "adult"
       ? [

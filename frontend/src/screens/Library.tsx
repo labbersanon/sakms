@@ -186,7 +186,7 @@ const PosterCard: Component<{
       props.mode !== "adult" && props.item.tmdbId
         ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
         : undefined,
-    ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId),
+    ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId).catch(() => ""),
   );
 
   // Claude 2026-08-14: Adult catalog posterUrl (proxied) beats TMDB path and
@@ -449,7 +449,7 @@ const DetailPanel: Component<{
       props.mode !== "adult" && props.item.tmdbId
         ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
         : undefined,
-    ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId),
+    ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId).catch(() => ""),
   );
 
   const posterUrl = () => {

@@ -1076,6 +1076,10 @@ type TitleDetail struct {
 	// Overview is the TMDB synopsis. The popup renders it under the keyword
 	// chips (Library tracked rows do not carry overview on GET /tracked).
 	Overview string `json:"overview"`
+	// PosterPath is the TMDB poster path from the same details call Overview
+	// comes from. Library tracked rows cache no poster art; the popup uses
+	// this instead of a second /poster round-trip when the card passed "".
+	PosterPath string `json:"posterPath"`
 }
 
 // --- Request-status worklist (Feature 4, derive-on-read) -------------------

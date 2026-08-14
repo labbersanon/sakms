@@ -39,7 +39,7 @@ func fakeTMDBDetail(t *testing.T, keywordsStatus int) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/recommendations"):
 			w.Write([]byte(`{"results":[{"id":99,"title":"Similar","poster_path":"/x.jpg","release_date":"2021-01-01","vote_average":6.6}]}`))
 		default: // /movie/{id} details
-			w.Write([]byte(`{"id":42,"title":"A Movie","overview":"A movie synopsis.","status":"Released","original_language":"en","runtime":100,"genres":[{"name":"Action"}],"production_companies":[{"name":"Studio One"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}],"release_dates":{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2023-07-01T00:00:00.000Z"}]}]}}`))
+			w.Write([]byte(`{"id":42,"title":"A Movie","overview":"A movie synopsis.","poster_path":"/p.jpg","status":"Released","original_language":"en","runtime":100,"genres":[{"name":"Action"}],"production_companies":[{"name":"Studio One"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}],"release_dates":{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2023-07-01T00:00:00.000Z"}]}]}}`))
 		}
 	})
 	srv := httptest.NewServer(mux)
@@ -69,7 +69,7 @@ func fakeTMDBDetailTV(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/recommendations"):
 			w.Write([]byte(`{"results":[{"id":99,"name":"Similar Show","poster_path":"/x.jpg","first_air_date":"2021-01-01","vote_average":6.6}]}`))
 		default: // /tv/{id} details
-			w.Write([]byte(`{"id":42,"name":"A Show","overview":"A show synopsis.","status":"Returning Series","original_language":"en","episode_run_time":[45],"genres":[{"name":"Drama"}],"networks":[{"name":"HBO"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}]}`))
+			w.Write([]byte(`{"id":42,"name":"A Show","overview":"A show synopsis.","poster_path":"/tv.jpg","status":"Returning Series","original_language":"en","episode_run_time":[45],"genres":[{"name":"Drama"}],"networks":[{"name":"HBO"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}]}`))
 		}
 	})
 	srv := httptest.NewServer(mux)
@@ -116,6 +116,9 @@ func TestDiscoverDetailHandler_AllSectionsPopulated(t *testing.T) {
 	}
 	if d.Overview != "A movie synopsis." {
 		t.Errorf("overview not populated: %q", d.Overview)
+	}
+	if d.PosterPath != "/p.jpg" {
+		t.Errorf("posterPath not populated: %q", d.PosterPath)
 	}
 	if len(d.Cast) != 1 || len(d.Crew) != 1 || d.Crew[0].Job != "Director" {
 		t.Errorf("credits not populated: cast=%+v crew=%+v", d.Cast, d.Crew)
@@ -197,6 +200,9 @@ func TestDiscoverDetailHandler_SeriesUsesTVShapes(t *testing.T) {
 	}
 	if d.Overview != "A show synopsis." {
 		t.Errorf("TV overview not populated: %q", d.Overview)
+	}
+	if d.PosterPath != "/tv.jpg" {
+		t.Errorf("TV posterPath not populated: %q", d.PosterPath)
 	}
 	if len(d.Networks) != 1 || d.Networks[0] != "HBO" {
 		t.Errorf("Networks — the field TVDetails had no way to populate before this feature — not populated: %+v", d.Networks)

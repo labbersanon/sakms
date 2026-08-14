@@ -79,6 +79,7 @@ const emptyTitleDetail = (): TitleDetail => ({
   recommendations: [],
   seasons: [],
   overview: "",
+  posterPath: "",
 });
 
 // libraryEnrichmentResponse answers Discover's trailer/detail/description
@@ -286,6 +287,28 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(screen.getByText("dream")).toBeInTheDocument();
     expect(screen.queryByText("Crew")).toBeNull();
     expect(screen.queryByText("Dir One")).toBeNull();
+  });
+
+  it("shows the TMDB poster from title detail when the tracked row has none", async () => {
+    stubFetch((url, init) => {
+      const extra = libraryEnrichmentResponse(url);
+      if (url.includes("/discover/detail")) {
+        return jsonResponse({
+          ...emptyTitleDetail(),
+          posterPath: "/inception.jpg",
+        });
+      }
+      if (extra) return extra;
+      return makeHandler([inception()])(url, init);
+    });
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const img = await screen.findByAltText("Inception");
+    expect(img).toHaveAttribute(
+      "src",
+      "/api/images/proxy?url=" +
+        encodeURIComponent("https://image.tmdb.org/t/p/w342/inception.jpg"),
+    );
   });
 
   it("adds a tag from the detail panel via the GENERIC /items/{id}/tags route", async () => {

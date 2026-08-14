@@ -1199,6 +1199,7 @@ const titleDetail = (over: Partial<TitleDetail> = {}): TitleDetail => ({
   cast: [{ name: "Actor One", character: "Hero", profilePath: "/a1.jpg" }],
   crew: [{ name: "Dir One", job: "Director", profilePath: "" }],
   watchProviders: [{ name: "Netflix", logoPath: "/nf.jpg" }],
+  posterPath: "/p.jpg",
   recommendations: [
     {
       id: 99,
@@ -1235,6 +1236,7 @@ const emptyDetail = (): TitleDetail =>
     watchProviders: [],
     recommendations: [],
     overview: "",
+    posterPath: "",
   });
 
 describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
@@ -1283,6 +1285,44 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     // Revenue/Budget are explicitly excluded.
     expect(screen.queryByText(/Revenue/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Budget/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the poster from TitleDetail when the item posterPath is empty", async () => {
+    stubWithDetail(titleDetail({ posterPath: "/from-detail.jpg" }));
+    const target: DetailTarget = {
+      mode: "movies",
+      item: movie({ id: 42, title: "Hero Movie", posterPath: "" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+    const img = await screen.findByAltText("Hero Movie");
+    expect(img).toHaveAttribute(
+      "src",
+      "/api/images/proxy?url=" +
+        encodeURIComponent("https://image.tmdb.org/t/p/w342/from-detail.jpg"),
+    );
+  });
+
+  it("falls back to /poster when item and detail posterPath are both empty", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "/lazy.jpg" });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+    const target: DetailTarget = {
+      mode: "movies",
+      item: movie({ id: 42, title: "Hero Movie", posterPath: "" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+    const img = await screen.findByAltText("Hero Movie");
+    expect(img).toHaveAttribute(
+      "src",
+      "/api/images/proxy?url=" +
+        encodeURIComponent("https://image.tmdb.org/t/p/w342/lazy.jpg"),
+    );
   });
 
   it("routes every detail image (headshot, provider logo) through the image proxy — never a direct TMDB host", async () => {

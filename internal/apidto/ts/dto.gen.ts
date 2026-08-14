@@ -1077,6 +1077,12 @@ export interface TitleDetail {
    * chips (Library tracked rows do not carry overview on GET /tracked).
    */
   overview: string;
+  /**
+   * PosterPath is the TMDB poster path from the same details call Overview
+   * comes from. Library tracked rows cache no poster art; the popup uses
+   * this instead of a second /poster round-trip when the card passed "".
+   */
+  posterPath: string;
 }
 /**
  * RequestStatusItem is one title's cross-mode status. Status is "In Library"

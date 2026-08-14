@@ -56,6 +56,11 @@ type Scene struct {
 	// art). Existing rows and failed probes stay horizontal. Never re-measured
 	// on poster updates or UpgradeSceneIdentity.
 	PosterAspectClass string `json:"posterAspectClass,omitempty"`
+	// PosterURL is the catalog artwork URL copied from MatchResult.Image at
+	// grab/import (imageproxy-validated). Empty when identify had no art or
+	// the URL failed Validate. Fill-if-empty on later upserts; never fetched
+	// by GET /tracked.
+	PosterURL string `json:"posterUrl,omitempty"`
 }
 
 // UpsertScene creates a scene, or updates it if one already exists for the
@@ -69,10 +74,16 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 	// Troubleshooting: ON CONFLICT DO UPDATE SET must omit this column or a
 	//   Rename Apply / Dedup path with a zero Scene would clobber it.
 	// Review if: classification is allowed to re-run when a poster URL is stored.
+	// Claude 2026-08-14: poster_url INSERT + fill-if-empty on conflict.
+	// Reason: grab-import has MatchResult.Image; Apply/Dedup must not wipe it,
+	//   but an empty row can gain art later. GET /tracked never probes.
+	// Troubleshooting: sanitizePosterURL drops non-https / private hosts.
+	// Review if: aspect is re-measured from this stored URL.
 	scene.PosterAspectClass = normalizePosterAspect(scene.PosterAspectClass)
+	scene.PosterURL = sanitizePosterURL(ctx, scene.PosterURL)
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO library_scenes (box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, size, quality_tier, poster_aspect_class)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO library_scenes (box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, size, quality_tier, poster_aspect_class, poster_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(box, scene_id) DO UPDATE SET
 			title = excluded.title,
 			studio = excluded.studio,
@@ -84,11 +95,12 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 			phash_file_mtime = excluded.phash_file_mtime,
 			size = excluded.size,
 			quality_tier = excluded.quality_tier,
+			poster_url = CASE WHEN library_scenes.poster_url = '' THEN excluded.poster_url ELSE library_scenes.poster_url END,
 			updated_at = sakms_now()
-		RETURNING id, created_at, updated_at, poster_aspect_class
-	`, scene.Box, scene.SceneID, scene.Title, scene.Studio, scene.Date, scene.FilePath, scene.RootFolderPath, scene.PHash, scene.PHashFileSize, scene.PHashFileMTime, scene.Size, scene.QualityTier, scene.PosterAspectClass)
+		RETURNING id, created_at, updated_at, poster_aspect_class, poster_url
+	`, scene.Box, scene.SceneID, scene.Title, scene.Studio, scene.Date, scene.FilePath, scene.RootFolderPath, scene.PHash, scene.PHashFileSize, scene.PHashFileMTime, scene.Size, scene.QualityTier, scene.PosterAspectClass, scene.PosterURL)
 
-	if err := row.Scan(&scene.ID, &scene.CreatedAt, &scene.UpdatedAt, &scene.PosterAspectClass); err != nil {
+	if err := row.Scan(&scene.ID, &scene.CreatedAt, &scene.UpdatedAt, &scene.PosterAspectClass, &scene.PosterURL); err != nil {
 		return Scene{}, fmt.Errorf("upserting scene %q: %w", scene.Title, err)
 	}
 	// Claude 2026-08-12: sync the primary library_scene_files row after every upsert.
@@ -112,7 +124,7 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 // key swapped.
 func (s *Store) GetScene(ctx context.Context, box, sceneID string) (*Scene, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
 		FROM library_scenes WHERE box = ? AND scene_id = ?
 	`, box, sceneID)
 	scene, err := scanScene(row)
@@ -134,7 +146,7 @@ func (s *Store) GetSceneByPHash(ctx context.Context, phash string) (*Scene, erro
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path,
-		       phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class
+		       phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
 		FROM library_scenes WHERE phash = ?
 	`, phash)
 	if err != nil {
@@ -168,7 +180,7 @@ func (s *Store) GetSceneByPHash(ctx context.Context, phash string) (*Scene, erro
 // ListScenes returns every tracked scene, ordered by title.
 func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 	out, err := s.queryScenes(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
 		FROM library_scenes ORDER BY title
 	`)
 	if err != nil {
@@ -183,7 +195,7 @@ func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 // calling this.
 func (s *Store) ListScenesByAspect(ctx context.Context, aspect string) ([]Scene, error) {
 	out, err := s.queryScenes(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
 		FROM library_scenes WHERE poster_aspect_class = ? ORDER BY title
 	`, aspect)
 	if err != nil {
@@ -373,6 +385,6 @@ func scanScene(row rowScanner) (Scene, error) {
 		&scene.FilePath, &scene.RootFolderPath,
 		&scene.PHash, &scene.PHashFileSize, &scene.PHashFileMTime,
 		&scene.CreatedAt, &scene.UpdatedAt,
-		&scene.Size, &scene.QualityTier, &scene.PosterAspectClass)
+		&scene.Size, &scene.QualityTier, &scene.PosterAspectClass, &scene.PosterURL)
 	return scene, err
 }

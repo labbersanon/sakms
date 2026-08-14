@@ -95,6 +95,19 @@ func ProbePosterAspect(ctx context.Context, imageURL string) string {
 	return ClassifyPosterAspect(cfg.Width, cfg.Height)
 }
 
+// sanitizePosterURL keeps a catalog image URL only if imageproxy.Validate
+// accepts it (http/https, no SSRF). Empty or rejected URLs store as "".
+func sanitizePosterURL(ctx context.Context, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if _, err := imageproxy.Validate(ctx, raw); err != nil {
+		return ""
+	}
+	return raw
+}
+
 func fetchPosterBytes(ctx context.Context, imageURL string) ([]byte, error) {
 	if posterFetchOverride != nil {
 		return posterFetchOverride(ctx, imageURL)

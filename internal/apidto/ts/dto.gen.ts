@@ -1631,6 +1631,7 @@ export interface TrackedItem {
   qualityTiers?: string[];
   files?: TrackedItemFile[];
   videoUrl?: string;
+  posterUrl?: string;
 }
 /**
  * TrackedItemFile is one primary or alternate video under a Movies tracked

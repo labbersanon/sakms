@@ -1669,6 +1669,7 @@ type TrackedItem struct {
 	QualityTiers   []string          `json:"qualityTiers,omitempty"`
 	Files          []TrackedItemFile `json:"files,omitempty"`
 	VideoURL       string            `json:"videoUrl,omitempty"`
+	PosterURL      string            `json:"posterUrl,omitempty"`
 }
 
 // TrackedItemFile is one primary or alternate video under a Movies tracked

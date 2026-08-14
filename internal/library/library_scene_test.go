@@ -407,3 +407,62 @@ func TestRestoreScene_MissingPosterAspectDefaultsHorizontal(t *testing.T) {
 		t.Fatalf("title = %q", got.Title)
 	}
 }
+
+func TestUpsertScene_PersistsAndFillsPosterURL(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	url := "https://1.1.1.1/poster.jpg"
+	created, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-art", Title: "Art", RootFolderPath: "/adult",
+		PosterURL: url,
+	})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if created.PosterURL != url {
+		t.Fatalf("created PosterURL = %q, want %q", created.PosterURL, url)
+	}
+	updated, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-art", Title: "Art 2", RootFolderPath: "/adult",
+		PosterURL: "https://1.1.1.1/other.jpg",
+	})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if updated.PosterURL != url {
+		t.Fatalf("fill-if-empty must keep first URL, got %q", updated.PosterURL)
+	}
+	empty, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-art-empty", Title: "Later", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("empty upsert: %v", err)
+	}
+	if empty.PosterURL != "" {
+		t.Fatalf("empty insert PosterURL = %q", empty.PosterURL)
+	}
+	filled, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-art-empty", Title: "Later", RootFolderPath: "/adult",
+		PosterURL: url,
+	})
+	if err != nil {
+		t.Fatalf("fill upsert: %v", err)
+	}
+	if filled.PosterURL != url {
+		t.Fatalf("empty row should gain URL, got %q", filled.PosterURL)
+	}
+}
+
+func TestUpsertScene_RejectsPrivatePosterURL(t *testing.T) {
+	s := newTestStore(t)
+	created, err := s.UpsertScene(context.Background(), Scene{
+		Box: "stashdb", SceneID: "uuid-ssrf", Title: "No", RootFolderPath: "/adult",
+		PosterURL: "https://127.0.0.1/secret.jpg",
+	})
+	if err != nil {
+		t.Fatalf("UpsertScene: %v", err)
+	}
+	if created.PosterURL != "" {
+		t.Fatalf("private host must not persist, got %q", created.PosterURL)
+	}
+}

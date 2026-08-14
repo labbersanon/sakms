@@ -33,7 +33,7 @@ import {
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { Mode } from "../api/discover";
-import { fetchTitlePoster, tmdbPoster } from "../api/discover";
+import { fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
 import {
   fetchSeasonStates,
   putAllSeasonsMonitored,
@@ -128,7 +128,12 @@ const PosterCard: Component<{
     ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId),
   );
 
+  // Claude 2026-08-14: Adult catalog posterUrl (proxied) beats TMDB path and
+  // the video still. Reason: parked artwork slice — MatchResult.Image is
+  // stored at grab; Library had no column. No BrowseMovies / N+1 lookup.
+  // Review if: 2B is revisited once catalog art is the common case.
   const posterUrl = () => {
+    if (props.mode === "adult") return proxyImage(props.item.posterUrl ?? "");
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };
@@ -375,6 +380,7 @@ const DetailPanel: Component<{
   );
 
   const posterUrl = () => {
+    if (props.mode === "adult") return proxyImage(props.item.posterUrl ?? "");
     const path = posterPath();
     return path ? tmdbPoster(path) : "";
   };

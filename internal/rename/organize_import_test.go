@@ -97,6 +97,9 @@ func TestOrganizeImportedAdult_PersistsVerticalPosterAspect(t *testing.T) {
 	if sc.PosterAspectClass != library.PosterAspectVertical {
 		t.Fatalf("PosterAspectClass = %q, want vertical", sc.PosterAspectClass)
 	}
+	if sc.PosterURL != posterURL {
+		t.Fatalf("PosterURL = %q, want catalog URL", sc.PosterURL)
+	}
 }
 
 func TestOrganizeImportedAdult_SoftSkipWhenUnmatched(t *testing.T) {

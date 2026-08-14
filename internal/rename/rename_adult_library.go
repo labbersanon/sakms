@@ -448,6 +448,7 @@ func OrganizeImportedAdult(ctx context.Context, sess *mode.Session, libStore *li
 		Size: fileSize, QualityTier: tier,
 		PHash: phash, PHashFileSize: fileSize, PHashFileMTime: fileMTime,
 		PosterAspectClass: aspect,
+		PosterURL:         id.match.Image,
 	}); err != nil {
 		return destPath, changes, fmt.Errorf("recording organized scene: %w", err)
 	}

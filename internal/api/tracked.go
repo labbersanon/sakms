@@ -55,6 +55,7 @@ type libraryTrackedItem struct {
 	QualityTiers   []string             `json:"qualityTiers,omitempty"`
 	Files          []libraryTrackedFile `json:"files,omitempty"`
 	VideoURL       string               `json:"videoUrl,omitempty"`
+	PosterURL      string               `json:"posterUrl,omitempty"`
 }
 
 // libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
@@ -225,6 +226,7 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 				out[i] = libraryTrackedItem{
 					ID: sc.ID, Title: sc.Title, Tags: tags,
 					CreatedAt: sc.CreatedAt, QualityTiers: []string{tier},
+					PosterURL: sc.PosterURL,
 				}
 				if sc.FilePath != "" && browserPlayableVideo(sc.FilePath) {
 					out[i].VideoURL = fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID)

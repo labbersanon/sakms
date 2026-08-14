@@ -922,6 +922,30 @@ describe("Library — Adult catalog", () => {
     ).toBe(false);
   });
 
+  it("prefers a catalog poster URL over the video still", async () => {
+    stubFetch(
+      makeHandler([inception()], {
+        adult: [
+          item({
+            id: 50,
+            title: "Catalog Art Scene",
+            qualityTiers: ["high"],
+            createdAt: "2026-04-01T00:00:00.000Z",
+            videoUrl: "/api/modes/adult/tracked/50/video",
+            posterUrl: "https://1.1.1.1/scene.jpg",
+          }),
+        ],
+      }),
+    );
+    renderLibrary("/library/adult");
+    const card = await screen.findByRole("button", { name: "Catalog Art Scene" });
+    const img = card.querySelector("img") as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe(
+      "/api/images/proxy?url=" + encodeURIComponent("https://1.1.1.1/scene.jpg"),
+    );
+    expect(card.querySelector("video")).toBeNull();
+  });
+
   it("drops the Adult video still for the letter tile when the video cannot load", async () => {
     stubFetch(
       makeHandler([inception()], {

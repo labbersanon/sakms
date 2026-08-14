@@ -96,6 +96,7 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 		Box: "stashdb", SceneID: "s1", Title: "Some Scene",
 		FilePath: "/media/Adult/Some Scene.mp4", RootFolderPath: "/media/Adult",
 		QualityTier: "high",
+		PosterURL:   "https://1.1.1.1/scene.jpg",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -130,6 +131,9 @@ func TestListTracked_Adult_ReturnsSceneLibraryItems(t *testing.T) {
 	}
 	if got[0].VideoURL != fmt.Sprintf("/api/modes/adult/tracked/%d/video", scene.ID) {
 		t.Fatalf("expected adult tracked video URL for poster fallback, got %q", got[0].VideoURL)
+	}
+	if got[0].PosterURL != "https://1.1.1.1/scene.jpg" {
+		t.Fatalf("expected catalog poster URL, got %q", got[0].PosterURL)
 	}
 }
 

@@ -319,6 +319,9 @@ func TestListTracked_Movies_ReturnsLibraryItemsWithLabelTags(t *testing.T) {
 	if err := libStore.AddTag(ctx, item.ID, "favorite"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if err := libStore.SetItemRating(ctx, item.ID, 4); err != nil {
+		t.Fatalf("set rating: %v", err)
+	}
 
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
@@ -348,6 +351,9 @@ func TestListTracked_Movies_ReturnsLibraryItemsWithLabelTags(t *testing.T) {
 	// this being non-empty).
 	if got[0].CreatedAt == "" {
 		t.Fatalf("expected createdAt to be populated for Movies, got %+v", got[0])
+	}
+	if got[0].Rating != 4 {
+		t.Fatalf("expected rating 4 on the tracked item, got %+v", got[0])
 	}
 }
 

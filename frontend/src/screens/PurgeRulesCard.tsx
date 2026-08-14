@@ -72,13 +72,14 @@ export function bytesToGB(bytes: number): number {
 // row — the client-side mirror of the (actual-value) Reason text the backend
 // generates at match time, but here it echoes the rule's THRESHOLDS, not an
 // item's triggering values, since no item is in scope. Fragment order matches
-// pruning.Match's own: age, size, tier, tags.
+// pruning.Match's own: age, size, tier, tags, rating.
 export function summarizeConditions(rule: PruningRule): string {
   const parts: string[] = [];
   if (rule.ageDays) parts.push(`${rule.ageDays}+ days old`);
   if (rule.sizeBytes) parts.push(`${bytesToGB(rule.sizeBytes)}+ GB`);
   if (rule.qualityTierFloor) parts.push(`tier ≤ ${rule.qualityTierFloor}`);
   if (rule.tags?.length) parts.push(`tags: ${rule.tags.join(", ")}`);
+  if (rule.minRating) parts.push(`rated below ${rule.minRating}★`);
   return parts.length ? parts.join(", ") : "no conditions";
 }
 
@@ -119,6 +120,10 @@ const RuleForm: Component<{
   );
   const [tags, setTags] = createSignal<string[]>(props.rule?.tags ?? []);
   const [newTag, setNewTag] = createSignal("");
+  const [ratingEnabled, setRatingEnabled] = createSignal(
+    (props.rule?.minRating ?? 0) > 0,
+  );
+  const [minRating, setMinRating] = createSignal(props.rule?.minRating ?? 3);
   const [enabled, setEnabled] = createSignal(props.rule?.enabled ?? true);
   const status = useSaveStatus();
 
@@ -144,7 +149,11 @@ const RuleForm: Component<{
   // same change (both the submit guard and the preview gate below share it,
   // since the preview endpoint 400s on a conditionless draft too).
   const hasCondition = () =>
-    ageEnabled() || sizeEnabled() || tierEnabled() || tags().length > 0;
+    ageEnabled() ||
+    sizeEnabled() ||
+    tierEnabled() ||
+    tags().length > 0 ||
+    (ratingEnabled() && minRating() > 0);
 
   const buildBody = (): PruningRuleUpsertRequest => ({
     name: name().trim(),
@@ -153,6 +162,7 @@ const RuleForm: Component<{
     sizeBytes: sizeEnabled() ? Math.max(0, gbToBytes(sizeGB())) : 0,
     qualityTierFloor: tierEnabled() ? tier() : "",
     tags: tagsEnabled() ? tags() : [],
+    minRating: ratingEnabled() ? Math.min(5, Math.max(1, Math.round(minRating()))) : 0,
     enabled: enabled(),
   });
 
@@ -193,6 +203,8 @@ const RuleForm: Component<{
         tier,
         tagsEnabled,
         tags,
+        ratingEnabled,
+        minRating,
       ],
       () => {
         if (previewTimer !== undefined) clearTimeout(previewTimer);
@@ -313,7 +325,7 @@ const RuleForm: Component<{
           </Show>
         </div>
 
-        {/* Tags — the fourth condition, positioned last so the form order
+        {/* Tags — the fourth condition. Rating is fifth, last, so form order
             matches pruning.Match's fragment order. Plain chip input, the
             retired Allowlist's own markup: one × per chip, one Add per input,
             no clear-all and no picker/autocomplete. */}
@@ -365,6 +377,38 @@ const RuleForm: Component<{
                 </Button>
               </div>
             </div>
+          </Show>
+        </div>
+
+        <div class="mb-2 rounded border border-border p-2">
+          <label class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label="Enable minimum rating condition"
+              checked={ratingEnabled()}
+              onChange={(e) => setRatingEnabled(e.currentTarget.checked)}
+            />
+            <span class="text-sm text-fg">Rated below N stars</span>
+          </label>
+          <Show when={ratingEnabled()}>
+            <select
+              class={`${inputClass} mt-1`}
+              aria-label="Minimum rating"
+              value={String(minRating())}
+              onChange={(e) => setMinRating(Number(e.currentTarget.value))}
+            >
+              <For each={[1, 2, 3, 4, 5]}>
+                {(n) => (
+                  <option value={n}>
+                    {n} star{n === 1 ? "" : "s"}
+                  </option>
+                )}
+              </For>
+            </select>
+            <p class="mt-1 text-xs text-muted">
+              Propose deletion for titles rated below this. Unrated titles never
+              match.
+            </p>
           </Show>
         </div>
 
@@ -450,6 +494,7 @@ export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
         sizeBytes: rule.sizeBytes ?? 0,
         qualityTierFloor: rule.qualityTierFloor ?? "",
         tags: rule.tags ?? [],
+        minRating: rule.minRating ?? 0,
         enabled: !rule.enabled,
       });
       await refetch();
@@ -475,7 +520,7 @@ export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
       <summary class="cursor-pointer text-sm font-medium">Rules</summary>
       <Muted class="mb-3 mt-3 block">
         Operator-authored rules that flag library items for Clean-up review by
-        age, size, quality tier and/or tags — AND'd within one rule, OR'd
+        age, size, quality tier, tags and/or minimum rating — AND'd within one rule, OR'd
         across rules. A rule only ever PROPOSES: nothing is deleted until an
         operator explicitly Applies it from the review queue below.
       </Muted>

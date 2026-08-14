@@ -128,7 +128,7 @@ func (s *Store) GetEpisodeByID(ctx context.Context, episodeID int64) (*Episode, 
 // key GetScene takes is itself restorable state.
 func (s *Store) GetSceneByID(ctx context.Context, sceneID int64) (*Scene, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url, rating
 		FROM library_scenes WHERE id = ?
 	`, sceneID)
 	scene, err := scanScene(row)

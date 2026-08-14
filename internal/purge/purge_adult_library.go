@@ -98,7 +98,7 @@ func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []prun
 			return nil, fmt.Errorf("loading tags for %q: %w", sc.Title, err)
 		}
 		ruleReasons := pruning.MatchAny(rules, pruning.Subject{
-			CreatedAt: sc.CreatedAt, SizeBytes: sc.Size, QualityTier: sc.QualityTier, Tags: tags,
+			CreatedAt: sc.CreatedAt, SizeBytes: sc.Size, QualityTier: sc.QualityTier, Tags: tags, Rating: sc.Rating,
 		}, now)
 		if len(ruleReasons) == 0 {
 			continue

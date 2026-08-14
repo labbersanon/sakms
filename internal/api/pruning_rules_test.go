@@ -529,3 +529,38 @@ func TestPruningRules_Preview_CountsTagsOnlyDraft(t *testing.T) {
 		t.Errorf("matchCount = %d, want 2 (the two Trailer-tagged items)", got.MatchCount)
 	}
 }
+
+func TestPruningRules_MinRatingSurvivesTheCRUDRoundTrip(t *testing.T) {
+	env := newPruningEnv(t)
+
+	req := apidto.PruningRuleUpsertRequest{
+		Name: "Low stars", Mode: string(mode.Movies), MinRating: 3, Enabled: true,
+	}
+	status, body := env.do(t, http.MethodPost, "/api/pruning-rules", req)
+	if status != http.StatusCreated && status != http.StatusOK {
+		t.Fatalf("POST = %d (%s), want 200/201", status, body)
+	}
+	var created apidto.PruningRule
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decoding create: %v", err)
+	}
+	if created.MinRating != 3 {
+		t.Fatalf("POST returned minRating %d, want 3", created.MinRating)
+	}
+
+	path := "/api/pruning-rules/" + strconv.FormatInt(created.ID, 10)
+	cleared := apidto.PruningRuleUpsertRequest{
+		Name: "Low stars", Mode: string(mode.Movies), AgeDays: 30, MinRating: 0, Enabled: true,
+	}
+	status, body = env.do(t, http.MethodPut, path, cleared)
+	if status != http.StatusOK {
+		t.Fatalf("PUT = %d (%s), want 200", status, body)
+	}
+	var updated apidto.PruningRule
+	if err := json.Unmarshal(body, &updated); err != nil {
+		t.Fatalf("decoding update: %v", err)
+	}
+	if updated.MinRating != 0 {
+		t.Fatalf("PUT left minRating %d, want 0 (cleared)", updated.MinRating)
+	}
+}

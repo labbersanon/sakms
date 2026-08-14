@@ -487,15 +487,38 @@ func TestMatch_TagsOnlyRuleIgnoresTheOtherThree(t *testing.T) {
 	}
 }
 
-func TestReason_FragmentOrderIsAgeSizeTierTags(t *testing.T) {
-	// All four configured, declared out of "order" in the struct literal —
-	// the Reason's fragment order must still be age, size, tier, tags.
-	r := Rule{Name: "R", Tags: []string{"BDSM"}, QualityTierFloor: "low", SizeBytes: 1, AgeDays: 1}
-	subj := Subject{CreatedAt: daysAgo(5), SizeBytes: 2048, QualityTier: "low", Tags: []string{"BDSM"}}
+func TestMatch_MinRating_BelowFloor_Matches(t *testing.T) {
+	r := Rule{Name: "Junk", MinRating: 3}
+	ok, reason := Match(r, Subject{Rating: 1}, fixedNow)
+	if !ok {
+		t.Fatalf("expected match, got false (reason=%q)", reason)
+	}
+	want := "Matched rule 'Junk': rated 1/5"
+	if reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+}
+
+func TestMatch_MinRating_UnratedAndAtFloor_DoNotMatch(t *testing.T) {
+	r := Rule{Name: "Junk", MinRating: 3}
+	if ok, _ := Match(r, Subject{Rating: 0}, fixedNow); ok {
+		t.Fatal("unrated must not match a min-rating rule")
+	}
+	if ok, _ := Match(r, Subject{Rating: 3}, fixedNow); ok {
+		t.Fatal("rating at the keep-floor must not match")
+	}
+	if ok, _ := Match(r, Subject{Rating: 5}, fixedNow); ok {
+		t.Fatal("rating above the keep-floor must not match")
+	}
+}
+
+func TestReason_FragmentOrderIsAgeSizeTierTagsRating(t *testing.T) {
+	r := Rule{Name: "R", Tags: []string{"BDSM"}, QualityTierFloor: "low", SizeBytes: 1, AgeDays: 1, MinRating: 4}
+	subj := Subject{CreatedAt: daysAgo(5), SizeBytes: 2048, QualityTier: "low", Tags: []string{"BDSM"}, Rating: 2}
 
 	_, reason := Match(r, subj, fixedNow)
-	want := "Matched rule 'R': 5 days old, 2KB, tier: low, tags: BDSM"
+	want := "Matched rule 'R': 5 days old, 2KB, tier: low, tags: BDSM, rated 2/5"
 	if reason != want {
-		t.Errorf("reason = %q, want %q (fragment order must be age, size, tier, tags)", reason, want)
+		t.Errorf("reason = %q, want %q (fragment order must be age, size, tier, tags, rating)", reason, want)
 	}
 }

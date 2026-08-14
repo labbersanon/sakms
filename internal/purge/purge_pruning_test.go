@@ -344,3 +344,39 @@ func TestScanLibrarySeries_NoSizeOrTierRules_DoesNotQueryEpisodes(t *testing.T) 
 		t.Fatal("expected a size rule to query library_episodes (the control half of this test is broken)")
 	}
 }
+
+func TestScanLibrary_MinRating_UnratedSkippedRatedBelowMatched(t *testing.T) {
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+
+	low, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 1, Title: "One Star", RootFolderPath: "/movies"})
+	if err != nil {
+		t.Fatalf("upsert low: %v", err)
+	}
+	if err := libStore.SetItemRating(ctx, low.ID, 1); err != nil {
+		t.Fatalf("rate low: %v", err)
+	}
+	keep, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 2, Title: "Four Star", RootFolderPath: "/movies"})
+	if err != nil {
+		t.Fatalf("upsert keep: %v", err)
+	}
+	if err := libStore.SetItemRating(ctx, keep.ID, 4); err != nil {
+		t.Fatalf("rate keep: %v", err)
+	}
+	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 3, Title: "Unrated", RootFolderPath: "/movies"}); err != nil {
+		t.Fatalf("upsert unrated: %v", err)
+	}
+
+	got, err := ScanLibrary(ctx, libStore, []pruning.Rule{{
+		Name: "Below three", Mode: string(mode.Movies), MinRating: 3, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(got) != 1 || got[0].Title != "One Star" {
+		t.Fatalf("got %+v, want only One Star", got)
+	}
+	if !strings.Contains(got[0].Reason, "rated 1/5") {
+		t.Errorf("reason = %q, want rated 1/5", got[0].Reason)
+	}
+}

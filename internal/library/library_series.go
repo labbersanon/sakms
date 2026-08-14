@@ -32,6 +32,11 @@ type Series struct {
 	Cast      []string `json:"cast,omitempty"`
 	CreatedAt string   `json:"createdAt"`
 	UpdatedAt string   `json:"updatedAt"`
+	// Claude 2026-08-14: operator 1–5 star rating at series level. 0 = unset.
+	// Reason: Purge acts on the show, not episodes (same unit as series tags).
+	//   UpsertSeries must not write this column.
+	// Review if: per-episode ratings are added.
+	Rating int `json:"rating,omitempty"`
 }
 
 // Episode is one canonical episode of a Series, whether or not it's
@@ -112,7 +117,7 @@ func (s *Store) GetSeriesByTMDBID(ctx context.Context, tmdbID int) (*Series, err
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
-		       created_at, updated_at
+		       created_at, updated_at, rating
 		FROM library_series WHERE tmdb_id = ?
 	`, tmdbID)
 	series, err := scanSeries(row)
@@ -134,7 +139,7 @@ func (s *Store) GetSeries(ctx context.Context, seriesID int64) (*Series, error) 
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
-		       created_at, updated_at
+		       created_at, updated_at, rating
 		FROM library_series WHERE id = ?
 	`, seriesID)
 	series, err := scanSeries(row)
@@ -152,7 +157,7 @@ func (s *Store) ListSeries(ctx context.Context) ([]Series, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
-		       created_at, updated_at
+		       created_at, updated_at, rating
 		FROM library_series ORDER BY title
 	`)
 	if err != nil {
@@ -761,7 +766,7 @@ func scanSeries(row rowScanner) (Series, error) {
 	var genresJSON, castJSON string
 	if err := row.Scan(&series.ID, &series.TMDBID, &series.TVDBID, &series.Title, &series.Year,
 		&series.RootFolderPath, &genresJSON, &castJSON,
-		&series.CreatedAt, &series.UpdatedAt); err != nil {
+		&series.CreatedAt, &series.UpdatedAt, &series.Rating); err != nil {
 		return Series{}, err
 	}
 	if err := json.Unmarshal([]byte(genresJSON), &series.Genres); err != nil {

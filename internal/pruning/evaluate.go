@@ -17,6 +17,7 @@ type Subject struct {
 	SizeBytes   int64    // 0 == not captured (backfill has not reached it).
 	QualityTier string   // "" == not captured; "unknown" == backfill could not infer.
 	Tags        []string // The item's own tags, verbatim from libStore; nil == none.
+	Rating      int      // Operator 1–5 stars; 0 == unset (fail-closed for min-rating).
 }
 
 // matchedTags returns which of ruleTags exactly match (case-insensitive) any
@@ -57,8 +58,8 @@ var tierRank = map[string]int{"low": 0, "medium": 1, "high": 2, "lossless": 3}
 // Match reports whether subj satisfies EVERY configured condition on r
 // (AND-within-rule), and returns the human-readable Reason fragment for a
 // match. Reason fragments are emitted in a fixed order — age, size, tier,
-// tags — which the rule form's own field order mirrors. A rule with no
-// configured conditions can never reach here in
+// tags, rating — which the rule form's own field order mirrors. A rule with
+// no configured conditions can never reach here in
 // practice (the store rejects it at Create/Update), but Match returns
 // false for one anyway rather than vacuously matching everything.
 func Match(r Rule, subj Subject, now time.Time) (bool, string) {
@@ -66,7 +67,8 @@ func Match(r Rule, subj Subject, now time.Time) (bool, string) {
 	hasSize := r.SizeBytes != 0
 	hasTier := r.QualityTierFloor != ""
 	hasTags := len(r.Tags) > 0
-	if !hasAge && !hasSize && !hasTier && !hasTags {
+	hasRating := r.MinRating != 0
+	if !hasAge && !hasSize && !hasTier && !hasTags && !hasRating {
 		return false, ""
 	}
 
@@ -114,6 +116,17 @@ func Match(r Rule, subj Subject, now time.Time) (bool, string) {
 			return false, ""
 		}
 		parts = append(parts, fmt.Sprintf("tags: %s", strings.Join(hits, ", ")))
+	}
+
+	if hasRating {
+		// Fail-closed: unrated (0) never satisfies a min-rating condition.
+		// MinRating is the keep-floor — match when the operator scored the
+		// title below that floor (rating < MinRating). Do not treat 0 as
+		// "worse than 1 star" or every unrated row would stage for delete.
+		if subj.Rating <= 0 || subj.Rating >= r.MinRating {
+			return false, ""
+		}
+		parts = append(parts, fmt.Sprintf("rated %d/5", subj.Rating))
 	}
 
 	return true, fmt.Sprintf("Matched rule '%s': %s", r.Name, strings.Join(parts, ", "))

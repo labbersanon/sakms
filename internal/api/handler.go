@@ -549,6 +549,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/{mode}/tags", listTagsHandler(libStore))
 	mux.HandleFunc("POST /api/modes/{mode}/items/{itemId}/tags", addItemTagHandler(libStore))
 	mux.HandleFunc("DELETE /api/modes/{mode}/items/{itemId}/tags/{tagId}", removeItemTagHandler(libStore))
+	mux.HandleFunc("PUT /api/modes/{mode}/items/{itemId}/rating", putItemRatingHandler(libStore))
 
 	// Adult scene tags — a parallel, fully library-backed path (see tag.go).
 	// Adult-only and hardcoded in the path (scenes exist only for Adult). The
@@ -558,6 +559,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/adult/scenes/{sceneId}/tags", listSceneTagsHandler(libStore))
 	mux.HandleFunc("POST /api/modes/adult/scenes/{sceneId}/tags", addSceneTagHandler(libStore))
 	mux.HandleFunc("DELETE /api/modes/adult/scenes/{sceneId}/tags/{tagId}", removeSceneTagHandler(libStore))
+	mux.HandleFunc("PUT /api/modes/adult/scenes/{sceneId}/rating", putSceneRatingHandler(libStore))
 
 	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, scStore, settingsStore))
 	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))

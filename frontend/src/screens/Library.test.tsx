@@ -175,6 +175,7 @@ const makeHandler = (
     seasons?: SeasonState[];
     onPost?: (url: string) => Response;
     onDelete?: (url: string) => Response;
+    onPut?: (url: string) => Response;
   } = {},
 ) => {
   return (url: string, init?: RequestInit): Response => {
@@ -203,6 +204,8 @@ const makeHandler = (
         ? noContent()
         : jsonResponse(overrides.seasons ?? []);
     if (method === "POST" && overrides.onPost) return overrides.onPost(url);
+    if (method === "PUT" && overrides.onPut) return overrides.onPut(url);
+    if (method === "PUT" && url.includes("/rating")) return noContent();
     if (method === "DELETE" && overrides.onDelete) return overrides.onDelete(url);
     throw new Error("unexpected fetch: " + url);
   };
@@ -356,6 +359,28 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(post.url).toContain("/api/modes/movies/items/10/tags");
     expect(post.url).not.toContain("/scenes/");
     expect(post.body).toEqual({ label: "fresh" });
+  });
+
+  it("rates a library card via PUT /items/{id}/rating without opening detail", async () => {
+    const calls = stubFetch(
+      makeHandler([inception()], {
+        onPut: (url) => {
+          if (url.includes("/api/modes/movies/items/10/rating")) return noContent();
+          throw new Error("unexpected PUT: " + url);
+        },
+      }),
+    );
+
+    renderLibrary();
+    await screen.findByRole("button", { name: "Inception" });
+    fireEvent.click(screen.getByLabelText("Rate 4 stars"));
+
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(put.url).toContain("/api/modes/movies/items/10/rating");
+    expect(put.url).not.toContain("/scenes/");
+    expect(put.body).toEqual({ rating: 4 });
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
   });
 
   it("removes a tag from the detail panel", async () => {

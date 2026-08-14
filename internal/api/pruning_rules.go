@@ -38,6 +38,7 @@ func toDTOPruningRule(r pruning.Rule) apidto.PruningRule {
 		SizeBytes:        r.SizeBytes,
 		QualityTierFloor: r.QualityTierFloor,
 		Tags:             r.Tags,
+		MinRating:        r.MinRating,
 		Enabled:          r.Enabled,
 		CreatedAt:        r.CreatedAt,
 		UpdatedAt:        r.UpdatedAt,
@@ -63,6 +64,7 @@ func ruleFromUpsert(id int64, req apidto.PruningRuleUpsertRequest) pruning.Rule 
 		SizeBytes:        req.SizeBytes,
 		QualityTierFloor: req.QualityTierFloor,
 		Tags:             req.Tags,
+		MinRating:        req.MinRating,
 		Enabled:          req.Enabled,
 	}
 }
@@ -82,7 +84,8 @@ func pruningRuleStoreError(w http.ResponseWriter, err error) {
 		errors.Is(err, pruning.ErrNoConditions),
 		errors.Is(err, pruning.ErrInvalidTierFloor),
 		errors.Is(err, pruning.ErrNegativeThreshold),
-		errors.Is(err, pruning.ErrBlankTag):
+		errors.Is(err, pruning.ErrBlankTag),
+		errors.Is(err, pruning.ErrInvalidMinRating):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, err.Error(), http.StatusInternalServerError)

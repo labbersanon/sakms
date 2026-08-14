@@ -32,6 +32,8 @@ func TestClassify(t *testing.T) {
 		{"/api/modes/series/dedup/scan/status", []string{SectionOrganize}},
 		{"/api/modes/adult/scenes/tags", []string{SectionAdultContent, SectionLibrary}},
 		{"/api/modes/movies/items/12/tags/3", []string{SectionLibrary}},
+		{"/api/modes/movies/items/12/rating", []string{SectionLibrary}},
+		{"/api/modes/adult/scenes/9/rating", []string{SectionAdultContent, SectionLibrary}},
 		{"/api/modes/movies/collections", []string{SectionCollections}},
 		{"/api/modes/movies/tracked", []string{SectionLibrary}},
 		{"/api/modes/series/library/9/seasons", []string{SectionLibrary}},

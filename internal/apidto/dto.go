@@ -1687,6 +1687,18 @@ type TrackedItem struct {
 	SceneID        string            `json:"sceneId,omitempty"`
 	Studio         string            `json:"studio,omitempty"`
 	Date           string            `json:"date,omitempty"`
+	// Claude 2026-08-14: operator 1–5 star rating from the library row.
+	// 0/omitted = unrated. GET /tracked must not copy catalog TMDB/TPDB scores.
+	// Review if: Discover's existing-library row starts showing stars.
+	Rating int `json:"rating,omitempty"`
+}
+
+// LibraryRatingRequest is PUT /api/modes/{mode}/items/{itemId}/rating
+// (Movies/Series) and PUT /api/modes/adult/scenes/{sceneId}/rating (Adult).
+// 0 clears the operator score; 1–5 sets it. Catalog TMDB/TPDB ratings are
+// not accepted here.
+type LibraryRatingRequest struct {
+	Rating int `json:"rating"`
 }
 
 // TrackedItemFile is one primary or alternate video under a Movies tracked
@@ -3045,8 +3057,8 @@ type SectionLockSectionsRequest struct {
 // --- Pruning rules (internal/pruning) — propose-only Purge safety rules ----
 //
 // Mirrors pruning.Rule's wire shape (see .omc/plans/autopilot-impl-pruning-rules.md
-// §2.1). AgeDays/SizeBytes/QualityTierFloor/Tags use the same NOT NULL DEFAULT
-// sentinel convention as the migrations (0/0/""/[] means "condition not
+// §2.1). AgeDays/SizeBytes/QualityTierFloor/Tags/MinRating use the same NOT NULL DEFAULT
+// sentinel convention as the migrations (0/0/""/[]/0 means "condition not
 // configured"), so unlike ConnectionUpsertRequest.APIKey these are plain
 // values, never *T.
 
@@ -3060,6 +3072,7 @@ type PruningRule struct {
 	SizeBytes        int64    `json:"sizeBytes,omitempty"`
 	QualityTierFloor string   `json:"qualityTierFloor,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
+	MinRating        int      `json:"minRating,omitempty"`
 	Enabled          bool     `json:"enabled"`
 	CreatedAt        string   `json:"createdAt"`
 	UpdatedAt        string   `json:"updatedAt"`
@@ -3077,6 +3090,7 @@ type PruningRuleUpsertRequest struct {
 	SizeBytes        int64    `json:"sizeBytes"`
 	QualityTierFloor string   `json:"qualityTierFloor"`
 	Tags             []string `json:"tags"`
+	MinRating        int      `json:"minRating"`
 	Enabled          bool     `json:"enabled"`
 }
 

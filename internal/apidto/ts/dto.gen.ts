@@ -1652,6 +1652,21 @@ export interface TrackedItem {
   sceneId?: string;
   studio?: string;
   date?: string;
+  /**
+   * Claude 2026-08-14: operator 1–5 star rating from the library row.
+   * 0/omitted = unrated. GET /tracked must not copy catalog TMDB/TPDB scores.
+   * Review if: Discover's existing-library row starts showing stars.
+   */
+  rating?: number /* int */;
+}
+/**
+ * LibraryRatingRequest is PUT /api/modes/{mode}/items/{itemId}/rating
+ * (Movies/Series) and PUT /api/modes/adult/scenes/{sceneId}/rating (Adult).
+ * 0 clears the operator score; 1–5 sets it. Catalog TMDB/TPDB ratings are
+ * not accepted here.
+ */
+export interface LibraryRatingRequest {
+  rating: number /* int */;
 }
 /**
  * TrackedItemFile is one primary or alternate video under a Movies tracked
@@ -3013,6 +3028,7 @@ export interface PruningRule {
   sizeBytes?: number /* int64 */;
   qualityTierFloor?: string;
   tags?: string[];
+  minRating?: number /* int */;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -3031,6 +3047,7 @@ export interface PruningRuleUpsertRequest {
   sizeBytes: number /* int64 */;
   qualityTierFloor: string;
   tags: string[];
+  minRating: number /* int */;
   enabled: boolean;
 }
 /**

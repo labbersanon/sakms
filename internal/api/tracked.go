@@ -69,6 +69,10 @@ type libraryTrackedItem struct {
 	SceneID string `json:"sceneId,omitempty"`
 	Studio  string `json:"studio,omitempty"`
 	Date    string `json:"date,omitempty"`
+	// Claude 2026-08-14: operator 1–5 star rating copied from the library
+	// row. 0/omitted = unrated. GET /tracked must not look up catalog scores.
+	// Review if: Discover's existing-library row starts showing stars too.
+	Rating int `json:"rating,omitempty"`
 }
 
 // libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
@@ -181,7 +185,7 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 					ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year,
 					CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast,
 					CreatedAt: item.CreatedAt, QualityTiers: tiers, Files: trackedFiles,
-					VideoURL: itemVideoURL,
+					VideoURL: itemVideoURL, Rating: item.Rating,
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -212,7 +216,7 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year, Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt, QualityTiers: tiersBySeries[s.ID]}
+				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year, Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt, QualityTiers: tiersBySeries[s.ID], Rating: s.Rating}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
@@ -251,6 +255,7 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 					PosterURL: sc.PosterURL,
 					Box:       sc.Box, SceneID: sc.SceneID,
 					Studio: sc.Studio, Date: sc.Date,
+					Rating: sc.Rating,
 				}
 				if sc.FilePath != "" && browserPlayableVideo(sc.FilePath) {
 					out[i].VideoURL = fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID)

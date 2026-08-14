@@ -1,5 +1,5 @@
 // Package pruning persists operator-authored propose-only pruning rules —
-// a rule is a NAMED set of AND'd conditions (age/size/quality-tier-floor/tags)
+// a rule is a NAMED set of AND'd conditions (age/size/quality-tier-floor/tags/min-rating)
 // scoped to one mode; an item matching ANY enabled rule for its mode gets
 // staged as a Purge proposal. Nothing in this package ever deletes: rule
 // evaluation runs only in Purge's existing propose phase, and every match
@@ -30,15 +30,15 @@ var ErrNameRequired = errors.New("pruning: name is required")
 // ErrInvalidMode is returned when Mode isn't one of movies/series/adult.
 var ErrInvalidMode = errors.New("pruning: invalid mode")
 
-// ErrNoConditions is returned when all four condition fields are at their
+// ErrNoConditions is returned when all five condition fields are at their
 // unset sentinel (age_days == 0, size_bytes == 0, quality_tier_floor == "",
-// len(tags) == 0) — AC1's "at least one condition required".
+// len(tags) == 0, min_rating == 0) — AC1's "at least one condition required".
 //
-// The string enumerates all four deliberately: it is mirrored client-side by
-// PurgeRulesCard.tsx's hasCondition(), so a future fifth condition that
+// The string enumerates all five deliberately: it is mirrored client-side by
+// PurgeRulesCard.tsx's hasCondition(), so a future sixth condition that
 // updates only one side is caught by TestCreate_RejectsRuleWithNoConditions
 // and the card's own validation test together.
-var ErrNoConditions = errors.New("pruning: at least one condition (age, size, quality tier floor, or tags) is required")
+var ErrNoConditions = errors.New("pruning: at least one condition (age, size, quality tier floor, tags, or min rating) is required")
 
 // ErrBlankTag is returned when Tags contains an empty or whitespace-only
 // entry. This is the guard the retired addAllowlistTagHandler used to apply at
@@ -52,11 +52,15 @@ var ErrInvalidTierFloor = errors.New("pruning: invalid quality tier floor")
 // ErrNegativeThreshold is returned when AgeDays or SizeBytes is negative.
 var ErrNegativeThreshold = errors.New("pruning: threshold must not be negative")
 
+// ErrInvalidMinRating is returned when MinRating is outside 0–5.
+// 0 is the unset sentinel; 1–5 are keep-floors (match if 0 < rating < min).
+var ErrInvalidMinRating = errors.New("pruning: min rating must be 0 through 5")
+
 // Rule is one operator-authored pruning rule. A zero value in a condition
-// field means "this condition is not configured" — 0 for the two numeric
-// thresholds, "" for the tier floor, and an empty slice for Tags (see
-// internal/db/migrations/0008_pruning_rule_tags.sql, and 0001_baseline.sql
-// for the other three).
+// field means "this condition is not configured" — 0 for the numeric
+// thresholds (including MinRating), "" for the tier floor, and an empty
+// slice for Tags (see internal/db/migrations/0013_library_ratings.sql,
+// 0008_pruning_rule_tags.sql, and 0001_baseline.sql).
 type Rule struct {
 	ID               int64    `json:"id"`
 	Name             string   `json:"name"`
@@ -65,6 +69,7 @@ type Rule struct {
 	SizeBytes        int64    `json:"sizeBytes,omitempty"`
 	QualityTierFloor string   `json:"qualityTierFloor,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
+	MinRating        int      `json:"minRating,omitempty"`
 	Enabled          bool     `json:"enabled"`
 	CreatedAt        string   `json:"createdAt"`
 	UpdatedAt        string   `json:"updatedAt"`
@@ -90,8 +95,9 @@ var validTierFloors = map[string]bool{
 }
 
 // Validate checks r against the fixed mode/tier enums, rejects negative
-// thresholds and blank tags, and requires at least one of the four conditions
-// to be configured (AC1). Called by both Create and Update.
+// thresholds, out-of-range min ratings, and blank tags, and requires at least
+// one of the five conditions to be configured (AC1). Called by both Create
+// and Update.
 func Validate(r Rule) error {
 	if r.Name == "" {
 		return ErrNameRequired
@@ -102,6 +108,9 @@ func Validate(r Rule) error {
 	if r.AgeDays < 0 || r.SizeBytes < 0 {
 		return ErrNegativeThreshold
 	}
+	if r.MinRating < 0 || r.MinRating > 5 {
+		return fmt.Errorf("%w: %d", ErrInvalidMinRating, r.MinRating)
+	}
 	if r.QualityTierFloor != "" && !validTierFloors[r.QualityTierFloor] {
 		return fmt.Errorf("%w: %q", ErrInvalidTierFloor, r.QualityTierFloor)
 	}
@@ -110,7 +119,7 @@ func Validate(r Rule) error {
 			return ErrBlankTag
 		}
 	}
-	if r.AgeDays == 0 && r.SizeBytes == 0 && r.QualityTierFloor == "" && len(r.Tags) == 0 {
+	if r.AgeDays == 0 && r.SizeBytes == 0 && r.QualityTierFloor == "" && len(r.Tags) == 0 && r.MinRating == 0 {
 		return ErrNoConditions
 	}
 	return nil
@@ -136,10 +145,10 @@ func (s *Store) Create(ctx context.Context, r Rule) (Rule, error) {
 		return Rule{}, fmt.Errorf("encoding tags for pruning rule %q: %w", r.Name, err)
 	}
 	row := s.db.QueryRowContext(ctx, `
-		INSERT INTO pruning_rules (name, mode, age_days, size_bytes, quality_tier_floor, tags, enabled)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO pruning_rules (name, mode, age_days, size_bytes, quality_tier_floor, tags, min_rating, enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id, created_at, updated_at
-	`, r.Name, r.Mode, r.AgeDays, r.SizeBytes, r.QualityTierFloor, tagsJSON, r.Enabled)
+	`, r.Name, r.Mode, r.AgeDays, r.SizeBytes, r.QualityTierFloor, tagsJSON, r.MinRating, r.Enabled)
 
 	if err := row.Scan(&r.ID, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return Rule{}, fmt.Errorf("creating pruning rule %q: %w", r.Name, err)
@@ -159,11 +168,11 @@ func (s *Store) Update(ctx context.Context, r Rule) (Rule, error) {
 	}
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE pruning_rules SET
-			name = ?, mode = ?, age_days = ?, size_bytes = ?, quality_tier_floor = ?, tags = ?, enabled = ?,
+			name = ?, mode = ?, age_days = ?, size_bytes = ?, quality_tier_floor = ?, tags = ?, min_rating = ?, enabled = ?,
 			updated_at = sakms_now()
 		WHERE id = ?
 		RETURNING id, created_at, updated_at
-	`, r.Name, r.Mode, r.AgeDays, r.SizeBytes, r.QualityTierFloor, tagsJSON, r.Enabled, r.ID)
+	`, r.Name, r.Mode, r.AgeDays, r.SizeBytes, r.QualityTierFloor, tagsJSON, r.MinRating, r.Enabled, r.ID)
 
 	if err := row.Scan(&r.ID, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -197,7 +206,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 // List returns every rule ordered by id, ascending.
 func (s *Store) List(ctx context.Context) ([]Rule, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, mode, age_days, size_bytes, quality_tier_floor, COALESCE(tags, '[]'), enabled, created_at, updated_at
+		SELECT id, name, mode, age_days, size_bytes, quality_tier_floor, COALESCE(tags, '[]'), min_rating, enabled, created_at, updated_at
 		FROM pruning_rules
 		ORDER BY id ASC
 	`)
@@ -212,7 +221,7 @@ func (s *Store) List(ctx context.Context) ([]Rule, error) {
 // ascending — the hot path purge.ScanLibrary* calls once per scan.
 func (s *Store) ListEnabledForMode(ctx context.Context, m mode.Mode) ([]Rule, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, mode, age_days, size_bytes, quality_tier_floor, COALESCE(tags, '[]'), enabled, created_at, updated_at
+		SELECT id, name, mode, age_days, size_bytes, quality_tier_floor, COALESCE(tags, '[]'), min_rating, enabled, created_at, updated_at
 		FROM pruning_rules
 		WHERE mode = ? AND enabled = true
 		ORDER BY id ASC
@@ -233,10 +242,10 @@ func scanRules(rows *sql.Rows) ([]Rule, error) {
 		var r Rule
 		var tagsJSON string
 		// Argument order MUST track the SELECT lists in List/ListEnabledForMode
-		// exactly — tags sits immediately after quality_tier_floor, before
-		// enabled. A mismatch here is a runtime scan error, not a compile
+		// exactly — tags sits immediately after quality_tier_floor, min_rating
+		// after tags, then enabled. A mismatch here is a runtime scan error, not a compile
 		// error, so nothing catches it until a test runs.
-		if err := rows.Scan(&r.ID, &r.Name, &r.Mode, &r.AgeDays, &r.SizeBytes, &r.QualityTierFloor, &tagsJSON, &r.Enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Mode, &r.AgeDays, &r.SizeBytes, &r.QualityTierFloor, &tagsJSON, &r.MinRating, &r.Enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning pruning rule: %w", err)
 		}
 		// Deliberately the OPPOSITE call from out's []Rule{} above: an empty

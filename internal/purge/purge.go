@@ -5,7 +5,7 @@
 // uses, just keyed off already-tracked items instead of unmapped folders.
 //
 // This package owns NO matching logic of its own. Every condition — age, size,
-// quality tier and tags — is evaluated by internal/pruning, which this package
+// quality tier, tags and min rating — is evaluated by internal/pruning, which this package
 // imports; the Scan functions only project a library row into a
 // pruning.Subject and forward it. Tag matching in particular used to live here
 // (MatchesAny/MatchedEntries) and now lives in internal/pruning's matchedTags:
@@ -65,7 +65,7 @@ func ScanLibrary(ctx context.Context, libStore *library.Store, rules []pruning.R
 			return nil, fmt.Errorf("loading tags for %q: %w", item.Title, err)
 		}
 		ruleReasons := pruning.MatchAny(rules, pruning.Subject{
-			CreatedAt: item.CreatedAt, SizeBytes: item.Size, QualityTier: item.QualityTier, Tags: tags,
+			CreatedAt: item.CreatedAt, SizeBytes: item.Size, QualityTier: item.QualityTier, Tags: tags, Rating: item.Rating,
 		}, now)
 		if len(ruleReasons) == 0 {
 			continue
@@ -146,7 +146,7 @@ func ScanLibrarySeries(ctx context.Context, libStore *library.Store, rules []pru
 		}
 		var ruleReasons []string
 		if len(rules) > 0 {
-			subj := pruning.Subject{CreatedAt: s.CreatedAt, Tags: tags}
+			subj := pruning.Subject{CreatedAt: s.CreatedAt, Tags: tags, Rating: s.Rating}
 			if needEpisodes {
 				episodes, epErr := libStore.ListEpisodes(ctx, s.ID)
 				if epErr != nil {

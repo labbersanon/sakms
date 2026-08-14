@@ -64,6 +64,13 @@ type Item struct {
 	// entered the library. "" means "not captured yet"; "unknown" means the
 	// backfill ran and could not determine one (an accepted permanent state).
 	QualityTier string `json:"qualityTier,omitempty"`
+	// Claude 2026-08-14: operator 1–5 star rating. 0 = unset.
+	// Reason: Clean-up min-rating is fail-closed on 0, same as tags. Upsert
+	//   must not write this column or a re-grab would wipe the operator score.
+	// Troubleshooting: catalog TMDB/TPDB ratings are a different field and
+	//   must not be copied here on GET /tracked.
+	// Review if: half-stars or a 10-point scale land.
+	Rating int `json:"rating,omitempty"`
 	// PHash is the SAK-computed perceptual hash of this item's video file,
 	// cached so Dedup decodes each tracked file once rather than every Scan.
 	// PHashFileSize/PHashFileMTime are the file-identity key it's valid for:
@@ -169,7 +176,7 @@ func (s *Store) List(ctx context.Context, m mode.Mode) ([]Item, error) {
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
 		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
-		       li.size, li.quality_tier
+		       li.size, li.quality_tier, li.rating
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.mode = ? ORDER BY li.title
@@ -197,7 +204,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Item, error) {
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
 		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
-		       li.size, li.quality_tier
+		       li.size, li.quality_tier, li.rating
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.id = ?
@@ -221,7 +228,7 @@ func (s *Store) GetByTMDBID(ctx context.Context, m mode.Mode, tmdbID int) (*Item
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
 		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
-		       li.size, li.quality_tier
+		       li.size, li.quality_tier, li.rating
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.mode = ? AND li.tmdb_id = ?
@@ -424,7 +431,7 @@ func scanItem(row rowScanner) (Item, error) {
 		&item.CreatedAt, &item.UpdatedAt,
 		&item.TMDBCollectionID, &item.CollectionName,
 		&genresJSON, &castJSON,
-		&item.Size, &item.QualityTier); err != nil {
+		&item.Size, &item.QualityTier, &item.Rating); err != nil {
 		return Item{}, err
 	}
 	item.Mode = mode.Mode(m)

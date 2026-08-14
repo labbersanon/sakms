@@ -119,6 +119,44 @@ describe("PurgeRulesCard — create", () => {
       sizeBytes: 0,
       qualityTierFloor: "",
       tags: [],
+      minRating: 0,
+      enabled: true,
+    });
+  });
+
+  it("creates a rule with a minimum rating condition", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && isRuleList(url))
+        return jsonResponse(rule({ id: 11, name: "One-star junk", minRating: 3 }));
+      return undefined;
+    });
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "One-star junk" },
+    });
+    fireEvent.click(screen.getByLabelText("Enable minimum rating condition"));
+    fireEvent.change(screen.getByLabelText("Minimum rating"), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByText("Create rule"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+        true,
+      ),
+    );
+    const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
+    expect(post.body).toEqual({
+      name: "One-star junk",
+      mode: "movies",
+      ageDays: 0,
+      sizeBytes: 0,
+      qualityTierFloor: "",
+      tags: [],
+      minRating: 3,
       enabled: true,
     });
   });
@@ -158,6 +196,7 @@ describe("PurgeRulesCard — create", () => {
       sizeBytes: 2147483648,
       qualityTierFloor: "",
       tags: [],
+      minRating: 0,
       enabled: true,
     });
   });
@@ -200,6 +239,7 @@ describe("PurgeRulesCard — edit", () => {
       sizeBytes: 0,
       qualityTierFloor: "",
       tags: [],
+      minRating: 0,
       enabled: true,
     });
   });
@@ -296,6 +336,7 @@ describe("PurgeRulesCard — enabled toggle", () => {
       sizeBytes: 0,
       qualityTierFloor: "",
       tags: [],
+      minRating: 0,
       enabled: false,
     });
   });
@@ -488,6 +529,7 @@ describe("PurgeRulesCard — the tags condition", () => {
       sizeBytes: 0,
       qualityTierFloor: "",
       tags: ["BDSM"],
+      minRating: 0,
       enabled: true,
     });
   });
@@ -582,6 +624,7 @@ describe("PurgeRulesCard — the enabled toggle preserves tags", () => {
       sizeBytes: 0,
       qualityTierFloor: "",
       tags: ["BDSM", "Rope"],
+      minRating: 0,
       enabled: false,
     });
   });

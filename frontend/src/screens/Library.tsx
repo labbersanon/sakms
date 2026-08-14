@@ -53,6 +53,7 @@ import {
   fetchTrackedItems,
   removeTag,
 } from "../api/tag";
+import { setItemRating } from "../api/rating";
 import {
   Button,
   // Card, // Claude 2026-08-13: only the commented-out AdultMoviesPlaceholder used this.
@@ -79,6 +80,7 @@ import {
   MediaGridSkeleton,
   MEDIA_POSTER_GRID_CLASS,
 } from "../components/media";
+import { StarRating } from "../components/StarRating";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import {
   ADULT_MEDIA_TABS,
@@ -176,6 +178,7 @@ const PosterCard: Component<{
   mode: Mode;
   selected: boolean;
   onClick: () => void;
+  onRate: (rating: number) => void;
   // Claude 2026-08-13: poster frame ratio, default 2:3.
   // Reason: Library Scenes is 16:9 (2B); Mainstream and Adult Movies stay 2:3.
   // Threaded as a value so a future catalog poster does not bake the tab into
@@ -228,6 +231,7 @@ const PosterCard: Component<{
   });
 
   return (
+    <div class="relative">
     <MediaCardShell
       class="group w-full"
       label={props.item.title}
@@ -299,6 +303,18 @@ const PosterCard: Component<{
         </Show>
       </div>
     </MediaCardShell>
+    {/* Claude 2026-08-14: star overlay is a SIBLING of MediaCardShell, not a
+        nested control. Reason: the shell is a <button>; nested buttons are
+        forbidden (Discover Mainstream comment). Clicks hit these stars, not
+        the card. Review if: MediaCardShell stops being a button. */}
+    <div class="absolute left-1 top-1 z-10 rounded bg-black/70 px-1 py-0.5">
+      <StarRating
+        rating={props.item.rating ?? 0}
+        size="sm"
+        onChange={props.onRate}
+      />
+    </div>
+    </div>
   );
 };
 
@@ -476,6 +492,7 @@ const DetailPanel: Component<{
   onDraftChange: (v: string) => void;
   onAdd: () => void;
   onRemoveTag: (tag: string) => void;
+  onRate: (rating: number) => void;
   posterAspect?: string;
   // Claude 2026-08-14: omit the panel poster when DetailPopup already shows one.
   // Reason: Library nested the original MediaDetailShell poster under the
@@ -665,6 +682,18 @@ const DetailPanel: Component<{
       <Show when={props.mode === "series"}>
         <SeasonsPanel seriesID={props.item.id} />
       </Show>
+
+      {/* Claude 2026-08-14: operator stars in the detail panel as well as the
+          card overlay. Reason: the overlay is small; this is the same control
+          at a usable size. Review if: rating moves off Library. */}
+      <div class="mb-3">
+        <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Rating</p>
+        <StarRating
+          rating={props.item.rating ?? 0}
+          size="md"
+          onChange={props.onRate}
+        />
+      </div>
 
       {/* Tags — mutable */}
       <div>
@@ -1020,6 +1049,11 @@ const LibraryView: Component<{
                         posterAspect={props.posterAspect}
                         selected={selectedId() === item.id}
                         onClick={() => openCard(item)}
+                        onRate={(rating) =>
+                          void act(() =>
+                            setItemRating(props.mode, item.id, rating),
+                          )
+                        }
                       />
                     )}
                   </For>
@@ -1043,6 +1077,11 @@ const LibraryView: Component<{
                         onAdd={() => submitDetailAdd(item())}
                         onRemoveTag={(tag) =>
                           void act(() => removeTag(props.mode, item().id, tag))
+                        }
+                        onRate={(rating) =>
+                          void act(() =>
+                            setItemRating(props.mode, item().id, rating),
+                          )
                         }
                       />
                     </Modal>
@@ -1071,6 +1110,11 @@ const LibraryView: Component<{
                             onRemoveTag={(tag) =>
                               void act(() =>
                                 removeTag(props.mode, item().id, tag),
+                              )
+                            }
+                            onRate={(rating) =>
+                              void act(() =>
+                                setItemRating(props.mode, item().id, rating),
                               )
                             }
                           />

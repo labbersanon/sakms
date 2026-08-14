@@ -62,6 +62,12 @@ type Scene struct {
 	// the URL failed Validate. Fill-if-empty on later upserts; never fetched
 	// by GET /tracked.
 	PosterURL string `json:"posterUrl,omitempty"`
+	// Claude 2026-08-14: operator 1–5 star rating. 0 = unset.
+	// Reason: same column as library_items/library_series; UpsertScene must
+	//   not write it. Adult Movies vs Scenes share library_scenes, so one
+	//   rating per scene row covers both chips.
+	// Review if: Adult Movies split off library_scenes.
+	Rating int `json:"rating,omitempty"`
 }
 
 // UpsertScene creates a scene, or updates it if one already exists for the
@@ -125,7 +131,7 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 // key swapped.
 func (s *Store) GetScene(ctx context.Context, box, sceneID string) (*Scene, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url, rating
 		FROM library_scenes WHERE box = ? AND scene_id = ?
 	`, box, sceneID)
 	scene, err := scanScene(row)
@@ -147,7 +153,7 @@ func (s *Store) GetSceneByPHash(ctx context.Context, phash string) (*Scene, erro
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path,
-		       phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
+		       phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url, rating
 		FROM library_scenes WHERE phash = ?
 	`, phash)
 	if err != nil {
@@ -181,7 +187,7 @@ func (s *Store) GetSceneByPHash(ctx context.Context, phash string) (*Scene, erro
 // ListScenes returns every tracked scene, ordered by title.
 func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 	out, err := s.queryScenes(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url, rating
 		FROM library_scenes ORDER BY title
 	`)
 	if err != nil {
@@ -196,7 +202,7 @@ func (s *Store) ListScenes(ctx context.Context) ([]Scene, error) {
 // empty (every row); operator Organize chips pass vertical or horizontal.
 func (s *Store) ListScenesByAspect(ctx context.Context, aspect string) ([]Scene, error) {
 	out, err := s.queryScenes(ctx, `
-		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url, rating
 		FROM library_scenes WHERE poster_aspect_class = ? ORDER BY title
 	`, aspect)
 	if err != nil {
@@ -424,6 +430,6 @@ func scanScene(row rowScanner) (Scene, error) {
 		&scene.FilePath, &scene.RootFolderPath,
 		&scene.PHash, &scene.PHashFileSize, &scene.PHashFileMTime,
 		&scene.CreatedAt, &scene.UpdatedAt,
-		&scene.Size, &scene.QualityTier, &scene.PosterAspectClass, &scene.PosterURL)
+		&scene.Size, &scene.QualityTier, &scene.PosterAspectClass, &scene.PosterURL, &scene.Rating)
 	return scene, err
 }

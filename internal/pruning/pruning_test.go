@@ -265,7 +265,28 @@ func TestCreate_TagsOnlyRuleIsValid(t *testing.T) {
 		t.Fatalf("a tags-only rule must be valid, got %v", err)
 	}
 	if created.AgeDays != 0 || created.SizeBytes != 0 || created.QualityTierFloor != "" {
-		t.Errorf("expected the other three conditions unset, got %+v", created)
+		t.Errorf("expected the other conditions unset, got %+v", created)
+	}
+}
+
+func TestCreate_MinRatingOnlyRuleIsValid(t *testing.T) {
+	s := newTestStore(t)
+	created, err := s.Create(context.Background(), Rule{
+		Name: "Low stars", Mode: string(mode.Movies), MinRating: 3, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("a min-rating-only rule must be valid, got %v", err)
+	}
+	if created.MinRating != 3 {
+		t.Errorf("MinRating = %d, want 3", created.MinRating)
+	}
+}
+
+func TestCreate_RejectsInvalidMinRating(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.Create(context.Background(), Rule{Name: "Bogus", Mode: string(mode.Movies), MinRating: 6})
+	if !errors.Is(err, ErrInvalidMinRating) {
+		t.Fatalf("expected ErrInvalidMinRating, got %v", err)
 	}
 }
 

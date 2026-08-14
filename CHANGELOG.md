@@ -7755,4 +7755,21 @@ capped at 90s on a child context; matching and queue replace use
 `WithoutCancel` so a proxy abort cannot drop the results. A later Scan
 still fill-if-empty remaining untagged identified scenes.
 
+## 2026-08-14 (later, same day) — Library star ratings and Clean-up min-rating
+
+Library cards (Movies, Series, Adult) show an operator 1–5 star rating.
+Stars sit in a sibling overlay next to `MediaCardShell` (not nested
+inside that `<button>`). The same control is in the Library detail
+panel. Clicking the current star again clears the rating. 0 means
+unrated.
+
+Ratings persist on `library_items`, `library_scenes`, and
+`library_series` (show-level, not per-episode). Upsert/re-grab does not
+overwrite them. GET `/tracked` returns the stored score and does not
+copy TMDB/TPDB catalog ratings.
+
+Clean-up rules gained a fifth AND condition, `minRating` (1–5): match
+when the title is rated **below** that floor. Unrated titles never
+match (fail-closed, same as tags).
+
 

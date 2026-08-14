@@ -5,7 +5,8 @@
 // Claude 2026-08-14: checkbox conditions replaced by AND-criteria rows
 // (field / operator / value / unit). POST/PUT bodies send `criteria` and
 // zero the five scalar fields. Filling the empty row appends another;
-// an in-progress row does not.
+// an in-progress row does not. Tag rows send values[] + matchMode (chips
+// + Any/All); empty chips block save.
 // Review if: the rules builder ever moves back into Settings.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +29,18 @@ const ageRow = (value: string): PruningCriterion => ({
   op: "gt",
   value,
   unit: "days",
+});
+
+const tagRow = (
+  values: string[],
+  over: Partial<PruningCriterion> = {},
+): PruningCriterion => ({
+  field: "tag",
+  op: "contains",
+  value: "",
+  values,
+  matchMode: "any",
+  ...over,
 });
 
 const rule = (over: Partial<PruningRule> = {}): PruningRule => ({
@@ -81,6 +94,28 @@ const fillCriterion = (
       target: { value: unit },
     });
   }
+};
+
+const addTagChip = (n: number, tag: string, op?: string, matchMode?: string) => {
+  fireEvent.change(screen.getByLabelText(`Criterion ${n} field`), {
+    target: { value: "tag" },
+  });
+  if (op) {
+    fireEvent.change(screen.getByLabelText(`Criterion ${n} operator`), {
+      target: { value: op },
+    });
+  }
+  if (matchMode) {
+    fireEvent.change(screen.getByLabelText(`Criterion ${n} match mode`), {
+      target: { value: matchMode },
+    });
+  }
+  fireEvent.input(screen.getByLabelText(`Criterion ${n} new tag`), {
+    target: { value: tag },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: `Add tag to criterion ${n}` }),
+  );
 };
 
 const stubFetch = (override?: Override) => {
@@ -229,7 +264,7 @@ describe("PurgeRulesCard — create", () => {
       target: { value: "Old and tagged" },
     });
     fillCriterion(1, "age", "30");
-    fillCriterion(2, "tag", "BDSM");
+    addTagChip(2, "BDSM");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -241,10 +276,7 @@ describe("PurgeRulesCard — create", () => {
     expect(post.body).toEqual(
       upsertBody({
         name: "Old and tagged",
-        criteria: [
-          ageRow("30"),
-          { field: "tag", op: "contains", value: "BDSM" },
-        ],
+        criteria: [ageRow("30"), tagRow(["BDSM"])],
       }),
     );
   });
@@ -547,7 +579,7 @@ describe("PurgeRulesCard — mode scoping", () => {
 });
 
 describe("PurgeRulesCard — the tags condition", () => {
-  it("sends a tag-contains criterion, firing NO request until Save", async () => {
+  it("sends a tag-contains-any criterion with chips, firing NO request until Save", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && isRuleList(url))
@@ -556,7 +588,7 @@ describe("PurgeRulesCard — the tags condition", () => {
     });
     render(() => <PurgeRulesCard mode="movies" />);
     fireEvent.click(await screen.findByText("+ New rule"));
-    fillCriterion(1, "tag", "BDSM");
+    addTagChip(1, "BDSM");
 
     expect(
       calls.some((c) => c.method === "POST" && isRuleList(c.url)),
@@ -576,12 +608,29 @@ describe("PurgeRulesCard — the tags condition", () => {
     expect(post.body).toEqual(
       upsertBody({
         name: "Tagged",
-        criteria: [{ field: "tag", op: "contains", value: "BDSM" }],
+        criteria: [tagRow(["BDSM"])],
       }),
     );
   });
 
-  it("ANDs two tag rows (contains and does-not-contain)", async () => {
+  it("defaults a new tag row to contains + any", async () => {
+    stubFetch();
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    fireEvent.change(screen.getByLabelText("Criterion 1 field"), {
+      target: { value: "tag" },
+    });
+    expect(
+      (screen.getByLabelText("Criterion 1 operator") as HTMLSelectElement)
+        .value,
+    ).toBe("contains");
+    expect(
+      (screen.getByLabelText("Criterion 1 match mode") as HTMLSelectElement)
+        .value,
+    ).toBe("any");
+  });
+
+  it("ANDs two tag rows (contains any and does-not-contain any)", async () => {
     const calls = stubFetch((url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       if (method === "POST" && isRuleList(url))
@@ -593,8 +642,8 @@ describe("PurgeRulesCard — the tags condition", () => {
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "BDSM not Pee" },
     });
-    fillCriterion(1, "tag", "BDSM");
-    fillCriterion(2, "tag", "Pee", "notContains");
+    addTagChip(1, "BDSM");
+    addTagChip(2, "Pee", "notContains");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -607,11 +656,82 @@ describe("PurgeRulesCard — the tags condition", () => {
       upsertBody({
         name: "BDSM not Pee",
         criteria: [
-          { field: "tag", op: "contains", value: "BDSM" },
-          { field: "tag", op: "notContains", value: "Pee" },
+          tagRow(["BDSM"]),
+          tagRow(["Pee"], { op: "notContains" }),
         ],
       }),
     );
+  });
+
+  it("sends matchMode all and multiple chips on one row", async () => {
+    const calls = stubFetch((url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && isRuleList(url))
+        return jsonResponse(rule({ id: 33, name: "All bondage" }));
+      return undefined;
+    });
+    render(() => <PurgeRulesCard mode="adult" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "All bondage" },
+    });
+    addTagChip(1, "Bondage", undefined, "all");
+    fireEvent.input(screen.getByLabelText("Criterion 1 new tag"), {
+      target: { value: "Bound" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add tag to criterion 1" }),
+    );
+    fireEvent.click(screen.getByText("Create rule"));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+        true,
+      ),
+    );
+    const post = calls.find((c) => c.method === "POST" && isRuleList(c.url))!;
+    expect(post.body).toEqual(
+      upsertBody({
+        name: "All bondage",
+        mode: "adult",
+        criteria: [tagRow(["Bondage", "Bound"], { matchMode: "all" })],
+      }),
+    );
+  });
+
+  it("offers no bulk affordance — one × per chip, one Add, no clear-all", async () => {
+    stubFetch();
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    addTagChip(1, "Bondage");
+    fireEvent.input(screen.getByLabelText("Criterion 1 new tag"), {
+      target: { value: "Bound" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add tag to criterion 1" }),
+    );
+
+    expect(screen.getByLabelText("Remove Bondage")).toBeInTheDocument();
+    expect(screen.getByLabelText("Remove Bound")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add tag to criterion 1" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/clear all/i)).toBeNull();
+    expect(screen.queryByText(/remove all/i)).toBeNull();
+  });
+
+  it("de-dupes chips case-insensitively with no error", async () => {
+    stubFetch();
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    addTagChip(1, "Bondage");
+    fireEvent.input(screen.getByLabelText("Criterion 1 new tag"), {
+      target: { value: "bondage" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add tag to criterion 1" }),
+    );
+    expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(1);
   });
 });
 
@@ -628,7 +748,7 @@ describe("PurgeRulesCard — client-side validation, tags-only", () => {
     fireEvent.input(screen.getByLabelText("Rule name"), {
       target: { value: "Legacy allowlist" },
     });
-    fillCriterion(1, "tag", "Trailer");
+    addTagChip(1, "Trailer");
     fireEvent.click(screen.getByText("Create rule"));
 
     await waitFor(() =>
@@ -637,6 +757,24 @@ describe("PurgeRulesCard — client-side validation, tags-only", () => {
       ),
     );
     expect(screen.queryByText("select at least one condition")).toBeNull();
+  });
+
+  it("blocks submit when a tag row has no chips", async () => {
+    const calls = stubFetch();
+    render(() => <PurgeRulesCard mode="movies" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    fireEvent.input(screen.getByLabelText("Rule name"), {
+      target: { value: "Empty chips" },
+    });
+    fireEvent.change(screen.getByLabelText("Criterion 1 field"), {
+      target: { value: "tag" },
+    });
+    fireEvent.click(screen.getByText("Create rule"));
+
+    await screen.findByText("select at least one condition");
+    expect(calls.some((c) => c.method === "POST" && isRuleList(c.url))).toBe(
+      false,
+    );
   });
 });
 
@@ -650,8 +788,8 @@ describe("PurgeRulesCard — the enabled toggle preserves criteria", () => {
             id: 32,
             name: "Tagged toggle",
             criteria: [
-              { field: "tag", op: "contains", value: "BDSM" },
-              { field: "tag", op: "contains", value: "Rope" },
+              tagRow(["BDSM"]),
+              tagRow(["Rope"]),
             ],
             enabled: true,
           }),
@@ -675,8 +813,8 @@ describe("PurgeRulesCard — the enabled toggle preserves criteria", () => {
       upsertBody({
         name: "Tagged toggle",
         criteria: [
-          { field: "tag", op: "contains", value: "BDSM" },
-          { field: "tag", op: "contains", value: "Rope" },
+          tagRow(["BDSM"]),
+          tagRow(["Rope"]),
         ],
         enabled: false,
       }),

@@ -335,6 +335,9 @@ func TestScanLibrarySeries_NoSizeOrTierRules_DoesNotQueryEpisodes(t *testing.T) 
 		{{Name: "Criteria tag", Mode: string(mode.Series), Enabled: true, Criteria: []pruning.Criterion{
 			{Field: pruning.FieldTag, Op: pruning.OpContains, Value: "junk"},
 		}}},
+		{{Name: "Criteria tag any", Mode: string(mode.Series), Enabled: true, Criteria: []pruning.Criterion{
+			{Field: pruning.FieldTag, Op: pruning.OpContains, MatchMode: pruning.MatchModeAny, Values: []string{"junk", "trailer"}},
+		}}},
 	} {
 		if _, err := ScanLibrarySeries(ctx, libStore, rules); err != nil {
 			t.Fatalf("a scan needing no size/tier aggregation queried library_episodes: %v", err)

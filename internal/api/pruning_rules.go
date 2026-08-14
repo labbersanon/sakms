@@ -52,7 +52,7 @@ func toDTOCriteria(cc []pruning.Criterion) []apidto.PruningCriterion {
 	}
 	out := make([]apidto.PruningCriterion, len(cc))
 	for i, c := range cc {
-		out[i] = apidto.PruningCriterion{Field: c.Field, Op: c.Op, Value: c.Value, Unit: c.Unit}
+		out[i] = apidto.PruningCriterion{Field: c.Field, Op: c.Op, Value: c.Value, Unit: c.Unit, Values: c.Values, MatchMode: c.MatchMode}
 	}
 	return out
 }
@@ -88,7 +88,7 @@ func criteriaFromDTO(cc []apidto.PruningCriterion) []pruning.Criterion {
 	}
 	out := make([]pruning.Criterion, len(cc))
 	for i, c := range cc {
-		out[i] = pruning.Criterion{Field: c.Field, Op: c.Op, Value: c.Value, Unit: c.Unit}
+		out[i] = pruning.Criterion{Field: c.Field, Op: c.Op, Value: c.Value, Unit: c.Unit, Values: c.Values, MatchMode: c.MatchMode}
 	}
 	return out
 }

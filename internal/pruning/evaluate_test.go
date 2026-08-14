@@ -657,3 +657,79 @@ func TestMatch_Criteria_EmptyListFallsBackToLegacy(t *testing.T) {
 		t.Errorf("reason = %q, want %q", reason, want)
 	}
 }
+
+func TestMatch_Criteria_TagMatchModeTable(t *testing.T) {
+	chips := []string{"Bondage", "Bound"}
+	onlyBondage := []string{"Bondage"}
+	both := []string{"Bondage", "Bound"}
+	neither := []string{"Rope"}
+	var untagged []string
+
+	type row struct {
+		op     string
+		mode   string
+		item   []string
+		want   bool
+		reason string
+	}
+	tests := []row{
+		{OpContains, MatchModeAny, onlyBondage, true, "tags: Bondage"},
+		{OpContains, MatchModeAny, neither, false, ""},
+		{OpContains, MatchModeAny, untagged, false, ""},
+		{OpContains, MatchModeAll, both, true, "tags: Bondage, Bound"},
+		{OpContains, MatchModeAll, onlyBondage, false, ""},
+		{OpContains, MatchModeAll, untagged, false, ""},
+		{OpNotContains, MatchModeAny, untagged, true, "tags: not Bondage, Bound"},
+		{OpNotContains, MatchModeAny, neither, true, "tags: not Bondage, Bound"},
+		{OpNotContains, MatchModeAny, onlyBondage, false, ""},
+		{OpNotContains, MatchModeAll, onlyBondage, true, "tags: not all of Bondage, Bound"},
+		{OpNotContains, MatchModeAll, untagged, true, "tags: not all of Bondage, Bound"},
+		{OpNotContains, MatchModeAll, both, false, ""},
+	}
+	for _, tc := range tests {
+		r := Rule{Name: "T", Criteria: []Criterion{{
+			Field: FieldTag, Op: tc.op, MatchMode: tc.mode, Values: chips,
+		}}}
+		ok, reason := Match(r, Subject{Tags: tc.item}, fixedNow)
+		if ok != tc.want {
+			t.Errorf("%s+%s item=%v: got %v, want %v (reason=%q)", tc.op, tc.mode, tc.item, ok, tc.want, reason)
+		}
+		if tc.want && reason != "Matched rule 'T': "+tc.reason {
+			t.Errorf("%s+%s reason = %q, want suffix %q", tc.op, tc.mode, reason, tc.reason)
+		}
+	}
+}
+
+func TestMatch_Criteria_TwoTagRowsAND(t *testing.T) {
+	r := Rule{Name: "Bondage not Pee", Criteria: []Criterion{
+		{Field: FieldTag, Op: OpContains, MatchMode: MatchModeAny, Values: []string{"Bondage", "Bound"}},
+		{Field: FieldTag, Op: OpNotContains, MatchMode: MatchModeAny, Values: []string{"Pee"}},
+	}}
+	ok, reason := Match(r, Subject{Tags: []string{"Bondage"}}, fixedNow)
+	if !ok {
+		t.Fatalf("Bondage-only must match contains+any AND notContains+any Pee, got false")
+	}
+	if want := "Matched rule 'Bondage not Pee': tags: Bondage, tags: not Pee"; reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+	if ok, _ := Match(r, Subject{Tags: []string{"Bondage", "Pee"}}, fixedNow); ok {
+		t.Error("Pee must fail the notContains row")
+	}
+	if ok, _ := Match(r, Subject{Tags: []string{"Rope"}}, fixedNow); ok {
+		t.Error("missing Bondage/Bound must fail contains+any")
+	}
+}
+
+func TestMatch_Criteria_BDSMContainsAnyMatchesOnlyBondage(t *testing.T) {
+	r := Rule{Name: "BDSM", Criteria: []Criterion{{
+		Field: FieldTag, Op: OpContains, MatchMode: MatchModeAny,
+		Values: []string{"Bondage", "Bound", "Dungeon", "Pee", "Peeing"},
+	}}}
+	ok, reason := Match(r, Subject{Tags: []string{"Bondage"}}, fixedNow)
+	if !ok {
+		t.Fatal("live BDSM conversion: a scene tagged only Bondage must match contains+any")
+	}
+	if want := "Matched rule 'BDSM': tags: Bondage"; reason != want {
+		t.Errorf("reason = %q, want %q", reason, want)
+	}
+}

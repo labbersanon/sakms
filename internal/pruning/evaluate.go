@@ -196,18 +196,50 @@ func matchCriterion(c Criterion, subj Subject, now time.Time) (bool, string) {
 		}
 		return true, fmt.Sprintf("tier: %s", subj.QualityTier)
 	case FieldTag:
-		hit := hasExactTag(subj.Tags, c.Value)
+		// Claude 2026-08-14: Values + matchMode any/all (De Morgan on notContains).
+		// Reason: one tag row holds a chip list; Any = OR, All = AND. Untagged
+		//   fails contains (fail-closed) and matches both notContains modes.
+		// Troubleshooting: empty Values falls back to Value so pre-0015 JSON
+		//   and Go tests that set Criterion{Value: "BDSM"} stay green.
+		// Review if: substring tag matching is added (must not; EqualFold only).
+		values := tagCriterionValuesForMatch(c)
+		mode := tagMatchModeForMatch(c)
+		if len(values) == 0 || mode == "" {
+			return false, ""
+		}
+		hits := matchedTags(values, subj.Tags)
 		switch c.Op {
 		case OpContains:
-			if !hit {
+			switch mode {
+			case MatchModeAny:
+				if len(hits) == 0 {
+					return false, ""
+				}
+			case MatchModeAll:
+				if len(hits) != len(values) {
+					return false, ""
+				}
+			default:
 				return false, ""
 			}
-			return true, fmt.Sprintf("tags: %s", c.Value)
+			return true, fmt.Sprintf("tags: %s", strings.Join(hits, ", "))
 		case OpNotContains:
-			if hit {
+			switch mode {
+			case MatchModeAny:
+				if len(hits) != 0 {
+					return false, ""
+				}
+			case MatchModeAll:
+				if len(hits) >= len(values) {
+					return false, ""
+				}
+			default:
 				return false, ""
 			}
-			return true, fmt.Sprintf("tags: not %s", c.Value)
+			if mode == MatchModeAll {
+				return true, fmt.Sprintf("tags: not all of %s", strings.Join(values, ", "))
+			}
+			return true, fmt.Sprintf("tags: not %s", strings.Join(values, ", "))
 		default:
 			return false, ""
 		}
@@ -226,9 +258,15 @@ func matchCriterion(c Criterion, subj Subject, now time.Time) (bool, string) {
 	}
 }
 
-func hasExactTag(itemTags []string, want string) bool {
-	return len(matchedTags([]string{want}, itemTags)) > 0
-}
+// Claude 2026-08-14: hasExactTag retired — tag match now uses matchedTags
+//   over Values (or a one-element Value fallback) plus matchMode.
+// Reason: a single-value helper hid Any/All and would drift from the table.
+// Troubleshooting: pre-0015 single-tag rows still match via
+//   tagCriterionValuesForMatch falling back to Value.
+// Review if: a one-tag helper is needed again for a different field.
+// func hasExactTag(itemTags []string, want string) bool {
+// 	return len(matchedTags([]string{want}, itemTags)) > 0
+// }
 
 func compareInt(actual, threshold int, op string) bool {
 	switch op {

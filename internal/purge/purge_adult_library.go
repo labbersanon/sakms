@@ -114,9 +114,21 @@ func ScanLibraryAdult(ctx context.Context, libStore *library.Store, rules []prun
 }
 
 func rulesHaveTags(rules []pruning.Rule) bool {
+	// Claude 2026-08-14: also true when any criterion field is tag.
+	// Reason: HTTP frontend zeros Tags and sends criteria; a contains+any
+	//   rule would skip Adult catalog fill-if-empty if we only checked Tags.
+	// Troubleshooting: size-only rules must still skip the lookup (see
+	//   TestScanLibraryAdult_DoesNotLookupWhenNoTagRules).
+	// Review if: grab-import always writes tags and the scan-time backfill
+	//   is removed.
 	for _, r := range rules {
 		if len(r.Tags) > 0 {
 			return true
+		}
+		for _, c := range r.Criteria {
+			if c.Field == pruning.FieldTag {
+				return true
+			}
 		}
 	}
 	return false

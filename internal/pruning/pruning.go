@@ -84,15 +84,38 @@ const (
 	UnitGB    = "gb"
 	UnitTB    = "tb"
 	UnitStars = "stars"
+
+	// MatchModeAny / MatchModeAll are tag-criterion combinators over Values.
+	// Any = OR (at least one chip); All = AND (every chip). Named apart from
+	// the MatchAny function (OR across rules).
+	MatchModeAny = "any"
+	MatchModeAll = "all"
 )
 
 // Criterion is one AND'd row on a Rule: field + operator + free-fill value
 // plus a unit when the field needs one (age/size/rating).
+//
+// Claude 2026-08-14: tag rows carry Values + MatchMode (any/all) instead of
+//
+//	a single Value. Value stays for age/size/quality/rating and as a
+//	one-element fallback for pre-0015 tag JSON.
+//
+// Reason: contains+any restores the old tags[] OR list; contains+all is
+//
+//	AND on the same row; notContains uses the same mode (De Morgan).
+//
+// Troubleshooting: empty MatchMode is treated as any so 0014 rows still
+//
+//	validate. Empty Values and Value is ErrBlankTag (incomplete row).
+//
+// Review if: drag-and-drop criterion ordering ships, or Value is dropped.
 type Criterion struct {
-	Field string `json:"field"`
-	Op    string `json:"op"`
-	Value string `json:"value"`
-	Unit  string `json:"unit,omitempty"`
+	Field     string   `json:"field"`
+	Op        string   `json:"op"`
+	Value     string   `json:"value"`
+	Unit      string   `json:"unit,omitempty"`
+	Values    []string `json:"values,omitempty"`
+	MatchMode string   `json:"matchMode,omitempty"`
 }
 
 // Rule is one operator-authored pruning rule. Criteria is the current
@@ -214,8 +237,11 @@ func validateCriterion(c Criterion) error {
 		if strings.TrimSpace(c.Unit) != "" {
 			return fmt.Errorf("tag has no unit")
 		}
-		if strings.TrimSpace(c.Value) == "" {
-			return ErrBlankTag
+		if _, err := validateTagMatchMode(c.MatchMode); err != nil {
+			return err
+		}
+		if _, err := tagCriterionValues(c); err != nil {
+			return err
 		}
 	case FieldRating:
 		if !isCompareOp(c.Op) {
@@ -236,6 +262,54 @@ func validateCriterion(c Criterion) error {
 
 func isCompareOp(op string) bool {
 	return op == OpGT || op == OpLT || op == OpEQ
+}
+
+func validateTagMatchMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", MatchModeAny:
+		return MatchModeAny, nil
+	case MatchModeAll:
+		return MatchModeAll, nil
+	default:
+		return "", fmt.Errorf("tag matchMode must be any or all")
+	}
+}
+
+// tagCriterionValues returns the tag chips for c. Values wins when non-empty;
+// otherwise a non-blank Value is the one-element pre-0015 fallback. Every
+// entry must be non-blank; zero chips is ErrBlankTag.
+func tagCriterionValues(c Criterion) ([]string, error) {
+	raw := c.Values
+	if len(raw) == 0 && strings.TrimSpace(c.Value) != "" {
+		raw = []string{c.Value}
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if strings.TrimSpace(v) == "" {
+			return nil, ErrBlankTag
+		}
+		out = append(out, strings.TrimSpace(v))
+	}
+	if len(out) == 0 {
+		return nil, ErrBlankTag
+	}
+	return out, nil
+}
+
+func tagCriterionValuesForMatch(c Criterion) []string {
+	vals, err := tagCriterionValues(c)
+	if err != nil {
+		return nil
+	}
+	return vals
+}
+
+func tagMatchModeForMatch(c Criterion) string {
+	mode, err := validateTagMatchMode(c.MatchMode)
+	if err != nil {
+		return ""
+	}
+	return mode
 }
 
 func parseNonNegInt(s string) (int, error) {

@@ -3019,12 +3019,16 @@ export interface SectionLockSectionsRequest {
 /**
  * PruningCriterion is one AND'd row on a pruning rule: field + operator +
  * free-fill value, plus unit when the field needs one (age/size/rating).
+ * Tag rows send Values (chip list) and MatchMode ("any" | "all"); Value is
+ * the one-element fallback for pre-0015 payloads.
  */
 export interface PruningCriterion {
   field: string;
   op: string;
   value: string;
   unit?: string;
+  values?: string[];
+  matchMode?: string;
 }
 /**
  * PruningRule is the full read shape for GET /api/pruning-rules and its

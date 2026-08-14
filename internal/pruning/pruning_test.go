@@ -358,10 +358,12 @@ func TestCreate_CriteriaOnlyRuleIsValid(t *testing.T) {
 	if len(list) != 1 || len(list[0].Criteria) != 2 {
 		t.Fatalf("List criteria = %+v, want 2 rows", list)
 	}
-	if list[0].Criteria[0] != (Criterion{Field: FieldAge, Op: OpGT, Value: "30", Unit: UnitDays}) {
+	want0 := Criterion{Field: FieldAge, Op: OpGT, Value: "30", Unit: UnitDays}
+	want1 := Criterion{Field: FieldAge, Op: OpLT, Value: "365", Unit: UnitDays}
+	if list[0].Criteria[0].Field != want0.Field || list[0].Criteria[0].Op != want0.Op || list[0].Criteria[0].Value != want0.Value || list[0].Criteria[0].Unit != want0.Unit {
 		t.Errorf("criteria[0] = %+v", list[0].Criteria[0])
 	}
-	if list[0].Criteria[1] != (Criterion{Field: FieldAge, Op: OpLT, Value: "365", Unit: UnitDays}) {
+	if list[0].Criteria[1].Field != want1.Field || list[0].Criteria[1].Op != want1.Op || list[0].Criteria[1].Value != want1.Value || list[0].Criteria[1].Unit != want1.Unit {
 		t.Errorf("criteria[1] = %+v", list[0].Criteria[1])
 	}
 }
@@ -385,5 +387,52 @@ func TestCreate_RejectsTagCompareOp(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidCriterion) {
 		t.Fatalf("expected ErrInvalidCriterion, got %v", err)
+	}
+}
+
+func TestCreate_RejectsTagCriterionWithZeroChips(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.Create(context.Background(), Rule{
+		Name: "Empty tags", Mode: string(mode.Adult), Enabled: true,
+		Criteria: []Criterion{{Field: FieldTag, Op: OpContains, MatchMode: MatchModeAny}},
+	})
+	if !errors.Is(err, ErrBlankTag) {
+		t.Fatalf("expected ErrBlankTag, got %v", err)
+	}
+}
+
+func TestCreate_RejectsInvalidTagMatchMode(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.Create(context.Background(), Rule{
+		Name: "Bogus mode", Mode: string(mode.Adult), Enabled: true,
+		Criteria: []Criterion{{Field: FieldTag, Op: OpContains, Values: []string{"Bondage"}, MatchMode: "xor"}},
+	})
+	if !errors.Is(err, ErrInvalidCriterion) {
+		t.Fatalf("expected ErrInvalidCriterion, got %v", err)
+	}
+}
+
+func TestCreate_TagValuesAndMatchModeRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	created, err := s.Create(context.Background(), Rule{
+		Name: "BDSM any", Mode: string(mode.Adult), Enabled: true,
+		Criteria: []Criterion{{
+			Field: FieldTag, Op: OpContains, MatchMode: MatchModeAny,
+			Values: []string{"Bondage", "Bound", "Dungeon", "Pee", "Peeing"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	list, err := s.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || created.ID != list[0].ID {
+		t.Fatalf("list = %+v", list)
+	}
+	got := list[0].Criteria
+	if len(got) != 1 || got[0].MatchMode != MatchModeAny || len(got[0].Values) != 5 || got[0].Values[0] != "Bondage" {
+		t.Fatalf("criteria = %+v, want contains+any with five chips", got)
 	}
 }

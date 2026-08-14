@@ -27,7 +27,14 @@
 // Troubleshooting: do not put aria-pressed on these controls — Library
 // sort tests select button[aria-pressed] as card shells. Seed from
 // rule.criteria, falling back to the five scalars for pre-0014 payloads.
-// Review if: gte/lte operators or OR-within-rule tags are added.
+//
+// Claude 2026-08-14: tag rows are chips + contains/notContains + Any/All
+// (matchMode). Default contains+Any; at least one chip to complete the row.
+// Reason: 0014 one-contains-per-tag was AND; Any restores OR on one row,
+//   All is AND on the same chips. notContains uses the same mode.
+// Troubleshooting: chipInput is local UI state, not POSTed. Empty chips
+//   are incomplete (same as an empty value). No aria-pressed.
+// Review if: drag-and-drop criterion ordering ships.
 
 import {
   type Component,
@@ -76,12 +83,19 @@ const TAG_OPS = [
   { value: "contains", label: "contains" },
   { value: "notContains", label: "does not contain" },
 ] as const;
+const TAG_MATCH_MODES = [
+  { value: "any", label: "any" },
+  { value: "all", label: "all" },
+] as const;
 
 type CriterionDraft = {
   field: CriterionField | "";
   op: string;
   value: string;
   unit: string;
+  values: string[];
+  matchMode: string;
+  chipInput: string;
 };
 
 export function gbToBytes(gb: number): number {
@@ -100,6 +114,14 @@ const OP_LABEL: Record<string, string> = {
 };
 
 function summarizeCriterion(c: PruningCriterion): string {
+  if (c.field === "tag") {
+    const op = c.op === "notContains" ? "does not contain" : "contains";
+    const mode = c.matchMode === "all" ? "all of" : "any of";
+    const tags = (c.values?.length ? c.values : c.value ? [c.value] : []).join(
+      ", ",
+    );
+    return `tag ${op} ${mode} ${tags}`;
+  }
   const op = OP_LABEL[c.op] ?? c.op;
   const unit = c.unit ? ` ${c.unit}` : "";
   return `${c.field} ${op} ${c.value}${unit}`;
@@ -122,15 +144,39 @@ export function summarizeConditions(rule: PruningRule): string {
 }
 
 function emptyCriterion(): CriterionDraft {
-  return { field: "", op: "", value: "", unit: "" };
+  return {
+    field: "",
+    op: "",
+    value: "",
+    unit: "",
+    values: [],
+    matchMode: "",
+    chipInput: "",
+  };
 }
 
 function isBlankCriterion(row: CriterionDraft): boolean {
-  return !row.field && !row.op && !row.value.trim() && !row.unit;
+  // A tag field with no chips yet is in-progress, not a second blank slot.
+  if (row.field) return false;
+  return (
+    !row.op &&
+    !row.value.trim() &&
+    !row.unit &&
+    row.values.length === 0 &&
+    !row.matchMode &&
+    !row.chipInput.trim()
+  );
 }
 
 function isCompleteCriterion(row: CriterionDraft): boolean {
-  if (!row.field || !row.op || !row.value.trim()) return false;
+  if (!row.field || !row.op) return false;
+  if (row.field === "tag") {
+    return (
+      (row.matchMode === "any" || row.matchMode === "all") &&
+      row.values.length >= 1
+    );
+  }
+  if (!row.value.trim()) return false;
   if (row.field === "age" || row.field === "size" || row.field === "rating") {
     return !!row.unit;
   }
@@ -182,11 +228,16 @@ function unitsFor(field: CriterionField | ""): { value: string; label: string }[
 function legacyTierCriterion(floor: string): CriterionDraft | null {
   switch (floor) {
     case "low":
-      return { field: "quality", op: "eq", value: "low", unit: "" };
+      return { ...emptyCriterion(), field: "quality", op: "eq", value: "low" };
     case "medium":
-      return { field: "quality", op: "lt", value: "high", unit: "" };
+      return { ...emptyCriterion(), field: "quality", op: "lt", value: "high" };
     case "high":
-      return { field: "quality", op: "lt", value: "lossless", unit: "" };
+      return {
+        ...emptyCriterion(),
+        field: "quality",
+        op: "lt",
+        value: "lossless",
+      };
     default:
       return null;
   }
@@ -196,19 +247,27 @@ function rowsFromRule(rule?: PruningRule): CriterionDraft[] {
   const rows: CriterionDraft[] = [];
   if (rule?.criteria?.length) {
     for (const c of rule.criteria) {
+      const field = (CRITERION_FIELDS as readonly string[]).includes(c.field)
+        ? (c.field as CriterionField)
+        : "";
+      const values =
+        c.values?.length ? c.values : c.value?.trim() ? [c.value] : [];
       rows.push({
-        field: (CRITERION_FIELDS as readonly string[]).includes(c.field)
-          ? (c.field as CriterionField)
-          : "",
+        field,
         op: c.op,
-        value: c.value,
+        value: field === "tag" ? "" : c.value,
         unit: c.unit ?? "",
+        values: field === "tag" ? values : [],
+        matchMode:
+          field === "tag" ? (c.matchMode === "all" ? "all" : "any") : "",
+        chipInput: "",
       });
     }
     return normalizeCriterionRows(rows);
   }
   if (rule?.ageDays) {
     rows.push({
+      ...emptyCriterion(),
       field: "age",
       op: "gt",
       value: String(rule.ageDays),
@@ -217,6 +276,7 @@ function rowsFromRule(rule?: PruningRule): CriterionDraft[] {
   }
   if (rule?.sizeBytes) {
     rows.push({
+      ...emptyCriterion(),
       field: "size",
       op: "gt",
       value: String(bytesToGB(rule.sizeBytes)),
@@ -227,11 +287,18 @@ function rowsFromRule(rule?: PruningRule): CriterionDraft[] {
     const mapped = legacyTierCriterion(rule.qualityTierFloor);
     if (mapped) rows.push(mapped);
   }
-  for (const tag of rule?.tags ?? []) {
-    rows.push({ field: "tag", op: "contains", value: tag, unit: "" });
+  if (rule?.tags?.length) {
+    rows.push({
+      ...emptyCriterion(),
+      field: "tag",
+      op: "contains",
+      values: [...rule.tags],
+      matchMode: "any",
+    });
   }
   if (rule?.minRating) {
     rows.push({
+      ...emptyCriterion(),
       field: "rating",
       op: "lt",
       value: String(rule.minRating),
@@ -242,6 +309,16 @@ function rowsFromRule(rule?: PruningRule): CriterionDraft[] {
 }
 
 function draftToCriterion(row: CriterionDraft): PruningCriterion {
+  if (row.field === "tag") {
+    const out: PruningCriterion = {
+      field: "tag",
+      op: row.op,
+      value: "",
+      values: row.values,
+      matchMode: row.matchMode || "any",
+    };
+    return out;
+  }
   const out: PruningCriterion = {
     field: row.field,
     op: row.op,
@@ -279,13 +356,54 @@ const RuleForm: Component<{
         prev.map((r, i) => {
           if (i !== index) return r;
           if (!field) return emptyCriterion();
+          if (field === "tag") {
+            return {
+              ...emptyCriterion(),
+              field: "tag",
+              op: defaultOp("tag"),
+              matchMode: r.field === "tag" && r.matchMode ? r.matchMode : "any",
+              values: r.field === "tag" ? r.values : [],
+              chipInput: r.field === "tag" ? r.chipInput : "",
+            };
+          }
           return {
+            ...emptyCriterion(),
             field,
             op: defaultOp(field),
             value: r.field === field ? r.value : "",
             unit: defaultUnit(field),
           };
         }),
+      ),
+    );
+  };
+
+  const addChip = (index: number) => {
+    setRows((prev) =>
+      normalizeCriterionRows(
+        prev.map((r, i) => {
+          if (i !== index) return r;
+          const next = r.chipInput.trim();
+          if (!next) return r;
+          const exists = r.values.some(
+            (v) => v.toLowerCase() === next.toLowerCase(),
+          );
+          return {
+            ...r,
+            values: exists ? r.values : [...r.values, next],
+            chipInput: "",
+          };
+        }),
+      ),
+    );
+  };
+
+  const removeChip = (index: number, tag: string) => {
+    setRows((prev) =>
+      normalizeCriterionRows(
+        prev.map((r, i) =>
+          i === index ? { ...r, values: r.values.filter((v) => v !== tag) } : r,
+        ),
       ),
     );
   };
@@ -410,22 +528,76 @@ const RuleForm: Component<{
                       {(op) => <option value={op.value}>{op.label}</option>}
                     </For>
                   </select>
-                  <input
-                    type={
-                      row.field === "tag" || row.field === "quality" || !row.field
-                        ? "text"
-                        : "number"
-                    }
-                    min={row.field === "rating" ? 1 : 0}
-                    max={row.field === "rating" ? 5 : undefined}
-                    step={row.field === "size" ? "0.1" : "1"}
-                    class={`${inputClass} min-w-[7rem] flex-1`}
-                    aria-label={`Criterion ${n()} value`}
-                    placeholder="value"
-                    value={row.value}
-                    disabled={!fieldSet()}
-                    onInput={(e) => patchRow(i(), { value: e.currentTarget.value })}
-                  />
+                  <Show when={row.field === "tag"}>
+                    <select
+                      class={`${inputClass} min-w-[5rem] !w-auto`}
+                      aria-label={`Criterion ${n()} match mode`}
+                      value={row.matchMode}
+                      onChange={(e) =>
+                        patchRow(i(), { matchMode: e.currentTarget.value })
+                      }
+                    >
+                      <For each={TAG_MATCH_MODES}>
+                        {(m) => <option value={m.value}>{m.label}</option>}
+                      </For>
+                    </select>
+                    <div class="flex min-w-[12rem] flex-1 flex-wrap items-center gap-1">
+                      <For each={row.values}>
+                        {(tag) => (
+                          <span class="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-sm text-fg">
+                            {tag}
+                            <Button
+                              type="button"
+                              aria-label={`Remove ${tag}`}
+                              onClick={() => removeChip(i(), tag)}
+                            >
+                              ×
+                            </Button>
+                          </span>
+                        )}
+                      </For>
+                      <input
+                        type="text"
+                        class={`${inputClass} min-w-[7rem] flex-1`}
+                        aria-label={`Criterion ${n()} new tag`}
+                        placeholder="tag"
+                        value={row.chipInput}
+                        onInput={(e) =>
+                          patchRow(i(), { chipInput: e.currentTarget.value })
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter") return;
+                          e.preventDefault();
+                          addChip(i());
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        aria-label={`Add tag to criterion ${n()}`}
+                        onClick={() => addChip(i())}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  </Show>
+                  <Show when={row.field !== "tag"}>
+                    <input
+                      type={
+                        row.field === "quality" || !row.field ? "text" : "number"
+                      }
+                      min={row.field === "rating" ? 1 : 0}
+                      max={row.field === "rating" ? 5 : undefined}
+                      step={row.field === "size" ? "0.1" : "1"}
+                      class={`${inputClass} min-w-[7rem] flex-1`}
+                      aria-label={`Criterion ${n()} value`}
+                      placeholder="value"
+                      value={row.value}
+                      disabled={!fieldSet()}
+                      onInput={(e) =>
+                        patchRow(i(), { value: e.currentTarget.value })
+                      }
+                    />
+                  </Show>
                   <select
                     class={`${inputClass} min-w-[5rem] !w-auto`}
                     aria-label={`Criterion ${n()} unit`}

@@ -370,3 +370,30 @@ func TestScanLibraryAdult_BackfillDeadlineStillMatchesTaggedScenes(t *testing.T)
 		t.Fatalf("got %+v, want the already-tagged scene %d", got, tagged.ID)
 	}
 }
+
+func TestScanLibraryAdult_CriteriaTagRuleBackfillsCatalogTags(t *testing.T) {
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s-1", Title: "X", RootFolderPath: "/media/Adult", PHash: "h1",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	src := fakeCatalogTags{
+		byPHash: map[string]CatalogTagHit{"h1": {Box: "stashdb", SceneID: "s-1", Tags: []string{"Bondage"}}},
+	}
+	got, err := ScanLibraryAdult(ctx, libStore, []pruning.Rule{{
+		Name: "BDSM", Mode: string(mode.Adult), Enabled: true,
+		Criteria: []pruning.Criterion{{
+			Field: pruning.FieldTag, Op: pruning.OpContains, MatchMode: pruning.MatchModeAny,
+			Values: []string{"Bondage", "Bound"},
+		}},
+	}}, "", src)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(got) != 1 || got[0].TrackedID != int(scene.ID) {
+		t.Fatalf("got %+v, want scene %d (criteria tag rules must still backfill)", got, scene.ID)
+	}
+}

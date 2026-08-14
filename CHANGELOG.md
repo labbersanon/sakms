@@ -7794,5 +7794,23 @@ Age/size backfill use strict `gt` (old matching was `>=`).
 Unrated titles and uncaptured sizes still fail-closed, including for
 `less than`.
 
+## 2026-08-14 (later, same day) — Clean-up tag match any / match all
+
+Each tag criterion now holds a list of tags plus `matchMode` `any` (OR)
+or `all` (AND). `contains` and `does not contain` both use that mode
+(De Morgan on exclusion). Other criteria rows stay independently AND'd;
+rules stay OR'd across the list.
+
+The Rules form builds the list with chips (add/remove one at a time,
+case-insensitive de-dupe) plus contains/notContains and Any/All.
+Default is contains + Any. At least one chip is required.
+
+Migration 0015 restores OR-any for 0014's one-contains-per-tag clusters:
+consecutive `field=tag, op=contains` single-value rows (no matchMode)
+collapse into one contains+any list. Live Adult BDSM (Bondage, Bound,
+Dungeon, Pee, Peeing) matches a scene tagged only Bondage again.
+Mixed contains + notContains rows are not flattened. The five scalar
+columns stay. Drag-and-drop rule/row ordering is not in this change.
+
 
 

@@ -485,11 +485,11 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     render(() => <DetailPopup target={target} onClose={() => {}} />);
 
     const movieCard = (await screen.findByText("Recommended Movie")).closest(
-      "div.w-\\[220px\\]",
+      "div.w-\\[140px\\]",
     ) as HTMLElement;
     const showCard = screen
       .getByText("Recommended Show")
-      .closest("div.w-\\[220px\\]") as HTMLElement;
+      .closest("div.w-\\[140px\\]") as HTMLElement;
 
     expect(within(movieCard).queryByText("Grab")).not.toBeInTheDocument();
     expect(within(showCard).queryByText("Grab")).not.toBeInTheDocument();

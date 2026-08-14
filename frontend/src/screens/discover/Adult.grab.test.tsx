@@ -185,7 +185,7 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
 
     renderInSelectMode();
     const card = (await screen.findByText("Fresh Scene")).closest(
-      ".w-\\[240px\\]",
+      ".w-\\[160px\\]",
     ) as HTMLElement;
 
     // In select-mode the card body toggles selection instead of opening
@@ -233,7 +233,7 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
 
     renderInSelectMode();
     const card = (await screen.findByText("Browse Scene")).closest(
-      ".w-\\[240px\\]",
+      ".w-\\[160px\\]",
     ) as HTMLElement;
 
     fireEvent.click(within(card).getByText("Browse Scene"));
@@ -280,7 +280,7 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
 
     renderInSelectMode();
     const card = (await screen.findByText("Catalog Scene")).closest(
-      ".w-\\[240px\\]",
+      ".w-\\[160px\\]",
     ) as HTMLElement;
 
     fireEvent.click(within(card).getByText("Catalog Scene"));
@@ -319,7 +319,7 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
 
     renderInSelectMode();
     const card = (await screen.findByText("ShowMore Scene")).closest(
-      ".w-\\[240px\\]",
+      ".w-\\[160px\\]",
     ) as HTMLElement;
 
     fireEvent.click(within(card).getByText("ShowMore Scene"));

@@ -250,10 +250,6 @@ describe("Rename — source-file preview (queue row control)", () => {
     expect(optionLabels).toEqual([
       "select action",
       "Rename",
-      // "Review" is second in BASE_ROW_ACTIONS (after Rename, before Search).
-      // It is disabled for Movies rows (rowActionEnabled returns false), but it
-      // IS rendered — the option list is always the full BASE_ROW_ACTIONS set.
-      "Review",
       "Search",
       "Dismiss",
       "Delete file",

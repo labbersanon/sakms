@@ -907,7 +907,9 @@ describe("Rename — Adult (dropdown; no Status column)", () => {
     expect(within(select).queryByRole("option", { name: "Give back" })).toBeNull();
     expect(within(select).queryByRole("option", { name: "Apply" })).toBeNull();
     expect(within(select).getByRole("option", { name: "Rename" })).toBeDisabled();
-    expect(within(select).getByRole("option", { name: "Search" })).toBeDisabled();
+    // Search stays enabled for unmatched — same gate as dismiss/delete/move
+    // (rowActionEnabled "repick": pending || unmatched).
+    expect(within(select).getByRole("option", { name: "Search" })).not.toBeDisabled();
     expect(within(select).getByRole("option", { name: "Dismiss" })).not.toBeDisabled();
     expect(
       within(row).queryByRole("button", {

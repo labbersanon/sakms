@@ -138,6 +138,18 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
       if (url.includes("/api/modes/movies/tmdb-search"))
         return jsonResponse(opts.movies?.length ? [tmdbResult] : []);
       if (url.includes("/tmdb-search")) return jsonResponse([tmdbResult]);
+      // Unmatched Series with no title auto-searches TVDB (kind=episode).
+      // Omit season/episode so the hit has no presetSlot and still opens the
+      // accordion — the path these tests exist to cover.
+      if (url.includes("/tvdb-search"))
+        return jsonResponse([
+          {
+            tmdbId: tmdbResult.id,
+            title: tmdbResult.title,
+            seriesTitle: tmdbResult.title,
+            releaseDate: tmdbResult.releaseDate,
+          },
+        ]);
       // SeasonEpisodeAccordion's self-fetch. Serving it is load-bearing: a
       // REJECTED seasons fetch resolves to [] and degrades to the free-text
       // fallback, where "Use show-level match only" still commits — so the

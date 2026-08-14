@@ -1,5 +1,5 @@
 // The authed app shell. Past auth it renders a LEFT SIDEBAR (Dashboard /
-// Discover / Library / Queue / Organize / Tag / Collections / Settings, each
+// Discover / Library / Queue / Organize / Collections / Settings, each
 // an icon + label) beside the client-side router; the landing view is
 // Discover. The sidebar collapses to icon-only and persists that choice in
 // localStorage. The router must never claim an /api/* path (see APP_ROUTES).
@@ -69,7 +69,6 @@ import { AdultNewestRowView, DiscoverAdult, DiscoverMainstream, TmdbRowView } fr
 import { LibraryAdult, LibraryMainstream } from "./Library";
 import { Queue } from "./Queue";
 import { Organize } from "./Organize";
-import { Tag } from "./Tag";
 import { Collections } from "./Collections";
 import { Settings } from "./Settings";
 import { BrowserNotifications } from "../components/BrowserNotifications";
@@ -97,7 +96,6 @@ export const APP_ROUTES = [
   "/library/adult",
   "/queue",
   "/organize",
-  "/tag",
   "/collections",
   "/settings",
 ] as const;
@@ -212,12 +210,6 @@ const IconRename: Component = () => (
     <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
   </svg>
 );
-const IconTag: Component = () => (
-  <svg {...svgProps}>
-    <path d="M20.5 12.5 12 21l-8-8V4h9Z" />
-    <circle cx="7.5" cy="7.5" r="1.2" />
-  </svg>
-);
 const IconCollections: Component = () => (
   <svg {...svgProps}>
     <rect x="2" y="7" width="16" height="13" rx="2" />
@@ -263,7 +255,6 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/library/mainstream", label: "Library", icon: IconLibrary, section: "library", group: "library" },
   { href: "/queue", label: "Queue", icon: IconQueue, section: "queue" },
   { href: "/organize", label: "Organize", icon: IconRename, section: "organize" },
-  { href: "/tag", label: "Tag", icon: IconTag, section: "tag" },
   { href: "/collections", label: "Collections", icon: IconCollections, section: "collections" },
   { href: "/settings", label: "Settings", icon: IconSettings, section: "settings" },
 ];
@@ -1035,7 +1026,6 @@ export const AppShell: Component<{
       <Route path="/library/adult" component={LibraryAdult} />
       <Route path="/queue" component={Queue} />
       <Route path="/organize" component={Organize} />
-      <Route path="/tag" component={Tag} />
       <Route path="/collections" component={Collections} />
       <Route
         path="/settings"

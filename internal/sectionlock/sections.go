@@ -30,7 +30,7 @@
 // path anywhere in the codebase.
 package sectionlock
 
-// Canonical section identifiers. These are the eight live sidebar hrefs
+// Canonical section identifiers. These are the seven live sidebar hrefs
 // (frontend/src/screens/AppShell.tsx's NAV_ITEMS, minus the leading "/")
 // plus the mode-scoped pseudo-section adult-content, which is not a tab at
 // all — it cuts across every tab that can show Adult material.
@@ -45,7 +45,6 @@ const (
 	SectionLibrary     = "library"
 	SectionQueue       = "queue"
 	SectionOrganize    = "organize"
-	SectionTag         = "tag"
 	SectionCollections = "collections"
 	SectionSettings    = "settings"
 
@@ -65,7 +64,6 @@ var tabSections = []string{
 	SectionLibrary,
 	SectionQueue,
 	SectionOrganize,
-	SectionTag,
 	SectionCollections,
 	SectionSettings,
 }

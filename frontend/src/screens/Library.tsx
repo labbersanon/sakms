@@ -1,15 +1,14 @@
 // Library — browse the tracked Movies/Series/Adult catalog. This is the one poster-grid
 // browser in the app: it took over the grid half that used to live in Tag.tsx
 // (PosterCard, DetailPanel, the client-side title search and the selection/detail
-// wiring all moved here verbatim), leaving Tag as the tag-CRUD table it was
-// originally documented to be.
+// wiring all moved here verbatim). Tag CRUD now lives here too — in the detail
+// panel — not on a separate sidebar tab.
 //
 // Layout, top to bottom: a Movies/Series/Adult tab bar over a filter row (title search
 // | genre | quality tier | sort) and a poster grid; selecting a card slides a
 // DetailPanel in at w-72 showing genres/cast/tags — plus, for Series only, the
 // per-season monitoring panel (SeasonsPanel). Tag mutations in the panel go
-// through the same addTag/removeTag + act() path Tag's table uses — only the
-// entry point changed, not the mechanics.
+// through addTag/removeTag + act().
 //
 // The mode and tier are ALSO seedable from the URL (/library?mode=…&tier=…),
 // which is what the Dashboard's storage-allocation cells link into. That is a

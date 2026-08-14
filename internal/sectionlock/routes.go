@@ -202,11 +202,13 @@ func classifyModes(rest []string, out Set) {
 		//   it feeds is ungated (see .omc/plans/autopilot-impl.md D-1).
 		// Review if: AC7 is ever widened to ungate the Adult search too.
 		out.Add(SectionOrganize)
-	case "tags", "items", "scenes":
-		// items/{itemId}/tags and scenes/{sceneId}/tags are tag CRUD;
-		// neither prefix has any non-tag route under it today.
-		out.Add(SectionTag)
-	case "tracked":
+	case "tags", "items", "scenes", "tracked":
+		// Claude 2026-08-13: RECLASSIFIED {tag} -> {library}.
+		// Reason: the Tag sidebar tab was removed; tag CRUD now lives in the
+		// Library detail panel. tracked was already {library}; these siblings
+		// belong with it.
+		// Troubleshooting: locking Library must gate tag vocab/add/remove too.
+		// Review if: tag editing moves to a different screen.
 		out.Add(SectionLibrary)
 	case "library":
 		// /library/root-folder{,/test} is a Settings control; everything

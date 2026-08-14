@@ -19,7 +19,7 @@ import type {
   SectionLockUnlockRequest,
 } from "@dto";
 
-// LOCKABLE_TAB_SECTIONS is the eight sidebar tabs, as section ids (each
+// LOCKABLE_TAB_SECTIONS is the seven sidebar tabs, as section ids (each
 // NAV_ITEM's href minus its leading "/"), in sidebar order.
 //
 // WHY THIS IS AUTHORED HERE RATHER THAN DERIVED FROM NAV_ITEMS. Deriving it
@@ -55,7 +55,6 @@ export const LOCKABLE_TAB_SECTIONS = [
   "library",
   "queue",
   "organize",
-  "tag",
   "collections",
   "settings",
 ] as const;
@@ -66,7 +65,7 @@ export const LOCKABLE_TAB_SECTIONS = [
 export const ADULT_CONTENT_SECTION = "adult-content";
 
 // ALL_LOCKABLE_SECTIONS is the full checkbox set for the Settings panel: the
-// eight tabs plus adult-content, in that fixed order.
+// seven tabs plus adult-content, in that fixed order.
 //
 // ORDER IS LOAD-BEARING, not cosmetic. Both the per-checkbox save and the
 // "lock everything" convenience build their request array by filtering THIS
@@ -86,7 +85,6 @@ const SECTION_LABELS: Record<string, string> = {
   library: "Library",
   queue: "Queue",
   organize: "Organize",
-  tag: "Tag",
   collections: "Collections",
   settings: "Settings",
   "adult-content": "Adult content",

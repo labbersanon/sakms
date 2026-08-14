@@ -1,4 +1,4 @@
-// Sidebar tests — the left nav renders all 8 items with icons + labels, the
+// Sidebar tests — the left nav renders all 7 items with icons + labels, the
 // collapse toggle hides labels while keeping icons, and the collapsed choice
 // persists to localStorage across a fresh mount. Also covers the mobile
 // off-canvas drawer: open/closed translate classes and closing on nav-link
@@ -20,7 +20,6 @@ const NAV_LABELS = [
   "Library",
   "Queue",
   "Organize",
-  "Tag",
   "Collections",
   "Settings",
 ];
@@ -64,8 +63,8 @@ describe("Sidebar", () => {
     for (const label of MEDIA_CHILDREN) {
       expect(screen.getAllByText(label)).toHaveLength(2);
     }
-    // 8 nav icons + 1 sidebar-collapse chevron + 3 group chevrons.
-    expect(container.querySelectorAll("svg").length).toBe(12);
+    // 7 nav icons + 1 sidebar-collapse chevron + 3 group chevrons.
+    expect(container.querySelectorAll("svg").length).toBe(11);
   });
 
   it("collapse toggle hides labels but keeps icons", () => {
@@ -86,7 +85,7 @@ describe("Sidebar", () => {
     for (const label of MEDIA_CHILDREN) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
-    expect(container.querySelectorAll("svg").length).toBe(9);
+    expect(container.querySelectorAll("svg").length).toBe(8);
     for (const label of NAV_LABELS) {
       if (label === "Discover" || label === "Library" || label === "Organize") continue;
       expect(container.querySelector(`a[title="${label}"]`)).toBeTruthy();
@@ -126,7 +125,7 @@ describe("Sidebar", () => {
     const { container } = renderSidebar();
 
     expect(screen.queryByText("Discover")).not.toBeInTheDocument();
-    expect(container.querySelectorAll("svg").length).toBe(9);
+    expect(container.querySelectorAll("svg").length).toBe(8);
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
   });
 

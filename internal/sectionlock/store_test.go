@@ -179,14 +179,14 @@ func TestStoreCachesAndInvalidatesOnWrite(t *testing.T) {
 		t.Fatalf("five reads hit the store %d times, want 1 — the gate must not add a query per request", n)
 	}
 
-	if err := store.SetSections(ctx, []string{SectionTag, SectionQueue}); err != nil {
+	if err := store.SetSections(ctx, []string{SectionLibrary, SectionQueue}); err != nil {
 		t.Fatalf("SetSections: %v", err)
 	}
 	got, err := store.LockedSections(ctx)
 	if err != nil {
 		t.Fatalf("LockedSections: %v", err)
 	}
-	if want := []string{SectionQueue, SectionTag}; !reflect.DeepEqual(got.Sorted(), want) {
+	if want := []string{SectionLibrary, SectionQueue}; !reflect.DeepEqual(got.Sorted(), want) {
 		t.Fatalf("after SetSections, LockedSections = %v, want %v", got.Sorted(), want)
 	}
 }

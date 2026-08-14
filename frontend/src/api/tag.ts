@@ -1,9 +1,7 @@
-// Tag workflow data access (Stage 3, last of the four). Ported verbatim from
-// the vanilla-JS frontend (internal/web/static/index.html's renderTag). The Tag
-// workflow is DELIBERATELY SIMPLER than Rename/Purge/Dedup: no staged
-// scan→propose→apply queue, just direct CRUD on a tracked item's tags. Two GETs
-// back the view — a tag vocabulary (autocomplete) and the tracked items each
-// carrying their current tags — and add/remove act immediately on one item.
+// Tracked-item and tag data access for the Library screen (and Discover's
+// tracked-row helpers). Tag editing is no longer a separate sidebar tab —
+// Library's detail panel is the sole UI surface. The API layer is still
+// immediate CRUD on one (item, tag) pair, not a staged scan→propose→apply queue.
 //
 // CRITICAL per-mode endpoint split (confirmed against internal/api/tag.go, NOT
 // a guess): Movies/Series use the GENERIC item-tag routes; Adult uses its OWN
@@ -47,16 +45,16 @@ export function fetchTagVocabulary(mode: Mode): Promise<TagEntry[]> {
 }
 
 // fetchTrackedItems lists what the mode currently tracks (items/series/scenes),
-// each with its current tags — the Tag workflow's item picker. One shared route
+// each with its current tags — Library's item picker. One shared route
 // for every mode; for Adult the returned id is a library_scenes.id.
 //
 // Claude 2026-08-13: optional aspect appends ?aspect= for Adult Library tabs.
 // Reason: Slice 1 shipped the query param unconsumed; Library Scenes/Movies
-// filter by poster_aspect_class. Omit aspect (Tag, Mainstream library row,
+// filter by poster_aspect_class. Omit aspect (Mainstream library row,
 // default) so the handler's empty-case returns every row.
 // Troubleshooting: invalid values 400 on the server — only pass vertical or
 // horizontal from LibraryAdult.
-// Review if: Tag or Organize needs the same filter (3A says they do not).
+// Review if: Organize needs the same filter (3A says it does not).
 export function fetchTrackedItems(
   mode: Mode,
   aspect?: "vertical" | "horizontal",

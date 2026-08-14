@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// SL-11: TabSections() equals the eight canonical sidebar ids.
+// SL-11: TabSections() equals the seven canonical sidebar ids.
 //
 // This is the Go half of the three-layer nav drift guard. The other two
 // are in the frontend (NAV_ITEMS becomes an export, and a TS test
@@ -23,7 +23,6 @@ func TestTabSectionsMatchesSidebar(t *testing.T) {
 		"library",
 		"queue",
 		"organize",
-		"tag",
 		"collections",
 		"settings",
 	}
@@ -74,8 +73,8 @@ func TestSetIntersects(t *testing.T) {
 	if !locked.Intersects(NewSet(SectionAdultContent)) {
 		t.Error("expected {organize,adult-content} to intersect {adult-content}")
 	}
-	if locked.Intersects(NewSet(SectionQueue, SectionTag)) {
-		t.Error("expected {organize,adult-content} not to intersect {queue,tag}")
+	if locked.Intersects(NewSet(SectionQueue, SectionLibrary)) {
+		t.Error("expected {organize,adult-content} not to intersect {queue,library}")
 	}
 	if locked.Intersects(NewSet()) {
 		t.Error("expected no intersection with the empty set")

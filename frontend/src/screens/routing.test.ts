@@ -22,4 +22,8 @@ describe("client-side router scope (Guardrail #2 / requirement #7)", () => {
     expect(APP_ROUTES).toContain("/discover/row/tmdb/:key");
     expect(APP_ROUTES).toContain("/discover/row/adult-newest/:rowId");
   });
+
+  it("no longer serves the removed /tag route", () => {
+    expect(APP_ROUTES as readonly string[]).not.toContain("/tag");
+  });
 });

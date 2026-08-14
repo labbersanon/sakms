@@ -296,6 +296,16 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
 // group's byte total on one line, its item count beneath. An empty group is a
 // muted em-dash rather than "0 B / 0 items".
 //
+// Claude 2026-08-14: Adult cells use the same Library drill-down as Movies/
+// Series. Adult still has no storage split by poster_aspect_class, so the
+// href is /library/adult?tab=scenes&tier=… (libraryTierHref). Allocation
+// stays scene-shaped (one Adult row covering every library_scenes file).
+// Reason: Adult Library Scenes already honors ?tier=; the Movies/enrichment
+// stub blocked a working deep link.
+// Troubleshooting: empty Adult Movies tab is expected until a ~2:3 import.
+// Review if: storage_allocation.go splits Adult by poster_aspect_class.
+//
+// Claude 2026-08-14: previous Adult stub copy (kept for history):
 // Movies and Series cells drill into the Library screen's filtered list. Adult
 // cells stay non-interactive for this scaffold slice: the new Adult Library
 // route exists, but Adult Movies/catalog enrichment is not built yet and storage
@@ -326,6 +336,9 @@ const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
         </span>
       }
     >
+      {/* Claude 2026-08-14: Adult stub retired — same <A> as Movies/Series.
+          Reason: Adult Library exists and honors ?tier=; parked drill-down.
+          Review if: Adult storage splits Movies vs Scenes.
       <Show
         when={props.mode !== "adult"}
         fallback={
@@ -338,13 +351,14 @@ const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
           </span>
         }
       >
+      */}
         <A
           href={libraryTierHref(props.mode, props.cell.tier)}
           class="block hover:text-accent"
         >
           {body()}
         </A>
-      </Show>
+      {/* </Show> */}
     </Show>
   );
 };

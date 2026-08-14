@@ -384,34 +384,26 @@ describe("Dashboard view", () => {
     expect(movies!.textContent).toContain("12 items");
   });
 
-  it("renders Adult cells as non-interactive with an explanation", async () => {
+  it("links Adult cells into Library with tab and tier", async () => {
     const { container } = renderDashboard();
     await screen.findByText("5.0 TB");
 
+    const links = [...container.querySelectorAll("a")];
+    const hrefs = links.map((a) => a.getAttribute("href"));
+    expect(hrefs).toContain("/library/adult?tab=scenes&tier=low");
+
     const adultRow = container.querySelectorAll("tbody tr")[2]!;
     expect(adultRow.textContent).toContain("Adult");
-    expect(adultRow.querySelector("a")).toBeNull();
-    for (const a of container.querySelectorAll("a")) {
-      expect(a.getAttribute("href")).not.toContain("/library/adult");
-    }
+    const adultLinks = [...adultRow.querySelectorAll("a")];
+    expect(adultLinks.length).toBeGreaterThan(0);
+    expect(adultLinks[0]!.getAttribute("href")).toContain("/library/adult?tab=scenes&tier=");
 
-    const disabled = adultRow.querySelector(
-      '[aria-disabled="true"][title]',
+    const low = links.find(
+      (a) => a.getAttribute("href") === "/library/adult?tab=scenes&tier=low",
     );
-    expect(disabled).not.toBeNull();
-    expect(disabled!.getAttribute("title")).toBe(
-      "Adult storage drill-down will land with the Adult Movies/enrichment slice",
-    );
-    expect(disabled!.textContent).toContain("6.0 TB");
-    expect(disabled!.textContent).toContain("100 items");
-
-    // The spec required the drill-down be VISIBLY stubbed, not just marked up
-    // for assistive tech — assert the dimming class, since aria-disabled and a
-    // title alone leave the cell indistinguishable from a live one at rest.
-    // Opacity is what actually dims it: body()'s own text-fg on the size line
-    // beats any colour class on this wrapper, but opacity applies subtree-wide.
-    expect(disabled!.className).toContain("opacity-50");
-    expect(disabled!.className).toContain("cursor-not-allowed");
+    expect(low!.textContent).toContain("6.0 TB");
+    expect(low!.textContent).toContain("100 items");
+    expect(adultRow.querySelector('[title="Adult storage drill-down will land with the Adult Movies/enrichment slice"]')).toBeNull();
   });
 
   it("explains the Series row total's tier overlap, and only that row's", async () => {

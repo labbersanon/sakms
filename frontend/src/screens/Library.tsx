@@ -523,7 +523,7 @@ const DetailPanel: Component<{
       chromeless
       subtitle={
         <div class="flex flex-col gap-0.5">
-          <Show when={props.item.year}>
+          <Show when={showTrackedCredits() && props.item.year}>
             <span>{props.item.year}</span>
           </Show>
           <Show when={props.item.collectionName}>

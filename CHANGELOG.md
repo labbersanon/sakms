@@ -7687,4 +7687,12 @@ existing keyword chip row (genres first, case-insensitive de-dupe). The
 photo Cast grid is the remaining Cast list. The no-tmdbId fallback modal
 still shows DetailPanel Genres/Cast.
 
+## 2026-08-14 (later, same day) — Year in the chip row
+
+The Library nested panel still showed the tracked year under the divider.
+That year now leads the same highlighted pill row as genres and keywords
+(from DiscoverItem.releaseDate, falling back to TitleDetail.releaseDates).
+Nested DetailPanel omits the duplicate year; the no-tmdbId fallback modal
+still shows it.
+
 

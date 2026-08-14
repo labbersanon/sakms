@@ -1262,6 +1262,7 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     expect(await screen.findByText("Hero Collection")).toBeInTheDocument();
     expect(screen.getByText("heist")).toBeInTheDocument();
     expect(screen.getByText("Action")).toBeInTheDocument();
+    expect(screen.getByText("2024", { exact: true })).toBeInTheDocument();
     expect(screen.getByText("A hero saves the day.")).toBeInTheDocument();
     expect(screen.getByText("Released")).toBeInTheDocument();
     expect(screen.getByText("2h 5m")).toBeInTheDocument();
@@ -1296,6 +1297,7 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     render(() => <DetailPopup target={target} onClose={() => {}} />);
     expect(await screen.findByText("spy")).toBeInTheDocument();
     expect(screen.getAllByText("Action")).toHaveLength(1);
+    expect(screen.getByText("2024", { exact: true })).toBeInTheDocument();
   });
 
   it("renders the poster from TitleDetail when the item posterPath is empty", async () => {

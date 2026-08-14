@@ -383,13 +383,17 @@ function formatRuntime(min: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-// mergeGenreKeywords puts TMDB genres ahead of keywords in the chip row.
-// The same label (case-insensitive, trimmed) appears once so a genre that
-// TMDB also lists as a keyword does not render two pills.
-function mergeGenreKeywords(genres: string[], keywords: string[]): string[] {
+// mergeDetailChips builds the highlighted pill row: year, then TMDB genres,
+// then keywords. The same label (case-insensitive, trimmed) appears once so
+// a genre that TMDB also lists as a keyword does not render two pills.
+function mergeDetailChips(
+  year: string | undefined,
+  genres: string[],
+  keywords: string[],
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of [...genres, ...keywords]) {
+  for (const raw of [...(year ? [year] : []), ...genres, ...keywords]) {
     const label = raw.trim();
     const key = label.toLowerCase();
     if (!key || seen.has(key)) continue;
@@ -1019,8 +1023,19 @@ export const DetailPopup: Component<{
             doesn't render — a partial bundle never breaks the popup. */}
         <Show when={mode() !== "adult" && detail()}>
           {(d) => {
+            const yearChip = () => {
+              const fromItem = yearOf((item() as DiscoverItem).releaseDate);
+              if (fromItem) return String(fromItem);
+              const fromDetail = d().releaseDates?.[0]?.date ?? "";
+              const y = yearOf(fromDetail);
+              return y ? String(y) : undefined;
+            };
             const chips = () =>
-              mergeGenreKeywords(d().genres ?? [], d().keywords ?? []);
+              mergeDetailChips(
+                yearChip(),
+                d().genres ?? [],
+                d().keywords ?? [],
+              );
             const meta = () =>
               [
                 ["Status", d().status] as const,
@@ -1042,11 +1057,12 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
-                {/* Claude 2026-08-14: genres share the keyword chip row.
-                    Reason: Library DetailPanel had a second Genres block
-                    below this row; moving TMDB genres here is one highlighted
-                    pill strip. Keywords still follow, de-duplicated.
-                    Review if: genres get their own labeled row again. */}
+                {/* Claude 2026-08-14: year + genres share the keyword chip row.
+                    Reason: Library DetailPanel showed year under the divider
+                    and a second Genres block; one highlighted pill strip is
+                    the Discover header treatment. Keywords still follow,
+                    de-duplicated.
+                    Review if: year moves next to the modal title instead. */}
                 <Show when={chips().length}>
                   <div class="mb-3 flex flex-wrap gap-1">
                     <For each={chips()}>

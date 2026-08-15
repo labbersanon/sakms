@@ -7831,5 +7831,10 @@ bordered labels on the cream form.
 Tag chips use `bg-surface/60` (was `/70`) so the translucent fill is
 one step more see-through.
 
+## 2026-08-14 (later, same day) — Clean-up tag chip fill is 30%
+
+Tag chips use `bg-surface/30` (was `/60`). `/60` still read too dark
+on the cream form.
+
 
 

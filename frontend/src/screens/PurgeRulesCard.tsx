@@ -506,7 +506,7 @@ const RuleForm: Component<{
                 //   select and Add on a phone-width Rules card.
                 // Troubleshooting: unit select is omitted when the field has no
                 //   units (tag/quality/blank). Chip × uses compact padding so
-                //   it does not dominate the chip. Chips use bg-surface/60 so
+                //   it does not dominate the chip. Chips use bg-surface/30 so
                 //   tag names read as pills on the cream form.
                 // Review if: drag-and-drop criterion ordering ships.
                 <div class="space-y-2">
@@ -602,7 +602,7 @@ const RuleForm: Component<{
                     >
                       <For each={row.values}>
                         {(tag) => (
-                          <span class="inline-flex max-w-full items-center gap-1 rounded border border-border bg-surface/60 px-2 py-0.5 text-sm text-fg backdrop-blur-sm">
+                          <span class="inline-flex max-w-full items-center gap-1 rounded border border-border bg-surface/30 px-2 py-0.5 text-sm text-fg backdrop-blur-sm">
                             <span class="truncate">{tag}</span>
                             <Button
                               type="button"

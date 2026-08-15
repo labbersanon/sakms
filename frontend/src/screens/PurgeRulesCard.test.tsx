@@ -743,7 +743,7 @@ describe("PurgeRulesCard — the tags condition", () => {
       screen.getByRole("button", { name: "Add tag to criterion 1" }),
     );
     expect(screen.getByText("Bondage").closest("span.inline-flex")).toHaveClass(
-      "bg-surface/60",
+      "bg-surface/30",
     );
   });
 

@@ -43,6 +43,70 @@ export async function enterVideoFullscreen(el: HTMLVideoElement): Promise<void> 
   }
 }
 
+// PlayFullscreenLink is the Library header control under Watch Trailer.
+// One click mounts the same inline <video> as TrackedPlayback, enters
+// fullscreen, and starts playback. Discover omits it (no playSrc).
+// Claude 2026-08-14: noun is Movie/Show/Scene so the label matches the
+// Library tab. Series has no browser-playable file URL today, so Library
+// simply does not pass playSrc for shows.
+// Review if: Series episode playback lands.
+export const PlayFullscreenLink: Component<{
+  src: string;
+  noun: "Movie" | "Show" | "Scene";
+  title: string;
+}> = (props) => {
+  const [open, setOpen] = createSignal(false);
+  const [wantFs, setWantFs] = createSignal(false);
+  let videoEl: HTMLVideoElement | undefined;
+
+  const start = (el: HTMLVideoElement) => {
+    void (async () => {
+      await enterVideoFullscreen(el);
+      await el.play().catch(() => undefined);
+    })();
+  };
+
+  const bindVideo = (el: HTMLVideoElement) => {
+    videoEl = el;
+    if (wantFs()) {
+      start(el);
+      setWantFs(false);
+    }
+  };
+
+  return (
+    <div class="mt-2">
+      <button
+        type="button"
+        class="rounded-md border border-border bg-surface-2 px-3 py-1 text-xs font-medium text-fg transition hover:opacity-90"
+        aria-label={`Play ${props.noun} fullscreen`}
+        onClick={() => {
+          if (videoEl) {
+            start(videoEl);
+            return;
+          }
+          setWantFs(true);
+          setOpen(true);
+        }}
+      >
+        {`Play ${props.noun} →`}
+      </button>
+      <Show when={open()}>
+        <video
+          ref={bindVideo}
+          class="mt-2 w-full rounded bg-surface-2"
+          controls
+          autoplay
+          playsinline
+          preload="metadata"
+          src={props.src}
+          aria-label={`Fullscreen player for ${props.title}`}
+        />
+      </Show>
+    </div>
+  );
+};
+
 export const TrackedPlayback: Component<{ src: string; label: string }> = (
   props,
 ) => {

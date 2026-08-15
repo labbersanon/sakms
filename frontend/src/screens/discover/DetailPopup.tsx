@@ -76,6 +76,7 @@ import {
 import { libraryRootFolder, manualGrab } from "../../api/grab";
 import { fetchQualityPrefs } from "../../api/settings";
 import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components/ui";
+import { PlayFullscreenLink } from "../../components/TrackedPlayback";
 import { MediaFallbackTile } from "../../components/media";
 import { type GrabTarget, Modal } from "./shared";
 import { PosterCard } from "./Mainstream";
@@ -478,6 +479,11 @@ export const DetailPopup: Component<{
   // Reason: "Library cards need enrichment the same as discover minus grab."
   // Review if: Library ever grows a grab affordance of its own.
   allowGrab?: boolean;
+  // Claude 2026-08-14: Library in-app play URL under Watch Trailer.
+  // Reason: operator asked a Play Movie/Show/Scene link that launches
+  // fullscreen. Discover omits it. Empty/undefined hides the control.
+  // Review if: Series episode playback starts sending a URL.
+  playSrc?: string;
   // Claude 2026-08-14: Library Rating sits above Cast / streaming.
   // Reason: operator asked Rating at the top of the detail body and
   // More like this at the bottom. Discover omits it.
@@ -906,6 +912,23 @@ export const DetailPopup: Component<{
                 </a>
               </Show>
             </div>
+            {/* Claude 2026-08-14: Play Movie/Show/Scene under Watch Trailer.
+                Reason: operator asked a Library play link here that launches
+                fullscreen. Discover has no playSrc. mkv/avi/wmv omit it.
+                Review if: Series episode playback lands. */}
+            <Show when={(props.playSrc ?? "").trim()}>
+              <PlayFullscreenLink
+                src={props.playSrc ?? ""}
+                noun={
+                  mode() === "adult"
+                    ? "Scene"
+                    : mode() === "series"
+                      ? "Show"
+                      : "Movie"
+                }
+                title={item().title}
+              />
+            </Show>
           </div>
         </div>
 

@@ -163,6 +163,25 @@ const trackedToDetailTarget = (
   return { mode, item: trackedToDiscoverItem(item, mode) };
 };
 
+// playableLibrarySrc is the in-app URL for Play Movie/Show/Scene under
+// Watch Trailer. Movies prefer the primary browser-playable file, then any
+// playable file, then the item URL. Adult uses the scene URL. Series has
+// no browser-playable file on GET /tracked today, so this returns "".
+// Claude 2026-08-14: header play must not invent a Series episode stream.
+// Review if: GET /tracked starts sending a Series videoUrl.
+const playableLibrarySrc = (mode: Mode, item: TrackedItem): string => {
+  if (mode === "movies") {
+    const files = item.files ?? [];
+    const primary = files.find((f) => f.isPrimary && f.videoUrl);
+    if (primary?.videoUrl) return primary.videoUrl;
+    const any = files.find((f) => f.videoUrl);
+    if (any?.videoUrl) return any.videoUrl;
+    return item.videoUrl ?? "";
+  }
+  if (mode === "adult") return item.videoUrl ?? "";
+  return "";
+};
+
 // adultHoverText matches AdultCard's studio/date overlay. Movies/Series have
 // no overview on the tracked payload, so those cards skip the overlay.
 const adultHoverText = (item: TrackedItem): string =>
@@ -1111,6 +1130,11 @@ const LibraryView: Component<{
                       allowGrab={false}
                       onClose={closeDetail}
                       onSelectRecommendation={setDetailTarget}
+                      playSrc={
+                        isLibraryTarget()
+                          ? playableLibrarySrc(props.mode, item()) || undefined
+                          : undefined
+                      }
                       lead={
                         isLibraryTarget() ? (
                           <DetailRating

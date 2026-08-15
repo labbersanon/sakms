@@ -769,6 +769,7 @@ describe("Library — per-season monitoring (Series only)", () => {
     await openSeriesDetail();
 
     expect(await screen.findByLabelText("Monitor Season 1")).toBeInTheDocument();
+    expect(screen.queryByText("Play Show →")).toBeNull();
     // Season 0 is LISTED as Specials, not filtered out — "All seasons" would
     // otherwise touch a season no visible row accounts for.
     expect(switchOf("Monitor Specials")).toBeInTheDocument();
@@ -1113,6 +1114,11 @@ describe("Library — Adult catalog", () => {
       false,
     );
     expect(calls.some((c) => c.url.includes("/quality-prefs"))).toBe(false);
+    expect(
+      within(screen.getByRole("dialog", { name: "Adult Scene" })).getByText(
+        "Play Scene →",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("Adult cards show a studio/date hover overlay like Discover", async () => {
@@ -1354,6 +1360,30 @@ describe("Library — in-app movie playback", () => {
     expect(
       within(dialog).queryByRole("button", { name: "Play Inception" }),
     ).toBeNull();
+    expect(within(dialog).queryByText("Play Movie →")).toBeNull();
+  });
+
+  it("puts Play Movie under Watch Trailer", async () => {
+    stubFetch((url, init) => {
+      if (url.includes("/discover/trailer"))
+        return jsonResponse({ url: "https://www.youtube.com/watch?v=abc" });
+      const extra = libraryEnrichmentResponse(url);
+      if (extra && !url.includes("/discover/trailer")) return extra;
+      return makeHandler([playable()])(url, init);
+    });
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
+    const trailer = await within(dialog).findByText("Watch Trailer →");
+    const play = within(dialog).getByText("Play Movie →");
+    expect(
+      (trailer.compareDocumentPosition(play) &
+        Node.DOCUMENT_POSITION_FOLLOWING) !==
+        0,
+    ).toBe(true);
+    expect(
+      within(dialog).getByRole("button", { name: "Play Movie fullscreen" }),
+    ).toBeInTheDocument();
   });
 });
 

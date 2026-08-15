@@ -8,7 +8,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { TrackedPlayback, enterVideoFullscreen } from "./TrackedPlayback";
+import { TrackedPlayback, PlayFullscreenLink, enterVideoFullscreen } from "./TrackedPlayback";
 
 describe("TrackedPlayback", () => {
   it("renders Play and Fullscreen with no video until Play is clicked", () => {
@@ -102,5 +102,61 @@ describe("enterVideoFullscreen", () => {
     } as unknown as HTMLVideoElement;
     await enterVideoFullscreen(ios);
     expect(webkitEnterFullscreen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PlayFullscreenLink", () => {
+  it("renders Play Movie with no video until clicked", () => {
+    render(() => (
+      <PlayFullscreenLink
+        src="/api/modes/movies/tracked/10/video?fileId=3"
+        noun="Movie"
+        title="Inception"
+      />
+    ));
+    expect(
+      screen.getByRole("button", { name: "Play Movie fullscreen" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Play Movie →")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Fullscreen player for Inception")).toBeNull();
+  });
+
+  it("click mounts the video, plays, and requests fullscreen", async () => {
+    const requestFullscreen = vi.fn().mockResolvedValue(undefined);
+    const play = vi.fn().mockResolvedValue(undefined);
+    const proto = HTMLVideoElement.prototype as HTMLVideoElement & {
+      play: () => Promise<void>;
+    };
+    const origFs = proto.requestFullscreen;
+    const origPlay = proto.play;
+    proto.requestFullscreen = requestFullscreen;
+    proto.play = play;
+    try {
+      render(() => (
+        <PlayFullscreenLink
+          src="/api/modes/movies/tracked/10/video?fileId=3"
+          noun="Movie"
+          title="Inception"
+        />
+      ));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Play Movie fullscreen" }),
+      );
+      const video = screen.getByLabelText(
+        "Fullscreen player for Inception",
+      ) as HTMLVideoElement;
+      expect(video.getAttribute("src")).toBe(
+        "/api/modes/movies/tracked/10/video?fileId=3",
+      );
+      expect(video.hasAttribute("autoplay")).toBe(true);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await vi.waitFor(() => {
+        expect(requestFullscreen).toHaveBeenCalledTimes(1);
+        expect(play).toHaveBeenCalled();
+      });
+    } finally {
+      proto.requestFullscreen = origFs;
+      proto.play = origPlay;
+    }
   });
 });

@@ -7849,6 +7849,15 @@ rest of the TMDB block). Files / seasons / Tags stay in the middle.
 More like this is last. Discover's rail is unchanged when there is no
 Library footer: Cast → Currently Streaming On → More like this.
 
+## 2026-08-14 (later, same day) — Play Movie/Show/Scene under Watch Trailer
+
+Library detail grows a Play Movie / Play Show / Play Scene control
+directly under Watch Trailer. One click mounts the in-app player,
+enters fullscreen, and starts playback. It only appears when GET
+/tracked already has a browser-playable URL (Movies mp4/m4v/webm/mov,
+Adult scene videoUrl). Series has no such URL yet, so Play Show stays
+hidden. Discover is unchanged. mkv/avi/wmv still omit the control.
+
 
 
 

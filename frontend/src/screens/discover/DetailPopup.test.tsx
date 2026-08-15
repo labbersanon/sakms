@@ -803,6 +803,7 @@ describe("DetailPopup — Watch Trailer link", () => {
       "href",
       "https://www.youtube.com/watch?v=abc123",
     );
+    expect(screen.queryByText("Play Movie →")).not.toBeInTheDocument();
     const trailerCall = calls.find((c) => c.url.includes("/discover/trailer"));
     expect(trailerCall?.url).toBe("/api/modes/movies/discover/trailer?tmdbId=42");
   });
@@ -847,6 +848,24 @@ describe("DetailPopup — Watch Trailer link", () => {
     await screen.findByText("Watch Trailer →");
     const trailerCall = calls.find((c) => c.url.includes("/discover/trailer"));
     expect(trailerCall?.url).toBe("/api/modes/series/discover/trailer?tmdbId=7");
+  });
+
+  it("renders Play Movie under Watch Trailer when playSrc is set", async () => {
+    stubWithTrailer("https://www.youtube.com/watch?v=abc123");
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42, title: "Hero Movie" }) }}
+        playSrc="/api/modes/movies/tracked/10/video?fileId=3"
+        onClose={() => {}}
+      />
+    ));
+    const trailer = await screen.findByText("Watch Trailer →");
+    const play = screen.getByText("Play Movie →");
+    expect(
+      (trailer.compareDocumentPosition(play) &
+        Node.DOCUMENT_POSITION_FOLLOWING) !==
+        0,
+    ).toBe(true);
   });
 });
 

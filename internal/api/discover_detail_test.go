@@ -693,15 +693,105 @@ func TestDiscoverCalendarHandler_MissingParams(t *testing.T) {
 	}
 }
 
-func TestDiscoverDetailHandler_OfficialRatingsFromTraktAndOMDb(t *testing.T) {
+func TestDiscoverDetailHandler_OfficialRatingsFromTraktExtendedAll(t *testing.T) {
+	omdbHits := 0
+	omdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		omdbHits++
+		http.Error(w, "omdb must not be called when trakt nested imdb is present", http.StatusInternalServerError)
+	}))
+	t.Cleanup(omdbSrv.Close)
+
+	traktSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/movies/tt0137523/ratings" {
+			t.Errorf("unexpected trakt path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("extended") != "all" {
+			t.Errorf("expected extended=all, got %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Error("public ratings must not send a bearer token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+		  "trakt":{"rating":8.2,"votes":99},
+		  "imdb":{"rating":8.1,"votes":1000}
+		}`))
+	}))
+	t.Cleanup(traktSrv.Close)
+
+	mux, connStore, traktStore := detailMuxStores(t, fakeTMDBDetail(t, http.StatusOK).URL)
+	overrideFixedURL(t, "omdb", omdbSrv.URL)
+	prevTrakt := trakt.DefaultBaseURL
+	trakt.DefaultBaseURL = traktSrv.URL
+	t.Cleanup(func() { trakt.DefaultBaseURL = prevTrakt })
+
+	secret := "trakt-secret"
+	if err := traktStore.SaveCredentials(context.Background(), "trakt-client", &secret); err != nil {
+		t.Fatalf("saving trakt credentials: %v", err)
+	}
+	if err := connStore.Upsert(context.Background(), "omdb", omdbSrv.URL, "omdb-key"); err != nil {
+		t.Fatalf("saving omdb key: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/detail?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var d apidto.TitleDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if omdbHits != 0 {
+		t.Errorf("omdb was called %d times; trakt nested imdb should skip it", omdbHits)
+	}
+	got := map[string]apidto.OfficialRating{}
+	for _, r := range d.Ratings {
+		got[r.Source] = r
+	}
+	if r, ok := got["imdb"]; !ok || r.Score != 8.1 || r.ScoreKind != "ten" || r.Votes != 1000 {
+		t.Errorf("imdb: %+v", r)
+	}
+	if _, ok := got["rtCritics"]; ok {
+		t.Errorf("rtCritics must be omitted, got %+v", got["rtCritics"])
+	}
+	if _, ok := got["rtAudience"]; ok {
+		t.Errorf("rtAudience must be omitted, got %+v", got["rtAudience"])
+	}
+	if r, ok := got["tmdb"]; !ok || r.Score != 8.2 || r.ScoreKind != "ten" {
+		t.Errorf("tmdb: %+v", r)
+	}
+	if r, ok := got["trakt"]; !ok || r.Score != 82 || r.ScoreKind != "percent" || r.Votes != 99 {
+		t.Errorf("trakt: %+v", r)
+	}
+	order := make([]string, 0, len(d.Ratings))
+	for _, r := range d.Ratings {
+		order = append(order, r.Source)
+	}
+	wantOrder := "imdb,tmdb,trakt"
+	if strings.Join(order, ",") != wantOrder {
+		t.Errorf("rating order %v, want %s", order, wantOrder)
+	}
+}
+
+func TestDiscoverDetailHandler_OfficialRatingsOMDbFallbackWhenTraktHasNoIMDb(t *testing.T) {
 	omdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("i") != "tt0137523" {
 			t.Errorf("unexpected imdb id: %s", r.URL.RawQuery)
 		}
+		if r.URL.Query().Get("tomatoes") != "" {
+			t.Errorf("tomatoes param must not be sent: %s", r.URL.RawQuery)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{
-		  "imdbRating":"8.1",
-		  "imdbVotes":"1,000",
+		  "imdbRating":"7.7",
+		  "imdbVotes":"2,000",
 		  "tomatoMeter":"93",
 		  "tomatoUserMeter":"66",
 		  "Response":"True"
@@ -710,14 +800,8 @@ func TestDiscoverDetailHandler_OfficialRatingsFromTraktAndOMDb(t *testing.T) {
 	t.Cleanup(omdbSrv.Close)
 
 	traktSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/movies/tmdb/42/ratings" {
-			t.Errorf("unexpected trakt path: %s", r.URL.Path)
-		}
-		if r.Header.Get("Authorization") != "" {
-			t.Error("public ratings must not send a bearer token")
-		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"rating":8.2,"votes":99}`))
+		w.Write([]byte(`{"trakt":{"rating":8.0,"votes":10}}`))
 	}))
 	t.Cleanup(traktSrv.Close)
 
@@ -754,28 +838,14 @@ func TestDiscoverDetailHandler_OfficialRatingsFromTraktAndOMDb(t *testing.T) {
 	for _, r := range d.Ratings {
 		got[r.Source] = r
 	}
-	if r, ok := got["imdb"]; !ok || r.Score != 8.1 || r.ScoreKind != "ten" || r.Votes != 1000 {
-		t.Errorf("imdb: %+v", r)
+	if r, ok := got["imdb"]; !ok || r.Score != 7.7 || r.Votes != 2000 {
+		t.Errorf("imdb from omdb fallback: %+v", r)
 	}
-	if r, ok := got["rtCritics"]; !ok || r.Score != 93 || r.Badge != "Fresh" || r.ScoreKind != "percent" {
-		t.Errorf("rtCritics: %+v", r)
+	if _, ok := got["rtCritics"]; ok {
+		t.Errorf("rtCritics must be omitted even when OMDb returns tomatoMeter")
 	}
-	if r, ok := got["rtAudience"]; !ok || r.Score != 66 || r.Badge != "Hot" {
-		t.Errorf("rtAudience: %+v", r)
-	}
-	if r, ok := got["tmdb"]; !ok || r.Score != 8.2 || r.ScoreKind != "ten" {
-		t.Errorf("tmdb: %+v", r)
-	}
-	if r, ok := got["trakt"]; !ok || r.Score != 82 || r.ScoreKind != "percent" || r.Votes != 99 {
+	if r, ok := got["trakt"]; !ok || r.Score != 80 {
 		t.Errorf("trakt: %+v", r)
-	}
-	order := make([]string, 0, len(d.Ratings))
-	for _, r := range d.Ratings {
-		order = append(order, r.Source)
-	}
-	wantOrder := "imdb,rtCritics,rtAudience,tmdb,trakt"
-	if strings.Join(order, ",") != wantOrder {
-		t.Errorf("rating order %v, want %s", order, wantOrder)
 	}
 }
 

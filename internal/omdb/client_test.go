@@ -15,7 +15,7 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	return New(Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
 }
 
-func TestByIMDBID_ParsesIMDbAndTomatoes(t *testing.T) {
+func TestByIMDBID_ParsesIMDb(t *testing.T) {
 	var gotQuery string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
@@ -34,26 +34,23 @@ func TestByIMDBID_ParsesIMDbAndTomatoes(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(gotQuery, "apikey=test-key") ||
-		!strings.Contains(gotQuery, "i=tt0137523") ||
-		!strings.Contains(gotQuery, "tomatoes=true") {
+		!strings.Contains(gotQuery, "i=tt0137523") {
 		t.Errorf("unexpected query: %s", gotQuery)
+	}
+	if strings.Contains(gotQuery, "tomatoes=") {
+		t.Errorf("tomatoes param must not be sent: %s", gotQuery)
 	}
 	if got.IMDbRating != 8.1 || got.IMDbVotes != 1234567 {
 		t.Errorf("unexpected imdb: %+v", got)
 	}
-	if got.TomatoMeter != 93 || got.TomatoUserMeter != 66 {
-		t.Errorf("unexpected tomatoes: %+v", got)
-	}
 }
 
-func TestByIMDBID_FallsBackToRatingsArray(t *testing.T) {
+func TestByIMDBID_NAVotesAreZero(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{
 		  "imdbRating":"7.5",
 		  "imdbVotes":"N/A",
-		  "tomatoMeter":"N/A",
-		  "Ratings":[{"Source":"Rotten Tomatoes","Value":"81%"}],
 		  "Response":"True"
 		}`))
 	})
@@ -63,9 +60,6 @@ func TestByIMDBID_FallsBackToRatingsArray(t *testing.T) {
 	}
 	if got.IMDbRating != 7.5 || got.IMDbVotes != 0 {
 		t.Errorf("unexpected imdb: %+v", got)
-	}
-	if got.TomatoMeter != 81 {
-		t.Errorf("expected Ratings[] fallback 81, got %d", got.TomatoMeter)
 	}
 }
 

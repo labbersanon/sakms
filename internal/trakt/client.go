@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/httpx"
 )
@@ -70,27 +72,46 @@ func (c *Client) newPublicRequest(ctx context.Context, path string) (*http.Reque
 	return req, nil
 }
 
-// Ratings is Trakt's public 0–10 community score for one title. Kind is
-// "movies" or "shows" (Trakt's path segment). Distribution is deliberately
-// not decoded — the detail popup's v1 row is icon+score, not a histogram.
-//
-// UNVERIFIED ASSUMPTION: GET /{movies|shows}/tmdb/{id}/ratings is modeled
-// from docs.trakt.tv (public, client_id-only). A missing title or a
-// rejected client_id surfaces as a non-2xx from DoJSON, and the detail
-// handler soft-fails that source rather than 500ing the popup.
-type Ratings struct {
+// NestedRating is one source's score inside GET /{movies|shows}/{id}/ratings
+// when called with ?extended=all. Trakt's nested objects use the same
+// rating/votes shape for imdb, trakt, and tmdb.
+type NestedRating struct {
 	Rating float64 `json:"rating"`
 	Votes  int     `json:"votes"`
 }
 
-func (c *Client) Ratings(ctx context.Context, kind string, tmdbID int) (Ratings, error) {
+// Ratings is Trakt's public score for one title. Kind is "movies" or
+// "shows" (Trakt's path segment). Distribution is deliberately not
+// decoded — the detail popup's row is icon+score, not a histogram.
+//
+// Claude 2026-08-15: path is /{movies|shows}/{imdbId}/ratings?extended=all.
+// Reason: GET /movies/tmdb/{id}/ratings is not a Trakt route — {id} is a
+// Trakt id, slug, or IMDb id (docs.trakt.tv getmoviesratings). extended=all
+// nests imdb/trakt/tmdb; without it only Trakt's own score is present, and
+// with it the top-level rating field may be absent.
+// Review if: Trakt documents a /tmdb/{id}/ratings alias.
+// Related files: internal/api/discover_detail.go
+type Ratings struct {
+	Rating float64      `json:"rating"`
+	Votes  int          `json:"votes"`
+	IMDb   NestedRating `json:"imdb"`
+	Trakt  NestedRating `json:"trakt"`
+	// rotten_tomatoes is intentionally not decoded — the operator does not
+	// want RT on the detail row.
+}
+
+func (c *Client) Ratings(ctx context.Context, kind, imdbID string) (Ratings, error) {
 	if c.cfg.ClientID == "" {
 		return Ratings{}, fmt.Errorf("trakt: client_id is required")
 	}
 	if kind != "movies" && kind != "shows" {
 		return Ratings{}, fmt.Errorf("trakt: ratings kind must be movies or shows, got %q", kind)
 	}
-	req, err := c.newPublicRequest(ctx, fmt.Sprintf("/%s/tmdb/%d/ratings", kind, tmdbID))
+	imdbID = strings.TrimSpace(imdbID)
+	if imdbID == "" {
+		return Ratings{}, fmt.Errorf("trakt: imdb id is required")
+	}
+	req, err := c.newPublicRequest(ctx, fmt.Sprintf("/%s/%s/ratings?extended=all", kind, url.PathEscape(imdbID)))
 	if err != nil {
 		return Ratings{}, err
 	}

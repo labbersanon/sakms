@@ -1,10 +1,10 @@
 // Package omdb is a client for the OMDb API — the lookup that turns an IMDb
-// id into IMDb and Rotten Tomatoes scores for the Discover/Library detail
-// popup. OMDb is a fixed public service (not self-hostable); SAK stores its
-// API key as a singleton "omdb" connections.Store entry, matching TMDB.
+// id into an IMDb score for the Discover/Library detail popup when Trakt did
+// not already supply one. OMDb is a fixed public service (not self-hostable);
+// SAK stores its API key as a singleton "omdb" connections.Store entry,
+// matching TMDB.
 //
 // UNVERIFIED ASSUMPTION: the response shape (imdbRating/imdbVotes,
-// tomatoMeter/tomatoUserMeter with tomatoes=true, Ratings[].Source/Value,
 // Response/Error as strings) is modeled from omdbapi.com's published
 // parameter docs, not confirmed against a live key in this repo. A missing
 // title or "N/A" field degrades to an empty score rather than an error.
@@ -42,28 +42,30 @@ func New(cfg Config, httpClient *http.Client) *Client {
 // Title is the subset of one OMDb by-id lookup the detail popup needs.
 // Scores are 0 when OMDb omitted them or reported "N/A".
 type Title struct {
-	IMDbRating      float64
-	IMDbVotes       int
-	TomatoMeter     int // critics Tomatometer, 0–100
-	TomatoUserMeter int // audience Popcornmeter, 0–100
+	IMDbRating float64
+	IMDbVotes  int
+	// Claude 2026-08-15: TomatoMeter / TomatoUserMeter no longer filled.
+	// Reason: operator does not want Rotten Tomatoes on the detail row.
+	// Review if: RT is added back as an explicit opt-in source.
+	// TomatoMeter     int // critics Tomatometer, 0–100
+	// TomatoUserMeter int // audience Popcornmeter, 0–100
 }
 
 type rawTitle struct {
-	IMDbRating      string `json:"imdbRating"`
-	IMDbVotes       string `json:"imdbVotes"`
-	TomatoMeter     string `json:"tomatoMeter"`
-	TomatoUserMeter string `json:"tomatoUserMeter"`
-	Ratings         []struct {
-		Source string `json:"Source"`
-		Value  string `json:"Value"`
-	} `json:"Ratings"`
+	IMDbRating string `json:"imdbRating"`
+	IMDbVotes  string `json:"imdbVotes"`
+	// TomatoMeter     string `json:"tomatoMeter"`
+	// TomatoUserMeter string `json:"tomatoUserMeter"`
+	// Ratings         []struct {
+	// 	Source string `json:"Source"`
+	// 	Value  string `json:"Value"`
+	// } `json:"Ratings"`
 	Response string `json:"Response"`
 	Error    string `json:"Error"`
 }
 
-// ByIMDBID fetches GET /?i=tt…&tomatoes=true. tomatoes=true is what adds
-// tomatoMeter / tomatoUserMeter; without it OMDb only returns the critics
-// percentage inside Ratings[].
+// ByIMDBID fetches GET /?i=tt…. IMDb score only — tomatoes=true is not
+// sent because the detail row does not show Rotten Tomatoes.
 func (c *Client) ByIMDBID(ctx context.Context, imdbID string) (Title, error) {
 	if c.cfg.APIKey == "" {
 		return Title{}, fmt.Errorf("omdb: api key is required")
@@ -72,19 +74,23 @@ func (c *Client) ByIMDBID(ctx context.Context, imdbID string) (Title, error) {
 	if imdbID == "" {
 		return Title{}, fmt.Errorf("omdb: imdb id is required")
 	}
-	raw, err := c.get(ctx, url.Values{"i": {imdbID}, "tomatoes": {"true"}})
+	// Claude 2026-08-15: dropped tomatoes=true.
+	// Reason: operator does not want RT; the extra tomatoMeter fields
+	// were unused after the IMDb-only row.
+	// raw, err := c.get(ctx, url.Values{"i": {imdbID}, "tomatoes": {"true"}})
+	raw, err := c.get(ctx, url.Values{"i": {imdbID}})
 	if err != nil {
 		return Title{}, err
 	}
 	out := Title{
-		IMDbRating:      parseOMDbFloat(raw.IMDbRating),
-		IMDbVotes:       int(parseOMDbFloat(raw.IMDbVotes)),
-		TomatoMeter:     int(parseOMDbFloat(raw.TomatoMeter)),
-		TomatoUserMeter: int(parseOMDbFloat(raw.TomatoUserMeter)),
+		IMDbRating: parseOMDbFloat(raw.IMDbRating),
+		IMDbVotes:  int(parseOMDbFloat(raw.IMDbVotes)),
+		// TomatoMeter:     int(parseOMDbFloat(raw.TomatoMeter)),
+		// TomatoUserMeter: int(parseOMDbFloat(raw.TomatoUserMeter)),
 	}
-	if out.TomatoMeter == 0 {
-		out.TomatoMeter = int(parseOMDbFloat(ratingValue(raw.Ratings, "Rotten Tomatoes")))
-	}
+	// if out.TomatoMeter == 0 {
+	// 	out.TomatoMeter = int(parseOMDbFloat(ratingValue(raw.Ratings, "Rotten Tomatoes")))
+	// }
 	return out, nil
 }
 
@@ -135,17 +141,19 @@ func (c *Client) get(ctx context.Context, extra url.Values) (rawTitle, error) {
 	return raw, nil
 }
 
-func ratingValue(ratings []struct {
-	Source string `json:"Source"`
-	Value  string `json:"Value"`
-}, source string) string {
-	for _, r := range ratings {
-		if strings.EqualFold(r.Source, source) {
-			return r.Value
-		}
-	}
-	return ""
-}
+// Claude 2026-08-15: ratingValue was only used to fill RT from Ratings[].
+// Reason: operator does not want Rotten Tomatoes.
+// func ratingValue(ratings []struct {
+// 	Source string `json:"Source"`
+// 	Value  string `json:"Value"`
+// }, source string) string {
+// 	for _, r := range ratings {
+// 		if strings.EqualFold(r.Source, source) {
+// 			return r.Value
+// 		}
+// 	}
+// 	return ""
+// }
 
 func parseOMDbFloat(s string) float64 {
 	s = strings.TrimSpace(s)

@@ -104,21 +104,29 @@ func TestPing_EmptyClientIDFailsWithoutARequest(t *testing.T) {
 	}
 }
 
-func TestRatings_MoviesByTMDBID(t *testing.T) {
-	var gotPath, gotAPIKey, gotAuth string
+func TestRatings_MoviesByIMDBIDExtendedAll(t *testing.T) {
+	var gotPath, gotQuery, gotAPIKey, gotAuth string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
 		gotAPIKey = r.Header.Get("trakt-api-key")
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"rating":8.2345,"votes":12345,"distribution":{"10":100}}`))
+		w.Write([]byte(`{
+		  "trakt":{"rating":8.29,"votes":24789},
+		  "imdb":{"rating":7.9,"votes":269113},
+		  "tmdb":{"rating":8.25,"votes":3739}
+		}`))
 	})
-	got, err := c.Ratings(context.Background(), "movies", 550)
+	got, err := c.Ratings(context.Background(), "movies", "tt0137523")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if gotPath != "/movies/tmdb/550/ratings" {
+	if gotPath != "/movies/tt0137523/ratings" {
 		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if gotQuery != "extended=all" {
+		t.Errorf("unexpected query: %s", gotQuery)
 	}
 	if gotAPIKey != "test-client-id" {
 		t.Errorf("expected trakt-api-key header, got %q", gotAPIKey)
@@ -126,8 +134,11 @@ func TestRatings_MoviesByTMDBID(t *testing.T) {
 	if gotAuth != "" {
 		t.Errorf("public ratings must not send a bearer token, got %q", gotAuth)
 	}
-	if got.Rating != 8.2345 || got.Votes != 12345 {
-		t.Errorf("unexpected ratings: %+v", got)
+	if got.IMDb.Rating != 7.9 || got.IMDb.Votes != 269113 {
+		t.Errorf("unexpected imdb nested ratings: %+v", got.IMDb)
+	}
+	if got.Trakt.Rating != 8.29 || got.Trakt.Votes != 24789 {
+		t.Errorf("unexpected trakt nested ratings: %+v", got.Trakt)
 	}
 }
 
@@ -135,7 +146,20 @@ func TestRatings_RejectsUnknownKind(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("no request should be issued for a bad kind")
 	})
-	if _, err := c.Ratings(context.Background(), "episodes", 1); err == nil {
+	if _, err := c.Ratings(context.Background(), "episodes", "tt1"); err == nil {
 		t.Fatal("expected an error for an unknown kind")
+	}
+}
+
+func TestRatings_EmptyIMDBIDFailsWithoutARequest(t *testing.T) {
+	requested := false
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+	})
+	if _, err := c.Ratings(context.Background(), "movies", "  "); err == nil {
+		t.Fatal("expected an error for an empty imdb id")
+	}
+	if requested {
+		t.Error("expected no HTTP request for an empty imdb id")
 	}
 }

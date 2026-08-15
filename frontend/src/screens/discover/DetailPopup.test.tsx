@@ -1324,22 +1324,6 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
             badge: "",
           },
           {
-            source: "rtCritics",
-            label: "RT Critics",
-            score: 93,
-            scoreKind: "percent",
-            votes: 0,
-            badge: "Fresh",
-          },
-          {
-            source: "rtAudience",
-            label: "RT Audience",
-            score: 66,
-            scoreKind: "percent",
-            votes: 0,
-            badge: "Hot",
-          },
-          {
             source: "tmdb",
             label: "TMDB",
             score: 8.2,
@@ -1363,13 +1347,11 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     const row = await screen.findByTestId("official-ratings");
     expect(row).toHaveTextContent("IMDb");
     expect(row).toHaveTextContent("8.1");
-    expect(row).toHaveTextContent("93%");
-    expect(row).toHaveTextContent("Fresh");
-    expect(row).toHaveTextContent("66%");
-    expect(row).toHaveTextContent("Hot");
     expect(row).toHaveTextContent("8.2");
     expect(row).toHaveTextContent("82%");
     expect(row).toHaveTextContent("Trakt");
+    expect(row).not.toHaveTextContent("93%");
+    expect(row).not.toHaveTextContent("Fresh");
     const collection = screen.getByText("Hero Collection");
     expect(
       row.compareDocumentPosition(collection) & Node.DOCUMENT_POSITION_FOLLOWING,

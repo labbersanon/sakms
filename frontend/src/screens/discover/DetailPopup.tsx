@@ -419,7 +419,7 @@ function flagEmoji(code: string): string {
 
 // Claude 2026-08-14: Movies/Series no longer render this circular TMDB %
 // gauge. OfficialRatingsRow (icon + score cards) replaced it so TMDB sits
-// next to Trakt/IMDb/RT instead of duplicating the same number as a ring.
+// next to Trakt/IMDb instead of duplicating the same number as a ring.
 // Adult still uses the plain ★ text below. Keep the component commented
 // rather than deleted so the gauge math is recoverable if a compact header
 // ring is wanted again.
@@ -441,8 +441,10 @@ function flagEmoji(code: string): string {
 
 const RATING_MARK: Record<string, { abbr: string; class: string }> = {
   imdb: { abbr: "IMDb", class: "bg-[#f5c518] text-black" },
-  rtCritics: { abbr: "RT", class: "bg-[#fa320a] text-white" },
-  rtAudience: { abbr: "AU", class: "bg-[#f5c518] text-black" },
+  // Claude 2026-08-15: RT marks unused while RT is omitted from assembly.
+  // Reason: operator does not want Rotten Tomatoes on the detail row.
+  // rtCritics: { abbr: "RT", class: "bg-[#fa320a] text-white" },
+  // rtAudience: { abbr: "AU", class: "bg-[#f5c518] text-black" },
   tmdb: { abbr: "TMDB", class: "bg-[#01b4e4] text-black" },
   trakt: { abbr: "Trakt", class: "bg-[#ed1c24] text-white" },
 };
@@ -453,8 +455,9 @@ function formatOfficialScore(r: OfficialRating): string {
 }
 
 // OfficialRatingsRow is the compact icon+score strip for catalog scores
-// (IMDb / RT / TMDB / Trakt). Empty sources are omitted by the backend, so
-// an unconfigured OMDb key simply means those cards never appear.
+// (IMDb / TMDB / Trakt). Empty sources are omitted by the backend, so an
+// unconfigured Trakt client id and OMDb key simply means those cards never
+// appear.
 const OfficialRatingsRow: Component<{ ratings: OfficialRating[] }> = (props) => (
   <Show when={props.ratings.length}>
     <div class="mb-3" data-testid="official-ratings">

@@ -106,12 +106,11 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 		// data race across the parallel goroutines. Assembled into the DTO after
 		// g.Wait().
 		var (
-			ext          titleExtended
-			credits      tmdb.Credits
-			keywords     []string
-			providers    []tmdb.WatchProvider
-			recs         []tmdb.Item
-			traktRatings trakt.Ratings
+			ext       titleExtended
+			credits   tmdb.Credits
+			keywords  []string
+			providers []tmdb.WatchProvider
+			recs      []tmdb.Item
 		)
 
 		g := new(errgroup.Group)
@@ -188,42 +187,31 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 				}
 				return nil
 			})
-			// Claude 2026-08-14: Trakt public ratings ride the same click
-			// fan-out as the TMDB bundle. Reason: icon+score row is
-			// detail-only; GET /tracked must not grow catalog scores.
-			// Review if: Quality Over Time (season chart) is added later.
-			if traktStore != nil {
-				g.Go(func() error {
-					conn, e := traktStore.Get(ctx)
-					if e != nil {
-						if !errors.Is(e, trakt.ErrNotConfigured) {
-							log.Printf("discover detail: trakt credentials failed for tmdbId=%d, omitting trakt rating: %v", tmdbID, e)
-						}
-						return nil
-					}
-					if conn.ClientID == "" {
-						return nil
-					}
-					kind := "movies"
-					if isTV {
-						kind = "shows"
-					}
-					c := trakt.New(trakt.Config{BaseURL: trakt.DefaultBaseURL, ClientID: conn.ClientID}, httpClient)
-					var re error
-					traktRatings, re = c.Ratings(ctx, kind, tmdbID)
-					if re != nil {
-						log.Printf("discover detail: trakt ratings failed for mode=%s tmdbId=%d, omitting trakt rating: %v", m, tmdbID, re)
-					}
-					return nil
-				})
-			}
+			// Claude 2026-08-15: Trakt ratings used to fan out here via
+			// GET /movies/tmdb/{id}/ratings. That path is not a Trakt
+			// route ({id} is Trakt id / slug / IMDb id), and the IMDb id
+			// is only known after the TMDB details goroutine finishes.
+			// lookupTraktRatings now runs after g.Wait().
+			// Reason: operator wants IMDb; Trakt's nested imdb score
+			// needs ?extended=all keyed by IMDb id.
+			// Review if: Trakt documents a /tmdb/{id}/ratings alias.
 		}
 		_ = g.Wait() // every goroutine returns nil — see the soft-fail note above.
 
 		var omdbTitle omdb.Title
+		var traktRatings trakt.Ratings
 		ratings := []apidto.OfficialRating{}
 		if !seasonsOnly {
-			omdbTitle = lookupOMDbTitle(ctx, httpClient, connStore, sess.TMDB, isTV, tmdbID, ext.IMDBID)
+			imdbID := ""
+			if wantCatalogIMDB(ctx, connStore, traktStore) {
+				imdbID = resolveTitleIMDBID(ctx, sess.TMDB, isTV, tmdbID, ext.IMDBID)
+			}
+			traktRatings = lookupTraktRatings(ctx, httpClient, traktStore, isTV, tmdbID, imdbID)
+			// OMDb is IMDb-only fallback — skip it when Trakt already
+			// nested an IMDb score so we don't spend a second lookup.
+			if traktRatings.IMDb.Rating <= 0 {
+				omdbTitle = lookupOMDbTitle(ctx, httpClient, connStore, tmdbID, imdbID)
+			}
 			ratings = assembleOfficialRatings(ext.VoteAverage, ext.VoteCount, traktRatings, omdbTitle)
 		}
 
@@ -556,35 +544,95 @@ func discoverCalendarHandler(httpClient *http.Client, connStore *connections.Sto
 	}
 }
 
-// lookupOMDbTitle fetches IMDb/RT scores when an OMDb key is configured.
+// wantCatalogIMDB is true when Trakt or OMDb is configured — those are
+// the only sources that need an IMDb id. TMDB's own vote lives on the
+// details call we already made, so an unconfigured install must not pay
+// for /tv/{id}/external_ids on every series popup.
+func wantCatalogIMDB(ctx context.Context, connStore *connections.Store, traktStore *trakt.Store) bool {
+	if traktStore != nil {
+		if conn, err := traktStore.Get(ctx); err == nil && conn.ClientID != "" {
+			return true
+		} else if err != nil && !errors.Is(err, trakt.ErrNotConfigured) {
+			log.Printf("discover detail: trakt credentials failed, omitting trakt rating: %v", err)
+		}
+	}
+	if conn, err := connStore.Get(ctx, "omdb"); err == nil && conn.APIKey != "" {
+		return true
+	} else if err != nil && !errors.Is(err, connections.ErrNotFound) {
+		log.Printf("discover detail: omdb connection failed, omitting imdb fallback: %v", err)
+	}
+	return false
+}
+
+// resolveTitleIMDBID returns the title's tt… id. Movies carry it on TMDB
+// /movie/{id}; series only expose it under /tv/{id}/external_ids.
+func resolveTitleIMDBID(ctx context.Context, tmdbClient *tmdb.Client, isTV bool, tmdbID int, movieIMDBID string) string {
+	if !isTV {
+		return movieIMDBID
+	}
+	id, err := tmdbClient.TVIMDBID(ctx, tmdbID)
+	if err != nil {
+		log.Printf("discover detail: tv imdb id failed for tmdbId=%d: %v", tmdbID, err)
+		return ""
+	}
+	return id
+}
+
+// lookupTraktRatings fetches GET /{movies|shows}/{imdbId}/ratings?extended=all.
+// Soft-fails to a zero Ratings when Trakt is unconfigured, the IMDb id is
+// missing, or the call fails — same contract as Cast/providers.
+func lookupTraktRatings(ctx context.Context, httpClient *http.Client, traktStore *trakt.Store, isTV bool, tmdbID int, imdbID string) trakt.Ratings {
+	if traktStore == nil {
+		return trakt.Ratings{}
+	}
+	conn, err := traktStore.Get(ctx)
+	if err != nil {
+		if !errors.Is(err, trakt.ErrNotConfigured) {
+			log.Printf("discover detail: trakt credentials failed for tmdbId=%d, omitting trakt rating: %v", tmdbID, err)
+		}
+		return trakt.Ratings{}
+	}
+	if conn.ClientID == "" {
+		return trakt.Ratings{}
+	}
+	if imdbID == "" {
+		log.Printf("discover detail: no imdb id for tmdbId=%d, omitting trakt ratings", tmdbID)
+		return trakt.Ratings{}
+	}
+	kind := "movies"
+	if isTV {
+		kind = "shows"
+	}
+	c := trakt.New(trakt.Config{BaseURL: trakt.DefaultBaseURL, ClientID: conn.ClientID}, httpClient)
+	got, re := c.Ratings(ctx, kind, imdbID)
+	if re != nil {
+		log.Printf("discover detail: trakt ratings failed for tmdbId=%d imdb=%s, omitting trakt rating: %v", tmdbID, imdbID, re)
+		return trakt.Ratings{}
+	}
+	return got
+}
+
+// lookupOMDbTitle fetches an IMDb score when an OMDb key is configured.
 // Soft-fails to a zero Title on any miss — same contract as Cast/providers.
-func lookupOMDbTitle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, tmdbClient *tmdb.Client, isTV bool, tmdbID int, movieIMDBID string) omdb.Title {
+func lookupOMDbTitle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, tmdbID int, imdbID string) omdb.Title {
 	conn, err := connStore.Get(ctx, "omdb")
 	if err != nil {
 		if !errors.Is(err, connections.ErrNotFound) {
-			log.Printf("discover detail: omdb connection failed for tmdbId=%d, omitting imdb/rt: %v", tmdbID, err)
+			log.Printf("discover detail: omdb connection failed for tmdbId=%d, omitting imdb fallback: %v", tmdbID, err)
 		}
 		return omdb.Title{}
 	}
 	if conn.APIKey == "" {
 		return omdb.Title{}
 	}
-	imdbID := movieIMDBID
-	if isTV {
-		var e error
-		imdbID, e = tmdbClient.TVIMDBID(ctx, tmdbID)
-		if e != nil {
-			log.Printf("discover detail: tv imdb id failed for tmdbId=%d, omitting imdb/rt: %v", tmdbID, e)
-			return omdb.Title{}
-		}
-	}
 	if imdbID == "" {
+		log.Printf("discover detail: no imdb id for tmdbId=%d, omitting omdb fallback", tmdbID)
 		return omdb.Title{}
 	}
 	c := omdb.New(omdb.Config{BaseURL: omdb.DefaultBaseURL, APIKey: conn.APIKey}, httpClient)
 	got, e := c.ByIMDBID(ctx, imdbID)
 	if e != nil {
-		log.Printf("discover detail: omdb lookup failed for tmdbId=%d imdb=%s, omitting imdb/rt: %v", tmdbID, imdbID, e)
+		log.Printf("discover detail: omdb lookup failed for tmdbId=%d imdb=%s, omitting imdb fallback: %v", tmdbID, imdbID, e)
 		return omdb.Title{}
 	}
 	return got
@@ -593,54 +641,74 @@ func lookupOMDbTitle(ctx context.Context, httpClient *http.Client, connStore *co
 const (
 	scoreKindTen     = "ten"
 	scoreKindPercent = "percent"
-	rtFreshThreshold = 60
+	// rtFreshThreshold = 60
 )
 
 func assembleOfficialRatings(tmdbAvg float64, tmdbVotes int, tr trakt.Ratings, om omdb.Title) []apidto.OfficialRating {
-	out := make([]apidto.OfficialRating, 0, 5)
-	if om.IMDbRating > 0 {
+	out := make([]apidto.OfficialRating, 0, 3)
+	imdbScore, imdbVotes := officialIMDb(tr, om)
+	if imdbScore > 0 {
 		out = append(out, apidto.OfficialRating{
-			Source: "imdb", Label: "IMDb", Score: om.IMDbRating,
-			ScoreKind: scoreKindTen, Votes: om.IMDbVotes,
+			Source: "imdb", Label: "IMDb", Score: imdbScore,
+			ScoreKind: scoreKindTen, Votes: imdbVotes,
 		})
 	}
-	if om.TomatoMeter > 0 {
-		out = append(out, apidto.OfficialRating{
-			Source: "rtCritics", Label: "RT Critics", Score: float64(om.TomatoMeter),
-			ScoreKind: scoreKindPercent, Badge: rtCriticsBadge(om.TomatoMeter),
-		})
-	}
-	if om.TomatoUserMeter > 0 {
-		out = append(out, apidto.OfficialRating{
-			Source: "rtAudience", Label: "RT Audience", Score: float64(om.TomatoUserMeter),
-			ScoreKind: scoreKindPercent, Badge: rtAudienceBadge(om.TomatoUserMeter),
-		})
-	}
+	// Claude 2026-08-15: RT critics/audience cards omitted.
+	// Reason: operator does not want Rotten Tomatoes on the detail row.
+	// Review if: RT is added back as an explicit opt-in source.
+	// if om.TomatoMeter > 0 {
+	// 	out = append(out, apidto.OfficialRating{
+	// 		Source: "rtCritics", Label: "RT Critics", Score: float64(om.TomatoMeter),
+	// 		ScoreKind: scoreKindPercent, Badge: rtCriticsBadge(om.TomatoMeter),
+	// 	})
+	// }
+	// if om.TomatoUserMeter > 0 {
+	// 	out = append(out, apidto.OfficialRating{
+	// 		Source: "rtAudience", Label: "RT Audience", Score: float64(om.TomatoUserMeter),
+	// 		ScoreKind: scoreKindPercent, Badge: rtAudienceBadge(om.TomatoUserMeter),
+	// 	})
+	// }
 	if tmdbAvg > 0 {
 		out = append(out, apidto.OfficialRating{
 			Source: "tmdb", Label: "TMDB", Score: tmdbAvg,
 			ScoreKind: scoreKindTen, Votes: tmdbVotes,
 		})
 	}
-	if tr.Rating > 0 {
+	trScore, trVotes := officialTrakt(tr)
+	if trScore > 0 {
 		out = append(out, apidto.OfficialRating{
-			Source: "trakt", Label: "Trakt", Score: tr.Rating * 10,
-			ScoreKind: scoreKindPercent, Votes: tr.Votes,
+			Source: "trakt", Label: "Trakt", Score: trScore * 10,
+			ScoreKind: scoreKindPercent, Votes: trVotes,
 		})
 	}
 	return out
 }
 
-func rtCriticsBadge(meter int) string {
-	if meter >= rtFreshThreshold {
-		return "Fresh"
+func officialIMDb(tr trakt.Ratings, om omdb.Title) (float64, int) {
+	if tr.IMDb.Rating > 0 {
+		return tr.IMDb.Rating, tr.IMDb.Votes
 	}
-	return "Rotten"
+	return om.IMDbRating, om.IMDbVotes
 }
 
-func rtAudienceBadge(meter int) string {
-	if meter >= rtFreshThreshold {
-		return "Hot"
+func officialTrakt(tr trakt.Ratings) (float64, int) {
+	if tr.Trakt.Rating > 0 {
+		return tr.Trakt.Rating, tr.Trakt.Votes
 	}
-	return "Spilled"
+	return tr.Rating, tr.Votes
 }
+
+// Claude 2026-08-15: RT badge helpers unused while RT is omitted.
+// func rtCriticsBadge(meter int) string {
+// 	if meter >= rtFreshThreshold {
+// 		return "Fresh"
+// 	}
+// 	return "Rotten"
+// }
+//
+// func rtAudienceBadge(meter int) string {
+// 	if meter >= rtFreshThreshold {
+// 		return "Hot"
+// 	}
+// 	return "Spilled"
+// }

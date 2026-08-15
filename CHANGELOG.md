@@ -7882,6 +7882,16 @@ Connections. Empty or unconfigured sources are omitted; a failed lookup
 never 500s the popup. Adult is unchanged. Quality Over Time is not in
 this change. Catalog scores are not stored on GET /tracked.
 
+## 2026-08-15 — IMDb from Trakt; Rotten Tomatoes dropped
+
+The detail ratings row is IMDb, TMDB, Trakt — no Rotten Tomatoes.
+IMDb comes from Trakt's nested `imdb` score on
+`GET /{movies|shows}/{imdbId}/ratings?extended=all` (the IMDb id is
+resolved after TMDB details). OMDb is IMDb-only fallback when Trakt has
+no nested IMDb score. Empty or unconfigured sources are still omitted.
+Catalog scores are still not stored on GET /tracked.
+
+
 
 
 

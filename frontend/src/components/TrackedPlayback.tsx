@@ -96,9 +96,12 @@ export const PlayFullscreenLink: Component<{
         {`Play ${props.noun} →`}
       </button>
       <Show when={open()}>
+        {/* Claude 2026-08-14: bg-black so fullscreen pillarbox is not cream.
+            Reason: bg-surface-2 painted the unused fullscreen area.
+            Review if: a themed player chrome is added. */}
         <video
           ref={bindVideo}
-          class="mt-2 w-full rounded bg-surface-2"
+          class="mt-2 w-full rounded bg-black"
           controls
           autoplay
           playsinline
@@ -165,7 +168,7 @@ export const TrackedPlayback: Component<{ src: string; label: string }> = (
         <div class="mt-2">
           <video
             ref={bindVideo}
-            class="w-full rounded bg-surface-2"
+            class="w-full rounded bg-black"
             controls
             preload="none"
             src={props.src}

@@ -7866,6 +7866,11 @@ on TMDB, Watch Trailer, and Play Movie/Scene stack as equal-width
 buttons next to a 2:3 poster. Plot text comes before year/genre chips.
 TMDB keywords sit behind a Keywords disclosure instead of a chip wall.
 
+## 2026-08-14 (later, same day) — Fullscreen playback uses a black backdrop
+
+Library in-app Play Movie/Scene fullscreen no longer shows cream
+pillarbox bars. The `<video>` and its fullscreen backdrop are black.
+
 
 
 

@@ -69,3 +69,17 @@ body {
     display: none;
   }
 }
+
+/* Claude 2026-08-14: Library in-app playback fullscreen was cream
+   (--color-bg / bg-surface-2) in the pillarbox. Native <video> fullscreen
+   paints the element's background in unused areas; the backdrop must be
+   black too or the page cream shows through.
+   Review if: a themed player chrome is added. */
+video:fullscreen,
+video:-webkit-full-screen {
+  background-color: #000;
+}
+video:fullscreen::backdrop,
+video:-webkit-full-screen::backdrop {
+  background-color: #000;
+}

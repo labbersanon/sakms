@@ -46,6 +46,7 @@ describe("TrackedPlayback", () => {
     expect(video.getAttribute("src")).toBe(
       "/api/modes/movies/tracked/10/video?fileId=3",
     );
+    expect(video.className).toContain("bg-black");
     expect(screen.getByRole("button", { name: "Hide player for Inception" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -148,6 +149,7 @@ describe("PlayFullscreenLink", () => {
       expect(video.getAttribute("src")).toBe(
         "/api/modes/movies/tracked/10/video?fileId=3",
       );
+      expect(video.className).toContain("bg-black");
       expect(video.hasAttribute("autoplay")).toBe(true);
       expect(screen.queryByRole("dialog")).toBeNull();
       await vi.waitFor(() => {

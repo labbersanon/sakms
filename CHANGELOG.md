@@ -7812,5 +7812,13 @@ Dungeon, Pee, Peeing) matches a scene tagged only Bondage again.
 Mixed contains + notContains rows are not flattened. The five scalar
 columns stay. Drag-and-drop rule/row ordering is not in this change.
 
+## 2026-08-14 (later, same day) — Clean-up tag row layout
+
+Tag criteria no longer share one wrapping flex row with chips, the Add
+field, and an empty unit dropdown. Dropdowns (field / contains / any)
+stay on the first line; chips wrap on their own row; the new-tag input
+and Add sit on a third line. The unit select is omitted when the field
+has no units (tag, quality, blank).
+
 
 

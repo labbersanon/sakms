@@ -7826,5 +7826,10 @@ Tag chips on a Clean-up rule use a translucent `bg-surface/70` fill
 (plus a light blur) so the names read as pills instead of hollow
 bordered labels on the cream form.
 
+## 2026-08-14 (later, same day) — Clean-up tag chip fill is 60%
+
+Tag chips use `bg-surface/60` (was `/70`) so the translucent fill is
+one step more see-through.
+
 
 

@@ -513,6 +513,7 @@ describe("PurgeRulesCard — the card shell", () => {
     expect(details).not.toBeNull();
     expect((details as HTMLDetailsElement).open).toBe(false);
     expect(details!.querySelector("summary")!.textContent).toBe("Rules");
+    expect(details).toHaveClass("bg-surface/30");
   });
 });
 

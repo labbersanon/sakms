@@ -739,7 +739,13 @@ export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
   };
 
   return (
-    <details class="mt-6 rounded border border-border p-3">
+    // Claude 2026-08-14: bg-surface/30 on the Rules <details>.
+    // Reason: the card sat on the cream watermark with no fill; chips
+    //   already use /30 and the operator asked for the same on this section.
+    // Troubleshooting: Activity log in OrganizeChrome still has no fill —
+    //   do not "align" them. backdrop-blur-sm matches the tag chips.
+    // Review if: the Rules card is restyled as a <Card> instead of <details>.
+    <details class="mt-6 rounded border border-border bg-surface/30 p-3 backdrop-blur-sm">
       <summary class="cursor-pointer text-sm font-medium">Rules</summary>
       <Muted class="mb-3 mt-3 block">
         Operator-authored rules that flag library items for Clean-up review.

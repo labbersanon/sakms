@@ -7836,5 +7836,12 @@ one step more see-through.
 Tag chips use `bg-surface/30` (was `/60`). `/60` still read too dark
 on the cream form.
 
+## 2026-08-14 (later, same day) — Clean-up Rules section is 30% fill
+
+The Rules `<details>` uses `bg-surface/30` plus a light blur, same
+opacity as the tag chips, so the section reads as a panel on the cream
+watermark instead of sitting on the page background.
+
+
 
 

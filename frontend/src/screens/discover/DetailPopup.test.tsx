@@ -1233,6 +1233,7 @@ const titleDetail = (over: Partial<TitleDetail> = {}): TitleDetail => ({
   // Always [] for a Movie, and this fixture's title is one. A Series' popup
   // hands this straight to SeasonEpisodePicker as pre-fetched data.
   seasons: [],
+  ratings: [],
   ...over,
 });
 
@@ -1307,6 +1308,72 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     // Revenue/Budget are explicitly excluded.
     expect(screen.queryByText(/Revenue/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Budget/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("official-ratings")).not.toBeInTheDocument();
+  });
+
+  it("renders official rating cards before the collection banner", async () => {
+    stubWithDetail(
+      titleDetail({
+        ratings: [
+          {
+            source: "imdb",
+            label: "IMDb",
+            score: 8.1,
+            scoreKind: "ten",
+            votes: 1000,
+            badge: "",
+          },
+          {
+            source: "rtCritics",
+            label: "RT Critics",
+            score: 93,
+            scoreKind: "percent",
+            votes: 0,
+            badge: "Fresh",
+          },
+          {
+            source: "rtAudience",
+            label: "RT Audience",
+            score: 66,
+            scoreKind: "percent",
+            votes: 0,
+            badge: "Hot",
+          },
+          {
+            source: "tmdb",
+            label: "TMDB",
+            score: 8.2,
+            scoreKind: "ten",
+            votes: 21000,
+            badge: "",
+          },
+          {
+            source: "trakt",
+            label: "Trakt",
+            score: 82,
+            scoreKind: "percent",
+            votes: 99,
+            badge: "",
+          },
+        ],
+      }),
+    );
+    const target: DetailTarget = { mode: "movies", item: movie({ id: 42 }) };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+    const row = await screen.findByTestId("official-ratings");
+    expect(row).toHaveTextContent("IMDb");
+    expect(row).toHaveTextContent("8.1");
+    expect(row).toHaveTextContent("93%");
+    expect(row).toHaveTextContent("Fresh");
+    expect(row).toHaveTextContent("66%");
+    expect(row).toHaveTextContent("Hot");
+    expect(row).toHaveTextContent("8.2");
+    expect(row).toHaveTextContent("82%");
+    expect(row).toHaveTextContent("Trakt");
+    const collection = screen.getByText("Hero Collection");
+    expect(
+      row.compareDocumentPosition(collection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("puts year and genres in the chip row and keeps extra keywords behind a disclosure", async () => {

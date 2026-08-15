@@ -103,3 +103,39 @@ func TestPing_EmptyClientIDFailsWithoutARequest(t *testing.T) {
 		t.Error("expected no HTTP request for an empty client_id")
 	}
 }
+
+func TestRatings_MoviesByTMDBID(t *testing.T) {
+	var gotPath, gotAPIKey, gotAuth string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("trakt-api-key")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"rating":8.2345,"votes":12345,"distribution":{"10":100}}`))
+	})
+	got, err := c.Ratings(context.Background(), "movies", 550)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/movies/tmdb/550/ratings" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if gotAPIKey != "test-client-id" {
+		t.Errorf("expected trakt-api-key header, got %q", gotAPIKey)
+	}
+	if gotAuth != "" {
+		t.Errorf("public ratings must not send a bearer token, got %q", gotAuth)
+	}
+	if got.Rating != 8.2345 || got.Votes != 12345 {
+		t.Errorf("unexpected ratings: %+v", got)
+	}
+}
+
+func TestRatings_RejectsUnknownKind(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no request should be issued for a bad kind")
+	})
+	if _, err := c.Ratings(context.Background(), "episodes", 1); err == nil {
+		t.Fatal("expected an error for an unknown kind")
+	}
+}

@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/trakt"
 )
 
 // fakeTMDBDetail serves the five endpoints discoverDetailHandler fans out to
@@ -39,7 +41,7 @@ func fakeTMDBDetail(t *testing.T, keywordsStatus int) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/recommendations"):
 			w.Write([]byte(`{"results":[{"id":99,"title":"Similar","poster_path":"/x.jpg","release_date":"2021-01-01","vote_average":6.6}]}`))
 		default: // /movie/{id} details
-			w.Write([]byte(`{"id":42,"title":"A Movie","overview":"A movie synopsis.","poster_path":"/p.jpg","status":"Released","original_language":"en","runtime":100,"genres":[{"name":"Action"}],"production_companies":[{"name":"Studio One"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}],"release_dates":{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2023-07-01T00:00:00.000Z"}]}]}}`))
+			w.Write([]byte(`{"id":42,"title":"A Movie","overview":"A movie synopsis.","poster_path":"/p.jpg","status":"Released","original_language":"en","runtime":100,"vote_average":8.2,"vote_count":21000,"imdb_id":"tt0137523","genres":[{"name":"Action"}],"production_companies":[{"name":"Studio One"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}],"release_dates":{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2023-07-01T00:00:00.000Z"}]}]}}`))
 		}
 	})
 	srv := httptest.NewServer(mux)
@@ -69,7 +71,7 @@ func fakeTMDBDetailTV(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/recommendations"):
 			w.Write([]byte(`{"results":[{"id":99,"name":"Similar Show","poster_path":"/x.jpg","first_air_date":"2021-01-01","vote_average":6.6}]}`))
 		default: // /tv/{id} details
-			w.Write([]byte(`{"id":42,"name":"A Show","overview":"A show synopsis.","poster_path":"/tv.jpg","status":"Returning Series","original_language":"en","episode_run_time":[45],"genres":[{"name":"Drama"}],"networks":[{"name":"HBO"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}]}`))
+			w.Write([]byte(`{"id":42,"name":"A Show","overview":"A show synopsis.","poster_path":"/tv.jpg","status":"Returning Series","original_language":"en","episode_run_time":[45],"vote_average":8.4,"vote_count":5000,"genres":[{"name":"Drama"}],"networks":[{"name":"HBO"}],"production_countries":[{"iso_3166_1":"US","name":"United States of America"}]}`))
 		}
 	})
 	srv := httptest.NewServer(mux)
@@ -78,21 +80,26 @@ func fakeTMDBDetailTV(t *testing.T) *httptest.Server {
 }
 
 func detailMux(t *testing.T, tmdbURL string) *http.ServeMux {
+	mux, _, _ := detailMuxStores(t, tmdbURL)
+	return mux
+}
+
+func detailMuxStores(t *testing.T, tmdbURL string) (*http.ServeMux, *connections.Store, *trakt.Store) {
 	t.Helper()
 	// The TMDB response-cache reset this helper used to do itself now lives in
 	// overrideFixedURL's "tmdb" case (called below), so every internal/api test
 	// gets it rather than only this file's. Do NOT re-add a local reset — one
 	// mechanism, in one place. See that case's comment for the hazard.
-	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	connStore, _, settingsStore, _, _, _, traktStore, _, _, _ := testStores(t)
 	ctx := context.Background()
 	overrideFixedURL(t, "tmdb", tmdbURL)
 	if err := connStore.Upsert(ctx, "tmdb", tmdbURL, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(testHTTPClient(), connStore, nil, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(testHTTPClient(), connStore, nil, settingsStore, traktStore))
 	mux.HandleFunc("GET /api/modes/{mode}/discover/calendar", discoverCalendarHandler(testHTTPClient(), connStore, nil, settingsStore))
-	return mux
+	return mux, connStore, traktStore
 }
 
 func TestDiscoverDetailHandler_AllSectionsPopulated(t *testing.T) {
@@ -125,6 +132,9 @@ func TestDiscoverDetailHandler_AllSectionsPopulated(t *testing.T) {
 	}
 	if len(d.Keywords) != 1 || len(d.WatchProviders) != 1 || len(d.Recommendations) != 1 {
 		t.Errorf("keywords/providers/recommendations not populated: %+v", d)
+	}
+	if len(d.Ratings) != 1 || d.Ratings[0].Source != "tmdb" || d.Ratings[0].Score != 8.2 || d.Ratings[0].Votes != 21000 {
+		t.Errorf("expected tmdb official rating, got %+v", d.Ratings)
 	}
 }
 
@@ -217,6 +227,9 @@ func TestDiscoverDetailHandler_SeriesUsesTVShapes(t *testing.T) {
 	}
 	if len(d.Recommendations) != 1 || d.Recommendations[0].Title != "Similar Show" {
 		t.Errorf("TV recommendations (name field, not title) not decoded correctly: %+v", d.Recommendations)
+	}
+	if len(d.Ratings) != 1 || d.Ratings[0].Source != "tmdb" || d.Ratings[0].Score != 8.4 {
+		t.Errorf("expected tmdb official rating for TV, got %+v", d.Ratings)
 	}
 }
 
@@ -507,6 +520,9 @@ func TestDiscoverDetail_SectionsSeasons_SkipsBundle(t *testing.T) {
 	if len(d.Cast) != 0 || len(d.Keywords) != 0 || len(d.WatchProviders) != 0 || len(d.Recommendations) != 0 {
 		t.Errorf("skipped sections must be empty, not fetched: %+v", d)
 	}
+	if len(d.Ratings) != 0 {
+		t.Errorf("sections=seasons must omit official ratings, got %+v", d.Ratings)
+	}
 }
 
 // TestDiscoverDetail_DefaultIncludesSeasonsAndBundle is the backward-compat
@@ -674,5 +690,133 @@ func TestDiscoverCalendarHandler_MissingParams(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 when 'to' is missing, got %d", resp.StatusCode)
+	}
+}
+
+func TestDiscoverDetailHandler_OfficialRatingsFromTraktAndOMDb(t *testing.T) {
+	omdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("i") != "tt0137523" {
+			t.Errorf("unexpected imdb id: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+		  "imdbRating":"8.1",
+		  "imdbVotes":"1,000",
+		  "tomatoMeter":"93",
+		  "tomatoUserMeter":"66",
+		  "Response":"True"
+		}`))
+	}))
+	t.Cleanup(omdbSrv.Close)
+
+	traktSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/movies/tmdb/42/ratings" {
+			t.Errorf("unexpected trakt path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Error("public ratings must not send a bearer token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"rating":8.2,"votes":99}`))
+	}))
+	t.Cleanup(traktSrv.Close)
+
+	mux, connStore, traktStore := detailMuxStores(t, fakeTMDBDetail(t, http.StatusOK).URL)
+	overrideFixedURL(t, "omdb", omdbSrv.URL)
+	prevTrakt := trakt.DefaultBaseURL
+	trakt.DefaultBaseURL = traktSrv.URL
+	t.Cleanup(func() { trakt.DefaultBaseURL = prevTrakt })
+
+	secret := "trakt-secret"
+	if err := traktStore.SaveCredentials(context.Background(), "trakt-client", &secret); err != nil {
+		t.Fatalf("saving trakt credentials: %v", err)
+	}
+	if err := connStore.Upsert(context.Background(), "omdb", omdbSrv.URL, "omdb-key"); err != nil {
+		t.Fatalf("saving omdb key: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/detail?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var d apidto.TitleDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := map[string]apidto.OfficialRating{}
+	for _, r := range d.Ratings {
+		got[r.Source] = r
+	}
+	if r, ok := got["imdb"]; !ok || r.Score != 8.1 || r.ScoreKind != "ten" || r.Votes != 1000 {
+		t.Errorf("imdb: %+v", r)
+	}
+	if r, ok := got["rtCritics"]; !ok || r.Score != 93 || r.Badge != "Fresh" || r.ScoreKind != "percent" {
+		t.Errorf("rtCritics: %+v", r)
+	}
+	if r, ok := got["rtAudience"]; !ok || r.Score != 66 || r.Badge != "Hot" {
+		t.Errorf("rtAudience: %+v", r)
+	}
+	if r, ok := got["tmdb"]; !ok || r.Score != 8.2 || r.ScoreKind != "ten" {
+		t.Errorf("tmdb: %+v", r)
+	}
+	if r, ok := got["trakt"]; !ok || r.Score != 82 || r.ScoreKind != "percent" || r.Votes != 99 {
+		t.Errorf("trakt: %+v", r)
+	}
+	order := make([]string, 0, len(d.Ratings))
+	for _, r := range d.Ratings {
+		order = append(order, r.Source)
+	}
+	wantOrder := "imdb,rtCritics,rtAudience,tmdb,trakt"
+	if strings.Join(order, ",") != wantOrder {
+		t.Errorf("rating order %v, want %s", order, wantOrder)
+	}
+}
+
+func TestDiscoverDetailHandler_OfficialRatingsSoftFail(t *testing.T) {
+	omdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(omdbSrv.Close)
+	traktSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(traktSrv.Close)
+
+	mux, connStore, traktStore := detailMuxStores(t, fakeTMDBDetail(t, http.StatusOK).URL)
+	overrideFixedURL(t, "omdb", omdbSrv.URL)
+	prevTrakt := trakt.DefaultBaseURL
+	trakt.DefaultBaseURL = traktSrv.URL
+	t.Cleanup(func() { trakt.DefaultBaseURL = prevTrakt })
+	secret := "trakt-secret"
+	if err := traktStore.SaveCredentials(context.Background(), "trakt-client", &secret); err != nil {
+		t.Fatalf("saving trakt credentials: %v", err)
+	}
+	if err := connStore.Upsert(context.Background(), "omdb", omdbSrv.URL, "omdb-key"); err != nil {
+		t.Fatalf("saving omdb key: %v", err)
+	}
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/detail?tmdbId=42")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("omdb/trakt failure must not 500 the popup; got %d", resp.StatusCode)
+	}
+	var d apidto.TitleDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(d.Ratings) != 1 || d.Ratings[0].Source != "tmdb" {
+		t.Errorf("expected only tmdb after omdb/trakt soft-fail, got %+v", d.Ratings)
 	}
 }

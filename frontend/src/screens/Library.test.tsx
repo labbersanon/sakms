@@ -80,6 +80,7 @@ const emptyTitleDetail = (): TitleDetail => ({
   seasons: [],
   overview: "",
   posterPath: "",
+  ratings: [],
 });
 
 // libraryEnrichmentResponse answers Discover's trailer/detail/description
@@ -302,6 +303,51 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(within(dialog).queryByText("Leonardo DiCaprio")).toBeNull();
     expect(screen.queryByText("Crew")).toBeNull();
     expect(screen.queryByText("Dir One")).toBeNull();
+  });
+
+  it("shows official catalog ratings above the overview on a Library movie", async () => {
+    stubFetch((url, init) => {
+      const extra = libraryEnrichmentResponse(url);
+      if (url.includes("/discover/detail")) {
+        return jsonResponse({
+          ...emptyTitleDetail(),
+          overview: "A thief who steals corporate secrets through dream-sharing.",
+          ratings: [
+            {
+              source: "tmdb",
+              label: "TMDB",
+              score: 8.2,
+              scoreKind: "ten",
+              votes: 21000,
+              badge: "",
+            },
+            {
+              source: "trakt",
+              label: "Trakt",
+              score: 82,
+              scoreKind: "percent",
+              votes: 99,
+              badge: "",
+            },
+          ],
+        });
+      }
+      if (extra) return extra;
+      return makeHandler([inception()])(url, init);
+    });
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const row = await screen.findByTestId("official-ratings");
+    expect(row).toHaveTextContent("8.2");
+    expect(row).toHaveTextContent("82%");
+    const overview = screen.getByText(
+      "A thief who steals corporate secrets through dream-sharing.",
+    );
+    expect(
+      (row.compareDocumentPosition(overview) &
+        Node.DOCUMENT_POSITION_FOLLOWING) !==
+        0,
+    ).toBe(true);
   });
 
   it("shows the TMDB poster from title detail when the tracked row has none", async () => {

@@ -8,12 +8,13 @@ import (
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/bravesearch"
-	"github.com/labbersanon/sakms/internal/searxng"
 	"github.com/labbersanon/sakms/internal/emby"
 	"github.com/labbersanon/sakms/internal/jellyfin"
 	"github.com/labbersanon/sakms/internal/ollama"
+	"github.com/labbersanon/sakms/internal/omdb"
 	"github.com/labbersanon/sakms/internal/plex"
 	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/searxng"
 	"github.com/labbersanon/sakms/internal/stashapi"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tmdb"
@@ -30,7 +31,7 @@ type ConnectionTestRequest struct {
 	// Service is a singleton connections service name OR, on the registry test
 	// routes, a serviceconn.Provider — the two vocabularies overlap on
 	// "jellyfin" deliberately (one dispatch, two callers).
-	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "nntp" | "tmdb" | "tvdb" | "trakt"
+	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "nntp" | "tmdb" | "tvdb" | "trakt" | "omdb"
 	URL      string `json:"url"`
 	Username string `json:"username,omitempty"` // only nntp uses this (testNNTP)
 	APIKey   string `json:"apiKey,omitempty"`
@@ -108,6 +109,8 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 	// the earlier keep-as-generic-capability decision.
 	case "tmdb":
 		return testTMDB(ctx, httpClient, req)
+	case "omdb":
+		return testOMDb(ctx, httpClient, req)
 	case "tvdb":
 		return testTVDB(ctx, httpClient, req)
 	case "nntp":
@@ -255,6 +258,14 @@ func testTMDB(ctx context.Context, httpClient *http.Client, req ConnectionTestRe
 	// Fixed public base URL — hardcoded, never req.URL (no URL collected).
 	c := tmdb.New(tmdb.Config{BaseURL: tmdb.DefaultBaseURL, APIKey: req.APIKey}, httpClient)
 	if _, err := c.Popular(ctx, tmdb.Movie, 1); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+func testOMDb(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	c := omdb.New(omdb.Config{BaseURL: omdb.DefaultBaseURL, APIKey: req.APIKey}, httpClient)
+	if err := c.Ping(ctx); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}
 	return ConnectionTestResult{OK: true}

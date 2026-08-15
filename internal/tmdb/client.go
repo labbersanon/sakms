@@ -324,18 +324,38 @@ func (c *Client) SearchTV(ctx context.Context, query string) ([]Item, error) {
 }
 
 type externalIDsResponse struct {
-	TVDBID int `json:"tvdb_id"`
+	TVDBID int    `json:"tvdb_id"`
+	IMDBID string `json:"imdb_id"`
 }
 
 // ExternalIDs resolves a TMDB TV show id to its TVDB id — 0 if TMDB doesn't
 // have one on file for this show (rare, but possible for very new or
 // obscure titles).
 func (c *Client) ExternalIDs(ctx context.Context, tmdbTVID int) (tvdbID int, err error) {
-	var resp externalIDsResponse
-	if err := c.do(ctx, fmt.Sprintf("/tv/%d/external_ids", tmdbTVID), nil, &resp); err != nil {
+	resp, err := c.tvExternalIDs(ctx, tmdbTVID)
+	if err != nil {
 		return 0, err
 	}
 	return resp.TVDBID, nil
+}
+
+// TVIMDBID resolves a TMDB TV show id to its IMDb id (tt…) — "" if TMDB
+// has none on file. Movies carry imdb_id on /movie/{id}; TV only exposes
+// it under /tv/{id}/external_ids. Used by the detail popup's OMDb lookup.
+func (c *Client) TVIMDBID(ctx context.Context, tmdbTVID int) (string, error) {
+	resp, err := c.tvExternalIDs(ctx, tmdbTVID)
+	if err != nil {
+		return "", err
+	}
+	return resp.IMDBID, nil
+}
+
+func (c *Client) tvExternalIDs(ctx context.Context, tmdbTVID int) (externalIDsResponse, error) {
+	var resp externalIDsResponse
+	if err := c.do(ctx, fmt.Sprintf("/tv/%d/external_ids", tmdbTVID), nil, &resp); err != nil {
+		return externalIDsResponse{}, err
+	}
+	return resp, nil
 }
 
 // CollectionRef is the subset of TMDB's belongs_to_collection object SAK
@@ -378,6 +398,12 @@ type MovieDetails struct {
 	// from, exposed here as the whole list for the detail popup's metadata
 	// sidebar. Deliberately NOT Revenue/Budget (out of scope, low value).
 	ReleaseDates []ReleaseDate
+	// VoteAverage is TMDB's 0–10 community score; VoteCount is how many
+	// votes that average is over. Both are 0 when TMDB omits them. The
+	// detail popup's official-ratings row uses these; list cards still
+	// read voteAverage off DiscoverItem.
+	VoteAverage float64
+	VoteCount   int
 }
 
 // ReleaseDate is one dated release entry for a movie — TMDB's release "type"
@@ -391,14 +417,16 @@ type ReleaseDate struct {
 }
 
 type movieDetailsResponse struct {
-	ID          int    `json:"id"`
-	Title       string `json:"title"`
-	PosterPath  string `json:"poster_path"`
-	IMDBID      string `json:"imdb_id"`
-	Runtime     int    `json:"runtime"`
-	Overview    string `json:"overview"`
-	ReleaseDate string `json:"release_date"`
-	Status      string `json:"status"`
+	ID          int     `json:"id"`
+	Title       string  `json:"title"`
+	PosterPath  string  `json:"poster_path"`
+	IMDBID      string  `json:"imdb_id"`
+	Runtime     int     `json:"runtime"`
+	Overview    string  `json:"overview"`
+	ReleaseDate string  `json:"release_date"`
+	Status      string  `json:"status"`
+	VoteAverage float64 `json:"vote_average"`
+	VoteCount   int     `json:"vote_count"`
 	// OriginalLanguage is TMDB's original_language ISO 639-1 code.
 	OriginalLanguage string `json:"original_language"`
 	Genres           []struct {
@@ -447,6 +475,8 @@ func (c *Client) MovieDetails(ctx context.Context, tmdbID int) (MovieDetails, er
 		ReleaseDate:      resp.ReleaseDate,
 		Status:           resp.Status,
 		OriginalLanguage: resp.OriginalLanguage,
+		VoteAverage:      resp.VoteAverage,
+		VoteCount:        resp.VoteCount,
 		Genres:           make([]string, len(resp.Genres)),
 		Studios:          make([]string, len(resp.ProductionCompanies)),
 	}
@@ -503,6 +533,11 @@ type TVDetails struct {
 	ProductionCountryCode string   // ISO 3166-1 code
 	Networks              []string // networks[].name
 	Overview              string
+	// VoteAverage/VoteCount are TMDB's 0–10 community score and vote tally.
+	// Both 0 when omitted. Same fields MovieDetails carries for the detail
+	// popup's official-ratings row.
+	VoteAverage float64
+	VoteCount   int
 	// Seasons is TMDB's seasons[] array, in the order TMDB returns it
 	// (season 0 / Specials included when present). It comes free with the
 	// /tv/{id} body this method already fetches — no extra round trip — and
@@ -557,6 +592,8 @@ type tvDetailsResponse struct {
 		Name     string `json:"name"`
 	} `json:"production_countries"`
 	OriginCountry []string `json:"origin_country"`
+	VoteAverage   float64  `json:"vote_average"`
+	VoteCount     int      `json:"vote_count"`
 	// Seasons is present in every /tv/{id} body TMDB returns; it was
 	// previously decoded away and discarded.
 	Seasons []TVSeason `json:"seasons"`
@@ -578,6 +615,8 @@ func (c *Client) TVDetails(ctx context.Context, tmdbID int) (TVDetails, error) {
 		Status:           resp.Status,
 		Overview:         resp.Overview,
 		OriginalLanguage: resp.OriginalLanguage,
+		VoteAverage:      resp.VoteAverage,
+		VoteCount:        resp.VoteCount,
 		Genres:           make([]string, len(resp.Genres)),
 		Networks:         make([]string, len(resp.Networks)),
 		Seasons:          resp.Seasons,

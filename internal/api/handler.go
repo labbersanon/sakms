@@ -20,6 +20,7 @@ import (
 	"github.com/labbersanon/sakms/internal/imageproxy"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/omdb"
 	"github.com/labbersanon/sakms/internal/openai"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/proposals"
@@ -331,7 +332,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// watch-providers/recommendations/extended metadata) — one on-demand,
 	// per-click TMDB fan-out, soft-failing each section independently.
 	// Movies/Series only. See discover_detail.go.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(httpClient, connStore, scStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/detail", discoverDetailHandler(httpClient, connStore, scStore, settingsStore, traktStore))
 	// Calendar / upcoming month view — a TMDB release-date-range browse for the
 	// visible month. Movies (release date) / Series (first_air_date premieres)
 	// only; never routes through the trending/popular unreleased-hiding filter.
@@ -837,7 +838,7 @@ type upsertConnectionRequest struct {
 
 // fixedURLServices are the connections whose outbound base URL is a hardcoded
 // package constant (internal/tmdb, internal/tvdb, internal/stashbox, internal/tpdbrest,
-// internal/openai, internal/gemini, internal/anthropic, internal/bravesearch), not a
+// internal/openai, internal/gemini, internal/anthropic, internal/bravesearch, internal/omdb), not a
 // user-supplied field — so the UI collects no URL for them and `url` is
 // optional in their upsert requests. Every other service still requires a URL.
 // tmdb/tvdb/stashdb/fansdb/tpdb never collected a URL in the first place;
@@ -861,6 +862,7 @@ type upsertConnectionRequest struct {
 var fixedURLServices = map[string]bool{
 	"tmdb": true, "tvdb": true, "stashdb": true, "fansdb": true, "tpdb": true,
 	"openai": true, "gemini": true, "anthropic": true, "brave": true,
+	"omdb": true,
 }
 
 // fixedURLValues maps each fixedURLServices entry to the real base-URL constant
@@ -881,6 +883,7 @@ var fixedURLValues = map[string]string{
 	"gemini":    gemini.DefaultBaseURL,
 	"anthropic": anthropic.DefaultBaseURL,
 	"brave":     bravesearch.DefaultBaseURL,
+	"omdb":      omdb.DefaultBaseURL,
 }
 
 // movedConnectionServices names the two services migration 0053 moved out of

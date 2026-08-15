@@ -285,6 +285,23 @@ func TestExternalIDs_ResolvesTVDBID(t *testing.T) {
 	}
 }
 
+func TestTVIMDBID_ResolvesIMDbID(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tv/2/external_ids" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id": 2, "tvdb_id": 12345, "imdb_id": "tt1234567"}`))
+	})
+	imdbID, err := c.TVIMDBID(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if imdbID != "tt1234567" {
+		t.Errorf("expected imdb id tt1234567, got %q", imdbID)
+	}
+}
+
 func TestExternalIDs_MissingTVDBIDReturnsZero(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

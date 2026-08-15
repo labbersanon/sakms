@@ -7,7 +7,8 @@
 // Settings would be genuinely confusing. That one keeps its name and its home.
 //
 // This section is where the old Connections tab's Prowlarr and Stash rows
-// landed. Stash is here rather than next to StashDB/FansDB/TPDB in Library ->
+// landed, plus OMDb (IMDb/RT scores for the detail popup — not mode-specific).
+// Stash is here rather than next to StashDB/FansDB/TPDB in Library ->
 // Adult despite the obvious functional adjacency — that was an individually
 // confirmed operator placement decision, not an oversight. Do not "improve" the
 // grouping by moving it.

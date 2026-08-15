@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
@@ -11,9 +13,11 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/omdb"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/trakt"
 )
 
 // maxPrefetchedSeasons caps how many seasons discoverDetailHandler eagerly
@@ -71,7 +75,7 @@ const maxPrefetchedSeasons = 30
 // detail popup omits the param and gets the full bundle plus seasons in one
 // request. Any OTHER value degrades to "give them everything" rather than
 // 400ing, matching this handler's existing soft-fail posture.
-func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
+func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, traktStore *trakt.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		if m != mode.Movies && m != mode.Series {
@@ -102,11 +106,12 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 		// data race across the parallel goroutines. Assembled into the DTO after
 		// g.Wait().
 		var (
-			ext       titleExtended
-			credits   tmdb.Credits
-			keywords  []string
-			providers []tmdb.WatchProvider
-			recs      []tmdb.Item
+			ext          titleExtended
+			credits      tmdb.Credits
+			keywords     []string
+			providers    []tmdb.WatchProvider
+			recs         []tmdb.Item
+			traktRatings trakt.Ratings
 		)
 
 		g := new(errgroup.Group)
@@ -183,8 +188,44 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 				}
 				return nil
 			})
+			// Claude 2026-08-14: Trakt public ratings ride the same click
+			// fan-out as the TMDB bundle. Reason: icon+score row is
+			// detail-only; GET /tracked must not grow catalog scores.
+			// Review if: Quality Over Time (season chart) is added later.
+			if traktStore != nil {
+				g.Go(func() error {
+					conn, e := traktStore.Get(ctx)
+					if e != nil {
+						if !errors.Is(e, trakt.ErrNotConfigured) {
+							log.Printf("discover detail: trakt credentials failed for tmdbId=%d, omitting trakt rating: %v", tmdbID, e)
+						}
+						return nil
+					}
+					if conn.ClientID == "" {
+						return nil
+					}
+					kind := "movies"
+					if isTV {
+						kind = "shows"
+					}
+					c := trakt.New(trakt.Config{BaseURL: trakt.DefaultBaseURL, ClientID: conn.ClientID}, httpClient)
+					var re error
+					traktRatings, re = c.Ratings(ctx, kind, tmdbID)
+					if re != nil {
+						log.Printf("discover detail: trakt ratings failed for mode=%s tmdbId=%d, omitting trakt rating: %v", m, tmdbID, re)
+					}
+					return nil
+				})
+			}
 		}
 		_ = g.Wait() // every goroutine returns nil — see the soft-fail note above.
+
+		var omdbTitle omdb.Title
+		ratings := []apidto.OfficialRating{}
+		if !seasonsOnly {
+			omdbTitle = lookupOMDbTitle(ctx, httpClient, connStore, sess.TMDB, isTV, tmdbID, ext.IMDBID)
+			ratings = assembleOfficialRatings(ext.VoteAverage, ext.VoteCount, traktRatings, omdbTitle)
+		}
 
 		// Season/episode prefetch — a SECOND, SEQUENTIAL-AFTER group, deliberately
 		// not a sixth sibling of the one above: the season list itself arrives with
@@ -288,6 +329,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			Recommendations:       mapDiscoverItems(recs),
 			Overview:              ext.Overview,
 			PosterPath:            ext.PosterPath,
+			Ratings:               ratings,
 			// `"seasons":[]` and never null — for a Movie (which never populates
 			// ext.Seasons), for a Series whose TVDetails call soft-failed, and for
 			// a Series TMDB reports zero seasons for. The zero-length make() above
@@ -319,6 +361,9 @@ type titleExtended struct {
 	ReleaseDates          []apidto.ReleaseDateEntry
 	Overview              string
 	PosterPath            string
+	IMDBID                string
+	VoteAverage           float64
+	VoteCount             int
 	// Seasons is Series-only (nil for a Movie) — TMDB's seasons[] as /tv/{id}
 	// returns it, in TMDB's own order. It is what the handler's per-season
 	// episode fan-out iterates.
@@ -339,6 +384,9 @@ func extendedFromMovie(d tmdb.MovieDetails) titleExtended {
 		ReleaseDates:          mapReleaseDates(d.ReleaseDates),
 		Overview:              d.Overview,
 		PosterPath:            d.PosterPath,
+		IMDBID:                d.IMDBID,
+		VoteAverage:           d.VoteAverage,
+		VoteCount:             d.VoteCount,
 	}
 }
 
@@ -354,6 +402,8 @@ func extendedFromTV(d tmdb.TVDetails) titleExtended {
 		Seasons:               d.Seasons,
 		Overview:              d.Overview,
 		PosterPath:            d.PosterPath,
+		VoteAverage:           d.VoteAverage,
+		VoteCount:             d.VoteCount,
 	}
 }
 
@@ -504,4 +554,93 @@ func discoverCalendarHandler(httpClient *http.Client, connStore *connections.Sto
 
 		writeJSON(w, mapDiscoverItems(items))
 	}
+}
+
+// lookupOMDbTitle fetches IMDb/RT scores when an OMDb key is configured.
+// Soft-fails to a zero Title on any miss — same contract as Cast/providers.
+func lookupOMDbTitle(ctx context.Context, httpClient *http.Client, connStore *connections.Store, tmdbClient *tmdb.Client, isTV bool, tmdbID int, movieIMDBID string) omdb.Title {
+	conn, err := connStore.Get(ctx, "omdb")
+	if err != nil {
+		if !errors.Is(err, connections.ErrNotFound) {
+			log.Printf("discover detail: omdb connection failed for tmdbId=%d, omitting imdb/rt: %v", tmdbID, err)
+		}
+		return omdb.Title{}
+	}
+	if conn.APIKey == "" {
+		return omdb.Title{}
+	}
+	imdbID := movieIMDBID
+	if isTV {
+		var e error
+		imdbID, e = tmdbClient.TVIMDBID(ctx, tmdbID)
+		if e != nil {
+			log.Printf("discover detail: tv imdb id failed for tmdbId=%d, omitting imdb/rt: %v", tmdbID, e)
+			return omdb.Title{}
+		}
+	}
+	if imdbID == "" {
+		return omdb.Title{}
+	}
+	c := omdb.New(omdb.Config{BaseURL: omdb.DefaultBaseURL, APIKey: conn.APIKey}, httpClient)
+	got, e := c.ByIMDBID(ctx, imdbID)
+	if e != nil {
+		log.Printf("discover detail: omdb lookup failed for tmdbId=%d imdb=%s, omitting imdb/rt: %v", tmdbID, imdbID, e)
+		return omdb.Title{}
+	}
+	return got
+}
+
+const (
+	scoreKindTen     = "ten"
+	scoreKindPercent = "percent"
+	rtFreshThreshold = 60
+)
+
+func assembleOfficialRatings(tmdbAvg float64, tmdbVotes int, tr trakt.Ratings, om omdb.Title) []apidto.OfficialRating {
+	out := make([]apidto.OfficialRating, 0, 5)
+	if om.IMDbRating > 0 {
+		out = append(out, apidto.OfficialRating{
+			Source: "imdb", Label: "IMDb", Score: om.IMDbRating,
+			ScoreKind: scoreKindTen, Votes: om.IMDbVotes,
+		})
+	}
+	if om.TomatoMeter > 0 {
+		out = append(out, apidto.OfficialRating{
+			Source: "rtCritics", Label: "RT Critics", Score: float64(om.TomatoMeter),
+			ScoreKind: scoreKindPercent, Badge: rtCriticsBadge(om.TomatoMeter),
+		})
+	}
+	if om.TomatoUserMeter > 0 {
+		out = append(out, apidto.OfficialRating{
+			Source: "rtAudience", Label: "RT Audience", Score: float64(om.TomatoUserMeter),
+			ScoreKind: scoreKindPercent, Badge: rtAudienceBadge(om.TomatoUserMeter),
+		})
+	}
+	if tmdbAvg > 0 {
+		out = append(out, apidto.OfficialRating{
+			Source: "tmdb", Label: "TMDB", Score: tmdbAvg,
+			ScoreKind: scoreKindTen, Votes: tmdbVotes,
+		})
+	}
+	if tr.Rating > 0 {
+		out = append(out, apidto.OfficialRating{
+			Source: "trakt", Label: "Trakt", Score: tr.Rating * 10,
+			ScoreKind: scoreKindPercent, Votes: tr.Votes,
+		})
+	}
+	return out
+}
+
+func rtCriticsBadge(meter int) string {
+	if meter >= rtFreshThreshold {
+		return "Fresh"
+	}
+	return "Rotten"
+}
+
+func rtAudienceBadge(meter int) string {
+	if meter >= rtFreshThreshold {
+		return "Hot"
+	}
+	return "Spilled"
 }

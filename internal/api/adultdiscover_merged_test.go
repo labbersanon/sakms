@@ -25,6 +25,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/bravesearch"
+	"github.com/labbersanon/sakms/internal/omdb"
 	"github.com/labbersanon/sakms/internal/stashbox"
 	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
@@ -92,6 +93,10 @@ func overrideFixedURL(t *testing.T, service, u string) {
 		prev := bravesearch.DefaultBaseURL
 		bravesearch.DefaultBaseURL = u
 		t.Cleanup(func() { bravesearch.DefaultBaseURL = prev })
+	case "omdb":
+		prev := omdb.DefaultBaseURL
+		omdb.DefaultBaseURL = u
+		t.Cleanup(func() { omdb.DefaultBaseURL = prev })
 	}
 }
 

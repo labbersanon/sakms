@@ -59,7 +59,7 @@ import {
   For,
   Show,
 } from "solid-js";
-import type { AvailabilityCandidate, AvailabilityPreview, TitleDetail } from "@dto";
+import type { AvailabilityCandidate, AvailabilityPreview, OfficialRating, TitleDetail } from "@dto";
 import {
   type AdultDiscoverItem,
   type DiscoverItem,
@@ -417,48 +417,87 @@ function flagEmoji(code: string): string {
   );
 }
 
-// RatingGauge renders a TMDB voteAverage (0–10) as a circular % gauge
-// (voteAverage × 10), replacing the plain "★ 8.4" text for Movies/Series — pure
-// presentation over the same underlying field (F1 item 1).
-const RatingGauge: Component<{ value: number }> = (props) => {
-  const pct = () => Math.max(0, Math.min(100, Math.round(props.value * 10)));
-  const radius = 16;
-  const circ = 2 * Math.PI * radius;
-  return (
-    <div
-      class="relative h-11 w-11 shrink-0"
-      title={`${props.value.toFixed(1)} / 10`}
-      aria-label={`Rating ${pct()} percent`}
-    >
-      <svg viewBox="0 0 40 40" class="h-full w-full -rotate-90">
-        <circle
-          cx="20"
-          cy="20"
-          r={radius}
-          fill="none"
-          stroke="currentColor"
-          stroke-width="3"
-          class="text-surface-2"
-        />
-        <circle
-          cx="20"
-          cy="20"
-          r={radius}
-          fill="none"
-          stroke="currentColor"
-          stroke-width="3"
-          stroke-linecap="round"
-          class="text-accent"
-          stroke-dasharray={String(circ)}
-          stroke-dashoffset={String(circ * (1 - pct() / 100))}
-        />
-      </svg>
-      <span class="absolute inset-0 flex items-center justify-center text-[11px] font-semibold text-fg">
-        {pct()}%
-      </span>
-    </div>
-  );
+// Claude 2026-08-14: Movies/Series no longer render this circular TMDB %
+// gauge. OfficialRatingsRow (icon + score cards) replaced it so TMDB sits
+// next to Trakt/IMDb/RT instead of duplicating the same number as a ring.
+// Adult still uses the plain ★ text below. Keep the component commented
+// rather than deleted so the gauge math is recoverable if a compact header
+// ring is wanted again.
+// Review if: a header-only TMDB ring is restored alongside the icon row.
+// const RatingGauge: Component<{ value: number }> = (props) => {
+//   const pct = () => Math.max(0, Math.min(100, Math.round(props.value * 10)));
+//   const radius = 16;
+//   const circ = 2 * Math.PI * radius;
+//   return (
+//     <div
+//       class="relative h-11 w-11 shrink-0"
+//       title={`${props.value.toFixed(1)} / 10`}
+//       aria-label={`Rating ${pct()} percent`}
+//     >
+//       ...
+//     </div>
+//   );
+// };
+
+const RATING_MARK: Record<string, { abbr: string; class: string }> = {
+  imdb: { abbr: "IMDb", class: "bg-[#f5c518] text-black" },
+  rtCritics: { abbr: "RT", class: "bg-[#fa320a] text-white" },
+  rtAudience: { abbr: "AU", class: "bg-[#f5c518] text-black" },
+  tmdb: { abbr: "TMDB", class: "bg-[#01b4e4] text-black" },
+  trakt: { abbr: "Trakt", class: "bg-[#ed1c24] text-white" },
 };
+
+function formatOfficialScore(r: OfficialRating): string {
+  if (r.scoreKind === "percent") return `${Math.round(r.score)}%`;
+  return r.score.toFixed(1);
+}
+
+// OfficialRatingsRow is the compact icon+score strip for catalog scores
+// (IMDb / RT / TMDB / Trakt). Empty sources are omitted by the backend, so
+// an unconfigured OMDb key simply means those cards never appear.
+const OfficialRatingsRow: Component<{ ratings: OfficialRating[] }> = (props) => (
+  <Show when={props.ratings.length}>
+    <div class="mb-3" data-testid="official-ratings">
+      <SectionHeading>Ratings</SectionHeading>
+      <div class="flex flex-wrap gap-2">
+        <For each={props.ratings}>
+          {(r) => {
+            const mark = RATING_MARK[r.source] ?? {
+              abbr: r.label,
+              class: "bg-surface-2 text-fg",
+            };
+            return (
+              <div
+                class="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-2 py-1.5"
+                title={
+                  r.votes > 0
+                    ? `${r.label} · ${r.votes.toLocaleString()} votes`
+                    : r.label
+                }
+              >
+                <span
+                  class={`rounded px-1.5 py-0.5 text-[10px] font-bold leading-none ${mark.class}`}
+                >
+                  {mark.abbr}
+                </span>
+                <div class="min-w-0">
+                  <div class="text-sm font-semibold leading-none text-fg">
+                    {formatOfficialScore(r)}
+                  </div>
+                  <Show when={r.badge}>
+                    <div class="mt-0.5 text-[10px] leading-none text-muted">
+                      {r.badge}
+                    </div>
+                  </Show>
+                </div>
+              </div>
+            );
+          }}
+        </For>
+      </div>
+    </div>
+  </Show>
+);
 
 // SectionHeading is the small uppercase label above each DetailPopup detail
 // section (Cast / Currently Streaming On / More like this) — one place so
@@ -873,15 +912,8 @@ export const DetailPopup: Component<{
           </a>
           <div class="flex min-w-0 flex-1 flex-col gap-1.5">
             <Show when={props.lead}>{props.lead}</Show>
-            <Show when={ratingValue() > 0}>
-              <Show
-                when={mode() !== "adult"}
-                fallback={
-                  <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
-                }
-              >
-                <RatingGauge value={ratingValue()} />
-              </Show>
+            <Show when={mode() === "adult" && ratingValue() > 0}>
+              <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
             </Show>
             <Show when={overviewText()}>
               <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
@@ -1091,6 +1123,7 @@ export const DetailPopup: Component<{
               ].filter(([, v]) => v);
             return (
               <div class="mt-4 border-t border-border pt-4">
+                <OfficialRatingsRow ratings={d().ratings ?? []} />
                 <Show when={d().collectionId > 0 && d().collectionName}>
                   <div class="mb-3 rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg">
                     Part of{" "}

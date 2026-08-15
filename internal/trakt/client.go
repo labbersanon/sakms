@@ -8,13 +8,12 @@ import (
 	"github.com/labbersanon/sakms/internal/httpx"
 )
 
-// DefaultBaseURL is Trakt's real API host — a constant, not an
-// operator-configurable field (unlike TMDB/TPDB, Trakt's stored connection
-// has no URL column of its own; see store.go's Connection). Callers still
-// set Config.BaseURL explicitly from this constant rather than a literal,
-// so tests can override it to a httptest.NewServer URL the same way
-// tmdb/tpdbrest tests do.
-const DefaultBaseURL = "https://api.trakt.tv"
+// DefaultBaseURL is Trakt's real API host. A var (not const) so tests can
+// point it at an httptest server, matching tmdb.DefaultBaseURL. Callers still
+// set Config.BaseURL explicitly from this rather than a literal. Unlike
+// TMDB/TPDB, Trakt's stored connection has no URL column of its own (see
+// store.go's Connection) — this is the only outbound host.
+var DefaultBaseURL = "https://api.trakt.tv"
 
 // Config parameterizes the client. BaseURL is normally https://api.trakt.tv,
 // stored explicitly rather than hardcoded, same convention as tmdb.Config.
@@ -56,6 +55,50 @@ func (c *Client) newAuthedRequest(ctx context.Context, path, accessToken string)
 	req.Header.Set("trakt-api-key", c.cfg.ClientID)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	return req, nil
+}
+
+// newPublicRequest is newAuthedRequest without a bearer token — Trakt's
+// public browse/ratings endpoints only need the app's client_id.
+func (c *Client) newPublicRequest(ctx context.Context, path string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.BaseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("trakt-api-version", traktAPIVersion)
+	req.Header.Set("trakt-api-key", c.cfg.ClientID)
+	return req, nil
+}
+
+// Ratings is Trakt's public 0–10 community score for one title. Kind is
+// "movies" or "shows" (Trakt's path segment). Distribution is deliberately
+// not decoded — the detail popup's v1 row is icon+score, not a histogram.
+//
+// UNVERIFIED ASSUMPTION: GET /{movies|shows}/tmdb/{id}/ratings is modeled
+// from docs.trakt.tv (public, client_id-only). A missing title or a
+// rejected client_id surfaces as a non-2xx from DoJSON, and the detail
+// handler soft-fails that source rather than 500ing the popup.
+type Ratings struct {
+	Rating float64 `json:"rating"`
+	Votes  int     `json:"votes"`
+}
+
+func (c *Client) Ratings(ctx context.Context, kind string, tmdbID int) (Ratings, error) {
+	if c.cfg.ClientID == "" {
+		return Ratings{}, fmt.Errorf("trakt: client_id is required")
+	}
+	if kind != "movies" && kind != "shows" {
+		return Ratings{}, fmt.Errorf("trakt: ratings kind must be movies or shows, got %q", kind)
+	}
+	req, err := c.newPublicRequest(ctx, fmt.Sprintf("/%s/tmdb/%d/ratings", kind, tmdbID))
+	if err != nil {
+		return Ratings{}, err
+	}
+	var out Ratings
+	if err := httpx.DoJSON(c.http, req, httpx.MaxResponseBodySize, &out); err != nil {
+		return Ratings{}, err
+	}
+	return out, nil
 }
 
 // WatchlistItem is one normalized Trakt watchlist entry — enough shape to

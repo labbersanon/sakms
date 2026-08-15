@@ -7871,6 +7871,17 @@ TMDB keywords sit behind a Keywords disclosure instead of a chip wall.
 Library in-app Play Movie/Scene fullscreen no longer shows cream
 pillarbox bars. The `<video>` and its fullscreen backdrop are black.
 
+## 2026-08-14 (later, same day) — Official ratings on Discover and Library detail
+
+Movies and Series detail popups show catalog scores as compact icon+score
+cards: IMDb, Rotten Tomatoes critics, RT audience, TMDB, and Trakt.
+TMDB comes from the existing details call. Trakt uses the public ratings
+endpoint when a Trakt client id is already configured. IMDb and RT appear
+only when an OMDb API key is saved under Settings → Advanced → API
+Connections. Empty or unconfigured sources are omitted; a failed lookup
+never 500s the popup. Adult is unchanged. Quality Over Time is not in
+this change. Catalog scores are not stored on GET /tracked.
+
 
 
 

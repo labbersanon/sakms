@@ -163,6 +163,7 @@ func TestMovieDetails_ExtendedFields(t *testing.T) {
 	const body = `{
 	  "id": 42, "title": "A Movie", "poster_path": "/p.jpg", "imdb_id": "tt1", "runtime": 100,
 	  "release_date": "2023-05-01", "status": "Released", "original_language": "en",
+	  "vote_average": 8.2, "vote_count": 21000,
 	  "genres": [{"name": "Action"}],
 	  "belongs_to_collection": {"id": 500, "name": "A Collection"},
 	  "production_companies": [{"name": "Studio One"}, {"name": "Studio Two"}],
@@ -198,6 +199,9 @@ func TestMovieDetails_ExtendedFields(t *testing.T) {
 	if d.Collection.ID != 500 || d.Collection.Name != "A Collection" {
 		t.Errorf("unexpected collection: %+v", d.Collection)
 	}
+	if d.VoteAverage != 8.2 || d.VoteCount != 21000 {
+		t.Errorf("unexpected votes: avg=%v count=%d", d.VoteAverage, d.VoteCount)
+	}
 	// US-only: the two US entries survive, the GB one is dropped.
 	if len(d.ReleaseDates) != 2 || d.ReleaseDates[0].Type != 3 || d.ReleaseDates[1].Type != 4 {
 		t.Errorf("expected 2 US release dates, got %+v", d.ReleaseDates)
@@ -209,6 +213,7 @@ func TestTVDetails_ExtendedFields(t *testing.T) {
 	  "id": 7, "name": "A Show", "poster_path": "/p.jpg", "status": "Returning Series",
 	  "overview": "A show synopsis.",
 	  "original_language": "ja", "episode_run_time": [24, 25],
+	  "vote_average": 8.4, "vote_count": 5000,
 	  "genres": [{"name": "Animation"}],
 	  "networks": [{"name": "Some Network"}],
 	  "production_countries": [{"iso_3166_1": "JP", "name": "Japan"}],
@@ -236,6 +241,9 @@ func TestTVDetails_ExtendedFields(t *testing.T) {
 	}
 	if d.ProductionCountry != "Japan" || d.ProductionCountryCode != "JP" {
 		t.Errorf("unexpected production country: %+v", d)
+	}
+	if d.VoteAverage != 8.4 || d.VoteCount != 5000 {
+		t.Errorf("unexpected votes: avg=%v count=%d", d.VoteAverage, d.VoteCount)
 	}
 }
 

@@ -104,6 +104,7 @@ export const SERVICES_WITH_FIXED_URL = [
   "gemini",
   "anthropic",
   "brave",
+  "omdb",
 ];
 
 // SERVICES_WITH_HOST_LOOKUP are the services the netscan package can identify
@@ -121,7 +122,7 @@ export const SERVICES_WITH_HOST_LOOKUP = ["prowlarr", "stash"];
 
 // API_SECTION_SERVICES are the global, mode-independent singleton connections,
 // rendered by Settings' Advanced -> "API Connections" section.
-export const API_SECTION_SERVICES = ["prowlarr", "stash"];
+export const API_SECTION_SERVICES = ["prowlarr", "stash", "omdb"];
 
 // LIBRARY_MODE_SERVICES are the metadata-source connections that belong to one
 // specific mode, rendered inside Settings' Library tab under that mode.
@@ -237,6 +238,7 @@ export const API_KEY_HELP_URLS: Record<string, string> = {
   gemini: "https://aistudio.google.com/app/apikey",
   anthropic: "https://console.anthropic.com/settings/keys",
   brave: "https://brave.com/search/api/",
+  omdb: "https://www.omdbapi.com/apikey.aspx",
 };
 
 // --- Connections -----------------------------------------------------------

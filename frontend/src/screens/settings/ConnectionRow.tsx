@@ -44,7 +44,7 @@ import { SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 // media players and Usenet subscriptions moved to the multi-connection registry
 // (migration 0053) and are no longer ConnectionRows.
 const serviceLabel = (service: string): string => {
-  const labels: Record<string, string> = {};
+  const labels: Record<string, string> = { omdb: "OMDb" };
   return labels[service] ?? service;
 };
 

@@ -1046,6 +1046,23 @@ type EpisodeSummary struct {
 	StillPath     string `json:"stillPath"`
 }
 
+// OfficialRating is one catalog score on the Discover/Library detail popup.
+// Source is a stable id the frontend uses to pick an icon ("tmdb", "trakt",
+// "imdb", "rtCritics", "rtAudience"). ScoreKind is "ten" (0–10 decimal, e.g.
+// IMDb 8.1 / TMDB 8.2) or "percent" (0–100, e.g. Trakt 82% / RT 93%).
+// Votes is 0 when the source does not report a count. Badge is optional
+// flavor text (RT "Fresh"/"Rotten", audience "Hot"/"Spilled"). Empty
+// sources are omitted from TitleDetail.Ratings rather than sent as zeros —
+// the same soft-fail-empty-section contract as Cast/WatchProviders.
+type OfficialRating struct {
+	Source    string  `json:"source"`
+	Label     string  `json:"label"`
+	Score     float64 `json:"score"`
+	ScoreKind string  `json:"scoreKind"`
+	Votes     int     `json:"votes"`
+	Badge     string  `json:"badge"`
+}
+
 // TitleDetail is the full Discover detail popup payload for a Movie/Series
 // title. Every section is independently soft-failed by the handler, so any
 // slice may be empty (that section simply doesn't render) without the whole
@@ -1053,8 +1070,10 @@ type EpisodeSummary struct {
 // PosterPath/StillPath carried by Seasons and their Episodes) are bare TMDB
 // paths — proxied by the frontend, never absolute URLs. Seasons is the
 // season/episode picker's grid data and is always empty for a Movie.
-// Deliberately carries NO Revenue/Budget and NO critic/review-badge field
-// (both out of scope for v1).
+// Deliberately carries NO Revenue/Budget. Ratings is the official-score
+// icon row (TMDB + Trakt + OMDb IMDb/RT when those keys exist); it is
+// empty when every source soft-fails or is unconfigured — never persisted
+// onto GET /tracked.
 type TitleDetail struct {
 	Status                string             `json:"status"`
 	OriginalLanguage      string             `json:"originalLanguage"`
@@ -1080,6 +1099,9 @@ type TitleDetail struct {
 	// comes from. Library tracked rows cache no poster art; the popup uses
 	// this instead of a second /poster round-trip when the card passed "".
 	PosterPath string `json:"posterPath"`
+	// Ratings is the official catalog-score row (TMDB / Trakt / IMDb / RT).
+	// Never null — [] when every source is empty or unconfigured.
+	Ratings []OfficialRating `json:"ratings"`
 }
 
 // --- Request-status worklist (Feature 4, derive-on-read) -------------------

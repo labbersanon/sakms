@@ -7842,6 +7842,13 @@ The Rules `<details>` uses `bg-surface/30` plus a light blur, same
 opacity as the tag chips, so the section reads as a panel on the cream
 watermark instead of sitting on the page background.
 
+## 2026-08-14 (later, same day) — Library detail: Rating top, More like this last
+
+Library movie/series detail puts operator Rating above Cast (and the
+rest of the TMDB block). Files / seasons / Tags stay in the middle.
+More like this is last. Discover's rail is unchanged when there is no
+Library footer: Cast → Currently Streaming On → More like this.
+
 
 
 

@@ -1356,3 +1356,62 @@ describe("Library — in-app movie playback", () => {
     ).toBeNull();
   });
 });
+
+const follows = (earlier: HTMLElement, later: HTMLElement) =>
+  (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !==
+  0;
+
+describe("Library — detail section order", () => {
+  it("puts Rating above Cast and More like this after Tags", async () => {
+    stubFetch((url, init) => {
+      if (url.includes("/discover/detail")) {
+        return jsonResponse({
+          ...emptyTitleDetail(),
+          cast: [
+            { name: "Dylan Avery", character: "Self", profilePath: "" },
+          ],
+          watchProviders: [{ name: "BritBox", logoPath: "" }],
+          recommendations: [
+            {
+              id: 99,
+              title: "Similar Title",
+              posterPath: "",
+              overview: "",
+              releaseDate: "2017-01-01",
+              voteAverage: 6.9,
+              mediaType: "movie",
+            },
+          ],
+        });
+      }
+      const extra = libraryEnrichmentResponse(url);
+      if (extra) return extra;
+      return makeHandler([
+        inception({
+          files: [
+            {
+              id: 3,
+              filePath: "/movies/Inception/Inception.mp4",
+              isPrimary: true,
+              videoUrl: "/api/modes/movies/tracked/10/video?fileId=3",
+            },
+          ],
+        }),
+      ])(url, init);
+    });
+    renderLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
+    const rating = await within(dialog).findByText("Rating");
+    const cast = await within(dialog).findByText("Cast");
+    const streaming = await within(dialog).findByText("Currently Streaming On");
+    const files = within(dialog).getByText("Files");
+    const tags = within(dialog).getByText("Tags");
+    const more = await within(dialog).findByText("More like this");
+    expect(follows(rating, cast)).toBe(true);
+    expect(follows(cast, streaming)).toBe(true);
+    expect(follows(streaming, files)).toBe(true);
+    expect(follows(files, tags)).toBe(true);
+    expect(follows(tags, more)).toBe(true);
+  });
+});

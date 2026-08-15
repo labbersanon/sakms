@@ -479,6 +479,22 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
   );
 };
 
+const DetailRating: Component<{
+  rating: number;
+  onRate: (rating: number) => void;
+}> = (props) => (
+  <div class="mb-3">
+    <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
+      Rating
+    </p>
+    <StarRating
+      rating={props.rating}
+      size="md"
+      onChange={props.onRate}
+    />
+  </div>
+);
+
 // DetailPanel shows full metadata + editable tags for the selected item.
 // Poster is lazy-fetched again (same endpoint, browser caches the image)
 // unless showPoster is false — nested under DetailPopup the header tile is
@@ -508,9 +524,14 @@ const DetailPanel: Component<{
   // Genres block under the Discover sections.
   // Review if: the no-tmdbId fallback modal is retired.
   showTrackedCredits?: boolean;
+  // Claude 2026-08-14: nested under DetailPopup the Rating block is `lead`,
+  // above Cast. Fallback Modal (no tmdbId) still renders it in this panel.
+  // Review if: the no-tmdbId fallback modal is retired.
+  showRating?: boolean;
 }> = (props) => {
   const showPoster = () => props.showPoster !== false;
   const showTrackedCredits = () => props.showTrackedCredits !== false;
+  const showRating = () => props.showRating !== false;
   const [posterPath] = createResource(
     () =>
       showPoster() && props.mode !== "adult" && props.item.tmdbId
@@ -591,6 +612,14 @@ const DetailPanel: Component<{
       chromeless
       subtitle={subtitle()}
     >
+      {/* Claude 2026-08-14: operator stars first in the fallback panel.
+          Reason: same "Rating at top" order as DetailPopup's lead slot.
+          Nested under DetailPopup this block is omitted (showRating=false).
+          Review if: the no-tmdbId fallback modal is retired. */}
+      <Show when={showRating()}>
+        <DetailRating rating={props.item.rating ?? 0} onRate={props.onRate} />
+      </Show>
+
       {/* Genres — read-only. Nested under DetailPopup these live in the
           keyword chip row instead (showTrackedCredits=false). */}
       <Show when={showTrackedCredits() && (props.item.genres ?? []).length > 0}>
@@ -682,18 +711,6 @@ const DetailPanel: Component<{
       <Show when={props.mode === "series"}>
         <SeasonsPanel seriesID={props.item.id} />
       </Show>
-
-      {/* Claude 2026-08-14: operator stars in the detail panel as well as the
-          card overlay. Reason: the overlay is small; this is the same control
-          at a usable size. Review if: rating moves off Library. */}
-      <div class="mb-3">
-        <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Rating</p>
-        <StarRating
-          rating={props.item.rating ?? 0}
-          size="md"
-          onChange={props.onRate}
-        />
-      </div>
 
       {/* Tags — mutable */}
       <div>
@@ -1094,6 +1111,18 @@ const LibraryView: Component<{
                       allowGrab={false}
                       onClose={closeDetail}
                       onSelectRecommendation={setDetailTarget}
+                      lead={
+                        isLibraryTarget() ? (
+                          <DetailRating
+                            rating={item().rating ?? 0}
+                            onRate={(rating) =>
+                              void act(() =>
+                                setItemRating(props.mode, item().id, rating),
+                              )
+                            }
+                          />
+                        ) : undefined
+                      }
                     >
                       <Show when={isLibraryTarget()}>
                         <div class="mt-4 border-t border-border pt-4">
@@ -1103,6 +1132,7 @@ const LibraryView: Component<{
                             posterAspect={props.posterAspect}
                             showPoster={false}
                             showTrackedCredits={false}
+                            showRating={false}
                             datalistId={datalistId()}
                             draft={detailDraft()}
                             onDraftChange={setDetailDraft}

@@ -1554,3 +1554,38 @@ describe("DetailPopup — allowGrab=false (Library enrichment)", () => {
     expect(calls.some((c) => c.url.includes("/quality-prefs"))).toBe(false);
   });
 });
+
+const follows = (earlier: HTMLElement, later: HTMLElement) =>
+  (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !==
+  0;
+
+describe("DetailPopup — lead and children order", () => {
+  it("renders lead above Cast and children above More like this", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail")) return jsonResponse(titleDetail());
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42 }) }}
+        onClose={() => {}}
+        lead={<p>Operator rating</p>}
+      >
+        <p>Library footer</p>
+      </DetailPopup>
+    ));
+    const lead = await screen.findByText("Operator rating");
+    const cast = await screen.findByText("Cast");
+    const streaming = screen.getByText("Currently Streaming On");
+    const footer = screen.getByText("Library footer");
+    const more = screen.getByText("More like this");
+    expect(follows(lead, cast)).toBe(true);
+    expect(follows(cast, streaming)).toBe(true);
+    expect(follows(streaming, footer)).toBe(true);
+    expect(follows(footer, more)).toBe(true);
+  });
+});

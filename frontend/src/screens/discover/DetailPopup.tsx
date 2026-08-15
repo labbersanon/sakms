@@ -478,6 +478,11 @@ export const DetailPopup: Component<{
   // Reason: "Library cards need enrichment the same as discover minus grab."
   // Review if: Library ever grows a grab affordance of its own.
   allowGrab?: boolean;
+  // Claude 2026-08-14: Library Rating sits above Cast / streaming.
+  // Reason: operator asked Rating at the top of the detail body and
+  // More like this at the bottom. Discover omits it.
+  // Review if: Rating leaves Library or Discover grows a lead slot.
+  lead?: JSX.Element;
   // Library-only footer (tags / seasons / files) inside this Modal so one
   // click does not drop Library-owned affordances. Discover omits it.
   children?: JSX.Element;
@@ -1016,6 +1021,10 @@ export const DetailPopup: Component<{
         </Show>
         </Show>
 
+        <Show when={props.lead}>
+          <div class="mt-4">{props.lead}</div>
+        </Show>
+
         {/* F1 rich detail (Movies/Series only). Every image below resolves via
             tmdbProfile/tmdbLogo → /api/images/proxy (never a direct TMDB host).
             Each sub-section is independently guarded: the backend soft-fails
@@ -1248,28 +1257,36 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
-                <Show when={d().recommendations?.length}>
-                  <div class="mt-4">
-                    <SectionHeading>More like this</SectionHeading>
-                    <div class="flex gap-3 overflow-x-auto pb-2">
-                      <For each={d().recommendations}>
-                        {(rec) => (
-                          <PosterCard
-                            mode={rec.mediaType === "tv" ? "series" : "movies"}
-                            item={rec}
-                            onGrab={(t) => props.onGrab?.(t)}
-                            onDetail={(t) => props.onSelectRecommendation?.(t)}
-                          />
-                        )}
-                      </For>
-                    </div>
-                  </div>
-                </Show>
               </div>
             );
           }}
         </Show>
         {props.children}
+        {/* Claude 2026-08-14: More like this is last, after Library children.
+            Reason: operator asked the rail at the bottom of the detail body.
+            Discover has no children, so Cast → Streaming → rail is unchanged.
+            Review if: Library children move into the F1 block. */}
+        <Show when={mode() !== "adult" && detail()}>
+          {(d) => (
+            <Show when={d().recommendations?.length}>
+              <div class="mt-4">
+                <SectionHeading>More like this</SectionHeading>
+                <div class="flex gap-3 overflow-x-auto pb-2">
+                  <For each={d().recommendations}>
+                    {(rec) => (
+                      <PosterCard
+                        mode={rec.mediaType === "tv" ? "series" : "movies"}
+                        item={rec}
+                        onGrab={(t) => props.onGrab?.(t)}
+                        onDetail={(t) => props.onSelectRecommendation?.(t)}
+                      />
+                    )}
+                  </For>
+                </div>
+              </div>
+            </Show>
+          )}
+        </Show>
       </Show>
     </Modal>
   );

@@ -720,6 +720,30 @@ describe("PurgeRulesCard — the tags condition", () => {
     expect(screen.queryByText(/remove all/i)).toBeNull();
   });
 
+  it("stacks tag chips below the dropdowns and omits the unit select", async () => {
+    stubFetch();
+    render(() => <PurgeRulesCard mode="adult" />);
+    fireEvent.click(await screen.findByText("+ New rule"));
+    addTagChip(1, "Bondage");
+    fireEvent.input(screen.getByLabelText("Criterion 1 new tag"), {
+      target: { value: "Bound" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add tag to criterion 1" }),
+    );
+
+    expect(screen.queryByLabelText("Criterion 1 unit")).toBeNull();
+    const chips = screen.getByTestId("criterion-1-chips");
+    expect(chips).toContainElement(screen.getByLabelText("Remove Bondage"));
+    expect(chips).toContainElement(screen.getByLabelText("Remove Bound"));
+    expect(chips).not.toContainElement(
+      screen.getByLabelText("Criterion 1 field"),
+    );
+    expect(chips).not.toContainElement(
+      screen.getByRole("button", { name: "Add tag to criterion 1" }),
+    );
+  });
+
   it("de-dupes chips case-insensitively with no error", async () => {
     stubFetch();
     render(() => <PurgeRulesCard mode="movies" />);

@@ -500,54 +500,112 @@ const RuleForm: Component<{
               const unitOptions = () => unitsFor(row.field);
               const canRemove = () => !isBlankCriterion(row);
               return (
-                <div class="flex flex-wrap items-center gap-2">
-                  <select
-                    class={`${inputClass} min-w-[7rem] !w-auto`}
-                    aria-label={`Criterion ${n()} field`}
-                    value={row.field}
-                    onChange={(e) =>
-                      onFieldChange(i(), e.currentTarget.value as CriterionField | "")
-                    }
-                  >
-                    <option value="">field</option>
-                    <For each={CRITERION_FIELDS}>
-                      {(f) => <option value={f}>{f}</option>}
-                    </For>
-                  </select>
-                  <select
-                    class={`${inputClass} min-w-[9rem] !w-auto`}
-                    aria-label={`Criterion ${n()} operator`}
-                    value={row.op}
-                    disabled={!fieldSet()}
-                    onChange={(e) => patchRow(i(), { op: e.currentTarget.value })}
-                  >
-                    <Show when={!row.op}>
-                      <option value="">operator</option>
-                    </Show>
-                    <For each={opsFor(row.field)}>
-                      {(op) => <option value={op.value}>{op.label}</option>}
-                    </For>
-                  </select>
-                  <Show when={row.field === "tag"}>
+                // Claude 2026-08-14: tag criteria stack — dropdowns, then chips,
+                //   then add-tag input. Do not flex-wrap chips with field/op/unit.
+                // Reason: one wrapping row interleaved chips with the empty unit
+                //   select and Add on a phone-width Rules card.
+                // Troubleshooting: unit select is omitted when the field has no
+                //   units (tag/quality/blank). Chip × uses compact padding so
+                //   it does not dominate the chip.
+                // Review if: drag-and-drop criterion ordering ships.
+                <div class="space-y-2">
+                  <div class="flex flex-wrap items-center gap-2">
                     <select
-                      class={`${inputClass} min-w-[5rem] !w-auto`}
-                      aria-label={`Criterion ${n()} match mode`}
-                      value={row.matchMode}
+                      class={`${inputClass} min-w-[7rem] !w-auto`}
+                      aria-label={`Criterion ${n()} field`}
+                      value={row.field}
                       onChange={(e) =>
-                        patchRow(i(), { matchMode: e.currentTarget.value })
+                        onFieldChange(i(), e.currentTarget.value as CriterionField | "")
                       }
                     >
-                      <For each={TAG_MATCH_MODES}>
-                        {(m) => <option value={m.value}>{m.label}</option>}
+                      <option value="">field</option>
+                      <For each={CRITERION_FIELDS}>
+                        {(f) => <option value={f}>{f}</option>}
                       </For>
                     </select>
-                    <div class="flex min-w-[12rem] flex-1 flex-wrap items-center gap-1">
+                    <select
+                      class={`${inputClass} min-w-[9rem] !w-auto`}
+                      aria-label={`Criterion ${n()} operator`}
+                      value={row.op}
+                      disabled={!fieldSet()}
+                      onChange={(e) => patchRow(i(), { op: e.currentTarget.value })}
+                    >
+                      <Show when={!row.op}>
+                        <option value="">operator</option>
+                      </Show>
+                      <For each={opsFor(row.field)}>
+                        {(op) => <option value={op.value}>{op.label}</option>}
+                      </For>
+                    </select>
+                    <Show when={row.field === "tag"}>
+                      <select
+                        class={`${inputClass} min-w-[5rem] !w-auto`}
+                        aria-label={`Criterion ${n()} match mode`}
+                        value={row.matchMode}
+                        onChange={(e) =>
+                          patchRow(i(), { matchMode: e.currentTarget.value })
+                        }
+                      >
+                        <For each={TAG_MATCH_MODES}>
+                          {(m) => <option value={m.value}>{m.label}</option>}
+                        </For>
+                      </select>
+                    </Show>
+                    <Show when={row.field !== "tag"}>
+                      <input
+                        type={
+                          row.field === "quality" || !row.field ? "text" : "number"
+                        }
+                        min={row.field === "rating" ? 1 : 0}
+                        max={row.field === "rating" ? 5 : undefined}
+                        step={row.field === "size" ? "0.1" : "1"}
+                        class={`${inputClass} min-w-[7rem] flex-1`}
+                        aria-label={`Criterion ${n()} value`}
+                        placeholder="value"
+                        value={row.value}
+                        disabled={!fieldSet()}
+                        onInput={(e) =>
+                          patchRow(i(), { value: e.currentTarget.value })
+                        }
+                      />
+                    </Show>
+                    <Show when={unitOptions().length > 0}>
+                      <select
+                        class={`${inputClass} min-w-[5rem] !w-auto`}
+                        aria-label={`Criterion ${n()} unit`}
+                        value={row.unit}
+                        disabled={!fieldSet()}
+                        onChange={(e) =>
+                          patchRow(i(), { unit: e.currentTarget.value })
+                        }
+                      >
+                        <For each={unitOptions()}>
+                          {(u) => <option value={u.value}>{u.label}</option>}
+                        </For>
+                      </select>
+                    </Show>
+                    <Show when={canRemove()}>
+                      <Button
+                        type="button"
+                        aria-label={`Remove criterion ${n()}`}
+                        onClick={() => removeRow(i())}
+                      >
+                        ×
+                      </Button>
+                    </Show>
+                  </div>
+                  <Show when={row.field === "tag"}>
+                    <div
+                      class="flex flex-wrap gap-1.5"
+                      data-testid={`criterion-${n()}-chips`}
+                    >
                       <For each={row.values}>
                         {(tag) => (
-                          <span class="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-sm text-fg">
-                            {tag}
+                          <span class="inline-flex max-w-full items-center gap-1 rounded border border-border px-2 py-0.5 text-sm text-fg">
+                            <span class="truncate">{tag}</span>
                             <Button
                               type="button"
+                              class="!px-2 !py-0.5"
                               aria-label={`Remove ${tag}`}
                               onClick={() => removeChip(i(), tag)}
                             >
@@ -556,9 +614,11 @@ const RuleForm: Component<{
                           </span>
                         )}
                       </For>
+                    </div>
+                    <div class="flex items-center gap-2">
                       <input
                         type="text"
-                        class={`${inputClass} min-w-[7rem] flex-1`}
+                        class={`${inputClass} min-w-0 flex-1`}
                         aria-label={`Criterion ${n()} new tag`}
                         placeholder="tag"
                         value={row.chipInput}
@@ -573,53 +633,13 @@ const RuleForm: Component<{
                       />
                       <Button
                         type="button"
+                        class="shrink-0"
                         aria-label={`Add tag to criterion ${n()}`}
                         onClick={() => addChip(i())}
                       >
                         Add
                       </Button>
                     </div>
-                  </Show>
-                  <Show when={row.field !== "tag"}>
-                    <input
-                      type={
-                        row.field === "quality" || !row.field ? "text" : "number"
-                      }
-                      min={row.field === "rating" ? 1 : 0}
-                      max={row.field === "rating" ? 5 : undefined}
-                      step={row.field === "size" ? "0.1" : "1"}
-                      class={`${inputClass} min-w-[7rem] flex-1`}
-                      aria-label={`Criterion ${n()} value`}
-                      placeholder="value"
-                      value={row.value}
-                      disabled={!fieldSet()}
-                      onInput={(e) =>
-                        patchRow(i(), { value: e.currentTarget.value })
-                      }
-                    />
-                  </Show>
-                  <select
-                    class={`${inputClass} min-w-[5rem] !w-auto`}
-                    aria-label={`Criterion ${n()} unit`}
-                    value={row.unit}
-                    disabled={!fieldSet() || unitOptions().length === 0}
-                    onChange={(e) => patchRow(i(), { unit: e.currentTarget.value })}
-                  >
-                    <Show when={unitOptions().length === 0}>
-                      <option value=""></option>
-                    </Show>
-                    <For each={unitOptions()}>
-                      {(u) => <option value={u.value}>{u.label}</option>}
-                    </For>
-                  </select>
-                  <Show when={canRemove()}>
-                    <Button
-                      type="button"
-                      aria-label={`Remove criterion ${n()}`}
-                      onClick={() => removeRow(i())}
-                    >
-                      ×
-                    </Button>
                   </Show>
                 </div>
               );

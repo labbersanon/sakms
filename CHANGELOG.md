@@ -7820,5 +7820,11 @@ stay on the first line; chips wrap on their own row; the new-tag input
 and Add sit on a third line. The unit select is omitted when the field
 has no units (tag, quality, blank).
 
+## 2026-08-14 (later, same day) — Clean-up tag chips are translucent
+
+Tag chips on a Clean-up rule use a translucent `bg-surface/70` fill
+(plus a light blur) so the names read as pills instead of hollow
+bordered labels on the cream form.
+
 
 

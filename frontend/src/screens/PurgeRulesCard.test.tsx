@@ -742,6 +742,9 @@ describe("PurgeRulesCard — the tags condition", () => {
     expect(chips).not.toContainElement(
       screen.getByRole("button", { name: "Add tag to criterion 1" }),
     );
+    expect(screen.getByText("Bondage").closest("span.inline-flex")).toHaveClass(
+      "bg-surface/70",
+    );
   });
 
   it("de-dupes chips case-insensitively with no error", async () => {

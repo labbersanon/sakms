@@ -54,6 +54,7 @@ export const PlayFullscreenLink: Component<{
   src: string;
   noun: "Movie" | "Show" | "Scene";
   title: string;
+  class?: string;
 }> = (props) => {
   const [open, setOpen] = createSignal(false);
   const [wantFs, setWantFs] = createSignal(false);
@@ -75,10 +76,13 @@ export const PlayFullscreenLink: Component<{
   };
 
   return (
-    <div class="mt-2">
+    <>
       <button
         type="button"
-        class="rounded-md border border-border bg-surface-2 px-3 py-1 text-xs font-medium text-fg transition hover:opacity-90"
+        class={
+          props.class ??
+          "inline-flex w-full items-center justify-center rounded-md border border-border bg-surface-2 px-3 py-1.5 text-xs font-medium text-fg transition hover:opacity-90"
+        }
         aria-label={`Play ${props.noun} fullscreen`}
         onClick={() => {
           if (videoEl) {
@@ -103,7 +107,7 @@ export const PlayFullscreenLink: Component<{
           aria-label={`Fullscreen player for ${props.title}`}
         />
       </Show>
-    </div>
+    </>
   );
 };
 

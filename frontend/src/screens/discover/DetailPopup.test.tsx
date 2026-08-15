@@ -1279,10 +1279,11 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
 
     // Collection banner + keyword chips + synopsis under tags + metadata sidebar.
     expect(await screen.findByText("Hero Collection")).toBeInTheDocument();
-    expect(screen.getByText("heist")).toBeInTheDocument();
     expect(screen.getByText("Action")).toBeInTheDocument();
     expect(screen.getByText("2024", { exact: true })).toBeInTheDocument();
     expect(screen.getByText("A hero saves the day.")).toBeInTheDocument();
+    expect(screen.getByText("Keywords")).toBeInTheDocument();
+    expect(screen.getByText("heist")).toBeInTheDocument();
     expect(screen.getByText("Released")).toBeInTheDocument();
     expect(screen.getByText("2h 5m")).toBeInTheDocument();
     // Production Country renders with a leading flag emoji, so match loosely.
@@ -1308,7 +1309,7 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     expect(screen.queryByText(/Budget/i)).not.toBeInTheDocument();
   });
 
-  it("puts genres in the keyword chip row and de-duplicates overlapping labels", async () => {
+  it("puts year and genres in the chip row and keeps extra keywords behind a disclosure", async () => {
     stubWithDetail(
       titleDetail({ genres: ["Action"], keywords: ["Action", "spy"] }),
     );
@@ -1317,6 +1318,7 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     expect(await screen.findByText("spy")).toBeInTheDocument();
     expect(screen.getAllByText("Action")).toHaveLength(1);
     expect(screen.getByText("2024", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Keywords")).toBeInTheDocument();
   });
 
   it("renders the poster from TitleDetail when the item posterPath is empty", async () => {

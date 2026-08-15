@@ -501,9 +501,10 @@ const SeasonsPanel: Component<{ seriesID: number }> = (props) => {
 const DetailRating: Component<{
   rating: number;
   onRate: (rating: number) => void;
+  class?: string;
 }> = (props) => (
-  <div class="mb-3">
-    <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
+  <div class={props.class ?? "mb-3"}>
+    <p class="mb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted">
       Rating
     </p>
     <StarRating
@@ -1138,6 +1139,7 @@ const LibraryView: Component<{
                       lead={
                         isLibraryTarget() ? (
                           <DetailRating
+                            class=""
                             rating={item().rating ?? 0}
                             onRate={(rating) =>
                               void act(() =>

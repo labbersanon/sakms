@@ -268,7 +268,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     );
   });
 
-  it("shows TMDB overview under tags and does not render Crew", async () => {
+  it("shows TMDB overview above year/genre chips and does not render Crew", async () => {
     stubFetch((url, init) => {
       const extra = libraryEnrichmentResponse(url);
       if (url.includes("/discover/detail")) {
@@ -286,13 +286,17 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     renderLibrary();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
+    const overview = await screen.findByText(
+      "A thief who steals corporate secrets through dream-sharing.",
+    );
+    const genre = within(dialog).getByText("Sci-Fi");
     expect(
-      await screen.findByText(
-        "A thief who steals corporate secrets through dream-sharing.",
-      ),
-    ).toBeInTheDocument();
+      (overview.compareDocumentPosition(genre) &
+        Node.DOCUMENT_POSITION_FOLLOWING) !==
+        0,
+    ).toBe(true);
     expect(within(dialog).getByText("dream")).toBeInTheDocument();
-    expect(within(dialog).getByText("Sci-Fi")).toBeInTheDocument();
+    expect(within(dialog).getByText("Keywords")).toBeInTheDocument();
     expect(within(dialog).getAllByText("2010")).toHaveLength(1);
     expect(within(dialog).queryByText("Genres")).toBeNull();
     expect(within(dialog).queryByText("Leonardo DiCaprio")).toBeNull();
@@ -1376,6 +1380,12 @@ describe("Library — in-app movie playback", () => {
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     const trailer = await within(dialog).findByText("Watch Trailer →");
     const play = within(dialog).getByText("Play Movie →");
+    const more = within(dialog).getByText(/More on TMDB/);
+    expect(
+      (more.compareDocumentPosition(trailer) &
+        Node.DOCUMENT_POSITION_FOLLOWING) !==
+        0,
+    ).toBe(true);
     expect(
       (trailer.compareDocumentPosition(play) &
         Node.DOCUMENT_POSITION_FOLLOWING) !==

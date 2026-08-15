@@ -7858,6 +7858,14 @@ enters fullscreen, and starts playback. It only appears when GET
 Adult scene videoUrl). Series has no such URL yet, so Play Show stays
 hidden. Discover is unchanged. mkv/avi/wmv still omit the control.
 
+## 2026-08-14 (later, same day) — Library detail header is a stacked action column
+
+The poster header no longer mixes an underline “More on TMDB” with a
+Watch Trailer pill and a second-row Play Movie control. Rating, More
+on TMDB, Watch Trailer, and Play Movie/Scene stack as equal-width
+buttons next to a 2:3 poster. Plot text comes before year/genre chips.
+TMDB keywords sit behind a Keywords disclosure instead of a chip wall.
+
 
 
 

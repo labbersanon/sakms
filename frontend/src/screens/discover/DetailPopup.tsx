@@ -384,9 +384,10 @@ function formatRuntime(min: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-// mergeDetailChips builds the highlighted pill row: year, then TMDB genres,
-// then keywords. The same label (case-insensitive, trimmed) appears once so
-// a genre that TMDB also lists as a keyword does not render two pills.
+// mergeDetailChips builds the highlighted pill row: year, then TMDB genres.
+// Keywords are no longer mixed into this row (they live behind a disclosure).
+// The same label (case-insensitive, trimmed) appears once so a duplicate
+// genre does not render two pills.
 function mergeDetailChips(
   year: string | undefined,
   genres: string[],
@@ -469,6 +470,13 @@ const SectionHeading: Component<{ children: string }> = (props) => (
   </h4>
 );
 
+// Claude 2026-08-14: More on TMDB / Watch Trailer / Play Movie share one
+// full-width stacked button style. Mixing an underline link with a pill
+// and a second-row Play control read as a ragged header next to the poster.
+// Review if: a horizontal chip row is wanted on wide screens.
+const HEADER_ACTION_CLASS =
+  "inline-flex w-full items-center justify-center rounded-md border border-border bg-surface-2 px-3 py-1.5 text-center text-xs font-medium text-fg transition hover:opacity-90";
+
 export const DetailPopup: Component<{
   target: DetailTarget;
   onClose: () => void;
@@ -484,9 +492,8 @@ export const DetailPopup: Component<{
   // fullscreen. Discover omits it. Empty/undefined hides the control.
   // Review if: Series episode playback starts sending a URL.
   playSrc?: string;
-  // Claude 2026-08-14: Library Rating sits above Cast / streaming.
-  // Reason: operator asked Rating at the top of the detail body and
-  // More like this at the bottom. Discover omits it.
+  // Claude 2026-08-14: Library Rating sits in the header stack next to the
+  // poster (above More on TMDB / Trailer / Play). Discover omits it.
   // Review if: Rating leaves Library or Discover grows a lead slot.
   lead?: JSX.Element;
   // Library-only footer (tags / seasons / files) inside this Modal so one
@@ -849,12 +856,12 @@ export const DetailPopup: Component<{
           </div>
         }
       >
-        <div class="flex gap-3">
+        <div class="flex items-start gap-3">
           <a
             href={externalDetailURL(props.target)}
             target="_blank"
             rel="noreferrer"
-            class="h-28 w-20 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
+            class="aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
           >
             <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
               <img
@@ -864,7 +871,8 @@ export const DetailPopup: Component<{
               />
             </Show>
           </a>
-          <div class="min-w-0 flex-1">
+          <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+            <Show when={props.lead}>{props.lead}</Show>
             <Show when={ratingValue() > 0}>
               <Show
                 when={mode() !== "adult"}
@@ -878,43 +886,41 @@ export const DetailPopup: Component<{
             <Show when={overviewText()}>
               <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
             </Show>
-            <div class="mt-1 flex items-center gap-3">
+            <a
+              href={externalDetailURL(props.target)}
+              target="_blank"
+              rel="noreferrer"
+              class={HEADER_ACTION_CLASS}
+            >
+              More on {sourceLabel(props.target)} →
+            </a>
+            {/* Trailer, elevated from the old header text link into a
+                distinct button (F1 item 2) — styling/placement only,
+                TrailerURL is already wired. Deliberately a SIBLING of the
+                availability/grab block below, not nested inside it: the
+                trailer resource is independent of the Prowlarr preview, so
+                it must keep rendering even while that preview is loading
+                or has errored (a code-review catch — it used to disappear
+                whenever preview.error was set, coupling two unrelated
+                states). */}
+            <Show
+              when={
+                trailer()?.startsWith("https://") ||
+                trailer()?.startsWith("http://")
+              }
+            >
               <a
-                href={externalDetailURL(props.target)}
+                href={trailer()}
                 target="_blank"
                 rel="noreferrer"
-                class="inline-block text-xs text-fg underline decoration-accent underline-offset-2"
+                class={HEADER_ACTION_CLASS}
               >
-                More on {sourceLabel(props.target)} →
+                Watch Trailer →
               </a>
-              {/* Trailer, elevated from the old header text link into a
-                  distinct button (F1 item 2) — styling/placement only,
-                  TrailerURL is already wired. Deliberately a SIBLING of the
-                  availability/grab block below, not nested inside it: the
-                  trailer resource is independent of the Prowlarr preview, so
-                  it must keep rendering even while that preview is loading
-                  or has errored (a code-review catch — it used to disappear
-                  whenever preview.error was set, coupling two unrelated
-                  states). */}
-              <Show
-                when={
-                  trailer()?.startsWith("https://") ||
-                  trailer()?.startsWith("http://")
-                }
-              >
-                <a
-                  href={trailer()}
-                  target="_blank"
-                  rel="noreferrer"
-                  class="rounded-md border border-border bg-surface-2 px-3 py-1 text-xs font-medium text-fg transition hover:opacity-90"
-                >
-                  Watch Trailer →
-                </a>
-              </Show>
-            </div>
-            {/* Claude 2026-08-14: Play Movie/Show/Scene under Watch Trailer.
-                Reason: operator asked a Library play link here that launches
-                fullscreen. Discover has no playSrc. mkv/avi/wmv omit it.
+            </Show>
+            {/* Claude 2026-08-14: Play Movie/Show/Scene in the same stack as
+                Watch Trailer. Reason: a second-row control under only the
+                trailer button left a ragged header. Discover has no playSrc.
                 Review if: Series episode playback lands. */}
             <Show when={(props.playSrc ?? "").trim()}>
               <PlayFullscreenLink
@@ -927,6 +933,7 @@ export const DetailPopup: Component<{
                       : "Movie"
                 }
                 title={item().title}
+                class={HEADER_ACTION_CLASS}
               />
             </Show>
           </div>
@@ -1044,10 +1051,6 @@ export const DetailPopup: Component<{
         </Show>
         </Show>
 
-        <Show when={props.lead}>
-          <div class="mt-4">{props.lead}</div>
-        </Show>
-
         {/* F1 rich detail (Movies/Series only). Every image below resolves via
             tmdbProfile/tmdbLogo → /api/images/proxy (never a direct TMDB host).
             Each sub-section is independently guarded: the backend soft-fails
@@ -1066,8 +1069,14 @@ export const DetailPopup: Component<{
               mergeDetailChips(
                 yearChip(),
                 d().genres ?? [],
-                d().keywords ?? [],
+                [],
               );
+            const extraKeywords = () => {
+              const seen = new Set(chips().map((c) => c.toLowerCase()));
+              return (d().keywords ?? [])
+                .map((k) => k.trim())
+                .filter((k) => k && !seen.has(k.toLowerCase()));
+            };
             const meta = () =>
               [
                 ["Status", d().status] as const,
@@ -1089,12 +1098,22 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
-                {/* Claude 2026-08-14: year + genres share the keyword chip row.
-                    Reason: Library DetailPanel showed year under the divider
-                    and a second Genres block; one highlighted pill strip is
-                    the Discover header treatment. Keywords still follow,
-                    de-duplicated.
-                    Review if: year moves next to the modal title instead. */}
+                {/* Claude 2026-08-14: synopsis first, then year+genre chips.
+                    Keywords used to dump into the same pill row and covered
+                    the plot on a phone. They now sit behind a Keywords
+                    disclosure. Review if: GET /tracked starts carrying overview. */}
+                <Show
+                  when={
+                    (d().overview ?? "").trim() ||
+                    ((item() as DiscoverItem).overview ?? "").trim()
+                  }
+                >
+                  <p class="mb-3 text-sm text-muted">
+                    {(d().overview ?? "").trim() ||
+                      ((item() as DiscoverItem).overview ?? "").trim()}
+                  </p>
+                </Show>
+
                 <Show when={chips().length}>
                   <div class="mb-3 flex flex-wrap gap-1">
                     <For each={chips()}>
@@ -1107,21 +1126,21 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
-                {/* Claude 2026-08-14: synopsis under keyword chips.
-                    Reason: Library tracked rows have no overview; the header
-                    line next to the poster was empty. Discover card overview
-                    is the same TMDB text, so it is not also shown up top.
-                    Review if: GET /tracked starts carrying overview. */}
-                <Show
-                  when={
-                    (d().overview ?? "").trim() ||
-                    ((item() as DiscoverItem).overview ?? "").trim()
-                  }
-                >
-                  <p class="mb-3 text-sm text-muted">
-                    {(d().overview ?? "").trim() ||
-                      ((item() as DiscoverItem).overview ?? "").trim()}
-                  </p>
+                <Show when={extraKeywords().length}>
+                  <details class="mb-3">
+                    <summary class="cursor-pointer text-xs font-medium text-muted">
+                      Keywords
+                    </summary>
+                    <div class="mt-2 flex flex-wrap gap-1">
+                      <For each={extraKeywords()}>
+                        {(k) => (
+                          <span class="inline-block rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
+                            {k}
+                          </span>
+                        )}
+                      </For>
+                    </div>
+                  </details>
                 </Show>
 
                 {/* Structured metadata sidebar — Status/Runtime/Language/Country

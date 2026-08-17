@@ -3890,7 +3890,10 @@ describe("Organize is its own top-level section tab", () => {
         screen.getByLabelText(`${wf} scan interval`),
       ).toBeInTheDocument();
     }
-    expect(screen.getAllByRole("switch")).toHaveLength(3);
+    expect(screen.getAllByRole("switch")).toHaveLength(4);
+    expect(
+      screen.getByLabelText("Include VMAF in scheduled Dedup"),
+    ).toBeInTheDocument();
   });
 });
 

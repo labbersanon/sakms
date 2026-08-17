@@ -309,15 +309,11 @@ func (a *scanAdapter) eagerVMAF(ctx context.Context, groups []proposals.Proposal
 		// still sending Keep-primary as referenceIndex.
 		// Review if: VMAF reference is changed back to Winner.
 		refIdx := vmaf.ReferenceIndex(g.Candidates)
-		if refIdx < 0 || refIdx >= len(g.Candidates) {
+		if refIdx < 0 || refIdx >= len(g.Candidates) || g.Candidates[refIdx].Path == "" {
 			log.Printf("scanschedule: eager vmaf: group %q has no VMAF reference — skipping", g.SourceName)
 			continue
 		}
 		reference := g.Candidates[refIdx].Path
-		if reference == "" {
-			log.Printf("scanschedule: eager vmaf: group %q has no VMAF reference — skipping", g.SourceName)
-			continue
-		}
 		for i, c := range g.Candidates {
 			if ctx.Err() != nil {
 				return

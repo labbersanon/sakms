@@ -156,6 +156,53 @@ func TestApplyLibraryAdult_DeletesFileAndScene(t *testing.T) {
 	}
 }
 
+func TestApplyLibraryAdult_DeletesSceneAlternateFiles(t *testing.T) {
+	root := t.TempDir()
+	sceneDir := filepath.Join(root, "Flagged Scene")
+	if err := os.MkdirAll(sceneDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	primary := filepath.Join(sceneDir, "scene.mkv")
+	alt := filepath.Join(sceneDir, "scene - 1080p.mp4")
+	for _, p := range []string{primary, alt} {
+		if err := os.WriteFile(p, []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	scene, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s-alts", Title: "Flagged Scene",
+		FilePath: primary, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertSceneFile(ctx, library.SceneFile{
+		SceneID: scene.ID, FilePath: alt, IsPrimary: false,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	changes, err := ApplyLibraryAdult(ctx, libStore, proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Flagged Scene",
+		SourcePath: primary, RootFolderPath: root, TrackedID: int(scene.ID),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected PathChanges for primary+alternate, got %+v", changes)
+	}
+	if _, err := os.Stat(sceneDir); !os.IsNotExist(err) {
+		t.Errorf("expected scene folder gone, stat: %v", err)
+	}
+	if _, err := libStore.GetScene(ctx, "stashdb", "s-alts"); err != library.ErrNotFound {
+		t.Errorf("expected the scene row to be deleted, got err=%v", err)
+	}
+}
+
 func TestApplyLibraryAdult_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {

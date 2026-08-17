@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+	// "os" // unused after 2026-08-17: file deletes moved to purge_remove.go
 	"strings"
 	"time"
 
@@ -257,11 +257,29 @@ func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals
 		return nil, fmt.Errorf("proposal %d has no scene id to delete", p.ID)
 	}
 
-	if p.SourcePath != "" {
-		if err := os.Remove(p.SourcePath); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("deleting %q: %w", p.SourcePath, err)
-		}
-		changes = append(changes, mode.PathChange{Path: p.SourcePath, Kind: mode.Deleted})
+	// Claude 2026-08-17: delete every library_scene_files path, not just SourcePath.
+	// Reason: Movies purge had the same primary-only hole; Adult scene
+	//   alternates CASCADE off DeleteScene and would stay on disk for Dedup.
+	// Troubleshooting: purged scene still appears in Dedup with leftover copies.
+	// Review if: scene files live only in library_scene_files.
+	// if p.SourcePath != "" {
+	// 	if err := os.Remove(p.SourcePath); err != nil && !os.IsNotExist(err) {
+	// 		return nil, fmt.Errorf("deleting %q: %w", p.SourcePath, err)
+	// 	}
+	// 	changes = append(changes, mode.PathChange{Path: p.SourcePath, Kind: mode.Deleted})
+	// }
+	files, err := libStore.ListSceneFiles(ctx, int64(p.TrackedID))
+	if err != nil {
+		return nil, fmt.Errorf("listing files for scene %d: %w", p.TrackedID, err)
+	}
+	paths := make([]string, 0, 1+len(files))
+	paths = append(paths, p.SourcePath)
+	for _, f := range files {
+		paths = append(paths, f.FilePath)
+	}
+	changes, err = removeTrackedMedia(paths, p.RootFolderPath)
+	if err != nil {
+		return changes, err
 	}
 	if err := libStore.DeleteScene(ctx, int64(p.TrackedID)); err != nil {
 		return changes, err

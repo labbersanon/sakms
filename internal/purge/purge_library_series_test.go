@@ -149,6 +149,55 @@ func TestApplyLibrarySeries_DeletesAllEpisodeFilesAndSeries(t *testing.T) {
 // Deleted PathChange for that shared file, not two — the second episode
 // row's delete attempt hits the file the first row's delete already
 // removed (a safe IsNotExist no-op), and must not double-count.
+func TestApplyLibrarySeries_DeletesEpisodeAlternateFiles(t *testing.T) {
+	dir := t.TempDir()
+	epPath := filepath.Join(dir, "s01e01.mkv")
+	altPath := filepath.Join(dir, "s01e01 - 720p.mkv")
+	if err := os.WriteFile(epPath, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(altPath, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 9, Title: "Show", RootFolderPath: dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: epPath,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
+		EpisodeID: ep.ID, FilePath: altPath, IsPrimary: false,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	changes, err := ApplyLibrarySeries(ctx, libStore, proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Show", TrackedID: int(series.ID),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected PathChanges for primary+alternate, got %+v", changes)
+	}
+	if _, err := os.Stat(epPath); !os.IsNotExist(err) {
+		t.Errorf("expected primary episode gone, stat: %v", err)
+	}
+	if _, err := os.Stat(altPath); !os.IsNotExist(err) {
+		t.Errorf("expected alternate episode gone, stat: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("library root must survive when files sit in it: %v", err)
+	}
+}
+
 func TestApplyLibrarySeries_SharedFileReportsOneDeletedPathChange(t *testing.T) {
 	dir := t.TempDir()
 	sharedPath := filepath.Join(dir, "s01e01-e02.mkv")

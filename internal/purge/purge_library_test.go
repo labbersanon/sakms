@@ -111,6 +111,58 @@ func TestApplyLibrary_DeletesFileAndLibraryItem(t *testing.T) {
 	}
 }
 
+func TestApplyLibrary_DeletesAlternateFilesAndMovieFolder(t *testing.T) {
+	root := t.TempDir()
+	movieDir := filepath.Join(root, "The Last House (2026) [tmdbid-1284041]")
+	if err := os.MkdirAll(movieDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	primary := filepath.Join(movieDir, "The Last House (2026) [tmdbid-1284041].mkv")
+	alt := filepath.Join(movieDir, "The Last House (2026) [tmdbid-1284041] - 1080p H264.mp4")
+	sibling := filepath.Join(movieDir, "The Last House (2026) [tmdbid-1284041] - 2160p HEVC.2.mp4")
+	for _, p := range []string{primary, alt, sibling} {
+		if err := os.WriteFile(p, []byte("data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	item, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 1284041, Title: "The Last House",
+		FilePath: primary, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
+		ItemID: item.ID, FilePath: alt, IsPrimary: false, QualityTier: "high",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	changes, err := ApplyLibrary(ctx, libStore, proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "The Last House", TrackedID: int(item.ID),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected PathChanges for primary+alternate, got %+v", changes)
+	}
+	for _, p := range []string{primary, alt, sibling} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %s gone, stat: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(movieDir); !os.IsNotExist(err) {
+		t.Errorf("expected movie folder gone, stat: %v", err)
+	}
+	if _, err := libStore.Get(ctx, item.ID); err != library.ErrNotFound {
+		t.Errorf("expected the library item to be deleted, got err=%v", err)
+	}
+}
+
 func TestApplyLibrary_RejectsNonPendingProposal(t *testing.T) {
 	libStore := newTestLibraryStore(t)
 	for _, status := range []proposals.Status{proposals.Applied, proposals.Dismissed, proposals.Unmatched} {

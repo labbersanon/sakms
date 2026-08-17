@@ -7901,6 +7901,19 @@ primary (quality Winner + Keep radio) is unchanged. Dedup card badges use
 that same size-based reference, so changing Keep no longer retriggers
 ffmpeg. Advanced, Dedup interval, and manual Scan are unchanged.
 
+## 2026-08-17 (later, same day) — Purge deletes every copy of a title
+
+Applying Purge on a Movies/Series/Adult title now removes every file in
+`library_*_files` (primary + alternates), not only the denormalized
+primary path. Movie/scene folders that are real subdirectories of the
+library root are then removed so leftover nfo/trickplay/sibling encodes
+cannot be rediscovered by Dedup. A file sitting directly in the library
+root still cannot take the root with it. This reverses the 2026-08-05
+alternate-files work's accidental "delete the primary, CASCADE the DB
+rows, leave the other copies on disk" hole — live: The Last House
+(tmdb 1284041) purge applied while three quality-suffixed copies and an
+unmapped REPACK folder remained.
+
 
 
 

@@ -16,7 +16,7 @@ package purge
 import (
 	"context"
 	"fmt"
-	"os"
+	// "os" // unused after 2026-08-17: file deletes moved to purge_remove.go
 	"strings"
 	"time"
 
@@ -101,11 +101,33 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	if err != nil {
 		return nil, fmt.Errorf("loading library item %d: %w", p.TrackedID, err)
 	}
-	if item.FilePath != "" {
-		if err := os.Remove(item.FilePath); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("deleting %q: %w", item.FilePath, err)
-		}
-		changes = append(changes, mode.PathChange{Path: item.FilePath, Kind: mode.Deleted})
+	// Claude 2026-08-17: delete every library_item_files path, not just FilePath.
+	// Reason: the old single os.Remove(item.FilePath) left Rename alternates and
+	//   sibling encodes on disk; Dedup then regrouped them after the item row
+	//   (and its file rows, via CASCADE) were gone. See purge_remove.go.
+	// Troubleshooting: purged title still appears in Dedup with all copies.
+	// Review if: library_item_files becomes the sole path source.
+	// if item.FilePath != "" {
+	// 	if err := os.Remove(item.FilePath); err != nil && !os.IsNotExist(err) {
+	// 		return nil, fmt.Errorf("deleting %q: %w", item.FilePath, err)
+	// 	}
+	// 	changes = append(changes, mode.PathChange{Path: item.FilePath, Kind: mode.Deleted})
+	// }
+	files, err := libStore.ListFiles(ctx, item.ID)
+	if err != nil {
+		return nil, fmt.Errorf("listing files for library item %d: %w", item.ID, err)
+	}
+	paths := make([]string, 0, 1+len(files))
+	paths = append(paths, item.FilePath)
+	for _, f := range files {
+		paths = append(paths, f.FilePath)
+	}
+	changes, err = removeTrackedMedia(paths, item.RootFolderPath)
+	if err != nil {
+		return changes, err
+	}
+	for _, c := range changes {
+		libStore.PruneVMAFScoresForPath(ctx, c.Path)
 	}
 	if err := libStore.Delete(ctx, int64(p.TrackedID)); err != nil {
 		return changes, err
@@ -252,20 +274,45 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		return nil, fmt.Errorf("proposal %d has no series id to delete", p.ID)
 	}
 
+	series, err := libStore.GetSeries(ctx, int64(p.TrackedID))
+	if err != nil {
+		return nil, fmt.Errorf("loading series %d: %w", p.TrackedID, err)
+	}
 	episodes, err := libStore.ListEpisodes(ctx, int64(p.TrackedID))
 	if err != nil {
 		return nil, fmt.Errorf("loading episodes for series %d: %w", p.TrackedID, err)
 	}
-	removedPaths := make(map[string]bool, len(episodes))
+	// Claude 2026-08-17: also delete library_episode_files alternates.
+	// Reason: the old loop only os.Remove'd each episode.FilePath; extra
+	//   encodes in library_episode_files CASCADE'd off the row and stayed
+	//   on disk, same hole as Movies' primary-only purge.
+	// Troubleshooting: purged series still has leftover episode copies.
+	// Review if: episode files live only in library_episode_files.
+	// removedPaths := make(map[string]bool, len(episodes))
+	// for _, ep := range episodes {
+	// 	if ep.FilePath == "" || removedPaths[ep.FilePath] {
+	// 		continue
+	// 	}
+	// 	if err := os.Remove(ep.FilePath); err != nil && !os.IsNotExist(err) {
+	// 		return changes, fmt.Errorf("deleting %q: %w", ep.FilePath, err)
+	// 	}
+	// 	removedPaths[ep.FilePath] = true
+	// 	changes = append(changes, mode.PathChange{Path: ep.FilePath, Kind: mode.Deleted})
+	// }
+	var paths []string
 	for _, ep := range episodes {
-		if ep.FilePath == "" || removedPaths[ep.FilePath] {
-			continue
+		paths = append(paths, ep.FilePath)
+		files, fErr := libStore.ListEpisodeFiles(ctx, ep.ID)
+		if fErr != nil {
+			return nil, fmt.Errorf("listing files for episode %d: %w", ep.ID, fErr)
 		}
-		if err := os.Remove(ep.FilePath); err != nil && !os.IsNotExist(err) {
-			return changes, fmt.Errorf("deleting %q: %w", ep.FilePath, err)
+		for _, f := range files {
+			paths = append(paths, f.FilePath)
 		}
-		removedPaths[ep.FilePath] = true
-		changes = append(changes, mode.PathChange{Path: ep.FilePath, Kind: mode.Deleted})
+	}
+	changes, err = removeTrackedMedia(paths, series.RootFolderPath)
+	if err != nil {
+		return changes, err
 	}
 	if err := libStore.DeleteSeries(ctx, int64(p.TrackedID)); err != nil {
 		return changes, err

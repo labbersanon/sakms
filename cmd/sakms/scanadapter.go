@@ -41,6 +41,7 @@ import (
 	"github.com/labbersanon/sakms/internal/scanschedule"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/vmaf"
 )
 
 // scanAdapter holds exactly the collaborators the manual scan handlers use, so
@@ -228,8 +229,9 @@ func (a *scanAdapter) ScanPurge(ctx context.Context, m mode.Mode) error {
 // (scanschedule.runDedupCycle), not here. Never Applies.
 //
 // When eagerVMAF is true, after the scan is persisted it eagerly computes VMAF
-// scores for each group's non-primary candidates against the group's primary
-// (star topology, plan AC6), so the on-demand view path serves a warm cache.
+// scores for each group's non-reference candidates against the group's largest
+// on-disk file (star topology, vmaf.ReferenceIndex), so the on-demand view
+// path serves a warm cache.
 // This eager fan-out runs here (rather than in the scheduler) because it needs
 // the in-memory groups the scan just found, which this method's error-only
 // return does not surface to the caller. A consequence: the caller's Dedup Hub
@@ -286,10 +288,11 @@ func (a *scanAdapter) ScanDedup(ctx context.Context, m mode.Mode, eagerVMAF bool
 	return nil
 }
 
-// eagerVMAF computes and caches a VMAF score for every non-primary candidate in
-// every group against that group's primary (the Winner candidate) — the same
-// star topology the on-demand view path uses. It is best-effort and
-// skip-and-continue: a group with no designated primary is skipped, and a
+// eagerVMAF computes and caches a VMAF score for every non-reference candidate
+// in every group against that group's VMAF reference — the largest on-disk
+// file (internal/vmaf.ReferenceIndex), not the Keep/Apply Winner.
+// Star topology matches the on-demand view path. It is best-effort and
+// skip-and-continue: a group with no usable reference is skipped, and a
 // single pair's compute/cache failure (or a cancelled context) is logged and
 // stepped over so one bad file never blocks the rest of the cycle (plan AC7).
 // Concurrency is bounded by internal/vmaf's shared semaphore inside
@@ -299,25 +302,28 @@ func (a *scanAdapter) eagerVMAF(ctx context.Context, groups []proposals.Proposal
 		if ctx.Err() != nil {
 			return
 		}
-		// The primary/reference is the group's Winner candidate (precomputed at
-		// Scan time by quality). Without one there is nothing to score against.
-		reference := ""
-		for _, c := range g.Candidates {
-			if c.Winner {
-				reference = c.Path
-				break
-			}
-		}
-		if reference == "" {
-			log.Printf("scanschedule: eager vmaf: group %q has no primary candidate — skipping", g.SourceName)
+		// Claude 2026-08-17: VMAF reference is largest file, not Winner.
+		// Reason: keep protocol (place.QualityKey) stays independent of VMAF
+		// comparison (deep-interview-dedup-vmaf-schedule).
+		// Troubleshooting: if Dedup badges miss the scheduled cache, the UI is
+		// still sending Keep-primary as referenceIndex.
+		// Review if: VMAF reference is changed back to Winner.
+		refIdx := vmaf.ReferenceIndex(g.Candidates)
+		if refIdx < 0 || refIdx >= len(g.Candidates) {
+			log.Printf("scanschedule: eager vmaf: group %q has no VMAF reference — skipping", g.SourceName)
 			continue
 		}
-		for _, c := range g.Candidates {
+		reference := g.Candidates[refIdx].Path
+		if reference == "" {
+			log.Printf("scanschedule: eager vmaf: group %q has no VMAF reference — skipping", g.SourceName)
+			continue
+		}
+		for i, c := range g.Candidates {
 			if ctx.Err() != nil {
 				return
 			}
-			if c.Path == reference {
-				continue // the primary is never scored against itself
+			if i == refIdx || c.Path == reference {
+				continue // the VMAF reference is never scored against itself
 			}
 			if err := api.EagerComputeAndCacheVMAF(ctx, a.libStore, c.Path, reference); err != nil {
 				log.Printf("scanschedule: eager vmaf %s vs %s: %v", c.Path, reference, err)

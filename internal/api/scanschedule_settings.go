@@ -58,10 +58,15 @@ const (
 	defaultScanIntervalSeconds = 24 * 60 * 60 // 86400
 
 	// defaultScanEnabled is the unset-key default for the three *_scan_enabled
-	// keys. Deliberately NOT shared with dedupVMAFScanEnabledKey's own default,
-	// which stays false — that is the narrower eager-VMAF opt-in, not a master
-	// schedule switch.
+	// keys. dedupVMAFScanEnabledKey now shares the same true default (changed
+	// 2026-08-17) — still a separate key, still not a master schedule switch.
 	defaultScanEnabled = true
+
+	// defaultDedupVMAFScanEnabled is the unset-key default for
+	// dedup_vmaf_scan_enabled. Mirrored by value with scanschedule.runCycle's
+	// GetBool default; both must stay true so the Organize Switch and the
+	// scheduler cannot disagree on an unset key.
+	defaultDedupVMAFScanEnabled = true
 )
 
 type scanIntervalResponse struct {
@@ -176,10 +181,10 @@ func putScanEnabledHandler(settingsStore *settings.Store, key string) http.Handl
 }
 
 // getDedupVMAFScanEnabledHandler returns whether a scheduled Dedup cycle
-// eagerly computes VMAF scores for the groups it finds (off by default).
+// eagerly computes VMAF scores for the groups it finds (on by default).
 func getDedupVMAFScanEnabledHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		enabled, err := settingsStore.GetBool(r.Context(), dedupVMAFScanEnabledKey, false)
+		enabled, err := settingsStore.GetBool(r.Context(), dedupVMAFScanEnabledKey, defaultDedupVMAFScanEnabled)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

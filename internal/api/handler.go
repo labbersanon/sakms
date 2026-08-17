@@ -665,8 +665,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// General Rename/Purge/Dedup scan scheduler settings (see
 	// internal/scanschedule) — one enabled toggle + one interval per workflow,
 	// plus the Dedup eager-VMAF toggle. The three workflows are ON by default at
-	// a 24h cadence (changed 2026-08-10); dedup-vmaf-scan-enabled stays off by
-	// default, it is the narrower eager-compute opt-in, not a master switch.
+	// a 24h cadence (changed 2026-08-10); dedup-vmaf-scan-enabled is also on
+	// by default (changed 2026-08-17) so scheduled Dedup warms VMAF scores.
 	// Enabled and interval are deliberately SEPARATE endpoints, not one combined
 	// DTO, matching dedup-vmaf-scan-enabled's own precedent — so turning a
 	// workflow off never rewrites its stored interval. Settings scalars only; the

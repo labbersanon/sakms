@@ -2,6 +2,7 @@ package proposals
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -55,8 +56,8 @@ func TestReplacePending_PersistsCandidates(t *testing.T) {
 		{
 			Status: Pending, SourceName: "Movie A", Title: "Movie A", TMDBID: 1,
 			Candidates: []Candidate{
-				{Label: "tracked", Path: "/media/Movies/Movie A/a.mkv", TrackedID: 9, Resolution: 720, Codec: "h264", BitRate: 3000},
-				{Label: "Movie.A.1080p", Path: "/media/Movies/Movie.A.1080p/b.mkv", Resolution: 1080, Codec: "av1", BitRate: 4000, Winner: true},
+				{Label: "tracked", Path: "/media/Movies/Movie A/a.mkv", TrackedID: 9, Resolution: 720, Codec: "h264", BitRate: 3000, Size: 100},
+				{Label: "Movie.A.1080p", Path: "/media/Movies/Movie.A.1080p/b.mkv", Resolution: 1080, Codec: "av1", BitRate: 4000, Winner: true, Size: 4000},
 			},
 		},
 	})
@@ -69,6 +70,9 @@ func TestReplacePending_PersistsCandidates(t *testing.T) {
 	if !saved[0].Candidates[1].Winner || saved[0].Candidates[1].Resolution != 1080 {
 		t.Errorf("unexpected candidate data: %+v", saved[0].Candidates[1])
 	}
+	if saved[0].Candidates[0].Size != 100 || saved[0].Candidates[1].Size != 4000 {
+		t.Errorf("Size did not persist: %+v", saved[0].Candidates)
+	}
 
 	got, err := s.Get(ctx, saved[0].ID)
 	if err != nil {
@@ -76,6 +80,22 @@ func TestReplacePending_PersistsCandidates(t *testing.T) {
 	}
 	if len(got.Candidates) != 2 || got.Candidates[0].TrackedID != 9 {
 		t.Fatalf("expected candidates to round-trip from storage, got %+v", got.Candidates)
+	}
+	if got.Candidates[1].Size != 4000 {
+		t.Errorf("Size did not round-trip from storage: %+v", got.Candidates)
+	}
+}
+
+func TestCandidateJSONMissingSizeIsZero(t *testing.T) {
+	var c Candidate
+	if err := json.Unmarshal([]byte(`{"label":"a","path":"/a.mkv","winner":true}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Size != 0 {
+		t.Errorf("missing size JSON unmarshaled as %d, want 0", c.Size)
+	}
+	if !c.Winner || c.Path != "/a.mkv" {
+		t.Errorf("unexpected candidate: %+v", c)
 	}
 }
 

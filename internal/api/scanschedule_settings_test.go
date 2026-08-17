@@ -212,11 +212,11 @@ func TestDedupVMAFScanEnabled_RoundTrip(t *testing.T) {
 	var got dedupVMAFScanEnabledResponse
 	json.NewDecoder(resp.Body).Decode(&got)
 	resp.Body.Close()
-	if got.Enabled {
-		t.Error("expected eager VMAF to default to disabled")
+	if !got.Enabled {
+		t.Error("expected eager VMAF to default to enabled")
 	}
 
-	body, _ := json.Marshal(dedupVMAFScanEnabledRequest{Enabled: true})
+	body, _ := json.Marshal(dedupVMAFScanEnabledRequest{Enabled: false})
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/settings/dedup-vmaf-scan-enabled", bytes.NewReader(body))
 	putResp, _ := http.DefaultClient.Do(req)
 	putResp.Body.Close()
@@ -228,7 +228,7 @@ func TestDedupVMAFScanEnabled_RoundTrip(t *testing.T) {
 	var got2 dedupVMAFScanEnabledResponse
 	json.NewDecoder(resp2.Body).Decode(&got2)
 	resp2.Body.Close()
-	if !got2.Enabled {
-		t.Error("expected enabled=true to round-trip")
+	if got2.Enabled {
+		t.Error("expected enabled=false to round-trip")
 	}
 }

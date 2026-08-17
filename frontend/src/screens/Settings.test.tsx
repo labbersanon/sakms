@@ -163,6 +163,8 @@ function defaultGet(url: string): Response | undefined {
   // covers both the row list and the /genres picker (both arrays).
   if (url.includes("/api/settings/adult-newest-scan-interval"))
     return jsonResponse({ intervalSeconds: 0 });
+  if (url.includes("/api/settings/dedup-vmaf-scan-enabled"))
+    return jsonResponse({ enabled: true });
   if (url.includes("/api/modes/adult/newest-rows")) return jsonResponse([]);
   // OrganizeScanScheduleSection (Organize tab) mount GETs — Claude 2026-08-10.
   // Six endpoints: one enabled + one interval per workflow. Two suffix matches

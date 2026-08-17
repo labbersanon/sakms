@@ -180,3 +180,21 @@ func fakeStashboxByID(t *testing.T, titles map[string]string) http.HandlerFunc {
 		}}})
 	}
 }
+
+func TestProbeCandidate_CapturesSize(t *testing.T) {
+	dir := t.TempDir()
+	path := writeVideoFile(t, dir, "movie.mkv", 250)
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		path: {CodecName: "h264", Height: 1080, BitRate: 1000},
+	}}
+	c := probeCandidate(context.Background(), prober, "tracked", path, 7)
+	if c == nil {
+		t.Fatal("probeCandidate returned nil")
+	}
+	if c.Size != 250 {
+		t.Errorf("Size = %d, want 250", c.Size)
+	}
+	if c.Path != path || c.TrackedID != 7 {
+		t.Errorf("unexpected candidate: %+v", c)
+	}
+}

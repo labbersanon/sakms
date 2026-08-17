@@ -153,12 +153,24 @@ func TestRunCycle_Rename_PanicIsolation(t *testing.T) {
 func TestRunCycle_Dedup_EagerFlagFromSettings(t *testing.T) {
 	settingsStore := newTestSettings(t)
 
-	// Default (unset) → eager false.
+	// Default (unset) → eager true.
 	f1 := newFake()
 	runCycle(context.Background(), workflowDedup, f1, settingsStore, dedupscan.New())
 	for _, c := range f1.snapshotDedup() {
+		if !c.eager {
+			t.Fatalf("dedup eager should default to true, got false for %s", c.mode)
+		}
+	}
+
+	// Explicit off → eager false for every mode.
+	if err := settingsStore.SetBool(context.Background(), DedupVMAFEnabledKey, false); err != nil {
+		t.Fatalf("SetBool: %v", err)
+	}
+	fOff := newFake()
+	runCycle(context.Background(), workflowDedup, fOff, settingsStore, dedupscan.New())
+	for _, c := range fOff.snapshotDedup() {
 		if c.eager {
-			t.Fatalf("dedup eager should default to false, got true for %s", c.mode)
+			t.Fatalf("dedup eager should be false when disabled, got true for %s", c.mode)
 		}
 	}
 

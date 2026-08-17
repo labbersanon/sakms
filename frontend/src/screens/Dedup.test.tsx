@@ -82,6 +82,7 @@ const candidate = (over: Partial<Candidate>): Candidate => ({
   resolution: 1080,
   codec: "h264",
   bitRate: 8_000_000,
+  size: 0,
   winner: false,
   ...over,
 });
@@ -1217,36 +1218,45 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
     expect(applyBtn.disabled).toBe(false);
   });
 
-  it("re-fetches against the new referenceIndex when the primary changes", async () => {
+  it("does not change VMAF referenceIndex when the Keep radio changes", async () => {
+    const sized = dedupProposal({
+      id: 3,
+      title: "V",
+      pHashSimilarity: 0.8,
+      candidates: [
+        candidate({
+          label: "tracked",
+          path: "/m/keep.mkv",
+          winner: true,
+          size: 100,
+        }),
+        candidate({
+          label: "orphan.mkv",
+          path: "/m/dupe.mkv",
+          winner: false,
+          size: 5000,
+        }),
+      ],
+    });
     const calls = stubFetch((url) => {
       if (
         url.includes("/api/modes/movies/dedup/proposals") &&
         !url.includes("/vmaf") &&
         !url.includes("/video")
       )
-        return jsonResponse([vmafGroup()]);
+        return jsonResponse([sized]);
       if (url.includes("/vmaf"))
-        return jsonResponse({ status: "computing", candidateIndex: 0, referenceIndex: 0 });
+        return jsonResponse({
+          status: "computing",
+          candidateIndex: 0,
+          referenceIndex: 1,
+        });
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Dedup />);
     await screen.findByText("V");
-    // Initially primary=0 → the non-primary tile (index 1) scores against ref 0.
-    await waitFor(() =>
-      expect(
-        calls.some(
-          (c) =>
-            c.url.includes("/vmaf") &&
-            c.url.includes("candidateIndex=1") &&
-            c.url.includes("referenceIndex=0"),
-        ),
-      ).toBe(true),
-    );
-    // Re-point primary to index 1 → tile 0 becomes the non-primary and scores
-    // against the NEW reference (index 1) — no special-case logic, just a new
-    // query key.
-    fireEvent.click(screen.getByLabelText("Keep orphan.mkv"));
+    // Largest file is index 1 → keep-primary (index 0) is scored against it.
     await waitFor(() =>
       expect(
         calls.some(
@@ -1257,6 +1267,19 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
         ),
       ).toBe(true),
     );
+    expect(await screen.findByText("primary")).toBeInTheDocument();
+    expect(await screen.findByText("VMAF…")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Keep orphan.mkv"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Keep orphan.mkv")).toBeChecked(),
+    );
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes("/vmaf") && c.url.includes("referenceIndex=0"),
+      ),
+    ).toBe(false);
   });
 
   it("stops polling once the tiles unmount", async () => {

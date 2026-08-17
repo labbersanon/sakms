@@ -83,3 +83,10 @@ export function fetchDedupScanInterval(): Promise<number> {
 export function putDedupScanInterval(intervalSeconds: number): Promise<void> {
   return putScanInterval("dedup-scan-interval", intervalSeconds);
 }
+
+export function fetchDedupVMAFScanEnabled(): Promise<boolean> {
+  return fetchScanEnabled("dedup-vmaf-scan-enabled");
+}
+export function putDedupVMAFScanEnabled(enabled: boolean): Promise<void> {
+  return putScanEnabled("dedup-vmaf-scan-enabled", enabled);
+}

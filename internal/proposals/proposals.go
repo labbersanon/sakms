@@ -57,6 +57,11 @@ type Candidate struct {
 	Resolution int    `json:"resolution"`
 	Codec      string `json:"codec"`
 	BitRate    int64  `json:"bitRate"`
+	// Size is the on-disk byte size of Path, captured at Scan via
+	// library.FileSize. VMAF uses the largest Size as its comparison
+	// reference (distinct from Winner, which is the Keep/Apply keeper).
+	// Zero means unknown (legacy candidates_json blobs, or a failed stat).
+	Size int64 `json:"size"`
 	// PHash is this candidate's SAK-computed perceptual hash (Movies Dedup
 	// only), scheme-tagged (see internal/phash). Surfaced for display/audit —
 	// the same-TMDB group was already refined by phash similarity at Scan time,
@@ -207,10 +212,14 @@ func New(db *sql.DB) *Store {
 //
 // Claude 2026-08-06: replaced delete-all+insert with apply-gate check + upsert.
 // Reason: watchfolder scan during apply-batch caused "no proposal with that id"
-//   (ErrNotFound) because ReplacePending's DELETE removed rows apply-batch was
-//   still looking up. Upsert preserves IDs; gate defers replace while apply runs.
+//
+//	(ErrNotFound) because ReplacePending's DELETE removed rows apply-batch was
+//	still looking up. Upsert preserves IDs; gate defers replace while apply runs.
+//
 // Troubleshooting: if ids appear stale, confirm BeginApply/EndApply are paired
-//   in every apply handler and that ErrReplaceDeferred is not silently swallowed.
+//
+//	in every apply handler and that ErrReplaceDeferred is not silently swallowed.
+//
 // Review if: applies become fully idempotent or the gate is superseded.
 func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fresh []Proposal) ([]Proposal, error) {
 	// Apply-gate: defer if an apply is running for this (mode, workflow).
@@ -410,7 +419,9 @@ func (s *Store) List(ctx context.Context, m mode.Mode, wf Workflow) ([]Proposal,
 
 // Claude 2026-08-05: page-size bounds for Organize queue pagination.
 // Reason: deep-interview-organize-pagination-log — Dedup/Purge apply is
-//   page-scoped; max page size is also their apply-batch bound.
+//
+//	page-scoped; max page size is also their apply-batch bound.
+//
 // Troubleshooting: clients sending limit>Max get clamped, not 400.
 // Review if: page-size options in the UI change.
 const (
@@ -547,7 +558,9 @@ func (s *Store) Get(ctx context.Context, id int64) (*Proposal, error) {
 //
 // Claude 2026-08-06: path-based live lookup for apply safety net
 // Reason: when Get(id) misses after a rescan, the same file still has a live
-//   row under a new id keyed by source_path.
+//
+//	row under a new id keyed by source_path.
+//
 // Troubleshooting: apply-batch "no proposal with that id" despite file still pending.
 // Review if: ApplyBatchItem always carries sourcePath and ids are fully stable.
 func (s *Store) GetLiveBySourcePath(ctx context.Context, m mode.Mode, wf Workflow, sourcePath string) (*Proposal, error) {
@@ -765,9 +778,11 @@ func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbI
 //
 // Claude 2026-08-12: added for Phase D3 — adult-rename-review-alts.
 // Reason: the Review confirm (catalog branch) needs to flip a web-identified
-//   Unmatched row to Pending with a specific catalog identity before calling
-//   ApplyLibraryAdult. MoveMode is explicitly refused here (it refuses same-mode
-//   moves, proposal_movemode.go) and Repick overwrites wrong fields.
+//
+//	Unmatched row to Pending with a specific catalog identity before calling
+//	ApplyLibraryAdult. MoveMode is explicitly refused here (it refuses same-mode
+//	moves, proposal_movemode.go) and Repick overwrites wrong fields.
+//
 // Review if: Repick gains an optional (box, scene_id) parameter.
 func (s *Store) RepickAdultScene(ctx context.Context, id int64, title, studio, date, box, sceneID string) error {
 	res, err := s.db.ExecContext(ctx, `
@@ -788,7 +803,7 @@ func (s *Store) RepickAdultScene(ctx context.Context, id int64, title, studio, d
 // partial unique index proposals_live_source_path_uidx
 // (mode, workflow, source_path) WHERE status IN ('pending','unmatched').
 // Rename-only in practice: Dedup rows carry an empty source_path, which the
-// index's own `source_path <> ''` predicate excludes.
+// index's own `source_path <> ”` predicate excludes.
 var ErrModeMoveConflict = errors.New("a live proposal for this file already exists in the target mode")
 
 // MoveTarget is the fully-resolved destination of a cross-mode move. Every

@@ -135,9 +135,15 @@ func probeCandidate(ctx context.Context, prober Prober, label, path string, trac
 	if err != nil {
 		return nil
 	}
+	// Claude 2026-08-17: persist on-disk Size for VMAF's largest-file reference.
+	// Reason: Dedup UI cannot stat server paths; Keep Winner is quality-ranked
+	// and must stay independent of VMAF comparison.
+	// Review if: Candidate.Size is populated from a different source than
+	// library.FileSize.
 	return &proposals.Candidate{
 		Label: label, Path: videoPath, TrackedID: trackedID,
 		Resolution: probe.Height, Codec: probe.CodecName, BitRate: probe.BitRate,
+		Size: library.FileSize(videoPath),
 	}
 }
 

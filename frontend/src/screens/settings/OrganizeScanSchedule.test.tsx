@@ -52,6 +52,8 @@ const stubFetch = (override?: Override) => {
       const r = await override(url, init);
       if (r) return r;
     }
+    if (method === "GET" && url.includes("dedup-vmaf-scan-enabled"))
+      return jsonResponse({ enabled: true });
     if (method === "GET" && url.includes("-scan-enabled"))
       return jsonResponse({ enabled: true });
     if (method === "GET" && url.includes("-scan-interval"))
@@ -83,11 +85,11 @@ describe("OrganizeScanScheduleSection — layout", () => {
         await screen.findByLabelText(`${wf.title} scan interval`),
       ).toBeTruthy();
     }
-    // Three toggles total: the spec's "one control per WORKFLOW covering all
-    // three modes together" constraint, asserted as a count so a future
-    // per-mode expansion (nine toggles) fails here rather than silently
-    // shipping.
-    expect(screen.getAllByRole("switch")).toHaveLength(3);
+    // Three workflow toggles plus Dedup's VMAF include Switch.
+    expect(screen.getAllByRole("switch")).toHaveLength(4);
+    expect(
+      screen.getByLabelText("Include VMAF in scheduled Dedup"),
+    ).toBeTruthy();
   });
 
   it("shows a FETCHED false, not just the on-by-default fallback", async () => {
@@ -194,6 +196,52 @@ describe("OrganizeScanScheduleSection — enabled toggles", () => {
     // The rollback restores the pre-click state; the error line is the proof
     // the PUT actually failed rather than the click never landing.
     expect(await screen.findByText(/boom/)).toBeTruthy();
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("Dedup VMAF: reflects the fetched state and PUTs immediately", async () => {
+    const calls = stubFetch();
+    render(() => <OrganizeScanScheduleSection />);
+
+    const toggle = (await screen.findByLabelText(
+      "Include VMAF in scheduled Dedup",
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(
+        putsTo(calls, "/api/settings/dedup-vmaf-scan-enabled"),
+      ).toHaveLength(1),
+    );
+    expect(
+      putsTo(calls, "/api/settings/dedup-vmaf-scan-enabled")[0]!.body,
+    ).toEqual({ enabled: false });
+    expect(putsTo(calls, "/api/settings/dedup-scan-interval")).toHaveLength(0);
+    expect(putsTo(calls, "/api/settings/dedup-scan-enabled")).toHaveLength(0);
+  });
+
+  it("Dedup VMAF: rolls back and surfaces the error when the PUT fails", async () => {
+    stubFetch((url, init) => {
+      if (
+        (init?.method ?? "GET").toUpperCase() === "PUT" &&
+        url.includes("/api/settings/dedup-vmaf-scan-enabled")
+      ) {
+        return new Response("vmaf boom", { status: 500 });
+      }
+      return undefined;
+    });
+    render(() => <OrganizeScanScheduleSection />);
+
+    const toggle = (await screen.findByLabelText(
+      "Include VMAF in scheduled Dedup",
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    fireEvent.click(toggle);
+
+    expect(await screen.findByText(/vmaf boom/)).toBeTruthy();
     expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 });

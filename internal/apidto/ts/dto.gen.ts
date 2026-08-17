@@ -1193,16 +1193,18 @@ export interface ExcludeTitlesBatchResponse {
 /**
  * Candidate is one file in a Dedup proposal's duplicate group — the shape the
  * Dedup view (frontend/src/screens/Dedup.tsx) renders one table row from. A
- * CURATED subset of internal/proposals.Candidate: only the fields the view
- * actually displays (Label/Path/Resolution/Codec/BitRate) plus Winner, the
+ * CURATED subset of internal/proposals.Candidate: the fields the view
+ * actually displays (Label/Path/Resolution/Codec/BitRate/Size) plus Winner, the
  * keeper-vs-duplicate flag. Winner==true is the "tracked copy" the group keeps;
  * every other candidate is a duplicate the Apply removes (see
- * internal/dedup.ApplyLibrary*). Wire order is load-bearing: DedupApplyRequest's
- * KeepIndex is an ARRAY INDEX into this exact slice (proposals.Proposal.Candidates
- * order), so the client MUST render candidates in received order and never sort
- * them, or the index it sends resolves to the wrong file. proposals.Candidate's
- * TrackedID/PHash are intentionally omitted — the view reads neither, and this
- * package curates to what the frontend consumes (see the Proposal doc / package doc).
+ * internal/dedup.ApplyLibrary*). Size is on-disk bytes; Dedup VMAF scores others
+ * against the largest Size, which is independent of Winner. Wire order is
+ * load-bearing: DedupApplyRequest's KeepIndex is an ARRAY INDEX into this exact
+ * slice (proposals.Proposal.Candidates order), so the client MUST render
+ * candidates in received order and never sort them, or the index it sends
+ * resolves to the wrong file. proposals.Candidate's TrackedID/PHash are
+ * intentionally omitted — the view reads neither, and this package curates to
+ * what the frontend consumes (see the Proposal doc / package doc).
  */
 export interface Candidate {
   label: string;
@@ -1210,6 +1212,7 @@ export interface Candidate {
   resolution: number /* int */;
   codec: string;
   bitRate: number /* int64 */;
+  size: number /* int64 */;
   winner: boolean;
 }
 /**

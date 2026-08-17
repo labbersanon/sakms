@@ -145,9 +145,10 @@ export interface DedupVmafScore {
 }
 
 // fetchDedupVmaf scores one candidate tile (candidateIndex) against the group's
-// current primary (referenceIndex). api() returns the parsed body for the 200
-// ("ready"/"error") AND 202 ("computing") responses alike — only a 4xx (bad
-// params, unknown proposal) throws, which the caller surfaces as an error state.
+// VMAF reference (referenceIndex — the largest on-disk file, not Keep-primary).
+// api() returns the parsed body for the 200 ("ready"/"error") AND 202
+// ("computing") responses alike — only a 4xx (bad params, unknown proposal)
+// throws, which the caller surfaces as an error state.
 export function fetchDedupVmaf(
   mode: Mode,
   id: number,

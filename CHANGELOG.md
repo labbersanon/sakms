@@ -7891,6 +7891,16 @@ resolved after TMDB details). OMDb is IMDb-only fallback when Trakt has
 no nested IMDb score. Empty or unconfigured sources are still omitted.
 Catalog scores are still not stored on GET /tracked.
 
+## 2026-08-17 — Scheduled Dedup VMAF (Organize toggle, largest-file reference)
+
+Scheduled Dedup cycles eagerly compute VMAF by default. Settings → Organize
+→ Dedup gains a second Switch ("Include VMAF in scheduled Dedup") wired to
+the existing `dedup_vmaf_scan_enabled` key (unset now reads as on). VMAF
+scores every other copy against the largest on-disk file; Keep/Apply
+primary (quality Winner + Keep radio) is unchanged. Dedup card badges use
+that same size-based reference, so changing Keep no longer retriggers
+ffmpeg. Advanced, Dedup interval, and manual Scan are unchanged.
+
 
 
 

@@ -120,10 +120,11 @@ const (
 	DedupEnabledKey  = "dedup_scan_enabled"
 
 	// DedupVMAFEnabledKey gates the eager-VMAF fan-out on a scheduled Dedup
-	// cycle (plan AC6). Off by default — deliberately NOT changed by the
-	// on-by-default work above, which is about the master Dedup schedule, not
-	// this narrower eager-compute opt-in. Independent of DedupIntervalKey and
-	// DedupEnabledKey (a Dedup schedule can run with or without eager VMAF).
+	// cycle (plan AC6). Unset reads as TRUE (on by default) — changed
+	// 2026-08-17 so scheduled Dedup warms the VMAF cache without an extra
+	// operator flip; an explicit stored false still skips eager compute.
+	// Independent of DedupIntervalKey and DedupEnabledKey (a Dedup schedule
+	// can run with or without eager VMAF).
 	DedupVMAFEnabledKey = "dedup_vmaf_scan_enabled"
 )
 
@@ -206,7 +207,7 @@ func Run(ctx context.Context, scanner Scanner, settingsStore *settings.Store, hu
 		// GetBool degrades to the default on any error, so a store hiccup at
 		// boot leaves a workflow ON rather than silently disabling it — the
 		// same tolerant-read shape the DedupVMAFEnabledKey read in runCycle
-		// uses, just with a true default instead of false.
+		// uses (also default true).
 		bootEnabled, _ := settingsStore.GetBool(ctx, wk.enabledKey, true)
 		reload := func() time.Duration {
 			return LoadInterval(ctx, settingsStore, key, DefaultIntervalSeconds)
@@ -286,8 +287,8 @@ func runCycle(ctx context.Context, wf workflow, scanner Scanner, settingsStore *
 	var eagerVMAF bool
 	if wf == workflowDedup {
 		// GetBool degrades to the default on any error, so a store hiccup means
-		// "no eager VMAF this cycle", never a failed cycle.
-		eagerVMAF, _ = settingsStore.GetBool(ctx, DedupVMAFEnabledKey, false)
+		// eager VMAF this cycle (on by default), never a failed cycle.
+		eagerVMAF, _ = settingsStore.GetBool(ctx, DedupVMAFEnabledKey, true)
 	}
 
 	for _, m := range allModes {

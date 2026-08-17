@@ -28,11 +28,13 @@ import {
 import {
   fetchDedupScanEnabled,
   fetchDedupScanInterval,
+  fetchDedupVMAFScanEnabled,
   fetchPurgeScanEnabled,
   fetchRenameScanEnabled,
   fetchRenameScanInterval,
   putDedupScanEnabled,
   putDedupScanInterval,
+  putDedupVMAFScanEnabled,
   putPurgeScanEnabled,
   putRenameScanEnabled,
   putRenameScanInterval,
@@ -77,6 +79,10 @@ const ScanSchedulePanel: Component<{
   putEnabled: (enabled: boolean) => Promise<void>;
   fetchInterval: () => Promise<number>;
   putInterval: (intervalSeconds: number) => Promise<void>;
+  // vmaf is Dedup-only: a second immediate Switch that piggybacks the Dedup
+  // ticker. Omit on Rename/Clean-up.
+  fetchVMAFEnabled?: () => Promise<boolean>;
+  putVMAFEnabled?: (enabled: boolean) => Promise<void>;
 }> = (props) => {
   // Enabled and interval are two independent resources against two independent
   // endpoints, deliberately: saving one never writes the other, which is what
@@ -84,6 +90,11 @@ const ScanSchedulePanel: Component<{
   const [enabled, { mutate: setEnabled }] = createResource(props.fetchEnabled);
   const [interval] = createResource(props.fetchInterval);
   const [toggleError, setToggleError] = createSignal("");
+  const [vmafEnabled, { mutate: setVmafEnabled }] = createResource(
+    () => (props.fetchVMAFEnabled ? "vmaf" : undefined),
+    () => props.fetchVMAFEnabled!(),
+  );
+  const [vmafError, setVmafError] = createSignal("");
 
   // The Switch is immediate-apply (its own contract, and the convention for
   // every row-level toggle in this app) — no Save button, unlike the
@@ -98,6 +109,19 @@ const ScanSchedulePanel: Component<{
     } catch (e) {
       setEnabled(previous);
       setToggleError((e as Error).message);
+    }
+  };
+
+  const toggleVMAF = async (next: boolean) => {
+    if (!props.putVMAFEnabled) return;
+    const previous = vmafEnabled();
+    setVmafEnabled(next);
+    setVmafError("");
+    try {
+      await props.putVMAFEnabled(next);
+    } catch (e) {
+      setVmafEnabled(previous);
+      setVmafError((e as Error).message);
     }
   };
 
@@ -130,6 +154,37 @@ const ScanSchedulePanel: Component<{
       </Show>
       <Show when={toggleError()}>
         <ErrorText>{toggleError()}</ErrorText>
+      </Show>
+      {/* Claude 2026-08-17: Dedup-only VMAF include Switch.
+          Reason: scheduled Dedup piggybacks eager VMAF (largest-file
+          reference); default on; next tick, no extra restart.
+          Review if: VMAF gets its own interval or moves off Organize. */}
+      <Show when={props.fetchVMAFEnabled}>
+        <div class="mb-3 flex items-center gap-2">
+          <Switch
+            checked={vmafEnabled() ?? true}
+            disabled={vmafEnabled.loading || vmafEnabled.error !== undefined}
+            onChange={(next) => void toggleVMAF(next)}
+            ariaLabel="Include VMAF in scheduled Dedup"
+          />
+          <span class="text-sm text-fg">Include VMAF in scheduled Dedup</span>
+        </div>
+        <Muted class="mb-3">
+          When on, each scheduled Dedup cycle scores every other copy against
+          the largest file (Keep/Apply primary is unchanged) and caches the
+          result so Dedup opens without waiting on ffmpeg. On by default. Takes
+          effect on the next Dedup tick — no extra restart. Does nothing while
+          Dedup scheduled scanning is off. ffmpeg is expensive (max two at a
+          time).
+        </Muted>
+        <Show when={vmafEnabled.error}>
+          <ErrorText>
+            Couldn't load this setting: {(vmafEnabled.error as Error)?.message}
+          </ErrorText>
+        </Show>
+        <Show when={vmafError()}>
+          <ErrorText>{vmafError()}</ErrorText>
+        </Show>
       </Show>
       <DurationSetting
         id={props.id}
@@ -165,6 +220,8 @@ export const OrganizeScanScheduleSection: Component = () => (
       putEnabled={putDedupScanEnabled}
       fetchInterval={fetchDedupScanInterval}
       putInterval={putDedupScanInterval}
+      fetchVMAFEnabled={fetchDedupVMAFScanEnabled}
+      putVMAFEnabled={putDedupVMAFScanEnabled}
     />
     <ScanSchedulePanel
       title="Clean-up"

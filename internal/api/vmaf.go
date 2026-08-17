@@ -73,15 +73,15 @@ func pairKey(candidatePath, referencePath string) string {
 
 // vmafHandler serves GET /api/modes/{mode}/dedup/proposals/{id}/vmaf?
 // candidateIndex=N&referenceIndex=M. It scores the proposal's candidate at
-// index N against the candidate at index M (the group's chosen reference /
-// primary), checking the vmaf_scores cache first (AC2) and computing+caching
-// on a miss (AC1). The primary's own tile is never scored against itself — a
-// request with candidateIndex == referenceIndex is rejected (AC1).
+// index N against the candidate at index M (the group's VMAF reference —
+// the largest on-disk file, sent by the frontend independently of Keep-primary),
+// checking the vmaf_scores cache first (AC2) and computing+caching on a miss
+// (AC1). Scoring a candidate against itself is rejected (candidateIndex ==
+// referenceIndex).
 //
-// Primary-change handling (AC3) needs no separate endpoint: switching the
-// primary means the frontend calls this with a different referenceIndex, which
-// is a different cache key (candidate_path, reference_path), so it is a natural
-// cache miss that recomputes against the new reference.
+// The handler stays index-generic: it does not re-pick the largest file. The
+// frontend (and eager scan) must send the size-based reference so cache keys
+// match. Changing Keep-primary must not change referenceIndex.
 //
 // inflight is constructed once here (not per-request) so it is shared across
 // every request this handler serves.

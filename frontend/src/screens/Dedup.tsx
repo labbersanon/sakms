@@ -109,6 +109,24 @@ const winnerIndex = (candidates: Candidate[]): number => {
   return i >= 0 ? i : 0;
 };
 
+// Claude 2026-08-17: VMAF comparison reference is the largest on-disk file,
+// not Keep-primary. Mirror of internal/vmaf.ReferenceIndex (without a server
+// stat fill). Changing the Keep radio must not change this index.
+// Review if: VMAF reference is changed back to Winner / keep-primary.
+const vmafReferenceIndex = (candidates: Candidate[]): number => {
+  let best = 0;
+  let bestSize = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const sz = candidates[i]?.size ?? 0;
+    if (sz > bestSize) {
+      best = i;
+      bestSize = sz;
+    }
+  }
+  if (bestSize > 0) return best;
+  return winnerIndex(candidates);
+};
+
 // fmtBitrate renders bitRate as "N kbps" (verbatim from the old frontend's
 // fmtBytes) — blank for a missing/zero bitrate.
 const fmtBitrate = (bitRate: number | undefined): string =>
@@ -131,7 +149,7 @@ const similarityLabel = (s: number): string => {
 // threshold that the UI already labels "likely duplicate"; "possible" groups
 // need human duplicate review first, not expensive quality scoring.
 // Troubleshooting: sampled VMAF still looked like a hung scan on low-confidence
-// groups because every non-primary tile mounted a polling VMAF badge.
+// groups because every non-reference tile mounted a polling VMAF badge.
 // Review if: similarityLabel's likely/high thresholds change.
 const VMAF_MIN_CONFIDENCE = 0.7;
 
@@ -553,6 +571,10 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
     const chosen = keepSel()[p.id];
     return chosen ?? winnerIndex(p.candidates ?? []);
   };
+  // referenceOf is the VMAF comparison file — largest size, never the Keep
+  // radio. Must not read keepSel or changing primary retriggers ffmpeg.
+  const referenceOf = (p: Proposal): number =>
+    vmafReferenceIndex(p.candidates ?? []);
   const additionalOf = (p: Proposal): ReadonlySet<number> =>
     additionalKeep()[p.id] ?? new Set<number>();
   const isPrimary = (p: Proposal, i: number): boolean => primaryOf(p) === i;
@@ -826,8 +848,8 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
                         </div>
 
                         {/* CARD view — a row of candidate tiles with a click-to-play
-                            video, metadata badge, keep controls, and (non-primary)
-                            VMAF score. */}
+                            video, metadata badge, keep controls, and VMAF score
+                            on every tile except the largest-file reference. */}
                         <Show when={viewMode() === "card"}>
                           <div class="mt-3 flex flex-wrap gap-3">
                             <For each={candidates()}>
@@ -868,23 +890,26 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
                                     />
                                     <div class="mb-2 flex items-center justify-between gap-2">
                                       <CandidateMeta c={c} />
-                                      <Show
-                                        when={!isPrimary(p, i())}
-                                        fallback={
+                                      <div class="flex flex-col items-end gap-1">
+                                        <Show when={isPrimary(p, i())}>
                                           <span class="text-xs font-medium text-ok">
                                             primary
                                           </span>
-                                        }
-                                      >
-                                        <Show when={shouldScoreVmaf(p)}>
+                                        </Show>
+                                        <Show
+                                          when={
+                                            shouldScoreVmaf(p) &&
+                                            i() !== referenceOf(p)
+                                          }
+                                        >
                                           <VmafBadge
                                             mode={props.mode}
                                             proposalId={p.id}
                                             candidateIndex={i()}
-                                            referenceIndex={primaryOf(p)}
+                                            referenceIndex={referenceOf(p)}
                                           />
                                         </Show>
-                                      </Show>
+                                      </div>
                                     </div>
                                     <Show when={pending()}>
                                       <div class="flex flex-col gap-1">

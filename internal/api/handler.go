@@ -204,6 +204,20 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/series/library/{seriesID}/seasons", listSeasonStatesHandler(seasons))
 	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/seasons/monitored", putAllSeasonsMonitoredHandler(seasons, grabsStore))
 	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/seasons/{seasonNumber}/monitored", putSeasonMonitoredHandler(libStore, grabsStore))
+	// Claude 2026-08-19: TMDB-keyed aliases so Discover can read/write the
+	// same library_season_monitored rows Library uses (library series id vs
+	// TMDB id). All-seasons is PUT on the collection, not
+	// .../seasons/monitored: Go's ServeMux rejects that as overlapping
+	// PUT .../{seriesID}/seasons/{seasonNumber}/monitored.
+	// Reason: Discover cards only have a TMDB id; Library's panel has the
+	// library_series row id. One flag table, two entry points.
+	// Troubleshooting: opening a series in Discover showed no monitor
+	// switches even when Library already had seasons monitored.
+	// Review if: Discover starts carrying a library series id on DetailTarget.
+	// Related files: frontend/src/components/SeasonsPanel.tsx, frontend/src/screens/discover/DetailPopup.tsx
+	mux.HandleFunc("GET /api/modes/series/library/tmdb/{tmdbId}/seasons", listSeasonStatesByTMDBHandler(seasons))
+	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons", putAllSeasonsMonitoredByTMDBHandler(seasons, grabsStore))
+	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons/{seasonNumber}/monitored", putSeasonMonitoredByTMDBHandler(seasons, grabsStore))
 
 	// Server-side directory browser for the Settings root-folder pickers +
 	// their as-you-type autocomplete — restricted to the mounted roots (see

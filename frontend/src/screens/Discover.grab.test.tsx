@@ -27,7 +27,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { AdultNewestReleaseItem, DiscoverItem } from "@dto";
 import { DiscoverAdult, DiscoverMainstream } from "./Discover";
-import { jsonResponse } from "../testing/http";
+import { jsonResponse, seriesMonitorDefaults } from "../testing/http";
 
 
 const movie = (over: Partial<DiscoverItem>): DiscoverItem => ({
@@ -113,6 +113,8 @@ const seasonFixture = (n: number) => ({
 });
 
 const mainstreamDefaults = (url: string): Response | null => {
+  const monitor = seriesMonitorDefaults(url);
+  if (monitor) return monitor;
   if (url.includes("/api/connections")) return jsonResponse([]);
   // The picker's own ?sections=seasons request. MUST precede the generic
   // "/discover" line: answered with a bare [] its absent `seasons` would route

@@ -20,7 +20,7 @@
 // (RunAutoGrab's deps, isActiveGrab, the retry reason strings). It stays
 // independently deletable, though the cost is slightly more than this file plus
 // its call sites: delete this file, its one call in runUsenetRetryCycle, and its
-// five route registrations in handler.go — then unwind the `libStore` parameter
+// eight route registrations in handler.go — then unwind the `libStore` parameter
 // that exists only to feed it, from both runUsenetRetryCycle's and
 // RunUsenetRetry's signatures and from RunUsenetRetry's call site in
 // cmd/sakms/main.go.
@@ -903,6 +903,84 @@ func (c seasonCatalog) states(ctx context.Context, seriesID int64) ([]library.Se
 	return states, nil
 }
 
+// statesByTMDB is the Discover alias of states: same merge when the series is
+// already in library_series, TMDB-only unmonitored seasons when it is not.
+func (c seasonCatalog) statesByTMDB(ctx context.Context, tmdbID int) ([]library.SeasonState, error) {
+	series, err := c.lib.GetSeriesByTMDBID(ctx, tmdbID)
+	if err == nil {
+		return c.states(ctx, series.ID)
+	}
+	if !errors.Is(err, library.ErrNotFound) {
+		return nil, err
+	}
+	return c.tmdbSeasonsOnly(ctx, tmdbID)
+}
+
+// tmdbSeasonsOnly is the untracked Discover read: TMDB's seasons[], every
+// monitored flag false. A local-store miss must not hide the switches.
+func (c seasonCatalog) tmdbSeasonsOnly(ctx context.Context, tmdbID int) ([]library.SeasonState, error) {
+	sess, err := mode.Build(ctx, c.connStore, c.scStore, c.settings, c.httpClient, nil, mode.Series)
+	if err != nil || sess.TMDB == nil {
+		return []library.SeasonState{}, nil
+	}
+	details, err := sess.TMDB.TVDetails(ctx, tmdbID)
+	if err != nil {
+		log.Printf("season catalog: loading TMDB details for tmdb %d: %v — no local series, listing nothing", tmdbID, err)
+		return []library.SeasonState{}, nil
+	}
+	states := make([]library.SeasonState, 0, len(details.Seasons))
+	for _, season := range details.Seasons {
+		states = append(states, library.SeasonState{
+			SeasonNumber: season.SeasonNumber,
+			EpisodeCount: season.EpisodeCount,
+		})
+	}
+	sort.Slice(states, func(i, j int) bool { return states[i].SeasonNumber < states[j].SeasonNumber })
+	return states, nil
+}
+
+// ensureSeriesByTMDB returns the library_series row for tmdbID, inserting a
+// shell row if Discover monitors a show that was never grabbed/renamed.
+// Existing rows are not upserted — that would clobber root_folder_path.
+func (c seasonCatalog) ensureSeriesByTMDB(ctx context.Context, tmdbID int) (*library.Series, error) {
+	series, err := c.lib.GetSeriesByTMDBID(ctx, tmdbID)
+	if err == nil {
+		return series, nil
+	}
+	if !errors.Is(err, library.ErrNotFound) {
+		return nil, err
+	}
+	title := ""
+	sess, sessErr := mode.Build(ctx, c.connStore, c.scStore, c.settings, c.httpClient, nil, mode.Series)
+	if sessErr == nil && sess.TMDB != nil {
+		if details, detErr := sess.TMDB.TVDetails(ctx, tmdbID); detErr == nil {
+			title = details.Title
+		}
+	}
+	if title == "" {
+		title = "TMDB " + strconv.Itoa(tmdbID)
+	}
+	root, _ := c.settings.Get(ctx, seriesLibraryRootFolderKey)
+	created, err := c.lib.UpsertSeries(ctx, library.Series{
+		TMDBID: tmdbID, Title: title, RootFolderPath: root,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func writeSeasonStates(w http.ResponseWriter, states []library.SeasonState) {
+	out := make([]apidto.SeasonState, 0, len(states))
+	for _, st := range states {
+		out = append(out, apidto.SeasonState{
+			SeasonNumber: st.SeasonNumber, EpisodeCount: st.EpisodeCount,
+			MissingCount: st.MissingCount, Monitored: st.Monitored,
+		})
+	}
+	writeJSON(w, out)
+}
+
 // listSeasonStatesHandler backs GET /api/modes/series/library/{seriesID}/seasons
 // — one explicit panel open, one series, one TMDB call (see seasonCatalog).
 func listSeasonStatesHandler(catalog seasonCatalog) http.HandlerFunc {
@@ -916,14 +994,26 @@ func listSeasonStatesHandler(catalog seasonCatalog) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		out := make([]apidto.SeasonState, 0, len(states))
-		for _, st := range states {
-			out = append(out, apidto.SeasonState{
-				SeasonNumber: st.SeasonNumber, EpisodeCount: st.EpisodeCount,
-				MissingCount: st.MissingCount, Monitored: st.Monitored,
-			})
+		writeSeasonStates(w, states)
+	}
+}
+
+// listSeasonStatesByTMDBHandler is Discover's read of the same season list
+// Library's GET .../library/{seriesID}/seasons returns. A series not yet in
+// library_series still 200s with TMDB's seasons, all unmonitored — absent row
+// means unmonitored, including "no series row at all".
+func listSeasonStatesByTMDBHandler(catalog seasonCatalog) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tmdbID, ok := tmdbIDPathValue(w, r)
+		if !ok {
+			return
 		}
-		writeJSON(w, out)
+		states, err := catalog.statesByTMDB(r.Context(), tmdbID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeSeasonStates(w, states)
 	}
 }
 
@@ -1036,6 +1126,92 @@ func putAllSeasonsMonitoredHandler(catalog seasonCatalog, grabsStore *grabs.Stor
 	}
 }
 
+// putSeasonMonitoredByTMDBHandler is Discover's write of one season's
+// monitored flag. It ensure-creates a library_series row so the flag has
+// somewhere to live, then uses the same SetSeasonMonitored Library uses.
+func putSeasonMonitoredByTMDBHandler(catalog seasonCatalog, grabsStore *grabs.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tmdbID, ok := tmdbIDPathValue(w, r)
+		if !ok {
+			return
+		}
+		seasonNumber, err := strconv.Atoi(r.PathValue("seasonNumber"))
+		if err != nil {
+			http.Error(w, "seasonNumber path parameter must be an integer", http.StatusBadRequest)
+			return
+		}
+		if seasonNumber < 0 {
+			http.Error(w, "seasonNumber path parameter must not be negative", http.StatusBadRequest)
+			return
+		}
+		var req apidto.SetSeasonMonitoredRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+		series, err := catalog.ensureSeriesByTMDB(ctx, tmdbID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := catalog.lib.SetSeasonMonitored(ctx, series.ID, seasonNumber, req.Monitored); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !req.Monitored {
+			cancelAirDateRetriesForSeasons(ctx, grabsStore, series.TMDBID, map[int]bool{seasonNumber: true}, time.Now())
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// putAllSeasonsMonitoredByTMDBHandler is Discover's all-seasons write
+// (PUT /library/tmdb/{tmdbId}/seasons). The season set is statesByTMDB so
+// it matches the GET Discover renders. Not .../seasons/monitored: that
+// pattern overlaps Library's per-season PUT on Go's ServeMux.
+func putAllSeasonsMonitoredByTMDBHandler(catalog seasonCatalog, grabsStore *grabs.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tmdbID, ok := tmdbIDPathValue(w, r)
+		if !ok {
+			return
+		}
+		var req apidto.SetSeasonMonitoredRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+		series, err := catalog.ensureSeriesByTMDB(ctx, tmdbID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		states, err := catalog.statesByTMDB(ctx, tmdbID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		touched := map[int]bool{}
+		var writeErr error
+		for _, st := range states {
+			if err := catalog.lib.SetSeasonMonitored(ctx, series.ID, st.SeasonNumber, req.Monitored); err != nil {
+				writeErr = err
+				break
+			}
+			touched[st.SeasonNumber] = true
+		}
+		if !req.Monitored {
+			cancelAirDateRetriesForSeasons(ctx, grabsStore, series.TMDBID, touched, time.Now())
+		}
+		if writeErr != nil {
+			http.Error(w, writeErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // getSeriesNewSeasonDiscoveryHandler reports the new-season discovery toggle,
 // false by default.
 func getSeriesNewSeasonDiscoveryHandler(settingsStore *settings.Store) http.HandlerFunc {
@@ -1095,4 +1271,13 @@ func lookupSeries(ctx context.Context, w http.ResponseWriter, libStore *library.
 		return nil, false
 	}
 	return series, true
+}
+
+func tmdbIDPathValue(w http.ResponseWriter, r *http.Request) (int, bool) {
+	tmdbID, err := strconv.Atoi(r.PathValue("tmdbId"))
+	if err != nil || tmdbID <= 0 {
+		http.Error(w, "tmdbId path parameter must be a positive integer", http.StatusBadRequest)
+		return 0, false
+	}
+	return tmdbID, true
 }

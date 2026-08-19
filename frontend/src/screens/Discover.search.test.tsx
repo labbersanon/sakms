@@ -33,7 +33,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { AdultDiscoverItem, DiscoverItem } from "@dto";
 import { DiscoverAdult, DiscoverMainstream } from "./Discover";
-import { jsonResponse } from "../testing/http";
+import { jsonResponse, seriesMonitorDefaults } from "../testing/http";
 
 
 const movie = (over: Partial<DiscoverItem>): DiscoverItem => ({
@@ -87,6 +87,8 @@ const isAdultSearchCall = (url: string) => /\/api\/modes\/adult\/search\?/.test(
 // so each test only special-cases the call it asserts on (mirrors the sibling
 // Discover.test.tsx helper). Returns null for anything unrecognized.
 const mainstreamDefaults = (url: string): Response | null => {
+  const monitor = seriesMonitorDefaults(url);
+  if (monitor) return monitor;
   if (url.includes("/api/connections")) return jsonResponse([]);
   if (url.includes("/newest-rows")) return jsonResponse([]);
   if (url.includes("/discover")) return jsonResponse([]);

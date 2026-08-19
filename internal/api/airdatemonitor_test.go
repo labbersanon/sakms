@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1584,6 +1585,153 @@ func TestSeasonMonitoringRoutes(t *testing.T) {
 	}
 }
 
+// TestDiscoverAndLibrarySeasonMonitoringShareOneFlag is the load-bearing
+// contract for Discover's TMDB-keyed aliases: a PUT on /library/tmdb/{id}
+// must be what Library's GET /library/{seriesID} reads, and the reverse.
+func TestDiscoverAndLibrarySeasonMonitoringShareOneFlag(t *testing.T) {
+	now := time.Now()
+	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{
+		1: {{Number: 1, Name: "Pilot", AirDate: dayOffset(now, -30)}},
+		2: {{Number: 1, Name: "Two", AirDate: dayOffset(now, -10)}},
+	}, noQualifyingRelease)
+	series := env.trackSeries(t)
+	env.seedOnDiskEpisode(t, series.ID, 1, 1, dayOffset(now, -30), "/series/Some Show/S01E01.mkv")
+
+	listByID := func(t *testing.T) []apidto.SeasonState {
+		t.Helper()
+		return env.getSeasons(t, series.ID)
+	}
+	listByTMDB := func(t *testing.T) []apidto.SeasonState {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/modes/series/library/tmdb/%d/seasons", airDateTMDBID), nil)
+		req.SetPathValue("tmdbId", strconv.Itoa(airDateTMDBID))
+		listSeasonStatesByTMDBHandler(env.catalog())(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET tmdb seasons: status %d, body %q", rec.Code, rec.Body.String())
+		}
+		var out []apidto.SeasonState
+		if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+			t.Fatalf("decoding tmdb seasons: %v", err)
+		}
+		return out
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut,
+		fmt.Sprintf("/api/modes/series/library/tmdb/%d/seasons/1/monitored", airDateTMDBID),
+		strings.NewReader(`{"monitored":true}`))
+	req.SetPathValue("tmdbId", strconv.Itoa(airDateTMDBID))
+	req.SetPathValue("seasonNumber", "1")
+	putSeasonMonitoredByTMDBHandler(env.catalog(), env.grabs)(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT tmdb season 1: status %d, body %q", rec.Code, rec.Body.String())
+	}
+
+	idStates := listByID(t)
+	tmdbStates := listByTMDB(t)
+	if len(idStates) == 0 || len(tmdbStates) == 0 {
+		t.Fatalf("empty season lists: id=%+v tmdb=%+v", idStates, tmdbStates)
+	}
+	monitoredByNumber := func(states []apidto.SeasonState, n int) bool {
+		for _, st := range states {
+			if st.SeasonNumber == n {
+				return st.Monitored
+			}
+		}
+		t.Fatalf("season %d missing from %+v", n, states)
+		return false
+	}
+	if !monitoredByNumber(idStates, 1) {
+		t.Errorf("Library GET did not see Discover's monitor write: %+v", idStates)
+	}
+	if !monitoredByNumber(tmdbStates, 1) {
+		t.Errorf("Discover GET did not see its own write: %+v", tmdbStates)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut,
+		fmt.Sprintf("/api/modes/series/library/%d/seasons/1/monitored", series.ID),
+		strings.NewReader(`{"monitored":false}`))
+	req.SetPathValue("seriesID", strconv.FormatInt(series.ID, 10))
+	req.SetPathValue("seasonNumber", "1")
+	putSeasonMonitoredHandler(env.lib, env.grabs)(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT library season 1 off: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	if monitoredByNumber(listByTMDB(t), 1) {
+		t.Errorf("Discover GET still showed monitored after Library un-monitored")
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut,
+		fmt.Sprintf("/api/modes/series/library/tmdb/%d/seasons", airDateTMDBID),
+		strings.NewReader(`{"monitored":true}`))
+	req.SetPathValue("tmdbId", strconv.Itoa(airDateTMDBID))
+	putAllSeasonsMonitoredByTMDBHandler(env.catalog(), env.grabs)(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT tmdb all seasons: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	for _, st := range listByID(t) {
+		if !st.Monitored {
+			t.Errorf("Library GET missed Discover all-seasons write on season %d: %+v", st.SeasonNumber, st)
+		}
+	}
+}
+
+// TestDiscoverSeasonMonitoringCreatesLibraryRow covers the untracked Discover
+// path: GET still reveals unmonitored TMDB seasons, and PUT creates the
+// library_series row the flag lives on.
+func TestDiscoverSeasonMonitoringCreatesLibraryRow(t *testing.T) {
+	now := time.Now()
+	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{
+		1: {{Number: 1, Name: "Pilot", AirDate: dayOffset(now, -30)}},
+	}, noQualifyingRelease)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/modes/series/library/tmdb/%d/seasons", airDateTMDBID), nil)
+	req.SetPathValue("tmdbId", strconv.Itoa(airDateTMDBID))
+	listSeasonStatesByTMDBHandler(env.catalog())(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET untracked tmdb seasons: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	var before []apidto.SeasonState
+	if err := json.NewDecoder(rec.Body).Decode(&before); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(before) != 1 || before[0].SeasonNumber != 1 || before[0].Monitored {
+		t.Fatalf("untracked GET should list TMDB season 1 unmonitored, got %+v", before)
+	}
+	if _, err := env.lib.GetSeriesByTMDBID(env.ctx, airDateTMDBID); !errors.Is(err, library.ErrNotFound) {
+		t.Fatalf("GET must not insert a library_series row, got %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut,
+		fmt.Sprintf("/api/modes/series/library/tmdb/%d/seasons/1/monitored", airDateTMDBID),
+		strings.NewReader(`{"monitored":true}`))
+	req.SetPathValue("tmdbId", strconv.Itoa(airDateTMDBID))
+	req.SetPathValue("seasonNumber", "1")
+	putSeasonMonitoredByTMDBHandler(env.catalog(), env.grabs)(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT untracked tmdb season 1: status %d, body %q", rec.Code, rec.Body.String())
+	}
+	created, err := env.lib.GetSeriesByTMDBID(env.ctx, airDateTMDBID)
+	if err != nil {
+		t.Fatalf("PUT should have created library_series: %v", err)
+	}
+	states := env.getSeasons(t, created.ID)
+	found := false
+	for _, st := range states {
+		if st.SeasonNumber == 1 && st.Monitored {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Library GET after Discover PUT missing monitored season 1: %+v", states)
+	}
+}
+
 // getSeasons drives the GET handler and decodes it — the merged list an
 // operator's panel actually renders, as opposed to lib.ListSeasonStates' raw
 // local rows.
@@ -1844,16 +1992,19 @@ func TestUnMonitoredZeroRowSeasonIsNotSynced(t *testing.T) {
 	}
 }
 
-// TestSeasonRoutesAreRegisteredOnTheRealMux drives all five routes through
-// NewMux by literal URL. Every other handler test in this file calls the
-// handler directly and supplies path values by hand, which cannot catch the
-// failure this one exists for: a missing or misspelled registration compiles
-// cleanly, passes go vet, and 404s (or 400s on an unresolved path value)
-// silently at runtime.
+// TestSeasonRoutesAreRegisteredOnTheRealMux drives the library and TMDB
+// season routes through NewMux by literal URL. Every other handler test in
+// this file calls the handler directly and supplies path values by hand,
+// which cannot catch the failure this one exists for: a missing or
+// misspelled registration compiles cleanly, passes go vet, and 404s (or
+// 400s on an unresolved path value) silently at runtime.
 //
 // The all-seasons PUT is exercised alongside the per-season one on purpose:
 // .../seasons/monitored and .../seasons/{seasonNumber}/monitored are sibling
 // patterns, and only a real mux proves the shorter one is not shadowed.
+// Discover's all-seasons write is PUT on the TMDB collection (not
+// .../tmdb/{id}/seasons/monitored) because that latter pattern overlaps
+// Library's per-season PUT.
 func TestSeasonRoutesAreRegisteredOnTheRealMux(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{}, noQualifyingRelease)
@@ -1942,6 +2093,25 @@ func TestSeasonRoutesAreRegisteredOnTheRealMux(t *testing.T) {
 	resp.Body.Close()
 	if !discovery.Enabled {
 		t.Error("the discovery toggle did not round-trip through the real mux")
+	}
+
+	tmdbBase := fmt.Sprintf("/api/modes/series/library/tmdb/%d/seasons", airDateTMDBID)
+	resp = do(t, http.MethodGet, tmdbBase, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: status %d — the TMDB alias is not registered", tmdbBase, resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, http.MethodPut, tmdbBase+"/3/monitored", `{"monitored":false}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT %s/3/monitored: status %d", tmdbBase, resp.StatusCode)
+	}
+
+	resp = do(t, http.MethodPut, tmdbBase, `{"monitored":true}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT %s (all seasons by TMDB): status %d — overlapping mux pattern", tmdbBase, resp.StatusCode)
 	}
 }
 

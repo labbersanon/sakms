@@ -15,7 +15,7 @@ import type { DiscoverItem, EpisodeSummary, SeasonSummary } from "@dto";
 import { DiscoverMainstream } from "./index";
 import { PosterCard } from "./Mainstream";
 import { SelectionProvider, createSelection } from "./selection";
-import { jsonResponse } from "../../testing/http";
+import { jsonResponse, seriesMonitorDefaults } from "../../testing/http";
 
 
 const movie = (over: Partial<DiscoverItem> = {}): DiscoverItem => ({
@@ -68,6 +68,8 @@ const detailWithSeasons = (seasons: SeasonSummary[]) => jsonResponse({ seasons }
 // mainstreamDefaults answers the background fetches Discover fires on mount with
 // empties, so each test only special-cases what it asserts on.
 const mainstreamDefaults = (url: string): Response | null => {
+  const monitor = seriesMonitorDefaults(url);
+  if (monitor) return monitor;
   if (url.includes("/api/connections")) return jsonResponse([]);
   if (url.includes("/newest-rows")) return jsonResponse([]);
   if (url.includes("/discover/calendar")) return jsonResponse([]);

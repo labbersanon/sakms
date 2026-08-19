@@ -19,7 +19,7 @@ import {
   fetchDiscoverFiltered,
 } from "../api/discover";
 import { AdultModeContext } from "../components/ui";
-import { jsonResponse } from "../testing/http";
+import { jsonResponse, seriesMonitorDefaults } from "../testing/http";
 
 
 const movie = (over: Partial<DiscoverItem>): DiscoverItem => ({
@@ -94,6 +94,8 @@ const stubFetch = (handler: Handler) => {
 // substring of "/discover"), and no test here opts a box in unless it's
 // specifically testing that row.
 const mainstreamDefaults = (url: string): Response | null => {
+  const monitor = seriesMonitorDefaults(url);
+  if (monitor) return monitor;
   if (url.includes("/api/connections")) return jsonResponse([]);
   // Adult's admin newest-rows list + any row's /resolve both default to empty
   // (no operator rows) — matched before "/discover" since neither path

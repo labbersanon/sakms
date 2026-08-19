@@ -7924,6 +7924,23 @@ already refused to delete a still-referenced shared file; Scan now does
 not offer the self-duplicate. A genuine second file of the same content
 still groups. `pHashBuildCandidates` also skips duplicate paths.
 
+## 2026-08-19 (later, same day) — Discover shows the same season monitors as Library
+
+Series detail on Discover now renders the same Seasons panel Library uses
+(All seasons + per-season switches, including Specials). Both read and
+write `library_season_monitored`. Library still keys by library series id;
+Discover keys by TMDB id via `/api/modes/series/library/tmdb/{tmdbId}/seasons`.
+A GET for a title not yet in `library_series` lists TMDB's seasons as
+unmonitored and does not insert a row. The first monitor PUT creates the
+series row so the flag has somewhere to live. Library's allowGrab=false
+popup does not mount a second TMDB-keyed copy — DetailPanel already owns
+that panel. Switches stay disabled until Settings → Download → Usenet →
+Enable auto-grab is on, same as Library. Discover's all-seasons write is
+PUT on the TMDB collection (not `.../seasons/monitored`) because Go's
+ServeMux treats that suffix as overlapping Library's per-season PUT.
+Movies and Adult are unchanged.
+
+
 
 
 

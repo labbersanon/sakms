@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignal, Show } from "solid-js";
-import { fireEvent, render, screen, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type {
   AdultDiscoverItem,
   AvailabilityCandidate,
@@ -26,7 +26,7 @@ import {
   externalDetailURL,
   sourceLabel,
 } from "./DetailPopup";
-import { jsonResponse } from "../../testing/http";
+import { jsonResponse, seriesMonitorDefaults } from "../../testing/http";
 
 
 const candidate = (over: Partial<AvailabilityCandidate> = {}): AvailabilityCandidate => ({
@@ -153,11 +153,14 @@ const stubFetch = (handler: Handler) => {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
     calls.push({
       url,
-      method: (init?.method ?? "GET").toUpperCase(),
+      method,
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
+    const monitor = seriesMonitorDefaults(url, method);
+    if (monitor) return monitor;
     return handler(url, init);
   });
   vi.stubGlobal("fetch", fn);
@@ -395,6 +398,90 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     const availCall = calls.find((c) => c.url.includes("/discover/availability"));
     expect(availCall?.url).toContain("season=2");
     expect(availCall?.url).toContain("episode=4");
+  });
+
+  it("Series reveals the same season monitors as Library, keyed by TMDB id", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({ id: 1396, title: "Breaking Bad", mediaType: "tv" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    expect(await screen.findByLabelText("Monitor all seasons")).toBeInTheDocument();
+    expect(screen.getByLabelText("Monitor Season 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("Monitor Specials")).toBeInTheDocument();
+    expect(screen.getByLabelText("Monitor Season 1").getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByLabelText("Monitor Specials").getAttribute("aria-checked")).toBe(
+      "false",
+    );
+
+    const get = calls.find(
+      (c) =>
+        c.method === "GET" &&
+        c.url.includes("/api/modes/series/library/tmdb/1396/seasons") &&
+        !c.url.includes("monitored"),
+    );
+    expect(get).toBeTruthy();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Monitor Specials")).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByLabelText("Monitor all seasons"));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url === "/api/modes/series/library/tmdb/1396/seasons" &&
+            (c.body as { monitored: boolean }).monitored === true,
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Monitor Specials")).not.toBeDisabled(),
+    );
+    fireEvent.click(screen.getByLabelText("Monitor Specials"));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url ===
+              "/api/modes/series/library/tmdb/1396/seasons/0/monitored" &&
+            (c.body as { monitored: boolean }).monitored === true,
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("Movies does not render season monitors", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail")) return jsonResponse(titleDetail());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie() }}
+        onClose={() => {}}
+      />
+    ));
+    await screen.findByRole("button", { name: "Grab" });
+    expect(screen.queryByLabelText("Monitor all seasons")).toBeNull();
   });
 
   // T-8.1: the popup already fetched the bundle, so the picker must consume it
@@ -1594,9 +1681,11 @@ describe("DetailPopup — allowGrab=false (Library enrichment)", () => {
       ),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Grab" })).toBeNull();
+    expect(screen.queryByLabelText("Monitor all seasons")).toBeNull();
     expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(
       false,
     );
+    expect(calls.some((c) => c.url.includes("/library/tmdb/"))).toBe(false);
   });
 
   it("Adult still fetches description for catalog scenes and never availability", async () => {

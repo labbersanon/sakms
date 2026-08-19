@@ -78,6 +78,7 @@ import { fetchQualityPrefs } from "../../api/settings";
 import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components/ui";
 import { PlayFullscreenLink } from "../../components/TrackedPlayback";
 import { MediaFallbackTile } from "../../components/media";
+import { SeasonsPanel } from "../../components/SeasonsPanel";
 import { type GrabTarget, Modal } from "./shared";
 import { PosterCard } from "./Mainstream";
 import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
@@ -877,6 +878,17 @@ export const DetailPopup: Component<{
 
   return (
     <Modal title={item().title} onClose={props.onClose}>
+      {/* Claude 2026-08-19: Discover shows the same per-season monitors as
+          Library. allowGrab is Discover's grab path; Library already mounts
+          SeasonsPanel in DetailPanel children (library series id) and must
+          not get a second copy keyed by TMDB id.
+          Reason: operator asked the monitor setting on Discover, bound to
+          the same library_season_monitored rows.
+          Troubleshooting: Discover had no switches; Library did.
+          Review if: Library stops nesting DetailPanel under this popup. */}
+      <Show when={allowGrab() && mode() === "series"}>
+        <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
+      </Show>
       <Show
         when={ready()}
         fallback={

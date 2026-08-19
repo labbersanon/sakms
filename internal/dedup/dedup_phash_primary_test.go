@@ -245,6 +245,95 @@ func TestScanLibrarySeriesPHash_AC5_DifferentEpisodesNotGrouped(t *testing.T) {
 	}
 }
 
+// TestScanLibrarySeriesPHash_SharedSplitFileIsNotADuplicate proves a
+// logical-episode-split file (two episode rows, one path) is not proposed as
+// a duplicate of itself. Live: Burning Love (2012) S01E01-E02 etc.
+func TestScanLibrarySeriesPHash_SharedSplitFileIsNotADuplicate(t *testing.T) {
+	dir := t.TempDir()
+	shared := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01-E02.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, Title: "Part 1", FilePath: shared,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, Title: "Part 2", FilePath: shared,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		shared: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+	}}
+	hasher := matchingPHasher(shared)
+
+	got, err := ScanLibrarySeriesPHash(ctx, sess, libStore, dir, prober, hasher, 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no proposal for one split file backing two episode rows, got %+v", got)
+	}
+	if hasher.calls[shared] != 1 {
+		t.Errorf("expected the shared file to be hashed once, got %d calls", hasher.calls[shared])
+	}
+}
+
+// TestScanLibrarySeriesPHash_SharedSplitFileStillGroupsRealExtraCopy proves
+// unique-by-path does not hide a genuine second file of the same content.
+func TestScanLibrarySeriesPHash_SharedSplitFileStillGroupsRealExtraCopy(t *testing.T) {
+	dir := t.TempDir()
+	shared := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01-E02.mkv", 100)
+	extra := writeVideoFile(t, dir, "Show.Name.S01E01-E02.REPACK.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: shared,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, FilePath: shared,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		shared: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+		extra:  {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
+	}}
+	hasher := matchingPHasher(shared, extra)
+
+	got, err := ScanLibrarySeriesPHash(ctx, sess, libStore, dir, prober, hasher, 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("expected one group of the split file plus the extra copy, got %+v", got)
+	}
+	paths := map[string]bool{}
+	for _, c := range got[0].Candidates {
+		paths[c.Path] = true
+	}
+	if !paths[shared] || !paths[extra] {
+		t.Errorf("expected candidates to be %q and %q, got %+v", shared, extra, got[0].Candidates)
+	}
+}
+
 // TestScanLibraryPHash_AC7_CacheHitAvoidsRehashOnSecondScan proves spec AC7:
 // a second scan over an unchanged fixture reuses the cached hash for BOTH a
 // tracked item (library_items.phash) and an orphan (orphan_phashes) — zero

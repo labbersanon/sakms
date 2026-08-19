@@ -311,6 +311,14 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 
 	seriesByID := make(map[int64]library.Series, len(allSeries))
 	known := map[string]bool{}
+	// Claude 2026-08-19: unique tracked episodes by FilePath before hashing
+	// Reason: a logical-episode-split file (S01E01-E02) is two library_episodes
+	//   rows with the same path; all-pairs phash grouping treated that as two
+	//   copies of one file (Burning Love 2012 live queue).
+	// Troubleshooting: Dedup lists the same path twice at 100% similarity.
+	// Review if: ScanLibrarySeriesPHash stops walking one item per episode row.
+	// Related files: internal/dedup/dedup_phash_primary_test.go
+	seenTrackedPath := map[string]struct{}{}
 	var trackedEpisodes []library.Episode
 	for _, s := range allSeries {
 		seriesByID[s.ID] = s
@@ -323,6 +331,10 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 				continue
 			}
 			known[ep.FilePath] = true
+			if _, dup := seenTrackedPath[ep.FilePath]; dup {
+				continue
+			}
+			seenTrackedPath[ep.FilePath] = struct{}{}
 			trackedEpisodes = append(trackedEpisodes, ep)
 		}
 	}
@@ -515,8 +527,13 @@ func pHashGroupLabel(group []pHashFileItem) (title string, tmdbID int, rootPath 
 // the legacy scan path). The PHash field on each returned Candidate is set
 // from the item's already-computed phashVal.
 func pHashBuildCandidates(ctx context.Context, prober Prober, group []pHashFileItem) []proposals.Candidate {
+	seenPath := make(map[string]struct{}, len(group))
 	var out []proposals.Candidate
 	for _, item := range group {
+		if _, dup := seenPath[item.path]; dup {
+			continue
+		}
+		seenPath[item.path] = struct{}{}
 		label := item.title
 		if label == "" {
 			label = item.label

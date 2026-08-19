@@ -19,9 +19,11 @@
 // row, but does NOT mean a file backing that row is exclusively used
 // there — a logical-episode-split file (library.ParseEpisodeNumbers)
 // legitimately backs TWO rows' FilePath at once (e.g. a "S01E01-E02" file is
-// both episode 1's and episode 2's row). ApplyLibrarySeries' delete step
-// accounts for this: see its own doc comment and
-// library.Store.CountEpisodesByFilePath.
+// both episode 1's and episode 2's row). ScanLibrarySeriesPHash unique-keys
+// tracked rows by path so that shared file is one candidate, not a
+// self-duplicate group. ApplyLibrarySeries' delete step still accounts for
+// a real extra copy losing against a still-shared split file: see its own
+// doc comment and library.Store.CountEpisodesByFilePath.
 //
 // Quality comparison never trusts a *arr app's own reported file quality —
 // every candidate, tracked or not, gets ffprobed directly by SAK itself

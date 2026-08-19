@@ -7914,6 +7914,17 @@ rows, leave the other copies on disk" hole — live: The Last House
 (tmdb 1284041) purge applied while three quality-suffixed copies and an
 unmapped REPACK folder remained.
 
+## 2026-08-19 — Series Dedup does not treat a split-file as two copies
+
+`ScanLibrarySeriesPHash` unique-keys tracked episode rows by `FilePath`
+before hashing. A logical-episode-split file (`S01E01-E02`) is two
+`library_episodes` rows sharing one path; all-pairs grouping had listed
+that path twice at 100% similarity (live: Burning Love 2012). Apply
+already refused to delete a still-referenced shared file; Scan now does
+not offer the self-duplicate. A genuine second file of the same content
+still groups. `pHashBuildCandidates` also skips duplicate paths.
+
+
 
 
 

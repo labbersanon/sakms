@@ -404,7 +404,7 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
 
   // savedScrollTop preserves the list's scroll offset across a takeover. The
   // scroll host is AppShell's <main>, NOT the document: the shell root is
-  // `h-screen overflow-hidden` and <main> is the app's only scroll region, so
+  // `h-svh overflow-hidden` and <main> is the app's only scroll region, so
   // window.scrollY is permanently 0 and window.scrollTo() does nothing. Reached
   // through a ref on this screen's own root rather than a global
   // document.querySelector, so it asks "what is MY scrolling ancestor" and

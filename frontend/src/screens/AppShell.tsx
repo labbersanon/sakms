@@ -5,7 +5,7 @@
 // localStorage. The router must never claim an /api/* path (see APP_ROUTES).
 //
 // LAYOUT (2026-07-14 mobile-responsive pass): the shell root is a fixed-height
-// flex row (`h-screen overflow-hidden`) with exactly one scroll region — the
+// flex row (`h-svh overflow-hidden`) with exactly one scroll region — the
 // <main> content column. The sidebar and header are never in that scroll
 // region, so neither scrolls away with page content; on desktop (md+) the
 // sidebar is a normal static flex column, on mobile it's a `fixed` off-canvas
@@ -914,7 +914,15 @@ export const AppShell: Component<{
       <AdultModeContext.Provider value={adultModeControl}>
         <SectionLockContext.Provider value={sectionLockControl}>
         <ScreenTabsContext.Provider value={setTabReg}>
-          <div class="flex h-screen overflow-hidden">
+          {/* Claude 2026-08-19: h-screen (100vh) → h-svh.
+              Reason: mobile Chrome/Brave 100vh is taller than the visible
+              viewport (URL + tab bars). The shell is overflow-hidden, so the
+              last Settings content (Download → Usenet Auto-grab + Save) sat
+              behind the browser chrome and could not be scrolled into view.
+              Troubleshooting: phone Settings stops scrolling at Auto-grab.
+              Review if: the shell stops using a locked viewport height. */}
+          {/* was: class="flex h-screen overflow-hidden" */}
+          <div class="flex h-svh overflow-hidden">
             {/* No visible UI; lives here (persistent shell root, not a swapped
                 <Route>) so the notifications stream stays open across in-app
                 navigation. */}
@@ -977,7 +985,7 @@ export const AppShell: Component<{
                   on-screen position regardless of how much room the sidebar
                   takes up next to this column; swap on `collapsed()` accordingly. */}
               <main
-                class="min-w-0 flex-1 overflow-y-auto bg-fixed bg-cover bg-center p-4 sm:p-6"
+                class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain bg-fixed bg-cover bg-center p-4 pb-10 sm:p-6"
                 style={{
                   "background-image": `url(${collapsed() ? "/wallpaper-collapsed.webp" : "/wallpaper-expanded.webp"})`,
                 }}

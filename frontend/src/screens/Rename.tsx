@@ -1042,7 +1042,7 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
   // Reason: the takeover removes the table from the DOM, which collapses the
   //   scroll container's height and makes the browser clamp its scrollTop —
   //   nothing restores it on return. The host is AppShell's <main>, NOT the
-  //   document: the shell root is `h-screen overflow-hidden` and <main> is the
+  //   document: the shell root is `h-svh overflow-hidden` and <main> is the
   //   app's only scroll region (AppShell.tsx:676, :738-739), so window.scrollY
   //   is permanently 0 and window.scrollTo() does nothing.
   // Troubleshooting: returning from Re-pick / Move jumps the list back to the

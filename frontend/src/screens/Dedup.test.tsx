@@ -1807,7 +1807,7 @@ describe("Dedup — search takeover container semantics (N3, N8, N9)", () => {
 // renderInMain mounts the screen inside a real <main>, which is what
 // Dedup's scroll-restore actually targets: it reaches its host with
 // rootEl.closest("main") (AppShell's <main> is the app's only scroll region —
-// the shell root is h-screen overflow-hidden, so window.scrollY is always 0).
+// the shell root is h-svh overflow-hidden, so window.scrollY is always 0).
 // Every other test in this file renders hostless on purpose, exercising the
 // documented null-host degrade path.
 const renderInMain = (): HTMLElement => {

@@ -7940,6 +7940,19 @@ PUT on the TMDB collection (not `.../seasons/monitored`) because Go's
 ServeMux treats that suffix as overlapping Library's per-season PUT.
 Movies and Adult are unchanged.
 
+## 2026-08-19 (later) — Mobile Settings scroll no longer stops at Auto-grab
+
+The app shell used `h-screen` (`100vh`). On phone Chrome/Brave that height is
+taller than the visible viewport (URL + tab bars). The shell is
+`overflow-hidden`, so `<main>`'s last pixels sat behind the browser chrome:
+Settings → Download → Usenet reached Auto-grab and would not scroll farther,
+hiding the rest of that card and the section Save button. The shell root is
+now `h-svh` (smallest viewport, the one that fits while the bars are showing),
+`<main>` gets `min-h-0` plus extra bottom padding, and the viewport meta
+includes `viewport-fit=cover`. Desktop layout is unchanged. This tab still
+ends at Auto-grab — quality prefs stay on Settings → Library.
+
+
 
 
 

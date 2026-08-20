@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Claude 2026-08-19: viewport-fit=cover so env(safe-area-inset-*)
+         can clear the phone home indicator under the locked h-svh shell.
+         Reason: Settings → Download → Usenet clipped at Auto-grab on mobile.
+         Review if: the shell no longer uses a locked viewport height. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>SAK Media Server</title>
   </head>

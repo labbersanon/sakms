@@ -1,10 +1,9 @@
 // MainstreamDiscover — the combined Movies+Series page and its cards: a search
 // bar over four stacked, independently-paginated TMDB category rows plus a
 // paginated "In your library" row of what's already tracked. Every card grabs
-// the same way as of 2026-08-02: its body click opens DetailPopup, which for
-// Series shows the season/episode picker first (the gating step, since no
-// release exists to score until a specific episode/pack is chosen). The inline
-// per-card Grab button these cards used to carry is gone.
+// the same way: body click opens DetailPopup (search results included —
+// season picker, availability grid, overview). Series still gates on a
+// season/episode pick first. The inline per-card Grab button is gone.
 // Extracted from the original single-file Discover.tsx.
 //
 // Row order (Optional RSS Discover rows + inline row editor): the row block
@@ -46,7 +45,6 @@ import {
   GrabDialog,
   Modal,
   PaginatedStrip,
-  SearchReleasePicker,
   SelectCheckbox,
   notConfiguredService,
 } from "./shared";
@@ -358,12 +356,9 @@ export const PosterCard: Component<{
   // Review if: this slot is still empty at the next Discover cleanup pass.
   onGrab?: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
-  // onOpenReleases, when passed (only by the catalog-Search result grid),
-  // reroutes the card's primary click to open the release picker instead of
-  // DetailPopup. It used to ALSO suppress the one-click Grab button (M3 —
-  // searched cards have no auto-grab shortcut); that half is moot since
-  // 2026-08-02, when no card renders one. Browse-row call sites omit it, so
-  // their click→DetailPopup behavior is unchanged.
+  // onOpenReleases is unused by Mainstream search (cards open DetailPopup
+  // like browse). Adult search still passes it. Left on the prop so a
+  // caller can reroute the primary click without a second card type.
   onOpenReleases?: () => void;
   // Claude 2026-08-13: "grid" fills Library-style wrap cells (View All,
   // search, filter). Default "row" keeps the 220px carousel/calendar tile.
@@ -792,12 +787,6 @@ export const MainstreamDiscover: Component<{
 }> = (props) => {
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
-  // releasePicker is the catalog-Search release picker for a clicked searched
-  // card (Movies/Series two-step: it fetches the one bounded Prowlarr search on
-  // open). Browse rows never set it — they open DetailPopup instead.
-  const [releasePicker, setReleasePicker] = createSignal<
-    { mode: "movies" | "series"; title: string; tmdbId: number } | null
-  >(null);
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
   const [reloadToken, setReloadToken] = createSignal(0);
@@ -1279,13 +1268,6 @@ export const MainstreamDiscover: Component<{
                       onGrab={setGrabTarget}
                       onDetail={setDetailTarget}
                       layout="grid"
-                      onOpenReleases={() =>
-                        setReleasePicker({
-                          mode: e.mode,
-                          title: e.item.title,
-                          tmdbId: e.item.id,
-                        })
-                      }
                     />
                   )}
                 </For>
@@ -1298,16 +1280,6 @@ export const MainstreamDiscover: Component<{
 
       <Show when={grabTarget()}>
         {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
-      </Show>
-      <Show when={releasePicker()}>
-        {(rp) => (
-          <SearchReleasePicker
-            mode={rp().mode}
-            title={rp().title}
-            tmdbId={rp().tmdbId}
-            onClose={() => setReleasePicker(null)}
-          />
-        )}
       </Show>
       {/* keyed: a "More like this" click swaps detailTarget from one truthy
           target to another. Without keyed, Solid updates props.target on the

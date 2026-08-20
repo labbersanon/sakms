@@ -308,6 +308,42 @@ func Select(candidates []Candidate, tier quality.Tier, minSeeders int) Selection
 	}
 }
 
+// SelectBest grades against each accepted tier, highest first, and
+// returns the first non-fallback Selection. A stored single-tier
+// preference is expanded by the caller via quality.TiersAtOrAbove; this
+// function only walks the set it is given. Empty/unrecognized accepted
+// lists expand from quality.Default so a corrupt settings value cannot
+// silently grab nothing.
+//
+// When every accepted tier misses, the returned Selection is the
+// lowest-tier Select (most permissive grades) so the manual pick list
+// explains the miss against the floor the operator actually allowed.
+func SelectBest(candidates []Candidate, accepted []quality.Tier, minSeeders int) Selection {
+	filtered := make([]quality.Tier, 0, len(accepted))
+	seen := make(map[quality.Tier]bool, len(accepted))
+	for _, t := range accepted {
+		if quality.Rank(t) <= 0 || seen[t] {
+			continue
+		}
+		seen[t] = true
+		filtered = append(filtered, t)
+	}
+	if len(filtered) == 0 {
+		filtered = quality.TiersAtOrAbove(quality.Default)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return quality.Rank(filtered[i]) > quality.Rank(filtered[j])
+	})
+	var last Selection
+	for _, t := range filtered {
+		last = Select(candidates, t, minSeeders)
+		if !last.Fallback {
+			return last
+		}
+	}
+	return last
+}
+
 // RuntimeMismatch is the pure post-grab mislabel check: it compares the
 // downloaded file's probed duration against the known TMDB/TPDB runtime (both
 // in seconds). checked == false when EITHER is unknown (<= 0) — the caller

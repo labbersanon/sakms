@@ -195,7 +195,7 @@ func pickPersistedAdultEnclosure(ctx context.Context, store *adultnewest.Release
 	}
 
 	cands := buildAutoGrabCandidates(filtered, float64(req.DurationSeconds), false)
-	sel := autograb.Select(cands, autoGrabTier(ctx, settingsStore, mode.Adult), minSeedersFor(mode.Adult))
+	sel := autograb.SelectBest(cands, autoGrabTiers(ctx, settingsStore, mode.Adult), minSeedersFor(mode.Adult))
 	if sel.Fallback {
 		return prowlarr.Release{}, false
 	}

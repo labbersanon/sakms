@@ -1827,9 +1827,15 @@ export interface AIModelRequest {
  * substitutes the default (10) when nothing is stored, and a request carrying 0
  * — an older client that predates the field — stores the default rather than
  * failing the whole quality save.
+ * Tiers is the accepted quality set (any non-empty subset of low/medium/high/
+ * lossless). Auto-grab tries them highest-first. A request that omits Tiers
+ * treats Tier as a floor and expands (high → high+lossless). GET always
+ * returns the effective set; Tier on the response is the lowest accepted
+ * value so older clients still see a single floor.
  */
 export interface QualityPrefsResponse {
   tier: string;
+  tiers: string[];
   maxResolution: number /* int */;
   protocol: string;
   undoDepth: number /* int */;
@@ -1846,6 +1852,7 @@ export interface QualityPrefsResponse {
  */
 export interface QualityPrefsRequest {
   tier: string;
+  tiers?: string[];
   maxResolution: number /* int */;
   protocol: string;
   undoDepth?: number /* int */;

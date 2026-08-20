@@ -173,6 +173,7 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
     );
     expect(calls.find((c) => c.method === "PUT")!.body).toEqual({
       tier: "medium",
+      tiers: ["medium", "high", "lossless"],
       maxResolution: 1080,
       protocol: "usenet",
       undoDepth: 3,
@@ -219,6 +220,7 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
     );
     expect(calls.find((c) => c.method === "PUT")!.body).toEqual({
       tier: "medium",
+      tiers: ["medium", "high", "lossless"],
       maxResolution: 1080,
       protocol: "usenet",
       undoDepth: 7,
@@ -234,5 +236,26 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
         /how many recent Applies stay undoable before the oldest is pruned/,
       ),
     ).toBeInTheDocument();
+  });
+
+  it("loads medium as a floor (medium+high+lossless) and unchecking lossless PUTs the remaining set", async () => {
+    const calls = stubQualityFetch(10);
+    render(() => <QualityPrefsSection mode={() => "movies"} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", { name: "Quality tier Medium" }),
+      ).toBeChecked(),
+    );
+    expect(screen.getByRole("checkbox", { name: "Quality tier High" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Quality tier Lossless" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Quality tier Low" })).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Quality tier Lossless" }));
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    expect(calls.find((c) => c.method === "PUT")!.body).toMatchObject({
+      tier: "medium",
+      tiers: ["medium", "high"],
+    });
   });
 });

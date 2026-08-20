@@ -75,6 +75,9 @@ func TestQualityPrefs_DefaultsWhenUnset(t *testing.T) {
 	if got.Tier != "high" || got.MaxResolution != 0 || got.Protocol != "" {
 		t.Errorf("expected defaults {tier:high maxResolution:0 protocol:\"\"}, got %+v", got)
 	}
+	if len(got.Tiers) != 2 || got.Tiers[0] != "high" || got.Tiers[1] != "lossless" {
+		t.Errorf("expected default floor expansion high→high+lossless, got tiers=%v", got.Tiers)
+	}
 }
 
 // TestQualityPrefs_PutThenGet_RoundTrip_IncludingProtocol_AllModes proves the
@@ -114,6 +117,9 @@ func TestQualityPrefs_PutThenGet_RoundTrip_IncludingProtocol_AllModes(t *testing
 			if got.Tier != "lossless" || got.MaxResolution != 1080 || got.Protocol != "usenet" {
 				t.Errorf("expected round-tripped {tier:lossless maxResolution:1080 protocol:usenet}, got %+v", got)
 			}
+			if len(got.Tiers) != 1 || got.Tiers[0] != "lossless" {
+				t.Errorf("PUT tier=lossless (no tiers) must expand to lossless-only, got %v", got.Tiers)
+			}
 		})
 	}
 }
@@ -132,6 +138,7 @@ func TestQualityPrefs_PutValidation(t *testing.T) {
 		{"bad tier", qualityPrefsRequest{Tier: "ultra", MaxResolution: 0, Protocol: ""}},
 		{"bad maxResolution", qualityPrefsRequest{Tier: "high", MaxResolution: 999, Protocol: ""}},
 		{"bad protocol", qualityPrefsRequest{Tier: "high", MaxResolution: 0, Protocol: "bittorrent"}},
+		{"bad tiers value", qualityPrefsRequest{Tier: "high", Tiers: []string{"high", "ultra"}, MaxResolution: 0, Protocol: ""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,5 +153,56 @@ func TestQualityPrefs_PutValidation(t *testing.T) {
 				t.Errorf("expected 400 for %+v, got %d", tc.req, resp.StatusCode)
 			}
 		})
+	}
+}
+
+func TestQualityPrefs_TiersMultiSelectAndFloorExpansion(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	put := func(body []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/modes/series/quality-prefs", bytes.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT failed: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("expected 204 from PUT, got %d", resp.StatusCode)
+		}
+	}
+	get := func() qualityPrefsResponse {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/api/modes/series/quality-prefs")
+		if err != nil {
+			t.Fatalf("GET failed: %v", err)
+		}
+		defer resp.Body.Close()
+		var got qualityPrefsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		return got
+	}
+
+	// Legacy single-tier PUT: medium is a floor → medium+high+lossless.
+	body, _ := json.Marshal(qualityPrefsRequest{Tier: "medium", MaxResolution: 0, Protocol: ""})
+	put(body)
+	got := get()
+	if got.Tier != "medium" || len(got.Tiers) != 3 || got.Tiers[0] != "medium" || got.Tiers[1] != "high" || got.Tiers[2] != "lossless" {
+		t.Fatalf("floor expansion: got %+v", got)
+	}
+
+	// Explicit set: operator unchecked lossless. Tier on the response is the floor.
+	body, _ = json.Marshal(qualityPrefsRequest{Tier: "low", Tiers: []string{"medium", "high"}, MaxResolution: 720, Protocol: "torrent"})
+	put(body)
+	got = get()
+	if got.Tier != "medium" || got.MaxResolution != 720 || got.Protocol != "torrent" {
+		t.Fatalf("explicit tiers: expected floor=medium cap=720 torrent, got %+v", got)
+	}
+	if len(got.Tiers) != 2 || got.Tiers[0] != "medium" || got.Tiers[1] != "high" {
+		t.Fatalf("explicit tiers round-trip, got %v", got.Tiers)
 	}
 }

@@ -525,15 +525,19 @@ func rankedAutoGrabCandidates(sel autograb.Selection, releases []prowlarr.Releas
 	return out
 }
 
-// autoGrabTier reads {mode}'s configured quality tier (the SAME per-mode
-// setting Search uses — see qualityTierKey), defaulting to quality.Default
-// when unset. Adult has no tier key, so it always grades against the default.
+// autoGrabTier reads {mode}'s configured quality-tier FLOOR (the SAME
+// per-mode setting Search uses — see qualityTierKey), defaulting to
+// quality.Default when unset. Import/rename paths stamp this single value
+// onto a library row; auto-grab scoring uses autoGrabTiers instead.
 func autoGrabTier(ctx context.Context, settingsStore *settings.Store, m mode.Mode) quality.Tier {
-	tierStr, err := settingsStore.Get(ctx, qualityTierKey(m))
-	if err != nil || tierStr == "" {
-		return quality.Default
-	}
-	return quality.Tier(tierStr)
+	return quality.Lowest(autoGrabTiers(ctx, settingsStore, m))
+}
+
+// autoGrabTiers is the accepted quality set auto-grab walks highest-first.
+// A stored JSON array wins; otherwise the legacy single tier is expanded
+// as a floor (high → high+lossless).
+func autoGrabTiers(ctx context.Context, settingsStore *settings.Store, m mode.Mode) []quality.Tier {
+	return resolveQualityTiers(ctx, settingsStore, m)
 }
 
 // autoGrabRootFolder resolves {mode}'s configured library root folder — where

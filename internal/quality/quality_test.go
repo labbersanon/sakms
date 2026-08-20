@@ -184,3 +184,38 @@ func TestInferTierNeverReturnsHighForNonBlurayInput(t *testing.T) {
 		t.Fatalf("expected bare bluray to reach High, got (%q, %v)", tier, ok)
 	}
 }
+
+func TestTiersAtOrAboveExpandsFloor(t *testing.T) {
+	cases := []struct {
+		floor Tier
+		want  []Tier
+	}{
+		{Low, []Tier{Low, Medium, High, Lossless}},
+		{Medium, []Tier{Medium, High, Lossless}},
+		{High, []Tier{High, Lossless}},
+		{Lossless, []Tier{Lossless}},
+		{Tier(""), []Tier{High, Lossless}},     // empty → Default
+		{Tier("bogus"), []Tier{High, Lossless}},
+	}
+	for _, tc := range cases {
+		got := TiersAtOrAbove(tc.floor)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("TiersAtOrAbove(%q) = %v, want %v", tc.floor, got, tc.want)
+		}
+	}
+}
+
+func TestRankAndLowestHighest(t *testing.T) {
+	if Rank(Lossless) <= Rank(High) || Rank(High) <= Rank(Medium) || Rank(Medium) <= Rank(Low) {
+		t.Fatalf("Rank must be lossless > high > medium > low, got %d %d %d %d", Rank(Lossless), Rank(High), Rank(Medium), Rank(Low))
+	}
+	if Lowest([]Tier{High, Lossless}) != High {
+		t.Errorf("Lowest(high, lossless) want high")
+	}
+	if Highest([]Tier{Medium, Lossless, Low}) != Lossless {
+		t.Errorf("Highest(medium, lossless, low) want lossless")
+	}
+	if Lowest(nil) != Default || Highest(nil) != Default {
+		t.Errorf("empty Lowest/Highest must fall back to Default")
+	}
+}

@@ -469,13 +469,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// poster resolves a library card's TMDB poster art lazily, per card (the
 	// library caches no poster path) — see posterHandler.
 	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, scStore, settingsStore))
-	// searchHandler is widened with grabHandler's own dispatch dependencies
-	// (dl, nzb, grabsStore, whStore, appended in that order) because the
-	// usenet_autograb_enabled toggle can make this route auto-grab instead of
-	// returning a pick-a-release list — see runToggleGatedSearch in search.go.
-	// This registration line is BE-5's, made on BE-6's behalf: BE-6 owns
-	// search.go/search_catalog.go and must not open handler.go (plan §2.3.1
-	// item 5, R4-3).
+	// searchHandler stays widened with grabHandler's dispatch dependencies
+	// (dl, nzb, grabsStore, whStore) so its signature matches Adult's
+	// concrete-path sibling. Movies/Series GET /search is read-only again
+	// (always a pick list); Adult's toggle-ON branch still auto-grabs via
+	// runToggleGatedSearch. Changing only this line's argument list would
+	// force a handler.go + Adult registration churn for no behavior change.
 	mux.HandleFunc("GET /api/modes/{mode}/search", searchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, whStore))
 	// Adult catalog-first Search: registered on the literal "adult" path so
 	// ServeMux prefers it over the {mode} wildcard above (same concrete-shadows-

@@ -505,30 +505,20 @@ describe("Discover auto-grab — Adult (runtime-sourced, via select-mode bulk)",
 // OLD behavior this test previously asserted and now inverts. The category-row
 // Series test above (browse rows, unchanged) still covers the season-picker
 // gating path — only the search-result path changed.
-describe("Discover search — a searched Series result opens the release picker (no one-click grab)", () => {
-  it("has no Grab button/season picker; clicking it fires /search once, then grabs a chosen release", async () => {
+describe("Discover search — a searched Series result opens DetailPopup (season picker, not the release picker)", () => {
+  it("clicking a searched series card opens DetailPopup and fires zero release-picker /search", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/movies/tmdb-search")) return jsonResponse([]);
       if (url.includes("/api/modes/series/tmdb-search"))
         return jsonResponse([movie({ id: 77, title: "Searched Series", mediaType: "tv" })]);
-      // Precise matcher: the release-picker endpoint, NOT tmdb-search / search/grab.
-      if (/\/api\/modes\/series\/search\?q=/.test(url))
-        return jsonResponse([
-          {
-            guid: "g1",
-            title: "Searched.Series.S01.1080p-GRP",
-            indexer: "IdxA",
-            protocol: "torrent",
-            size: 1200000000,
-            seeders: 30,
-            downloadUrl: "magnet:?xt=urn:btih:ser",
-            publishDate: "",
-            score: 90,
-          },
-        ]);
-      if (url.includes("/library/root-folder")) return jsonResponse({ path: "/tv" });
-      if (/\/api\/modes\/series\/search\/grab/.test(url))
-        return jsonResponse({ id: 5, mode: "series", title: "Searched Series", status: "queued" });
+      if (url.includes("/discover/availability")) {
+        const emptyTier = { usenet: undefined, torrent: undefined };
+        const emptyRes = { low: emptyTier, medium: emptyTier, high: emptyTier, lossless: emptyTier };
+        return jsonResponse({ res2160: emptyRes, res1080: emptyRes, res720: emptyRes, res480: emptyRes });
+      }
+      if (url.includes("/quality-prefs")) return jsonResponse({ tier: "medium", maxResolution: 0 });
+      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -543,46 +533,15 @@ describe("Discover search — a searched Series result opens the release picker 
     );
 
     const card = await screen.findByRole("button", { name: "Searched Series" });
-    // These four checks used to discriminate a searched card (no Grab, no
-    // season picker) from a browse card (had both, inline). Since the Discover
-    // card cleanup removed the inline Grab button — and the season/episode
-    // picker it used to gate — from EVERY card type, none of these four
-    // discriminate any more; they pass whether or not the underlying
-    // suppression logic still exists. No coverage is lost: the real proof that
-    // a searched card skips season gating is the click-behavior assertion below
-    // (body click fires exactly one release-picker /search and zero autograb
-    // calls, with no season/episode interaction in between). See
-    // Discover.search.test.tsx:10 for the same correction on the sibling M3
-    // comment.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
-    expect(within(card).queryByLabelText("Season")).not.toBeInTheDocument();
-    expect(within(card).queryByText("Choose seasons/episodes")).not.toBeInTheDocument();
-    expect(
-      within(card).queryByRole("button", { name: /Season \d+.*eps/ }),
-    ).not.toBeInTheDocument();
 
-    // Clicking the card body opens the picker; exactly one /search fired, no auto-grab.
     fireEvent.click(card);
     expect(
-      await screen.findByText("Searched.Series.S01.1080p-GRP"),
+      await screen.findByText("Pick a season (and optionally an episode) to check availability."),
     ).toBeInTheDocument();
     expect(
       calls.filter((c) => /\/api\/modes\/series\/search\?q=/.test(c.url)),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(autograbCalls(calls)).toHaveLength(0);
-
-    // Selecting the release grabs it via /search/grab with the tmdbId threaded.
-    fireEvent.click(screen.getByText("Grab"));
-    await waitFor(() =>
-      expect(calls.some((c) => /\/search\/grab/.test(c.url))).toBe(true),
-    );
-    expect(calls.find((c) => /\/search\/grab/.test(c.url))?.body).toMatchObject({
-      title: "Searched Series",
-      tmdbId: 77,
-      indexer: "IdxA",
-      protocol: "torrent",
-      downloadUrl: "magnet:?xt=urn:btih:ser",
-      rootFolderPath: "/tv",
-    });
   });
 });

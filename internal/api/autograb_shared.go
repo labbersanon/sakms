@@ -293,7 +293,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	// over-qualify (see buildAutoGrabCandidates).
 	neutralizeSeasonPacks := req.Mode == mode.Series && runtimeSeconds > 0
 	candidates := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
-	sel := autograb.Select(candidates, autoGrabTier(ctx, deps.SettingsStore, req.Mode), minSeedersFor(req.Mode))
+	sel := autograb.SelectBest(candidates, autoGrabTiers(ctx, deps.SettingsStore, req.Mode), minSeedersFor(req.Mode))
 
 	out := AutoGrabOutcome{Selection: sel, Releases: releases, Status: http.StatusOK}
 

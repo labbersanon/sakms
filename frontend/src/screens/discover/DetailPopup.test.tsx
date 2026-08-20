@@ -180,6 +180,30 @@ describe("DetailPopup — availability grid derivation (pure logic)", () => {
     expect(candidateAt(preview, 720, "high", "torrent")).toBeUndefined();
   });
 
+  it("computeDefaults walks accepted tiers highest-first (lossless before high)", () => {
+    const preview = emptyPreview();
+    preview.res1080.high.torrent = candidate({ title: "High1080" });
+    preview.res1080.lossless.torrent = candidate({ title: "Lossless1080" });
+    expect(
+      computeDefaults(preview, { tier: "high", maxResolution: 0 }),
+    ).toEqual({
+      resolution: 1080,
+      tier: "lossless",
+      protocol: "torrent",
+    });
+    expect(
+      computeDefaults(preview, {
+        tier: "high",
+        tiers: ["high"],
+        maxResolution: 0,
+      }),
+    ).toEqual({
+      resolution: 1080,
+      tier: "high",
+      protocol: "torrent",
+    });
+  });
+
   it("computeDefaults picks the exact quality-prefs (maxResolution, tier) combination, preferring torrent when both protocols qualify", () => {
     const preview = emptyPreview();
     preview.res1080.high.torrent = candidate({ title: "PreferredTorrent" });
@@ -718,9 +742,11 @@ describe("DetailPopup — empty availability grid explanation", () => {
     // Never claims a quality/seeder cause it has no evidence for.
     expect(screen.queryByText(/none qualified/)).not.toBeInTheDocument();
 
-    // The message is ADDITIVE — the selectors and Grab button still render
-    // exactly as before, disabled because nothing qualified.
-    expect(screen.getByRole("button", { name: "Grab" })).toBeDisabled();
+    // The message is ADDITIVE — the selectors still render disabled, but
+    // Grab stays enabled: auto-grab (on in these stubs via
+    // seriesMonitorDefaults) searches with TMDB runtime even when the
+    // preview grid is empty.
+    expect(screen.getByRole("button", { name: "Grab" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "1080p" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Torrent" })).toBeDisabled();
   });
@@ -743,7 +769,7 @@ describe("DetailPopup — empty availability grid explanation", () => {
     expect(
       screen.queryByText("No matching releases found for this search."),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Grab" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Grab" })).not.toBeDisabled();
   });
 
   it("shows an UNMAPPED rejection status verbatim rather than dropping it", async () => {
@@ -957,7 +983,7 @@ describe("DetailPopup — Watch Trailer link", () => {
 });
 
 describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shape)", () => {
-  it("resolves the root folder, then calls manualGrab with the selected candidate's fields", async () => {
+  it("with auto-grab on, Grab posts /autograb (TMDB id) rather than the selected cell", async () => {
     const preview = emptyPreview();
     preview.res1080.high.torrent = candidate({
       title: "Hero.Movie.1080p",
@@ -971,8 +997,12 @@ describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shap
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080 });
       if (url.includes("/library/root-folder")) return jsonResponse({ path: "/movies" });
-      if (url.includes("/search/grab"))
-        return jsonResponse({ id: 9, mode: "movies", title: "Hero Movie", status: "queued" });
+      if (url.includes("/modes/movies/autograb"))
+        return jsonResponse({
+          grabbed: true,
+          message: "auto-grabbed Hero.Movie.1080p",
+          grab: { title: "Hero.Movie.1080p" },
+        });
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -982,15 +1012,13 @@ describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shap
     fireEvent.click(await screen.findByRole("button", { name: "Grab" }));
 
     expect(await screen.findByText(/Grabbed/)).toBeInTheDocument();
-    const grabCall = calls.find((c) => c.url.includes("/search/grab"));
+    const grabCall = calls.find((c) => c.url.includes("/modes/movies/autograb"));
+    expect(grabCall?.method).toBe("POST");
     expect(grabCall?.body).toMatchObject({
       title: "Hero Movie",
       tmdbId: 42,
-      indexer: "IndexerA",
-      protocol: "torrent",
-      downloadUrl: "magnet:?xt=urn:btih:abc",
-      rootFolderPath: "/movies",
     });
+    expect(calls.some((c) => c.url.includes("/search/grab"))).toBe(false);
   });
 
   // Claude 2026-08-11: cover malformed availability data at the UI boundary.
@@ -1580,8 +1608,12 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
         return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
       if (url.includes("/library/root-folder"))
         return jsonResponse({ path: "/movies" });
-      if (url.includes("/search/grab"))
-        return jsonResponse({ id: 9, mode: "movies", title: "Hero Movie", status: "queued" });
+      if (url.includes("/modes/movies/autograb"))
+        return jsonResponse({
+          grabbed: true,
+          message: "auto-grabbed Hero.Movie.1080p",
+          grab: { title: "Hero.Movie.1080p" },
+        });
       throw new Error("unexpected fetch: " + url);
     });
 

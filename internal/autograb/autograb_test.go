@@ -255,6 +255,42 @@ func TestSelectPicksHighestQualified(t *testing.T) {
 	}
 }
 
+func TestSelectBestTriesHighestAcceptedTierFirst(t *testing.T) {
+	// Medium/1080p floor is 5 Mbps; High is 10. x264 padding is ×0.8, so
+	// 8 Mbps implied → padded 6.4 qualifies Medium but not High; 15 Mbps
+	// implied → padded 12 qualifies High.
+	mediumOnly := Candidate{
+		Title: "medium-only", Protocol: "usenet",
+		SizeBytes: bytesForMbps(8, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264",
+	}
+	highOk := Candidate{
+		Title: "high-ok", Protocol: "usenet",
+		SizeBytes: bytesForMbps(15, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264",
+	}
+
+	both := SelectBest([]Candidate{mediumOnly, highOk}, []quality.Tier{quality.Medium, quality.High}, 0)
+	if both.Fallback || both.Grades[both.PickIndex].Candidate.Title != "high-ok" {
+		t.Fatalf("accepted medium+high should pick the High qualifier first, got fallback=%v pick=%+v", both.Fallback, both)
+	}
+
+	onlyMedium := SelectBest([]Candidate{mediumOnly}, []quality.Tier{quality.Medium, quality.High}, 0)
+	if onlyMedium.Fallback || onlyMedium.Grades[onlyMedium.PickIndex].Candidate.Title != "medium-only" {
+		t.Fatalf("when High misses, SelectBest must fall through to Medium, got fallback=%v pick=%+v", onlyMedium.Fallback, onlyMedium)
+	}
+
+	highOnly := SelectBest([]Candidate{mediumOnly}, []quality.Tier{quality.High}, 0)
+	if !highOnly.Fallback {
+		t.Fatal("a Medium-only candidate must not qualify when High is the only accepted tier")
+	}
+
+	empty := SelectBest([]Candidate{highOk}, nil, 0)
+	if empty.Fallback {
+		t.Fatal("empty accepted list must expand from quality.Default (High) and pick the High qualifier")
+	}
+}
+
 // TestMinScoreFloorFallback proves the fallback-to-manual-pick-list signal:
 // when nothing clears the floor, Fallback is true, PickIndex is -1, and Ranked
 // is ordered by the SAME bitrate score (not release.ScoreCandidate).

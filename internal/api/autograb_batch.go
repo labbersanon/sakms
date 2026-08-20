@@ -295,7 +295,7 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 		if cached, ok := pickPersistedAdultEnclosure(ctx, store, settingsStore, req); ok {
 			if adultIdentityWeak(req.Studio, req.Performers, cached.Title) {
 				cands := buildAutoGrabCandidates([]prowlarr.Release{cached}, float64(req.DurationSeconds), false)
-				sel := autograb.Select(cands, autoGrabTier(ctx, settingsStore, m), minSeedersFor(m))
+				sel := autograb.SelectBest(cands, autoGrabTiers(ctx, settingsStore, m), minSeedersFor(m))
 				return nil, true, false, rankedAutoGrabCandidates(sel, []prowlarr.Release{cached}), "identity signals too thin for unattended dispatch — pick one below", nil
 			}
 			// Strong identity: use the cached enclosure for grabDirectEnclosure.
@@ -344,7 +344,7 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 
 	neutralizeSeasonPacks := m == mode.Series && runtimeSeconds > 0
 	cands := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
-	sel := autograb.Select(cands, autoGrabTier(ctx, settingsStore, m), minSeedersFor(m))
+	sel := autograb.SelectBest(cands, autoGrabTiers(ctx, settingsStore, m), minSeedersFor(m))
 
 	// Fallback: nothing cleared the floor → hand back the ranked pick list, no
 	// grab attempted (never "grab the least-bad option").

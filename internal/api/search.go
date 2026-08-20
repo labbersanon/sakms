@@ -59,24 +59,19 @@ func categoriesForSearch(m mode.Mode) []int {
 }
 
 // searchHandler queries Prowlarr for {mode} and scores every result against
-// that mode's configured quality-prefs (tier + max resolution, defaulting
-// to quality.Default/no cap when unset) — a read-only proxy+transform,
-// nothing staged or persisted.
+// that mode's configured quality-prefs (accepted tiers + max resolution,
+// defaulting to quality.Default/no cap when unset) — a read-only
+// proxy+transform, nothing staged or persisted.
 //
-// UNLESS usenet_autograb_enabled is on. Then this endpoint stops being
-// read-only: it hands its already-fetched, already-deduped releases to
-// runToggleGatedSearch, which scores them and either dispatches the winner or
-// parks a pending_retry row, and answers with an OUTCOME
-// (apidto.SearchAutoGrabOutcome) instead of a pick-a-release list — there is
-// nothing left to pick once the toggle has picked. This route is the one place
-// a Usenet search happens BEFORE a pick is made, which is why the gated
-// TriggerRequest hooks here and not in grabHandler (which already holds the
-// operator's chosen release) or in dispatchToDownloadClient (which RunAutoGrab
-// itself calls, so a hook there would recurse).
+// Movies and Series always return the pick-a-release list. Auto-grab for
+// those modes lives on POST /api/modes/{mode}/autograb (DetailPopup Grab)
+// and on the unattended retry/air-date/pre-release triggers — not on this
+// GET. A previous revision swapped the response to SearchAutoGrabOutcome
+// when usenet_autograb_enabled was on, which hid the pick list and graded
+// with RuntimeSeconds=0 so nothing could ever qualify.
 //
-// Movies and Series only: GET /api/modes/adult/search is served by the
-// concrete-path adultSearchHandler, which reaches the SAME shared
-// runToggleGatedSearch rather than holding a second copy of this branch.
+// Adult is served by the concrete-path adultSearchHandler, which still
+// routes toggle-ON searches through runToggleGatedSearch.
 func searchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, whStore *webhooks.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -87,18 +82,6 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 			return
 		}
 
-		// Read the toggle once, first. It only chooses a RESPONSE SHAPE here;
-		// the gate itself is enforced inside RunAutoGrab (same constant, so the
-		// two reads cannot drift).
-		autoGrab, err := settingsStore.GetBool(ctx, usenetAutoGrabEnabledKey, false)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// dl, not nil: the toggle-ON branch dispatches, and
-		// dispatchToDownloadClient rejects a torrent dispatch on a nil
-		// Session.Downloader.
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -134,22 +117,6 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 			}
 		})
 
-		// Toggle ON: the scorer runs here instead of the pick list being
-		// rendered. Everything below this point (release.ScoreCandidate, the
-		// sort, the []SearchReleaseResult encode) is skipped — there is nothing
-		// left to render when the toggle has already picked.
-		if autoGrab {
-			outcome, status, err := runToggleGatedSearch(ctx,
-				AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, Webhooks: whStore},
-				sess, searchGrabIdentity{Mode: m, Title: query}, releases)
-			if err != nil {
-				http.Error(w, err.Error(), status)
-				return
-			}
-			writeJSON(w, outcome)
-			return
-		}
-
 		prefs, err := searchQualityProfile(ctx, settingsStore, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -181,14 +148,7 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 // release.Profile Search scores against, defaulting to quality.Default/no
 // resolution cap when unset.
 func searchQualityProfile(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (release.Profile, error) {
-	tierStr, err := settingsStore.Get(ctx, qualityTierKey(m))
-	if err != nil && !errors.Is(err, settings.ErrNotFound) {
-		return release.Profile{}, err
-	}
-	tier := quality.Tier(tierStr)
-	if tierStr == "" {
-		tier = quality.Default
-	}
+	tiers := resolveQualityTiers(ctx, settingsStore, m)
 
 	maxResStr, err := settingsStore.Get(ctx, maxResolutionKey(m))
 	if err != nil && !errors.Is(err, settings.ErrNotFound) {
@@ -199,7 +159,7 @@ func searchQualityProfile(ctx context.Context, settingsStore *settings.Store, m 
 		maxRes, _ = strconv.Atoi(maxResStr)
 	}
 
-	return quality.ProfileFor(tier, maxRes), nil
+	return quality.ProfileFor(quality.Highest(tiers), maxRes), nil
 }
 
 // searchGrabIdentity is the mode-agnostic identity of the thing being searched

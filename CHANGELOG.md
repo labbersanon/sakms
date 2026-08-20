@@ -7952,6 +7952,18 @@ now `h-svh` (smallest viewport, the one that fits while the bars are showing),
 includes `viewport-fit=cover`. Desktop layout is unchanged. This tab still
 ends at Auto-grab — quality prefs stay on Settings → Library.
 
+## 2026-08-20 — Search posters open DetailPopup; quality tiers are a floor
+
+Movies/Series catalog-search cards open the same DetailPopup browse already
+used (season picker, availability grid, overview/trailer). They no longer
+route through GET `/search` as a release picker. With auto-grab on, the
+popup Grab button calls POST `/autograb` (TMDB runtime) and shows the
+ranked pick list when nothing qualifies; Adult search still uses the
+release picker. Quality prefs are a multi-select set: a stored single tier
+is a floor (High → High+Lossless) that the operator can uncheck. Auto-grab
+tries accepted tiers highest first. Movies/Series GET `/search` always
+returns the pick list even when the toggle is on.
+
 
 
 

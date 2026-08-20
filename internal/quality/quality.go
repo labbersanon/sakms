@@ -28,6 +28,64 @@ const (
 // behavior change from before tiers existed.
 const Default = High
 
+// AllTiers is low→lossless, the Settings checkbox order.
+var AllTiers = []Tier{Low, Medium, High, Lossless}
+
+// TiersAtOrAbove expands a stored single-tier floor into the accepted
+// set: low → all four, medium → medium+high+lossless, high →
+// high+lossless, lossless → lossless only. Unrecognized/empty floors
+// expand from Default. Rank (probe.go) is lossless=4 … low=1.
+func TiersAtOrAbove(floor Tier) []Tier {
+	if Rank(floor) <= 0 {
+		floor = Default
+	}
+	out := make([]Tier, 0, len(AllTiers))
+	for _, t := range AllTiers {
+		if Rank(t) >= Rank(floor) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// Lowest returns the lowest-ranked tier in ts (the floor). Empty or
+// all-unrecognized input falls back to Default.
+func Lowest(ts []Tier) Tier {
+	found := false
+	var low Tier
+	for _, t := range ts {
+		if Rank(t) <= 0 {
+			continue
+		}
+		if !found || Rank(t) < Rank(low) {
+			low, found = t, true
+		}
+	}
+	if !found {
+		return Default
+	}
+	return low
+}
+
+// Highest returns the highest-ranked tier in ts. Empty or
+// all-unrecognized input falls back to Default.
+func Highest(ts []Tier) Tier {
+	found := false
+	var high Tier
+	for _, t := range ts {
+		if Rank(t) <= 0 {
+			continue
+		}
+		if !found || Rank(t) > Rank(high) {
+			high, found = t, true
+		}
+	}
+	if !found {
+		return Default
+	}
+	return high
+}
+
 // resolutionLadder is every resolution internal/release.Parse recognizes,
 // highest first.
 var resolutionLadder = []int{2160, 1080, 720, 480}

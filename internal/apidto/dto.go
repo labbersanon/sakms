@@ -1866,11 +1866,18 @@ type AIModelRequest struct {
 // substitutes the default (10) when nothing is stored, and a request carrying 0
 // — an older client that predates the field — stores the default rather than
 // failing the whole quality save.
+//
+// Tiers is the accepted quality set (any non-empty subset of low/medium/high/
+// lossless). Auto-grab tries them highest-first. A request that omits Tiers
+// treats Tier as a floor and expands (high → high+lossless). GET always
+// returns the effective set; Tier on the response is the lowest accepted
+// value so older clients still see a single floor.
 type QualityPrefsResponse struct {
-	Tier          string `json:"tier"`
-	MaxResolution int    `json:"maxResolution"`
-	Protocol      string `json:"protocol"`
-	UndoDepth     int    `json:"undoDepth"`
+	Tier          string   `json:"tier"`
+	Tiers         []string `json:"tiers"`
+	MaxResolution int      `json:"maxResolution"`
+	Protocol      string   `json:"protocol"`
+	UndoDepth     int      `json:"undoDepth"`
 }
 
 // Claude 2026-08-10: added UndoDepth to both quality-prefs DTOs.
@@ -1895,10 +1902,11 @@ type QualityPrefsResponse struct {
 // leave the stored value alone", which is NOT the same as an explicit value and
 // must not be collapsed into a default (see putQualityPrefsHandler).
 type QualityPrefsRequest struct {
-	Tier          string `json:"tier"`
-	MaxResolution int    `json:"maxResolution"`
-	Protocol      string `json:"protocol"`
-	UndoDepth     *int   `json:"undoDepth,omitempty"`
+	Tier          string   `json:"tier"`
+	Tiers         []string `json:"tiers,omitempty"`
+	MaxResolution int      `json:"maxResolution"`
+	Protocol      string   `json:"protocol"`
+	UndoDepth     *int     `json:"undoDepth,omitempty"`
 }
 
 // NamingPresetResponse / NamingPresetRequest back

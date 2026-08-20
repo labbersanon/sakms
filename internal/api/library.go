@@ -188,6 +188,7 @@ func testLibraryRootFolderHandler() http.HandlerFunc {
 // since it had no Search workflow; that stopped being true once Adult grew
 // its own availability-popup search path).
 func qualityTierKey(m mode.Mode) string        { return string(m) + "_quality_tier" }
+func qualityTiersKey(m mode.Mode) string       { return string(m) + "_quality_tiers" }
 func maxResolutionKey(m mode.Mode) string      { return string(m) + "_max_resolution" }
 func protocolPreferenceKey(m mode.Mode) string { return string(m) + "_protocol_preference" }
 
@@ -234,39 +235,81 @@ func UndoDepthFor(settingsStore *settings.Store) rename.DepthFunc {
 }
 
 type qualityPrefsResponse struct {
-	Tier          string `json:"tier"`
-	MaxResolution int    `json:"maxResolution"`
-	Protocol      string `json:"protocol"`
-	UndoDepth     int    `json:"undoDepth"`
+	Tier          string   `json:"tier"`
+	Tiers         []string `json:"tiers"`
+	MaxResolution int      `json:"maxResolution"`
+	Protocol      string   `json:"protocol"`
+	UndoDepth     int      `json:"undoDepth"`
 }
 
 // UndoDepth is a POINTER, mirroring apidto.QualityPrefsRequest — see that type
 // for why (a required TS field breaks the frontend build, and nil must mean
 // "not sent, leave the stored value alone" rather than "use the default").
+// Tiers is omitempty so an older client that only sends Tier still round-trips:
+// empty/omitted Tiers means "treat Tier as a floor and expand".
 type qualityPrefsRequest struct {
-	Tier          string `json:"tier"`
-	MaxResolution int    `json:"maxResolution"`
-	Protocol      string `json:"protocol"`
-	UndoDepth     *int   `json:"undoDepth,omitempty"`
+	Tier          string   `json:"tier"`
+	Tiers         []string `json:"tiers,omitempty"`
+	MaxResolution int      `json:"maxResolution"`
+	Protocol      string   `json:"protocol"`
+	UndoDepth     *int     `json:"undoDepth,omitempty"`
+}
+
+func parseQualityTiers(ss []string) []quality.Tier {
+	seen := make(map[quality.Tier]bool, len(ss))
+	out := make([]quality.Tier, 0, len(ss))
+	for _, s := range ss {
+		t := quality.Tier(s)
+		if quality.Rank(t) <= 0 || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+func qualityTiersToStrings(ts []quality.Tier) []string {
+	out := make([]string, len(ts))
+	for i, t := range ts {
+		out[i] = string(t)
+	}
+	return out
+}
+
+// resolveQualityTiers returns the accepted quality set for mode m.
+// A stored JSON array (movies_quality_tiers / …) wins when it parses to at
+// least one valid tier. Otherwise the legacy single movies_quality_tier
+// value is treated as a floor and expanded (high → high+lossless).
+func resolveQualityTiers(ctx context.Context, settingsStore *settings.Store, m mode.Mode) []quality.Tier {
+	raw, err := settingsStore.Get(ctx, qualityTiersKey(m))
+	if err == nil && raw != "" {
+		var ss []string
+		if json.Unmarshal([]byte(raw), &ss) == nil {
+			if parsed := parseQualityTiers(ss); len(parsed) > 0 {
+				return parsed
+			}
+		}
+	}
+	tier, err := settingsStore.Get(ctx, qualityTierKey(m))
+	if err != nil || quality.Rank(quality.Tier(tier)) <= 0 {
+		return quality.TiersAtOrAbove(quality.Default)
+	}
+	return quality.TiersAtOrAbove(quality.Tier(tier))
 }
 
 // getQualityPrefsHandler returns {mode}'s Search scoring preferences —
-// defaults to quality.Default ("high"), maxResolution=0 (no cap), and
-// protocol="" (no preference) when unset, matching quality.ProfileFor's own
-// zero-config fallback exactly for the first two.
+// defaults to quality.Default ("high") expanded to high+lossless,
+// maxResolution=0 (no cap), and protocol="" (no preference) when unset,
+// matching quality.ProfileFor's own zero-config fallback exactly for the
+// first two.
 func getQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 
-		tier, err := settingsStore.Get(ctx, qualityTierKey(m))
-		if err != nil && !errors.Is(err, settings.ErrNotFound) {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if tier == "" {
-			tier = string(quality.Default)
-		}
+		tiers := resolveQualityTiers(ctx, settingsStore, m)
+		tier := string(quality.Lowest(tiers))
 
 		maxResStr, err := settingsStore.Get(ctx, maxResolutionKey(m))
 		if err != nil && !errors.Is(err, settings.ErrNotFound) {
@@ -312,7 +355,8 @@ func getQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(qualityPrefsResponse{
-			Tier: tier, MaxResolution: maxRes, Protocol: protocol, UndoDepth: undoDepth,
+			Tier: tier, Tiers: qualityTiersToStrings(tiers),
+			MaxResolution: maxRes, Protocol: protocol, UndoDepth: undoDepth,
 		})
 	}
 }
@@ -342,10 +386,27 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if !validQualityTiers[req.Tier] {
-			http.Error(w, "tier must be one of: low, medium, high, lossless", http.StatusBadRequest)
-			return
+		var stored []quality.Tier
+		if len(req.Tiers) > 0 {
+			for _, s := range req.Tiers {
+				if !validQualityTiers[s] {
+					http.Error(w, "each tiers value must be one of: low, medium, high, lossless", http.StatusBadRequest)
+					return
+				}
+			}
+			stored = parseQualityTiers(req.Tiers)
+			if len(stored) == 0 {
+				http.Error(w, "tiers must contain at least one of: low, medium, high, lossless", http.StatusBadRequest)
+				return
+			}
+		} else {
+			if !validQualityTiers[req.Tier] {
+				http.Error(w, "tier must be one of: low, medium, high, lossless", http.StatusBadRequest)
+				return
+			}
+			stored = quality.TiersAtOrAbove(quality.Tier(req.Tier))
 		}
+		floor := quality.Lowest(stored)
 		switch req.MaxResolution {
 		case 0, 480, 720, 1080, 2160:
 		default:
@@ -373,7 +434,16 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		if err := settingsStore.Set(ctx, qualityTierKey(m), req.Tier); err != nil {
+		if err := settingsStore.Set(ctx, qualityTierKey(m), string(floor)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tiersJSON, err := json.Marshal(qualityTiersToStrings(stored))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := settingsStore.Set(ctx, qualityTiersKey(m), string(tiersJSON)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

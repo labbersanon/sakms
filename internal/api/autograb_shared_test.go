@@ -391,76 +391,97 @@ func TestAdultSearchHandlerToggleOffIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestSearchRoutesToggleOnReturnOutcomeShape is AC 13's shape half, asserted on
-// BOTH routes: with the toggle on neither endpoint answers with a pick list
-// (Movies/Series' []SearchReleaseResult, Adult's scene cards) — both answer
-// with the SAME apidto.SearchAutoGrabOutcome, through the one shared
-// runToggleGatedSearch.
-//
-// The outcome is pending_retry rather than grabbed, and that is not an artifact
-// of the fixture: see the RuntimeSeconds note on runToggleGatedSearch. A
-// query-only Search carries no runtime, and autograb.GradeCandidate
-// short-circuits an unknown runtime to not-qualified BEFORE any other check, so
-// this hook can only ever park a retry. TestRunAutoGrabTriggerRequestGrabsWhenRuntimeKnown
-// covers the dispatch half at the level where a runtime exists.
+// TestSearchRoutesToggleOnReturnOutcomeShape is AC 13's shape half.
+// Adult's concrete search route still answers SearchAutoGrabOutcome when
+// the toggle is on. Movies/Series GET /search always returns the pick list
+// (auto-grab for those modes is POST /autograb from DetailPopup).
 func TestSearchRoutesToggleOnReturnOutcomeShape(t *testing.T) {
 	releasesJSON := `[{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":8000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`
-	for _, tc := range []struct {
-		name    string
-		path    string
-		m       mode.Mode
-		rootKey string
-	}{
-		{"movies via the {mode} wildcard route", "/api/modes/movies/search?q=some+movie", mode.Movies, moviesLibraryRootFolderKey},
-		{"adult via its own concrete route", "/api/modes/adult/search?q=some+scene", mode.Adult, adultLibraryRootFolderKey},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			prowlarrSrv := fakeProwlarr(t, releasesJSON)
-			connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
-			if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			setAutoGrabToggle(t, settingsStore, true)
-			if err := settingsStore.Set(ctx, tc.rootKey, "/library"); err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
 
-			srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
-			defer srv.Close()
+	t.Run("movies pick list even with toggle on", func(t *testing.T) {
+		ctx := context.Background()
+		prowlarrSrv := fakeProwlarr(t, releasesJSON)
+		connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
+		if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		setAutoGrabToggle(t, settingsStore, true)
+		if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/library"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-			resp, err := http.Get(srv.URL + tc.path)
-			if err != nil {
-				t.Fatalf("GET failed: %v", err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("expected 200, got %d", resp.StatusCode)
-			}
-			var outcome apidto.SearchAutoGrabOutcome
-			if err := json.NewDecoder(resp.Body).Decode(&outcome); err != nil {
-				t.Fatalf("decoding outcome: %v", err)
-			}
-			if outcome.Outcome != "pending_retry" || outcome.GrabID == 0 {
-				t.Fatalf("expected an observable pending_retry outcome, got %+v", outcome)
-			}
-			if outcome.AutoGrabbed {
-				t.Error("nothing qualified, so autoGrabbed must be false")
-			}
-			if outcome.Reason != noQualifyingCandidateReason {
-				t.Errorf("unexpected reason %q", outcome.Reason)
-			}
+		srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+		defer srv.Close()
 
-			// The row the outcome points at really exists and is retryable.
-			g, err := grabsStore.Get(ctx, outcome.GrabID)
-			if err != nil {
-				t.Fatalf("loading the row the outcome names: %v", err)
-			}
-			if g.Status != grabs.PendingRetry || g.Mode != tc.m {
-				t.Fatalf("unexpected parked row: %+v", g)
-			}
-		})
-	}
+		resp, err := http.Get(srv.URL + "/api/modes/movies/search?q=some+movie")
+		if err != nil {
+			t.Fatalf("GET failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		var list []apidto.SearchReleaseResult
+		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+			t.Fatalf("decoding pick list: %v", err)
+		}
+		if len(list) != 1 || list[0].Title == "" {
+			t.Fatalf("expected a scored pick list, got %+v", list)
+		}
+		grabsList, err := grabsStore.List(ctx, mode.Movies)
+		if err != nil {
+			t.Fatalf("listing grabs: %v", err)
+		}
+		if len(grabsList) != 0 {
+			t.Errorf("movies GET /search must not park a grab, wrote %d row(s)", len(grabsList))
+		}
+	})
+
+	t.Run("adult via its own concrete route", func(t *testing.T) {
+		ctx := context.Background()
+		prowlarrSrv := fakeProwlarr(t, releasesJSON)
+		connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, rssFeedsStore := testStores(t)
+		if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		setAutoGrabToggle(t, settingsStore, true)
+		if err := settingsStore.Set(ctx, adultLibraryRootFolderKey, "/library"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+		defer srv.Close()
+
+		resp, err := http.Get(srv.URL + "/api/modes/adult/search?q=some+scene")
+		if err != nil {
+			t.Fatalf("GET failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		var outcome apidto.SearchAutoGrabOutcome
+		if err := json.NewDecoder(resp.Body).Decode(&outcome); err != nil {
+			t.Fatalf("decoding outcome: %v", err)
+		}
+		if outcome.Outcome != "pending_retry" || outcome.GrabID == 0 {
+			t.Fatalf("expected an observable pending_retry outcome, got %+v", outcome)
+		}
+		if outcome.AutoGrabbed {
+			t.Error("nothing qualified, so autoGrabbed must be false")
+		}
+		if outcome.Reason != noQualifyingCandidateReason {
+			t.Errorf("unexpected reason %q", outcome.Reason)
+		}
+
+		g, err := grabsStore.Get(ctx, outcome.GrabID)
+		if err != nil {
+			t.Fatalf("loading the row the outcome names: %v", err)
+		}
+		if g.Status != grabs.PendingRetry || g.Mode != mode.Adult {
+			t.Fatalf("unexpected parked row: %+v", g)
+		}
+	})
 }
 
 // TestRunAutoGrabTriggerRequestGrabsWhenRuntimeKnown is AC 13's dispatch half.

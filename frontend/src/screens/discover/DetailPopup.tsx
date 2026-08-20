@@ -73,13 +73,15 @@ import {
   tmdbPoster,
   tmdbProfile,
 } from "../../api/discover";
-import { libraryRootFolder, manualGrab } from "../../api/grab";
+import { libraryRootFolder, manualGrab, autoGrab } from "../../api/grab";
+import type { AutoGrabCandidate, AutoGrabResponse } from "../../api/grab";
 import { fetchQualityPrefs } from "../../api/settings";
+import { fetchUsenetAutoGrabEnabled } from "../../api/usenet";
 import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components/ui";
 import { PlayFullscreenLink } from "../../components/TrackedPlayback";
 import { MediaFallbackTile } from "../../components/media";
 import { SeasonsPanel } from "../../components/SeasonsPanel";
-import { type GrabTarget, Modal } from "./shared";
+import { type GrabTarget, FallbackPickList, Modal } from "./shared";
 import { PosterCard } from "./Mainstream";
 import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
 
@@ -242,6 +244,25 @@ const isTierKey = (t: string): t is TierKey =>
 const isProtocolKey = (p: string): p is ProtocolKey =>
   (PROTOCOLS as string[]).includes(p);
 
+// acceptedTiersHighestFirst walks prefs.tiers (or expands prefs.tier as a
+// floor) high→low so computeDefaults / auto-grab prefer lossless before
+// high before medium before low.
+function acceptedTiersHighestFirst(prefs?: {
+  tier: string;
+  tiers?: string[];
+}): TierKey[] {
+  const listed = (prefs?.tiers ?? []).filter(isTierKey);
+  if (listed.length) {
+    return [...listed].sort((a, b) => TIERS.indexOf(b) - TIERS.indexOf(a));
+  }
+  if (prefs && isTierKey(prefs.tier)) {
+    return TIERS.slice(TIERS.indexOf(prefs.tier))
+      .slice()
+      .reverse();
+  }
+  return [];
+}
+
 // pickProtocolPreferring is pickProtocol, but tries a configured protocol
 // preference first — falling back to pickProtocol's own torrent-preferred
 // default when the preference is absent, unrecognized, or has no candidate
@@ -284,20 +305,23 @@ function pickProtocolPreferring(
 // protocol torrent-preferred.
 export function computeDefaults(
   preview: AvailabilityPreview,
-  prefs?: { tier: string; maxResolution: number; protocol?: string },
+  prefs?: { tier: string; tiers?: string[]; maxResolution: number; protocol?: string },
 ): { resolution: number; tier: TierKey; protocol: ProtocolKey } | undefined {
-  if (prefs && isTierKey(prefs.tier)) {
+  const tryTiers = acceptedTiersHighestFirst(prefs);
+  if (tryTiers.length) {
     const capped =
-      prefs.maxResolution > 0
+      prefs && prefs.maxResolution > 0
         ? RESOLUTIONS_DESC.filter((r) => r <= prefs.maxResolution)
         : RESOLUTIONS_DESC;
     const aboveCap =
-      prefs.maxResolution > 0
+      prefs && prefs.maxResolution > 0
         ? RESOLUTIONS_DESC.filter((r) => r > prefs.maxResolution)
         : [];
-    for (const r of [...capped, ...aboveCap]) {
-      const found = pickProtocolPreferring(preview, r, prefs.tier, prefs.protocol);
-      if (found) return { resolution: r, tier: prefs.tier, protocol: found.protocol };
+    for (const t of tryTiers) {
+      for (const r of [...capped, ...aboveCap]) {
+        const found = pickProtocolPreferring(preview, r, t, prefs?.protocol);
+        if (found) return { resolution: r, tier: t, protocol: found.protocol };
+      }
     }
   }
   for (const r of RESOLUTIONS_DESC) {
@@ -590,6 +614,15 @@ export const DetailPopup: Component<{
     },
   );
 
+  // Movies/Series Grab uses POST /autograb when the global toggle is on
+  // (runtime comes from TMDB). Adult stays on the selected-cell manual grab.
+  // Soft-fail to false so a missing stub in tests keeps the manual path.
+  const [autoGrabEnabled] = createResource(
+    () => (allowGrab() && mode() !== "adult" ? true : null),
+    () => fetchUsenetAutoGrabEnabled().catch(() => false),
+  );
+  const useAutoGrab = () => mode() !== "adult" && autoGrabEnabled() === true;
+
   // trailer resolves this title's YouTube trailer URL once per title —
   // Movies/Series only, skipped entirely for Adult (no TMDB id to resolve
   // one from). "" (no trailer on file) is a normal, non-error outcome; the
@@ -826,16 +859,42 @@ export const DetailPopup: Component<{
   const [grabbing, setGrabbing] = createSignal(false);
   const [grabError, setGrabError] = createSignal("");
   const [grabbed, setGrabbed] = createSignal(false);
+  const [grabbedTitle, setGrabbedTitle] = createSignal("");
+  const [fallback, setFallback] = createSignal<AutoGrabResponse | null>(null);
+  const [manualPicking, setManualPicking] = createSignal("");
 
-  // grab mirrors GrabDialog.pickManual (shared.tsx) exactly: resolve the
-  // mode's root folder first, then manualGrab with the selected candidate's
-  // indexer/protocol/downloadUrl plus the item's own identity fields.
+  const grabDisabled = () => {
+    if (grabbing() || !!fallback()) return true;
+    if (useAutoGrab()) return !ready() || autoGrabEnabled.loading;
+    return !selectedCandidate();
+  };
+
+  // grab: auto-grab (movies/series, toggle on) searches with TMDB runtime
+  // and either dispatches or shows FallbackPickList. Toggle off (and Adult)
+  // still manual-grabs the selected grid cell.
   const grab = async () => {
-    const c = selectedCandidate();
-    if (!c) return;
     setGrabError("");
     setGrabbing(true);
     try {
+      if (useAutoGrab()) {
+        const se = seasonEpisode();
+        const res = await autoGrab(mode(), {
+          title: item().title,
+          tmdbId: (item() as DiscoverItem).id,
+          seasonNumber: mode() === "series" ? se?.season : undefined,
+          episodeNumber: mode() === "series" ? se?.episode : undefined,
+          seasonSpecified: mode() === "series" ? true : undefined,
+        });
+        if (res.fallback) {
+          setFallback(res);
+          return;
+        }
+        setGrabbedTitle(res.grab?.title || item().title);
+        setGrabbed(true);
+        return;
+      }
+      const c = selectedCandidate();
+      if (!c) return;
       // Claude 2026-08-11: validate the selected release before any Grab request.
       // Reason: availability data is external input, so a populated grid cell
       // must not imply its downloadUrl and protocol are usable.
@@ -868,11 +927,44 @@ export const DetailPopup: Component<{
         downloadUrl: c.downloadUrl,
         rootFolderPath: root,
       });
+      setGrabbedTitle(c.title);
       setGrabbed(true);
     } catch (e) {
       setGrabError((e as Error).message);
     } finally {
       setGrabbing(false);
+    }
+  };
+
+  const pickFallback = async (c: AutoGrabCandidate) => {
+    setGrabError("");
+    setManualPicking(c.downloadUrl);
+    try {
+      const root = await libraryRootFolder(mode());
+      if (!root) {
+        throw new Error(
+          "no root folder configured for this mode — set one in Settings first",
+        );
+      }
+      const se = seasonEpisode();
+      await manualGrab(mode(), {
+        title: item().title,
+        tmdbId: (item() as DiscoverItem).id,
+        seasonNumber: mode() === "series" ? se?.season : undefined,
+        episodeNumber: mode() === "series" ? se?.episode : undefined,
+        seasonSpecified: mode() === "series" ? true : undefined,
+        indexer: c.indexer,
+        protocol: c.protocol,
+        downloadUrl: c.downloadUrl,
+        rootFolderPath: root,
+      });
+      setGrabbedTitle(c.title);
+      setGrabbed(true);
+      setFallback(null);
+    } catch (e) {
+      setGrabError((e as Error).message);
+    } finally {
+      setManualPicking("");
     }
   };
 
@@ -1068,30 +1160,44 @@ export const DetailPopup: Component<{
                 isDisabled={(pr) => !protocolEnabled(pr)}
               />
 
-              <div class="mt-4 flex items-center justify-end gap-3">
+              <div class="mt-4 flex flex-col gap-3">
+                <Show when={fallback()}>
+                  {(res) => (
+                    <FallbackPickList
+                      response={res()}
+                      onPick={(c) => void pickFallback(c)}
+                      grabbing={manualPicking()}
+                      error={grabError()}
+                    />
+                  )}
+                </Show>
+                <div class="flex items-center justify-end gap-3">
                 {/* Trailer button now lives in the header action row (next
                     to "More on TMDB") as a sibling of this whole
                     availability/grab block, not nested inside it — see the
                     comment there for why. */}
-                <Show when={grabError()}>
+                <Show when={grabError() && !fallback()}>
                   <ErrorText>{grabError()}</ErrorText>
                 </Show>
                 <Show
                   when={!grabbed()}
                   fallback={
                     <div class="text-sm text-ok">
-                      Grabbed “{selectedCandidate()?.title}”.
+                      Grabbed “{grabbedTitle() || selectedCandidate()?.title}”.
                     </div>
                   }
                 >
-                  <Button
-                    variant="primary"
-                    onClick={() => void grab()}
-                    disabled={!selectedCandidate() || grabbing()}
-                  >
-                    {grabbing() ? "Grabbing…" : "Grab"}
-                  </Button>
+                  <Show when={!fallback()}>
+                    <Button
+                      variant="primary"
+                      onClick={() => void grab()}
+                      disabled={grabDisabled()}
+                    >
+                      {grabbing() ? "Grabbing…" : "Grab"}
+                    </Button>
+                  </Show>
                 </Show>
+                </div>
               </div>
             </div>
           </Show>

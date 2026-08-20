@@ -1,33 +1,12 @@
-// Catalog-first manual Search tests (Component 2, spec Amendment): the
-// restructured Discover search bars. Movies/Series are two-step (catalog cards
-// via tmdb-search → click a card → exactly ONE Prowlarr release-picker /search →
-// grab); Adult is one-shot (submit → /api/modes/adult/search returns scene cards
-// with release variants inline → click a card → picker opens with zero further
-// network calls → grab). Searched cards carry NO one-click Grab button (M3); the
-// picker replaces it. Browse rows are unchanged — a regression guard proves they
-// still open DetailPopup and never fire a picker /search.
+// Catalog-first Search tests: Movies/Series search lists TMDB catalog cards
+// (tmdb-search). Clicking a card opens the same DetailPopup browse uses
+// (season picker, availability grid, overview) — never the old release
+// picker GET /search?q=. Adult is still one-shot (submit → scene cards →
+// click → picker with zero further network calls). Browse rows are unchanged.
 //
-// Claude 2026-08-02: this header used to add "keep their Grab button" to that
-// last clause. As of the Discover card cleanup NO card type has an inline Grab
-// button, so M3's searched-vs-browse contrast is now purely about what the CLICK
-// does (release picker vs. DetailPopup), not about a button one has and the
-// other lacks.
-// CORRECTED 2026-08-02 (later, same day): "The M3 absence assertions below still
-// hold and were not weakened" was true as written but misleading. Those
-// `queryByText("Grab")` checks on searched cards no longer DISCRIMINATE
-// anything — every card type, searched and browse alike, now lacks an inline
-// Grab button, so the assertion passes whether or not the underlying
-// suppression logic still exists. No coverage is lost: the real M3
-// discriminator now lives in the click-behavior assertions in the same tests
-// (a searched card's body click fires exactly one release-picker /search; a
-// browse card's click opens DetailPopup instead). Read "still hold" as
-// "trivially true," not "still proves M3."
-// Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §1.2/§3.2.
-//
-// Matcher note (advisor catch): three endpoints contain the substring "search"
-// — tmdb-search (catalog), /search?q= (release picker), /search/grab (grab). The
-// precise matchers below distinguish them so a "zero Prowlarr at catalog step" /
-// "exactly once on click" assertion can't silently count the wrong call.
+// Matcher note: three endpoints contain the substring "search"
+// — tmdb-search (catalog), /search?q= (legacy release picker / Adult search),
+// /search/grab (grab). The precise matchers below distinguish them.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
@@ -121,16 +100,15 @@ const clickMoviesTab = () => {
 };
 
 describe("Discover search — Mainstream catalog-first (two-step)", () => {
-  it("submit renders catalog cards (tmdb-search) with ZERO release-picker /search; clicking a card fires /search exactly once and doesn't re-fire; searched cards have no Grab button", async () => {
+  it("submit renders catalog cards (tmdb-search) with ZERO release-picker /search; clicking a card opens DetailPopup and never fires /search", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/movies/tmdb-search"))
         return jsonResponse([movie({ id: 90, title: "Catalog Movie" })]);
       if (url.includes("/api/modes/series/tmdb-search")) return jsonResponse([]);
-      if (isReleasePickerCall(url))
-        return jsonResponse([
-          { guid: "g1", title: "Catalog.Movie.2160p-GRP", indexer: "IdxA", protocol: "usenet", size: 5000000000, seeders: 0, downloadUrl: "https://nzb/1", publishDate: "", score: 88 },
-          { guid: "g2", title: "Catalog.Movie.1080p-GRP", indexer: "IdxB", protocol: "torrent", size: 2000000000, seeders: 12, downloadUrl: "magnet:?2", publishDate: "", score: 60 },
-        ]);
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      if (url.includes("/discover/detail")) return jsonResponse({});
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -145,42 +123,25 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
       screen.getByPlaceholderText("Search movies & shows…").closest("form")!,
     );
 
-    // Search results use layout="grid" (w-full), not the carousel 220px width.
     const card = await screen.findByRole("button", { name: "Catalog Movie" });
-    // Catalog step: tmdb-search fired, ZERO Prowlarr release-picker /search.
     expect(calls.some((c) => c.url.includes("/api/modes/movies/tmdb-search"))).toBe(true);
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
-    // No inline Grab button on this searched card — no longer M3-discriminating
-    // on its own (see the CORRECTED header note above); the click-behavior
-    // assertions below are what actually prove the searched-card path.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
-    // Click the card body → exactly one /search; picker lists BOTH quality
-    // variants (dedupeReleases keeps distinct variants selectable).
     fireEvent.click(card);
-    expect(await screen.findByText("Catalog.Movie.2160p-GRP")).toBeInTheDocument();
-    expect(screen.getByText("Catalog.Movie.1080p-GRP")).toBeInTheDocument();
-    expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(1);
-
-    // Re-render/scroll must NOT re-fire the one-shot /search.
-    fireEvent.scroll(window);
-    fireEvent.mouseOver(screen.getByText("Catalog.Movie.2160p-GRP"));
-    expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(1);
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
   });
 
-  it("selecting a release in the picker grabs it via /search/grab with rootFolderPath from libraryRootFolder(mode)", async () => {
+  it("clicking a searched card does not grab; DetailPopup is the grab path", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/movies/tmdb-search"))
         return jsonResponse([movie({ id: 90, title: "Pick Movie" })]);
       if (url.includes("/api/modes/series/tmdb-search")) return jsonResponse([]);
-      if (isReleasePickerCall(url))
-        return jsonResponse([
-          { guid: "g1", title: "Pick.Movie.1080p-GRP", indexer: "IdxA", protocol: "torrent", size: 2000000000, seeders: 12, downloadUrl: "magnet:?p", publishDate: "", score: 70 },
-        ]);
-      if (url.includes("/api/modes/movies/library/root-folder"))
-        return jsonResponse({ path: "/movies" });
-      if (/\/api\/modes\/movies\/search\/grab/.test(url))
-        return jsonResponse({ id: 1, mode: "movies", title: "Pick Movie", status: "queued" });
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      if (url.includes("/discover/detail")) return jsonResponse({});
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -197,28 +158,20 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
 
     const card = await screen.findByRole("button", { name: "Pick Movie" });
     fireEvent.click(card);
-    fireEvent.click(await screen.findByText("Pick.Movie.1080p-GRP")); // ensure open
-    fireEvent.click(screen.getByText("Grab")); // the picker row's grab
-
-    await waitFor(() =>
-      expect(calls.some((c) => /\/search\/grab/.test(c.url))).toBe(true),
-    );
-    expect(calls.find((c) => /\/search\/grab/.test(c.url))?.body).toMatchObject({
-      title: "Pick Movie",
-      tmdbId: 90,
-      indexer: "IdxA",
-      protocol: "torrent",
-      downloadUrl: "magnet:?p",
-      rootFolderPath: "/movies",
-    });
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(calls.some((c) => /\/search\/grab/.test(c.url))).toBe(false);
+    expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
   });
 
-  it("Movies/Series: a catalog card whose release search returns nothing shows the picker empty state (no error, no raw list)", async () => {
+  it("Movies/Series: a catalog card with an empty availability grid shows the popup empty state", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/tmdb-search"))
         return jsonResponse([movie({ id: 90, title: "Empty Movie" })]);
       if (url.includes("/api/modes/series/tmdb-search")) return jsonResponse([]);
-      if (isReleasePickerCall(url)) return jsonResponse([]);
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      if (url.includes("/discover/detail")) return jsonResponse({});
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -236,7 +189,7 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
     const card = await screen.findByRole("button", { name: "Empty Movie" });
     fireEvent.click(card);
     expect(
-      await screen.findByText("No releases found for this title."),
+      await screen.findByText("No matching releases found for this search."),
     ).toBeInTheDocument();
   });
 

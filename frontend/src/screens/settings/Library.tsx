@@ -188,7 +188,7 @@ const PROTOCOL_LABELS: Record<string, string> = {
 
 export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   const [prefs] = createResource(props.mode, fetchQualityPrefs);
-  const [tier, setTier] = createSignal("high");
+  const [tiers, setTiers] = createSignal<string[]>(["high", "lossless"]);
   const [maxRes, setMaxRes] = createSignal(0);
   const [protocol, setProtocol] = createSignal("");
   // 10 is rename.DefaultUndoDepth (internal/rename/undo_store.go). It is only
@@ -197,10 +197,14 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   // stored.
   const [undoDepth, setUndoDepth] = createSignal(10);
   const [dirty, setDirty] = createSignal(false);
+  const expandFloor = (floor: string): string[] => {
+    const idx = QUALITY_TIERS.indexOf(floor);
+    return idx >= 0 ? QUALITY_TIERS.slice(idx) : ["high", "lossless"];
+  };
   createEffect(
     on(prefs, (p) => {
       if (p) {
-        setTier(p.tier);
+        setTiers(p.tiers?.length ? [...p.tiers] : expandFloor(p.tier));
         setMaxRes(p.maxResolution);
         setProtocol(p.protocol);
         setUndoDepth(p.undoDepth);
@@ -240,6 +244,17 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
     !Number.isInteger(undoDepth()) ||
     undoDepth() < 1 ||
     undoDepth() > MAX_UNDO_DEPTH;
+  const noTiers = () => tiers().length === 0;
+  const lowestTier = () =>
+    QUALITY_TIERS.find((t) => tiers().includes(t)) ?? "high";
+  const toggleTier = (t: string, on: boolean) => {
+    setTiers((prev) => {
+      if (on) return QUALITY_TIERS.filter((x) => x === t || prev.includes(x));
+      const next = prev.filter((x) => x !== t);
+      return next.length ? next : prev;
+    });
+    setDirty(true);
+  };
   const status = useSaveStatus();
   const save = async () => {
     // Defense in depth: both Save buttons are disabled while out of range, so
@@ -252,9 +267,15 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
       status.failed(err);
       throw err;
     }
+    if (noTiers()) {
+      const err = new Error("Select at least one quality tier");
+      status.failed(err);
+      throw err;
+    }
     try {
       await putQualityPrefs(props.mode(), {
-        tier: tier(),
+        tier: lowestTier(),
+        tiers: tiers(),
         maxResolution: maxRes(),
         protocol: protocol(),
         undoDepth: undoDepth(),
@@ -270,21 +291,29 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
     id: "library-quality",
     label: "quality preferences",
     dirty,
-    valid: () => !undoDepthOutOfRange(),
+    valid: () => !undoDepthOutOfRange() && !noTiers(),
     save,
   });
   return (
     <Card title={`Search quality preferences (${MODE_LABELS[props.mode()]})`}>
-      <PillSelector
-        label="Tier (bitrate/codec)"
-        options={QUALITY_TIERS}
-        optionLabels={QUALITY_TIER_LABELS}
-        selected={tier()}
-        onSelect={(v) => {
-          setTier(v);
-          setDirty(true);
-        }}
-      />
+      <div class="mb-3">
+        <span class={labelClass}>Accepted tiers (bitrate/codec)</span>
+        <div class="mt-1 flex flex-wrap gap-4">
+          <For each={QUALITY_TIERS}>
+            {(t) => (
+              <label class="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  aria-label={`Quality tier ${QUALITY_TIER_LABELS[t]}`}
+                  checked={tiers().includes(t)}
+                  onChange={(e) => toggleTier(t, e.currentTarget.checked)}
+                />
+                <span class="text-sm text-fg">{QUALITY_TIER_LABELS[t]}</span>
+              </label>
+            )}
+          </For>
+        </div>
+      </div>
       <PillSelector
         label="Maximum resolution"
         options={RESOLUTION_OPTIONS}
@@ -332,7 +361,7 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         <Show when={!batched()}>
           <Button
             variant="primary"
-            disabled={undoDepthOutOfRange()}
+            disabled={undoDepthOutOfRange() || noTiers()}
             onClick={() => void save().catch(() => {})}
           >
             Save
@@ -341,16 +370,19 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         <SaveStatus text={status.status().text} error={status.status().error} />
       </div>
       <Muted class="mt-2">
-        Tier prefers smaller/more-compressed releases (Low) up to the
-        least-compressed remux/Blu-ray (Lossless) — it never changes what
-        resolution is preferred. Maximum resolution softly prefers at-or-below-cap
-        results, falling back to whatever's available if nothing meets it.
-        Protocol is the Discover popup's default pick when both are available;
-        it still falls back to whichever protocol actually has a release.
-        Undoable recent Applies (1–100) is how many recent Applies stay undoable
-        before the oldest is pruned — Rename's “Recently Applied” list shows
-        them. Lowering it shrinks that list immediately, though the entries it
-        stops showing stay undoable until a later Apply actually evicts them.
+        Accepted tiers are a floor you can narrow: a stored High starts as
+        High+Lossless, and unchecking Lossless means auto-grab will not
+        require a remux. Auto-grab tries the remaining tiers highest first
+        and grabs the best qualifying release. Tier never changes which
+        resolution is preferred. Maximum resolution softly prefers
+        at-or-below-cap results, falling back to whatever's available if
+        nothing meets it. Protocol is the Discover popup's default pick when
+        both are available; it still falls back to whichever protocol
+        actually has a release. Undoable recent Applies (1–100) is how many
+        recent Applies stay undoable before the oldest is pruned — Rename's
+        “Recently Applied” list shows them. Lowering it shrinks that list
+        immediately, though the entries it stops showing stay undoable until
+        a later Apply actually evicts them.
       </Muted>
     </Card>
   );

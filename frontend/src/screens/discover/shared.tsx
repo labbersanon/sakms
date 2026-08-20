@@ -20,11 +20,7 @@ import {
   Switch,
   Match,
 } from "solid-js";
-import {
-  type Mode,
-  type SearchReleaseResult,
-  fetchReleaseOptions,
-} from "../../api/discover";
+import { type Mode } from "../../api/discover";
 import {
   type AutoGrabCandidate,
   type AutoGrabRequest,
@@ -292,123 +288,6 @@ export const FallbackPickList: Component<{
     </Show>
   </div>
 );
-
-// formatSize renders a byte count as a compact GB/MB label for a release row;
-// 0/absent (e.g. a pool direct-grab enclosure that carries no size) yields ""
-// so the row's meta line drops it via .filter(Boolean).
-function formatSize(bytes: number): string {
-  if (!bytes || bytes <= 0) return "";
-  const gb = bytes / 1e9;
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
-}
-
-// SearchReleasePicker is the catalog-Search release picker: the flat, selectable
-// list of scored releases behind one clicked searched card. It accepts EITHER a
-// fetch key (Movies/Series: mode+title — fetches the one bounded Prowlarr search
-// on open) OR pre-supplied releases (Adult: the scene's already-fetched variants,
-// no network call). Selecting a row grabs that exact release via the existing
-// /search/grab endpoint (rootFolderPath from libraryRootFolder(mode), exactly as
-// GrabDialog's manual pick does), then closes.
-//
-// The Movies/Series fetch is a SINGLE createResource keyed on a stable
-// {mode,title} source — it fires exactly once on open and never re-fires on
-// scroll/hover/re-render (the same one-shot pattern DetailPopup's
-// fetchAvailabilityPreview uses). When props.releases is supplied the source
-// returns null, so the fetcher never runs (Adult makes zero network calls here).
-export const SearchReleasePicker: Component<{
-  mode: Mode;
-  title: string;
-  // tmdbId threads a Movies/Series catalog id into the grab; Adult has none.
-  tmdbId?: number;
-  // releases, when supplied (Adult), are used directly — no fetch.
-  releases?: SearchReleaseResult[];
-  onClose: () => void;
-}> = (props) => {
-  const [fetched] = createResource(
-    () =>
-      props.releases
-        ? null
-        : { mode: props.mode as Exclude<Mode, "adult">, title: props.title },
-    ({ mode, title }) => fetchReleaseOptions(mode, title),
-  );
-  const releases = () => props.releases ?? fetched() ?? [];
-  const loading = () => !props.releases && fetched.loading;
-
-  const [grabbing, setGrabbing] = createSignal("");
-  const [error, setError] = createSignal("");
-
-  const pick = async (r: SearchReleaseResult) => {
-    setError("");
-    setGrabbing(r.downloadUrl);
-    try {
-      const root = await libraryRootFolder(props.mode);
-      if (!root) {
-        throw new Error(
-          "no root folder configured for this mode — set one in Settings first",
-        );
-      }
-      await manualGrab(props.mode, {
-        title: props.title,
-        tmdbId: props.mode !== "adult" ? props.tmdbId : undefined,
-        indexer: r.indexer,
-        protocol: r.protocol,
-        downloadUrl: r.downloadUrl,
-        rootFolderPath: root,
-      });
-      props.onClose();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setGrabbing("");
-    }
-  };
-
-  return (
-    <Modal title={`Releases — ${props.title}`} onClose={props.onClose}>
-      <Show
-        when={!loading()}
-        fallback={<Muted>Searching for releases…</Muted>}
-      >
-        <Show when={error()}>
-          <ErrorText>{error()}</ErrorText>
-        </Show>
-        <Show
-          when={releases().length > 0}
-          fallback={<Muted>No releases found for this title.</Muted>}
-        >
-          <ul class="flex flex-col gap-2">
-            <For each={releases()}>
-              {(r) => (
-                <li class="flex items-center gap-3 rounded-md border border-border bg-surface-2 p-2">
-                  <div class="min-w-0 flex-1">
-                    <div class="truncate text-sm text-fg" title={r.title}>
-                      {r.title}
-                    </div>
-                    <div class="truncate text-xs text-muted">
-                      {[
-                        r.indexer,
-                        r.protocol,
-                        formatSize(r.size),
-                        r.seeders ? `${r.seeders} seeders` : "",
-                        r.score ? `score ${r.score}` : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </div>
-                  </div>
-                  <Button onClick={() => void pick(r)} disabled={!!grabbing()}>
-                    {grabbing() === r.downloadUrl ? "Grabbing…" : "Grab"}
-                  </Button>
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
-      </Show>
-    </Modal>
-  );
-};
 
 // MISSING_GRAB_SERVICE maps each backend "X isn't configured yet" error
 // auto-grab can hit to its setup form's shape. Prowlarr is the only one left:

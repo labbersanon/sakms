@@ -499,12 +499,9 @@ describe("Discover auto-grab — Adult (runtime-sourced, via select-mode bulk)",
   });
 });
 
-// M3 (spec Amendment §3): searched cards no longer carry a one-click auto-grab.
-// A searched card's primary click opens the catalog-Search release picker — for
-// a Series result too (no season/episode picker, no auto-grab), which was the
-// OLD behavior this test previously asserted and now inverts. The category-row
-// Series test above (browse rows, unchanged) still covers the season-picker
-// gating path — only the search-result path changed.
+// A searched Series card's primary click opens DetailPopup (season picker
+// first), not the old flat release list. The category-row Series test above
+// (browse rows) covers the same season-picker gating on browse.
 describe("Discover search — a searched Series result opens DetailPopup (season picker, not the release picker)", () => {
   it("clicking a searched series card opens DetailPopup and fires zero release-picker /search", async () => {
     const calls = stubFetch((url) => {

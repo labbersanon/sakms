@@ -7964,6 +7964,15 @@ is a floor (High → High+Lossless) that the operator can uncheck. Auto-grab
 tries accepted tiers highest first. Movies/Series GET `/search` always
 returns the pick list even when the toggle is on.
 
+## 2026-08-20 — Adult search posters open DetailPopup, not the release list
+
+The same-day Movies/Series search change left Adult search on
+`SearchReleasePicker`: clicking a searched scene opened a flat
+`Releases —` grab list instead of the enriched popup browse already
+uses (poster, description, availability grid, Grab). Adult search cards
+now call `onDetail` like browse; DetailPopup is the grab path. The
+picker component is removed — nothing else mounted it.
+
 
 
 

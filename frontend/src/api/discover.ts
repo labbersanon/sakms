@@ -17,7 +17,6 @@ import type {
   DiscoverItem,
   PerformerSummary,
   PosterResponse,
-  SearchReleaseResult,
   StudioSummary,
   TitleDetail,
   TrailerResponse,
@@ -31,7 +30,6 @@ export type {
   AvailabilityPreview,
   DiscoverItem,
   PerformerSummary,
-  SearchReleaseResult,
   StudioSummary,
   TitleDetail,
 };
@@ -264,33 +262,15 @@ export function fetchTmdbSearch(
   );
 }
 
-// fetchReleaseOptions runs the Movies/Series catalog-Search release picker's one
-// bounded Prowlarr search for a chosen catalog title — GET /api/modes/{mode}/
-// search?q={title}. This is the step-2 "click a card → exactly ONE Prowlarr
-// search → flat release picker" call: fired once, only when the operator clicks
-// a searched card (never at the catalog step, never per-scroll/keystroke), the
-// same explicit-action trigger shape DetailPopup's availability check has. The
-// catalog step itself (fetchTmdbSearch above) still fires zero Prowlarr. Adult
-// does NOT use this — it carries its release variants inline (fetchAdultSearch).
-export function fetchReleaseOptions(
-  mode: Exclude<Mode, "adult">,
-  title: string,
-): Promise<SearchReleaseResult[]> {
-  return api<SearchReleaseResult[]>(
-    `/api/modes/${mode}/search?q=${encodeURIComponent(title)}`,
-  );
-}
-
 // fetchAdultSearch runs Adult's one-shot catalog Search — GET /api/modes/adult/
-// search?q=&page=N. Unlike Movies/Series' two-step flow, submitting an Adult
-// query returns one card per identified scene with its release variants carried
-// INLINE (AdultSearchScene.releases), so clicking a scene card opens the picker
-// with zero further network calls. page=1 (submit) fires exactly ONE bounded
-// Prowlarr search alongside the RSS-pool query; page>1 pages the pool only and
-// fires zero further Prowlarr (one Prowlarr call per one explicit operator
-// action — the action being search-submit for Adult). Adult Discover's browse
-// rows come from fetchAdultNewestRows/fetchMergedStudios/fetchMergedPerformers
-// instead — this is the search path only.
+// search?q=&page=N. Submitting an Adult query returns one card per identified
+// scene. Clicking a card opens DetailPopup (same as browse); the popup's
+// availability fetch is the grab path. page=1 (submit) fires exactly ONE
+// bounded Prowlarr search alongside the RSS-pool query; page>1 pages the pool
+// only and fires zero further Prowlarr (one Prowlarr call per one explicit
+// operator action — the action being search-submit for Adult). Adult Discover's
+// browse rows come from fetchAdultNewestRows/fetchMergedStudios/
+// fetchMergedPerformers instead — this is the search path only.
 export function fetchAdultSearch(
   query: string,
   page = 1,

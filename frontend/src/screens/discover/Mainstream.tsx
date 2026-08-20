@@ -356,10 +356,6 @@ export const PosterCard: Component<{
   // Review if: this slot is still empty at the next Discover cleanup pass.
   onGrab?: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
-  // onOpenReleases is unused by Mainstream search (cards open DetailPopup
-  // like browse). Adult search still passes it. Left on the prop so a
-  // caller can reroute the primary click without a second card type.
-  onOpenReleases?: () => void;
   // Claude 2026-08-13: "grid" fills Library-style wrap cells (View All,
   // search, filter). Default "row" keeps the 220px carousel/calendar tile.
   // Reason: flex-wrap + fixed width showed one poster per phone row.
@@ -391,10 +387,6 @@ export const PosterCard: Component<{
   const onBody = () => {
     if (inSelect()) {
       if (props.mode === "movies") selection?.toggle(movieKey());
-      return;
-    }
-    if (props.onOpenReleases) {
-      props.onOpenReleases();
       return;
     }
     props.onDetail({ mode: props.mode, item: props.item });

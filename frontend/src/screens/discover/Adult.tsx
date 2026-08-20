@@ -38,7 +38,6 @@ import {
   type AdultDiscoverItem,
   type AdultSearchScenesPage,
   type AdultSortBy,
-  type SearchReleaseResult,
   fetchAdultDescription,
   fetchAdultDiscoverMergedRecent,
   fetchAdultDiscoverSorted,
@@ -61,7 +60,6 @@ import {
   type GrabTarget,
   ConfigureConnectionModal,
   PaginatedStrip,
-  SearchReleasePicker,
   SelectCheckbox,
   notConfiguredService,
 } from "./shared";
@@ -130,13 +128,6 @@ export const toAdultDiscoverItem = (
 export const AdultCard: Component<{
   item: AdultDiscoverItem;
   onDetail: (t: DetailTarget) => void;
-  // onOpenReleases, when passed (only by the catalog-Search result grid),
-  // reroutes the card's primary click to open the release picker (seeded with
-  // this scene's already-fetched variants) instead of DetailPopup. Browse/
-  // drill-down call sites omit it, so their click→DetailPopup behavior is
-  // unchanged. (It also used to suppress the one-click Grab button (M3); that
-  // second job went away with the button itself on 2026-08-02.)
-  onOpenReleases?: () => void;
   // Claude 2026-08-13: "poster" is 2:3 for Discover Movies; default "video"
   // keeps Scenes at 16:9. Width lives on MediaCardShell (wrapper collapsed).
   // Review if: a third Adult card geometry is added.
@@ -213,10 +204,6 @@ export const AdultCard: Component<{
   const onBody = () => {
     if (inSelect()) {
       selection?.toggle(sceneKey());
-      return;
-    }
-    if (props.onOpenReleases) {
-      props.onOpenReleases();
       return;
     }
     props.onDetail({ mode: "adult", item: props.item });
@@ -451,12 +438,6 @@ export const AdultDiscover: Component<{
   // uses it for the bulk-grab registration.
   // Review if: a per-card single grab is ever restored to Adult Discover.
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
-  // releasePicker is the catalog-Search release picker for a clicked searched
-  // scene card — seeded with that scene's already-fetched release variants, so
-  // it makes ZERO network calls. Browse/drill-down cards never set it.
-  const [releasePicker, setReleasePicker] = createSignal<
-    { title: string; releases: SearchReleaseResult[] } | null
-  >(null);
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
   const [reloadToken, setReloadToken] = createSignal(0);
@@ -1053,12 +1034,6 @@ export const AdultDiscover: Component<{
                       onDetail={setDetailTarget}
                       aspect={cardAspect()}
                       layout="grid"
-                      onOpenReleases={() =>
-                        setReleasePicker({
-                          title: s.scene.title,
-                          releases: s.releases,
-                        })
-                      }
                     />
                   )}
                 </For>
@@ -1068,16 +1043,6 @@ export const AdultDiscover: Component<{
         </section>
       </Show>
 
-      <Show when={releasePicker()}>
-        {(rp) => (
-          <SearchReleasePicker
-            mode="adult"
-            title={rp().title}
-            releases={rp().releases}
-            onClose={() => setReleasePicker(null)}
-          />
-        )}
-      </Show>
       <Show when={detailTarget()}>
         {(t) => <DetailPopup target={t()} onClose={() => setDetailTarget(null)} />}
       </Show>

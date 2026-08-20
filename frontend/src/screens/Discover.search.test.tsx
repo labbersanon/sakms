@@ -1,15 +1,15 @@
 // Catalog-first Search tests: Movies/Series search lists TMDB catalog cards
-// (tmdb-search). Clicking a card opens the same DetailPopup browse uses
-// (season picker, availability grid, overview) — never the old release
-// picker GET /search?q=. Adult is still one-shot (submit → scene cards →
-// click → picker with zero further network calls). Browse rows are unchanged.
+// (tmdb-search). Adult search lists scene cards from /adult/search. Clicking
+// a card in either path opens the same DetailPopup browse uses (season
+// picker / availability grid / overview) — never the old release-picker
+// list. Browse rows are unchanged.
 //
 // Matcher note: three endpoints contain the substring "search"
 // — tmdb-search (catalog), /search?q= (legacy release picker / Adult search),
 // /search/grab (grab). The precise matchers below distinguish them.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import type { AdultDiscoverItem, DiscoverItem } from "@dto";
 import { DiscoverAdult, DiscoverMainstream } from "./Discover";
 import { jsonResponse, seriesMonitorDefaults } from "../testing/http";
@@ -216,7 +216,7 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
 });
 
 describe("Discover search — Adult one-shot", () => {
-  it("submit calls /api/modes/adult/search once, renders scene cards, and clicking a scene card opens the picker with NO extra network call; searched scene cards have no Grab button", async () => {
+  it("submit calls /api/modes/adult/search once, renders scene cards, and clicking a scene card opens DetailPopup", async () => {
     const calls = stubFetch((url) => {
       if (isAdultSearchCall(url))
         return jsonResponse({
@@ -231,6 +231,9 @@ describe("Discover search — Adult one-shot", () => {
           ],
           hasMore: false,
         });
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      if (url.includes("/discover/description")) return jsonResponse({ text: "", source: "" });
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -246,22 +249,16 @@ describe("Discover search — Adult one-shot", () => {
 
     const card = await screen.findByRole("button", { name: "Adult Search Scene" });
     expect(calls.filter((c) => isAdultSearchCall(c.url))).toHaveLength(1);
-    // No inline Grab button on this searched scene card — no longer
-    // M3-discriminating on its own (see the CORRECTED header note above); the
-    // zero-extra-network-call assertions below are what actually prove the
-    // searched-card path.
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
-    // Opening the picker consumes the inline variants — zero further network calls.
-    const before = calls.length;
     fireEvent.click(card);
-    expect(await screen.findByText("Adult.Scene.XXX.2160p-GRP")).toBeInTheDocument();
-    expect(screen.getByText("Adult.Scene.XXX.1080p-GRP")).toBeInTheDocument();
-    expect(calls.length).toBe(before);
-    expect(calls.filter((c) => isAdultSearchCall(c.url))).toHaveLength(1);
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(screen.queryByText("Adult.Scene.XXX.2160p-GRP")).not.toBeInTheDocument();
+    expect(screen.queryByText("Adult.Scene.XXX.1080p-GRP")).not.toBeInTheDocument();
+    expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(true);
   });
 
-  it("selecting an Adult scene's release grabs it via /search/grab (rootFolderPath threaded, no tmdbId)", async () => {
+  it("clicking a searched Adult card does not grab; DetailPopup is the grab path", async () => {
     const calls = stubFetch((url) => {
       if (isAdultSearchCall(url))
         return jsonResponse({
@@ -275,10 +272,9 @@ describe("Discover search — Adult one-shot", () => {
           ],
           hasMore: false,
         });
-      if (url.includes("/api/modes/adult/library/root-folder"))
-        return jsonResponse({ path: "/adult" });
-      if (/\/api\/modes\/adult\/search\/grab/.test(url))
-        return jsonResponse({ id: 3, mode: "adult", title: "Grab Scene", status: "queued" });
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      if (url.includes("/discover/description")) return jsonResponse({ text: "", source: "" });
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -294,22 +290,9 @@ describe("Discover search — Adult one-shot", () => {
 
     const card = await screen.findByRole("button", { name: "Grab Scene" });
     fireEvent.click(card);
-    fireEvent.click(await screen.findByText("Grab.Scene.1080p"));
-    fireEvent.click(screen.getByText("Grab"));
-
-    await waitFor(() =>
-      expect(calls.some((c) => /\/adult\/search\/grab/.test(c.url))).toBe(true),
-    );
-    const grab = calls.find((c) => /\/adult\/search\/grab/.test(c.url));
-    expect(grab?.body).toMatchObject({
-      title: "Grab Scene",
-      indexer: "AdlA",
-      protocol: "torrent",
-      downloadUrl: "magnet:?g",
-      rootFolderPath: "/adult",
-    });
-    // Adult manual grab carries no tmdbId (undefined is dropped by JSON.stringify).
-    expect(grab?.body).not.toHaveProperty("tmdbId");
+    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(screen.queryByText("Grab.Scene.1080p")).not.toBeInTheDocument();
+    expect(calls.some((c) => /\/search\/grab/.test(c.url))).toBe(false);
   });
 
   it("Adult: a query with no matches shows the empty grid state, no error", async () => {
@@ -338,11 +321,9 @@ describe("Discover search — Adult one-shot", () => {
 // from BOTH, so that contrast no longer exists and those two assertions were
 // deleted rather than re-selectored.
 // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §1.2/§3.2. What
-// these cases still guard is the part the search redesign actually owns and
-// that IS unchanged: a browse card's click opens DetailPopup and fires ZERO
-// release-picker/adult /search calls, where a SEARCHED card's click opens the
-// release picker instead. The searched-card "no Grab" absence assertions
-// elsewhere in this file (AC5) are untouched and still pass unmodified.
+// these cases still guard is that a browse card's click opens DetailPopup
+// and fires ZERO release-picker /search calls. Search cards now open the
+// same popup (see the Adult/Mainstream search cases above).
 // Review if: browse and searched cards ever diverge in click behavior again.
 describe("Discover browse-row regression guard (unchanged by the search redesign)", () => {
   it("Mainstream browse cards open DetailPopup (not the release picker) and fire zero release-picker /search", async () => {

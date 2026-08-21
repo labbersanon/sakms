@@ -13,6 +13,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -423,15 +424,10 @@ func TestScanLibraryPHash_TransitiveGroupUsesWorstPairSimilarity(t *testing.T) {
 	}
 }
 
-// TestScanLibraryPHash_SkipsAppliedAlternates proves plan §11.2/§9.8: a
-// tracked item's applied alternate — a deliberate second copy recorded as a
-// non-primary row in library_item_files — is never re-discovered as an
-// orphan and phash-grouped against its own primary. Without the AllFilePaths
-// known-set pass in ScanLibraryPHash, this fails against main today (the
-// pre-existing Movies defect §0.10 describes): the alternate would surface
-// as an orphan, phash-match its own primary (same hash on purpose here), and
-// produce a Dedup proposal offering to delete the file Rename just placed.
-func TestScanLibraryPHash_SkipsAppliedAlternates(t *testing.T) {
+// TestScanLibraryPHash_IncludesAppliedExtras proves Dedup is independent of
+// Rename: a library extra (library_item_files non-primary) is a candidate and
+// groups with its primary. Rename folding a second copy must not hide it.
+func TestScanLibraryPHash_IncludesAppliedExtras(t *testing.T) {
 	dir := t.TempDir()
 	primaryFile := writeVideoFile(t, dir, "Some Movie (2020).mkv", 100)
 	alternateFile := writeVideoFile(t, dir, "Some Movie (2020) - 720p h264.mkv", 100)
@@ -460,18 +456,53 @@ func TestScanLibraryPHash_SkipsAppliedAlternates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("expected the applied alternate to be excluded from Dedup consideration, got %+v", got)
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("expected Dedup to propose the extra against its primary, got %+v", got)
 	}
 }
 
-// TestScanLibrarySeriesPHash_SkipsAppliedAlternates is the Series counterpart
-// of TestScanLibraryPHash_SkipsAppliedAlternates via library_episode_files.
-// An episode with a primary plus an alternate row, both files on disk, must
-// produce no Dedup proposal — without the Series known-set pass the
-// alternate is discovered as an orphan and phash-grouped against its own
-// primary episode.
-func TestScanLibrarySeriesPHash_SkipsAppliedAlternates(t *testing.T) {
+// TestScanLibraryPHash_SameTMDBIdentityGroupsDissimilarPHash is the Last Crusade
+// case: same TMDB id, open-matte vs crop so phash is far outside threshold.
+func TestScanLibraryPHash_SameTMDBIdentityGroupsDissimilarPHash(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "Indiana Jones and the Last Crusade (1989) [tmdbid-89]")
+	primaryFile := writeVideoFile(t, folder, "Indiana Jones and the Last Crusade (1989) [tmdbid-89].mp4", 100)
+	extraFile := writeVideoFile(t, folder, "Indiana Jones and the Last Crusade (1989) [tmdbid-89] - 1080p H264.mp4", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 89, Title: "Indiana Jones and the Last Crusade",
+		FilePath: primaryFile, RootFolderPath: dir,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Movies}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		primaryFile: {CodecName: "av1", Width: 1920, Height: 816, BitRate: 4913500},
+		extraFile:   {CodecName: "av1", Width: 1920, Height: 1080, BitRate: 4787881},
+	}}
+	hasher := &fakePHasher{byPath: map[string]string{primaryFile: refHash, extraFile: farHash}}
+
+	got, err := ScanLibraryPHash(ctx, sess, libStore, dir, prober, hasher, 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("expected same-TMDB extras to group despite dissimilar phash, got %+v", got)
+	}
+	if got[0].TMDBID != 89 {
+		t.Errorf("expected TMDBID 89, got %d", got[0].TMDBID)
+	}
+	if !strings.Contains(got[0].Reason, "TMDB identity") {
+		t.Errorf("expected identity reason, got %q", got[0].Reason)
+	}
+}
+
+// TestScanLibrarySeriesPHash_IncludesAppliedExtras is the Series counterpart
+// of TestScanLibraryPHash_IncludesAppliedExtras via library_episode_files.
+func TestScanLibrarySeriesPHash_IncludesAppliedExtras(t *testing.T) {
 	dir := t.TempDir()
 	primaryFile := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01.mkv", 100)
 	alternateFile := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01 - 720p h264.mkv", 100)
@@ -504,8 +535,8 @@ func TestScanLibrarySeriesPHash_SkipsAppliedAlternates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("expected the applied alternate to be excluded from Dedup consideration, got %+v", got)
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("expected Dedup to propose the episode extra against its primary, got %+v", got)
 	}
 }
 

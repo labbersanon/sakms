@@ -151,7 +151,9 @@ func errorsIsNoRows(err error) bool {
 }
 
 // AllFilePaths returns every on-disk path for mode m — denormalized item
-// paths plus library_item_files — so Rename/Dedup known-maps skip alternates.
+// paths plus library_item_files — so Rename's known-map does not re-propose
+// files it already placed. Dedup enumerates the same paths as its own
+// candidates; it does not use this list to hide extras.
 func (s *Store) AllFilePaths(ctx context.Context, m mode.Mode) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT file_path FROM (
@@ -175,6 +177,21 @@ func (s *Store) AllFilePaths(ctx context.Context, m mode.Mode) ([]string, error)
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// DeleteItemFileByPath removes the library_item_files row for path, if one
+// exists. A no-op if no row matches. Dedup Apply uses this when the loser is
+// an extra copy of a still-tracked title — deleting the title row would take
+// the keeper with it.
+func (s *Store) DeleteItemFileByPath(ctx context.Context, path string) error {
+	if path == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM library_item_files WHERE file_path = ?`, path)
+	if err != nil {
+		return fmt.Errorf("deleting library file row for %q: %w", path, err)
+	}
+	return nil
 }
 
 // UpdateItemPrimaryPath writes the denormalized primary path/tier/size on

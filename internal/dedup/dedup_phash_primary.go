@@ -1,20 +1,17 @@
 // Package dedup — phash-primary scan (Movies + Series).
 //
-// ScanLibraryPHash and ScanLibrarySeriesPHash group ALL files — tracked items
-// and orphans alike — by perceptual similarity using an all-pairs O(n²)
-// comparison and union-find connected components. TMDB is used only for
-// display labels; it never determines whether files are grouped. This catches
-// three cases the legacy TMDB-keyed scan misses:
+// ScanLibraryPHash and ScanLibrarySeriesPHash group ALL video files —
+// tracked primaries, extra copies recorded on the library row, and orphans —
+// independently of Rename. Two files group when they are perceptually similar
+// OR they share a TMDB identity (Movies: same TMDB id; Series: same TMDB id
+// plus the same season/episode). TMDB search is still used for unlabeled
+// orphans; a [tmdbid-N] path tag is enough on its own.
 //
-//  1. Orphan-vs-orphan: two copies of the same film, both untracked, different
-//     filenames — TMDB searches may diverge, but phash always matches.
-//  2. Cross-ID mis-assignment: both tracked, but one resolved to the wrong TMDB
-//     ID — different TMDB buckets, but phash sees identical content.
-//  3. Named-vs-unnamed: one file is tracked, the other's filename is too
-//     generic for a TMDB match — the orphan was never reachable before.
+// Phash still catches the cases identity cannot: orphan-vs-orphan with no
+// id, and two tracked rows that resolved to the wrong TMDB ids.
 //
-// Apply path is unchanged: ApplyLibrary / ApplyLibrarySeries handle the
-// resulting proposals as before.
+// ApplyLibrary / ApplyLibrarySeries delete only the losing candidate's own
+// file — removing an extra copy never deletes the title it belongs to.
 
 package dedup
 
@@ -28,6 +25,7 @@ import (
 	"github.com/labbersanon/sakms/internal/config"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/naming"
 	"github.com/labbersanon/sakms/internal/phash"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/searchterm"
@@ -70,6 +68,100 @@ func (uf *pHashUnionFind) find(x int) int {
 
 func (uf *pHashUnionFind) union(x, y int) {
 	uf.parent[uf.find(x)] = uf.find(y)
+}
+
+func sameMovieIdentity(a, b pHashFileItem) bool {
+	return a.tmdbID != 0 && a.tmdbID == b.tmdbID
+}
+
+// sameEpisodeIdentity requires a real episode slot, not a failed filename
+// parse (0, 0). Series TMDB id alone would merge every episode of a show.
+func sameEpisodeIdentity(a, b pHashFileItem) bool {
+	if a.tmdbID == 0 || a.tmdbID != b.tmdbID {
+		return false
+	}
+	if a.season == 0 && a.episode == 0 {
+		return false
+	}
+	return a.season == b.season && a.episode == b.episode
+}
+
+// phashWithin reports whether a and b both hashed successfully and are within
+// perFrameThreshold of each other. A missing hash never groups.
+func phashWithin(a, b pHashFileItem, perFrameThreshold int) bool {
+	if a.phashVal == "" || b.phashVal == "" {
+		return false
+	}
+	within, err := phash.SimilarityWithin(a.phashVal, b.phashVal, phash.Frames, perFrameThreshold)
+	return err == nil && within
+}
+
+// anyPair reports whether match holds for at least one pair in items.
+func anyPair(items []pHashFileItem, match func(a, b pHashFileItem) bool) bool {
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if match(items[i], items[j]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unionByPHashAndIdentity groups every pair that either shares an identity
+// (sameID) or is perceptually within perFrameThreshold. A nil sameID groups by
+// perceptual similarity alone.
+func unionByPHashAndIdentity(items []pHashFileItem, perFrameThreshold int, sameID func(a, b pHashFileItem) bool) *pHashUnionFind {
+	uf := newPHashUnionFind(len(items))
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if (sameID != nil && sameID(items[i], items[j])) || phashWithin(items[i], items[j], perFrameThreshold) {
+				uf.union(i, j)
+			}
+		}
+	}
+	return uf
+}
+
+// pHashGroupReason describes why a group was formed, so the operator can tell
+// a shared-identity grouping from a perceptual one before deleting anything.
+func pHashGroupReason(group []pHashFileItem, n int, similarity float64, perFrameThreshold int, sameID func(a, b pHashFileItem) bool) string {
+	byID := sameID != nil && anyPair(group, sameID)
+	byHash := anyPair(group, func(a, b pHashFileItem) bool {
+		return phashWithin(a, b, perFrameThreshold)
+	})
+	switch {
+	case byID && byHash:
+		return fmt.Sprintf("%d copies share TMDB identity and are perceptually similar (%.0f%% similar)", n, similarity*100)
+	case byID:
+		return fmt.Sprintf("%d copies share the same TMDB identity", n)
+	default:
+		return fmt.Sprintf("%d copies found to be perceptually similar (%.0f%% similar)", n, similarity*100)
+	}
+}
+
+func orphanMovieTMDB(ctx context.Context, sess *mode.Session, path, name string) (tmdbID int, title string) {
+	if id := naming.TMDBIDFromPath(path); id != 0 {
+		return id, ""
+	}
+	if sess != nil && sess.TMDB != nil {
+		if results, sErr := sess.TMDB.SearchMovies(ctx, searchterm.FromName(name)); sErr == nil && len(results) > 0 {
+			return results[0].ID, results[0].Title
+		}
+	}
+	return 0, ""
+}
+
+func orphanSeriesTMDB(ctx context.Context, sess *mode.Session, path, name string) (tmdbID int, title string) {
+	if id := naming.TMDBIDFromPath(path); id != 0 {
+		return id, ""
+	}
+	if sess != nil && sess.TMDB != nil {
+		if results, sErr := sess.TMDB.SearchTV(ctx, searchterm.FromName(library.StripEpisodeMarker(name))); sErr == nil && len(results) > 0 {
+			return results[0].ID, results[0].Title
+		}
+	}
+	return 0, ""
 }
 
 // pHashGroupComponents returns all connected components with ≥ 2 members.
@@ -123,24 +215,15 @@ func minPairwiseSimilarity(group []pHashFileItem, frames int) float64 {
 	return min
 }
 
-// ScanLibraryPHash is Dedup's phash-primary scan for Movies mode. Unlike the
-// legacy ScanLibrary (TMDB-keyed), this scan groups all files by perceptual
-// similarity. TMDB is consulted only for display labels; it never gates
-// whether two files are considered duplicates.
+// ScanLibraryPHash is Dedup's Movies scan. Files group by perceptual
+// similarity or by shared TMDB identity, taken from a [tmdbid-N] path tag, the
+// library row, or a TMDB search. Extra copies on library_item_files are
+// candidates too — Rename having folded them in does not exempt them.
 //
 // perFrameThreshold is the Movies per-frame Hamming distance ceiling —
 // default 64 bits (of 256 per frame, PDQ scale — see phash.DefaultMoviesThreshold's
 // doc comment for the measured calibration this was chosen against),
 // configurable via movies_phash_dedup_threshold.
-//
-// Claude 2026-08-04: corrected from "default 25 bits (~60% similarity)".
-// Reason: that number was PHash-64-bit-scale, obsolete since 1f1d4c5
-// recalibrated to PDQ's 256-bit-per-frame scale; the "~60% similarity" gloss
-// was dropped rather than recomputed because it was never load-bearing (the
-// actual gate is SimilarityWithin's raw bit comparison, not a percentage).
-// Troubleshooting: an executor reading only this comment (not distance.go)
-// would otherwise "fix" the real 64 back to a stale 25.
-// Review if: internal/phash/algo.go swaps the hash algorithm again.
 func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Movies library root folder configured yet — add one in Settings first")
@@ -151,22 +234,26 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		return nil, fmt.Errorf("loading library items: %w", err)
 	}
 
-	known := make(map[string]bool, len(tracked))
-	for _, t := range tracked {
-		known[t.FilePath] = true
-	}
-
-	// Claude 2026-08-08: mark alternate paths known so Dedup stops re-discovering them
-	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §11.2 — an applied
-	//   alternate is a DELIBERATE second copy; re-discovering it as an orphan and
-	//   phash-grouping it against its own primary offers the operator a delete for a file
-	//   the Rename workflow just placed on purpose. Pre-existing since alternates shipped
-	//   2026-08-05; fixed for both modes together so neither is left asymmetric.
-	// Troubleshooting: Dedup proposes deleting a " - 1080p h264"/" - alternate" file.
-	// Review if: AllFilePaths stops covering library_item_files.
-	if paths, err := libStore.AllFilePaths(ctx, mode.Movies); err == nil {
-		for _, p := range paths {
-			known[p] = true
+	// known doubles as this pass's seen-path set: a path already claimed by an
+	// earlier row (a shared file, or the same path listed twice) is one
+	// candidate, not a self-duplicate group.
+	var items []pHashFileItem
+	known := map[string]bool{}
+	for i := range tracked {
+		t := &tracked[i]
+		for _, path := range movieTrackedPaths(ctx, libStore, t) {
+			if known[path] {
+				continue
+			}
+			known[path] = true
+			items = append(items, pHashFileItem{
+				path:      path,
+				label:     filepath.Base(path),
+				trackedID: int(t.ID),
+				tmdbID:    t.TMDBID,
+				title:     t.Title,
+				phashVal:  hashTrackedMoviePath(ctx, hasher, libStore, t, path),
+			})
 		}
 	}
 
@@ -175,34 +262,8 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
 	}
 
-	// Progress unit: files whose analyze (hash) step has completed. Total is an
-	// upper bound — len(tracked)+len(entries); Movies orphans are one file each,
-	// so a skipped sidecar/unprobeable entry can only make Current fall short of
-	// Total, never exceed it. The done event carries the authoritative final
-	// count (see the handler), so a short live Total is corrected on completion.
-	total := len(tracked) + len(entries)
-	current := 0
-
-	// Build the flat candidate list: tracked items then orphan entries.
-	var items []pHashFileItem
-	for i := range tracked {
-		t := &tracked[i]
-		h := loadOrComputeTrackedItemPHash(ctx, hasher, libStore, t)
-		current++
-		if onProgress != nil {
-			onProgress(ProgressEvent{Current: current, Total: total, Name: filepath.Base(t.FilePath), Phase: "hashing"})
-		}
-		items = append(items, pHashFileItem{
-			path:      t.FilePath,
-			label:     filepath.Base(t.FilePath),
-			trackedID: int(t.ID),
-			tmdbID:    t.TMDBID,
-			title:     t.Title,
-			phashVal:  h,
-		})
-	}
-
-	var orphanPaths []string
+	type movieOrphan struct{ name, path string }
+	var orphans []movieOrphan
 	for _, entry := range entries {
 		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
 			continue
@@ -211,60 +272,55 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		if err != nil {
 			continue
 		}
-		orphanPaths = append(orphanPaths, videoPath)
-		h := libStore.LoadOrComputeOrphanPHash(ctx, hasher, videoPath)
+		orphans = append(orphans, movieOrphan{name: entry.Name, path: videoPath})
+	}
+
+	// Progress unit: files whose hash step has completed. The tracked files
+	// above are already hashed by the time this reports them.
+	total := len(items) + len(orphans)
+	current := 0
+	for _, item := range items {
 		current++
 		if onProgress != nil {
-			onProgress(ProgressEvent{Current: current, Total: total, Name: entry.Name, Phase: "hashing"})
+			onProgress(ProgressEvent{Current: current, Total: total, Name: item.label, Phase: "hashing"})
 		}
-		var tmdbID int
-		var title string
-		if sess.TMDB != nil {
-			if results, sErr := sess.TMDB.SearchMovies(ctx, searchterm.FromName(entry.Name)); sErr == nil && len(results) > 0 {
-				tmdbID = results[0].ID
-				title = results[0].Title
-			}
+	}
+
+	for _, o := range orphans {
+		h := libStore.LoadOrComputeOrphanPHash(ctx, hasher, o.path)
+		current++
+		if onProgress != nil {
+			onProgress(ProgressEvent{Current: current, Total: total, Name: o.name, Phase: "hashing"})
 		}
+		tmdbID, title := orphanMovieTMDB(ctx, sess, o.path, o.name)
 		items = append(items, pHashFileItem{
-			path:     videoPath,
-			label:    entry.Name,
+			path:     o.path,
+			label:    o.name,
 			tmdbID:   tmdbID,
 			title:    title,
 			phashVal: h,
 		})
 	}
 
-	// Remove orphan_phashes rows for files no longer present in this scan.
-	_ = libStore.DeleteOrphanPHashesNotIn(ctx, orphanPaths)
-
-	// All-pairs phash comparison → union-find connected components.
-	uf := newPHashUnionFind(len(items))
-	for i := 0; i < len(items); i++ {
-		if items[i].phashVal == "" {
-			continue
-		}
-		for j := i + 1; j < len(items); j++ {
-			if items[j].phashVal == "" {
-				continue
-			}
-			within, err := phash.SimilarityWithin(items[i].phashVal, items[j].phashVal, phash.Frames, perFrameThreshold)
-			if err == nil && within {
-				uf.union(i, j)
-			}
-		}
+	// Every path this scan saw keeps its cached hash — a library extra hashes
+	// through the orphan cache too (hashTrackedMoviePath), so pruning it here
+	// would force a re-decode on the next scan.
+	keepCached := make([]string, 0, len(orphans)+len(known))
+	for _, o := range orphans {
+		keepCached = append(keepCached, o.path)
 	}
+	for p := range known {
+		keepCached = append(keepCached, p)
+	}
+	_ = libStore.DeleteOrphanPHashesNotIn(ctx, keepCached)
 
+	uf := unionByPHashAndIdentity(items, perFrameThreshold, sameMovieIdentity)
 	groups := pHashGroupComponents(items, uf)
 
 	var out []proposals.Proposal
 	for _, group := range groups {
 		similarity := minPairwiseSimilarity(group, phash.Frames)
-
-		// Title/TMDB ID: prefer a tracked item's resolved identity, then the
-		// best orphan TMDB search result, then the first filename as fallback.
 		title, tmdbID, rootPath := pHashGroupLabel(group)
-
-		// Prefer the tracked item's own root folder path over the derived one.
 		for i := range tracked {
 			for _, c := range group {
 				if c.trackedID == int(tracked[i].ID) && tracked[i].RootFolderPath != "" {
@@ -272,19 +328,17 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 				}
 			}
 		}
-
 		candidates := pHashBuildCandidates(ctx, prober, group)
 		if len(candidates) < 2 {
 			continue
 		}
 		markWinner(candidates)
-
 		out = append(out, proposals.Proposal{
 			Mode: mode.Movies, Workflow: proposals.Dedup, Status: proposals.Pending,
 			SourceName: title, Title: title, TMDBID: tmdbID, RootFolderPath: rootPath,
 			Candidates:      candidates,
 			PHashSimilarity: similarity,
-			Reason:          fmt.Sprintf("%d copies found to be perceptually similar (%.0f%% similar)", len(candidates), similarity*100),
+			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, sameMovieIdentity),
 		})
 	}
 	return out, nil
@@ -309,17 +363,16 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		return nil, fmt.Errorf("loading series: %w", err)
 	}
 
+	type trackedEpFile struct {
+		ep   library.Episode
+		path string
+	}
 	seriesByID := make(map[int64]library.Series, len(allSeries))
+	// known doubles as this pass's seen-path set: a logical-episode-split file
+	// (S01E01-E02) backs two library_episodes rows at the same path, and must
+	// stay one candidate rather than becoming a self-duplicate group.
 	known := map[string]bool{}
-	// Claude 2026-08-19: unique tracked episodes by FilePath before hashing
-	// Reason: a logical-episode-split file (S01E01-E02) is two library_episodes
-	//   rows with the same path; all-pairs phash grouping treated that as two
-	//   copies of one file (Burning Love 2012 live queue).
-	// Troubleshooting: Dedup lists the same path twice at 100% similarity.
-	// Review if: ScanLibrarySeriesPHash stops walking one item per episode row.
-	// Related files: internal/dedup/dedup_phash_primary_test.go
-	seenTrackedPath := map[string]struct{}{}
-	var trackedEpisodes []library.Episode
+	var trackedFiles []trackedEpFile
 	for _, s := range allSeries {
 		seriesByID[s.ID] = s
 		episodes, epErr := libStore.ListEpisodes(ctx, s.ID)
@@ -327,23 +380,13 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 			return nil, fmt.Errorf("loading episodes for %q: %w", s.Title, epErr)
 		}
 		for _, ep := range episodes {
-			if ep.FilePath == "" {
-				continue
+			for _, path := range episodeTrackedPaths(ctx, libStore, ep) {
+				if known[path] {
+					continue
+				}
+				known[path] = true
+				trackedFiles = append(trackedFiles, trackedEpFile{ep: ep, path: path})
 			}
-			known[ep.FilePath] = true
-			if _, dup := seenTrackedPath[ep.FilePath]; dup {
-				continue
-			}
-			seenTrackedPath[ep.FilePath] = struct{}{}
-			trackedEpisodes = append(trackedEpisodes, ep)
-		}
-	}
-
-	// Claude 2026-08-08: same fix as the Movies pass above, for episode alternates
-	// Review if: AllEpisodeFilePaths stops covering library_episode_files.
-	if paths, err := libStore.AllEpisodeFilePaths(ctx); err == nil {
-		for _, p := range paths {
-			known[p] = true
 		}
 	}
 
@@ -356,12 +399,8 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 	// emitting any progress, so the denominator counts video files — the exact
 	// unit the emitting loops iterate. This is the fix for the >100% bug: a
 	// single season-pack entry expands to several files via
-	// ResolveEpisodeVideoFiles, so len(trackedEpisodes)+len(entries) is NOT a
+	// ResolveEpisodeVideoFiles, so len(trackedFiles)+len(entries) is NOT a
 	// valid denominator (Current, which counts video files, could exceed it).
-	// ScanRootFolder-order + ResolveEpisodeVideoFiles-order are preserved, so
-	// orphanPaths is byte-identical to what the old inline loop produced; the
-	// item-building loop below consumes this same slice (no double resolve), and
-	// DeleteOrphanPHashesNotIn is fed from it unchanged.
 	var orphanPaths []string
 	for _, entry := range entries {
 		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
@@ -374,16 +413,17 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		orphanPaths = append(orphanPaths, videoFiles...)
 	}
 
-	total := len(trackedEpisodes) + len(orphanPaths)
+	total := len(trackedFiles) + len(orphanPaths)
 	current := 0
 
 	var items []pHashFileItem
-	for i := range trackedEpisodes {
-		ep := &trackedEpisodes[i]
-		h := loadOrComputeTrackedEpisodePHash(ctx, hasher, libStore, ep)
+	for i := range trackedFiles {
+		tf := &trackedFiles[i]
+		ep := &tf.ep
+		h := hashTrackedEpisodePath(ctx, hasher, libStore, ep, tf.path)
 		current++
 		if onProgress != nil {
-			onProgress(ProgressEvent{Current: current, Total: total, Name: filepath.Base(ep.FilePath), Phase: "hashing"})
+			onProgress(ProgressEvent{Current: current, Total: total, Name: filepath.Base(tf.path), Phase: "hashing"})
 		}
 		seriesTitle := ""
 		seriesTMDBID := 0
@@ -392,8 +432,8 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 			seriesTMDBID = s.TMDBID
 		}
 		items = append(items, pHashFileItem{
-			path:      ep.FilePath,
-			label:     filepath.Base(ep.FilePath),
+			path:      tf.path,
+			label:     filepath.Base(tf.path),
 			trackedID: int(ep.ID),
 			tmdbID:    seriesTMDBID,
 			season:    ep.SeasonNumber,
@@ -411,14 +451,7 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 			onProgress(ProgressEvent{Current: current, Total: total, Name: name, Phase: "hashing"})
 		}
 		season, episode, _ := library.ParseEpisodeFilename(name)
-		var tmdbID int
-		var title string
-		if sess.TMDB != nil {
-			if results, sErr := sess.TMDB.SearchTV(ctx, searchterm.FromName(library.StripEpisodeMarker(name))); sErr == nil && len(results) > 0 {
-				tmdbID = results[0].ID
-				title = results[0].Title
-			}
-		}
+		tmdbID, title := orphanSeriesTMDB(ctx, sess, videoPath, name)
 		items = append(items, pHashFileItem{
 			path:     videoPath,
 			label:    name,
@@ -430,34 +463,21 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		})
 	}
 
-	_ = libStore.DeleteOrphanPHashesNotIn(ctx, orphanPaths)
-
-	uf := newPHashUnionFind(len(items))
-	for i := 0; i < len(items); i++ {
-		if items[i].phashVal == "" {
-			continue
-		}
-		for j := i + 1; j < len(items); j++ {
-			if items[j].phashVal == "" {
-				continue
-			}
-			within, err := phash.SimilarityWithin(items[i].phashVal, items[j].phashVal, phash.Frames, perFrameThreshold)
-			if err == nil && within {
-				uf.union(i, j)
-			}
-		}
+	// Every path this scan saw keeps its cached hash — see the Movies sibling.
+	keepCached := make([]string, 0, len(orphanPaths)+len(known))
+	keepCached = append(keepCached, orphanPaths...)
+	for p := range known {
+		keepCached = append(keepCached, p)
 	}
+	_ = libStore.DeleteOrphanPHashesNotIn(ctx, keepCached)
 
+	uf := unionByPHashAndIdentity(items, perFrameThreshold, sameEpisodeIdentity)
 	groups := pHashGroupComponents(items, uf)
 
 	var out []proposals.Proposal
 	for _, group := range groups {
 		similarity := minPairwiseSimilarity(group, phash.Frames)
-
 		title, tmdbID, rootPath := pHashGroupLabel(group)
-
-		// Season/episode: prefer the tracked episode's values; fall back to
-		// the first orphan with a parseable filename.
 		season, episode := 0, 0
 		for _, item := range group {
 			if item.season != 0 || item.episode != 0 {
@@ -466,24 +486,20 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 				break
 			}
 		}
-
-		// Prefer the tracked episode's series root folder path.
-		for i := range trackedEpisodes {
+		for i := range trackedFiles {
 			for _, c := range group {
-				if c.trackedID == int(trackedEpisodes[i].ID) {
-					if s, ok := seriesByID[trackedEpisodes[i].SeriesID]; ok && s.RootFolderPath != "" {
+				if c.trackedID == int(trackedFiles[i].ep.ID) {
+					if s, ok := seriesByID[trackedFiles[i].ep.SeriesID]; ok && s.RootFolderPath != "" {
 						rootPath = s.RootFolderPath
 					}
 				}
 			}
 		}
-
 		candidates := pHashBuildCandidates(ctx, prober, group)
 		if len(candidates) < 2 {
 			continue
 		}
 		markWinner(candidates)
-
 		label := fmt.Sprintf("%s S%02dE%02d", title, season, episode)
 		out = append(out, proposals.Proposal{
 			Mode: mode.Series, Workflow: proposals.Dedup, Status: proposals.Pending,
@@ -491,7 +507,7 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 			RootFolderPath:  rootPath,
 			Candidates:      candidates,
 			PHashSimilarity: similarity,
-			Reason:          fmt.Sprintf("%d copies found to be perceptually similar (%.0f%% similar)", len(candidates), similarity*100),
+			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, sameEpisodeIdentity),
 		})
 	}
 	return out, nil
@@ -504,6 +520,17 @@ func pHashGroupLabel(group []pHashFileItem) (title string, tmdbID int, rootPath 
 	for _, item := range group {
 		if item.trackedID != 0 && item.title != "" {
 			title = item.title
+			tmdbID = item.tmdbID
+			rootPath = filepath.Dir(item.path)
+			return
+		}
+	}
+	for _, item := range group {
+		if item.tmdbID != 0 {
+			title = item.title
+			if title == "" {
+				title = item.label
+			}
 			tmdbID = item.tmdbID
 			rootPath = filepath.Dir(item.path)
 			return
@@ -546,6 +573,48 @@ func pHashBuildCandidates(ctx context.Context, prober Prober, group []pHashFileI
 		out = append(out, *c)
 	}
 	return out
+}
+
+// movieTrackedPaths returns every on-disk copy of a tracked title: its
+// denormalized primary plus its library_item_files rows.
+func movieTrackedPaths(ctx context.Context, libStore *library.Store, t *library.Item) []string {
+	var extras []string
+	if files, err := libStore.ListFiles(ctx, t.ID); err == nil {
+		for _, f := range files {
+			extras = append(extras, f.FilePath)
+		}
+	}
+	return pathsWithExtras(t.FilePath, extras)
+}
+
+// episodeTrackedPaths is movieTrackedPaths' Series sibling, over
+// library_episode_files.
+func episodeTrackedPaths(ctx context.Context, libStore *library.Store, ep library.Episode) []string {
+	var extras []string
+	if files, err := libStore.ListEpisodeFiles(ctx, ep.ID); err == nil {
+		for _, f := range files {
+			extras = append(extras, f.FilePath)
+		}
+	}
+	return pathsWithExtras(ep.FilePath, extras)
+}
+
+// hashTrackedMoviePath hashes one copy of a tracked title. Only the primary
+// has a phash column on its own row; an extra copy caches through the orphan
+// phash table instead.
+func hashTrackedMoviePath(ctx context.Context, hasher PHasher, libStore *library.Store, item *library.Item, path string) string {
+	if path == item.FilePath {
+		return loadOrComputeTrackedItemPHash(ctx, hasher, libStore, item)
+	}
+	return libStore.LoadOrComputeOrphanPHash(ctx, hasher, path)
+}
+
+// hashTrackedEpisodePath is hashTrackedMoviePath's Series sibling.
+func hashTrackedEpisodePath(ctx context.Context, hasher PHasher, libStore *library.Store, ep *library.Episode, path string) string {
+	if path == ep.FilePath {
+		return loadOrComputeTrackedEpisodePHash(ctx, hasher, libStore, ep)
+	}
+	return libStore.LoadOrComputeOrphanPHash(ctx, hasher, path)
 }
 
 // loadOrComputeTrackedItemPHash returns a valid cached phash for a tracked

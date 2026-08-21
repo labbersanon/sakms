@@ -7973,10 +7973,16 @@ uses (poster, description, availability grid, Grab). Adult search cards
 now call `onDetail` like browse; DetailPopup is the grab path. The
 picker component is removed — nothing else mounted it.
 
+## 2026-08-21 — Dedup independent of Rename; group by TMDB identity too
 
+Dedup no longer treats Rename-folded extras as "already handled." Movies and
+Series scans include every video on a library row plus orphans, and group when
+files are perceptually similar **or** share a TMDB identity (Movies: same id;
+Series: same id + season/episode). A `[tmdbid-N]` path tag is enough; TMDB
+search is only a fallback for unlabeled files. Apply deletes an extra copy's
+own file and file-row, not the whole title. Adult extras are included the same
+way (scene identity), without phash-dropping library extras.
 
-
-
-
-
-
+Live case this reverses: two Last Crusade encodes (1920×816 crop vs 1920×1080
+WEB-DL) were the same TMDB 89 but ~48% PDQ similar, so Dedup stayed silent
+while Rename had a pending alternate fold.

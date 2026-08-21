@@ -64,3 +64,30 @@ func TestUpsertFile_TwoFilesOnePrimary(t *testing.T) {
 		t.Fatalf("AllFilePaths should include primary+alt, got %v", paths)
 	}
 }
+
+func TestDeleteItemFileByPath_RemovesOnlyThatRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	item, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: 12, Title: "Film", FilePath: "/a.mkv", RootFolderPath: "/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertFile(ctx, ItemFile{ItemID: item.ID, FilePath: "/b.mkv", IsPrimary: false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteItemFileByPath(ctx, "/b.mkv"); err != nil {
+		t.Fatal(err)
+	}
+	files, err := s.ListFiles(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].FilePath != "/a.mkv" {
+		t.Fatalf("expected only primary remaining, got %+v", files)
+	}
+	if _, err := s.Get(ctx, item.ID); err != nil {
+		t.Fatalf("item row should remain: %v", err)
+	}
+}

@@ -4,15 +4,11 @@
 // to keep the better-quality copy instead of leaving both silently in
 // place (today's behavior in both source CLIs).
 //
-// Movies and Series both group PURELY by perceptual hash now (ScanLibraryPHash /
-// ScanLibrarySeriesPHash, shipped 2026-07-18 in 50dd970) — no TMDB id or
-// (show,season,episode) key gates the union; two files perceptually similar
-// enough group regardless of what either resolves to, or whether either
-// resolves at all (see dedup_phash_primary.go's own doc comments and
-// .omc/specs/deep-interview-phash-grouping.md). Adult still groups by the
-// resolved scene's foreignID (ScanLibraryAdult) and refines with the shared
-// refineByPHash helper. Every mode runs its own libStore-backed
-// ScanLibrary*/ApplyLibrary* sibling, dispatched at the API layer.
+// Movies and Series group by perceptual hash OR shared TMDB identity
+// (ScanLibraryPHash / ScanLibrarySeriesPHash). Adult groups by the resolved
+// scene's (box, scene_id) and refines untracked orphans with refineByPHash.
+// In every mode, an extra copy recorded on a library row is a Dedup candidate
+// of its own — Rename folding it in does not hide it from Dedup.
 //
 // CORRECTION (logical episode-splitting): Series' UNIQUE(series_id, season,
 // episode) constraint rules out ambiguity for ONE (series,season,episode)
@@ -114,6 +110,26 @@ func refineByPHash(candidates []proposals.Candidate, frames, perFrameThreshold i
 		if err == nil && within {
 			out = append(out, c)
 		}
+	}
+	return out
+}
+
+// pathsWithExtras returns primary followed by extras, dropping blanks and
+// repeats — the set of on-disk copies Dedup treats as candidates for one
+// library row. An extra copy is a candidate in its own right: Rename folding
+// it onto the row does not hide it from Dedup.
+func pathsWithExtras(primary string, extras []string) []string {
+	seen := make(map[string]struct{}, len(extras)+1)
+	var out []string
+	for _, p := range append([]string{primary}, extras...) {
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
 	}
 	return out
 }
@@ -251,7 +267,15 @@ func ApplyLibrary(ctx context.Context, libStore *library.Store, p proposals.Prop
 	}
 
 	if winner.TrackedID != 0 {
-		return int64(winner.TrackedID), changes, nil
+		if err := promoteMovieWinnerIfNeeded(ctx, libStore, winner); err != nil {
+			return 0, changes, err
+		}
+		// The winner's row can be gone already — a loser removal that emptied
+		// the row deletes it — so fall through to the Upsert below instead of
+		// returning an id that no longer exists.
+		if _, err := libStore.Get(ctx, int64(winner.TrackedID)); err == nil {
+			return int64(winner.TrackedID), changes, nil
+		}
 	}
 
 	// Persist the winner's phash + file identity so the next Scan finds it
@@ -293,23 +317,116 @@ func removeLibraryCandidate(ctx context.Context, libStore *library.Store, c prop
 	if err != nil {
 		return "", fmt.Errorf("loading library item %d: %w", c.TrackedID, err)
 	}
+	if movieCandidateIsExtra(ctx, libStore, c) {
+		if err := os.Remove(c.Path); err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := libStore.DeleteItemFileByPath(ctx, c.Path); err != nil {
+			return c.Path, err
+		}
+		return c.Path, nil
+	}
 	removedPath := ""
 	if item.FilePath != "" {
 		if err := os.Remove(item.FilePath); err != nil && !os.IsNotExist(err) {
 			return "", fmt.Errorf("deleting %q: %w", item.FilePath, err)
 		}
 		removedPath = item.FilePath
+		_ = libStore.DeleteItemFileByPath(ctx, item.FilePath)
+	}
+	// Other copies still back this title — keep the row, it now needs a new
+	// primary rather than deletion.
+	if files, listErr := libStore.ListFiles(ctx, item.ID); listErr == nil && len(files) > 0 {
+		return removedPath, nil
 	}
 	if err := libStore.Delete(ctx, int64(c.TrackedID)); err != nil {
-		// The file is already physically gone (os.Remove above succeeded) even
-		// though the DB row deletion failed — return removedPath alongside the
-		// error so the caller still reports the committed deletion to
-		// NotifyPlayers, matching purge.ApplyLibrary's sibling behavior and the
-		// "capture at the point the os-level mutation lands" rule used
-		// throughout this feature (Critic fix #3).
 		return removedPath, err
 	}
 	return removedPath, nil
+}
+
+// movieCandidateIsExtra reports whether c is a non-primary library_item_files
+// row — an extra copy of a title, not the title itself. Deleting one must
+// remove only that file row; deleting the library_items row would take the
+// keeper down with it.
+func movieCandidateIsExtra(ctx context.Context, libStore *library.Store, c proposals.Candidate) bool {
+	if c.TrackedID == 0 || c.Path == "" {
+		return false
+	}
+	files, err := libStore.ListFiles(ctx, int64(c.TrackedID))
+	if err != nil {
+		return false
+	}
+	for _, f := range files {
+		if f.FilePath == c.Path && !f.IsPrimary {
+			return true
+		}
+	}
+	return false
+}
+
+// promoteMovieWinnerIfNeeded makes winner the title's primary when an extra
+// copy beat the primary. A missing row is not an error — the caller falls back
+// to Upsert.
+func promoteMovieWinnerIfNeeded(ctx context.Context, libStore *library.Store, winner proposals.Candidate) error {
+	item, err := libStore.Get(ctx, int64(winner.TrackedID))
+	if err != nil {
+		return nil
+	}
+	if item.FilePath == winner.Path || winner.Path == "" {
+		return nil
+	}
+	size := library.FileSize(winner.Path)
+	if err := libStore.UpdateItemPrimaryPath(ctx, item.ID, winner.Path, item.QualityTier, size); err != nil {
+		return fmt.Errorf("promoting %q to primary: %w", winner.Path, err)
+	}
+	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
+		ItemID: item.ID, FilePath: winner.Path, IsPrimary: true,
+		QualityTier: item.QualityTier, Size: size, PHash: winner.PHash,
+	}); err != nil {
+		return fmt.Errorf("recording promoted primary %q: %w", winner.Path, err)
+	}
+	return nil
+}
+
+// episodeCandidateIsExtra is movieCandidateIsExtra's Series sibling, over
+// library_episode_files.
+func episodeCandidateIsExtra(ctx context.Context, libStore *library.Store, c proposals.Candidate) bool {
+	if c.TrackedID == 0 || c.Path == "" {
+		return false
+	}
+	files, err := libStore.ListEpisodeFiles(ctx, int64(c.TrackedID))
+	if err != nil {
+		return false
+	}
+	for _, f := range files {
+		if f.FilePath == c.Path && !f.IsPrimary {
+			return true
+		}
+	}
+	return false
+}
+
+// promoteEpisodeWinnerIfNeeded is promoteMovieWinnerIfNeeded's Series sibling.
+func promoteEpisodeWinnerIfNeeded(ctx context.Context, libStore *library.Store, winner proposals.Candidate) error {
+	ep, err := libStore.GetEpisodeByID(ctx, int64(winner.TrackedID))
+	if err != nil || ep == nil {
+		return nil
+	}
+	if ep.FilePath == winner.Path || winner.Path == "" {
+		return nil
+	}
+	size := library.FileSize(winner.Path)
+	if err := libStore.UpdateEpisodePrimaryPath(ctx, ep.ID, winner.Path, ep.QualityTier, size); err != nil {
+		return fmt.Errorf("promoting %q to episode primary: %w", winner.Path, err)
+	}
+	if _, err := libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
+		EpisodeID: ep.ID, FilePath: winner.Path, IsPrimary: true,
+		QualityTier: ep.QualityTier, Size: size, PHash: winner.PHash,
+	}); err != nil {
+		return fmt.Errorf("recording promoted episode primary %q: %w", winner.Path, err)
+	}
+	return nil
 }
 
 // ApplyLibrarySeries is Dedup's Series-library counterpart to ApplyLibrary.
@@ -405,6 +522,11 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		if err := os.Remove(c.Path); err != nil && !os.IsNotExist(err) {
 			return 0, changes, fmt.Errorf("removing %s: %w", c.Path, err)
 		}
+		if episodeCandidateIsExtra(ctx, libStore, c) {
+			if err := libStore.DeleteEpisodeFileByPath(ctx, c.Path); err != nil {
+				return 0, changes, fmt.Errorf("removing extra file row for %s: %w", c.Path, err)
+			}
+		}
 		changes = append(changes, mode.PathChange{Path: c.Path, Kind: mode.Deleted})
 		// Event-driven vmaf_scores cleanup for the just-deleted loser. Reached
 		// only after the refCount>1 shared-file guard above lets the delete
@@ -414,6 +536,9 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 	}
 
 	if winner.TrackedID != 0 {
+		if err := promoteEpisodeWinnerIfNeeded(ctx, libStore, winner); err != nil {
+			return 0, changes, err
+		}
 		return int64(winner.TrackedID), changes, nil
 	}
 

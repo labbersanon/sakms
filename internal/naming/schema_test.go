@@ -18,6 +18,24 @@ func writeFile(t *testing.T, dir, name string) string {
 	return path
 }
 
+func TestTMDBIDFromPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"/media/Movies/Indiana Jones and the Last Crusade (1989) [tmdbid-89]/Indiana Jones and the Last Crusade (1989) [tmdbid-89] - 1080p H264.mp4", 89},
+		{"Some Movie (2020) [tmdbid-42].mkv", 42},
+		{"/media/Series/Some Show (2019) [tmdbid-555]/Season 01/Some Show S01E01.mkv", 555},
+		{"/media/Movies/Some Movie (2020)/Some Movie (2020).mkv", 0},
+		{"", 0},
+	}
+	for _, tc := range cases {
+		if got := TMDBIDFromPath(tc.path); got != tc.want {
+			t.Errorf("TMDBIDFromPath(%q)=%d, want %d", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestMatchesMovieSchema(t *testing.T) {
 	t.Run("conformant Jellyfin folder+file matches", func(t *testing.T) {
 		root := t.TempDir()

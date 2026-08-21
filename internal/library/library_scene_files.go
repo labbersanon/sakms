@@ -16,8 +16,8 @@ import (
 // library_scenes s ON s.id = f.scene_id.
 //
 // Claude 2026-08-12: SceneFile — mirrors EpisodeFile for Adult alternate-version support
-// Reason: deep-interview-adult-rename-review-alts — Adult gains Movies/Series parity for
-//   multi-file (primary + alternates) per scene slot.
+// Reason: deep-interview-adult-rename-review-alts — Adult gains Movies/Series
+// parity for multi-file (primary + alternates) per scene slot.
 // Troubleshooting: see migration 0010 NAME HAZARD comment; always alias in joins.
 // Review if: library_scenes.file_path stops being the denormalized primary.
 type SceneFile struct {
@@ -165,7 +165,8 @@ func (s *Store) DeleteSceneFileByPath(ctx context.Context, filePath string) erro
 
 // AllScenePaths returns every on-disk Adult path — denormalized
 // library_scenes.file_path plus library_scene_files — so Rename's known-map
-// skips alternates. Mirrors AllEpisodeFilePaths (library_episode_files.go:141).
+// skips files it already placed. Dedup enumerates extras as its own
+// candidates; it does not use this list to hide them.
 func (s *Store) AllScenePaths(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT file_path FROM (

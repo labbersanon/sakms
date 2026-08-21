@@ -98,27 +98,11 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 	}
 
 	trackedByKey := make(map[sceneDedupKey]library.Scene, len(scenes))
-	// Claude 2026-08-12: use AllScenePaths instead of sc.FilePath for the known map.
-	// Reason: deep-interview-adult-rename-review-alts C10 — library_scene_files holds
-	//   alternate paths that ListScenes never returns. Without this fix, Dedup would
-	//   re-discover a folded alternate as an orphan and propose deleting a file that
-	//   Rename deliberately kept. This is a data-loss-adjacent fix, not a tidy-up.
-	// Troubleshooting: Dedup proposed deleting a file that had been folded as an
-	//   alternate by Rename — the file was in library_scene_files but not in known.
-	// Review if: AllScenePaths stops covering library_scene_files.
 	known := map[string]bool{}
-	if paths, pathErr := libStore.AllScenePaths(ctx); pathErr == nil {
-		for _, p := range paths {
+	for _, sc := range scenes {
+		for _, p := range sceneTrackedPaths(ctx, libStore, sc) {
 			known[p] = true
 		}
-	} else {
-		for _, sc := range scenes {
-			if sc.FilePath != "" {
-				known[sc.FilePath] = true
-			}
-		}
-	}
-	for _, sc := range scenes {
 		trackedByKey[sceneDedupKey{box: sc.Box, sceneID: sc.SceneID}] = sc
 	}
 
@@ -182,9 +166,13 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 		title, studio, date := orphans[0].title, orphans[0].studio, orphans[0].date
 		rootPath := ""
 		var candidates []proposals.Candidate
+		libraryPaths := map[string]struct{}{}
 		if isTracked {
-			if c := probeCandidate(ctx, prober, "tracked", trackedScene.FilePath, int(trackedScene.ID)); c != nil {
-				candidates = append(candidates, *c)
+			for _, path := range sceneTrackedPaths(ctx, libStore, trackedScene) {
+				if c := probeCandidate(ctx, prober, "tracked", path, int(trackedScene.ID)); c != nil {
+					candidates = append(candidates, *c)
+					libraryPaths[path] = struct{}{}
+				}
 			}
 			title, studio, date = trackedScene.Title, trackedScene.Studio, trackedScene.Date
 			rootPath = trackedScene.RootFolderPath
@@ -213,9 +201,9 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 			trackedPtr = &ts
 		}
 		candidates = attachPHashesScene(ctx, hasher, libStore, candidates, trackedPtr)
-		candidates = refineByPHash(candidates, phash.Frames, perFrameThreshold)
+		candidates = refineAdultOrphans(candidates, libraryPaths, phash.Frames, perFrameThreshold)
 		if len(candidates) < 2 {
-			continue // perceptually dissimilar — keep both, no proposal
+			continue // perceptually dissimilar orphans — keep both, no proposal
 		}
 		markWinner(candidates)
 
@@ -228,7 +216,78 @@ func ScanLibraryAdult(ctx context.Context, sess *mode.Session, libStore *library
 			Reason:     fmt.Sprintf("%d copies identified as %q", len(candidates), title),
 		})
 	}
+
+	// Second pass: a tracked scene holding several copies of its own — all in
+	// library_scene_files, none on disk as an orphan — never appears in the
+	// loop above, since that one is keyed by orphan hits. The copies already
+	// share (box, scene_id), so no phash refine gates the group.
+	for _, sc := range scenes {
+		key := sceneDedupKey{box: sc.Box, sceneID: sc.SceneID}
+		if _, hadOrphans := orphansByKey[key]; hadOrphans {
+			continue
+		}
+		if !library.MatchesPosterAspect(sc.PosterAspectClass, aspect) {
+			continue
+		}
+		paths := sceneTrackedPaths(ctx, libStore, sc)
+		if len(paths) < 2 {
+			continue
+		}
+		var candidates []proposals.Candidate
+		for _, path := range paths {
+			if c := probeCandidate(ctx, prober, filepath.Base(path), path, int(sc.ID)); c != nil {
+				candidates = append(candidates, *c)
+			}
+		}
+		if len(candidates) < 2 {
+			continue
+		}
+		ts := sc
+		candidates = attachPHashesScene(ctx, hasher, libStore, candidates, &ts)
+		if len(candidates) < 2 {
+			continue
+		}
+		markWinner(candidates)
+		out = append(out, proposals.Proposal{
+			Mode: mode.Adult, Workflow: proposals.Dedup, Status: proposals.Pending,
+			SourceName: sc.Title, Title: sc.Title, Studio: sc.Studio, Date: sc.Date,
+			RootFolderPath: sc.RootFolderPath,
+			GiveBackBox:    key.box, GiveBackSceneID: key.sceneID,
+			Candidates: candidates,
+			Reason:     fmt.Sprintf("%d copies identified as %q", len(candidates), sc.Title),
+		})
+	}
 	return out, nil
+}
+
+// sceneTrackedPaths returns every on-disk copy of a tracked scene: its
+// denormalized primary plus its library_scene_files rows.
+func sceneTrackedPaths(ctx context.Context, libStore *library.Store, sc library.Scene) []string {
+	var extras []string
+	if files, err := libStore.ListSceneFiles(ctx, sc.ID); err == nil {
+		for _, f := range files {
+			extras = append(extras, f.FilePath)
+		}
+	}
+	return pathsWithExtras(sc.FilePath, extras)
+}
+
+// refineAdultOrphans drops untracked candidates that fail the phash check
+// against the tracked reference. Library extras stay — they already share
+// the scene identity, which is Dedup's grouping key independent of Rename.
+func refineAdultOrphans(candidates []proposals.Candidate, libraryPaths map[string]struct{}, frames, perFrameThreshold int) []proposals.Candidate {
+	out := refineByPHash(candidates, frames, perFrameThreshold)
+	kept := make(map[string]struct{}, len(out))
+	for _, c := range out {
+		kept[c.Path] = struct{}{}
+	}
+	for _, c := range candidates {
+		_, isLibraryCopy := libraryPaths[c.Path]
+		if _, alreadyKept := kept[c.Path]; isLibraryCopy && !alreadyKept {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // adultSceneIdentity maps an Identify result to the (box, scene_id) pair
@@ -328,7 +387,12 @@ func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals
 	}
 
 	if winner.TrackedID != 0 {
-		return int64(winner.TrackedID), changes, nil
+		if err := promoteSceneWinnerIfNeeded(ctx, libStore, winner); err != nil {
+			return 0, changes, err
+		}
+		if _, err := libStore.GetSceneByID(ctx, int64(winner.TrackedID)); err == nil {
+			return int64(winner.TrackedID), changes, nil
+		}
 	}
 
 	// Persist the winner's phash + file identity so the next Scan finds it
@@ -362,12 +426,19 @@ func ApplyLibraryAdult(ctx context.Context, libStore *library.Store, p proposals
 // DeleteScene fails so the caller can still report the committed deletion.
 func removeSceneCandidate(ctx context.Context, libStore *library.Store, c proposals.Candidate) (string, error) {
 	if c.TrackedID == 0 {
-		// Claude 2026-08-06: treat ENOENT as success for untracked losers
-		// Reason: parity with Movies removeLibraryCandidate + tracked scene path.
-		// Troubleshooting: Dedup Apply fails when Rename already removed the orphan.
-		// Review if: Apply should distinguish "already gone" in the UI reason string.
 		if err := os.Remove(c.Path); err != nil && !os.IsNotExist(err) {
 			return "", err
+		}
+		return c.Path, nil
+	}
+	if sceneCandidateIsExtra(ctx, libStore, c) {
+		if c.Path != "" {
+			if err := os.Remove(c.Path); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("deleting %q: %w", c.Path, err)
+			}
+		}
+		if err := libStore.DeleteSceneFileByPath(ctx, c.Path); err != nil {
+			return c.Path, err
 		}
 		return c.Path, nil
 	}
@@ -377,14 +448,55 @@ func removeSceneCandidate(ctx context.Context, libStore *library.Store, c propos
 			return "", fmt.Errorf("deleting %q: %w", c.Path, err)
 		}
 		removedPath = c.Path
+		_ = libStore.DeleteSceneFileByPath(ctx, c.Path)
+	}
+	// Other copies still back this scene — keep the row, it now needs a new
+	// primary rather than deletion.
+	if files, err := libStore.ListSceneFiles(ctx, int64(c.TrackedID)); err == nil && len(files) > 0 {
+		return removedPath, nil
 	}
 	if err := libStore.DeleteScene(ctx, int64(c.TrackedID)); err != nil {
-		// The file is already physically gone (os.Remove above succeeded) even
-		// though the DB row deletion failed — return removedPath alongside the
-		// error so the caller still reports the committed deletion to
-		// NotifyPlayers, matching removeLibraryCandidate's sibling behavior and
-		// the "capture at the point the os-level mutation lands" rule.
 		return removedPath, err
 	}
 	return removedPath, nil
+}
+
+// sceneCandidateIsExtra is movieCandidateIsExtra's Adult sibling, over
+// library_scene_files.
+func sceneCandidateIsExtra(ctx context.Context, libStore *library.Store, c proposals.Candidate) bool {
+	if c.TrackedID == 0 || c.Path == "" {
+		return false
+	}
+	files, err := libStore.ListSceneFiles(ctx, int64(c.TrackedID))
+	if err != nil {
+		return false
+	}
+	for _, f := range files {
+		if f.FilePath == c.Path && !f.IsPrimary {
+			return true
+		}
+	}
+	return false
+}
+
+// promoteSceneWinnerIfNeeded is promoteMovieWinnerIfNeeded's Adult sibling.
+func promoteSceneWinnerIfNeeded(ctx context.Context, libStore *library.Store, winner proposals.Candidate) error {
+	sc, err := libStore.GetSceneByID(ctx, int64(winner.TrackedID))
+	if err != nil || sc == nil {
+		return nil
+	}
+	if sc.FilePath == winner.Path || winner.Path == "" {
+		return nil
+	}
+	size, mtime, _ := fileIdentity(winner.Path)
+	if err := libStore.UpdateScenePrimaryPath(ctx, sc.ID, winner.Path, sc.QualityTier, size, winner.PHash, size, mtime); err != nil {
+		return fmt.Errorf("promoting %q to scene primary: %w", winner.Path, err)
+	}
+	if _, err := libStore.UpsertSceneFile(ctx, library.SceneFile{
+		SceneID: sc.ID, FilePath: winner.Path, IsPrimary: true,
+		QualityTier: sc.QualityTier, Size: size, PHash: winner.PHash,
+	}); err != nil {
+		return fmt.Errorf("recording promoted scene primary %q: %w", winner.Path, err)
+	}
+	return nil
 }

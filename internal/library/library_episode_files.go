@@ -133,11 +133,12 @@ func (s *Store) PrimaryEpisodeFile(ctx context.Context, episodeID int64) (Episod
 
 // AllEpisodeFilePaths returns every on-disk Series path — denormalized
 // library_episodes.file_path plus library_episode_files — so Rename's known-map
-// skips alternates. A range file repeats one path across several episode rows;
-// the inner query's UNION (not UNION ALL) already dedupes those repeats, so the
-// outer SELECT DISTINCT is redundant here rather than load-bearing. Mirrors
-// AllFilePaths (library_files.go:155),
-// minus the mode parameter (library_episodes is Series-only, like library_series).
+// skips files it already placed. Dedup enumerates the same paths as its own
+// candidates; it does not use this list to hide extras. A range file repeats
+// one path across several episode rows; the inner query's UNION (not UNION ALL)
+// already dedupes those repeats, so the outer SELECT DISTINCT is redundant here
+// rather than load-bearing. Mirrors AllFilePaths (library_files.go:155), minus
+// the mode parameter (library_episodes is Series-only, like library_series).
 func (s *Store) AllEpisodeFilePaths(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT file_path FROM (
@@ -159,6 +160,20 @@ func (s *Store) AllEpisodeFilePaths(ctx context.Context) ([]string, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// DeleteEpisodeFileByPath removes the library_episode_files row for path, if
+// one exists. A no-op if no row matches. Dedup Apply uses this when the loser
+// is an extra copy of a still-tracked episode.
+func (s *Store) DeleteEpisodeFileByPath(ctx context.Context, path string) error {
+	if path == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM library_episode_files WHERE file_path = ?`, path)
+	if err != nil {
+		return fmt.Errorf("deleting episode file row for %q: %w", path, err)
+	}
+	return nil
 }
 
 // UpdateEpisodePrimaryPath writes the denormalized primary path/tier/size on

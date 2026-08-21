@@ -293,3 +293,57 @@ func TestApplyLibrary_RejectsFewerThanTwoCandidates(t *testing.T) {
 		t.Fatal("expected ApplyLibrary to refuse a proposal with fewer than 2 candidates")
 	}
 }
+
+func TestApplyLibrary_ExtraLoserDeletesOnlyTheExtra(t *testing.T) {
+	dir := t.TempDir()
+	primaryFile := writeVideoFile(t, dir, "primary.mkv", 10)
+	extraFile := writeVideoFile(t, dir, "extra.mkv", 10)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	tracked, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 89, Title: "Last Crusade", FilePath: primaryFile, RootFolderPath: dir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
+		ItemID: tracked.ID, FilePath: extraFile, IsPrimary: false,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Last Crusade", TMDBID: 89,
+		Candidates: []proposals.Candidate{
+			{Label: "primary", Path: primaryFile, TrackedID: int(tracked.ID), Winner: true},
+			{Label: "extra", Path: extraFile, TrackedID: int(tracked.ID)},
+		},
+	}
+	id, changes, err := ApplyLibrary(ctx, libStore, p, nil, nil, false, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != tracked.ID {
+		t.Errorf("expected the title to stay tracked as %d, got %d", tracked.ID, id)
+	}
+	if _, err := os.Stat(primaryFile); err != nil {
+		t.Errorf("expected the primary to remain, stat: %v", err)
+	}
+	if _, err := os.Stat(extraFile); !os.IsNotExist(err) {
+		t.Error("expected the extra file to be deleted")
+	}
+	if _, err := libStore.Get(ctx, tracked.ID); err != nil {
+		t.Errorf("expected the library item to remain, got %v", err)
+	}
+	files, err := libStore.ListFiles(ctx, tracked.ID)
+	if err != nil {
+		t.Fatalf("listing files: %v", err)
+	}
+	if len(files) != 1 || files[0].FilePath != primaryFile {
+		t.Errorf("expected only the primary file row, got %+v", files)
+	}
+	if len(changes) != 1 || changes[0].Path != extraFile {
+		t.Errorf("expected one Deleted PathChange for the extra, got %+v", changes)
+	}
+}

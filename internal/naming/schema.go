@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -33,7 +34,21 @@ var (
 	// in a filename — Adult has one fixed scheme, not a per-preset shape, so
 	// this is the sole conformance marker MatchesAdultSchema checks for.
 	adultPhashTag = regexp.MustCompile(`\[phash-[^\]]+\]`)
+	tmdbIDTag     = regexp.MustCompile(`(?i)\[tmdbid-(\d+)\]`)
 )
+
+// TMDBIDFromPath returns the first usable [tmdbid-N] tag in path — folder or
+// filename — or 0 if there is none. Dedup uses this so a file already sitting
+// in a SAK/Jellyfin folder is grouped by identity without asking TMDB search
+// or Rename.
+func TMDBIDFromPath(path string) int {
+	for _, m := range tmdbIDTag.FindAllStringSubmatch(path, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
 
 // MatchesMovieSchema reports whether entryPath — as found by
 // library.ScanRootFolder, directly under a Movies root — is already

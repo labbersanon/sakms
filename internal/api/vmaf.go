@@ -13,6 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/vmaf"
 )
 
@@ -25,8 +26,10 @@ import (
 // this same endpoint until it flips to "ready".
 type vmafScoreResponse struct {
 	// Status is one of "ready" (Score is populated), "computing" (a
-	// computation for this exact pair is in flight — poll again), or "error"
-	// (the last computation for this pair failed; Error explains it).
+	// computation for this exact pair is in flight — poll again), "skipped"
+	// (the pair is not a phash match — VMAF is quality scoring, not duplicate
+	// detection), or "error" (the last computation for this pair failed;
+	// Error explains it).
 	Status         string  `json:"status"`
 	Score          float64 `json:"score,omitempty"`
 	Cached         bool    `json:"cached,omitempty"`
@@ -75,8 +78,10 @@ func pairKey(candidatePath, referencePath string) string {
 // candidateIndex=N&referenceIndex=M. It scores the proposal's candidate at
 // index N against the candidate at index M (the group's VMAF reference —
 // the largest on-disk file, sent by the frontend independently of Keep-primary),
-// checking the vmaf_scores cache first (AC2) and computing+caching on a miss
-// (AC1). Scoring a candidate against itself is rejected (candidateIndex ==
+// but only when the pair is a phash match (vmaf.ShouldScoreVMAF). Identity-only
+// TMDB groups return status "skipped" without ffmpeg. Matching pairs check the
+// vmaf_scores cache first (AC2) and computing+caching on a miss (AC1).
+// Scoring a candidate against itself is rejected (candidateIndex ==
 // referenceIndex).
 //
 // The handler stays index-generic: it does not re-pick the largest file. The
@@ -85,7 +90,7 @@ func pairKey(candidatePath, referencePath string) string {
 //
 // inflight is constructed once here (not per-request) so it is shared across
 // every request this handler serves.
-func vmafHandler(propStore *proposals.Store, libStore *library.Store) http.HandlerFunc {
+func vmafHandler(propStore *proposals.Store, libStore *library.Store, settingsStore *settings.Store) http.HandlerFunc {
 	inflight := &vmafInflight{state: map[string]*vmafPairState{}}
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -133,8 +138,30 @@ func vmafHandler(propStore *proposals.Store, libStore *library.Store) http.Handl
 			return
 		}
 
-		candidatePath := prop.Candidates[candidateIndex].Path
-		referencePath := prop.Candidates[referenceIndex].Path
+		candidate := prop.Candidates[candidateIndex]
+		reference := prop.Candidates[referenceIndex]
+		threshold, tErr := resolvePHashThreshold(ctx, settingsStore, m)
+		if tErr != nil {
+			http.Error(w, tErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Claude 2026-08-21: skip VMAF when the pair is not a phash match.
+		// Reason: TMDB-identity groups (crop vs open-matte) are not the same
+		// picture; ffmpeg VMAF is quality scoring after duplicate detection.
+		// Troubleshooting: Last Crusade-style tiles still running ffmpeg means
+		// this gate is after cache/compute or candidates_json lacks PHash.
+		// Review if: Dedup stops grouping by TMDB identity.
+		if !vmaf.ShouldScoreVMAF(candidate.PHash, reference.PHash, threshold) {
+			writeJSON(w, vmafScoreResponse{
+				Status:         "skipped",
+				CandidateIndex: candidateIndex,
+				ReferenceIndex: referenceIndex,
+			})
+			return
+		}
+
+		candidatePath := candidate.Path
+		referencePath := reference.Path
 
 		// 1. Cache first (AC2): a valid cached score serves immediately, no
 		//    ffmpeg. A successful (re)compute also drops any prior in-flight

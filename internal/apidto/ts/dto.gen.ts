@@ -1202,9 +1202,15 @@ export interface ExcludeTitlesBatchResponse {
  * load-bearing: DedupApplyRequest's KeepIndex is an ARRAY INDEX into this exact
  * slice (proposals.Proposal.Candidates order), so the client MUST render
  * candidates in received order and never sort them, or the index it sends
- * resolves to the wrong file. proposals.Candidate's TrackedID/PHash are
- * intentionally omitted — the view reads neither, and this package curates to
- * what the frontend consumes (see the Proposal doc / package doc).
+ * resolves to the wrong file. TrackedID is omitted — the view never reads it.
+ * Claude 2026-08-21: PHash is on the wire for pair-level VMAF gating.
+ * Reason: Dedup groups by phash OR TMDB identity; VMAF must run only when
+ * THIS candidate matches the VMAF reference on phash, not when the group's
+ * worst-pair pHashSimilarity clears 0.7. The list handler encodes domain
+ * proposals.Candidate (which already had phash); this field keeps the DTO
+ * honest so the client can skip the /vmaf fetch without duplicating Hamming
+ * against an undocumented extra key.
+ * Review if: VMAF gating moves to a server-computed boolean per candidate.
  */
 export interface Candidate {
   label: string;
@@ -1214,6 +1220,7 @@ export interface Candidate {
   bitRate: number /* int64 */;
   size: number /* int64 */;
   winner: boolean;
+  phash?: string;
 }
 /**
  * Proposal is one staged review-queue row as the Rename/Purge/Dedup views consume

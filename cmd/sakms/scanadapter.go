@@ -283,7 +283,7 @@ func (a *scanAdapter) ScanDedup(ctx context.Context, m mode.Mode, eagerVMAF bool
 	}
 
 	if eagerVMAF {
-		a.eagerVMAF(ctx, found)
+		a.eagerVMAF(ctx, found, threshold)
 	}
 	return nil
 }
@@ -297,7 +297,14 @@ func (a *scanAdapter) ScanDedup(ctx context.Context, m mode.Mode, eagerVMAF bool
 // stepped over so one bad file never blocks the rest of the cycle (plan AC7).
 // Concurrency is bounded by internal/vmaf's shared semaphore inside
 // api.EagerComputeAndCacheVMAF, not here.
-func (a *scanAdapter) eagerVMAF(ctx context.Context, groups []proposals.Proposal) {
+//
+// Claude 2026-08-21: skip pairs that are not a phash match.
+// Reason: TMDB-identity groups (Last Crusade crop vs 1080) must not burn
+// ffmpeg on dissimilar pictures. perFrameThreshold is the same cut Scan used.
+// Troubleshooting: scheduled VMAF still scoring identity-only groups means
+// this gate is missing or Candidate.PHash is empty in candidates_json.
+// Review if: Dedup stops grouping by TMDB identity.
+func (a *scanAdapter) eagerVMAF(ctx context.Context, groups []proposals.Proposal, perFrameThreshold int) {
 	for _, g := range groups {
 		if ctx.Err() != nil {
 			return
@@ -320,6 +327,9 @@ func (a *scanAdapter) eagerVMAF(ctx context.Context, groups []proposals.Proposal
 			}
 			if i == refIdx || c.Path == reference {
 				continue // the VMAF reference is never scored against itself
+			}
+			if !vmaf.ShouldScoreVMAF(c.PHash, g.Candidates[refIdx].PHash, perFrameThreshold) {
+				continue
 			}
 			if err := api.EagerComputeAndCacheVMAF(ctx, a.libStore, c.Path, reference); err != nil {
 				log.Printf("scanschedule: eager vmaf %s vs %s: %v", c.Path, reference, err)

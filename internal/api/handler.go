@@ -304,7 +304,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// + poll-shaped like the dedup scan above it: a cache miss kicks off a
 	// background computation and returns "computing"; the cache (vmaf_scores)
 	// serves repeat views without recomputing (AC2). See vmaf.go.
-	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals/{id}/vmaf", vmafHandler(propStore, libStore))
+	mux.HandleFunc("GET /api/modes/{mode}/dedup/proposals/{id}/vmaf", vmafHandler(propStore, libStore, settingsStore))
 	// Raw video bytes of one proposal's source file, for the card view's
 	// click-to-play preview. Workflow-generic (Dedup, Rename, and any future
 	// workflow all resolve through this one handler): proposalVideoPath

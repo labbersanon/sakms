@@ -1147,14 +1147,27 @@ describe("Dedup — phash similarity badge and confidence label (AC6)", () => {
 });
 
 describe("Dedup — VMAF card wiring (AC17)", () => {
+  const matchingPhash = "pdq256/5f:" + "0".repeat(320);
+  const farPhash = "pdq256/5f:" + "f".repeat(320);
+
   const vmafGroup = () =>
     dedupProposal({
       id: 3,
       title: "V",
       pHashSimilarity: 0.8,
       candidates: [
-        candidate({ label: "tracked", path: "/m/keep.mkv", winner: true }),
-        candidate({ label: "orphan.mkv", path: "/m/dupe.mkv", winner: false }),
+        candidate({
+          label: "tracked",
+          path: "/m/keep.mkv",
+          winner: true,
+          phash: matchingPhash,
+        }),
+        candidate({
+          label: "orphan.mkv",
+          path: "/m/dupe.mkv",
+          winner: false,
+          phash: matchingPhash,
+        }),
       ],
     });
 
@@ -1229,12 +1242,14 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
           path: "/m/keep.mkv",
           winner: true,
           size: 100,
+          phash: matchingPhash,
         }),
         candidate({
           label: "orphan.mkv",
           path: "/m/dupe.mkv",
           winner: false,
           size: 5000,
+          phash: matchingPhash,
         }),
       ],
     });
@@ -1308,7 +1323,7 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
     expect(calls.filter((c) => c.url.includes("/vmaf")).length).toBe(afterUnmount);
   });
 
-  it("does not request VMAF for low-confidence possible duplicates", async () => {
+  it("does not request VMAF when the pair is not a phash match", async () => {
     const calls = stubFetch((url) => {
       if (
         url.includes("/api/modes/movies/dedup/proposals") &&
@@ -1318,20 +1333,31 @@ describe("Dedup — VMAF card wiring (AC17)", () => {
         return jsonResponse([
           dedupProposal({
             id: 30,
-            title: "Possible Only",
-            pHashSimilarity: 0.5,
+            title: "Last Crusade",
+            pHashSimilarity: 0.48,
             candidates: [
-              candidate({ label: "primary.mkv", path: "/m/primary.mkv", winner: true }),
-              candidate({ label: "alt.mkv", path: "/m/alt.mkv", winner: false }),
+              candidate({
+                label: "crop.mkv",
+                path: "/m/crop.mkv",
+                winner: true,
+                phash: matchingPhash,
+              }),
+              candidate({
+                label: "open-matte.mkv",
+                path: "/m/full.mkv",
+                winner: false,
+                phash: farPhash,
+              }),
             ],
           }),
         ]);
-      if (url.includes("/vmaf")) throw new Error("low-confidence group must not request VMAF");
+      if (url.includes("/vmaf"))
+        throw new Error("identity-only pair must not request VMAF");
       throw new Error("unexpected fetch: " + url);
     });
 
     render(() => <Dedup />);
-    await screen.findByText("Possible Only");
+    await screen.findByText("Last Crusade");
     await new Promise((r) => setTimeout(r, 50));
 
     expect(calls.some((c) => c.url.includes("/vmaf"))).toBe(false);

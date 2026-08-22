@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -58,6 +59,9 @@ func getVMAF(t *testing.T, srv *httptest.Server, m string, id int64, candidateIn
 	return resp.StatusCode, out
 }
 
+func matchPHash() string { return "pdq256/5f:" + strings.Repeat("0", 320) }
+func farPHash() string   { return "pdq256/5f:" + strings.Repeat("f", 320) }
+
 func TestVMAFHandler_Validation(t *testing.T) {
 	srv, propStore, _ := newVMAFTestMux(t)
 	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
@@ -103,7 +107,7 @@ func TestVMAFHandler_CacheHit(t *testing.T) {
 	}
 
 	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
-		{Label: "cand", Path: candPath}, {Label: "primary", Path: refPath},
+		{Label: "cand", Path: candPath, PHash: matchPHash()}, {Label: "primary", Path: refPath, PHash: matchPHash()},
 	})
 
 	// Seed the cache exactly as a real compute would, with the candidate file's
@@ -145,7 +149,7 @@ func TestVMAFHandler_MissComputesAndCachesAndDedupesInflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
-		{Label: "cand", Path: candPath}, {Label: "primary", Path: refPath},
+		{Label: "cand", Path: candPath, PHash: matchPHash()}, {Label: "primary", Path: refPath, PHash: matchPHash()},
 	})
 
 	// A controllable stub: block until released, count invocations. If the
@@ -199,7 +203,7 @@ func TestVMAFHandler_MissComputesAndCachesAndDedupesInflight(t *testing.T) {
 func TestVMAFHandler_ComputeErrorSurfacesAsError(t *testing.T) {
 	srv, propStore, _ := newVMAFTestMux(t)
 	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
-		{Label: "cand", Path: "/nonexistent/candidate.mkv"}, {Label: "primary", Path: "/nonexistent/reference.mkv"},
+		{Label: "cand", Path: "/nonexistent/candidate.mkv", PHash: matchPHash()}, {Label: "primary", Path: "/nonexistent/reference.mkv", PHash: matchPHash()},
 	})
 
 	restore := vmafCompute
@@ -226,6 +230,77 @@ func TestVMAFHandler_ComputeErrorSurfacesAsError(t *testing.T) {
 	}
 	if got.Status != "error" || got.Error == "" {
 		t.Fatalf("expected an error status with a message, got %+v", got)
+	}
+}
+
+func TestVMAFHandler_SkipsWhenPHashDoesNotMatch(t *testing.T) {
+	srv, propStore, _ := newVMAFTestMux(t)
+	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
+		{Label: "crop", Path: "/crop.mkv", PHash: matchPHash()},
+		{Label: "open-matte", Path: "/full.mkv", PHash: farPHash()},
+	})
+
+	restore := vmafCompute
+	vmafCompute = func(ctx context.Context, a, b string) (float64, error) {
+		t.Errorf("identity-only pair must not compute VMAF; computed %s vs %s", a, b)
+		return 0, nil
+	}
+	defer func() { vmafCompute = restore }()
+
+	status, body := getVMAF(t, srv, "movies", dedup.ID, 0, 1)
+	if status != http.StatusOK {
+		t.Fatalf("got %d, want 200", status)
+	}
+	if body.Status != "skipped" {
+		t.Fatalf("expected skipped for dissimilar phash, got %+v", body)
+	}
+}
+
+func TestVMAFHandler_SkipsWhenPHashMissing(t *testing.T) {
+	srv, propStore, _ := newVMAFTestMux(t)
+	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
+		{Label: "a", Path: "/a.mkv"}, {Label: "b", Path: "/b.mkv"},
+	})
+
+	restore := vmafCompute
+	vmafCompute = func(ctx context.Context, a, b string) (float64, error) {
+		t.Errorf("missing phash must not compute VMAF; computed %s vs %s", a, b)
+		return 0, nil
+	}
+	defer func() { vmafCompute = restore }()
+
+	status, body := getVMAF(t, srv, "movies", dedup.ID, 0, 1)
+	if status != http.StatusOK || body.Status != "skipped" {
+		t.Fatalf("expected 200/skipped with empty hashes, got %d/%+v", status, body)
+	}
+}
+
+func TestVMAFHandler_SkipWinsOverCacheHit(t *testing.T) {
+	srv, propStore, libStore := newVMAFTestMux(t)
+	dir := t.TempDir()
+	candPath := filepath.Join(dir, "candidate.mkv")
+	refPath := filepath.Join(dir, "reference.mkv")
+	if err := os.WriteFile(candPath, []byte("candidate-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
+		{Label: "crop", Path: candPath, PHash: matchPHash()},
+		{Label: "open-matte", Path: refPath, PHash: farPHash()},
+	})
+	size, mtime, err := library.VMAFFileIdentity(candPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := libStore.UpsertVMAFScore(context.Background(), library.VMAFScore{
+		CandidatePath: candPath, CandidateFileSize: size, CandidateFileMTime: mtime,
+		ReferencePath: refPath, Score: 12.0, ComputedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := getVMAF(t, srv, "movies", dedup.ID, 0, 1)
+	if status != http.StatusOK || body.Status != "skipped" {
+		t.Fatalf("expected skipped even with a cached score, got %d/%+v", status, body)
 	}
 }
 

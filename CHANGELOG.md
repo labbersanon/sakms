@@ -7986,3 +7986,12 @@ way (scene identity), without phash-dropping library extras.
 Live case this reverses: two Last Crusade encodes (1920×816 crop vs 1920×1080
 WEB-DL) were the same TMDB 89 but ~48% PDQ similar, so Dedup stayed silent
 while Rename had a pending alternate fold.
+
+## 2026-08-21 — Dedup skips VMAF without a phash match
+
+VMAF is quality scoring after duplicate detection. Same-TMDB pairs that are not
+a perceptual match (crop vs open-matte Last Crusade at ~48% PDQ) no longer run
+ffmpeg: the on-demand `/vmaf` handler returns `skipped`, scheduled eager VMAF
+steps over the pair, and the Dedup card does not fetch a score. Pair-level
+phash match uses the same Hamming cut as Dedup grouping, not the group's worst-
+pair similarity or the old 0.7 UI heuristic.

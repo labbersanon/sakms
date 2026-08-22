@@ -134,9 +134,9 @@ export function applyKeep(
 // here — the same local-declaration pattern as DedupScanStatus above. The
 // endpoint is poll-shaped: a cache miss kicks off a background computation and
 // returns "computing" (HTTP 202); the client re-polls until "ready" (score
-// populated) or "error".
+// populated), "skipped" (pair is not a phash match — no ffmpeg), or "error".
 export interface DedupVmafScore {
-  status: "ready" | "computing" | "error";
+  status: "ready" | "computing" | "error" | "skipped";
   score?: number;
   cached?: boolean;
   candidateIndex: number;

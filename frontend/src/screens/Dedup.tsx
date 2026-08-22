@@ -62,6 +62,7 @@ import {
 } from "solid-js";
 import type { ApplyBatchItem, ApplyBatchResponse } from "@dto";
 import type { Mode } from "../api/discover";
+import { phashMatches } from "../dedupPhash";
 import type { AdultOrganizeAspect } from "../api/organize";
 import {
   type Candidate,
@@ -144,17 +145,27 @@ const similarityLabel = (s: number): string => {
   return "possible duplicate — review carefully";
 };
 
-// Claude 2026-08-12: VMAF is quality scoring, not duplicate detection.
-// Reason: only spend VMAF compute after pHash confidence reaches the same
-// threshold that the UI already labels "likely duplicate"; "possible" groups
-// need human duplicate review first, not expensive quality scoring.
-// Troubleshooting: sampled VMAF still looked like a hung scan on low-confidence
-// groups because every non-reference tile mounted a polling VMAF badge.
-// Review if: similarityLabel's likely/high thresholds change.
-const VMAF_MIN_CONFIDENCE = 0.7;
-
-const shouldScoreVmaf = (p: Proposal): boolean =>
-  (p.pHashSimilarity ?? 0) >= VMAF_MIN_CONFIDENCE;
+// Claude 2026-08-21: VMAF is pair-level, after a phash match.
+// Reason: TMDB-identity groups (crop vs open-matte) are not the same picture;
+// group pHashSimilarity is the worst pair and must not gate the matching one.
+// Replaces the 2026-08-12 0.7 group-confidence cut. API re-checks with the
+// stored threshold and returns status skipped.
+// Troubleshooting: identity-only tiles still polling /vmaf — candidate.phash
+// missing on the wire, or shouldScoreVmaf still using pHashSimilarity.
+// Review if: internal/vmaf.ShouldScoreVMAF's match rule changes.
+const shouldScoreVmaf = (
+  p: Proposal,
+  candidateIndex: number,
+  referenceIndex: number,
+  mode: Mode,
+): boolean => {
+  const cands = p.candidates ?? [];
+  return phashMatches(
+    cands[candidateIndex]?.phash,
+    cands[referenceIndex]?.phash,
+    mode,
+  );
+};
 
 // ViewMode toggles the group layout: "list" (compact table) or "card" (tiles
 // with a video preview). Persisted per mode in localStorage, defaulting to
@@ -226,7 +237,7 @@ const VmafBadge: Component<{
   referenceIndex: number;
 }> = (props) => {
   const [state, setState] = createSignal<{
-    status: "computing" | "ready" | "error";
+    status: "computing" | "ready" | "error" | "skipped";
     score?: number;
     error?: string;
   }>({ status: "computing" });
@@ -258,6 +269,8 @@ const VmafBadge: Component<{
               timer = setTimeout(() => void poll(), VMAF_POLL_MS);
             } else if (r.status === "ready") {
               setState({ status: "ready", score: r.score });
+            } else if (r.status === "skipped") {
+              setState({ status: "skipped" });
             } else {
               setState({ status: "error", error: r.error });
             }
@@ -277,25 +290,27 @@ const VmafBadge: Component<{
   );
 
   return (
-    <Show
-      when={state().status !== "computing"}
-      fallback={
-        <span class="text-xs text-muted" aria-label="VMAF computing">
-          VMAF…
-        </span>
-      }
-    >
+    <Show when={state().status !== "skipped"}>
       <Show
-        when={state().status === "ready"}
+        when={state().status !== "computing"}
         fallback={
-          <span class="text-xs text-warn" title={state().error} aria-label="VMAF unavailable">
-            VMAF n/a
+          <span class="text-xs text-muted" aria-label="VMAF computing">
+            VMAF…
           </span>
         }
       >
-        <span class="text-xs text-muted" aria-label="VMAF score">
-          VMAF {state().score?.toFixed(1)}
-        </span>
+        <Show
+          when={state().status === "ready"}
+          fallback={
+            <span class="text-xs text-warn" title={state().error} aria-label="VMAF unavailable">
+              VMAF n/a
+            </span>
+          }
+        >
+          <span class="text-xs text-muted" aria-label="VMAF score">
+            VMAF {state().score?.toFixed(1)}
+          </span>
+        </Show>
       </Show>
     </Show>
   );
@@ -898,8 +913,12 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
                                         </Show>
                                         <Show
                                           when={
-                                            shouldScoreVmaf(p) &&
-                                            i() !== referenceOf(p)
+                                            shouldScoreVmaf(
+                                              p,
+                                              i(),
+                                              referenceOf(p),
+                                              props.mode,
+                                            ) && i() !== referenceOf(p)
                                           }
                                         >
                                           <VmafBadge

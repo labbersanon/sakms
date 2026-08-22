@@ -65,8 +65,10 @@ type Candidate struct {
 	// PHash is this candidate's SAK-computed perceptual hash (Movies Dedup
 	// only), scheme-tagged (see internal/phash). Surfaced for display/audit —
 	// the same-TMDB group was already refined by phash similarity at Scan time,
-	// so nothing consumes this on Apply. Empty for non-Movies-library Dedup
-	// candidates (Adult/Series/Servarr paths don't compute it). Zero migration:
+	// so nothing consumes this on Apply. Empty for candidates whose scan
+	// did not compute a hash. VMAF gating (internal/vmaf.ShouldScoreVMAF)
+	// reads this pair-wise against the VMAF reference: no match, no ffmpeg.
+	// Zero migration:
 	// Candidates persist as the candidates_json blob, so a new field just
 	// serializes. Distinct from Proposal.PHash, which is Adult's Stash-READ
 	// hash, never SAK-computed.

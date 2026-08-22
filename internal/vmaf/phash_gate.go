@@ -14,7 +14,8 @@ import "github.com/labbersanon/sakms/internal/phash"
 // duplicate detector (it must not be).
 
 // ShouldScoreVMAF reports whether candidate vs reference is eligible for VMAF.
-// Missing hashes are not a match. A decode/scheme mismatch is not a match.
+// A missing hash, or one that fails to decode or uses a different scheme, is
+// not a match.
 func ShouldScoreVMAF(candidatePHash, referencePHash string, perFrameThreshold int) bool {
 	if candidatePHash == "" || referencePHash == "" {
 		return false

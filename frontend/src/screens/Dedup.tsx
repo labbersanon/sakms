@@ -56,9 +56,11 @@ import {
   createResource,
   createSignal,
   For,
+  Match,
   on,
   onCleanup,
   Show,
+  Switch,
 } from "solid-js";
 import type { ApplyBatchItem, ApplyBatchResponse } from "@dto";
 import type { Mode } from "../api/discover";
@@ -159,6 +161,7 @@ const shouldScoreVmaf = (
   referenceIndex: number,
   mode: Mode,
 ): boolean => {
+  if (candidateIndex === referenceIndex) return false; // the reference is never scored against itself
   const cands = p.candidates ?? [];
   return phashMatches(
     cands[candidateIndex]?.phash,
@@ -224,12 +227,12 @@ const VMAF_POLL_MS = 2500;
 
 // VmafBadge shows one non-primary tile's VMAF score against the group's current
 // primary (AC17). It fetches on render, re-polls every VMAF_POLL_MS while the
-// backend reports "computing", and stops on "ready", "error", or when the tile
-// unmounts / its params change (the createEffect+onCleanup pair). The primary
-// tile never renders this (it is the reference); switching primary re-keys the
-// effect via referenceIndex, which naturally re-fetches against the new
-// reference. An "error" is a small non-blocking indicator — it never disables
-// Apply/Skip/Dismiss.
+// backend reports "computing", and stops on "ready", "skipped", "error", or
+// when the tile unmounts / its params change (the createEffect+onCleanup pair).
+// The primary tile never renders this (it is the reference); switching primary
+// re-keys the effect via referenceIndex, which naturally re-fetches against the
+// new reference. An "error" is a small non-blocking indicator — it never
+// disables Apply/Skip/Dismiss.
 const VmafBadge: Component<{
   mode: Mode;
   proposalId: number;
@@ -289,30 +292,29 @@ const VmafBadge: Component<{
     ),
   );
 
+  // "skipped" renders nothing — no Match claims it.
   return (
-    <Show when={state().status !== "skipped"}>
-      <Show
-        when={state().status !== "computing"}
-        fallback={
-          <span class="text-xs text-muted" aria-label="VMAF computing">
-            VMAF…
-          </span>
-        }
-      >
-        <Show
-          when={state().status === "ready"}
-          fallback={
-            <span class="text-xs text-warn" title={state().error} aria-label="VMAF unavailable">
-              VMAF n/a
-            </span>
-          }
+    <Switch>
+      <Match when={state().status === "computing"}>
+        <span class="text-xs text-muted" aria-label="VMAF computing">
+          VMAF…
+        </span>
+      </Match>
+      <Match when={state().status === "ready"}>
+        <span class="text-xs text-muted" aria-label="VMAF score">
+          VMAF {state().score?.toFixed(1)}
+        </span>
+      </Match>
+      <Match when={state().status === "error"}>
+        <span
+          class="text-xs text-warn"
+          title={state().error}
+          aria-label="VMAF unavailable"
         >
-          <span class="text-xs text-muted" aria-label="VMAF score">
-            VMAF {state().score?.toFixed(1)}
-          </span>
-        </Show>
-      </Show>
-    </Show>
+          VMAF n/a
+        </span>
+      </Match>
+    </Switch>
   );
 };
 
@@ -912,14 +914,12 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
                                           </span>
                                         </Show>
                                         <Show
-                                          when={
-                                            shouldScoreVmaf(
-                                              p,
-                                              i(),
-                                              referenceOf(p),
-                                              props.mode,
-                                            ) && i() !== referenceOf(p)
-                                          }
+                                          when={shouldScoreVmaf(
+                                            p,
+                                            i(),
+                                            referenceOf(p),
+                                            props.mode,
+                                          )}
                                         >
                                           <VmafBadge
                                             mode={props.mode}

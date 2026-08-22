@@ -62,6 +62,19 @@ func getVMAF(t *testing.T, srv *httptest.Server, m string, id int64, candidateIn
 func matchPHash() string { return "pdq256/5f:" + strings.Repeat("0", 320) }
 func farPHash() string   { return "pdq256/5f:" + strings.Repeat("f", 320) }
 
+// failIfComputed swaps in a vmafCompute stub that fails the test if it is
+// reached — for the paths that must never shell out to ffmpeg (cache hit, or a
+// pair the phash gate skips).
+func failIfComputed(t *testing.T) {
+	t.Helper()
+	restore := vmafCompute
+	vmafCompute = func(_ context.Context, a, b string) (float64, error) {
+		t.Errorf("VMAF must not be computed; computed %s vs %s", a, b)
+		return 0, nil
+	}
+	t.Cleanup(func() { vmafCompute = restore })
+}
+
 func TestVMAFHandler_Validation(t *testing.T) {
 	srv, propStore, _ := newVMAFTestMux(t)
 	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
@@ -123,13 +136,7 @@ func TestVMAFHandler_CacheHit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A cache hit must never shell out to ffmpeg — fail loudly if it does.
-	restore := vmafCompute
-	vmafCompute = func(ctx context.Context, a, b string) (float64, error) {
-		t.Errorf("cache hit should not compute; computed %s vs %s", a, b)
-		return 0, nil
-	}
-	defer func() { vmafCompute = restore }()
+	failIfComputed(t)
 
 	status, body := getVMAF(t, srv, "movies", dedup.ID, 0, 1)
 	if status != http.StatusOK {
@@ -233,45 +240,28 @@ func TestVMAFHandler_ComputeErrorSurfacesAsError(t *testing.T) {
 	}
 }
 
-func TestVMAFHandler_SkipsWhenPHashDoesNotMatch(t *testing.T) {
-	srv, propStore, _ := newVMAFTestMux(t)
-	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
-		{Label: "crop", Path: "/crop.mkv", PHash: matchPHash()},
-		{Label: "open-matte", Path: "/full.mkv", PHash: farPHash()},
-	})
-
-	restore := vmafCompute
-	vmafCompute = func(ctx context.Context, a, b string) (float64, error) {
-		t.Errorf("identity-only pair must not compute VMAF; computed %s vs %s", a, b)
-		return 0, nil
+func TestVMAFHandler_SkipsPairsThatAreNotAPHashMatch(t *testing.T) {
+	tests := []struct {
+		name                string
+		candPHash, refPHash string
+	}{
+		{"dissimilar hashes (crop vs open-matte)", matchPHash(), farPHash()},
+		{"no hashes at all", "", ""},
 	}
-	defer func() { vmafCompute = restore }()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, propStore, _ := newVMAFTestMux(t)
+			dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
+				{Label: "crop", Path: "/crop.mkv", PHash: tc.candPHash},
+				{Label: "open-matte", Path: "/full.mkv", PHash: tc.refPHash},
+			})
+			failIfComputed(t)
 
-	status, body := getVMAF(t, srv, "movies", dedup.ID, 0, 1)
-	if status != http.StatusOK {
-		t.Fatalf("got %d, want 200", status)
-	}
-	if body.Status != "skipped" {
-		t.Fatalf("expected skipped for dissimilar phash, got %+v", body)
-	}
-}
-
-func TestVMAFHandler_SkipsWhenPHashMissing(t *testing.T) {
-	srv, propStore, _ := newVMAFTestMux(t)
-	dedup := insertProposal(t, propStore, mode.Movies, proposals.Dedup, []proposals.Candidate{
-		{Label: "a", Path: "/a.mkv"}, {Label: "b", Path: "/b.mkv"},
-	})
-
-	restore := vmafCompute
-	vmafCompute = func(ctx context.Context, a, b string) (float64, error) {
-		t.Errorf("missing phash must not compute VMAF; computed %s vs %s", a, b)
-		return 0, nil
-	}
-	defer func() { vmafCompute = restore }()
-
-	status, body := getVMAF(t, srv, "movies", dedup.ID, 0, 1)
-	if status != http.StatusOK || body.Status != "skipped" {
-		t.Fatalf("expected 200/skipped with empty hashes, got %d/%+v", status, body)
+			status, body := getVMAF(t, srv, "movies", dedup.ID, 0, 1)
+			if status != http.StatusOK || body.Status != "skipped" {
+				t.Fatalf("got %d/%+v, want 200/skipped", status, body)
+			}
+		})
 	}
 }
 

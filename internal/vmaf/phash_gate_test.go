@@ -17,10 +17,10 @@ func TestShouldScoreVMAF(t *testing.T) {
 	far := seededHash(strings.Repeat("f", 320))
 
 	tests := []struct {
-		name                  string
-		candidate, reference  string
-		perFrameThreshold     int
-		want                  bool
+		name                 string
+		candidate, reference string
+		perFrameThreshold    int
+		want                 bool
 	}{
 		{"identical hashes match", ref, ref, phash.DefaultMoviesThreshold, true},
 		{"near hashes match at movies default", near, ref, phash.DefaultMoviesThreshold, true},

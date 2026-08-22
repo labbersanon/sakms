@@ -11,13 +11,9 @@
 
 import type { Mode } from "./api/discover";
 
-export const PHASH_FRAMES = 5;
-export const PHASH_THRESHOLD_MOVIES = 64;
-export const PHASH_THRESHOLD_DEFAULT = 40;
-
-export function phashThresholdForMode(mode: Mode): number {
-  return mode === "movies" ? PHASH_THRESHOLD_MOVIES : PHASH_THRESHOLD_DEFAULT;
-}
+const PHASH_FRAMES = 5;
+const PHASH_THRESHOLD_MOVIES = 64;
+const PHASH_THRESHOLD_DEFAULT = 40;
 
 export function phashMatches(
   a: string | undefined,
@@ -39,7 +35,9 @@ export function phashMatches(
     if (Number.isNaN(x)) return false;
     bits += popcount8(x);
   }
-  return bits <= phashThresholdForMode(mode) * PHASH_FRAMES;
+  const perFrame =
+    mode === "movies" ? PHASH_THRESHOLD_MOVIES : PHASH_THRESHOLD_DEFAULT;
+  return bits <= perFrame * PHASH_FRAMES;
 }
 
 function popcount8(x: number): number {

@@ -78,11 +78,10 @@ func pairKey(candidatePath, referencePath string) string {
 // candidateIndex=N&referenceIndex=M. It scores the proposal's candidate at
 // index N against the candidate at index M (the group's VMAF reference —
 // the largest on-disk file, sent by the frontend independently of Keep-primary),
-// but only when the pair is a phash match (vmaf.ShouldScoreVMAF). Identity-only
-// TMDB groups return status "skipped" without ffmpeg. Matching pairs check the
-// vmaf_scores cache first (AC2) and computing+caching on a miss (AC1).
-// Scoring a candidate against itself is rejected (candidateIndex ==
-// referenceIndex).
+// but only when the pair is a phash match (vmaf.ShouldScoreVMAF): identity-only
+// TMDB groups return status "skipped" without ffmpeg. A matching pair checks the
+// vmaf_scores cache first (AC2) and computes+caches on a miss (AC1). Scoring a
+// candidate against itself is rejected (candidateIndex == referenceIndex).
 //
 // The handler stays index-generic: it does not re-pick the largest file. The
 // frontend (and eager scan) must send the size-based reference so cache keys
@@ -145,11 +144,12 @@ func vmafHandler(propStore *proposals.Store, libStore *library.Store, settingsSt
 			http.Error(w, tErr.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Claude 2026-08-21: skip VMAF when the pair is not a phash match.
+		// Claude 2026-08-21: this gate runs BEFORE the cache read.
 		// Reason: TMDB-identity groups (crop vs open-matte) are not the same
-		// picture; ffmpeg VMAF is quality scoring after duplicate detection.
+		// picture, and a score cached before the gate existed must still
+		// report skipped rather than be served back.
 		// Troubleshooting: Last Crusade-style tiles still running ffmpeg means
-		// this gate is after cache/compute or candidates_json lacks PHash.
+		// the gate moved below cache/compute, or candidates_json lacks PHash.
 		// Review if: Dedup stops grouping by TMDB identity.
 		if !vmaf.ShouldScoreVMAF(candidate.PHash, reference.PHash, threshold) {
 			writeJSON(w, vmafScoreResponse{

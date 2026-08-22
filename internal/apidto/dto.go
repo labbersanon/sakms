@@ -1225,12 +1225,9 @@ type ExcludeTitlesBatchResponse struct {
 // resolves to the wrong file. TrackedID is omitted — the view never reads it.
 //
 // Claude 2026-08-21: PHash is on the wire for pair-level VMAF gating.
-// Reason: Dedup groups by phash OR TMDB identity; VMAF must run only when
-// THIS candidate matches the VMAF reference on phash, not when the group's
-// worst-pair pHashSimilarity clears 0.7. The list handler encodes domain
-// proposals.Candidate (which already had phash); this field keeps the DTO
-// honest so the client can skip the /vmaf fetch without duplicating Hamming
-// against an undocumented extra key.
+// Reason: Dedup groups by phash OR TMDB identity, so the client must know
+// whether THIS candidate matches the VMAF reference — the group's worst-pair
+// pHashSimilarity cannot answer that. A curation exception, not a precedent.
 // Review if: VMAF gating moves to a server-computed boolean per candidate.
 type Candidate struct {
 	Label      string `json:"label"`

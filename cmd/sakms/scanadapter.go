@@ -321,6 +321,7 @@ func (a *scanAdapter) eagerVMAF(ctx context.Context, groups []proposals.Proposal
 			continue
 		}
 		reference := g.Candidates[refIdx].Path
+		referencePHash := g.Candidates[refIdx].PHash
 		for i, c := range g.Candidates {
 			if ctx.Err() != nil {
 				return
@@ -328,7 +329,7 @@ func (a *scanAdapter) eagerVMAF(ctx context.Context, groups []proposals.Proposal
 			if i == refIdx || c.Path == reference {
 				continue // the VMAF reference is never scored against itself
 			}
-			if !vmaf.ShouldScoreVMAF(c.PHash, g.Candidates[refIdx].PHash, perFrameThreshold) {
+			if !vmaf.ShouldScoreVMAF(c.PHash, referencePHash, perFrameThreshold) {
 				continue
 			}
 			if err := api.EagerComputeAndCacheVMAF(ctx, a.libStore, c.Path, reference); err != nil {

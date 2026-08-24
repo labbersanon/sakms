@@ -108,6 +108,7 @@ const mainstreamDefaults = (url: string): Response | null => {
   // test meaning to exercise the grid would pass against the old surface.
   if (url.includes("/discover/detail"))
     return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
+  if (url.includes("/discover/genres")) return null;
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });

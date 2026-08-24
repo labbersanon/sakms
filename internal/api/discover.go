@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -326,6 +327,17 @@ func discoverGenresHandler(httpClient *http.Client, connStore *connections.Store
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+
+		// Claude 2026-08-24: sort TMDB's genre list A→Z before serving.
+		// Reason: TMDB returns genres in arbitrary id order; the Mainstream
+		// filter dropdown is a single <select>, so a fixed sort is the only
+		// way every genre is findable without scanning the whole list.
+		// Troubleshooting: "missing genres" reports where the API returned
+		// data but operators couldn't locate e.g. "Science Fiction".
+		// Review if: a locale-aware sort is added (would need a language param).
+		slices.SortFunc(genres, func(a, b tmdb.Genre) int {
+			return strings.Compare(a.Name, b.Name)
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(genres)

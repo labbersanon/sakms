@@ -8,8 +8,8 @@
 // filter/sort actually renders (a filtered grid replaces the carousels; see
 // Mainstream.tsx/Adult.tsx).
 
-import { type Component, type JSX, createResource, For, Show } from "solid-js";
-import { labelClass, FILTER_BAR_FIELDS_CLASS } from "../../components/ui";
+import { type Component, type JSX, createResource, createSignal, For, Show } from "solid-js";
+import { ErrorText, labelClass, FILTER_BAR_FIELDS_CLASS } from "../../components/ui";
 import { type AdultSortBy, type DiscoverSortBy } from "../../api/discover";
 import { type Genre, fetchGenres } from "../../api/discoverSliders";
 
@@ -126,10 +126,22 @@ export const MainstreamFilterSortBar: Component<{
   onChange: (f: MainstreamFilters) => void;
   lockedContentType?: MainstreamContentType;
 }> = (props) => {
-  const [genres] = createResource(
-    () => props.value().contentType,
-    (ct) => fetchGenres(ct).catch(() => [] as Genre[]),
-  );
+  // lockedContentType is the Discover tab's Movies/Series scope — when set,
+  // the content-type <select> is hidden but the genre list must still track
+  // that tab, not a stale filters.contentType left over from a prior view.
+  const genreMode = () =>
+    props.lockedContentType ?? props.value().contentType;
+
+  const [genreError, setGenreError] = createSignal<Error | null>(null);
+  const [genres, genreResource] = createResource(genreMode, async (mode) => {
+    setGenreError(null);
+    try {
+      return await fetchGenres(mode);
+    } catch (err) {
+      setGenreError(err instanceof Error ? err : new Error(String(err)));
+      return [] as Genre[];
+    }
+  });
 
   const patch = (partial: Partial<MainstreamFilters>) =>
     props.onChange({ ...props.value(), ...partial });
@@ -157,17 +169,69 @@ export const MainstreamFilterSortBar: Component<{
           </SelectField>
         </Show>
 
-        <SelectField
-          id="discover-filter-genre"
-          label="Genre"
-          value={props.value().genreId ?? ""}
-          onChange={(v) => patch({ genreId: v ? parseInt(v, 10) : null })}
-        >
-          <option value="">All genres</option>
-          <For each={genres() ?? []}>
-            {(g) => <option value={g.id}>{g.name}</option>}
-          </For>
-        </SelectField>
+        <div class="flex w-full flex-col sm:w-auto">
+          <label class={labelClass} for="discover-filter-genre">
+            Genre
+          </label>
+          <Show
+            when={!genreResource.loading}
+            fallback={
+              <select
+                id="discover-filter-genre"
+                class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
+                disabled
+              >
+                <option>Loading genres…</option>
+              </select>
+            }
+          >
+            <Show
+              when={!genreError()}
+              fallback={
+                <>
+                  <select
+                    id="discover-filter-genre"
+                    class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
+                    disabled
+                  >
+                    <option>Could not load genres</option>
+                  </select>
+                  <ErrorText>
+                    {genreError()?.message ?? "Genre list failed to load"}
+                    {" — "}
+                    <button
+                      type="button"
+                      class="underline"
+                      onClick={() => void genreResource.refetch()}
+                    >
+                      Retry
+                    </button>
+                  </ErrorText>
+                </>
+              }
+            >
+              <select
+                id="discover-filter-genre"
+                class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
+                value={props.value().genreId ?? ""}
+                onChange={(e) =>
+                  patch({
+                    genreId: e.currentTarget.value
+                      ? parseInt(e.currentTarget.value, 10)
+                      : null,
+                  })
+                }
+              >
+                <option value="">All genres</option>
+                <For each={genres() ?? []}>
+                  {(g) => (
+                    <option value={String(g.id)}>{g.name}</option>
+                  )}
+                </For>
+              </select>
+            </Show>
+          </Show>
+        </div>
 
         <SelectField
           id="discover-filter-year"

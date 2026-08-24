@@ -716,6 +716,37 @@ func TestDiscoverGenresHandler_MoviesUsesMovieGenreList(t *testing.T) {
 	}
 }
 
+// TestDiscoverGenresHandler_SortsAlphabetically proves the handler returns
+// TMDB's genre list sorted by name — the Mainstream filter dropdown is a
+// single <select>, so a fixed sort is the only way every genre is findable.
+func TestDiscoverGenresHandler_SortsAlphabetically(t *testing.T) {
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"genres":[{"id":35,"name":"Comedy"},{"id":28,"name":"Action"}]}`))
+	})
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/movies/discover/genres")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var genres []tmdb.Genre
+	if err := json.NewDecoder(resp.Body).Decode(&genres); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(genres) != 2 || genres[0].Name != "Action" || genres[1].Name != "Comedy" {
+		t.Errorf("expected Action then Comedy, got %+v", genres)
+	}
+}
+
 // TestDiscoverStudiosHandler_ReturnsKnownStudios proves the static seed list
 // serves directly with no TMDB connection required.
 func TestDiscoverStudiosHandler_ReturnsKnownStudios(t *testing.T) {

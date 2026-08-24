@@ -53,6 +53,8 @@ const defaults = (url: string): Response | null => {
         mediaType: "movie",
       },
     ]);
+  if (url.includes("/discover/genres"))
+    return jsonResponse([{ id: 10759, name: "Action & Adventure" }]);
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });

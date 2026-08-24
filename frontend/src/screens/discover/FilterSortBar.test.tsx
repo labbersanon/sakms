@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import {
   type AdultSortValue,
   type MainstreamFilters,
@@ -187,6 +187,52 @@ describe("MainstreamFilterSortBar", () => {
     stubGenres([]);
     renderBar();
     expect(screen.queryByText("Clear filters")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a genre-fetch failure instead of an empty dropdown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/modes/movies/discover/genres")) {
+          return new Response("tmdb down", { status: 502 });
+        }
+        throw new Error("unexpected fetch: " + url);
+      }),
+    );
+    renderBar();
+    await waitFor(() =>
+      expect(screen.getByText(/Could not load genres/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Retry")).toBeInTheDocument();
+    expect(screen.queryByText("All genres")).not.toBeInTheDocument();
+  });
+
+  it("fetches genres for lockedContentType even when filters differ", async () => {
+    const fn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/modes/series/discover/genres"))
+        return jsonResponse([{ id: 10759, name: "Action & Adventure" }]);
+      throw new Error("unexpected fetch: " + url);
+    });
+    vi.stubGlobal("fetch", fn);
+    const [value, setValue] = createSignal<MainstreamFilters>({
+      ...DEFAULT_MAINSTREAM_FILTERS,
+      contentType: "movies",
+    });
+    render(() => (
+      <MainstreamFilterSortBar
+        value={value}
+        onChange={setValue}
+        lockedContentType="series"
+      />
+    ));
+    expect(await screen.findByText("Action & Adventure")).toBeInTheDocument();
+    expect(
+      fn.mock.calls.some(([u]) =>
+        String(u).includes("/api/modes/series/discover/genres"),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -253,7 +253,7 @@ func TestRun_FeedBootPollFiresBeforeInterval(t *testing.T) {
 	if err := settingsStore.Set(ctx, FeedIntervalSettingKey, "3600"); err != nil {
 		t.Fatalf("setting feed interval: %v", err)
 	}
-	go Run(ctx, 0, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth())
+	go Run(ctx, 0, connStore, nil, settingsStore, releaseStore, nil, rssFeedsStore, NewFeedHealth(), nil)
 
 	select {
 	case <-hit:

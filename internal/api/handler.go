@@ -103,7 +103,7 @@ import (
 // Troubleshooting: it MAY BE NIL, and nil means "no pruning rules" — a Purge
 // scan then behaves exactly as it did before this feature, and the CRUD routes
 // return 503. Every test call site that does not exercise rules passes nil.
-func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy, discoverCache *discoverrefresh.Store, pruningStore *pruning.Store) *http.ServeMux {
+func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, propStore *proposals.Store, prober dedup.Prober, hasher dedup.PHasher, videoHasher rename.PHasher, settingsStore *settings.Store, grabsStore *grabs.Store, libStore *library.Store, slidersStore *discoversliders.Store, traktStore *trakt.Store, adultNewestRowStore *adultnewest.Store, adultNewestReleaseStore *adultnewest.ReleaseStore, feedHealth *adultnewest.FeedHealth, rssFeedsStore *rssfeeds.Store, entityStore parseentity.EntityStore, whStore *webhooks.Store, dl *downloader.Manager, nzb *usenet.Manager, hub *dedupscan.Hub, imageProxy *imageproxy.Proxy, discoverCache *discoverrefresh.Store, pruningStore *pruning.Store, adultMonitoredStore *adultnewest.MonitoredStore) *http.ServeMux {
 	// Claude 2026-08-03: added discoverRefreshDeps, built from params NewMux
 	// already carries (BE-16, discover-scheduled-refresh plan §5.2/§5.3).
 	// Reason: the slider create/update and Trakt device-poll lifecycle hooks
@@ -451,6 +451,14 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// on the literal "adult" path so ServeMux prefers it over {mode}. See
 	// adultdiscover_newest_scenes.go.
 	mux.HandleFunc("GET /api/modes/adult/discover/newest/entity-scenes", adultNewestEntityScenesHandler(connStore, scStore, settingsStore, adultNewestReleaseStore, feedHealth))
+	// Adult monitored-entity toggle — performer/studio monitoring (adult_monitor.go).
+	// GET: reads monitor state for kind+name; ZERO Prowlarr calls.
+	// PUT: enables/disables monitoring; resolves entity id server-side on enable.
+	// Claude 2026-08-24: registered on literal "adult" so ServeMux prefers it.
+	mux.HandleFunc("GET /api/modes/adult/discover/monitor", getAdultMonitorStateHandler(adultMonitoredStore, adultNewestReleaseStore))
+	mux.HandleFunc("PUT /api/modes/adult/discover/monitor", putAdultMonitorHandler(adultMonitoredStore, adultNewestReleaseStore, grabsStore, httpClient, connStore, scStore, settingsStore))
+	// Monitored-entity scene strip — the Monitored Discover row.
+	mux.HandleFunc("GET /api/modes/adult/newest-rows/monitored/resolve", getMonitoredEntitiesRowHandler(adultMonitoredStore, adultNewestReleaseStore, feedHealth))
 	// Pop-up / drill-down description + bio read: one scene description, or one
 	// performer/studio bio, fetched from the catalogs only on an explicit
 	// operator open. Narrower than the drill-down above it — it never constructs
@@ -663,6 +671,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/settings/watch-folders-poll-interval", putWatchFoldersPollIntervalHandler(settingsStore))
 	mux.HandleFunc("GET /api/settings/adult-newest-scan-interval", getAdultNewestScanIntervalHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/adult-newest-scan-interval", putAdultNewestScanIntervalHandler(settingsStore))
+	// Claude 2026-08-24: Adult monitor poll interval setting.
+	mux.HandleFunc("GET /api/settings/adult-monitor-interval", getAdultMonitorIntervalHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/adult-monitor-interval", putAdultMonitorIntervalHandler(settingsStore))
 
 	// Claude 2026-08-03: register the Discover cache background refresh
 	// interval GET/PUT pair (BE-9, discover-scheduled-refresh plan §6.4).

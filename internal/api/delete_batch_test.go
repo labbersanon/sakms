@@ -1014,7 +1014,7 @@ func TestDeleteBatch_FiresNoWebhook(t *testing.T) {
 		t.Fatalf("seeding the proposal: %v", err)
 	}
 
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, whStore, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, scStore, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, whStore, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	out := postDeleteBatch(t, srv, []deleteBatchItem{{ID: saved[0].ID}})

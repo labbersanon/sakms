@@ -76,7 +76,7 @@ func newAdultCacheServer(t *testing.T, sceneTitle, sceneKey string) (*httptest.S
 		t.Fatalf("setting quality tier: %v", err)
 	}
 	seedAdultCacheRelease(t, releaseStore, sceneTitle, sceneKey)
-	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil)
+	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, grabsStore, settingsStore, releaseStore
@@ -445,7 +445,7 @@ func TestAutoGrabBatch_Adult_WeakIdentityReturnsFallback(t *testing.T) {
 	}
 
 	dl := newTestDownloader("gid-batch-weak", t.TempDir())
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
@@ -509,7 +509,7 @@ func TestAutoGrabBatch_Adult_StrongIdentityGrabs(t *testing.T) {
 
 	dl := newTestDownloader("gid-batch-strong", t.TempDir())
 	dl.EnableTestAutoGID()
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{

@@ -104,6 +104,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/excludes"
@@ -205,7 +206,8 @@ func LoadUsenetRetryInterval(ctx context.Context, settingsStore *settings.Store)
 func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *http.Client,
 	connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store,
 	grabsStore *grabs.Store, excludesStore *excludes.Store, whStore *webhooks.Store,
-	libStore *library.Store, dl *downloader.Manager, nzb *usenet.Manager) {
+	libStore *library.Store, dl *downloader.Manager, nzb *usenet.Manager,
+	monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore) {
 
 	if interval <= 0 {
 		return // opt-in gate: off by default, honoring "manual first"
@@ -241,7 +243,7 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 				interval = cur
 				ticker.Reset(cur)
 			}
-			runUsenetRetryCycle(ctx, deps, build, lookup, libStore, excludedRequestKeys(ctx, excludesStore), time.Now())
+			runUsenetRetryCycle(ctx, deps, build, lookup, libStore, monitoredStore, releaseStore, excludedRequestKeys(ctx, excludesStore), time.Now())
 		}
 	}
 }
@@ -281,12 +283,15 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 // and releaseDueGrabs return immediately, exactly as sweepUsenetFailures does
 // for a nil lookup.
 func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc,
-	lookup usenetDownloadLookup, libStore *library.Store, excluded map[string]bool, now time.Time) {
+	lookup usenetDownloadLookup, libStore *library.Store, monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore, excluded map[string]bool, now time.Time) {
 
 	sweepUsenetFailures(ctx, deps, lookup)
 	retryDueGrabs(ctx, deps, build, excluded, now)
 	monitorAirDates(ctx, deps, build, libStore, excluded, now)
 	releaseDueGrabs(ctx, deps, build, libStore, excluded, now)
+	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
+	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.
+	monitorAdultEntities(ctx, deps, build, monitoredStore, releaseStore, excluded, now)
 }
 
 // sweepUsenetFailures is the AUTHORITATIVE M3 transition: it asks the usenet

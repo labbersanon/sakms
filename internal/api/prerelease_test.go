@@ -96,7 +96,7 @@ func TestReleaseDueGrabsReturnsImmediatelyWithoutALibraryStore(t *testing.T) {
 		t.Fatal("a nil library store must stop the pass before it builds a session")
 		return nil, nil
 	}
-	runUsenetRetryCycle(ctx, env.deps, failIfBuilt, nil, nil, nil, time.Now())
+	runUsenetRetryCycle(ctx, env.deps, failIfBuilt, nil, nil, nil, nil, nil, time.Now())
 
 	after, err := env.grabs.Get(ctx, g.ID)
 	if err != nil {
@@ -162,7 +162,7 @@ func TestReleaseDueGrabsPromotesTheSameRow(t *testing.T) {
 	env := newPreReleaseEnv(t, healthyMovieRelease)
 	g := heldRow(t, env.grabs, "Some Movie", 42, time.Now().Add(-time.Hour))
 
-	runUsenetRetryCycle(ctx, env.deps, env.build, nil, env.lib, nil, time.Now())
+	runUsenetRetryCycle(ctx, env.deps, env.build, nil, env.lib, nil, nil, nil, time.Now())
 
 	list, err := env.grabs.List(ctx, mode.Movies)
 	if err != nil {
@@ -489,7 +489,7 @@ func TestParkPendingRetryPrefersTheExistingGrabID(t *testing.T) {
 		t.Fatalf("fixture is wrong: R (id %d) must sort after H (id %d) for FindPendingRetry's id ASC to prefer H", r.ID, h.ID)
 	}
 
-	runUsenetRetryCycle(ctx, env.deps, env.build, nil, env.lib, nil, time.Now())
+	runUsenetRetryCycle(ctx, env.deps, env.build, nil, env.lib, nil, nil, nil, time.Now())
 
 	afterH, err := env.grabs.Get(ctx, h.ID)
 	if err != nil {

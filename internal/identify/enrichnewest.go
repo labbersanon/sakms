@@ -234,6 +234,37 @@ func tpdbSceneToMatch(s tpdbrest.Scene) *MatchResult {
 	}
 }
 
+// ResolveEntityID resolves kind+name to an opaque catalog id in the given box,
+// using the same exact-name logic EnrichNewestScenes uses internally. Returns ""
+// when the box isn't configured, the entity cannot be matched, or the context is
+// cancelled. It is exported for the Adult monitor feature, which must record the
+// resolved id before enabling monitoring (requirement: catalog identity required).
+//
+// Preferred box selection (TPDB first per bio-precedent pins):
+//   - If box is non-empty, resolve in that box only.
+//   - If box is empty, try "tpdb" first, then fall back to other configured boxes.
+//
+// The caller should pass the entity_source from the pool row when available,
+// so the box used for monitoring matches the box that identified the entity.
+func (id *Identifier) ResolveEntityID(ctx context.Context, kind, name, box string) (resolvedBox, entityID string) {
+	if id.Boxes == nil {
+		return "", ""
+	}
+	if box != "" {
+		return box, id.resolveEntityInBox(ctx, box, kind, name)
+	}
+	// No box specified — try tpdb first (bio precedent), then any configured stash-boxes.
+	if eid := id.resolveEntityInBox(ctx, "tpdb", kind, name); eid != "" {
+		return "tpdb", eid
+	}
+	for boxName := range id.Boxes.stashBoxes {
+		if eid := id.resolveEntityInBox(ctx, boxName, kind, name); eid != "" {
+			return boxName, eid
+		}
+	}
+	return "", ""
+}
+
 // MatchReleaseTitlesToCatalog is the exported entry point to this package's
 // local, zero-upstream-cost scene-title matcher (matchReleaseTitles) for
 // callers outside the entity-scoped EnrichNewestScenes path — e.g. Adult

@@ -1108,3 +1108,72 @@ func TestRearmHeldRequest_ErrNotFound(t *testing.T) {
 		t.Errorf("want ErrNotFound, got %v", err)
 	}
 }
+
+// --- monitor_entity_key round-trip ---
+
+func TestSetMonitorEntityKey_RoundTrips(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	g, err := s.Create(ctx, Grab{
+		Mode: mode.Adult, Title: "A Scene", TMDBID: 0,
+		Indexer: "I", Protocol: "usenet", DownloadClient: "nntp", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if g.MonitorEntityKey != "" {
+		t.Errorf("MonitorEntityKey should be empty on create; got %q", g.MonitorEntityKey)
+	}
+
+	key := "performer\x1ftpdb\x1fabc123"
+	if err := s.SetMonitorEntityKey(ctx, g.ID, key); err != nil {
+		t.Fatalf("SetMonitorEntityKey: %v", err)
+	}
+
+	got, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.MonitorEntityKey != key {
+		t.Errorf("MonitorEntityKey round-trip: got %q; want %q", got.MonitorEntityKey, key)
+	}
+}
+
+func TestSetMonitorEntityKey_ErrNotFound(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetMonitorEntityKey(context.Background(), 999999, "k"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound for missing grab; got %v", err)
+	}
+}
+
+func TestMonitorEntityKey_AppearsInList(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	g, err := s.Create(ctx, Grab{
+		Mode: mode.Adult, Title: "Listed Scene", TMDBID: 0,
+		Indexer: "I", Protocol: "usenet", DownloadClient: "nntp", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	key := "studio\x1ffansdb\x1fstudio-id"
+	if err := s.SetMonitorEntityKey(ctx, g.ID, key); err != nil {
+		t.Fatalf("SetMonitorEntityKey: %v", err)
+	}
+
+	list, err := s.List(ctx, mode.Adult)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, row := range list {
+		if row.ID == g.ID {
+			if row.MonitorEntityKey != key {
+				t.Errorf("List MonitorEntityKey: got %q; want %q", row.MonitorEntityKey, key)
+			}
+			return
+		}
+	}
+	t.Fatalf("grab %d not found in List", g.ID)
+}

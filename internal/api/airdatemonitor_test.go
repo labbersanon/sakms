@@ -253,7 +253,7 @@ func (e *airDateEnv) catalog() seasonCatalog {
 // silently execute nothing and pass.
 func (e *airDateEnv) runCycle(t *testing.T, now time.Time) {
 	t.Helper()
-	runUsenetRetryCycle(e.ctx, e.deps, e.build, nil, e.lib, e.excluded, now)
+	runUsenetRetryCycle(e.ctx, e.deps, e.build, nil, e.lib, nil, nil, e.excluded, now)
 }
 
 func (e *airDateEnv) trackSeries(t *testing.T) library.Series {
@@ -2017,7 +2017,7 @@ func TestSeasonRoutesAreRegisteredOnTheRealMux(t *testing.T) {
 	// dereferences both stores. Passing them also makes this the one test that
 	// drives the TMDB merge all the way through the production mux.
 	srv := httptest.NewServer(NewMux(testHTTPClient(), env.conns, env.scConns, nil, nil, testPHasher(t), testVideoHasher(t),
-		env.settings, env.grabs, env.lib, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+		env.settings, env.grabs, env.lib, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	do := func(t *testing.T, method, path, body string) *http.Response {

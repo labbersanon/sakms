@@ -168,17 +168,28 @@ func LoadInterval(ctx context.Context, settingsStore *settings.Store) time.Durat
 // interval defaults to defaultIntervalHours, not off (see
 // IntervalSettingKey's doc comment), so this job runs out of the box unlike
 // every other background job in this codebase.
-func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth) {
+// Run drives the background scan loop until ctx is cancelled — mirrors
+// recheck.Run's shape (ticker, live-retune via settings, context-cancellation
+// shutdown). Three independent passes, each with its own ticker:
+//   1. Browse: newest-releases browse (browse/identify pipeline)
+//   2. Feed: RSS feed ingestion
+//   3. Monitor: monitored performer/studio polling (monitor.go)
+//
+// monitoredStore is nil when the monitor pass is not deployed — the ticker is
+// skipped in that case. Passing nil is the correct call for any instance that
+// hasn't been migrated to 0017 yet.
+func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth, monitoredStore *MonitoredStore) {
 	feedInterval := LoadFeedInterval(ctx, settingsStore)
-	if interval <= 0 && feedInterval <= 0 {
-		return // opt-in gate: both passes off, honoring "manual first"
+	monitorInterval := LoadMonitorInterval(ctx, settingsStore)
+	if interval <= 0 && feedInterval <= 0 && (monitorInterval <= 0 || monitoredStore == nil) {
+		return // opt-in gate: all passes off, honoring "manual first"
 	}
 
 	httpClient := &http.Client{Timeout: outboundTimeout}
 
-	// Two independent tickers, each with its own enable check and cadence, so
-	// disabling one pass never stops the other (M2: feeds and browse never share
-	// a ticker or a budget). A nil channel parks its case in the select.
+	// Three independent tickers, each with its own enable check and cadence, so
+	// disabling one pass never stops the others. A nil channel parks its case in
+	// the select.
 	var browseTicker *time.Ticker
 	var browseC <-chan time.Time
 	if interval > 0 {
@@ -215,6 +226,19 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 		runFeedCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
 	}
 
+	// Claude 2026-08-24: third ticker — monitored-entity poll pass.
+	// monitoredStore nil → monitorC stays nil (case never fires).
+	var monitorTicker *time.Ticker
+	var monitorC <-chan time.Time
+	if monitorInterval > 0 && monitoredStore != nil {
+		monitorTicker = time.NewTicker(monitorInterval)
+		defer monitorTicker.Stop()
+		monitorC = monitorTicker.C
+		log.Printf("adultnewest: background monitor pass enabled (every %s)", monitorInterval)
+		// Boot poll: same rationale as browse — 24h tickers don't survive redeploys.
+		runMonitorCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, monitoredStore, entityStore)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -225,7 +249,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 				log.Printf("adultnewest: browse interval set to 0 — stopping browse pass (restart to re-enable)")
 				browseTicker.Stop()
 				browseC = nil
-				if feedC == nil {
+				if feedC == nil && monitorC == nil {
 					return
 				}
 				continue
@@ -241,7 +265,7 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 				log.Printf("adultnewest: feed interval set to 0 — stopping feed pass (restart to re-enable)")
 				feedTicker.Stop()
 				feedC = nil
-				if browseC == nil {
+				if browseC == nil && monitorC == nil {
 					return
 				}
 				continue
@@ -251,6 +275,22 @@ func Run(ctx context.Context, interval time.Duration, connStore *connections.Sto
 				feedTicker.Reset(cur)
 			}
 			runFeedCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, entityStore, rssFeedsStore, feedHealth)
+		case <-monitorC:
+			cur := LoadMonitorInterval(ctx, settingsStore)
+			if cur <= 0 {
+				log.Printf("adultnewest: monitor interval set to 0 — stopping monitor pass (restart to re-enable)")
+				monitorTicker.Stop()
+				monitorC = nil
+				if browseC == nil && feedC == nil {
+					return
+				}
+				continue
+			}
+			if cur != monitorInterval {
+				monitorInterval = cur
+				monitorTicker.Reset(cur)
+			}
+			runMonitorCycle(ctx, httpClient, connStore, scStore, settingsStore, releaseStore, monitoredStore, entityStore)
 		}
 	}
 }

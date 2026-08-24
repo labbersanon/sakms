@@ -47,7 +47,7 @@ func insertRenameProposal(t *testing.T, propStore *proposals.Store, m mode.Mode,
 func newProposalVideoMux(t *testing.T) (http.Handler, *proposals.Store) {
 	t.Helper()
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil)
+	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, dedupscan.New(), nil, nil, nil, nil)
 	return mux, propStore
 }
 

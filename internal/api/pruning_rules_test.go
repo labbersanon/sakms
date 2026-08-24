@@ -50,7 +50,7 @@ func newPruningEnv(t *testing.T) *pruningEnv {
 
 	srv := httptest.NewServer(NewMux(testHTTPClient(), nil, nil, propStore,
 		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB), nil, libStore,
-		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, pruningStore))
+		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, pruningStore, nil))
 	t.Cleanup(srv.Close)
 
 	return &pruningEnv{srv: srv, libStore: libStore, pruningStore: pruningStore, propStore: propStore, sqlDB: sqlDB}

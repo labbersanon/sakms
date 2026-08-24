@@ -75,7 +75,7 @@ func newLayer2Fixture(t *testing.T) *layer2Fixture {
 		t.Fatalf("SetSections: %v", err)
 	}
 
-	apiMux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil)
+	apiMux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, rowStore, releaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	gated := auth.Middleware(secretStore, authStore, apiMux, auth.WithSectionGate(sectionlock.NewGate(lockStore, secretStore)))
 
 	srv := httptest.NewServer(gated)

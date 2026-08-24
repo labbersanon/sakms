@@ -79,7 +79,7 @@ func newUndoAPIEnv(t *testing.T, depth rename.DepthFunc) *undoAPIEnv {
 		grabs.New(sqlDB, secretStore), libStore, discoversliders.New(sqlDB),
 		trakt.NewStore(sqlDB, secretStore), adultnewest.New(sqlDB), adultnewest.NewReleaseStore(sqlDB),
 		testFeedHealth(), rssfeeds.NewStore(sqlDB, secretStore),
-		nil, nil, nil, nil, nil, nil, nil, nil))
+		nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 
 	return &undoAPIEnv{srv: srv, propStore: propStore, libStore: libStore,

@@ -120,7 +120,7 @@ func TestReparkFailedRetryDoesNotLeakTheCause(t *testing.T) {
 		}
 	}
 	runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-		leaky, nil, nil, nil, time.Now())
+		leaky, nil, nil, nil, nil, nil, time.Now())
 
 	got, err := grabsStore.Get(ctx, g.ID)
 	if err != nil {

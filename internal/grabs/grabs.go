@@ -163,8 +163,14 @@ type Grab struct {
 	// provenance outlives the hold. DueForRelease's retry_after = '' guard, not
 	// a clear, is what makes promotion fire exactly once.
 	HoldUntil string `json:"holdUntil,omitempty"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	// MonitorEntityKey is the Adult monitored-entity origin marker. Non-empty
+	// ONLY for grabs dispatched by the Adult monitor cycle
+	// (internal/api/adultmonitor.go). Format: kind + \x1f + entity_source +
+	// \x1f + entity_id (see adultnewest.FormatMonitorKey). Never cleared after
+	// dispatch — provenance outlives the grab, same as HoldUntil.
+	MonitorEntityKey string `json:"monitorEntityKey,omitempty"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt"`
 }
 
 // encryptor is the subset of *secrets.Store this package needs — the same
@@ -243,12 +249,12 @@ func (s *Store) Create(ctx context.Context, g Grab) (Grab, error) {
 		INSERT INTO grabs (
 			mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 			download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path,
-			download_url_encrypted, retry_after, retry_count, retry_reason, hold_until
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id, created_at, updated_at
 	`, string(g.Mode), g.Title, g.TMDBID, g.TVDBID, g.SeasonNumber, g.EpisodeNumber, g.SeasonSpecified, g.QualityProfileID, g.Indexer, g.Protocol,
 		g.DownloadClient, g.ClientRef, g.DownloadGID, g.DownloadStatus, g.DownloadStagingPath, string(g.Status), g.RootFolderPath,
-		encrypted, g.RetryAfter, g.RetryCount, g.RetryReason, g.HoldUntil)
+		encrypted, g.RetryAfter, g.RetryCount, g.RetryReason, g.HoldUntil, g.MonitorEntityKey)
 
 	if err := row.Scan(&g.ID, &g.CreatedAt, &g.UpdatedAt); err != nil {
 		// Claude 2026-08-04: Postgres UNIQUE is SQLSTATE 23505 (was SQLite message match).
@@ -266,7 +272,7 @@ func (s *Store) List(ctx context.Context, m mode.Mode) ([]Grab, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs WHERE mode = ? ORDER BY created_at DESC, id DESC
 	`, string(m))
 	if err != nil {
@@ -293,7 +299,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Grab, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs WHERE id = ?
 	`, id)
 	g, err := s.scanGrab(row)
@@ -376,7 +382,7 @@ func (s *Store) GetByDownloadGID(ctx context.Context, gid string) (*Grab, error)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs WHERE download_gid = ?
 	`, gid)
 	g, err := s.scanGrab(row)
@@ -410,7 +416,7 @@ func (s *Store) ActiveByDownloadGID(ctx context.Context, m mode.Mode, gid string
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs WHERE mode = ? AND download_gid = ? AND status NOT IN ('imported', 'failed')
 		ORDER BY id ASC LIMIT 1
 	`, string(m), gid)
@@ -437,7 +443,7 @@ func (s *Store) scanGrab(row rowScanner) (Grab, error) {
 	var m, encryptedURL string
 	err := row.Scan(&g.ID, &m, &g.Title, &g.TMDBID, &g.TVDBID, &g.SeasonNumber, &g.EpisodeNumber, &g.SeasonSpecified, &g.QualityProfileID, &g.Indexer, &g.Protocol,
 		&g.DownloadClient, &g.ClientRef, &g.DownloadGID, &g.DownloadStatus, &g.DownloadStagingPath, &g.Status, &g.RootFolderPath, &g.FlaggedForReview, &g.FlagReason,
-		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.HoldUntil, &g.CreatedAt, &g.UpdatedAt)
+		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.HoldUntil, &g.MonitorEntityKey, &g.CreatedAt, &g.UpdatedAt)
 	g.Mode = mode.Mode(m)
 	if err != nil {
 		return g, err
@@ -729,7 +735,7 @@ func (s *Store) DueForRetry(ctx context.Context, now time.Time) ([]Grab, error) 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs
 		WHERE status = ? AND download_gid = '' AND retry_after != '' AND retry_after <= ?
 		  AND (hold_until = '' OR hold_until <= ?)
@@ -775,7 +781,7 @@ func (s *Store) FindPendingRetry(ctx context.Context, m mode.Mode, tmdbID int, t
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs
 		WHERE mode = ? AND status = ? AND season_number = ? AND season_specified = ? AND episode_number = ?
 		ORDER BY id ASC
@@ -836,7 +842,7 @@ func (s *Store) FindHeldRequest(ctx context.Context, m mode.Mode, tmdbID int) (*
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs
 		WHERE mode = ? AND tmdb_id = ? AND hold_until != ''
 		ORDER BY id ASC LIMIT 1
@@ -880,7 +886,7 @@ func (s *Store) DueForRelease(ctx context.Context, now time.Time) ([]Grab, error
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
 		FROM grabs
 		WHERE status = ? AND download_gid = '' AND retry_after = ''
 		  AND hold_until != '' AND hold_until <= ?
@@ -900,4 +906,21 @@ func (s *Store) DueForRelease(ctx context.Context, now time.Time) ([]Grab, error
 		out = append(out, g)
 	}
 	return out, rows.Err()
+}
+
+// SetMonitorEntityKey writes the monitor_entity_key column on an existing grab.
+// Called by the Adult monitor dispatch pass after a grab is created or parked,
+// to stamp it with the monitor-entity origin marker for later un-monitor cleanup.
+// Returns ErrNotFound when id resolves to nothing.
+func (s *Store) SetMonitorEntityKey(ctx context.Context, id int64, key string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			monitor_entity_key = ?,
+			updated_at         = sakms_now()
+		WHERE id = ?
+	`, key, id)
+	if err != nil {
+		return fmt.Errorf("setting monitor entity key on grab %d: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
 }

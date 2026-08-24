@@ -236,7 +236,7 @@ func TestRun_BrowseBootPollFiresBeforeInterval(t *testing.T) {
 
 	// A one-hour browse interval: if the boot poll didn't fire, Prowlarr would
 	// not be queried for an hour — the test would time out at 2s instead.
-	go Run(ctx, time.Hour, connStore, nil, settingsStore, releaseStore, nil, nil, NewFeedHealth())
+	go Run(ctx, time.Hour, connStore, nil, settingsStore, releaseStore, nil, nil, NewFeedHealth(), nil)
 
 	select {
 	case <-hit:

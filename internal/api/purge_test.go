@@ -48,7 +48,7 @@ func newPurgeE2EEnv(t *testing.T) *purgeE2EEnv {
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connections.New(sqlDB, secretStore), nil,
 		proposals.New(sqlDB), testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB),
 		nil, libStore, nil, nil, nil, nil, testFeedHealth(), nil,
-		nil, nil, nil, nil, nil, nil, nil, pruning.New(sqlDB)))
+		nil, nil, nil, nil, nil, nil, nil, pruning.New(sqlDB), nil))
 	t.Cleanup(srv.Close)
 
 	return &purgeE2EEnv{srv: srv, libStore: libStore, dir: t.TempDir()}
@@ -205,7 +205,7 @@ func TestPurgeWorkflow_TagsRuleThenScanThenApply_EndToEnd(t *testing.T) {
 // empty library rather than 400-ing on a missing Whisparr).
 func TestPurgeScanHandler_NoConnectionNeeded(t *testing.T) {
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
-	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil))
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	for _, m := range []string{"movies", "series", "adult"} {

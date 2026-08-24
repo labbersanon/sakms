@@ -3227,3 +3227,31 @@ type StashBoxDatabaseTestRequest struct {
 	Endpoint string `json:"endpoint"`
 	APIKey   string `json:"apiKey"`
 }
+
+// --- Adult monitored entities (performer/studio monitoring) ---------------
+
+// AdultMonitorState is GET /api/modes/adult/discover/monitor's response.
+// It describes whether the requested performer/studio is currently monitored
+// and whether its catalog identity could be resolved.
+//
+// Resolved=false means the entity cannot be enabled for monitoring without
+// a pool entry or a direct box lookup (requires a prior drill-down to cache
+// the entity_source).
+type AdultMonitorState struct {
+	Resolved   bool   `json:"resolved"`
+	Source     string `json:"source,omitempty"`
+	EntityID   string `json:"entityId,omitempty"`
+	EntityName string `json:"entityName,omitempty"`
+	Monitored  bool   `json:"monitored"`
+	// Reason is an operator-facing explanation when Resolved=false or the
+	// entity state is unusual (e.g. "entity not in pool yet"). Empty when the
+	// state is straightforward.
+	Reason string `json:"reason,omitempty"`
+}
+
+// SetAdultMonitorRequest is PUT /api/modes/adult/discover/monitor's body.
+type SetAdultMonitorRequest struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Monitored bool   `json:"monitored"`
+}

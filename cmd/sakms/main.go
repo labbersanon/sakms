@@ -243,6 +243,9 @@ func run() error {
 	// start-call below.
 	adultNewestRowStore := adultnewest.New(sqlDB)
 	adultNewestReleaseStore := adultnewest.NewReleaseStore(sqlDB)
+	// adultMonitoredStore backs the Adult performer/studio monitor feature
+	// (migration 0017). Nil-safe in all callers; set nil here to disable.
+	adultMonitoredStore := adultnewest.NewMonitoredStore(sqlDB)
 	// feedHealth is the concurrency-safe per-feed liveness holder shared by the
 	// adultnewest feed poller (sole writer) and the three Adult Discover read
 	// handlers (readers) so a feed-sourced row's request-time availability is a
@@ -357,7 +360,7 @@ func run() error {
 	// deliberately (see BE-10's own note there) — only this one needed to
 	// change.
 	// Troubleshooting: N/A — the cache is live from here on.
-	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy, discoverCache, pruningStore)
+	apiMux := api.NewMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, propStore, prober, phashDispatcher, videoDispatcher, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, feedHealth, rssFeedsStore, entityStore, webhookStore, dlManager, nzbManager, dedupHub, imageProxy, discoverCache, pruningStore, adultMonitoredStore)
 	protectedAPI := auth.Middleware(secretStore, authStore, apiMux, sectionGate...)
 
 	// Node mux: per-handler auth (bearer for node agents, master key/session
@@ -565,7 +568,7 @@ func run() error {
 	// mirrored by internal/discoverrefresh below); an explicit "0" in
 	// Settings turns it off. To remove entirely: delete internal/adultnewest,
 	// this line, its NewMux params, and the two stores' construction above.
-	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, serviceConnStore, settingsStore, adultNewestReleaseStore, entityStore, rssFeedsStore, feedHealth)
+	go adultnewest.Run(ctx, adultnewest.LoadInterval(ctx, settingsStore), connStore, serviceConnStore, settingsStore, adultNewestReleaseStore, entityStore, rssFeedsStore, feedHealth, adultMonitoredStore)
 
 	// Same deliberate, opt-in exception as recheck/adultnewest above: a
 	// background job that syncs all four entity-cache sources (Stash/TPDB/
@@ -622,7 +625,8 @@ func run() error {
 	// internal/api/usenetretry.go, its four route registrations in handler.go,
 	// and this line.
 	go api.RunUsenetRetry(ctx, api.LoadUsenetRetryInterval(ctx, settingsStore), &http.Client{Timeout: outboundTimeout},
-		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, libStore, dlManager, nzbManager)
+		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, libStore, dlManager, nzbManager,
+		adultMonitoredStore, adultNewestReleaseStore)
 
 	// General Rename/Purge/Dedup scan scheduler — the fourth deliberate
 	// exception to "manual by default" (see internal/scanschedule's package doc

@@ -56,7 +56,7 @@ func newStashBoxEnv(t *testing.T) *stashBoxEnv {
 
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, proposals.New(sqlDB),
 		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB), nil, library.New(sqlDB),
-		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, nil))
+		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 
 	return &stashBoxEnv{srv: srv, connStore: connStore, sqlDB: sqlDB}
@@ -475,7 +475,7 @@ func TestStashBoxDatabases_Unavailable(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	srv := httptest.NewServer(NewMux(testHTTPClient(), nil, nil, proposals.New(sqlDB),
 		testProber(t), testPHasher(t), testVideoHasher(t), settings.New(sqlDB), nil, library.New(sqlDB),
-		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, nil))
+		nil, nil, nil, nil, testFeedHealth(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	t.Cleanup(srv.Close)
 
 	resp, err := http.Get(srv.URL + "/api/stashbox-databases")

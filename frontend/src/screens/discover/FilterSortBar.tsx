@@ -8,10 +8,10 @@
 // filter/sort actually renders (a filtered grid replaces the carousels; see
 // Mainstream.tsx/Adult.tsx).
 
-import { type Component, type JSX, createResource, createSignal, For, Show } from "solid-js";
+import { type Component, type JSX, createResource, For, Match, Show, Switch } from "solid-js";
 import { ErrorText, labelClass, FILTER_BAR_FIELDS_CLASS } from "../../components/ui";
 import { type AdultSortBy, type DiscoverSortBy } from "../../api/discover";
-import { type Genre, fetchGenres } from "../../api/discoverSliders";
+import { fetchGenres } from "../../api/discoverSliders";
 
 // MainstreamContentType is which TMDB catalog the filter bar targets — Movies
 // and TV have separate genre id spaces with no clean 1:1 mapping, so exactly
@@ -87,7 +87,7 @@ const YEAR_OPTIONS: number[] = (() => {
 })();
 
 const SELECT_CLASS =
-  "rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent";
+  "mt-1 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent sm:w-auto";
 
 // SelectField is the one labeled native <select> the filter bar repeats for
 // each control (label above, select below) so the whole bar reads as one
@@ -106,7 +106,7 @@ const SelectField: Component<{
     </label>
     <select
       id={props.id}
-      class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
+      class={SELECT_CLASS}
       value={props.value}
       onChange={(e) => props.onChange(e.currentTarget.value)}
     >
@@ -126,22 +126,17 @@ export const MainstreamFilterSortBar: Component<{
   onChange: (f: MainstreamFilters) => void;
   lockedContentType?: MainstreamContentType;
 }> = (props) => {
-  // lockedContentType is the Discover tab's Movies/Series scope — when set,
-  // the content-type <select> is hidden but the genre list must still track
-  // that tab, not a stale filters.contentType left over from a prior view.
-  const genreMode = () =>
-    props.lockedContentType ?? props.value().contentType;
+  // When the tab locks the content type its <select> is hidden, but the genre
+  // list must still follow the lock rather than a stale filters.contentType
+  // carried over from a prior view.
+  const genreMode = () => props.lockedContentType ?? props.value().contentType;
 
-  const [genreError, setGenreError] = createSignal<Error | null>(null);
-  const [genres, { refetch: refetchGenres }] = createResource(genreMode, async (mode) => {
-    setGenreError(null);
-    try {
-      return await fetchGenres(mode);
-    } catch (err) {
-      setGenreError(err instanceof Error ? err : new Error(String(err)));
-      return [] as Genre[];
-    }
-  });
+  const [genres, { refetch: refetchGenres }] = createResource(genreMode, fetchGenres);
+
+  const genreErrorMessage = (): string => {
+    const err: unknown = genres.error;
+    return err instanceof Error ? err.message : "Genre list failed to load";
+  };
 
   const patch = (partial: Partial<MainstreamFilters>) =>
     props.onChange({ ...props.value(), ...partial });
@@ -173,46 +168,32 @@ export const MainstreamFilterSortBar: Component<{
           <label class={labelClass} for="discover-filter-genre">
             Genre
           </label>
-          <Show
-            when={!genres.loading}
-            fallback={
-              <select
-                id="discover-filter-genre"
-                class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
-                disabled
-              >
+          <Switch>
+            <Match when={genres.loading}>
+              <select id="discover-filter-genre" class={SELECT_CLASS} disabled>
                 <option>Loading genres…</option>
               </select>
-            }
-          >
-            <Show
-              when={!genreError()}
-              fallback={
-                <>
-                  <select
-                    id="discover-filter-genre"
-                    class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
-                    disabled
-                  >
-                    <option>Could not load genres</option>
-                  </select>
-                  <ErrorText>
-                    {genreError()?.message ?? "Genre list failed to load"}
-                    {" — "}
-                    <button
-                      type="button"
-                      class="underline"
-                      onClick={() => void refetchGenres()}
-                    >
-                      Retry
-                    </button>
-                  </ErrorText>
-                </>
-              }
-            >
+            </Match>
+            <Match when={genres.error}>
+              <select id="discover-filter-genre" class={SELECT_CLASS} disabled>
+                <option>Could not load genres</option>
+              </select>
+              <ErrorText>
+                {genreErrorMessage()}
+                {" — "}
+                <button
+                  type="button"
+                  class="underline"
+                  onClick={() => void refetchGenres()}
+                >
+                  Retry
+                </button>
+              </ErrorText>
+            </Match>
+            <Match when={true}>
               <select
                 id="discover-filter-genre"
-                class={`mt-1 w-full sm:w-auto ${SELECT_CLASS}`}
+                class={SELECT_CLASS}
                 value={props.value().genreId ?? ""}
                 onChange={(e) =>
                   patch({
@@ -224,13 +205,11 @@ export const MainstreamFilterSortBar: Component<{
               >
                 <option value="">All genres</option>
                 <For each={genres() ?? []}>
-                  {(g) => (
-                    <option value={String(g.id)}>{g.name}</option>
-                  )}
+                  {(g) => <option value={String(g.id)}>{g.name}</option>}
                 </For>
               </select>
-            </Show>
-          </Show>
+            </Match>
+          </Switch>
         </div>
 
         <SelectField

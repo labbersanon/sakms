@@ -301,7 +301,9 @@ func filterReleasedMovies(ctx context.Context, sess *mode.Session, page int, ite
 // type (movie genres for Movies/Adult, TV genres for Series) — reference
 // data for the genre-browse row's picker and a "genre" slider's FilterValue
 // dropdown in the admin editor. Not paginated; TMDB's genre list is small
-// and rarely changes.
+// and rarely changes. Sorted by name before serving: TMDB returns it in
+// arbitrary id order, which leaves the filter bar's single <select> with no
+// findable ordering (a locale-aware sort would need a language param).
 func discoverGenresHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -328,13 +330,6 @@ func discoverGenresHandler(httpClient *http.Client, connStore *connections.Store
 			return
 		}
 
-		// Claude 2026-08-24: sort TMDB's genre list A→Z before serving.
-		// Reason: TMDB returns genres in arbitrary id order; the Mainstream
-		// filter dropdown is a single <select>, so a fixed sort is the only
-		// way every genre is findable without scanning the whole list.
-		// Troubleshooting: "missing genres" reports where the API returned
-		// data but operators couldn't locate e.g. "Science Fiction".
-		// Review if: a locale-aware sort is added (would need a language param).
 		slices.SortFunc(genres, func(a, b tmdb.Genre) int {
 			return strings.Compare(a.Name, b.Name)
 		})

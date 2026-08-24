@@ -2,16 +2,17 @@
 // that back the operator's monitor toggle on performer/studio drill-down pages.
 //
 // Routes:
-//   GET  /api/modes/adult/discover/monitor?kind=&name= → AdultMonitorState
-//   PUT  /api/modes/adult/discover/monitor              ← SetAdultMonitorRequest
-//   GET  /api/modes/adult/newest-rows/monitored/resolve?page= → []AdultNewestReleaseItem
-//   GET  /api/settings/adult-monitor-interval          → adultMonitorIntervalResponse
-//   PUT  /api/settings/adult-monitor-interval          ← adultMonitorIntervalRequest
 //
-// The GET handler makes ZERO Prowlarr calls — it reads only the monitored store
-// (and, if absent there, the pool table for entity_source). The PUT handler
-// re-resolves the entity server-side (one box call, via identify.ResolveEntityID)
-// and 409s when the entity cannot be resolved and monitored=true is requested.
+//	GET  /api/modes/adult/discover/monitor?kind=&name= → AdultMonitorState
+//	PUT  /api/modes/adult/discover/monitor              ← SetAdultMonitorRequest
+//	GET  /api/modes/adult/newest-rows/monitored/resolve?page= → []AdultNewestReleaseItem
+//	GET  /api/settings/adult-monitor-interval          → adultMonitorIntervalResponse
+//	PUT  /api/settings/adult-monitor-interval          ← adultMonitorIntervalRequest
+//
+// Neither handler ever searches Prowlarr. Both resolve the entity's catalog
+// identity with at most one box call via identify.ResolveEntityID, preferring
+// the pool's known entity_source; GET reports the outcome as Resolved, PUT 409s
+// when monitored=true is requested for an entity it cannot resolve.
 package api
 
 import (
@@ -84,12 +85,10 @@ func putAdultMonitorIntervalHandler(settingsStore *settings.Store) http.HandlerF
 }
 
 // getAdultMonitorStateHandler is GET /api/modes/adult/discover/monitor?kind=&name=
-// It returns the current monitor state for a performer/studio. ZERO Prowlarr
-// calls are made. When the entity is not already in the monitored store, it
-// performs at most one exact-name catalog resolve (same budget shape as
-// adultDescriptionHandler) so Resolved reflects a real opaque id — the pool's
-// entity_id is the NAME, not a catalog id, so "box known" alone must not
-// enable the toggle.
+// It returns the current monitor state for a performer/studio. Rows already in
+// the monitored store answer from there; anything else costs at most one
+// exact-name catalog resolve (same budget shape as adultDescriptionHandler) so
+// Resolved reflects a real opaque id.
 //
 // kind must be "performer" or "studio"; name must be non-empty. Any other
 // combination returns 400. Unresolvable / unconfigured installs still return
@@ -125,11 +124,7 @@ func getAdultMonitorStateHandler(monitoredStore *adultnewest.MonitoredStore, rel
 		// Reason: pool entity_id is the display name; Resolved must mean a real id.
 		// Troubleshooting: toggle enabled then PUT 409 — GET was treating pool box as resolved.
 		// Review if: monitored store always pre-seeds identity before the toggle renders.
-		rowType := adultnewest.RowPerformer
-		if kind == "studio" {
-			rowType = adultnewest.RowStudio
-		}
-		preferredBox, _ := releaseStore.EntityBox(ctx, rowType, name)
+		preferredBox, _ := releaseStore.EntityBox(ctx, adultRowType(kind), name)
 
 		sess, buildErr := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult)
 		if buildErr != nil || sess.Identify == nil {
@@ -202,14 +197,9 @@ func putAdultMonitorHandler(monitoredStore *adultnewest.MonitoredStore, releaseS
 			return
 		}
 
-		// Enable: resolve entity id first. Try pool EntityBox, else build a session.
-		rowType := adultnewest.RowPerformer
-		if req.Kind == "studio" {
-			rowType = adultnewest.RowStudio
-		}
-
-		// Prefer the pool's known box — it already disambiguated the entity.
-		preferredBox, _ := releaseStore.EntityBox(ctx, rowType, req.Name)
+		// Enable: resolve the entity id first, preferring the pool's known box
+		// because it already disambiguated the entity.
+		preferredBox, _ := releaseStore.EntityBox(ctx, adultRowType(req.Kind), req.Name)
 
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult)
 		if err != nil {
@@ -228,10 +218,9 @@ func putAdultMonitorHandler(monitoredStore *adultnewest.MonitoredStore, releaseS
 			return
 		}
 
-		// Fetch entity image from pool if available.
+		// Carry the image forward from a previous monitor of the same entity.
 		image := ""
-		existing, err := monitoredStore.GetByKindSourceID(ctx, req.Kind, resolvedBox, entityID)
-		if err == nil {
+		if existing, err := monitoredStore.GetByKindSourceID(ctx, req.Kind, resolvedBox, entityID); err == nil {
 			image = existing.EntityImage
 		}
 
@@ -253,7 +242,7 @@ func getMonitoredEntitiesRowHandler(monitoredStore *adultnewest.MonitoredStore, 
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		page := 1
-		if p, err := adultMonitorParseInt(r.URL.Query().Get("page")); err == nil && p > 0 {
+		if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
 			page = p
 		}
 
@@ -265,21 +254,18 @@ func getMonitoredEntitiesRowHandler(monitoredStore *adultnewest.MonitoredStore, 
 
 		now := time.Now()
 		items := []apidto.AdultNewestReleaseItem{}
-		seen := make(map[string]bool) // deduplicate by entity ID
+		seen := make(map[string]bool)
 
+		// Every monitored entity's scenes are collected before paging: the
+		// monitored list is operator-curated and therefore bounded, and a scene
+		// can be linked to more than one entity, so dedup has to see all of them
+		// before an offset means anything.
 		for _, entity := range monitored {
-			rowType := adultnewest.RowPerformer
-			if entity.Kind == "studio" {
-				rowType = adultnewest.RowStudio
-			}
-			scenes, err := releaseStore.ScenesLinkedToEntity(ctx, rowType, entity.EntityName)
+			scenes, err := releaseStore.ScenesLinkedToEntity(ctx, adultRowType(entity.Kind), entity.EntityName)
 			if err != nil {
 				log.Printf("adult monitor row: listing scenes for %s %q: %v", entity.Kind, entity.EntityName, err)
 				continue
 			}
-			// Simple pagination: skip first (page-1)*defaultResolvePerPage scenes across all entities.
-			// For simplicity we collect all and let the caller page client-side or accept
-			// the full list — the monitored list is bounded (operator-curated).
 			for _, m := range scenes {
 				key := m.EntitySource + "/" + m.EntityID
 				if seen[key] {
@@ -293,22 +279,22 @@ func getMonitoredEntitiesRowHandler(monitoredStore *adultnewest.MonitoredStore, 
 			}
 		}
 
-		// Apply page offset (each page = 25 items).
 		const pageSize = 25
 		start := (page - 1) * pageSize
 		if start >= len(items) {
 			writeJSON(w, []apidto.AdultNewestReleaseItem{})
 			return
 		}
-		end := start + pageSize
-		if end > len(items) {
-			end = len(items)
-		}
-		writeJSON(w, items[start:end])
+		writeJSON(w, items[start:min(start+pageSize, len(items))])
 	}
 }
 
-// adultMonitorParseInt parses an integer string for query params.
-func adultMonitorParseInt(s string) (int, error) {
-	return strconv.Atoi(s)
+// adultRowType maps a monitor "kind" ("performer"/"studio") to the pool row type
+// used to look the entity up. Anything other than "studio" is a performer, which
+// is safe because every caller validates kind first.
+func adultRowType(kind string) adultnewest.RowType {
+	if kind == "studio" {
+		return adultnewest.RowStudio
+	}
+	return adultnewest.RowPerformer
 }

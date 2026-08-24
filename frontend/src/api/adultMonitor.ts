@@ -1,10 +1,11 @@
 // Adult Discover performer/studio monitoring API — GET monitor state, PUT
 // toggle, and resolve the monitored-row strip. Each call goes through api()
 // (src/api/client.ts) so it inherits the session cookie and the global
-// 401 → re-boot session-expiry fallback.
+// 401 → re-boot session-expiry fallback. Request/response shapes are the
+// generated DTOs (@dto), never hand-duplicated.
 
-import type { AdultMonitorState, SetAdultMonitorRequest } from "@dto";
 import { api } from "./client";
+import type { AdultMonitorState, SetAdultMonitorRequest } from "@dto";
 import type { AdultNewestReleaseItem } from "./adultNewestRows";
 
 export type { AdultMonitorState, SetAdultMonitorRequest };
@@ -31,9 +32,9 @@ export function setMonitored(body: SetAdultMonitorRequest): Promise<void> {
 }
 
 // fetchMonitoredRow resolves the paginated monitored-entities strip for the
-// browse page — GET /api/modes/adult/newest-rows/monitored/resolve?page={n}.
-// Returns the same AdultNewestReleaseItem shape every other newest-row strip
-// uses, so it wires directly into PaginatedStrip via toAdultDiscoverItem.
+// browse page. It returns the same AdultNewestReleaseItem shape every other
+// newest-row strip uses, so it wires straight into PaginatedStrip via
+// toAdultDiscoverItem.
 export function fetchMonitoredRow(
   page = 1,
 ): Promise<AdultNewestReleaseItem[]> {

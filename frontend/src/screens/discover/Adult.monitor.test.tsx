@@ -15,8 +15,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { AdultDiscover } from "./Adult";
-import { jsonResponse, noContent } from "../../testing/http";
-
+import { jsonResponse } from "../../testing/http";
 
 type Call = { url: string; method: string; body: unknown };
 type Override = (
@@ -275,7 +274,7 @@ describe("AdultDiscover — monitor switch A→B drill doesn't leak state", () =
       entityName: "Bella Rose", monitored: false, reason: "",
     };
 
-    stubFetch((url, init) => {
+    stubFetch((url) => {
       if (url.includes("/api/modes/adult/description"))
         return jsonResponse({ text: "", source: "" });
       if (url.includes("/discover/monitor")) {

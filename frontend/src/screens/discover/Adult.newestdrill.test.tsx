@@ -487,7 +487,7 @@ describe("AdultDiscover — drill-down row 2: no stale bio across a drill switch
     });
     vi.stubGlobal("fetch", fn);
 
-    const { container } = render(() => <AdultDiscover />);
+    render(() => <AdultDiscover />);
 
     await openDrill("Studio A");
     expect(await screen.findByText("Bio for A.")).toBeInTheDocument();

@@ -2,15 +2,14 @@
 // based pass that runs for each monitored performer/studio, processes new
 // releases into the pool cache, and records poll results. The auto-grab dispatch
 // that follows is in internal/api/adultmonitor.go (the 5th pass of
-// runUsenetRetryCycle), which reads the pool to find scenes added since
-// monitored_since and dispatches grabs.
+// runUsenetRetryCycle), which reads the pool for scenes added since
+// monitored_since.
 //
-// This file is wired as the THIRD ticker case in scan.go's Run function, reusing
-// the same httpClient, connStore, scStore, settingsStore, and releaseStore that
-// the browse and feed passes already share — no new goroutine, no independent
-// scheduler. It is independently deletable: remove this file, the monitorC
-// ticker case in scan.go's Run, and the MonitoredStore parameter from Run's
-// signature (and its construction site in cmd/sakms/main.go).
+// Wired as the THIRD ticker case in scan.go's Run, sharing the dependencies the
+// browse and feed passes already take — no new goroutine, no independent
+// scheduler. Independently deletable: remove this file, the monitorC ticker case
+// in scan.go's Run, and the MonitoredStore parameter from Run's signature (and
+// its construction site in cmd/sakms/main.go).
 //
 // DO NOT import internal/api from this file.
 package adultnewest
@@ -33,10 +32,8 @@ import (
 
 // MonitorIntervalSettingKey is the settings key holding the monitor poll cadence,
 // in whole seconds. Mirrors IntervalSettingKey's import-avoidance convention — the
-// API handler mirrors this value rather than importing this package.
-//
-// Default 24 hours when unset (via LoadMonitorInterval). Explicit 0 = off
-// (the pass is skipped; the ticker is not started).
+// API handler mirrors this value rather than importing this package. See
+// LoadMonitorInterval for how unset/0 are interpreted.
 const MonitorIntervalSettingKey = "adult_monitor_interval_seconds"
 
 // defaultMonitorIntervalSeconds is the monitor poll cadence when the key has
@@ -52,10 +49,9 @@ const maxMonitoredPerCycle = 20
 // the key is explicitly set to 0; returns the 24h default when the key was
 // never set. Mirrors LoadInterval (browse) and LoadFeedInterval exactly.
 func LoadMonitorInterval(ctx context.Context, settingsStore *settings.Store) time.Duration {
-	// Claude 2026-08-24: identical approach to LoadInterval — unset key returns
-	// the 24h default; explicit 0 means off; any non-integer stored value
-	// degrades to off (not default) because that shape only happens via direct
-	// DB tampering, not the Settings UI.
+	// Claude 2026-08-24: a non-integer stored value degrades to off, not to the
+	// default, because that shape only happens via direct DB tampering — never
+	// through the Settings UI. Same choice as LoadInterval.
 	v, err := settingsStore.Get(ctx, MonitorIntervalSettingKey)
 	if errors.Is(err, settings.ErrNotFound) {
 		return time.Duration(defaultMonitorIntervalSeconds) * time.Second

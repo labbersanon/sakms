@@ -121,7 +121,7 @@ func (s *MonitoredStore) ListDue(ctx context.Context, now time.Time, limit int) 
 	// Claude 2026-08-24: empty next_poll_at sorts before every real timestamp
 	// (same convention as retry_after on grabs), so newly-added monitored
 	// entities with no poll yet are always due.
-	ts := now.UTC().Format("2006-01-02T15:04:05.000Z")
+	ts := now.UTC().Format(sakmsTimestampFormat)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+monitoredColumns+`
 		FROM adult_monitored_entities
 		WHERE monitored = 1 AND (next_poll_at = '' OR next_poll_at <= $1)
@@ -213,7 +213,7 @@ func (s *MonitoredStore) SetMonitored(ctx context.Context, kind, source, entityI
 	since := ""
 	if monitored {
 		monitoredInt = 1
-		since = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+		since = time.Now().UTC().Format(sakmsTimestampFormat)
 	}
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE adult_monitored_entities SET
@@ -254,8 +254,6 @@ func (s *MonitoredStore) RecordPoll(ctx context.Context, id int64, found int, no
 	}
 
 	next := now.Add(monitorBackoff(emptyPolls))
-	ts := now.UTC().Format("2006-01-02T15:04:05.000Z")
-	nextTS := next.UTC().Format("2006-01-02T15:04:05.000Z")
 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE adult_monitored_entities SET
@@ -264,20 +262,18 @@ func (s *MonitoredStore) RecordPoll(ctx context.Context, id int64, found int, no
 			empty_polls    = $3,
 			updated_at     = sakms_now()
 		WHERE id = $4`,
-		ts, nextTS, emptyPolls, id)
+		now.UTC().Format(sakmsTimestampFormat), next.UTC().Format(sakmsTimestampFormat), emptyPolls, id)
 	if err != nil {
 		return fmt.Errorf("recording poll for entity %d: %w", id, err)
 	}
-	return func() error {
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return ErrMonitoredNotFound
-		}
-		return nil
-	}()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrMonitoredNotFound
+	}
+	return nil
 }
 
 // monitorBackoff returns the next poll interval based on how many consecutive

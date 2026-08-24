@@ -496,13 +496,14 @@ export const AdultDiscover: Component<{
 
   // entityMonitor tracks the monitoring state for the drilled-into entity.
   // Keyed on `drill` (same as entityDetail) so it refires once per drill-open
-  // and clears/suppresses on drill close (null drill → no fetch). Errors are
-  // swallowed → null for the same reason entityDetail swallows: no
-  // ErrorBoundary, so an unguarded error throw would crash the SPA.
+  // and fetches nothing on the browse view. Errors are swallowed → null for the
+  // same reason entityDetail swallows: no ErrorBoundary, so an unguarded throw
+  // would crash the SPA.
   //
-  // Claude 2026-08-24: gate reads on entityMonitor.loading (same pattern as
-  // entityBio above) so a drill switch doesn't momentarily show the PREVIOUS
-  // entity's monitored state while the new fetch is in flight.
+  // Claude 2026-08-24: monitorState gates reads on entityMonitor.loading (same
+  // pattern as entityBio above) so a drill switch doesn't momentarily show the
+  // PREVIOUS entity's monitored state while the new fetch is in flight. Every
+  // consumer must read monitorState(), never entityMonitor() directly.
   // Review if: entityMonitor's fetcher stops being keyed on `drill`.
   const [entityMonitor, { mutate: mutateMonitor }] = createResource(
     drill,
@@ -517,13 +518,13 @@ export const AdultDiscover: Component<{
   const monitorState = (): AdultMonitorState | null =>
     entityMonitor.loading ? null : (entityMonitor() ?? null);
 
-  // optimisticSetMonitored flips the monitor switch with local-first update
-  // and rolls back on PUT failure (409 or network error).
-  // Claude 2026-08-24: 409 means the backend couldn't resolve the entity on
-  // enable — the switch reverts and the backend's reason surfaces via a refetch.
-  // Reason: a 409 means the previously-resolved entity lost its catalog entry
-  // between the GET and the PUT, which is rare but possible. Rollback + refetch
-  // shows the current server state rather than a stuck optimistic value.
+  // optimisticSetMonitored flips the monitor switch locally first, then restores
+  // the pre-toggle state if the PUT fails.
+  //
+  // Claude 2026-08-24: any failure rolls back to `prev` rather than refetching.
+  // Reason: the only expected failure is a 409, meaning the entity lost its
+  //   catalog entry between the GET and the PUT — rare, and the GET's own state
+  //   is still the best thing to show until the next drill-open re-fetches it.
   // Review if: the monitor endpoint grows a separate "unresolvable" status code.
   const [monitorBusy, setMonitorBusy] = createSignal(false);
   const optimisticSetMonitored = async (next: boolean) => {
@@ -531,13 +532,11 @@ export const AdultDiscover: Component<{
     if (!dd || monitorBusy()) return;
     const prev = entityMonitor();
     if (!prev) return;
-    // Optimistic update.
     mutateMonitor({ ...prev, monitored: next });
     setMonitorBusy(true);
     try {
       await setMonitored({ kind: dd.kind, name: dd.name, monitored: next });
     } catch {
-      // Roll back on any failure and let a refetch restore the real state.
       mutateMonitor(prev);
     } finally {
       setMonitorBusy(false);
@@ -994,14 +993,9 @@ export const AdultDiscover: Component<{
                     {d().name}
                   </h2>
                 </div>
-                {/* Row 2 — bio banner + monitor switch. The outer container
-                    renders whenever drill() is set (not just when bio text
-                    exists) so the Monitor switch is always visible on a
-                    drill-down, even for entities with no catalog biography.
-                    The bio text block stays gated on entityBio() so an entity
-                    with no bio doesn't show an empty paragraph.
-                    Tags are deliberately absent — no catalog exposes tags on a
-                    performer or a studio, so there is nothing to bind to.
+                {/* Row 2 — bio banner + monitor switch. Tags are deliberately
+                    absent: no catalog exposes tags on a performer or a studio,
+                    so there is nothing to bind to.
 
                     Claude 2026-08-02: items-start on the flex container.
                     Reason: the default align-items:stretch sets the art frame's
@@ -1053,7 +1047,8 @@ export const AdultDiscover: Component<{
                     {/* Monitor switch — always rendered for every drill.
                         resolved → enabled, optimistic PUT with rollback.
                         unresolved → disabled + reason string.
-                        loading → disabled, no explanation shown yet.
+                        loading → disabled, no explanation shown yet (that falls
+                        out of monitorState() being null while loading).
 
                         Claude 2026-08-24: the switch is rendered directly in
                         the banner's text column rather than a separate section,
@@ -1064,25 +1059,11 @@ export const AdultDiscover: Component<{
                       <Switch
                         checked={monitorState()?.monitored ?? false}
                         onChange={(next) => void optimisticSetMonitored(next)}
-                        disabled={
-                          monitorBusy() ||
-                          entityMonitor.loading ||
-                          !(monitorState()?.resolved ?? false)
-                        }
-                        ariaLabel={
-                          d().kind === "performer"
-                            ? `Monitor performer ${d().name}`
-                            : `Monitor studio ${d().name}`
-                        }
+                        disabled={monitorBusy() || !monitorState()?.resolved}
+                        ariaLabel={`Monitor ${d().kind} ${d().name}`}
                       />
                       <span class="text-sm text-fg">Monitor</span>
-                      <Show
-                        when={
-                          !entityMonitor.loading &&
-                          monitorState() !== null &&
-                          !monitorState()?.resolved
-                        }
-                      >
+                      <Show when={monitorState()?.resolved === false}>
                         <span class="text-xs text-muted">
                           {monitorState()?.reason ||
                             "Can't monitor — this performer/studio isn't matched to a catalog entry yet."}

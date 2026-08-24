@@ -1,17 +1,13 @@
 // This file is the Adult monitored-entity DISPATCH pass — the FIFTH pass inside
 // runUsenetRetryCycle. It reads the adult_newest_releases pool for scenes linked
 // to monitored entities whose first_seen_at > monitored_since, and dispatches
-// auto-grabs for new matches via RunAutoGrab (TriggerAirDate is reused — same
-// unattended gated trigger; a new TriggerMonitor const would add no gate
-// difference and would only add code).
+// auto-grabs for new matches via RunAutoGrab. The detection/poll cycle that
+// fills the pool lives in internal/adultnewest/monitor.go.
 //
 // NO GOROUTINE, NO TICKER, NO INTERVAL KEY lives in this file. It is a plain
 // function called as the FIFTH step of runUsenetRetryCycle, exactly as
 // monitorAirDates is the third and releaseDueGrabs is the fourth. The static
 // AST test (adultmonitor_static_test.go) proves this.
-//
-// What lives here: DISPATCH + cancelMonitorRetries (the un-monitor cleanup).
-// The detection/poll cycle lives in internal/adultnewest/monitor.go.
 //
 // It lives in internal/api rather than its own package for the same reason all
 // the other passes do: everything it drives is package-private here
@@ -90,12 +86,7 @@ func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionB
 			continue
 		}
 
-		// Find scenes added to the pool since this entity was first monitored.
-		rowType := adultnewest.RowPerformer
-		if entity.Kind == "studio" {
-			rowType = adultnewest.RowStudio
-		}
-		scenes, err := releaseStore.ScenesLinkedToEntity(ctx, rowType, entity.EntityName)
+		scenes, err := releaseStore.ScenesLinkedToEntity(ctx, adultRowType(entity.Kind), entity.EntityName)
 		if err != nil {
 			log.Printf("adult monitor dispatch: listing scenes for %s %q: %v", entity.Kind, entity.EntityName, err)
 			continue
@@ -135,22 +126,25 @@ func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionB
 			//   a monitored entity is the strongest identity signal available.
 			// Troubleshooting: monitor hits park forever as pending_retry with no dispatch.
 			// Review if: grabs table gains studio/performers columns and retry can reload them.
-			req := AutoGrabRequest{
+			studio := scene.EntityStudio
+			var performers []string
+			if entity.Kind == "studio" {
+				studio = entity.EntityName
+			} else {
+				performers = []string{entity.EntityName}
+			}
+
+			out, err := RunAutoGrab(ctx, deps, sess, AutoGrabRequest{
 				Mode:            mode.Adult,
 				Title:           title,
-				Studio:          scene.EntityStudio,
+				Studio:          studio,
+				Performers:      performers,
 				ReleaseTitle:    scene.FirstSeenReleaseTitle,
 				DurationSeconds: scene.EntityDurationSeconds,
 				Box:             scene.EntitySource,
 				SceneID:         scene.EntityID,
 				Trigger:         TriggerAdultMonitor,
-			}
-			if entity.Kind == "studio" {
-				req.Studio = entity.EntityName
-			} else {
-				req.Performers = []string{entity.EntityName}
-			}
-			out, err := RunAutoGrab(ctx, deps, sess, req)
+			})
 			switch {
 			case err != nil:
 				log.Printf("adult monitor dispatch: %q — auto-grab failed (%T)", title, rootCause(err))
@@ -235,10 +229,7 @@ func cancelMonitorRetries(ctx context.Context, grabsStore *grabs.Store, key stri
 	}
 	now := time.Now()
 	for _, g := range list {
-		if g.MonitorEntityKey != key {
-			continue
-		}
-		if !monitorOriginated(g) {
+		if g.MonitorEntityKey != key || !monitorOriginated(g) {
 			continue
 		}
 		if err := grabsStore.SetRetryAfter(ctx, g.ID, now, monitorUnmonitoredReason); err != nil {

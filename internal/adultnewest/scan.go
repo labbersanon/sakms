@@ -86,14 +86,11 @@ const maxNewPerCycle = 25
 // not "burn the whole queue to ''." A single success anywhere resets the count.
 const genderBackfillFailureThreshold = 20
 
-// tagBackfillMaxPerCycle bounds how many empty-genre scene/movie rows the tag
-// backfill drains per browse cycle — same budget shape as maxNewPerCycle so a
-// large legacy queue (rows cached before tags were wired into stash-box queries)
-// cannot hammer the boxes in one tick.
-const tagBackfillMaxPerCycle = 25
-
 // tagBackfillFailureThreshold mirrors genderBackfillFailureThreshold — abort
 // the pass once the boxes are clearly down rather than churning the whole queue.
+// Unlike maxNewPerCycle there is no per-cycle row cap: id.Throttle already
+// rate-limits every box call and the legacy empty-genre backlog is finite, so
+// this drains like backfillPerformerGenders does.
 const tagBackfillFailureThreshold = 20
 
 // FeedIntervalSettingKey holds the FEED pass's cadence, in whole seconds — a
@@ -409,34 +406,51 @@ func backfillPerformerGenders(ctx context.Context, id *identify.Identifier, rele
 // (stashdb/fansdb via FindScene, tpdb via GetSceneByID/GetMovieByID). Rows
 // cached before tags were added to the identification paths — or matched while
 // tags were still omitted — stay at genres=[] forever without this pass, even
-// though re-identification now carries tags, because Insert's first-writer-wins
-// contract preserves the empty array and Prowlarr releases are never re-scanned.
+// though re-identification now carries tags, because Insert preserves an empty
+// array until a later write backfills it.
 //
-// Error handling mirrors backfillPerformerGenders: a box error leaves the row
-// queued (genres stay []) for the next cycle and bumps the consecutive-failure
-// counter; a reached catalog with no tags writes [] and performers [] explicitly
-// so the row leaves the queue.
+// Claude 2026-08-24: a nil MatchResult is not a negative — leave the row queued.
+// Reason: ResolveCatalogRef returns (nil, nil) both for an unconfigured box and
+// for a missing entity, so treating it as "no tags on file" would set
+// tags_resolved=1 forever. Unconfigured boxes are skipped before the throttle so
+// they never trip the breaker; a configured miss does.
+// Troubleshooting: genre pills stayed empty after a FansDB-less deploy poisoned
+// stashdb rows' tags_resolved flag.
+// Review if: ResolveCatalogRef gains a distinguishable no-match error.
 func backfillSceneTags(ctx context.Context, id *identify.Identifier, releaseStore *ReleaseStore) error {
 	if id == nil || id.Boxes == nil {
 		return nil
 	}
-	queue, err := releaseStore.UntaggedScenes(ctx, tagBackfillMaxPerCycle)
+	queue, err := releaseStore.UntaggedScenes(ctx, 0)
 	if err != nil {
 		return err
 	}
+	if len(queue) == 0 {
+		return nil
+	}
+	log.Printf("adultnewest: tag backfill draining %d untagged scene/movie row(s)", len(queue))
 	consecutiveFailures := 0
 	for _, row := range queue {
 		box := row.EntitySource
-		if box == "" {
+		// An unconfigured box stays queued until the operator adds it, without
+		// throttling or counting toward the breaker (that would abort the pass
+		// before configured-box rows are reached).
+		if box == "" || !id.Boxes.HasCatalog(box) {
 			continue
 		}
-		if err := id.Throttle.Wait(ctx, box); err != nil {
-			return err
+		if id.Throttle != nil {
+			if err := id.Throttle.Wait(ctx, box); err != nil {
+				return err
+			}
 		}
 		mr, err := id.Boxes.ResolveCatalogRef(ctx, box, row.EntityID, row.RowType == RowMovie)
-		if err != nil {
+		if err != nil || mr == nil {
 			consecutiveFailures++
-			log.Printf("adultnewest: resolving tags for %s %q (id=%d): %v — left untagged, will retry next cycle", row.RowType, row.EntityID, row.ID, err)
+			cause := "catalog returned no match"
+			if err != nil {
+				cause = err.Error()
+			}
+			log.Printf("adultnewest: resolving tags for %s %q (id=%d): %s — left untagged, will retry next cycle", row.RowType, row.EntityID, row.ID, cause)
 			if consecutiveFailures >= tagBackfillFailureThreshold {
 				log.Printf("adultnewest: tag backfill aborted after %d consecutive failures — remaining scenes stay untagged for next cycle", consecutiveFailures)
 				return nil
@@ -444,19 +458,9 @@ func backfillSceneTags(ctx context.Context, id *identify.Identifier, releaseStor
 			continue
 		}
 		consecutiveFailures = 0
-		genres := []string{}
-		performers := []string{}
-		if mr != nil {
-			genres = splitCommaTrim(mr.Tags)
-			performers = splitCommaTrim(mr.Performers)
-			if genres == nil {
-				genres = []string{}
-			}
-			if performers == nil {
-				performers = []string{}
-			}
-		}
-		if err := releaseStore.UpdateTags(ctx, row.ID, genres, performers); err != nil {
+		// UpdateTags normalizes nil to [] itself, so a tagless answer still
+		// promotes the row out of the queue.
+		if err := releaseStore.UpdateTags(ctx, row.ID, splitCommaTrim(mr.Tags), splitCommaTrim(mr.Performers)); err != nil {
 			log.Printf("adultnewest: updating tags for %s %q (id=%d): %v", row.RowType, row.EntityID, row.ID, err)
 		}
 	}

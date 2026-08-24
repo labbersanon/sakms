@@ -372,10 +372,15 @@ func (s *ReleaseStore) UntaggedScenes(ctx context.Context, limit int) ([]struct 
 	return out, rows.Err()
 }
 
-// UpdateTags writes resolved genres and performers onto one scene/movie row by
-// id — the tag backfill's only write. genres/performers may both be empty when
-// the catalog genuinely has none on file; that still promotes the row out of the
-// empty-genres work queue so it is not re-fetched forever.
+// UpdateTags writes resolved genres onto one scene/movie row by id and marks
+// tags_resolved = 1 so the row leaves the empty-genres work queue. genres may
+// be empty when the catalog genuinely has none on file.
+//
+// Claude 2026-08-24: performers only fill when the existing column is empty.
+// Reason: this queue is genre-driven, so an unconditional performers write
+// would clear a row that already had them whenever the catalog answer carries
+// none. Mirrors Insert's backfill-on-empty shape.
+// Review if: a dedicated performers backfill pass lands.
 func (s *ReleaseStore) UpdateTags(ctx context.Context, id int, genres, performers []string) error {
 	if genres == nil {
 		genres = []string{}
@@ -391,8 +396,16 @@ func (s *ReleaseStore) UpdateTags(ctx context.Context, id int, genres, performer
 	if err != nil {
 		return fmt.Errorf("encoding performers for entity %d: %w", id, err)
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE adult_newest_releases SET genres = ?, performers = ?, tags_resolved = 1 WHERE id = ?`,
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE adult_newest_releases SET
+			genres = ?,
+			performers = CASE
+				WHEN (performers IS NULL OR performers = '' OR performers = '[]')
+				THEN ?
+				ELSE performers
+			END,
+			tags_resolved = 1
+		WHERE id = ?`,
 		string(genresJSON), string(performersJSON), id); err != nil {
 		return fmt.Errorf("updating tags for entity %d: %w", id, err)
 	}

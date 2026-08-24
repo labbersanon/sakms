@@ -38,6 +38,19 @@ func NewBoxSearcher(stashBoxes map[string]*stashbox.Client, tpdb *tpdbrest.Clien
 	return &BoxSearcher{stashBoxes: stashBoxes, tpdb: tpdb, cache: newResultCache()}
 }
 
+// HasCatalog reports whether the named box is configured. ResolveCatalogRef
+// answers (nil, nil) for an unconfigured box, so callers that must not read
+// that as "the catalog has nothing on file" check this first.
+func (b *BoxSearcher) HasCatalog(box string) bool {
+	if b == nil {
+		return false
+	}
+	if box == "tpdb" {
+		return b.tpdb != nil
+	}
+	return b.stashBoxes[box] != nil
+}
+
 // SearchStashBox searches one stash-box (StashDB/FansDB) by title text.
 // Returns the first candidate (of up to the first 5) whose title similarity
 // is >= 0.4 AND whose studio doesn't contradict studio (if given): a

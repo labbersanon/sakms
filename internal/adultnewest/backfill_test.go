@@ -369,6 +369,21 @@ func seedUntaggedScene(t *testing.T, ctx context.Context, releaseStore *ReleaseS
 	return 0
 }
 
+// stillUntagged reports whether the row is still in the tag work queue.
+func stillUntagged(t *testing.T, ctx context.Context, releaseStore *ReleaseStore, id int) bool {
+	t.Helper()
+	queue, err := releaseStore.UntaggedScenes(ctx, 0)
+	if err != nil {
+		t.Fatalf("UntaggedScenes: %v", err)
+	}
+	for _, row := range queue {
+		if row.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func fakeSceneTagBox(t *testing.T, tags map[string][]string, errIDs map[string]bool) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -414,13 +429,120 @@ func TestBackfill_ResolvesSceneTags(t *testing.T) {
 	if len(got.Genres) != 2 || got.Genres[0] != "Anal" || got.Genres[1] != "Blonde" {
 		t.Fatalf("expected genres resolved, got %+v", got.Genres)
 	}
-	queue, err := releaseStore.UntaggedScenes(ctx, 0)
-	if err != nil {
-		t.Fatalf("UntaggedScenes: %v", err)
+	if stillUntagged(t, ctx, releaseStore, id) {
+		t.Fatalf("expected row %d to leave the untagged queue", id)
 	}
-	for _, row := range queue {
-		if row.ID == id {
-			t.Fatalf("expected row %d to leave the untagged queue", id)
-		}
+}
+
+// A (nil, nil) answer from ResolveCatalogRef (findScene null / missing entity)
+// must NOT mark tags_resolved — the row waits for a later cycle rather than
+// being poisoned as "confirmed empty".
+func TestBackfill_NilMatchLeavesQueued(t *testing.T) {
+	_, _, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	id := seedUntaggedScene(t, ctx, releaseStore, "missing-scene")
+	box := fakeSceneTagBox(t, nil, nil) // every id → findScene:null
+
+	if err := backfillSceneTags(ctx, backfillIdentifier(box.URL), releaseStore); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	if !stillUntagged(t, ctx, releaseStore, id) {
+		t.Fatalf("expected nil-match row %d to remain in the untagged queue", id)
+	}
+}
+
+// A row whose entity_source names an unconfigured box stays queued, and must
+// not trip the breaker — configured-box rows later in the queue still drain.
+func TestBackfill_UnconfiguredBoxLeavesQueued(t *testing.T) {
+	_, _, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	if err := releaseStore.Insert(ctx, MatchedRelease{
+		RowType: RowScene, EntityID: "fans-1", EntitySource: "fansdb",
+		EntityTitle: "Fans Scene",
+	}); err != nil {
+		t.Fatalf("seeding fansdb row: %v", err)
+	}
+	fansID := findByID(t, releaseStore, RowScene, "fans-1").ID
+	stashID := seedUntaggedScene(t, ctx, releaseStore, "stash-1")
+
+	box := fakeSceneTagBox(t, map[string][]string{"stash-1": {"Anal"}}, nil)
+	// backfillIdentifier configures stashdb only — fansdb is unconfigured.
+	if err := backfillSceneTags(ctx, backfillIdentifier(box.URL), releaseStore); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	if !stillUntagged(t, ctx, releaseStore, fansID) {
+		t.Fatal("expected unconfigured-box row to remain queued")
+	}
+	if stillUntagged(t, ctx, releaseStore, stashID) {
+		t.Fatal("expected configured-box row to leave the queue despite a prior unconfigured sibling")
+	}
+}
+
+// UpdateTags must not clear a non-empty performers column when the catalog
+// answer carries none.
+func TestUpdateTags_PreservesExistingPerformers(t *testing.T) {
+	_, _, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	if err := releaseStore.Insert(ctx, MatchedRelease{
+		RowType: RowScene, EntityID: "p1", EntitySource: "stashdb",
+		EntityTitle: "With Performers", Performers: []string{"Jane Doe"},
+	}); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	got := findByID(t, releaseStore, RowScene, "p1")
+	if err := releaseStore.UpdateTags(ctx, got.ID, []string{"Anal"}, nil); err != nil {
+		t.Fatalf("UpdateTags: %v", err)
+	}
+	got = findByID(t, releaseStore, RowScene, "p1")
+	if len(got.Genres) != 1 || got.Genres[0] != "Anal" {
+		t.Fatalf("expected genres [Anal], got %+v", got.Genres)
+	}
+	if len(got.Performers) != 1 || got.Performers[0] != "Jane Doe" {
+		t.Fatalf("expected performers preserved, got %+v", got.Performers)
+	}
+}
+
+// When performers is still [], a non-empty catalog answer fills it (the same
+// backfill-on-empty shape as Insert).
+func TestUpdateTags_FillsEmptyPerformers(t *testing.T) {
+	_, _, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	if err := releaseStore.Insert(ctx, MatchedRelease{
+		RowType: RowScene, EntityID: "p2", EntitySource: "stashdb",
+		EntityTitle: "No Performers",
+	}); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	got := findByID(t, releaseStore, RowScene, "p2")
+	if err := releaseStore.UpdateTags(ctx, got.ID, []string{"Blonde"}, []string{"Jane Doe"}); err != nil {
+		t.Fatalf("UpdateTags: %v", err)
+	}
+	got = findByID(t, releaseStore, RowScene, "p2")
+	if len(got.Performers) != 1 || got.Performers[0] != "Jane Doe" {
+		t.Fatalf("expected performers filled, got %+v", got.Performers)
+	}
+}
+
+// A reached catalog with an empty tag list is a real negative — genres=[] is
+// written and tags_resolved promoted so the row is not re-fetched forever.
+func TestBackfill_EmptyTagsStillLeavesQueue(t *testing.T) {
+	_, _, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	id := seedUntaggedScene(t, ctx, releaseStore, "empty-tags")
+	box := fakeSceneTagBox(t, map[string][]string{"empty-tags": {}}, nil)
+
+	if err := backfillSceneTags(ctx, backfillIdentifier(box.URL), releaseStore); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	if stillUntagged(t, ctx, releaseStore, id) {
+		t.Fatalf("expected empty-tags row %d to leave the untagged queue", id)
 	}
 }

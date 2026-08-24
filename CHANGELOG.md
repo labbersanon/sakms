@@ -7995,3 +7995,23 @@ ffmpeg: the on-demand `/vmaf` handler returns `skipped`, scheduled eager VMAF
 steps over the pair, and the Dedup card does not fetch a score. Pair-level
 phash match uses the same Hamming cut as Dedup grouping, not the group's worst-
 pair similarity or the old 0.7 UI heuristic.
+
+## 2026-08-24 — Adult Discover: monitor performers and studios
+
+Operators can toggle **Monitor** on a performer/studio drill-down. Monitoring
+requires a resolved opaque catalog identity (exact-name resolve via
+`identify.ResolveEntityID` — the pool's `entity_id` is the display name and is
+not enough). Unresolvable entities keep the switch disabled with an explanation.
+
+Detection is a third ticker inside `adultnewest.Run`: one sequential Prowlarr
+search per due monitored entity (default cadence **24h**, explicit 0 = off),
+capped at 20/cycle, with empty-poll backoff. Matches reuse the existing
+identify → `adult_newest_releases` pool path. Dispatch is the fifth pass of
+`runUsenetRetryCycle` under new trigger `TriggerAdultMonitor`: only scenes with
+`first_seen_at > monitored_since`, not already on disk, not already in flight.
+`Studio`/`Performers` are threaded so `adultIdentityWeak` does not park every
+hit. A **Monitored** strip on Adult Discover browse lists linked pooled scenes.
+
+Un-monitor cancels never-dispatched monitor-originated `pending_retry` rows via
+`grabs.monitor_entity_key` (origin marker, same lesson as `hold_until`).
+Migration `0017_adult_monitored_entities.sql`.

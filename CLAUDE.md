@@ -166,6 +166,20 @@ launch, which is exactly what the sibling torrent-behavior plan's §5
 originally recommended and this feature's spec overrode — not a general proof
 about the whole codebase.
 
+**AMENDED 2026-08-24 — Adult performer/studio monitoring adds a SIXTH trigger
+source (`TriggerAdultMonitor`), and changes NO scheduler count.** Detection
+lives as a third ticker case inside the existing `adultnewest.Run` select loop
+(no new `main.go` launch). Dispatch is a plain fifth pass inside
+`runUsenetRetryCycle` (`internal/api/adultmonitor.go`), proven by
+`adultmonitor_static_test.go` the same way air-date monitoring is. Corrected
+enumeration: **six live triggers — `TriggerOperator` / `TriggerRequest` /
+`TriggerRetry` / `TriggerAirDate` / `TriggerPreRelease` / `TriggerAdultMonitor`
+— all through the one `RunAutoGrab` path.** Un-monitor cancels never-dispatched
+monitor retries via `grabs.monitor_entity_key` (a real origin marker; do not
+infer origin from `retry_reason`). This is a second system-minted unattended
+dispatch surface in the same category as air-date monitoring: defaults off,
+absent row means unmonitored, so nothing fires on upgrade.
+
 **AMENDED 2026-08-02 — Calendar pre-release requests add a FIFTH trigger source
 to the bounded auto-grab exception below, and change NO COUNT in this section.**
 Same shape as the air-date amendment directly above, recorded for the same

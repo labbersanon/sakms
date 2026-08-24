@@ -29,6 +29,7 @@ import (
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 )
 
@@ -52,7 +53,7 @@ const monitorUnmonitoredReason = "the entity was un-monitored, so this monitor-o
 // It mirrors dispatchAirDateGrabs's structure: a session build, an active-grab
 // prefilter, sequential dispatch with a per-cycle cap, and the single RunAutoGrab
 // path for every attempt.
-func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore, excluded map[string]bool, now time.Time) {
+func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, libStore *library.Store, monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore, excluded map[string]bool, now time.Time) {
 	if monitoredStore == nil || releaseStore == nil {
 		return
 	}
@@ -119,11 +120,22 @@ func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionB
 			if activeGrabTitles[title] {
 				continue
 			}
+			// Already on disk — never re-grab. libStore may be nil in older tests.
+			if libStore != nil && scene.EntitySource != "" && scene.EntityID != "" {
+				if _, err := libStore.GetScene(ctx, scene.EntitySource, scene.EntityID); err == nil {
+					continue
+				}
+			}
 
 			attempts++
 			monKey := adultnewest.FormatMonitorKey(entity.Kind, entity.EntitySource, entity.EntityID)
 
-			out, err := RunAutoGrab(ctx, deps, sess, AutoGrabRequest{
+			// Claude 2026-08-24: thread the monitored entity into Studio/Performers.
+			// Reason: adultIdentityWeak parks every Adult retry when both are empty;
+			//   a monitored entity is the strongest identity signal available.
+			// Troubleshooting: monitor hits park forever as pending_retry with no dispatch.
+			// Review if: grabs table gains studio/performers columns and retry can reload them.
+			req := AutoGrabRequest{
 				Mode:            mode.Adult,
 				Title:           title,
 				Studio:          scene.EntityStudio,
@@ -132,10 +144,13 @@ func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionB
 				Box:             scene.EntitySource,
 				SceneID:         scene.EntityID,
 				Trigger:         TriggerAdultMonitor,
-				// Pattern B: no ExistingGrabID — Create path.
-				// MonitorEntityKey is set post-grab via SetMonitorEntityKey below,
-				// or carried on the grab's Create call.
-			})
+			}
+			if entity.Kind == "studio" {
+				req.Studio = entity.EntityName
+			} else {
+				req.Performers = []string{entity.EntityName}
+			}
+			out, err := RunAutoGrab(ctx, deps, sess, req)
 			switch {
 			case err != nil:
 				log.Printf("adult monitor dispatch: %q — auto-grab failed (%T)", title, rootCause(err))

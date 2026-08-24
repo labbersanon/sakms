@@ -455,7 +455,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// GET: reads monitor state for kind+name; ZERO Prowlarr calls.
 	// PUT: enables/disables monitoring; resolves entity id server-side on enable.
 	// Claude 2026-08-24: registered on literal "adult" so ServeMux prefers it.
-	mux.HandleFunc("GET /api/modes/adult/discover/monitor", getAdultMonitorStateHandler(adultMonitoredStore, adultNewestReleaseStore))
+	mux.HandleFunc("GET /api/modes/adult/discover/monitor", getAdultMonitorStateHandler(adultMonitoredStore, adultNewestReleaseStore, httpClient, connStore, scStore, settingsStore))
 	mux.HandleFunc("PUT /api/modes/adult/discover/monitor", putAdultMonitorHandler(adultMonitoredStore, adultNewestReleaseStore, grabsStore, httpClient, connStore, scStore, settingsStore))
 	// Monitored-entity scene strip — the Monitored Discover row.
 	mux.HandleFunc("GET /api/modes/adult/newest-rows/monitored/resolve", getMonitoredEntitiesRowHandler(adultMonitoredStore, adultNewestReleaseStore, feedHealth))

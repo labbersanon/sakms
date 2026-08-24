@@ -1,35 +1,13 @@
 // Adult Discover performer/studio monitoring API — GET monitor state, PUT
 // toggle, and resolve the monitored-row strip. Each call goes through api()
 // (src/api/client.ts) so it inherits the session cookie and the global
-// 401 → re-boot session-expiry fallback. Paths confirmed against the plan's
-// API contract for GET/PUT /api/modes/adult/discover/monitor and
-// GET /api/modes/adult/newest-rows/monitored/resolve.
-//
-// TODO: switch AdultMonitorState / SetAdultMonitorRequest to @dto once
-// internal/apidto/ts/dto.gen.ts includes them (they are not yet generated).
+// 401 → re-boot session-expiry fallback.
 
+import type { AdultMonitorState, SetAdultMonitorRequest } from "@dto";
 import { api } from "./client";
 import type { AdultNewestReleaseItem } from "./adultNewestRows";
 
-// AdultMonitorState is the shape GET /api/modes/adult/discover/monitor returns.
-// Always 200 — when the entity cannot be resolved, resolved is false and
-// reason carries the human-readable explanation.
-export type AdultMonitorState = {
-  resolved: boolean;
-  source: string;
-  entityId: string;
-  entityName: string;
-  monitored: boolean;
-  reason: string;
-};
-
-// SetAdultMonitorRequest is the body for PUT /api/modes/adult/discover/monitor.
-// 204 on success; 409 when monitored:true but the entity can't be resolved.
-export type SetAdultMonitorRequest = {
-  kind: "performer" | "studio";
-  name: string;
-  monitored: boolean;
-};
+export type { AdultMonitorState, SetAdultMonitorRequest };
 
 // fetchMonitorState fetches the current monitoring state for one performer or
 // studio. Never throws on a "can't resolve" state — that is a 200 with

@@ -291,7 +291,7 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	releaseDueGrabs(ctx, deps, build, libStore, excluded, now)
 	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
 	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.
-	monitorAdultEntities(ctx, deps, build, monitoredStore, releaseStore, excluded, now)
+	monitorAdultEntities(ctx, deps, build, libStore, monitoredStore, releaseStore, excluded, now)
 }
 
 // sweepUsenetFailures is the AUTHORITATIVE M3 transition: it asks the usenet

@@ -85,12 +85,16 @@ func putAdultMonitorIntervalHandler(settingsStore *settings.Store) http.HandlerF
 
 // getAdultMonitorStateHandler is GET /api/modes/adult/discover/monitor?kind=&name=
 // It returns the current monitor state for a performer/studio. ZERO Prowlarr
-// calls are made — the response is built entirely from the monitored store and
-// the pool table.
+// calls are made. When the entity is not already in the monitored store, it
+// performs at most one exact-name catalog resolve (same budget shape as
+// adultDescriptionHandler) so Resolved reflects a real opaque id — the pool's
+// entity_id is the NAME, not a catalog id, so "box known" alone must not
+// enable the toggle.
 //
 // kind must be "performer" or "studio"; name must be non-empty. Any other
-// combination returns 400.
-func getAdultMonitorStateHandler(monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
+// combination returns 400. Unresolvable / unconfigured installs still return
+// 200 with Resolved=false (no ErrorBoundary in the SPA).
+func getAdultMonitorStateHandler(monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		kind := r.URL.Query().Get("kind")
 		name := r.URL.Query().Get("name")
@@ -117,25 +121,41 @@ func getAdultMonitorStateHandler(monitoredStore *adultnewest.MonitoredStore, rel
 			return
 		}
 
-		// Not in monitored table — check pool for entity_source.
+		// Claude 2026-08-24: resolve opaque catalog id on drill-open.
+		// Reason: pool entity_id is the display name; Resolved must mean a real id.
+		// Troubleshooting: toggle enabled then PUT 409 — GET was treating pool box as resolved.
+		// Review if: monitored store always pre-seeds identity before the toggle renders.
 		rowType := adultnewest.RowPerformer
 		if kind == "studio" {
 			rowType = adultnewest.RowStudio
 		}
-		box, poolErr := releaseStore.EntityBox(ctx, rowType, name)
-		if poolErr != nil {
-			// Not in pool either — not resolvable without a Prowlarr call.
+		preferredBox, _ := releaseStore.EntityBox(ctx, rowType, name)
+
+		sess, buildErr := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Adult)
+		if buildErr != nil || sess.Identify == nil {
 			writeJSON(w, apidto.AdultMonitorState{
-				Resolved: false,
-				Reason:   "entity not in pool — open the drill-down first to resolve its catalog identity",
+				Resolved:   false,
+				EntityName: name,
+				Reason:     "Can't monitor — no catalog box is configured to resolve this entry.",
 			})
 			return
 		}
-
+		resolvedBox, entityID := sess.Identify.ResolveEntityID(ctx, kind, name, preferredBox)
+		if entityID == "" {
+			writeJSON(w, apidto.AdultMonitorState{
+				Resolved:   false,
+				Source:     preferredBox,
+				EntityName: name,
+				Reason:     "Can't monitor — this performer/studio isn't matched to a catalog entry yet.",
+			})
+			return
+		}
 		writeJSON(w, apidto.AdultMonitorState{
-			Resolved: box != "",
-			Source:   box,
-			Reason:   "entity found in pool but not yet in monitored list",
+			Resolved:   true,
+			Source:     resolvedBox,
+			EntityID:   entityID,
+			EntityName: name,
+			Monitored:  false,
 		})
 	}
 }
@@ -216,19 +236,11 @@ func putAdultMonitorHandler(monitoredStore *adultnewest.MonitoredStore, releaseS
 		}
 
 		since := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-		upserted, err := monitoredStore.UpsertOnMonitor(ctx, req.Kind, resolvedBox, entityID, req.Name, image, since)
-		if err != nil {
+		if _, err := monitoredStore.UpsertOnMonitor(ctx, req.Kind, resolvedBox, entityID, req.Name, image, since); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		writeJSON(w, apidto.AdultMonitorState{
-			Resolved:   true,
-			Source:     upserted.EntitySource,
-			EntityID:   upserted.EntityID,
-			EntityName: upserted.EntityName,
-			Monitored:  upserted.Monitored,
-		})
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

@@ -254,7 +254,7 @@ func TestMonitorAdultEntities_WatermarkSkipsOldScenes(t *testing.T) {
 		return mode.Build(ctx, connStore, scStore, settingsStore, testHTTPClient(), nil, m)
 	}
 
-	monitorAdultEntities(ctx, deps, build, monitoredStore, releaseStore, nil, time.Now())
+	monitorAdultEntities(ctx, deps, build, nil, monitoredStore, releaseStore, nil, time.Now())
 
 	// No grabs should have been created — the scene is "older" than monitored_since.
 	list, err := grabsStore.List(ctx, mode.Adult)
@@ -270,7 +270,7 @@ func TestMonitorAdultEntities_NilStoreSkipsGracefully(t *testing.T) {
 	// Passing nil for monitoredStore must not panic.
 	ctx := context.Background()
 	deps := AutoGrabDeps{}
-	monitorAdultEntities(ctx, deps, nil, nil, nil, nil, time.Now())
+	monitorAdultEntities(ctx, deps, nil, nil, nil, nil, nil, time.Now())
 }
 
 func TestMonitorAdultEntities_CapAtMaxGrabsPerCycle(t *testing.T) {
@@ -322,7 +322,7 @@ func TestMonitorAdultEntities_CapAtMaxGrabsPerCycle(t *testing.T) {
 		return mode.Build(ctx, connStore, scStore, settingsStore, testHTTPClient(), nil, m)
 	}
 
-	monitorAdultEntities(ctx, deps, build, monitoredStore, releaseStore, nil, time.Now())
+	monitorAdultEntities(ctx, deps, build, nil, monitoredStore, releaseStore, nil, time.Now())
 
 	list, err := grabsStore.List(ctx, mode.Adult)
 	if err != nil {

@@ -3180,3 +3180,32 @@ export interface StashBoxDatabaseTestRequest {
   endpoint: string;
   apiKey: string;
 }
+/**
+ * AdultMonitorState is GET /api/modes/adult/discover/monitor's response.
+ * It describes whether the requested performer/studio is currently monitored
+ * and whether its catalog identity could be resolved.
+ * Resolved=false means the entity cannot be enabled for monitoring without
+ * a pool entry or a direct box lookup (requires a prior drill-down to cache
+ * the entity_source).
+ */
+export interface AdultMonitorState {
+  resolved: boolean;
+  source?: string;
+  entityId?: string;
+  entityName?: string;
+  monitored: boolean;
+  /**
+   * Reason is an operator-facing explanation when Resolved=false or the
+   * entity state is unusual (e.g. "entity not in pool yet"). Empty when the
+   * state is straightforward.
+   */
+  reason?: string;
+}
+/**
+ * SetAdultMonitorRequest is PUT /api/modes/adult/discover/monitor's body.
+ */
+export interface SetAdultMonitorRequest {
+  kind: string;
+  name: string;
+  monitored: boolean;
+}

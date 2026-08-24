@@ -345,3 +345,82 @@ func TestBackfill_ResumesAfterCircuitBreaker(t *testing.T) {
 		t.Fatalf("expected the queue fully drained after the box recovered, got %d still NULL", len(queue))
 	}
 }
+
+func seedUntaggedScene(t *testing.T, ctx context.Context, releaseStore *ReleaseStore, entityID string) int {
+	t.Helper()
+	if err := releaseStore.Insert(ctx, MatchedRelease{
+		RowType:      RowScene,
+		EntityID:     entityID,
+		EntitySource: "stashdb",
+		EntityTitle:  "Tagged Scene",
+	}); err != nil {
+		t.Fatalf("seeding untagged scene: %v", err)
+	}
+	list, err := releaseStore.UntaggedScenes(ctx, 0)
+	if err != nil {
+		t.Fatalf("UntaggedScenes: %v", err)
+	}
+	for _, row := range list {
+		if row.EntityID == entityID {
+			return row.ID
+		}
+	}
+	t.Fatalf("seeded scene %q not found in untagged queue", entityID)
+	return 0
+}
+
+func fakeSceneTagBox(t *testing.T, tags map[string][]string, errIDs map[string]bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		id, _ := req.Variables["id"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		if errIDs[id] {
+			fmt.Fprint(w, `{"errors":[{"message":"boom"}]}`)
+			return
+		}
+		tagList, ok := tags[id]
+		if !ok {
+			fmt.Fprint(w, `{"data":{"findScene":null}}`)
+			return
+		}
+		tagJSON := ""
+		for i, name := range tagList {
+			if i > 0 {
+				tagJSON += ","
+			}
+			tagJSON += fmt.Sprintf(`{"name":%q}`, name)
+		}
+		fmt.Fprintf(w, `{"data":{"findScene":{"id":%q,"title":"T","release_date":"2024-01-01","studio":{"name":"S","parent":null},"tags":[%s]}}}`,
+			id, tagJSON)
+	}))
+}
+
+func TestBackfill_ResolvesSceneTags(t *testing.T) {
+	_, _, releaseStore := newTestScanStores(t)
+	ctx := context.Background()
+
+	id := seedUntaggedScene(t, ctx, releaseStore, "scene-uuid-1")
+	box := fakeSceneTagBox(t, map[string][]string{"scene-uuid-1": {"Anal", "Blonde"}}, nil)
+
+	if err := backfillSceneTags(ctx, backfillIdentifier(box.URL), releaseStore); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got := findByID(t, releaseStore, RowScene, "scene-uuid-1")
+	if len(got.Genres) != 2 || got.Genres[0] != "Anal" || got.Genres[1] != "Blonde" {
+		t.Fatalf("expected genres resolved, got %+v", got.Genres)
+	}
+	queue, err := releaseStore.UntaggedScenes(ctx, 0)
+	if err != nil {
+		t.Fatalf("UntaggedScenes: %v", err)
+	}
+	for _, row := range queue {
+		if row.ID == id {
+			t.Fatalf("expected row %d to leave the untagged queue", id)
+		}
+	}
+}

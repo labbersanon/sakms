@@ -170,11 +170,13 @@ func (s *ReleaseStore) MarkSeen(ctx context.Context, releaseGUID string) error {
 //     browse insert (whose download_url is empty) never overwrites a feed's enclosure, and a
 //     second feed never downgrades the first feed's enclosure.
 //
-// Identity-stable metadata (title/studio/image/genres/performers) keeps the
-// first-writer-wins contract — it is intentionally NOT in the SET clause, so it
-// is preserved on conflict. This closes M1 (a feed match can no longer be
-// silently dropped by a pre-cached browse row) without letting a browse match
-// steal a feed row's grab path.
+// Identity-stable metadata (title/studio/image) keeps the first-writer-wins
+// contract on conflict. Genres/performers use the same backfill-on-empty shape
+// as gender: a row cached before tags/performers were wired (or matched via a
+// path that omitted them) keeps [] until a later insert carries real values,
+// without overwriting a row that already has tags. This closes M1 (a feed match
+// can no longer be silently dropped by a pre-cached browse row) without letting
+// a browse match steal a feed row's grab path.
 func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 	genres := m.Genres
 	if genres == nil {
@@ -196,12 +198,16 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 	if err != nil {
 		return fmt.Errorf("encoding performers for entity %q: %w", m.EntityID, err)
 	}
+	tagsResolved := 0
+	if len(genres) > 0 {
+		tagsResolved = 1
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO adult_newest_releases
 			(row_type, entity_id, entity_source, entity_title, entity_studio, entity_image, entity_date,
 			 entity_duration_seconds, first_seen_release_title, genres, performers, gender,
-			 download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 download_url, download_protocol, size_bytes, browse_confirmed, feed_id, feed_item_key, last_confirmed_seen, tags_resolved)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(row_type, entity_source, entity_id) DO UPDATE SET
 			browse_confirmed  = GREATEST(adult_newest_releases.browse_confirmed, excluded.browse_confirmed),
 			download_url      = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
@@ -217,10 +223,21 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 			last_confirmed_seen = CASE WHEN adult_newest_releases.download_url = '' AND excluded.download_url != ''
 			                    THEN excluded.last_confirmed_seen ELSE adult_newest_releases.last_confirmed_seen END,
 			gender = CASE WHEN adult_newest_releases.gender IS NULL OR adult_newest_releases.gender = ''
-			                    THEN excluded.gender ELSE adult_newest_releases.gender END
+			                    THEN excluded.gender ELSE adult_newest_releases.gender END,
+			genres = CASE WHEN (adult_newest_releases.genres IS NULL OR adult_newest_releases.genres = '' OR adult_newest_releases.genres = '[]')
+			                   AND excluded.genres IS NOT NULL AND excluded.genres != '' AND excluded.genres != '[]'
+			              THEN excluded.genres ELSE adult_newest_releases.genres END,
+			performers = CASE WHEN (adult_newest_releases.performers IS NULL OR adult_newest_releases.performers = '' OR adult_newest_releases.performers = '[]')
+			                       AND excluded.performers IS NOT NULL AND excluded.performers != '' AND excluded.performers != '[]'
+			                  THEN excluded.performers ELSE adult_newest_releases.performers END,
+			tags_resolved = CASE WHEN excluded.tags_resolved = 1 THEN 1
+			                     WHEN (adult_newest_releases.genres IS NULL OR adult_newest_releases.genres = '' OR adult_newest_releases.genres = '[]')
+			                          AND excluded.genres IS NOT NULL AND excluded.genres != '' AND excluded.genres != '[]'
+			                     THEN 1
+			                     ELSE adult_newest_releases.tags_resolved END
 	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate,
 		m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON), string(performersJSON), m.Gender,
-		m.DownloadURL, m.DownloadProtocol, m.SizeBytes, m.BrowseConfirmed, m.FeedID, m.FeedItemKey, m.LastConfirmedSeen)
+		m.DownloadURL, m.DownloadProtocol, m.SizeBytes, m.BrowseConfirmed, m.FeedID, m.FeedItemKey, m.LastConfirmedSeen, tagsResolved)
 	if err != nil {
 		return fmt.Errorf("inserting matched entity %q: %w", m.EntityID, err)
 	}
@@ -304,6 +321,80 @@ func (s *ReleaseStore) UpdateGender(ctx context.Context, id int, gender string) 
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE adult_newest_releases SET gender = ? WHERE id = ?`, gender, id); err != nil {
 		return fmt.Errorf("updating gender for entity %d: %w", id, err)
+	}
+	return nil
+}
+
+// UntaggedScenes returns scene/movie rows whose catalog tags have never been
+// resolved (tags_resolved = 0) — the tag backfill's work queue (see
+// scan.go's backfillSceneTags). Ordered by id so a partial drain resumes
+// deterministically. limit caps how many rows one cycle processes (0 = no limit).
+func (s *ReleaseStore) UntaggedScenes(ctx context.Context, limit int) ([]struct {
+	ID           int
+	EntityID     string
+	EntitySource string
+	RowType      RowType
+}, error) {
+	query := `SELECT id, entity_id, entity_source, row_type FROM adult_newest_releases
+		WHERE row_type IN (?, ?) AND tags_resolved = 0
+		ORDER BY id`
+	args := []any{string(RowScene), string(RowMovie)}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing untagged scenes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []struct {
+		ID           int
+		EntityID     string
+		EntitySource string
+		RowType      RowType
+	}
+	for rows.Next() {
+		var r struct {
+			ID           int
+			EntityID     string
+			EntitySource string
+			RowType      RowType
+		}
+		var rowTypeStr string
+		if err := rows.Scan(&r.ID, &r.EntityID, &r.EntitySource, &rowTypeStr); err != nil {
+			return nil, fmt.Errorf("scanning untagged scene: %w", err)
+		}
+		r.RowType = RowType(rowTypeStr)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UpdateTags writes resolved genres and performers onto one scene/movie row by
+// id — the tag backfill's only write. genres/performers may both be empty when
+// the catalog genuinely has none on file; that still promotes the row out of the
+// empty-genres work queue so it is not re-fetched forever.
+func (s *ReleaseStore) UpdateTags(ctx context.Context, id int, genres, performers []string) error {
+	if genres == nil {
+		genres = []string{}
+	}
+	if performers == nil {
+		performers = []string{}
+	}
+	genresJSON, err := json.Marshal(genres)
+	if err != nil {
+		return fmt.Errorf("encoding genres for entity %d: %w", id, err)
+	}
+	performersJSON, err := json.Marshal(performers)
+	if err != nil {
+		return fmt.Errorf("encoding performers for entity %d: %w", id, err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE adult_newest_releases SET genres = ?, performers = ?, tags_resolved = 1 WHERE id = ?`,
+		string(genresJSON), string(performersJSON), id); err != nil {
+		return fmt.Errorf("updating tags for entity %d: %w", id, err)
 	}
 	return nil
 }

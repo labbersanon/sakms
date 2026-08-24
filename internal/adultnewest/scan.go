@@ -86,6 +86,16 @@ const maxNewPerCycle = 25
 // not "burn the whole queue to ''." A single success anywhere resets the count.
 const genderBackfillFailureThreshold = 20
 
+// tagBackfillMaxPerCycle bounds how many empty-genre scene/movie rows the tag
+// backfill drains per browse cycle — same budget shape as maxNewPerCycle so a
+// large legacy queue (rows cached before tags were wired into stash-box queries)
+// cannot hammer the boxes in one tick.
+const tagBackfillMaxPerCycle = 25
+
+// tagBackfillFailureThreshold mirrors genderBackfillFailureThreshold — abort
+// the pass once the boxes are clearly down rather than churning the whole queue.
+const tagBackfillFailureThreshold = 20
+
 // FeedIntervalSettingKey holds the FEED pass's cadence, in whole seconds — a
 // deliberate new tunable, distinct from IntervalSettingKey (the 24h browse
 // pass). The feed pass runs on its own ticker with its own budget, which is what
@@ -345,6 +355,9 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 	if err := backfillPerformerGenders(ctx, sess.Identify, releaseStore); err != nil {
 		log.Printf("adultnewest: backfilling performer genders: %v", err)
 	}
+	if err := backfillSceneTags(ctx, sess.Identify, releaseStore); err != nil {
+		log.Printf("adultnewest: backfilling scene tags: %v", err)
+	}
 }
 
 // backfillPerformerGenders drains the NULL-gender performer work queue
@@ -389,6 +402,82 @@ func backfillPerformerGenders(ctx context.Context, id *identify.Identifier, rele
 		}
 	}
 	return nil
+}
+
+// backfillSceneTags drains the empty-genres scene/movie work queue
+// (ReleaseStore.UntaggedScenes) by re-fetching each entity from its catalog
+// (stashdb/fansdb via FindScene, tpdb via GetSceneByID/GetMovieByID). Rows
+// cached before tags were added to the identification paths — or matched while
+// tags were still omitted — stay at genres=[] forever without this pass, even
+// though re-identification now carries tags, because Insert's first-writer-wins
+// contract preserves the empty array and Prowlarr releases are never re-scanned.
+//
+// Error handling mirrors backfillPerformerGenders: a box error leaves the row
+// queued (genres stay []) for the next cycle and bumps the consecutive-failure
+// counter; a reached catalog with no tags writes [] and performers [] explicitly
+// so the row leaves the queue.
+func backfillSceneTags(ctx context.Context, id *identify.Identifier, releaseStore *ReleaseStore) error {
+	if id == nil || id.Boxes == nil {
+		return nil
+	}
+	queue, err := releaseStore.UntaggedScenes(ctx, tagBackfillMaxPerCycle)
+	if err != nil {
+		return err
+	}
+	consecutiveFailures := 0
+	for _, row := range queue {
+		box := row.EntitySource
+		if box == "" {
+			continue
+		}
+		if err := id.Throttle.Wait(ctx, box); err != nil {
+			return err
+		}
+		mr, err := id.Boxes.ResolveCatalogRef(ctx, box, row.EntityID, row.RowType == RowMovie)
+		if err != nil {
+			consecutiveFailures++
+			log.Printf("adultnewest: resolving tags for %s %q (id=%d): %v — left untagged, will retry next cycle", row.RowType, row.EntityID, row.ID, err)
+			if consecutiveFailures >= tagBackfillFailureThreshold {
+				log.Printf("adultnewest: tag backfill aborted after %d consecutive failures — remaining scenes stay untagged for next cycle", consecutiveFailures)
+				return nil
+			}
+			continue
+		}
+		consecutiveFailures = 0
+		genres := []string{}
+		performers := []string{}
+		if mr != nil {
+			genres = splitCommaTrim(mr.Tags)
+			performers = splitCommaTrim(mr.Performers)
+			if genres == nil {
+				genres = []string{}
+			}
+			if performers == nil {
+				performers = []string{}
+			}
+		}
+		if err := releaseStore.UpdateTags(ctx, row.ID, genres, performers); err != nil {
+			log.Printf("adultnewest: updating tags for %s %q (id=%d): %v", row.RowType, row.EntityID, row.ID, err)
+		}
+	}
+	return nil
+}
+
+// splitCommaTrim splits a comma-joined tag/performers string and trims each
+// piece — the same literal-comma convention boxlookup uses when building
+// MatchResult.Tags/Performers.
+func splitCommaTrim(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // processRelease identifies one Prowlarr release and writes every entity it

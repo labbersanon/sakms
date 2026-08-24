@@ -133,6 +133,32 @@ func TestInsert_CaseMerge_BrowseThenBrowse(t *testing.T) {
 	}
 }
 
+// TestInsert_CaseMerge_BackfillsEmptyGenres proves a later insert carrying
+// catalog tags upgrades a pre-cached row whose genres were still [].
+func TestInsert_CaseMerge_BackfillsEmptyGenres(t *testing.T) {
+	s := newTestReleaseStore(t)
+	ctx := context.Background()
+
+	first := browseRow("e5")
+	if err := s.Insert(ctx, first); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	second := browseRow("e5")
+	second.Genres = []string{"Anal", "Blonde"}
+	second.Performers = []string{"Jane Doe"}
+	if err := s.Insert(ctx, second); err != nil {
+		t.Fatalf("second insert: %v", err)
+	}
+
+	got := findByID(t, s, RowScene, "e5")
+	if len(got.Genres) != 2 || got.Genres[0] != "Anal" || got.Genres[1] != "Blonde" {
+		t.Errorf("expected genres backfilled on conflict, got %+v", got.Genres)
+	}
+	if len(got.Performers) != 1 || got.Performers[0] != "Jane Doe" {
+		t.Errorf("expected performers backfilled on conflict, got %+v", got.Performers)
+	}
+}
+
 // TestRefreshLastConfirmedSeen_UpdatesOnlyGivenFeedKeys asserts writer (ii): the
 // full-window bulk refresh advances last_confirmed_seen only for the named
 // feed's named keys, leaving other feeds' rows untouched.

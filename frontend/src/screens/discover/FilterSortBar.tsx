@@ -133,7 +133,7 @@ export const MainstreamFilterSortBar: Component<{
     props.lockedContentType ?? props.value().contentType;
 
   const [genreError, setGenreError] = createSignal<Error | null>(null);
-  const [genres, genreResource] = createResource(genreMode, async (mode) => {
+  const [genres, { refetch: refetchGenres }] = createResource(genreMode, async (mode) => {
     setGenreError(null);
     try {
       return await fetchGenres(mode);
@@ -174,7 +174,7 @@ export const MainstreamFilterSortBar: Component<{
             Genre
           </label>
           <Show
-            when={!genreResource.loading}
+            when={!genres.loading}
             fallback={
               <select
                 id="discover-filter-genre"
@@ -202,7 +202,7 @@ export const MainstreamFilterSortBar: Component<{
                     <button
                       type="button"
                       class="underline"
-                      onClick={() => void genreResource.refetch()}
+                      onClick={() => void refetchGenres()}
                     >
                       Retry
                     </button>

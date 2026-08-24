@@ -433,8 +433,12 @@ describe("Discover auto-grab — Adult (runtime-sourced, via select-mode bulk)",
       // unattended auto-grab exception).
       // Troubleshooting: substring-collision ordering — the /resolve item
       // endpoint shares a prefix with its own list endpoint, so it must be
-      // matched FIRST.
-      // Review if: a single-item Adult auto-grab affordance is ever reinstated.
+      // matched FIRST. Also note: /newest-rows/monitored/resolve must be
+      // matched before the generic /newest-rows/{id}/resolve pattern, since
+      // "monitored/resolve" contains BOTH "/newest-rows/" and "/resolve".
+      // MonitoredRow self-hides on an empty response (returns [] here).
+      // Claude 2026-08-24: added /monitored/resolve guard.
+      if (url.includes("/newest-rows/monitored/resolve")) return jsonResponse([]);
       if (url.includes("/newest-rows/") && url.includes("/resolve"))
         // Non-empty image so the card renders an <img>, not the TextPoster
         // fallback — the fallback repeats the title, giving the click query

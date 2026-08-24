@@ -365,7 +365,12 @@ describe("AdultDiscover — drill-down row 2: the catalog bio banner", () => {
     expect(img?.className).not.toContain("object-cover");
   });
 
-  it("renders NO framed block at all when the catalog has no bio (no placeholder, no empty panel)", async () => {
+  it("renders the banner container but no bio text when the catalog has no bio (no placeholder paragraph)", async () => {
+    // Claude 2026-08-24: test updated — banner container now always renders on
+    // a drill to host the Monitor switch (hoisted out of <Show when={entityBio}>).
+    // The behavioral contract that changed: no-bio → container present, bio <p>
+    // absent (not "container absent" as before). The no-placeholder-paragraph
+    // guarantee is preserved: the bio text <p> only renders when text is non-empty.
     stubFetch((url) => {
       if (url.includes(DESCRIPTION_URL)) return jsonResponse({ text: "", source: "" });
       return newestEntityStub("studio", "Vixen Media")(url);
@@ -373,14 +378,22 @@ describe("AdultDiscover — drill-down row 2: the catalog bio banner", () => {
 
     const { container } = render(() => <AdultDiscover />);
     await openDrill("Vixen Media");
-    // The scene strip renders, so the drill is fully settled — the banner's
-    // absence below is a real absence, not an un-awaited render.
+    // The scene strip renders, so the drill is fully settled.
     expect(await screen.findByText("Drill Scene")).toBeInTheDocument();
 
-    expect(banner(container)).toBeNull();
+    // Banner container IS present (hosts the Monitor switch).
+    const frame = banner(container);
+    expect(frame).not.toBeNull();
+    // But no bio paragraph inside the banner — scoped inside the frame to
+    // avoid matching AdultCard hover-overlay <p class="line-clamp-4"> nodes.
+    expect(frame?.querySelector('p[class~="line-clamp-4"]')).toBeNull();
   });
 
-  it("survives a rejected description fetch: no banner, no crash (this app has no ErrorBoundary)", async () => {
+  it("survives a rejected description fetch: banner present (no crash), no bio text (this app has no ErrorBoundary)", async () => {
+    // Claude 2026-08-24: test updated — banner container now always renders.
+    // The no-crash guarantee (swallowed error → null resource, not SPA crash)
+    // is unchanged. The banner is present (Monitor switch lives there); the bio
+    // paragraph is absent since the fetch failed → empty text.
     stubFetch((url) => {
       // Fall through to stubFetch's `throw new Error("unexpected fetch")` for
       // the description endpoint — an unswallowed rejection here would make the
@@ -393,7 +406,10 @@ describe("AdultDiscover — drill-down row 2: the catalog bio banner", () => {
     await openDrill("Vixen Media");
 
     expect(await screen.findByText("Drill Scene")).toBeInTheDocument();
-    expect(banner(container)).toBeNull();
+    // Banner present (Monitor switch), no bio paragraph inside banner.
+    const frame = banner(container);
+    expect(frame).not.toBeNull();
+    expect(frame?.querySelector('p[class~="line-clamp-4"]')).toBeNull();
     expect(container.querySelector("h2")?.textContent).toBe("Vixen Media");
   });
 
@@ -481,9 +497,13 @@ describe("AdultDiscover — drill-down row 2: no stale bio across a drill switch
 
     // B's description fetch is still pending here — A's stale bio (still
     // sitting in the resource, since Solid never clears it on a key change)
-    // must not leak into B's banner.
+    // must not leak into B's banner. The banner container IS present (Monitor
+    // switch lives there regardless of bio state — see 2026-08-24 hoist), but
+    // the bio paragraph must be absent while B's text is loading.
+    // Claude 2026-08-24: removed `expect(banner(container)).toBeNull()` —
+    // banner container now always renders on drill. The stale-bio guarantee
+    // is fully covered by the queryByText("Bio for A.") check above it.
     expect(screen.queryByText("Bio for A.")).toBeNull();
-    expect(banner(container)).toBeNull();
 
     resolveB!(jsonResponse({ text: "Bio for B.", source: "tpdb" }));
 

@@ -6,15 +6,13 @@
 // single-page (live) grid of just that entity's scenes. Extracted from the
 // original single-file Discover.tsx.
 //
-// Row order (inline row editor): EVERY row here is an admin-defined newest row
-// — an ENTITY row (drag-reorder + enable-toggle + Delete inline, backed by its
-// own CRUD APIs). There are no structural rows left on this screen: the
-// optional StashDB/FansDB scene/Studios/Performers rows were deleted, and with
-// them the Show/Hide toggle and the per-screen KV row-order store
-// (useRowOrder("adult", …)) that used to interleave them. Order now lives in
-// adultnewest's own `sort_order` column, the SAME column Settings' Adult Rows
-// tab writes — see useAdultRowOrder. Only applies to the plain browse view;
-// search results and a drill-down are unaffected. editMode (from
+// Row order (inline row editor): EVERY admin-defined newest row is an ENTITY
+// row (drag-reorder + enable-toggle + Delete inline, backed by its own CRUD
+// APIs). There is one structural row: MonitoredRow, which renders above all
+// newest rows on browse and self-hides when empty. Order of newest rows lives
+// in adultnewest's own `sort_order` column, the SAME column Settings' Adult
+// Rows tab writes — see useAdultRowOrder. Only applies to the plain browse
+// view; search results and a drill-down are unaffected. editMode (from
 // Discover/index.tsx's tab-bar Edit toggle) swaps the row list for RowEditor.
 //
 // RSS feeds (target=adult) are NOT part of this row-order/editor system: their
@@ -23,6 +21,11 @@
 // path, after all newest rows, ordered by the feed's own sort_order — fully
 // decoupled from the newest-row order so reordering rows can never relocate a
 // feed row.
+//
+// Monitor switch: drilling into a performer/studio shows a Monitor toggle in
+// the bio banner area (always rendered when drilled, not just when bio text
+// exists). Resolved entities get an optimistic-toggle switch; unresolved ones
+// get it disabled with the backend's reason string.
 
 import {
   type Component,
@@ -55,7 +58,7 @@ import {
   updateAdultNewestRow,
 } from "../../api/adultNewestRows";
 import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS, MEDIA_CAROUSEL_ADULT_CLASS, MEDIA_CAROUSEL_ENTITY_CLASS } from "../../components/media";
-import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
+import { Button, ErrorText, Muted, Switch, yearOf } from "../../components/ui";
 import {
   type GrabTarget,
   ConfigureConnectionModal,
@@ -69,6 +72,12 @@ import { type RssFeed, fetchRssFeeds } from "../../api/rssFeeds";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
 import { useAdultRowOrder } from "./useAdultRowOrder";
+import {
+  type AdultMonitorState,
+  fetchMonitorState,
+  setMonitored,
+} from "../../api/adultMonitor";
+import { MonitoredRow } from "./MonitoredRow";
 
 // sourceLabel maps a non-TPDB AdultDiscoverItem.source to its display label —
 // "" (no label) for "tpdb" (the default, unlabeled source) or an unrecognized/
@@ -485,6 +494,56 @@ export const AdultDiscover: Component<{
   // Review if: entityDetail's fetcher stops being keyed on `drill`.
   const entityBio = () => (entityDetail.loading ? "" : entityDetail()?.text ?? "");
 
+  // entityMonitor tracks the monitoring state for the drilled-into entity.
+  // Keyed on `drill` (same as entityDetail) so it refires once per drill-open
+  // and clears/suppresses on drill close (null drill → no fetch). Errors are
+  // swallowed → null for the same reason entityDetail swallows: no
+  // ErrorBoundary, so an unguarded error throw would crash the SPA.
+  //
+  // Claude 2026-08-24: gate reads on entityMonitor.loading (same pattern as
+  // entityBio above) so a drill switch doesn't momentarily show the PREVIOUS
+  // entity's monitored state while the new fetch is in flight.
+  // Review if: entityMonitor's fetcher stops being keyed on `drill`.
+  const [entityMonitor, { mutate: mutateMonitor }] = createResource(
+    drill,
+    async (dd) => {
+      try {
+        return await fetchMonitorState(dd.kind, dd.name);
+      } catch {
+        return null as AdultMonitorState | null;
+      }
+    },
+  );
+  const monitorState = (): AdultMonitorState | null =>
+    entityMonitor.loading ? null : (entityMonitor() ?? null);
+
+  // optimisticSetMonitored flips the monitor switch with local-first update
+  // and rolls back on PUT failure (409 or network error).
+  // Claude 2026-08-24: 409 means the backend couldn't resolve the entity on
+  // enable — the switch reverts and the backend's reason surfaces via a refetch.
+  // Reason: a 409 means the previously-resolved entity lost its catalog entry
+  // between the GET and the PUT, which is rare but possible. Rollback + refetch
+  // shows the current server state rather than a stuck optimistic value.
+  // Review if: the monitor endpoint grows a separate "unresolvable" status code.
+  const [monitorBusy, setMonitorBusy] = createSignal(false);
+  const optimisticSetMonitored = async (next: boolean) => {
+    const dd = drill();
+    if (!dd || monitorBusy()) return;
+    const prev = entityMonitor();
+    if (!prev) return;
+    // Optimistic update.
+    mutateMonitor({ ...prev, monitored: next });
+    setMonitorBusy(true);
+    try {
+      await setMonitored({ kind: dd.kind, name: dd.name, monitored: next });
+    } catch {
+      // Roll back on any failure and let a refetch restore the real state.
+      mutateMonitor(prev);
+    } finally {
+      setMonitorBusy(false);
+    }
+  };
+
   // adultSort is the sort bar's value. sorting() is true only when a non-
   // default sort is chosen AND the view isn't a search or a drill-down (a
   // sort has no defined meaning inside one studio's/performer's scene list).
@@ -869,6 +928,14 @@ export const AdultDiscover: Component<{
                     <ErrorText>{editError()}</ErrorText>
                   </Show>
                 </Show>
+                {/* MonitoredRow renders above all admin-defined newest rows
+                    so monitored performers/studios are always first. It
+                    self-hides when the resolved page is empty. */}
+                <MonitoredRow
+                  reloadToken={reloadToken}
+                  onDetail={setDetailTarget}
+                  onError={setSetupError}
+                />
                 <For each={visibleRowIds()}>{(id) => renderRow(id)}</For>
                 {/* RSS feed rows render on an independent path: always after all
                     newest rows, ordered by each feed's own sort_order (already
@@ -927,10 +994,12 @@ export const AdultDiscover: Component<{
                     {d().name}
                   </h2>
                 </div>
-                {/* Row 2 — performer/studio bio banner, catalog-sourced, ABOVE
-                    the existing scene grid and never a modal. Renders only when
-                    the catalog has real text; an entity with none is a plain
-                    drill-down exactly as before (no placeholder, no skeleton).
+                {/* Row 2 — bio banner + monitor switch. The outer container
+                    renders whenever drill() is set (not just when bio text
+                    exists) so the Monitor switch is always visible on a
+                    drill-down, even for entities with no catalog biography.
+                    The bio text block stays gated on entityBio() so an entity
+                    with no bio doesn't show an empty paragraph.
                     Tags are deliberately absent — no catalog exposes tags on a
                     performer or a studio, so there is nothing to bind to.
 
@@ -942,41 +1011,86 @@ export const AdultDiscover: Component<{
                     items-start restores height:auto so aspect-ratio governs.
                     Troubleshooting: same stretch-row hazard EntityCard's frame
                     avoids by living in a non-flex tile.
-                    Review if: the banner ever stops being a flex row. */}
-                <Show when={entityBio()}>
-                  <div class="mb-4 flex items-start gap-3 rounded-xl border border-border bg-surface p-4">
-                    <div
-                      class="shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
-                      classList={{
-                        "w-20": d().kind === "performer",
-                        "aspect-[2/3]": d().kind === "performer",
-                        "w-36": d().kind === "studio",
-                        "aspect-video": d().kind === "studio",
-                      }}
+                    Review if: the banner ever stops being a flex row.
+
+                    Claude 2026-08-24: banner/container hoisted out of
+                    <Show when={entityBio()}> — was previously invisible for
+                    entities with no catalog bio, which hid the Monitor switch.
+                    Review if: the drill-down layout is redesigned. */}
+                <div class="mb-4 flex items-start gap-3 rounded-xl border border-border bg-surface p-4">
+                  <div
+                    class="shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
+                    classList={{
+                      "w-20": d().kind === "performer",
+                      "aspect-[2/3]": d().kind === "performer",
+                      "w-36": d().kind === "studio",
+                      "aspect-video": d().kind === "studio",
+                    }}
+                  >
+                    <Show
+                      when={proxyImage(d().image)}
+                      fallback={<MediaFallbackTile title={d().name} />}
                     >
-                      <Show
-                        when={proxyImage(d().image)}
-                        fallback={<MediaFallbackTile title={d().name} />}
-                      >
-                        <img
-                          src={proxyImage(d().image)}
-                          alt={d().name}
-                          loading="lazy"
-                          class="h-full w-full"
-                          classList={{
-                            "object-cover": d().kind === "performer",
-                            "object-contain": d().kind === "studio",
-                          }}
-                        />
-                      </Show>
-                    </div>
-                    <div class="min-w-0 flex-1">
-                      <p class="line-clamp-4 text-sm text-muted" title={entityBio()}>
+                      <img
+                        src={proxyImage(d().image)}
+                        alt={d().name}
+                        loading="lazy"
+                        class="h-full w-full"
+                        classList={{
+                          "object-cover": d().kind === "performer",
+                          "object-contain": d().kind === "studio",
+                        }}
+                      />
+                    </Show>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    {/* Bio text — only when the catalog has real text. */}
+                    <Show when={entityBio()}>
+                      <p class="mb-3 line-clamp-4 text-sm text-muted" title={entityBio()}>
                         {entityBio()}
                       </p>
+                    </Show>
+                    {/* Monitor switch — always rendered for every drill.
+                        resolved → enabled, optimistic PUT with rollback.
+                        unresolved → disabled + reason string.
+                        loading → disabled, no explanation shown yet.
+
+                        Claude 2026-08-24: the switch is rendered directly in
+                        the banner's text column rather than a separate section,
+                        so it always appears together with the artwork frame
+                        regardless of bio presence.
+                        Review if: the banner layout is changed significantly. */}
+                    <div class="flex items-center gap-2">
+                      <Switch
+                        checked={monitorState()?.monitored ?? false}
+                        onChange={(next) => void optimisticSetMonitored(next)}
+                        disabled={
+                          monitorBusy() ||
+                          entityMonitor.loading ||
+                          !(monitorState()?.resolved ?? false)
+                        }
+                        ariaLabel={
+                          d().kind === "performer"
+                            ? `Monitor performer ${d().name}`
+                            : `Monitor studio ${d().name}`
+                        }
+                      />
+                      <span class="text-sm text-fg">Monitor</span>
+                      <Show
+                        when={
+                          !entityMonitor.loading &&
+                          monitorState() !== null &&
+                          !monitorState()?.resolved
+                        }
+                      >
+                        <span class="text-xs text-muted">
+                          {monitorState()?.reason ||
+                            "Can't monitor — this performer/studio isn't matched to a catalog entry yet."}
+                        </span>
+                      </Show>
                     </div>
                   </div>
-                </Show>
+                </div>
                 <PaginatedStrip
                   title="Scenes"
                   reloadToken={reloadToken}

@@ -51,6 +51,24 @@ type browseError struct{ msg string }
 
 func (e *browseError) Error() string { return e.msg }
 
+func isBrowsableRoot(path string) bool {
+	for _, r := range browsableRoots {
+		if path == r {
+			return true
+		}
+	}
+	return false
+}
+
+// browseParent is the directory one level up from path, or "" at a
+// browsable root (the UI then shows the roots list).
+func browseParent(path string) string {
+	if path == "" || isBrowsableRoot(path) {
+		return ""
+	}
+	return filepath.Dir(path)
+}
+
 // browseHandler lists the sub-directories of a path under one of the
 // browsable roots, for the Settings UI's root-folder picker and its
 // as-you-type autocomplete (both hit this same endpoint). Directories only

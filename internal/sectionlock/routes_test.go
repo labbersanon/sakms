@@ -195,6 +195,25 @@ func TestClassifyOrganizeEvents(t *testing.T) {
 	}
 }
 
+func TestClassifyOrganizeBrowse(t *testing.T) {
+	for _, path := range []string{
+		"/api/organize/browse",
+		"/api/organize/browse/rename",
+		"/api/organize/browse/move",
+		"/api/organize/browse/delete",
+	} {
+		got := Classify(path).Sorted()
+		want := []string{SectionOrganize}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Classify(%q) = %v, want %v", path, got, want)
+		}
+	}
+	// Settings' dirs-only picker stays {settings}.
+	if got := Classify("/api/browse").Sorted(); len(got) != 1 || got[0] != SectionSettings {
+		t.Fatalf("GET /api/browse = %v, want [settings]", Classify("/api/browse").Sorted())
+	}
+}
+
 // Claude 2026-08-11: NEW — pins /api/pruning-rules to {organize}.
 // Reason: these routes were {settings} until the rules builder moved off the
 // Settings > Pruning tab (removed) onto the Clean-up screen's Rules card. No

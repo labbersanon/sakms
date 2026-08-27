@@ -2302,6 +2302,74 @@ type BrowseResponse struct {
 	Entries []BrowseEntry `json:"entries"`
 }
 
+// Claude 2026-08-27: Organize Browse tab DTOs.
+// Reason: GET /api/browse stays dirs-only for Settings pickers; Organize
+//   Browse lists files too and mutates (rename/move/delete) immediately
+//   after confirm, rewriting library paths so the filesystem and UI cannot
+//   drift. Routes live under /api/organize/browse so Layer 1 classifies
+//   them {organize}, not {settings}.
+// Troubleshooting: dto.gen.ts drift — run `go run ./cmd/gendto`, never
+//   hand-edit the generated file.
+// Review if: node-local browse grows the same mutation surface.
+
+// OrganizeBrowseEntry is one file or directory GET /api/organize/browse lists.
+type OrganizeBrowseEntry struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size,omitempty"`
+	ModTime string `json:"modTime,omitempty"`
+	// Tracked is true when this path (or, for a directory, any file under it)
+	// is a library-owned path. The Browse UI uses it to warn before delete.
+	Tracked bool `json:"tracked"`
+}
+
+// OrganizeBrowseResponse is GET /api/organize/browse. Path is the resolved
+// directory (empty when listing the browsable roots). Parent is the
+// directory one level up, or empty at a browsable root / the roots list.
+type OrganizeBrowseResponse struct {
+	Path    string                `json:"path"`
+	Parent  string                `json:"parent,omitempty"`
+	Entries []OrganizeBrowseEntry `json:"entries"`
+}
+
+// OrganizeBrowseRenameRequest is POST /api/organize/browse/rename.
+// NewName is a basename only (no slashes); the entry stays in Path's parent.
+type OrganizeBrowseRenameRequest struct {
+	Path    string `json:"path"`
+	NewName string `json:"newName"`
+}
+
+// OrganizeBrowseMoveRequest is POST /api/organize/browse/move.
+// DestDir is an existing directory under a browsable root; each path is
+// moved into it, keeping its basename. Skip-and-continue per path.
+type OrganizeBrowseMoveRequest struct {
+	Paths   []string `json:"paths"`
+	DestDir string   `json:"destDir"`
+}
+
+// OrganizeBrowseDeleteRequest is POST /api/organize/browse/delete.
+// Directories are removed recursively. Skip-and-continue per path.
+type OrganizeBrowseDeleteRequest struct {
+	Paths []string `json:"paths"`
+}
+
+// OrganizeBrowseOpItem is one rename/move/delete result. Dest is the
+// resulting path for rename/move; empty on delete. Tracked is true when
+// library rows were rewritten or dropped.
+type OrganizeBrowseOpItem struct {
+	Path    string `json:"path"`
+	Dest    string `json:"dest,omitempty"`
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+	Tracked bool   `json:"tracked"`
+}
+
+// OrganizeBrowseOpResponse is the shared success body for Browse mutations.
+type OrganizeBrowseOpResponse struct {
+	Results []OrganizeBrowseOpItem `json:"results"`
+}
+
 // --- Optional raw RSS feed rows (internal/rssfeeds + internal/rssfeed) — a
 // per-row raw RSS 2.0 feed URL (NZBGeek saved-search style), fetched and
 // parsed server-side, rendered as one more optional Discover row. Target is

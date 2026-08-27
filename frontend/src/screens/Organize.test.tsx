@@ -39,6 +39,9 @@ const stubFetch = () => {
     if (url.includes("/proposals")) {
       return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
     }
+    if (url.includes("/api/organize/browse")) {
+      return jsonResponse({ path: "", entries: [] });
+    }
     return jsonResponse([]);
   });
   vi.stubGlobal("fetch", fn);
@@ -95,6 +98,16 @@ describe("Organize — query tab", () => {
     expect(
       await screen.findByText("No duplicate groups yet — click Scan."),
     ).toBeInTheDocument();
+  });
+
+  it("?tab=browse shows the file browser", async () => {
+    stubFetch();
+    renderOrganize("/organize?tab=browse");
+    expect(await screen.findByText("Browse")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Tracked library titles stay in sync/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No proposals yet — click Scan.")).toBeNull();
   });
 
   it("opens the persisted tab when ?tab= missing", async () => {

@@ -223,6 +223,17 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// their as-you-type autocomplete — restricted to the mounted roots (see
 	// browse.go). Session-protected like every other route on this mux.
 	mux.HandleFunc("GET /api/browse", browseHandler())
+	// Claude 2026-08-27: Organize Browse tab — files+dirs list and
+	//   confirm-then-mutate rename/move/delete under the same allowlist as
+	//   GET /api/browse. Classified {organize} via /api/organize/* .
+	// Reason: Settings' dirs-only picker must not grow mutation or file
+	//   listing; library path rewrite lives next to the filesystem op.
+	// Troubleshooting: SL-9 — these literals must stay under /api/organize/.
+	// Review if: node-local browse shares this handler.
+	mux.HandleFunc("GET /api/organize/browse", organizeBrowseListHandler(libStore))
+	mux.HandleFunc("POST /api/organize/browse/rename", organizeBrowseRenameHandler(libStore))
+	mux.HandleFunc("POST /api/organize/browse/move", organizeBrowseMoveHandler(libStore))
+	mux.HandleFunc("POST /api/organize/browse/delete", organizeBrowseDeleteHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/quality-prefs", getQualityPrefsHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/quality-prefs", putQualityPrefsHandler(settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/naming-preset", getNamingPresetHandler(settingsStore))

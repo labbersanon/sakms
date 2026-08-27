@@ -24,7 +24,7 @@ const NAV_LABELS = [
   "Settings",
 ];
 
-const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup"];
+const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup", "Browse"];
 const MEDIA_CHILDREN = ["Mainstream", "Adult"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router

@@ -5,7 +5,7 @@ import { api } from "./client";
 import type { OrganizeEvent, Proposal, ProposalPage } from "@dto";
 import type { Mode } from "./discover";
 
-export type OrganizeWorkflow = "rename" | "dedup" | "purge";
+export type OrganizeWorkflow = "rename" | "dedup" | "purge" | "browse";
 
 export type { AdultOrganizeAspect } from "./aspect";
 export { adultAspectQuery } from "./aspect";

@@ -2254,6 +2254,73 @@ export interface BrowseResponse {
   entries: BrowseEntry[];
 }
 /**
+ * OrganizeBrowseEntry is one file or directory GET /api/organize/browse lists.
+ */
+export interface OrganizeBrowseEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size?: number /* int64 */;
+  modTime?: string;
+  /**
+   * Tracked is true when this path (or, for a directory, any file under it)
+   * is a library-owned path. The Browse UI uses it to warn before delete.
+   */
+  tracked: boolean;
+}
+/**
+ * OrganizeBrowseResponse is GET /api/organize/browse. Path is the resolved
+ * directory (empty when listing the browsable roots). Parent is the
+ * directory one level up, or empty at a browsable root / the roots list.
+ */
+export interface OrganizeBrowseResponse {
+  path: string;
+  parent?: string;
+  entries: OrganizeBrowseEntry[];
+}
+/**
+ * OrganizeBrowseRenameRequest is POST /api/organize/browse/rename.
+ * NewName is a basename only (no slashes); the entry stays in Path's parent.
+ */
+export interface OrganizeBrowseRenameRequest {
+  path: string;
+  newName: string;
+}
+/**
+ * OrganizeBrowseMoveRequest is POST /api/organize/browse/move.
+ * DestDir is an existing directory under a browsable root; each path is
+ * moved into it, keeping its basename. Skip-and-continue per path.
+ */
+export interface OrganizeBrowseMoveRequest {
+  paths: string[];
+  destDir: string;
+}
+/**
+ * OrganizeBrowseDeleteRequest is POST /api/organize/browse/delete.
+ * Directories are removed recursively. Skip-and-continue per path.
+ */
+export interface OrganizeBrowseDeleteRequest {
+  paths: string[];
+}
+/**
+ * OrganizeBrowseOpItem is one rename/move/delete result. Dest is the
+ * resulting path for rename/move; empty on delete. Tracked is true when
+ * library rows were rewritten or dropped.
+ */
+export interface OrganizeBrowseOpItem {
+  path: string;
+  dest?: string;
+  ok: boolean;
+  error?: string;
+  tracked: boolean;
+}
+/**
+ * OrganizeBrowseOpResponse is the shared success body for Browse mutations.
+ */
+export interface OrganizeBrowseOpResponse {
+  results: OrganizeBrowseOpItem[];
+}
+/**
  * --- Optional raw RSS feed rows (internal/rssfeeds + internal/rssfeed) — a
  * per-row raw RSS 2.0 feed URL (NZBGeek saved-search style), fetched and
  * parsed server-side, rendered as one more optional Discover row. Target is

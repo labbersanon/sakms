@@ -33,6 +33,15 @@ const (
 	//   Append's workflow must be "rename" (the log is queried WHERE workflow).
 	// Review if: Delete or Dismiss ever gain undo (they are excluded by design).
 	KindUndo = "undo"
+	// Claude 2026-08-27: Organize Browse tab mutations.
+	// Reason: the activity log is queried WHERE workflow, and Browse is a
+	//   fourth organize workflow alongside rename/dedup/purge.
+	// Troubleshooting: Browse activity log empty — Append workflow must be
+	//   "browse" (see frontend fetchOrganizeEvents("browse")).
+	// Review if: Browse mutations move onto the proposals queue.
+	KindFileRename = "file_rename"
+	KindFileMove   = "file_move"
+	KindFileDelete = "file_delete"
 )
 
 // Event is one persisted organize activity row.

@@ -13,6 +13,12 @@ export const ORGANIZE_WORKFLOWS = [
   { id: "rename", label: "Rename" },
   { id: "purge", label: "Clean-up" },
   { id: "dedup", label: "Dedup" },
+  // Claude 2026-08-27: Browse tab (file manager).
+  // Reason: confirm-then-mutate rename/move/delete under the mounted roots;
+  //   id is "browse" (URL ?tab=browse), not "files".
+  // Troubleshooting: invalid tab still falls back to rename.
+  // Review if: nested paths replace query params.
+  { id: "browse", label: "Browse" },
 ] as const;
 
 export type OrganizeTabId = (typeof ORGANIZE_WORKFLOWS)[number]["id"];

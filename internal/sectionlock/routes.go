@@ -86,6 +86,10 @@ func Classify(rawPath string) Set {
 		// Reason: sibling of proposals queues; must be gated with Organize section
 		// Troubleshooting: SL-9 failed — route unclassified after organize_events mux
 		// Review if: organize subtree moves under /api/proposals/
+		// Claude 2026-08-27: also GET/POST /api/organize/browse* (Files→Browse tab).
+		// Reason: prefix rule already covers the new list/rename/move/delete
+		//   routes; they must stay {organize}, never {settings} like /api/browse.
+		// Review if: Browse grows a mode or node-id segment in the path.
 		out.Add(SectionOrganize)
 	case "autograb-batch":
 		// Discover's select-mode bulk grab. Adult items inside the body

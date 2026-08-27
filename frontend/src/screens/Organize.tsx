@@ -1,8 +1,9 @@
-// Organize groups Rename / Purge / Dedup — the three review-queue workflows an
-// operator runs to keep the library clean — under a single sidebar entry.
-// Workflow switching lives in the sidebar (collapsible group / flyout); this
-// screen reads `?tab=` and renders the matching embedded component. The active
-// tab is also mirrored to localStorage (`sakms.organize.tab`).
+// Organize groups Rename / Clean-up / Dedup / Browse under a single sidebar
+// entry. Rename/Clean-up/Dedup are staged review queues; Browse is a
+// confirm-then-mutate file manager. Workflow switching lives in the sidebar
+// (collapsible group / flyout); this screen reads `?tab=` and renders the
+// matching embedded component. The active tab is also mirrored to
+// localStorage (`sakms.organize.tab`).
 //
 // The embedded Rename/Purge/Dedup each render ModeTabs, which registers a tab
 // set with the shell's SINGLE tab slot. Left alone, the child's Movies/Series/
@@ -23,6 +24,7 @@ import { ScreenTabsContext } from "../components/ui";
 import { Rename } from "./Rename";
 import { Purge } from "./Purge";
 import { Dedup } from "./Dedup";
+import { Browse } from "./Browse";
 import {
   type OrganizeTabId,
   isOrganizeTabId,
@@ -62,6 +64,9 @@ export const Organize: Component = () => {
         </Show>
         <Show when={tab() === "dedup"}>
           <Dedup />
+        </Show>
+        <Show when={tab() === "browse"}>
+          <Browse />
         </Show>
       </ScreenTabsContext.Provider>
     </div>

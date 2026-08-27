@@ -8015,3 +8015,15 @@ hit. A **Monitored** strip on Adult Discover browse lists linked pooled scenes.
 Un-monitor cancels never-dispatched monitor-originated `pending_retry` rows via
 `grabs.monitor_entity_key` (origin marker, same lesson as `hold_until`).
 Migration `0017_adult_monitored_entities.sql`.
+
+## 2026-08-27 — Organize Browse tab: rename, move, delete
+
+Organize gains a fourth sidebar child, **Browse** (`?tab=browse`), a
+confirm-then-mutate file manager over the same mounted roots as Settings'
+folder picker (`/media`, `/downloads`, `/adult`). It lists files and
+folders; rename is single-select; move and delete are multi-select.
+Mutations hit disk immediately after the confirm dialog (not a Scan/Apply
+queue). Tracked library paths are rewritten on rename/move and dropped on
+delete so the library cannot drift from the filesystem. Settings'
+dirs-only `GET /api/browse` is unchanged; the new routes live under
+`/api/organize/browse` and classify as `{organize}`.

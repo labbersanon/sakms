@@ -107,6 +107,7 @@ describe("Browse", () => {
     await screen.findByText("a.mkv");
     expect(screen.getByText("Movies")).toBeInTheDocument();
     expect(screen.getAllByText("Tracked").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Path")).toHaveClass("bg-bg");
   });
 
   it("enables rename for one selection and posts after confirm", async () => {

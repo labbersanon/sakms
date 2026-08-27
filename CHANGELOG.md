@@ -8056,3 +8056,10 @@ The listing and properties pane were transparent over the Organize
 wallpaper. They now use the same white `bg-surface` card chrome as the
 Rename/Dedup queues (`rounded-xl border border-border bg-surface/95`).
 The top breadcrumb label is **Files**, not Roots.
+
+## 2026-08-27 — Browse path bar; navy text instead of gold
+
+Folder names and path crumbs used `text-accent` (gold) on cream, which
+was hard to read. They now use `text-fg` like the rest of Organize. The
+current path sits in an inset folder bar on the listing card (folder
+icon + clickable segments), not a loose breadcrumb row.

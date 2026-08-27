@@ -7,6 +7,9 @@
 //   Organize section lock. Stat 404 — path vanished after a mutate.
 //   Unreadable table — listing/pane must use bg-surface (white) over the
 //   wallpaper; transparent wrappers show cream-ticket paper through navy ink.
+//   Gold text-accent on crumbs/folder names is unreadable on cream; path
+//   and names use text-fg like the rest of Organize. Path lives in an
+//   inset folder bar on the listing card, not a loose breadcrumb row.
 // Review if: Browse is staged onto the proposals queue.
 
 import {
@@ -330,26 +333,6 @@ export const Browse: Component = () => {
         </Show>
       </div>
 
-      <nav class="mb-3 flex flex-wrap items-center gap-1 text-sm" aria-label="Path">
-        <For each={crumbs()}>
-          {(c, i) => (
-            <>
-              <Show when={i() > 0}>
-                <span class="text-muted">/</span>
-              </Show>
-              <button
-                type="button"
-                class="rounded px-1 text-accent hover:underline"
-                classList={{ "font-medium text-fg no-underline": c.path === currentPath() }}
-                onClick={() => openDir(c.path)}
-              >
-                {c.label}
-              </button>
-            </>
-          )}
-        </For>
-      </nav>
-
       <Show when={error()}>
         <ErrorText>{error()}</ErrorText>
       </Show>
@@ -358,7 +341,31 @@ export const Browse: Component = () => {
       </Show>
 
       <div class="flex flex-col gap-3 lg:flex-row lg:items-start">
-        <div class={`min-w-0 flex-1 overflow-x-auto ${panelClass}`}>
+        <div class={`min-w-0 flex-1 overflow-hidden ${panelClass}`}>
+          <nav
+            class="flex items-center gap-1 overflow-x-auto border-b border-border bg-bg px-2 py-1.5 font-mono text-sm text-fg"
+            aria-label="Path"
+          >
+            <Folder size={16} class="shrink-0 text-muted" />
+            <For each={crumbs()}>
+              {(c, i) => (
+                <>
+                  <Show when={i() > 0}>
+                    <span class="text-muted">/</span>
+                  </Show>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded px-0.5 text-fg hover:underline"
+                    classList={{ "font-medium no-underline": c.path === currentPath() }}
+                    onClick={() => openDir(c.path)}
+                  >
+                    {c.label}
+                  </button>
+                </>
+              )}
+            </For>
+          </nav>
+          <div class="overflow-x-auto">
           <table class="w-full text-left text-sm">
             <thead class="bg-surface-2 text-muted">
               <tr>
@@ -413,12 +420,11 @@ export const Browse: Component = () => {
                         <td class="px-2 py-1.5">
                           <button
                             type="button"
-                            class="inline-flex max-w-full items-center gap-2 text-left"
-                            classList={{ "text-accent": e.isDir }}
+                            class="inline-flex max-w-full items-center gap-2 text-left text-fg"
                             onClick={() => (e.isDir ? openDir(e.path) : selectOne(e))}
                           >
                             <Show when={e.isDir} fallback={<FileIcon size={16} class="shrink-0 text-muted" />}>
-                              <Folder size={16} class="shrink-0 text-accent" />
+                              <Folder size={16} class="shrink-0 text-muted" />
                             </Show>
                             <span class="truncate">{e.name}</span>
                             <Show when={e.tracked}>
@@ -441,6 +447,7 @@ export const Browse: Component = () => {
               </Show>
             </tbody>
           </table>
+          </div>
         </div>
 
         <aside

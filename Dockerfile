@@ -70,10 +70,20 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # release's checksums.sha256.
 # Review if: internal/vmaf drops the libvmaf dependency, or trixie's ffmpeg gains
 # --enable-libvmaf (then the distro package could replace this whole stage).
+# Claude 2026-08-27: retarget pin off autobuild-2026-07-23-14-16 / n7.1.5.
+# Reason: BtbN deletes older dated autobuild assets; that URL 404'd and
+#   blocked sakms-auto-update (rollback rebuilds the previous SHA against
+#   the same dead pin, so it failed too). n7.1 is no longer published;
+#   n8.1 is the current GPL static linux64 line. Still a dated tag +
+#   SHA256, never `latest`.
+# Troubleshooting: compose build wget 404 on BtbN/FFmpeg-Builds — pick a
+#   tag that still exists on the releases page and copy the asset name +
+#   checksums.sha256 line.
+# Review if: BtbN drops n8.1 the same way, or trixie ffmpeg gains libvmaf.
 FROM debian:trixie-slim AS ffmpeg
-ARG FFMPEG_TAG=autobuild-2026-07-23-14-16
-ARG FFMPEG_ASSET=ffmpeg-n7.1.5-9-gb9a218bc1e-linux64-gpl-7.1.tar.xz
-ARG FFMPEG_SHA256=be92c8080a25ab71067f9e80cbf0483112af88b855425796d63ab890add6a64c
+ARG FFMPEG_TAG=autobuild-2026-08-26-13-06
+ARG FFMPEG_ASSET=ffmpeg-n8.1.2-46-g139afe709a-linux64-gpl-8.1.tar.xz
+ARG FFMPEG_SHA256=0814f4491c2673ea505be8fb65a76c2bfabaa5aad8f33d49b1c5b87a2262e8c5
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \

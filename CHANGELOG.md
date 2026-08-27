@@ -8038,3 +8038,14 @@ browser-playable containers (`.mp4`/`.m4v`/`.webm`/`.mov`) and streams
 via `GET /api/organize/browse/video` after the same mount-root allowlist
 as the listing. Multi-select Move/Delete still apply to the whole
 selection; Properties requires exactly one item.
+
+## 2026-08-27 — Dockerfile: retarget BtbN FFmpeg pin (n7.1 → n8.1)
+
+`sakms-auto-update` failed because BtbN deleted
+`autobuild-2026-07-23-14-16` (`ffmpeg-n7.1.5-…-linux64-gpl-7.1.tar.xz`
+404). Rollback rebuilt the previous SHA against the same dead URL and
+also failed. The running container stayed on `66b7d08`. Pin moved to
+dated tag `autobuild-2026-08-26-13-06` /
+`ffmpeg-n8.1.2-46-g139afe709a-linux64-gpl-8.1.tar.xz` with the release
+`checksums.sha256` (still checksum-gated, never `latest`). n7.1 is no
+longer published.

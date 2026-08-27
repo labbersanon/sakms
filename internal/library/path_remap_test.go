@@ -134,6 +134,53 @@ func TestEntryTracked(t *testing.T) {
 	}
 }
 
+func TestTrackedChildNames_FooDoesNotSwallowFooTwo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: 11, Title: "Foo", Year: 2021,
+		FilePath: "/media/Movies/Foo/movie.mkv", RootFolderPath: "/media/Movies",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: 12, Title: "Foo Two", Year: 2022,
+		FilePath: "/media/Movies/Foo Two/movie.mkv", RootFolderPath: "/media/Movies",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: 13, Title: "Loose", Year: 2023,
+		FilePath: "/media/Movies/loose.mkv", RootFolderPath: "/media/Movies",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := s.TrackedChildNames(ctx, "/media/Movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 3 || names[0] != "Foo" || names[1] != "Foo Two" || names[2] != "loose.mkv" {
+		t.Fatalf("names = %v, want [Foo, Foo Two, loose.mkv]", names)
+	}
+
+	names, err = s.TrackedChildNames(ctx, "/media/Movies/Foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "movie.mkv" {
+		t.Fatalf("Foo children = %v, want [movie.mkv] (must not include Foo Two)", names)
+	}
+
+	names, err = s.TrackedChildNames(ctx, "/media/Movies/Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("empty dir names = %v, want none", names)
+	}
+}
+
 func TestLibraryHitsForPath_FileAndFolder(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

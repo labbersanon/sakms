@@ -61,6 +61,16 @@ function stubBrowse() {
             : undefined,
       });
     }
+    // Must match before /api/organize/browse, whose prefix would
+    // otherwise swallow this URL.
+    if (method === "GET" && url.includes("/api/organize/browse/tracked")) {
+      const path = new URL(url, "http://local").searchParams.get("path") || "";
+      const entries = path === "/media" || path.startsWith("/media/") ? mediaKids : roots;
+      return jsonResponse({
+        path,
+        names: entries.filter((e) => e.tracked).map((e) => e.name),
+      });
+    }
     if (method === "GET" && url.includes("/api/organize/browse")) {
       const path = new URL(url, "http://local").searchParams.get("path") || "";
       const entries = path === "/media" || path.startsWith("/media/") ? mediaKids : roots;

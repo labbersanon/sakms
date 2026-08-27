@@ -29,8 +29,61 @@ func pathArgs(path string, n int) []any {
 	return args
 }
 
+// Claude 2026-08-27: Browse tracked badges list child names, not every
+//   descendant file_path.
+// Reason: opening /media/Movies waited on the whole library tree; the
+//   DISTINCT first segment is all the listing rows need.
+// Troubleshooting: "Foo Two" showing as "Foo" — the match must stay
+//   coveredPred (starts_with(dir+'/')), never LIKE dir+'%'. length(?) is
+//   the SQL character length of the bound dir, not Go len, so multibyte
+//   segments stay aligned with substr.
+// Review if: hover prefetch lands or library_*_files become sole source.
+
+// TrackedChildNames returns the distinct first path segment after dir/ among
+// library-owned file_paths covered by dir, never nil. Browse merges these
+// onto its disk-only listing to badge tracked rows.
+func (s *Store) TrackedChildNames(ctx context.Context, dir string) ([]string, error) {
+	if s == nil || s.db == nil || dir == "" {
+		return []string{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT name FROM (
+			SELECT split_part(substr(file_path, length(?) + 2), '/', 1) AS name
+			FROM (
+				SELECT file_path FROM library_items WHERE `+coveredPred+`
+				UNION
+				SELECT file_path FROM library_item_files WHERE `+coveredPred+`
+				UNION
+				SELECT file_path FROM library_episodes WHERE `+coveredPred+`
+				UNION
+				SELECT file_path FROM library_episode_files WHERE `+coveredPred+`
+				UNION
+				SELECT file_path FROM library_scenes WHERE `+coveredPred+`
+				UNION
+				SELECT file_path FROM library_scene_files WHERE `+coveredPred+`
+			) t
+		) x WHERE name <> ''
+		ORDER BY name`,
+		append([]any{dir}, pathArgs(dir, 12)...)...)
+	if err != nil {
+		return nil, fmt.Errorf("listing tracked child names under %q: %w", dir, err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
 // TrackedPathsUnder returns every library-owned file_path that equals path
-// or lives under it. Used to mark Browse listing rows as tracked.
+// or lives under it. Browse listing no longer pulls this full set (see
+// TrackedChildNames); RemapPath / ForgetPath / HasTrackedUnder still share
+// coveredPred.
 func (s *Store) TrackedPathsUnder(ctx context.Context, path string) ([]string, error) {
 	if s == nil || s.db == nil || path == "" {
 		return nil, nil
@@ -66,8 +119,8 @@ func (s *Store) TrackedPathsUnder(ctx context.Context, path string) ([]string, e
 }
 
 // HasTrackedUnder reports whether any library-owned file lives at path or
-// under it. Used for the three browsable-root rows so listing /media does
-// not pull every tracked path in the library.
+// under it. GET /api/organize/browse/tracked uses it for the three
+// browsable-root rows, which have no useful child names to list.
 func (s *Store) HasTrackedUnder(ctx context.Context, path string) (bool, error) {
 	if s == nil || s.db == nil || path == "" {
 		return false, nil

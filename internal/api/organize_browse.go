@@ -31,23 +31,23 @@ import (
 //   EXDEV — source and dest are on different mounts; copy is not offered.
 // Review if: Browse is staged onto the proposals queue.
 
-func organizeBrowseListHandler(libStore *library.Store) http.HandlerFunc {
+// Claude 2026-08-27: the list is disk-only; tracked badges are a follow-up
+//   GET /api/organize/browse/tracked (library.TrackedChildNames).
+// Reason: the old list UNION'd every library file_path under the tree and
+//   rescanned that set per row, so opening a folder waited on Postgres
+//   before ReadDir could paint.
+// Troubleshooting: badges missing — /tracked must be queried with the same
+//   path as the shown listing; entry.tracked from the list is always false.
+// Review if: a listing cache or hover prefetch is added.
+
+func organizeBrowseListHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.Query().Get("path")
 		if raw == "" {
 			entries := make([]apidto.OrganizeBrowseEntry, 0, len(browsableRoots))
 			for _, root := range browsableRoots {
-				tracked := false
-				if libStore != nil {
-					ok, err := libStore.HasTrackedUnder(r.Context(), root)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-					tracked = ok
-				}
 				entries = append(entries, apidto.OrganizeBrowseEntry{
-					Name: root, Path: root, IsDir: true, Tracked: tracked,
+					Name: root, Path: root, IsDir: true,
 				})
 			}
 			writeJSON(w, apidto.OrganizeBrowseResponse{Path: "", Entries: entries})
@@ -72,15 +72,6 @@ func organizeBrowseListHandler(libStore *library.Store) http.HandlerFunc {
 			return
 		}
 
-		var tracked []string
-		if libStore != nil {
-			tracked, err = libStore.TrackedPathsUnder(r.Context(), dir)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-
 		entries := make([]apidto.OrganizeBrowseEntry, 0, len(infos))
 		for _, info := range infos {
 			full := filepath.Join(dir, info.Name())
@@ -95,7 +86,6 @@ func organizeBrowseListHandler(libStore *library.Store) http.HandlerFunc {
 				}
 				ent.ModTime = fi.ModTime().UTC().Format("2006-01-02T15:04:05Z")
 			}
-			ent.Tracked = library.EntryTracked(full, info.IsDir(), tracked)
 			ent.Playable = !info.IsDir() && browserPlayableVideo(full)
 			entries = append(entries, ent)
 		}
@@ -108,6 +98,44 @@ func organizeBrowseListHandler(libStore *library.Store) http.HandlerFunc {
 		writeJSON(w, apidto.OrganizeBrowseResponse{
 			Path: dir, Parent: browseParent(dir), Entries: entries,
 		})
+	}
+}
+
+func organizeBrowseTrackedHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw := r.URL.Query().Get("path")
+		if raw == "" {
+			names := make([]string, 0, len(browsableRoots))
+			if libStore != nil {
+				for _, root := range browsableRoots {
+					ok, err := libStore.HasTrackedUnder(r.Context(), root)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					if ok {
+						names = append(names, root)
+					}
+				}
+			}
+			writeJSON(w, apidto.OrganizeBrowseTrackedResponse{Path: "", Names: names})
+			return
+		}
+
+		dir, err := resolveBrowsablePath(raw)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		names := []string{}
+		if libStore != nil {
+			names, err = libStore.TrackedChildNames(r.Context(), dir)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		writeJSON(w, apidto.OrganizeBrowseTrackedResponse{Path: dir, Names: names})
 	}
 }
 

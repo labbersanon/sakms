@@ -227,11 +227,14 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	//   confirm-then-mutate rename/move/delete under the same allowlist as
 	//   GET /api/browse. Classified {organize} via /api/organize/* .
 	//   stat/video power the properties pane and Play/preview.
+	//   GET /tracked is the cheap badge follow-up; the list itself is
+	//   disk-only (no library SQL).
 	// Reason: Settings' dirs-only picker must not grow mutation or file
 	//   listing; library path rewrite lives next to the filesystem op.
 	// Troubleshooting: SL-9 — these literals must stay under /api/organize/.
 	// Review if: node-local browse shares this handler.
-	mux.HandleFunc("GET /api/organize/browse", organizeBrowseListHandler(libStore))
+	mux.HandleFunc("GET /api/organize/browse", organizeBrowseListHandler())
+	mux.HandleFunc("GET /api/organize/browse/tracked", organizeBrowseTrackedHandler(libStore))
 	mux.HandleFunc("POST /api/organize/browse/rename", organizeBrowseRenameHandler(libStore))
 	mux.HandleFunc("POST /api/organize/browse/move", organizeBrowseMoveHandler(libStore))
 	mux.HandleFunc("POST /api/organize/browse/delete", organizeBrowseDeleteHandler(libStore))

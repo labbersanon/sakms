@@ -198,6 +198,7 @@ func TestClassifyOrganizeEvents(t *testing.T) {
 func TestClassifyOrganizeBrowse(t *testing.T) {
 	for _, path := range []string{
 		"/api/organize/browse",
+		"/api/organize/browse/tracked",
 		"/api/organize/browse/rename",
 		"/api/organize/browse/move",
 		"/api/organize/browse/delete",

@@ -10,6 +10,9 @@
 //   Gold text-accent on crumbs/folder names is unreadable on cream; path
 //   and names use text-fg like the rest of Organize. Path lives in an
 //   inset folder bar on the listing card, not a loose breadcrumb row.
+//   Tracked badges come from GET /api/organize/browse/tracked, not the
+//   listing payload (list.tracked is always false). A refetch keeps the
+//   last listing on screen instead of swapping the table for Loading.
 // Review if: Browse is staged onto the proposals queue.
 
 import {
@@ -28,6 +31,7 @@ import {
   deleteOrganizeBrowse,
   fetchOrganizeBrowse,
   fetchOrganizeBrowseStat,
+  fetchOrganizeBrowseTracked,
   moveOrganizeBrowse,
   renameOrganizeBrowse,
 } from "../api/organizeBrowse";
@@ -118,6 +122,10 @@ export const Browse: Component = () => {
     () => `${path()}:${refresh()}`,
     () => fetchOrganizeBrowse(path()),
   );
+  const [tracked] = createResource(
+    () => `${path()}:${refresh()}`,
+    () => fetchOrganizeBrowseTracked(path()),
+  );
   const [destListing] = createResource(
     () => (dialog()?.kind === "move" ? `${destDir()}:${refresh()}` : null),
     () => fetchOrganizeBrowse(destDir()),
@@ -147,9 +155,16 @@ export const Browse: Component = () => {
     });
   });
 
-  const entries = () => listing()?.entries ?? [];
-  const parent = () => listing()?.parent ?? "";
-  const currentPath = () => listing()?.path ?? path();
+  const shownListing = () => listing.latest ?? listing();
+  const entries = createMemo(() => {
+    const list = shownListing();
+    if (!list) return [];
+    const t = tracked.latest ?? tracked();
+    const names = t?.path === list.path ? new Set(t.names ?? []) : new Set<string>();
+    return (list.entries ?? []).map((e) => ({ ...e, tracked: names.has(e.name) }));
+  });
+  const parent = () => shownListing()?.parent ?? "";
+  const currentPath = () => shownListing()?.path ?? path();
   const selectedEntries = createMemo(() => {
     const ids = selected();
     return entries().filter((e) => ids.has(e.path));
@@ -383,7 +398,7 @@ export const Browse: Component = () => {
               </tr>
             </thead>
             <tbody>
-              <Show when={!listing.loading} fallback={
+              <Show when={shownListing()} fallback={
                 <tr>
                   <td colSpan={4} class="px-3 py-6 text-muted">Loading…</td>
                 </tr>

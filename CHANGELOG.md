@@ -8063,3 +8063,21 @@ Folder names and path crumbs used `text-accent` (gold) on cream, which
 was hard to read. They now use `text-fg` like the rest of Organize. The
 current path sits in an inset folder bar on the listing card (folder
 icon + clickable segments), not a loose breadcrumb row.
+
+## 2026-08-27 — Browse listing is disk-only; tracked badges follow up
+
+Opening a folder waited on `GET /api/organize/browse` until Postgres
+returned every library `file_path` under that tree (`TrackedPathsUnder`
+across six tables, then a per-row `EntryTracked` scan). The list is now
+`ReadDir` plus size/mtime/playable only; `tracked` on those rows is
+always false. A follow-up `GET /api/organize/browse/tracked?path=`
+returns the immediate child names that are library-owned
+(`TrackedChildNames` — first path segment after `dir/`, still
+`starts_with`, never `LIKE dir+'%'` so `/media/A` does not swallow
+`/media/Apple`). The UI paints the previous listing while a refetch is
+in flight and merges badges only when the tracked path matches the shown
+listing. Migration `0018_library_file_path_indexes.sql` adds btree
+indexes on `library_items` / `library_episodes` / `library_scenes` /
+`library_episode_files(file_path)`. `library_item_files` and
+`library_scene_files` already had `UNIQUE(file_path)`. No directory-listing
+cache — confirm-then-mutate on disk stays the source of truth.

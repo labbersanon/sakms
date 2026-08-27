@@ -3,11 +3,19 @@ import type {
   OrganizeBrowseOpResponse,
   OrganizeBrowseResponse,
   OrganizeBrowseStat,
+  OrganizeBrowseTrackedResponse,
 } from "@dto";
 
 export function fetchOrganizeBrowse(path: string): Promise<OrganizeBrowseResponse> {
   const query = path ? `?path=${encodeURIComponent(path)}` : "";
   return api<OrganizeBrowseResponse>(`/api/organize/browse${query}`);
+}
+
+export function fetchOrganizeBrowseTracked(
+  path: string,
+): Promise<OrganizeBrowseTrackedResponse> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return api<OrganizeBrowseTrackedResponse>(`/api/organize/browse/tracked${query}`);
 }
 
 export function fetchOrganizeBrowseStat(path: string): Promise<OrganizeBrowseStat> {

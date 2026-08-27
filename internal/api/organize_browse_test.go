@@ -12,7 +12,10 @@ import (
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/library/librarytest"
 	"github.com/labbersanon/sakms/internal/mediainfo"
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 func withBrowsableRoot(t *testing.T, root string) {
@@ -25,7 +28,7 @@ func withBrowsableRoot(t *testing.T, root string) {
 func TestOrganizeBrowseList_RootsWhenPathEmpty(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse", nil)
-	organizeBrowseListHandler(nil)(rr, req)
+	organizeBrowseListHandler()(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -60,7 +63,7 @@ func TestOrganizeBrowseList_FilesAndDirsSorted(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse?path="+tmp, nil)
-	organizeBrowseListHandler(nil)(rr, req)
+	organizeBrowseListHandler()(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
 	}
@@ -80,6 +83,11 @@ func TestOrganizeBrowseList_FilesAndDirsSorted(t *testing.T) {
 	if resp.Entries[2].IsDir || resp.Entries[2].Name != "movie.mkv" || resp.Entries[2].Size != 2 {
 		t.Errorf("third = %+v, want file movie.mkv size 2", resp.Entries[2])
 	}
+	for _, e := range resp.Entries {
+		if e.Tracked {
+			t.Errorf("list entry %q tracked=true, want false (badges are /tracked)", e.Name)
+		}
+	}
 	if resp.Parent != "" {
 		t.Errorf("parent of root = %q, want empty", resp.Parent)
 	}
@@ -88,7 +96,7 @@ func TestOrganizeBrowseList_FilesAndDirsSorted(t *testing.T) {
 func TestOrganizeBrowseList_RejectsTraversal(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse?path=/media/../etc", nil)
-	organizeBrowseListHandler(nil)(rr, req)
+	organizeBrowseListHandler()(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
 	}
@@ -256,6 +264,65 @@ type stubBrowseProber struct {
 
 func (s stubBrowseProber) Probe(context.Context, string) (*mediainfo.Probe, error) {
 	return s.probe, s.err
+}
+
+func TestOrganizeBrowseTracked_RejectsTraversal(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse/tracked?path=/media/../etc", nil)
+	organizeBrowseTrackedHandler(nil)(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestOrganizeBrowseTracked_ChildNamesAndRoots(t *testing.T) {
+	tmp := t.TempDir()
+	foo := filepath.Join(tmp, "Foo")
+	if err := os.Mkdir(foo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withBrowsableRoot(t, tmp)
+	s := librarytest.New(t)
+	ctx := context.Background()
+	if _, err := s.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Foo", Year: 2020,
+		FilePath: filepath.Join(foo, "movie.mkv"), RootFolderPath: tmp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 2, Title: "Foo Two", Year: 2021,
+		FilePath: filepath.Join(tmp, "Foo Two", "movie.mkv"), RootFolderPath: tmp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse/tracked?path="+tmp, nil)
+	organizeBrowseTrackedHandler(s)(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	var resp apidto.OrganizeBrowseTrackedResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Path != tmp {
+		t.Errorf("path = %q, want %q", resp.Path, tmp)
+	}
+	if len(resp.Names) != 2 || resp.Names[0] != "Foo" || resp.Names[1] != "Foo Two" {
+		t.Fatalf("names = %v, want [Foo, Foo Two] (prefix must not swallow)", resp.Names)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/organize/browse/tracked", nil)
+	organizeBrowseTrackedHandler(s)(rr, req)
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Path != "" || len(resp.Names) != 1 || resp.Names[0] != tmp {
+		t.Fatalf("root names = path %q %v, want empty path and [%q]", resp.Path, resp.Names, tmp)
+	}
 }
 
 func TestOrganizeBrowseStat_FileProbeAndDirWalk(t *testing.T) {

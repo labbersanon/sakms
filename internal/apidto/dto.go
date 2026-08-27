@@ -2319,8 +2319,9 @@ type OrganizeBrowseEntry struct {
 	IsDir   bool   `json:"isDir"`
 	Size    int64  `json:"size,omitempty"`
 	ModTime string `json:"modTime,omitempty"`
-	// Tracked is true when this path (or, for a directory, any file under it)
-	// is a library-owned path. The Browse UI uses it to warn before delete.
+	// Tracked on GET /api/organize/browse is always false — the list is
+	// disk-only. GET /api/organize/browse/tracked supplies child names the
+	// UI merges onto these rows so delete still warns for library titles.
 	Tracked bool `json:"tracked"`
 	// Playable is true when a browser <video> element can decode this file
 	// (.mp4/.m4v/.webm/.mov). mkv and other containers stay false so the UI
@@ -2335,6 +2336,16 @@ type OrganizeBrowseResponse struct {
 	Path    string                `json:"path"`
 	Parent  string                `json:"parent,omitempty"`
 	Entries []OrganizeBrowseEntry `json:"entries"`
+}
+
+// OrganizeBrowseTrackedResponse is GET /api/organize/browse/tracked?path=.
+// Names are immediate child basenames under Path that have a library-owned
+// file at that child or anywhere under it. Empty Path lists which of the
+// browsable roots (/media, /downloads, /adult) have any tracked files;
+// those names match the root listing's entry.name (the root path itself).
+type OrganizeBrowseTrackedResponse struct {
+	Path  string   `json:"path"`
+	Names []string `json:"names"`
 }
 
 // OrganizeBrowseRenameRequest is POST /api/organize/browse/rename.

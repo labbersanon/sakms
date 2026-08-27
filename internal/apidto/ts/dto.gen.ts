@@ -2263,8 +2263,9 @@ export interface OrganizeBrowseEntry {
   size?: number /* int64 */;
   modTime?: string;
   /**
-   * Tracked is true when this path (or, for a directory, any file under it)
-   * is a library-owned path. The Browse UI uses it to warn before delete.
+   * Tracked on GET /api/organize/browse is always false — the list is
+   * disk-only. GET /api/organize/browse/tracked supplies child names the
+   * UI merges onto these rows so delete still warns for library titles.
    */
   tracked: boolean;
   /**
@@ -2283,6 +2284,17 @@ export interface OrganizeBrowseResponse {
   path: string;
   parent?: string;
   entries: OrganizeBrowseEntry[];
+}
+/**
+ * OrganizeBrowseTrackedResponse is GET /api/organize/browse/tracked?path=.
+ * Names are immediate child basenames under Path that have a library-owned
+ * file at that child or anywhere under it. Empty Path lists which of the
+ * browsable roots (/media, /downloads, /adult) have any tracked files;
+ * those names match the root listing's entry.name (the root path itself).
+ */
+export interface OrganizeBrowseTrackedResponse {
+  path: string;
+  names: string[];
 }
 /**
  * OrganizeBrowseRenameRequest is POST /api/organize/browse/rename.

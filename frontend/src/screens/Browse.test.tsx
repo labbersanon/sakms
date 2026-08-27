@@ -99,9 +99,12 @@ async function openMedia() {
 }
 
 describe("Browse", () => {
-  it("lists roots then files after opening a folder", async () => {
+  it("lists Files then entries after opening a folder", async () => {
     stubBrowse();
-    await openMedia();
+    render(() => <Browse />);
+    expect(await screen.findByRole("button", { name: "Files" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByText("/media"));
+    await screen.findByText("a.mkv");
     expect(screen.getByText("Movies")).toBeInTheDocument();
     expect(screen.getAllByText("Tracked").length).toBeGreaterThan(0);
   });

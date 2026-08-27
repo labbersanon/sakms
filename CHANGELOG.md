@@ -8049,3 +8049,10 @@ dated tag `autobuild-2026-08-26-13-06` /
 `ffmpeg-n8.1.2-46-g139afe709a-linux64-gpl-8.1.tar.xz` with the release
 `checksums.sha256` (still checksum-gated, never `latest`). n7.1 is no
 longer published.
+
+## 2026-08-27 — Browse table: white surface + Files breadcrumb
+
+The listing and properties pane were transparent over the Organize
+wallpaper. They now use the same white `bg-surface` card chrome as the
+Rename/Dedup queues (`rounded-xl border border-border bg-surface/95`).
+The top breadcrumb label is **Files**, not Roots.

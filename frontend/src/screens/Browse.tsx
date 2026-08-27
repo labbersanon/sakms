@@ -5,6 +5,8 @@
 //   Play/preview (browser-playable video only).
 // Troubleshooting: empty listing — GET /api/organize/browse?path=; 403 —
 //   Organize section lock. Stat 404 — path vanished after a mutate.
+//   Unreadable table — listing/pane must use bg-surface (white) over the
+//   wallpaper; transparent wrappers show cream-ticket paper through navy ink.
 // Review if: Browse is staged onto the proposals queue.
 
 import {
@@ -44,6 +46,10 @@ type MenuState = { x: number; y: number; path: string };
 const dtClass = "text-[11px] uppercase tracking-wide text-muted";
 const menuItemClass =
   "block w-full px-3 py-1.5 text-left text-sm text-fg hover:bg-surface-2 disabled:text-muted";
+// Same card chrome as Rename/Dedup queues so the listing sits on white
+// ticket-surface, not the page wallpaper.
+const panelClass =
+  "rounded-xl border border-border bg-surface/95 shadow-sm backdrop-blur-md";
 
 function formatSize(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -257,8 +263,8 @@ export const Browse: Component = () => {
 
   const crumbs = createMemo(() => {
     const current = currentPath();
-    if (!current) return [] as { label: string; path: string }[];
-    const out = [{ label: "Roots", path: "" }];
+    const out = [{ label: "Files", path: "" }];
+    if (!current) return out;
     let acc = "";
     for (const part of current.split("/").filter(Boolean)) {
       acc += `/${part}`;
@@ -342,9 +348,6 @@ export const Browse: Component = () => {
             </>
           )}
         </For>
-        <Show when={crumbs().length === 0}>
-          <span class="text-muted">Roots</span>
-        </Show>
       </nav>
 
       <Show when={error()}>
@@ -355,7 +358,7 @@ export const Browse: Component = () => {
       </Show>
 
       <div class="flex flex-col gap-3 lg:flex-row lg:items-start">
-        <div class="min-w-0 flex-1 overflow-x-auto rounded border border-border">
+        <div class={`min-w-0 flex-1 overflow-x-auto ${panelClass}`}>
           <table class="w-full text-left text-sm">
             <thead class="bg-surface-2 text-muted">
               <tr>
@@ -441,7 +444,7 @@ export const Browse: Component = () => {
         </div>
 
         <aside
-          class="w-full shrink-0 rounded border border-border p-3 lg:w-80"
+          class={`w-full shrink-0 p-3 lg:w-80 ${panelClass}`}
           aria-label="Properties"
         >
           <h3 class="mb-2 text-sm font-semibold text-fg">Properties</h3>
@@ -661,7 +664,7 @@ export const Browse: Component = () => {
       <Show when={dialog()?.kind === "move"}>
         <Modal title="Move to…" onClose={() => !busy() && setDialog(null)}>
           <Muted class="mb-2">Choose a destination folder.</Muted>
-          <p class="mb-2 font-mono text-xs text-muted">{destDir() || "(roots)"}</p>
+          <p class="mb-2 font-mono text-xs text-muted">{destDir() || "Files"}</p>
           <div class="mb-2 flex gap-2">
             <Button
               variant="secondary"

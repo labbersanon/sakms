@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { Browse } from "./Browse";
+import { AdultModeContext } from "../components/ui";
 import { jsonResponse } from "../testing/http";
 
 afterEach(() => {
@@ -11,6 +13,10 @@ afterEach(() => {
 const roots = [
   { name: "/media", path: "/media", isDir: true, tracked: true },
   { name: "/downloads", path: "/downloads", isDir: true, tracked: false },
+  { name: "/adult", path: "/adult", isDir: true, tracked: false },
+];
+const adultKids = [
+  { name: "scene.mp4", path: "/adult/scene.mp4", isDir: false, size: 1024, tracked: false, playable: true },
 ];
 const mediaKids = [
   {
@@ -31,6 +37,19 @@ const mediaKids = [
   },
   { name: "Movies", path: "/media/Movies", isDir: true, tracked: true, playable: false },
 ];
+
+const under = (path: string, root: string) => path === root || path.startsWith(root + "/");
+
+function entriesFor(path: string) {
+  if (under(path, "/adult")) return adultKids;
+  if (under(path, "/media")) return mediaKids;
+  return roots;
+}
+
+function parentFor(path: string) {
+  if (!path || roots.some((r) => r.path === path)) return "";
+  return under(path, "/adult") ? "/adult" : "/media";
+}
 
 function stubBrowse() {
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -65,19 +84,19 @@ function stubBrowse() {
     // otherwise swallow this URL.
     if (method === "GET" && url.includes("/api/organize/browse/tracked")) {
       const path = new URL(url, "http://local").searchParams.get("path") || "";
-      const entries = path === "/media" || path.startsWith("/media/") ? mediaKids : roots;
       return jsonResponse({
         path,
-        names: entries.filter((e) => e.tracked).map((e) => e.name),
+        names: entriesFor(path)
+          .filter((e) => e.tracked)
+          .map((e) => e.name),
       });
     }
     if (method === "GET" && url.includes("/api/organize/browse")) {
       const path = new URL(url, "http://local").searchParams.get("path") || "";
-      const entries = path === "/media" || path.startsWith("/media/") ? mediaKids : roots;
       return jsonResponse({
         path,
-        parent: path === "/media" ? "" : path ? "/media" : "",
-        entries,
+        parent: parentFor(path),
+        entries: entriesFor(path),
       });
     }
     if (url.includes("/api/organize/events")) return jsonResponse([]);
@@ -204,5 +223,25 @@ describe("Browse", () => {
     expect(await screen.findByRole("menuitem", { name: "Properties" })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: "Move" })).toBeEnabled();
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeEnabled();
+  });
+
+  it("hides /adult when Adult mode is off and leaves it if the toggle turns off mid-browse", async () => {
+    stubBrowse();
+    const [enabled, setEnabled] = createSignal(true);
+    render(() => (
+      <AdultModeContext.Provider value={{ enabled, refetch: () => {} }}>
+        <Browse />
+      </AdultModeContext.Provider>
+    ));
+    expect(await screen.findByText("/adult")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("/adult"));
+    expect(await screen.findByText("scene.mp4")).toBeInTheDocument();
+
+    setEnabled(false);
+    await waitFor(() => {
+      expect(screen.queryByText("scene.mp4")).not.toBeInTheDocument();
+      expect(screen.getByText("/media")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("/adult")).not.toBeInTheDocument();
   });
 });

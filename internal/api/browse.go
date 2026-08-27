@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // browsableRoots are the only directory subtrees the Browse endpoint will
@@ -18,6 +20,41 @@ import (
 // silently clamped, so a traversal attempt fails loudly rather than quietly
 // listing the wrong tree.
 var browsableRoots = []string{"/media", "/downloads", "/adult"}
+
+const adultBrowsableRoot = "/adult"
+
+func isAdultBrowsablePath(path string) bool {
+	return path == adultBrowsableRoot || strings.HasPrefix(path, adultBrowsableRoot+"/")
+}
+
+// browsableListingRoots is the root set shown when path is empty. A nil
+// settingsStore keeps the full allowlist (unit tests); Adult off — or a
+// settings read error — drops /adult so it isn't listed as a folder.
+//
+// Claude 2026-08-27: omit /adult from picker/Browse root listings when the
+// Settings Adult toggle is off.
+// Reason: AdultModeEnabledKey is a visibility switch (see adult_mode.go); the
+// Adult tab already hides, but the /adult mount still appeared as a folder on
+// Organize Browse and in Settings FolderPicker.
+// Troubleshooting: /adult stays reachable via ?path=/adult — deliberate, this
+// is not a backend access boundary. resolveBrowsablePath is unchanged so
+// rename/move/schedulers keep working.
+// Review if: the toggle becomes a real access gate.
+func browsableListingRoots(ctx context.Context, settingsStore *settings.Store) []string {
+	if settingsStore == nil {
+		return browsableRoots
+	}
+	if enabled, err := resolveAdultModeEnabled(ctx, settingsStore); err == nil && enabled {
+		return browsableRoots
+	}
+	roots := make([]string, 0, len(browsableRoots)-1)
+	for _, r := range browsableRoots {
+		if r != adultBrowsableRoot {
+			roots = append(roots, r)
+		}
+	}
+	return roots
+}
 
 // resolveBrowsablePath validates a caller-supplied path and returns its
 // cleaned, absolute form, or an error if it escapes every browsable root.
@@ -73,17 +110,18 @@ func browseParent(path string) string {
 // browsable roots, for the Settings UI's root-folder picker and its
 // as-you-type autocomplete (both hit this same endpoint). Directories only
 // — a file is never a valid root folder. With no (or empty) `path`, it
-// returns the three roots themselves so the picker has somewhere to start.
+// returns the listing roots themselves so the picker has somewhere to start.
 //
 // A valid-prefix path that doesn't exist yet returns 200 with no entries
 // rather than an error, so the debounced autocomplete degrades gracefully
 // while the operator is still mid-word.
-func browseHandler() http.HandlerFunc {
+func browseHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.Query().Get("path")
 		if raw == "" {
-			entries := make([]apidto.BrowseEntry, 0, len(browsableRoots))
-			for _, root := range browsableRoots {
+			roots := browsableListingRoots(r.Context(), settingsStore)
+			entries := make([]apidto.BrowseEntry, 0, len(roots))
+			for _, root := range roots {
 				entries = append(entries, apidto.BrowseEntry{Name: root, Path: root})
 			}
 			writeJSON(w, apidto.BrowseResponse{Path: "", Entries: entries})

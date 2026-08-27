@@ -354,6 +354,13 @@ export function fetchBrowse(path: string): Promise<BrowseResponse> {
   return api<BrowseResponse>(`/api/browse?path=${encodeURIComponent(path)}`);
 }
 
+// /adult is the Adult library mount. Hide it from Browse and FolderPicker
+// when the Settings Adult toggle is off — a visibility filter, not a
+// path-allowlist change. "/adults" and "/media/adult" stay visible.
+export function isAdultBrowsablePath(path: string): boolean {
+  return path === "/adult" || path.startsWith("/adult/");
+}
+
 // --- API Access (break-glass key) ------------------------------------------
 
 export function fetchAPIKeyStatus(): Promise<APIKeyStatusResponse> {

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { FolderPicker } from "./FolderPicker";
+import { AdultModeContext } from "./ui";
 import { jsonResponse } from "../testing/http";
 
 
@@ -124,5 +125,22 @@ describe("FolderPicker", () => {
     );
     expect(screen.queryByRole("listitem")).toBeNull();
     expect(screen.queryByText(/error/i)).toBeNull();
+  });
+
+  it("hides /adult from suggestions when Adult mode is off", async () => {
+    stub(roots);
+    render(() => (
+      <AdultModeContext.Provider
+        value={{ enabled: () => false, refetch: () => {} }}
+      >
+        <Harness />
+      </AdultModeContext.Provider>
+    ));
+    fireEvent.focus(screen.getByLabelText("Folder"));
+    expect(
+      await screen.findByRole("button", { name: /\/media/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /\/downloads/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /\/adult/ })).toBeNull();
   });
 });

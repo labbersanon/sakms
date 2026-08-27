@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/organizeevents"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // Claude 2026-08-27: Organize Browse tab API.
@@ -40,12 +41,13 @@ import (
 //   path as the shown listing; entry.tracked from the list is always false.
 // Review if: a listing cache or hover prefetch is added.
 
-func organizeBrowseListHandler() http.HandlerFunc {
+func organizeBrowseListHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.Query().Get("path")
 		if raw == "" {
-			entries := make([]apidto.OrganizeBrowseEntry, 0, len(browsableRoots))
-			for _, root := range browsableRoots {
+			roots := browsableListingRoots(r.Context(), settingsStore)
+			entries := make([]apidto.OrganizeBrowseEntry, 0, len(roots))
+			for _, root := range roots {
 				entries = append(entries, apidto.OrganizeBrowseEntry{
 					Name: root, Path: root, IsDir: true,
 				})
@@ -101,13 +103,14 @@ func organizeBrowseListHandler() http.HandlerFunc {
 	}
 }
 
-func organizeBrowseTrackedHandler(libStore *library.Store) http.HandlerFunc {
+func organizeBrowseTrackedHandler(libStore *library.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.Query().Get("path")
 		if raw == "" {
-			names := make([]string, 0, len(browsableRoots))
+			roots := browsableListingRoots(r.Context(), settingsStore)
+			names := make([]string, 0, len(roots))
 			if libStore != nil {
-				for _, root := range browsableRoots {
+				for _, root := range roots {
 					ok, err := libStore.HasTrackedUnder(r.Context(), root)
 					if err != nil {
 						http.Error(w, err.Error(), http.StatusInternalServerError)

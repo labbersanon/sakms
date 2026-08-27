@@ -8081,3 +8081,14 @@ indexes on `library_items` / `library_episodes` / `library_scenes` /
 `library_episode_files(file_path)`. `library_item_files` and
 `library_scene_files` already had `UNIQUE(file_path)`. No directory-listing
 cache — confirm-then-mutate on disk stays the source of truth.
+
+## 2026-08-27 — Hide /adult in Browse when Adult mode is off
+
+The Settings Adult toggle already hid Adult tabs, but Organize Browse
+and the Settings folder picker still listed the `/adult` mount. Empty-path
+listings now omit `/adult` when `adult_mode_enabled` is off (same
+`resolveAdultModeEnabled` default as the toggle). The UI also filters
+that root and returns to Files if you were inside `/adult` when the
+toggle flips. `resolveBrowsablePath` still allows `/adult` — this is
+visibility, not a new access gate — so rename/move and background jobs
+keep working.

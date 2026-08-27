@@ -28,7 +28,7 @@ func withBrowsableRoot(t *testing.T, root string) {
 func TestOrganizeBrowseList_RootsWhenPathEmpty(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse", nil)
-	organizeBrowseListHandler()(rr, req)
+	organizeBrowseListHandler(nil)(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -63,7 +63,7 @@ func TestOrganizeBrowseList_FilesAndDirsSorted(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse?path="+tmp, nil)
-	organizeBrowseListHandler()(rr, req)
+	organizeBrowseListHandler(nil)(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
 	}
@@ -96,7 +96,7 @@ func TestOrganizeBrowseList_FilesAndDirsSorted(t *testing.T) {
 func TestOrganizeBrowseList_RejectsTraversal(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse?path=/media/../etc", nil)
-	organizeBrowseListHandler()(rr, req)
+	organizeBrowseListHandler(nil)(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
 	}
@@ -269,7 +269,7 @@ func (s stubBrowseProber) Probe(context.Context, string) (*mediainfo.Probe, erro
 func TestOrganizeBrowseTracked_RejectsTraversal(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse/tracked?path=/media/../etc", nil)
-	organizeBrowseTrackedHandler(nil)(rr, req)
+	organizeBrowseTrackedHandler(nil, nil)(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
 	}
@@ -299,7 +299,7 @@ func TestOrganizeBrowseTracked_ChildNamesAndRoots(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse/tracked?path="+tmp, nil)
-	organizeBrowseTrackedHandler(s)(rr, req)
+	organizeBrowseTrackedHandler(s, nil)(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
 	}
@@ -316,12 +316,30 @@ func TestOrganizeBrowseTracked_ChildNamesAndRoots(t *testing.T) {
 
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/organize/browse/tracked", nil)
-	organizeBrowseTrackedHandler(s)(rr, req)
+	organizeBrowseTrackedHandler(s, nil)(rr, req)
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp.Path != "" || len(resp.Names) != 1 || resp.Names[0] != tmp {
 		t.Fatalf("root names = path %q %v, want empty path and [%q]", resp.Path, resp.Names, tmp)
+	}
+}
+
+func TestOrganizeBrowseList_OmitsAdultRootWhenAdultDisabled(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse", nil)
+	organizeBrowseListHandler(testSettingsAdultEnabled(t, false))(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	var resp apidto.OrganizeBrowseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range resp.Entries {
+		if e.Path == adultBrowsableRoot {
+			t.Fatalf("listed %+v while Adult mode is off", e)
+		}
 	}
 }
 

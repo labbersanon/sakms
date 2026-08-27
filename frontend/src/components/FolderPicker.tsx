@@ -17,8 +17,8 @@ import {
   Show,
 } from "solid-js";
 import type { BrowseEntry } from "@dto";
-import { fetchBrowse } from "../api/settings";
-import { inputClass } from "./ui";
+import { fetchBrowse, isAdultBrowsablePath } from "../api/settings";
+import { inputClass, useAdultEnabled } from "./ui";
 
 // DEBOUNCE_MS throttles the as-you-type fetch so each keystroke doesn't fire a
 // request; a clicked suggestion reuses the same debounced path so drilling down
@@ -35,6 +35,7 @@ export const FolderPicker: Component<{
   // (e.g. the kids-path field) omit it and render normally.
   invalid?: () => boolean;
 }> = (props) => {
+  const adultEnabled = useAdultEnabled();
   const [entries, setEntries] = createSignal<BrowseEntry[]>([]);
   const [open, setOpen] = createSignal(false);
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -56,6 +57,11 @@ export const FolderPicker: Component<{
     if (debounceTimer !== undefined) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => void doFetch(path), DEBOUNCE_MS);
   };
+
+  const visibleEntries = () =>
+    adultEnabled()
+      ? entries()
+      : entries().filter((e) => !isAdultBrowsablePath(e.path));
 
   const onInput = (v: string) => {
     props.onChange(v);
@@ -102,9 +108,9 @@ export const FolderPicker: Component<{
         onFocus={onFocus}
         onKeyDown={onKeyDown}
       />
-      <Show when={open() && entries().length > 0}>
+      <Show when={open() && visibleEntries().length > 0}>
         <ul class="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-surface shadow-lg">
-          <For each={entries()}>
+          <For each={visibleEntries()}>
             {(entry) => (
               <li>
                 <button

@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/dbtest"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 func TestResolveBrowsablePath(t *testing.T) {
@@ -62,7 +66,7 @@ func TestResolveBrowsablePath(t *testing.T) {
 func TestBrowseHandler_RootsWhenPathEmpty(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/browse", nil)
-	browseHandler()(rr, req)
+	browseHandler(nil)(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
@@ -87,7 +91,7 @@ func TestBrowseHandler_RootsWhenPathEmpty(t *testing.T) {
 func TestBrowseHandler_RejectsPathOutsideRoots(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/browse?path=/etc", nil)
-	browseHandler()(rr, req)
+	browseHandler(nil)(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
@@ -97,7 +101,7 @@ func TestBrowseHandler_RejectsPathOutsideRoots(t *testing.T) {
 func TestBrowseHandler_RejectsTraversal(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/browse?path=/media/../etc", nil)
-	browseHandler()(rr, req)
+	browseHandler(nil)(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
@@ -124,7 +128,7 @@ func TestBrowseHandler_ListsDirsOnly(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/browse?path="+tmp, nil)
-	browseHandler()(rr, req)
+	browseHandler(nil)(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
@@ -159,7 +163,7 @@ func TestBrowseHandler_NonExistentValidPath(t *testing.T) {
 	missing := filepath.Join(tmp, "does-not-exist-yet")
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/browse?path="+missing, nil)
-	browseHandler()(rr, req)
+	browseHandler(nil)(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
@@ -170,5 +174,61 @@ func TestBrowseHandler_NonExistentValidPath(t *testing.T) {
 	}
 	if len(resp.Entries) != 0 {
 		t.Errorf("got %d entries, want 0", len(resp.Entries))
+	}
+}
+
+func testSettingsAdultEnabled(t *testing.T, on bool) *settings.Store {
+	t.Helper()
+	s := settings.New(dbtest.New(t))
+	if err := s.SetBool(context.Background(), AdultModeEnabledKey, on); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestIsAdultBrowsablePath(t *testing.T) {
+	if !isAdultBrowsablePath("/adult") || !isAdultBrowsablePath("/adult/foo") {
+		t.Fatal("/adult and children should match")
+	}
+	if isAdultBrowsablePath("/adults") || isAdultBrowsablePath("/media/adult") || isAdultBrowsablePath("/media") {
+		t.Fatal("siblings and other roots must not match")
+	}
+}
+
+func TestBrowsableListingRoots_HidesAdultWhenOff(t *testing.T) {
+	ctx := context.Background()
+	if len(browsableListingRoots(ctx, nil)) != len(browsableRoots) {
+		t.Fatal("nil settings store should keep the full allowlist")
+	}
+
+	off := browsableListingRoots(ctx, testSettingsAdultEnabled(t, false))
+	if slices.Contains(off, adultBrowsableRoot) {
+		t.Fatal("adult root listed while Adult mode is off")
+	}
+	if len(off) != len(browsableRoots)-1 {
+		t.Fatalf("got %d roots, want %d", len(off), len(browsableRoots)-1)
+	}
+
+	on := browsableListingRoots(ctx, testSettingsAdultEnabled(t, true))
+	if !slices.Contains(on, adultBrowsableRoot) {
+		t.Fatal("adult root missing while Adult mode is on")
+	}
+}
+
+func TestBrowseHandler_OmitsAdultRootWhenAdultDisabled(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/browse", nil)
+	browseHandler(testSettingsAdultEnabled(t, false))(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp apidto.BrowseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range resp.Entries {
+		if e.Path == adultBrowsableRoot {
+			t.Fatalf("listed %+v while Adult mode is off", e)
+		}
 	}
 }

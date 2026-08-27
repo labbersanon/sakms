@@ -13,6 +13,8 @@
 //   Tracked badges come from GET /api/organize/browse/tracked, not the
 //   listing payload (list.tracked is always false). A refetch keeps the
 //   last listing on screen instead of swapping the table for Loading.
+//   /adult is omitted when the Settings Adult toggle is off (same
+//   visibility switch as the Adult tab).
 // Review if: Browse is staged onto the proposals queue.
 
 import {
@@ -35,8 +37,9 @@ import {
   moveOrganizeBrowse,
   renameOrganizeBrowse,
 } from "../api/organizeBrowse";
+import { isAdultBrowsablePath } from "../api/settings";
 import { SourcePreviewVideo } from "../components/SourcePreview";
-import { Button, ErrorText, Muted, inputClass } from "../components/ui";
+import { Button, ErrorText, Muted, inputClass, useAdultEnabled } from "../components/ui";
 import { Modal } from "./discover/shared";
 import { ActivityLogPanel } from "./OrganizeChrome";
 import Folder from "lucide-solid/icons/folder";
@@ -117,6 +120,7 @@ export const Browse: Component = () => {
     "idle",
   );
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  const adultEnabled = useAdultEnabled();
 
   const [listing] = createResource(
     () => `${path()}:${refresh()}`,
@@ -141,6 +145,19 @@ export const Browse: Component = () => {
     setMenu(null);
   });
 
+  // adultHidden is the single /adult predicate shared by the bounce-out effect
+  // and the row filters below; it reads adultEnabled() first so the effect
+  // re-runs when the toggle flips.
+  const adultHidden = (p: string) => !adultEnabled() && isAdultBrowsablePath(p);
+
+  createEffect(() => {
+    if (adultHidden(path())) {
+      setPath("");
+      setDetailPath("");
+    }
+    if (adultHidden(destDir())) setDestDir("");
+  });
+
   createEffect(() => {
     if (!menu()) return;
     const close = () => setMenu(null);
@@ -155,14 +172,24 @@ export const Browse: Component = () => {
     });
   });
 
-  const shownListing = () => listing.latest ?? listing();
+  const shownListing = () => {
+    const latest = listing.latest ?? listing();
+    // Never hold a stale /adult listing on screen after the toggle flips off.
+    return adultHidden(latest?.path ?? "") ? listing() : latest;
+  };
   const entries = createMemo(() => {
     const list = shownListing();
     if (!list) return [];
     const t = tracked.latest ?? tracked();
     const names = t?.path === list.path ? new Set(t.names ?? []) : new Set<string>();
-    return (list.entries ?? []).map((e) => ({ ...e, tracked: names.has(e.name) }));
+    return (list.entries ?? [])
+      .filter((e) => !adultHidden(e.path))
+      .map((e) => ({ ...e, tracked: names.has(e.name) }));
   });
+  const destDirs = () =>
+    (destListing()?.entries ?? []).filter(
+      (e: OrganizeBrowseEntry) => e.isDir && !adultHidden(e.path),
+    );
   const parent = () => shownListing()?.parent ?? "";
   const currentPath = () => shownListing()?.path ?? path();
   const selectedEntries = createMemo(() => {
@@ -295,9 +322,10 @@ export const Browse: Component = () => {
     <div>
       <h2 class="mb-1 text-lg font-semibold text-fg">Browse</h2>
       <Muted class="mb-4">
-        Rename, move, or delete under /media, /downloads, and /adult. Tracked
-        library titles stay in sync with the filesystem. Right-click a row for
-        Properties, Copy path, or Play/preview.
+        Rename, move, or delete under /media, /downloads
+        {adultEnabled() ? ", and /adult" : ""}. Tracked library titles stay
+        in sync with the filesystem. Right-click a row for Properties, Copy
+        path, or Play/preview.
       </Muted>
 
       <div class="mb-3 flex flex-wrap items-center gap-2">
@@ -697,7 +725,7 @@ export const Browse: Component = () => {
             </Button>
           </div>
           <ul class="max-h-56 overflow-auto rounded border border-border">
-            <For each={(destListing()?.entries ?? []).filter((e: OrganizeBrowseEntry) => e.isDir)}>
+            <For each={destDirs()}>
               {(e) => (
                 <li>
                   <button

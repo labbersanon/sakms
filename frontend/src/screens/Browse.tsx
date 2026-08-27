@@ -1,8 +1,10 @@
 // Claude 2026-08-27: Organize Browse tab — confirm-then-mutate file manager.
 // Reason: confirm dialogs are the approval gate, not a Scan/Apply queue.
-//   Rename is single-select; move and delete are multi-select.
-// Troubleshooting: empty listing — GET /api/organize/browse?path=; 403 — Organize
-//   section lock. Tracked badge comes from library path tables, not a rescan.
+//   Rename is single-select; move and delete are multi-select. Properties
+//   live in a persistent side pane; right-click adds Copy path and
+//   Play/preview (browser-playable video only).
+// Troubleshooting: empty listing — GET /api/organize/browse?path=; 403 —
+//   Organize section lock. Stat 404 — path vanished after a mutate.
 // Review if: Browse is staged onto the proposals queue.
 
 import {
@@ -13,14 +15,18 @@ import {
   createMemo,
   createResource,
   createSignal,
+  onCleanup,
 } from "solid-js";
 import type { OrganizeBrowseEntry, OrganizeBrowseOpItem } from "@dto";
 import {
+  browseVideoUrl,
   deleteOrganizeBrowse,
   fetchOrganizeBrowse,
+  fetchOrganizeBrowseStat,
   moveOrganizeBrowse,
   renameOrganizeBrowse,
 } from "../api/organizeBrowse";
+import { SourcePreviewVideo } from "../components/SourcePreview";
 import { Button, ErrorText, Muted, inputClass } from "../components/ui";
 import { Modal } from "./discover/shared";
 import { ActivityLogPanel } from "./OrganizeChrome";
@@ -33,11 +39,32 @@ type Dialog =
   | { kind: "move" }
   | { kind: "delete" };
 
+type MenuState = { x: number; y: number; path: string };
+
+const dtClass = "text-[11px] uppercase tracking-wide text-muted";
+const menuItemClass =
+  "block w-full px-3 py-1.5 text-left text-sm text-fg hover:bg-surface-2 disabled:text-muted";
+
 function formatSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatDuration(sec: number): string {
+  if (!sec || sec < 0) return "";
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  if (h) return `${h}h ${m}m ${r}s`;
+  if (m) return `${m}m ${r}s`;
+  return `${r}s`;
+}
+
+function formatModTime(t: string | undefined): string {
+  return t ? t.replace("T", " ").replace("Z", "") : "—";
 }
 
 function opError(results: OrganizeBrowseOpItem[]): string {
@@ -47,16 +74,36 @@ function opError(results: OrganizeBrowseOpItem[]): string {
     .join("\n");
 }
 
+function kindLabel(kind: string): string {
+  switch (kind) {
+    case "movie":
+      return "Movie";
+    case "episode":
+      return "Episode";
+    case "scene":
+      return "Scene";
+    default:
+      return kind;
+  }
+}
+
 export const Browse: Component = () => {
   const [path, setPath] = createSignal("");
   const [refresh, setRefresh] = createSignal(0);
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
+  const [detailPath, setDetailPath] = createSignal("");
+  const [menu, setMenu] = createSignal<MenuState | null>(null);
+  const [preview, setPreview] = createSignal<OrganizeBrowseEntry | null>(null);
   const [dialog, setDialog] = createSignal<Dialog | null>(null);
   const [renameTo, setRenameTo] = createSignal("");
   const [destDir, setDestDir] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
   const [logKey, setLogKey] = createSignal(0);
+  const [copyStatus, setCopyStatus] = createSignal<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
   const [listing] = createResource(
     () => `${path()}:${refresh()}`,
@@ -66,10 +113,29 @@ export const Browse: Component = () => {
     () => (dialog()?.kind === "move" ? `${destDir()}:${refresh()}` : null),
     () => fetchOrganizeBrowse(destDir()),
   );
+  const [stat] = createResource(
+    () => detailPath() || null,
+    (p) => fetchOrganizeBrowseStat(p),
+  );
 
   createEffect(() => {
     listing();
     setSelected(new Set<string>());
+    setMenu(null);
+  });
+
+  createEffect(() => {
+    if (!menu()) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", onKey);
+    });
   });
 
   const entries = () => listing()?.entries ?? [];
@@ -81,6 +147,11 @@ export const Browse: Component = () => {
   });
   const selectedCount = () => selected().size;
   const oneSelected = () => selectedEntries().length === 1;
+  const menuEntry = createMemo(() => {
+    const m = menu();
+    if (!m) return undefined;
+    return entries().find((e) => e.path === m.path);
+  });
 
   const toggle = (p: string) => {
     const next = new Set(selected());
@@ -97,11 +168,74 @@ export const Browse: Component = () => {
   };
   const openDir = (p: string) => {
     setError("");
+    setDetailPath("");
     setPath(p);
   };
   const goUp = () => {
     setError("");
+    setDetailPath("");
     setPath(parent());
+  };
+  const selectOne = (e: OrganizeBrowseEntry) => {
+    setSelected(new Set([e.path]));
+    setDetailPath(e.path);
+  };
+  const renameSelected = () => {
+    const e = selectedEntries()[0];
+    if (!e) return;
+    setRenameTo(e.name);
+    setDialog({ kind: "rename", path: e.path, name: e.name });
+  };
+  const showSelectedProperties = () => {
+    const e = selectedEntries()[0];
+    if (e) setDetailPath(e.path);
+  };
+  const openMove = () => {
+    setDestDir(path());
+    setDialog({ kind: "move" });
+  };
+  const openDelete = () => setDialog({ kind: "delete" });
+
+  const onRowContext = (ev: MouseEvent, e: OrganizeBrowseEntry) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!selected().has(e.path)) {
+      setSelected(new Set([e.path]));
+    }
+    const x = Math.min(ev.clientX, window.innerWidth - 220);
+    const y = Math.min(ev.clientY, window.innerHeight - 280);
+    setMenu({ x, y, path: e.path });
+  };
+
+  const MenuItem: Component<{
+    label: string;
+    disabled?: boolean;
+    onSelect: () => void;
+  }> = (props) => (
+    <button
+      type="button"
+      role="menuitem"
+      class={menuItemClass}
+      disabled={props.disabled}
+      onClick={() => {
+        props.onSelect();
+        setMenu(null);
+      }}
+    >
+      {props.label}
+    </button>
+  );
+
+  const copyPath = async (p: string) => {
+    clearTimeout(copyTimer);
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard API unavailable");
+      await navigator.clipboard.writeText(p);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+    copyTimer = setTimeout(() => setCopyStatus("idle"), 2000);
   };
 
   const runOp = async (fn: () => Promise<{ results: OrganizeBrowseOpItem[] }>) => {
@@ -138,7 +272,8 @@ export const Browse: Component = () => {
       <h2 class="mb-1 text-lg font-semibold text-fg">Browse</h2>
       <Muted class="mb-4">
         Rename, move, or delete under /media, /downloads, and /adult. Tracked
-        library titles stay in sync with the filesystem.
+        library titles stay in sync with the filesystem. Right-click a row for
+        Properties, Copy path, or Play/preview.
       </Muted>
 
       <div class="mb-3 flex flex-wrap items-center gap-2">
@@ -156,22 +291,14 @@ export const Browse: Component = () => {
         <Button
           variant="secondary"
           disabled={!oneSelected() || busy()}
-          onClick={() => {
-            const e = selectedEntries()[0];
-            if (!e) return;
-            setRenameTo(e.name);
-            setDialog({ kind: "rename", path: e.path, name: e.name });
-          }}
+          onClick={renameSelected}
         >
           Rename
         </Button>
         <Button
           variant="secondary"
           disabled={selectedCount() === 0 || busy()}
-          onClick={() => {
-            setDestDir(path());
-            setDialog({ kind: "move" });
-          }}
+          onClick={openMove}
         >
           Move
         </Button>
@@ -179,10 +306,22 @@ export const Browse: Component = () => {
           variant="secondary"
           class="border-danger text-danger"
           disabled={selectedCount() === 0 || busy()}
-          onClick={() => setDialog({ kind: "delete" })}
+          onClick={openDelete}
         >
           Delete
         </Button>
+        <Button
+          variant="secondary"
+          disabled={!oneSelected() || busy()}
+          onClick={showSelectedProperties}
+        >
+          Properties
+        </Button>
+        <Show when={copyStatus() !== "idle"}>
+          <span class="text-xs text-muted">
+            {copyStatus() === "copied" ? "Path copied" : "Couldn't copy path"}
+          </span>
+        </Show>
       </div>
 
       <nav class="mb-3 flex flex-wrap items-center gap-1 text-sm" aria-label="Path">
@@ -215,82 +354,279 @@ export const Browse: Component = () => {
         <ErrorText>{(listing.error as Error).message}</ErrorText>
       </Show>
 
-      <div class="overflow-x-auto rounded border border-border">
-        <table class="w-full text-left text-sm">
-          <thead class="bg-surface-2 text-muted">
-            <tr>
-              <th class="w-10 px-2 py-2">
-                <input
-                  type="checkbox"
-                  aria-label="Select all"
-                  checked={entries().length > 0 && selectedCount() === entries().length}
-                  onChange={toggleAll}
-                />
-              </th>
-              <th class="px-2 py-2 font-medium">Name</th>
-              <th class="px-2 py-2 font-medium">Size</th>
-              <th class="px-2 py-2 font-medium">Modified</th>
-            </tr>
-          </thead>
-          <tbody>
-            <Show when={!listing.loading} fallback={
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-start">
+        <div class="min-w-0 flex-1 overflow-x-auto rounded border border-border">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-surface-2 text-muted">
               <tr>
-                <td colSpan={4} class="px-3 py-6 text-muted">Loading…</td>
+                <th class="w-10 px-2 py-2">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all"
+                    checked={entries().length > 0 && selectedCount() === entries().length}
+                    onChange={toggleAll}
+                  />
+                </th>
+                <th class="px-2 py-2 font-medium">Name</th>
+                <th class="px-2 py-2 font-medium">Size</th>
+                <th class="px-2 py-2 font-medium">Modified</th>
               </tr>
-            }>
-              <Show
-                when={entries().length > 0}
-                fallback={
-                  <tr>
-                    <td colSpan={4} class="px-3 py-6 text-muted">This folder is empty.</td>
-                  </tr>
-                }
-              >
-                <For each={entries()}>
-                  {(e) => (
-                    <tr class="border-t border-border/60 hover:bg-surface-2/60">
-                      <td class="px-2 py-1.5">
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${e.name}`}
-                          checked={selected().has(e.path)}
-                          onChange={() => toggle(e.path)}
-                        />
-                      </td>
-                      <td class="px-2 py-1.5">
-                        <button
-                          type="button"
-                          class="inline-flex max-w-full items-center gap-2 text-left"
-                          classList={{ "text-accent": e.isDir }}
-                          onClick={() => (e.isDir ? openDir(e.path) : toggle(e.path))}
-                        >
-                          <Show when={e.isDir} fallback={<FileIcon size={16} class="shrink-0 text-muted" />}>
-                            <Folder size={16} class="shrink-0 text-accent" />
-                          </Show>
-                          <span class="truncate">{e.name}</span>
-                          <Show when={e.tracked}>
-                            <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
-                              Tracked
-                            </span>
-                          </Show>
-                        </button>
-                      </td>
-                      <td class="whitespace-nowrap px-2 py-1.5 text-muted">
-                        {e.isDir ? "—" : formatSize(e.size ?? 0)}
-                      </td>
-                      <td class="whitespace-nowrap px-2 py-1.5 text-muted">
-                        {e.modTime ? e.modTime.replace("T", " ").replace("Z", "") : "—"}
-                      </td>
+            </thead>
+            <tbody>
+              <Show when={!listing.loading} fallback={
+                <tr>
+                  <td colSpan={4} class="px-3 py-6 text-muted">Loading…</td>
+                </tr>
+              }>
+                <Show
+                  when={entries().length > 0}
+                  fallback={
+                    <tr>
+                      <td colSpan={4} class="px-3 py-6 text-muted">This folder is empty.</td>
                     </tr>
-                  )}
-                </For>
+                  }
+                >
+                  <For each={entries()}>
+                    {(e) => (
+                      <tr
+                        class="border-t border-border/60 hover:bg-surface-2/60"
+                        classList={{ "bg-surface-2/80": detailPath() === e.path }}
+                        onContextMenu={(ev) => onRowContext(ev, e)}
+                        onClick={(ev) => {
+                          const t = ev.target as HTMLElement;
+                          if (t.closest("input[type=checkbox]")) return;
+                          if (t.closest("button")) return;
+                          selectOne(e);
+                        }}
+                      >
+                        <td class="px-2 py-1.5">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${e.name}`}
+                            checked={selected().has(e.path)}
+                            onChange={() => toggle(e.path)}
+                          />
+                        </td>
+                        <td class="px-2 py-1.5">
+                          <button
+                            type="button"
+                            class="inline-flex max-w-full items-center gap-2 text-left"
+                            classList={{ "text-accent": e.isDir }}
+                            onClick={() => (e.isDir ? openDir(e.path) : selectOne(e))}
+                          >
+                            <Show when={e.isDir} fallback={<FileIcon size={16} class="shrink-0 text-muted" />}>
+                              <Folder size={16} class="shrink-0 text-accent" />
+                            </Show>
+                            <span class="truncate">{e.name}</span>
+                            <Show when={e.tracked}>
+                              <span class="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
+                                Tracked
+                              </span>
+                            </Show>
+                          </button>
+                        </td>
+                        <td class="whitespace-nowrap px-2 py-1.5 text-muted">
+                          {e.isDir ? "—" : formatSize(e.size ?? 0)}
+                        </td>
+                        <td class="whitespace-nowrap px-2 py-1.5 text-muted">
+                          {formatModTime(e.modTime)}
+                        </td>
+                      </tr>
+                    )}
+                  </For>
+                </Show>
               </Show>
+            </tbody>
+          </table>
+        </div>
+
+        <aside
+          class="w-full shrink-0 rounded border border-border p-3 lg:w-80"
+          aria-label="Properties"
+        >
+          <h3 class="mb-2 text-sm font-semibold text-fg">Properties</h3>
+          <Show
+            when={detailPath()}
+            fallback={<Muted>Select an item to see properties.</Muted>}
+          >
+            <Show when={stat.loading}>
+              <Muted>Loading…</Muted>
             </Show>
-          </tbody>
-        </table>
+            <Show when={stat.error}>
+              <ErrorText>{(stat.error as Error).message}</ErrorText>
+            </Show>
+            <Show when={stat()}>
+              {(s) => (
+                <dl class="space-y-2 text-sm">
+                  <div>
+                    <dt class={dtClass}>Name</dt>
+                    <dd class="break-all text-fg">{s().name}</dd>
+                  </div>
+                  <div>
+                    <dt class={dtClass}>Path</dt>
+                    <dd class="break-all font-mono text-xs text-fg">{s().path}</dd>
+                    <Button
+                      variant="secondary"
+                      class="mt-1"
+                      onClick={() => void copyPath(s().path)}
+                    >
+                      Copy path
+                    </Button>
+                  </div>
+                  <div>
+                    <dt class={dtClass}>Type</dt>
+                    <dd class="text-fg">{s().isDir ? "Folder" : "File"}</dd>
+                  </div>
+                  <Show when={!s().isDir}>
+                    <div>
+                      <dt class={dtClass}>Size</dt>
+                      <dd class="text-fg">{formatSize(s().size ?? 0)}</dd>
+                    </div>
+                  </Show>
+                  <Show when={s().isDir}>
+                    <div>
+                      <dt class={dtClass}>Contents</dt>
+                      <dd class="text-fg">
+                        {s().itemCount ?? 0} item{(s().itemCount ?? 0) === 1 ? "" : "s"}
+                        {" · "}
+                        {formatSize(s().totalSize ?? 0)}
+                        <Show when={s().truncated}>
+                          <span class="block text-xs text-muted">Counts are partial</span>
+                        </Show>
+                      </dd>
+                    </div>
+                  </Show>
+                  <div>
+                    <dt class={dtClass}>Modified</dt>
+                    <dd class="text-fg">{formatModTime(s().modTime)}</dd>
+                  </div>
+                  <div>
+                    <dt class={dtClass}>Library</dt>
+                    <dd class="text-fg">
+                      <Show when={s().tracked} fallback="Not tracked">
+                        Tracked
+                      </Show>
+                    </dd>
+                  </div>
+                  <Show when={(s().library ?? []).length > 0}>
+                    <div>
+                      <dt class={dtClass}>
+                        Titles
+                        <Show when={(s().libraryTotal ?? 0) > (s().library ?? []).length}>
+                          {` (${s().library?.length} of ${s().libraryTotal})`}
+                        </Show>
+                      </dt>
+                      <dd>
+                        <ul class="mt-1 space-y-1">
+                          <For each={s().library}>
+                            {(h) => (
+                              <li class="text-fg">
+                                <span class="text-muted">{kindLabel(h.kind)} · </span>
+                                {h.series ? `${h.series} — ` : ""}
+                                {h.title}
+                                <Show when={h.year}>
+                                  {` (${h.year})`}
+                                </Show>
+                              </li>
+                            )}
+                          </For>
+                        </ul>
+                      </dd>
+                    </div>
+                  </Show>
+                  <Show when={s().probe}>
+                    <div>
+                      <dt class={dtClass}>Media</dt>
+                      <dd class="text-fg">
+                        {[
+                          s().probe?.width && s().probe?.height
+                            ? `${s().probe?.width}×${s().probe?.height}`
+                            : "",
+                          s().probe?.codec,
+                          formatDuration(s().probe?.duration ?? 0),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </dd>
+                    </div>
+                  </Show>
+                  <Show when={s().probeError}>
+                    <Muted>Could not probe media: {s().probeError}</Muted>
+                  </Show>
+                  <Show when={s().playable && s().videoUrl}>
+                    <div>
+                      <dt class={`mb-1 ${dtClass}`}>Preview</dt>
+                      <dd>
+                        <SourcePreviewVideo src={s().videoUrl ?? ""} label={s().name} />
+                      </dd>
+                    </div>
+                  </Show>
+                  <Show when={!s().isDir && !s().playable && !s().probeError && s().probe}>
+                    <Muted>This format cannot play in the browser</Muted>
+                  </Show>
+                </dl>
+              )}
+            </Show>
+          </Show>
+        </aside>
       </div>
 
       <ActivityLogPanel workflow="browse" refreshKey={logKey()} />
+
+      <Show when={menu()}>
+        {(m) => (
+          <div
+            role="menu"
+            aria-label="Browse actions"
+            class="fixed z-50 min-w-44 rounded border border-border bg-surface py-1 shadow-lg"
+            style={{ left: `${m().x}px`, top: `${m().y}px` }}
+            onClick={(ev) => ev.stopPropagation()}
+            onContextMenu={(ev) => ev.preventDefault()}
+          >
+            <MenuItem
+              label="Rename"
+              disabled={!oneSelected() || busy()}
+              onSelect={renameSelected}
+            />
+            <MenuItem
+              label="Move"
+              disabled={selectedCount() === 0 || busy()}
+              onSelect={openMove}
+            />
+            <MenuItem
+              label="Delete"
+              disabled={selectedCount() === 0 || busy()}
+              onSelect={openDelete}
+            />
+            <MenuItem label="Copy path" onSelect={() => void copyPath(m().path)} />
+            <Show when={menuEntry()?.playable}>
+              <MenuItem
+                label="Play/preview"
+                onSelect={() => {
+                  const e = menuEntry();
+                  if (e) {
+                    setDetailPath(e.path);
+                    setPreview(e);
+                  }
+                }}
+              />
+            </Show>
+            <MenuItem
+              label="Properties"
+              disabled={!oneSelected()}
+              onSelect={showSelectedProperties}
+            />
+          </div>
+        )}
+      </Show>
+
+      <Show when={preview()}>
+        {(e) => (
+          <Modal title={e().name} onClose={() => setPreview(null)}>
+            <SourcePreviewVideo src={browseVideoUrl(e().path)} label={e().name} />
+          </Modal>
+        )}
+      </Show>
 
       <Show when={dialog()?.kind === "rename"}>
         <Modal title="Rename" onClose={() => !busy() && setDialog(null)}>

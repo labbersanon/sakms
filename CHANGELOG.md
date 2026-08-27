@@ -8027,3 +8027,14 @@ queue). Tracked library paths are rewritten on rename/move and dropped on
 delete so the library cannot drift from the filesystem. Settings'
 dirs-only `GET /api/browse` is unchanged; the new routes live under
 `/api/organize/browse` and classify as `{organize}`.
+
+## 2026-08-27 — Organize Browse: context menu, properties pane, preview
+
+Browse rows grow a right-click menu (Rename, Move, Delete, Copy path,
+Play/preview, Properties) and a persistent side pane. Properties show
+filesystem details, tracked library titles, recursive folder counts, and
+an ffprobe for video files. Play/preview is offered only for
+browser-playable containers (`.mp4`/`.m4v`/`.webm`/`.mov`) and streams
+via `GET /api/organize/browse/video` after the same mount-root allowlist
+as the listing. Multi-select Move/Delete still apply to the whole
+selection; Properties requires exactly one item.

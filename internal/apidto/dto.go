@@ -2322,6 +2322,10 @@ type OrganizeBrowseEntry struct {
 	// Tracked is true when this path (or, for a directory, any file under it)
 	// is a library-owned path. The Browse UI uses it to warn before delete.
 	Tracked bool `json:"tracked"`
+	// Playable is true when a browser <video> element can decode this file
+	// (.mp4/.m4v/.webm/.mov). mkv and other containers stay false so the UI
+	// can omit Play rather than mount a broken player.
+	Playable bool `json:"playable"`
 }
 
 // OrganizeBrowseResponse is GET /api/organize/browse. Path is the resolved
@@ -2368,6 +2372,58 @@ type OrganizeBrowseOpItem struct {
 // OrganizeBrowseOpResponse is the shared success body for Browse mutations.
 type OrganizeBrowseOpResponse struct {
 	Results []OrganizeBrowseOpItem `json:"results"`
+}
+
+// Claude 2026-08-27: Organize Browse properties (stat) + in-pane preview.
+// Reason: the tab is a file manager — every row needs filesystem details,
+//   tracked library titles, and (for video) a probe; Play streams only after
+//   resolveBrowsablePath, never a client-trusted path.
+// Troubleshooting: dto.gen.ts drift — run `go run ./cmd/gendto`.
+// Review if: transcoding lands and every container becomes playable.
+
+// OrganizeBrowseProbe is ffprobe output for a video file on GET
+// /api/organize/browse/stat. Omitted when the path is not a video or probe
+// failed (see ProbeError on the parent).
+type OrganizeBrowseProbe struct {
+	Codec    string  `json:"codec,omitempty"`
+	Width    int     `json:"width,omitempty"`
+	Height   int     `json:"height,omitempty"`
+	Duration float64 `json:"duration,omitempty"`
+	BitRate  int64   `json:"bitrate,omitempty"`
+}
+
+// OrganizeBrowseLibraryHit is one library title that owns this path (file
+// match) or lives under it (directory). Kind is "movie" | "episode" | "scene".
+type OrganizeBrowseLibraryHit struct {
+	Kind   string `json:"kind"`
+	Mode   string `json:"mode"`
+	ID     int64  `json:"id"`
+	Title  string `json:"title"`
+	Series string `json:"series,omitempty"`
+	Year   int    `json:"year,omitempty"`
+}
+
+// OrganizeBrowseStat is GET /api/organize/browse/stat?path=. ItemCount and
+// TotalSize are recursive directory totals (files + nested dirs; byte sum of
+// files). Truncated is true when the walk stopped at the entry cap.
+// Library is a capped sample; LibraryTotal is the uncapped distinct-title
+// count. VideoURL is set only when Playable is true.
+type OrganizeBrowseStat struct {
+	Name         string                     `json:"name"`
+	Path         string                     `json:"path"`
+	IsDir        bool                       `json:"isDir"`
+	Size         int64                      `json:"size,omitempty"`
+	ModTime      string                     `json:"modTime,omitempty"`
+	Tracked      bool                       `json:"tracked"`
+	Playable     bool                       `json:"playable"`
+	VideoURL     string                     `json:"videoUrl,omitempty"`
+	ItemCount    int64                      `json:"itemCount,omitempty"`
+	TotalSize    int64                      `json:"totalSize,omitempty"`
+	Truncated    bool                       `json:"truncated,omitempty"`
+	Probe        *OrganizeBrowseProbe       `json:"probe,omitempty"`
+	ProbeError   string                     `json:"probeError,omitempty"`
+	Library      []OrganizeBrowseLibraryHit `json:"library,omitempty"`
+	LibraryTotal int                        `json:"libraryTotal,omitempty"`
 }
 
 // --- Optional raw RSS feed rows (internal/rssfeeds + internal/rssfeed) — a

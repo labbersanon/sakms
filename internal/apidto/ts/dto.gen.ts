@@ -2267,6 +2267,12 @@ export interface OrganizeBrowseEntry {
    * is a library-owned path. The Browse UI uses it to warn before delete.
    */
   tracked: boolean;
+  /**
+   * Playable is true when a browser <video> element can decode this file
+   * (.mp4/.m4v/.webm/.mov). mkv and other containers stay false so the UI
+   * can omit Play rather than mount a broken player.
+   */
+  playable: boolean;
 }
 /**
  * OrganizeBrowseResponse is GET /api/organize/browse. Path is the resolved
@@ -2319,6 +2325,54 @@ export interface OrganizeBrowseOpItem {
  */
 export interface OrganizeBrowseOpResponse {
   results: OrganizeBrowseOpItem[];
+}
+/**
+ * OrganizeBrowseProbe is ffprobe output for a video file on GET
+ * /api/organize/browse/stat. Omitted when the path is not a video or probe
+ * failed (see ProbeError on the parent).
+ */
+export interface OrganizeBrowseProbe {
+  codec?: string;
+  width?: number /* int */;
+  height?: number /* int */;
+  duration?: number /* float64 */;
+  bitrate?: number /* int64 */;
+}
+/**
+ * OrganizeBrowseLibraryHit is one library title that owns this path (file
+ * match) or lives under it (directory). Kind is "movie" | "episode" | "scene".
+ */
+export interface OrganizeBrowseLibraryHit {
+  kind: string;
+  mode: string;
+  id: number /* int64 */;
+  title: string;
+  series?: string;
+  year?: number /* int */;
+}
+/**
+ * OrganizeBrowseStat is GET /api/organize/browse/stat?path=. ItemCount and
+ * TotalSize are recursive directory totals (files + nested dirs; byte sum of
+ * files). Truncated is true when the walk stopped at the entry cap.
+ * Library is a capped sample; LibraryTotal is the uncapped distinct-title
+ * count. VideoURL is set only when Playable is true.
+ */
+export interface OrganizeBrowseStat {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size?: number /* int64 */;
+  modTime?: string;
+  tracked: boolean;
+  playable: boolean;
+  videoUrl?: string;
+  itemCount?: number /* int64 */;
+  totalSize?: number /* int64 */;
+  truncated?: boolean;
+  probe?: OrganizeBrowseProbe;
+  probeError?: string;
+  library?: OrganizeBrowseLibraryHit[];
+  libraryTotal?: number /* int */;
 }
 /**
  * --- Optional raw RSS feed rows (internal/rssfeeds + internal/rssfeed) — a

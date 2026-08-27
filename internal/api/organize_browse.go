@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +15,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/config"
+	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/organizeevents"
 )
@@ -92,6 +96,7 @@ func organizeBrowseListHandler(libStore *library.Store) http.HandlerFunc {
 				ent.ModTime = fi.ModTime().UTC().Format("2006-01-02T15:04:05Z")
 			}
 			ent.Tracked = library.EntryTracked(full, info.IsDir(), tracked)
+			ent.Playable = !info.IsDir() && browserPlayableVideo(full)
 			entries = append(entries, ent)
 		}
 		sort.Slice(entries, func(i, j int) bool {
@@ -233,6 +238,167 @@ func organizeBrowseDeleteHandler(libStore *library.Store) http.HandlerFunc {
 		}
 		writeJSON(w, apidto.OrganizeBrowseOpResponse{Results: results})
 	}
+}
+
+// Claude 2026-08-27: Browse properties + video stream.
+// Reason: the pane needs one-path filesystem/library/probe details; Play
+//   must ServeContent only after resolveBrowsablePath (not a proposal id).
+// Troubleshooting: 400 "path must be within..." — same allowlist as list.
+//   Probe omitted + probeError set — ffprobe failed; the rest of stat is
+//   still valid. Walk truncated — directory exceeded browseDirWalkCap.
+// Review if: transcoding lands and /video can serve every container.
+
+const browseDirWalkCap = 100_000
+
+// lstatBrowsableParam resolves ?path= through the mount-root allowlist and
+// lstats it. On failure it has already written the HTTP error and reports
+// ok=false.
+func lstatBrowsableParam(w http.ResponseWriter, r *http.Request) (full string, st os.FileInfo, ok bool) {
+	raw := r.URL.Query().Get("path")
+	if raw == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return "", nil, false
+	}
+	full, err := resolveBrowsablePath(raw)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return "", nil, false
+	}
+	st, err = os.Lstat(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return "", nil, false
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return "", nil, false
+	}
+	return full, st, true
+}
+
+func organizeBrowseStatHandler(libStore *library.Store, prober dedup.Prober) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		full, st, ok := lstatBrowsableParam(w, r)
+		if !ok {
+			return
+		}
+
+		out := apidto.OrganizeBrowseStat{
+			Name:    filepath.Base(full),
+			Path:    full,
+			IsDir:   st.IsDir(),
+			ModTime: st.ModTime().UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		if isBrowsableRoot(full) {
+			out.Name = full
+		}
+		if !st.IsDir() {
+			out.Size = st.Size()
+			out.Playable = browserPlayableVideo(full)
+			if out.Playable {
+				out.VideoURL = browseVideoURL(full)
+			}
+			if config.IsVideoFile(full) && prober != nil {
+				probe, err := prober.Probe(r.Context(), full)
+				if err != nil {
+					out.ProbeError = err.Error()
+				} else if probe != nil {
+					out.Probe = &apidto.OrganizeBrowseProbe{
+						Codec:    probe.CodecName,
+						Width:    probe.Width,
+						Height:   probe.Height,
+						Duration: probe.Duration,
+						BitRate:  probe.BitRate,
+					}
+				}
+			}
+		} else {
+			count, total, truncated, err := browseDirStats(r.Context(), full)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			out.ItemCount = count
+			out.TotalSize = total
+			out.Truncated = truncated
+		}
+
+		if libStore != nil {
+			tracked, err := libStore.HasTrackedUnder(r.Context(), full)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			out.Tracked = tracked
+			hits, total, err := libStore.LibraryHitsForPath(r.Context(), full)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			out.LibraryTotal = total
+			if len(hits) > 0 {
+				out.Library = make([]apidto.OrganizeBrowseLibraryHit, len(hits))
+				for i, h := range hits {
+					out.Library[i] = apidto.OrganizeBrowseLibraryHit{
+						Kind: h.Kind, Mode: h.Mode, ID: h.ID,
+						Title: h.Title, Series: h.Series, Year: h.Year,
+					}
+				}
+			}
+		}
+		writeJSON(w, out)
+	}
+}
+
+func organizeBrowseVideoHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		full, st, ok := lstatBrowsableParam(w, r)
+		if !ok {
+			return
+		}
+		if st.IsDir() {
+			http.Error(w, "path is a directory", http.StatusBadRequest)
+			return
+		}
+		if !config.IsVideoFile(full) {
+			http.Error(w, "not a video file", http.StatusBadRequest)
+			return
+		}
+		serveLocalVideoFile(w, r, full, "browse")
+	}
+}
+
+func browseVideoURL(path string) string {
+	return "/api/organize/browse/video?path=" + url.QueryEscape(path)
+}
+
+func browseDirStats(ctx context.Context, root string) (items, total int64, truncated bool, err error) {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if walkErr != nil {
+			return nil
+		}
+		if p == root {
+			return nil
+		}
+		if items >= browseDirWalkCap {
+			truncated = true
+			return fs.SkipAll
+		}
+		items++
+		if !d.IsDir() {
+			if fi, e := d.Info(); e == nil {
+				total += fi.Size()
+			}
+		}
+		return nil
+	})
+	if err != nil && truncated {
+		err = nil
+	}
+	return items, total, truncated, err
 }
 
 func mutatePath(r *http.Request, libStore *library.Store, src, dest string) apidto.OrganizeBrowseOpItem {

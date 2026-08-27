@@ -363,6 +363,204 @@ func (s *Store) forgetSceneAfterDelete(ctx context.Context, id int64) (bool, err
 	return true, nil
 }
 
+// Claude 2026-08-27: Browse properties pane lists library titles for a path.
+// Reason: filesystem details alone do not tell the operator which movie /
+//   episode / scene owns a tracked file (or how many titles sit under a
+//   folder). Prefix match is the same coveredPred as RemapPath — /media/A
+//   must not swallow /media/Apple.
+// Troubleshooting: empty library on a Tracked row — check item_files /
+//   episode_files / scene_files, not only the denormalized file_path column.
+// Review if: library_*_files become the sole path source.
+
+const libraryHitCap = 25
+
+// LibraryHit is one tracked title that owns path (exact file) or lives
+// under it (directory). Kind is "movie", "episode", or "scene".
+type LibraryHit struct {
+	Kind   string
+	Mode   string
+	ID     int64
+	Title  string
+	Series string
+	Year   int
+}
+
+func coveredCol(col string) string {
+	return `(` + col + ` = ? OR starts_with(` + col + `, ? || '/'))`
+}
+
+// LibraryHitsForPath returns a capped sample of library titles at path or
+// under it, plus the uncapped distinct-title count.
+func (s *Store) LibraryHitsForPath(ctx context.Context, path string) ([]LibraryHit, int, error) {
+	if s == nil || s.db == nil || path == "" {
+		return nil, 0, nil
+	}
+	movies, nMovies, err := s.movieHitsForPath(ctx, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	episodes, nEps, err := s.episodeHitsForPath(ctx, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	scenes, nScenes, err := s.sceneHitsForPath(ctx, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := nMovies + nEps + nScenes
+	hits := make([]LibraryHit, 0, libraryHitCap)
+	for _, group := range [][]LibraryHit{movies, episodes, scenes} {
+		remain := libraryHitCap - len(hits)
+		if remain <= 0 {
+			break
+		}
+		if len(group) > remain {
+			group = group[:remain]
+		}
+		hits = append(hits, group...)
+	}
+	return hits, total, nil
+}
+
+func (s *Store) movieHitsForPath(ctx context.Context, path string) ([]LibraryHit, int, error) {
+	n, err := s.countHits(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT i.id FROM library_items i WHERE `+coveredCol("i.file_path")+`
+			UNION
+			SELECT i.id FROM library_item_files f
+			JOIN library_items i ON i.id = f.item_id
+			WHERE `+coveredCol("f.file_path")+`
+		) t`, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, mode, title, year FROM (
+			SELECT i.id, i.mode, i.title, i.year FROM library_items i
+			WHERE `+coveredCol("i.file_path")+`
+			UNION
+			SELECT i.id, i.mode, i.title, i.year FROM library_item_files f
+			JOIN library_items i ON i.id = f.item_id
+			WHERE `+coveredCol("f.file_path")+`
+		) t ORDER BY title LIMIT ?`,
+		append(pathArgs(path, 4), libraryHitCap)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing movie hits for %q: %w", path, err)
+	}
+	defer rows.Close()
+	var hits []LibraryHit
+	for rows.Next() {
+		var h LibraryHit
+		if err := rows.Scan(&h.ID, &h.Mode, &h.Title, &h.Year); err != nil {
+			return nil, 0, err
+		}
+		h.Kind = "movie"
+		hits = append(hits, h)
+	}
+	return hits, n, rows.Err()
+}
+
+func (s *Store) episodeHitsForPath(ctx context.Context, path string) ([]LibraryHit, int, error) {
+	n, err := s.countHits(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT e.id FROM library_episodes e WHERE `+coveredCol("e.file_path")+`
+			UNION
+			SELECT e.id FROM library_episode_files f
+			JOIN library_episodes e ON e.id = f.episode_id
+			WHERE `+coveredCol("f.file_path")+`
+		) t`, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, ep_title, season_number, episode_number, series_title, year FROM (
+			SELECT e.id, e.title AS ep_title, e.season_number, e.episode_number,
+			       s.title AS series_title, s.year
+			FROM library_episodes e
+			JOIN library_series s ON s.id = e.series_id
+			WHERE `+coveredCol("e.file_path")+`
+			UNION
+			SELECT e.id, e.title, e.season_number, e.episode_number, s.title, s.year
+			FROM library_episode_files f
+			JOIN library_episodes e ON e.id = f.episode_id
+			JOIN library_series s ON s.id = e.series_id
+			WHERE `+coveredCol("f.file_path")+`
+		) t ORDER BY series_title, season_number, episode_number LIMIT ?`,
+		append(pathArgs(path, 4), libraryHitCap)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing episode hits for %q: %w", path, err)
+	}
+	defer rows.Close()
+	var hits []LibraryHit
+	for rows.Next() {
+		var h LibraryHit
+		var epTitle string
+		var season, epNum int
+		if err := rows.Scan(&h.ID, &epTitle, &season, &epNum, &h.Series, &h.Year); err != nil {
+			return nil, 0, err
+		}
+		h.Kind = "episode"
+		h.Mode = "series"
+		if epTitle == "" {
+			h.Title = fmt.Sprintf("S%02dE%02d", season, epNum)
+		} else {
+			h.Title = fmt.Sprintf("S%02dE%02d %s", season, epNum, epTitle)
+		}
+		hits = append(hits, h)
+	}
+	return hits, n, rows.Err()
+}
+
+func (s *Store) sceneHitsForPath(ctx context.Context, path string) ([]LibraryHit, int, error) {
+	n, err := s.countHits(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT s.id FROM library_scenes s WHERE `+coveredCol("s.file_path")+`
+			UNION
+			SELECT s.id FROM library_scene_files f
+			JOIN library_scenes s ON s.id = f.scene_id
+			WHERE `+coveredCol("f.file_path")+`
+		) t`, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, title FROM (
+			SELECT s.id, s.title FROM library_scenes s
+			WHERE `+coveredCol("s.file_path")+`
+			UNION
+			SELECT s.id, s.title FROM library_scene_files f
+			JOIN library_scenes s ON s.id = f.scene_id
+			WHERE `+coveredCol("f.file_path")+`
+		) t ORDER BY title LIMIT ?`,
+		append(pathArgs(path, 4), libraryHitCap)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing scene hits for %q: %w", path, err)
+	}
+	defer rows.Close()
+	var hits []LibraryHit
+	for rows.Next() {
+		var h LibraryHit
+		if err := rows.Scan(&h.ID, &h.Title); err != nil {
+			return nil, 0, err
+		}
+		h.Kind = "scene"
+		h.Mode = "adult"
+		hits = append(hits, h)
+	}
+	return hits, n, rows.Err()
+}
+
+// countHits runs a two-branch (denormalized column UNION *_files) count; both
+// branches bind path twice, so every caller needs four args.
+func (s *Store) countHits(ctx context.Context, q, path string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, q, pathArgs(path, 4)...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting library hits for %q: %w", path, err)
+	}
+	return n, nil
+}
+
 // EntryTracked reports whether listing entry at fullPath (a file or dir
 // under dir) is tracked, given the tracked file paths already loaded for dir.
 func EntryTracked(fullPath string, isDir bool, tracked []string) bool {

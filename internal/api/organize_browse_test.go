@@ -2,14 +2,17 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/mediainfo"
 )
 
 func withBrowsableRoot(t *testing.T, root string) {
@@ -243,5 +246,125 @@ func TestOrganizeBrowseMove_RejectsIntoSelf(t *testing.T) {
 	}
 	if resp.Results[0].OK {
 		t.Fatalf("move into self should fail, got %+v", resp.Results[0])
+	}
+}
+
+type stubBrowseProber struct {
+	probe *mediainfo.Probe
+	err   error
+}
+
+func (s stubBrowseProber) Probe(context.Context, string) (*mediainfo.Probe, error) {
+	return s.probe, s.err
+}
+
+func TestOrganizeBrowseStat_FileProbeAndDirWalk(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "folder")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(dir, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkv := filepath.Join(tmp, "clip.mkv")
+	if err := os.WriteFile(mkv, []byte("abcd"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "a.bin"), []byte("xy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mp4 := filepath.Join(tmp, "play.mp4")
+	if err := os.WriteFile(mp4, []byte("mp4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withBrowsableRoot(t, tmp)
+
+	prober := stubBrowseProber{probe: &mediainfo.Probe{
+		CodecName: "h264", Width: 1920, Height: 1080, Duration: 12.5, BitRate: 4_000_000,
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse/stat?path="+mkv, nil)
+	organizeBrowseStatHandler(nil, prober)(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("stat file status = %d body %s", rr.Code, rr.Body.String())
+	}
+	var fileStat apidto.OrganizeBrowseStat
+	if err := json.Unmarshal(rr.Body.Bytes(), &fileStat); err != nil {
+		t.Fatal(err)
+	}
+	if fileStat.Size != 4 || fileStat.IsDir || fileStat.Playable {
+		t.Fatalf("mkv stat = %+v", fileStat)
+	}
+	if fileStat.Probe == nil || fileStat.Probe.Width != 1920 || fileStat.Probe.Codec != "h264" {
+		t.Fatalf("probe = %+v", fileStat.Probe)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/organize/browse/stat?path="+mp4, nil)
+	organizeBrowseStatHandler(nil, prober)(rr, req)
+	if err := json.Unmarshal(rr.Body.Bytes(), &fileStat); err != nil {
+		t.Fatal(err)
+	}
+	if !fileStat.Playable || fileStat.VideoURL == "" {
+		t.Fatalf("mp4 should be playable: %+v", fileStat)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/organize/browse/stat?path="+dir, nil)
+	organizeBrowseStatHandler(nil, nil)(rr, req)
+	var dirStat apidto.OrganizeBrowseStat
+	if err := json.Unmarshal(rr.Body.Bytes(), &dirStat); err != nil {
+		t.Fatal(err)
+	}
+	if !dirStat.IsDir || dirStat.ItemCount != 2 || dirStat.TotalSize != 2 {
+		t.Fatalf("dir stat = %+v (want 2 items, 2 bytes)", dirStat)
+	}
+}
+
+func TestOrganizeBrowseStat_RejectsTraversal(t *testing.T) {
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse/stat?path=/media/../etc/passwd", nil)
+	organizeBrowseStatHandler(nil, nil)(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestOrganizeBrowseVideo_ServesAndRejects(t *testing.T) {
+	tmp := t.TempDir()
+	mp4 := filepath.Join(tmp, "play.mp4")
+	if err := os.WriteFile(mp4, []byte("videobytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	txt := filepath.Join(tmp, "notes.txt")
+	if err := os.WriteFile(txt, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withBrowsableRoot(t, tmp)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/organize/browse/video?path="+mp4, nil)
+	organizeBrowseVideoHandler()(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("video status = %d body %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "videobytes") {
+		t.Fatalf("body %q", rr.Body.String())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/organize/browse/video?path="+txt, nil)
+	organizeBrowseVideoHandler()(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("txt status = %d, want 400", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/organize/browse/video?path=/etc/passwd", nil)
+	organizeBrowseVideoHandler()(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("outside-root status = %d, want 400", rr.Code)
 	}
 }

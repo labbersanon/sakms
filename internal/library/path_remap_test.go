@@ -133,3 +133,61 @@ func TestEntryTracked(t *testing.T) {
 		t.Error("other file should not be tracked")
 	}
 }
+
+func TestLibraryHitsForPath_FileAndFolder(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	moviePath := "/media/Movies/Foo/movie.mkv"
+	if _, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: 11, Title: "Foo", Year: 2021,
+		FilePath: moviePath, RootFolderPath: "/media/Movies",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	series, err := s.UpsertSeries(ctx, Series{
+		TMDBID: 22, Title: "Show", Year: 2019, RootFolderPath: "/media/TV",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epPath := "/media/TV/Show/S01E01.mkv"
+	if _, err := s.UpsertEpisode(ctx, Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1,
+		Title: "Pilot", FilePath: epPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: 12, Title: "Foo Two", Year: 2022,
+		FilePath: "/media/Movies/Foo Two/movie.mkv", RootFolderPath: "/media/Movies",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, total, err := s.LibraryHitsForPath(ctx, moviePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(hits) != 1 || hits[0].Title != "Foo" || hits[0].Kind != "movie" {
+		t.Fatalf("file hits = %+v total=%d", hits, total)
+	}
+
+	hits, total, err = s.LibraryHitsForPath(ctx, "/media/Movies/Foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(hits) != 1 || hits[0].Title != "Foo" {
+		t.Fatalf("folder must not swallow Foo Two: %+v total=%d", hits, total)
+	}
+
+	hits, total, err = s.LibraryHitsForPath(ctx, epPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(hits) != 1 || hits[0].Kind != "episode" || hits[0].Series != "Show" {
+		t.Fatalf("episode hits = %+v total=%d", hits, total)
+	}
+	if hits[0].Title != "S01E01 Pilot" {
+		t.Errorf("episode title = %q", hits[0].Title)
+	}
+}

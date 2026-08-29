@@ -2,8 +2,11 @@ package usenet
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -12,7 +15,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	par2lib "github.com/go-newsgroups/par2"
@@ -86,8 +88,6 @@ type Manager struct {
 	// SetSubscriptions changes that sum; runDownload captures the channel it
 	// acquired from so a swap never releases into the wrong one.
 	semaphore chan struct{}
-
-	nextGID atomic.Int64 // monotonic counter for "nzb-N" GID strings
 }
 
 // Config parameterises a Manager.
@@ -277,7 +277,7 @@ func (m *Manager) Start(ctx context.Context) {
 // AddNZB fetches the NZB at url, parses it, and starts a background download
 // in the manager's staging directory. name is the display name; when empty,
 // the X-DNZB-Name header value is used (or a generic fallback). Returns the
-// GID ("nzb-N") assigned to this download.
+// GID ("nzb-" + 16 hex chars) assigned to this download.
 func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) {
 	nzb, dnzb, err := fetchNZB(m.httpClient, url)
 	if err != nil {
@@ -290,19 +290,15 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 		name = "usenet-download"
 	}
 
-	gid := fmt.Sprintf("nzb-%d", m.nextGID.Add(1))
-
-	// SECURITY: key the per-download staging dir on the GID (nzb-<int>, no path
-	// separators or "..") — NOT sanitizeName(name). name is attacker-controlled
-	// (the raw Prowlarr release title / NZB X-DNZB-Name header) and sanitizeName
-	// only strips "/\\\x00", not "." / ".." — a name of exactly ".." would make
-	// this resolve to the PARENT of the staging dir, which Cancel would then
-	// os.RemoveAll. The GID is unique and traversal-free, so it's a safe path
-	// component and also gives each download its own dir (two same-named releases
-	// no longer collide, so cancelling one can't touch the other's files).
-	dlDir := filepath.Join(m.stagingDir, gid)
-	if err := os.MkdirAll(dlDir, 0o755); err != nil {
-		return "", fmt.Errorf("usenet: creating staging dir %s: %w", dlDir, err)
+	// Claude 2026-08-29: opaque nzb-<16 hex> GIDs, not a process-local nzb-N counter
+	// Reason: nextGID reset to 0 on every container restart, so AddNZB reused nzb-1
+	//   and ActiveByDownloadGID treated a new series as already grabbing (Furious
+	//   vs Ultimatum). Indexer/ntfy can fire on the NZB fetch before that guard.
+	// Troubleshooting: air-date logs "already being downloaded" with 0 grab rows
+	// Review if: GIDs are minted from a durable store (DB sequence) instead
+	gid, dlDir, err := m.allocateStaging()
+	if err != nil {
+		return "", err
 	}
 
 	var totalBytes int64
@@ -326,11 +322,55 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	}
 
 	m.mu.Lock()
+	if _, taken := m.downloads[gid]; taken {
+		m.mu.Unlock()
+		cancel()
+		_ = os.RemoveAll(dlDir)
+		return "", fmt.Errorf("usenet: gid %s already in flight", gid)
+	}
 	m.downloads[gid] = dl
 	m.mu.Unlock()
 
 	go m.runDownload(dlCtx, gid, dl, nzb)
 	return gid, nil
+}
+
+const (
+	// 8 random bytes → "nzb-" + 16 hex chars, a shape no historical nzb-1..n
+	// counter value can collide with.
+	nzbGIDBytes             = 8
+	allocateStagingAttempts = 8
+)
+
+// allocateStaging mints a GID and creates the staging directory it owns,
+// retrying with a fresh GID if that one is already on disk. Mkdir rather than
+// MkdirAll is deliberate: fs.ErrExist is the collision signal.
+//
+// SECURITY: the per-download dir is keyed on the GID, never on sanitizeName(name).
+// name is attacker-controlled (Prowlarr title / NZB X-DNZB-Name) and sanitizeName
+// only strips "/\\\x00", not "." / ".." — a name of exactly ".." would resolve to
+// the PARENT of the staging dir, which Cancel would then os.RemoveAll.
+func (m *Manager) allocateStaging() (gid, dlDir string, err error) {
+	if err := os.MkdirAll(m.stagingDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("usenet: creating staging dir %s: %w", m.stagingDir, err)
+	}
+	for i := 0; i < allocateStagingAttempts; i++ {
+		var raw [nzbGIDBytes]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", "", fmt.Errorf("usenet: generating gid: %w", err)
+		}
+		gid = "nzb-" + hex.EncodeToString(raw[:])
+		dlDir = filepath.Join(m.stagingDir, gid)
+
+		if err := os.Mkdir(dlDir, 0o755); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return "", "", fmt.Errorf("usenet: creating staging dir %s: %w", dlDir, err)
+		}
+		return gid, dlDir, nil
+	}
+	return "", "", fmt.Errorf("usenet: could not allocate a free nzb GID")
 }
 
 // Pause stops an active download by cancelling its context. The entry remains
@@ -359,8 +399,8 @@ func (m *Manager) Resume(_ string) error {
 // AND deletes the downloaded/partial file(s) it wrote to disk.
 //
 // File-deletion safety: unlike the torrent engine, every usenet download gets
-// its OWN per-download staging subdirectory, created in AddNZB as
-// filepath.Join(m.stagingDir, sanitizeName(name)) — that whole directory is
+// its OWN per-download staging subdirectory, created by allocateStaging as
+// filepath.Join(m.stagingDir, gid) — that whole directory is
 // owned by this one download, so os.RemoveAll of it is safe and complete (it
 // can't take a sibling download's files). Guarded to never remove the root
 // staging dir or an empty path. cancel() is called first so the download

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -997,4 +998,45 @@ func deadPort(t *testing.T) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	return port
+}
+
+var opaqueNZBGID = regexp.MustCompile(`^nzb-[0-9a-f]{16}$`)
+
+// Regression for the restart collision: a process-local nzb-1, nzb-2, … counter
+// reset on every container restart and reused the GID of an in-flight grab.
+func TestAllocateStaging_OpaqueAndUnique(t *testing.T) {
+	m := New(Config{StagingDir: t.TempDir()})
+	g1, d1, err := m.allocateStaging()
+	if err != nil {
+		t.Fatalf("first allocateStaging: %v", err)
+	}
+	g2, d2, err := m.allocateStaging()
+	if err != nil {
+		t.Fatalf("second allocateStaging: %v", err)
+	}
+	if g1 == g2 {
+		t.Fatalf("two allocations minted the same gid %q", g1)
+	}
+	for gid, dir := range map[string]string{g1: d1, g2: d2} {
+		if !opaqueNZBGID.MatchString(gid) {
+			t.Errorf("gid %q: want nzb- + 16 hex chars", gid)
+		}
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			t.Errorf("staging dir %s: %v", dir, err)
+		}
+	}
+}
+
+func TestAddNZB_ReturnsOpaqueGID(t *testing.T) {
+	p := makePayload(t, 1, 1024)
+	nzb := nzbServer(t, p)
+	m := New(Config{StagingDir: t.TempDir(), HTTPClient: nzb.Client()})
+	gid, err := m.AddNZB(context.Background(), nzb.URL, "Opaque GID")
+	if err != nil {
+		t.Fatalf("AddNZB: %v", err)
+	}
+	if !opaqueNZBGID.MatchString(gid) {
+		t.Errorf("AddNZB gid %q: want nzb- + 16 hex chars", gid)
+	}
+	m.Cancel(gid)
 }

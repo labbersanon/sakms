@@ -19,7 +19,9 @@ import {
   type Component,
   type JSX,
   For,
+  Match,
   Show,
+  Switch,
   createEffect,
   createResource,
   createSignal,
@@ -34,6 +36,14 @@ import {
   type OrganizeTabId,
   isOrganizeTabId,
 } from "./organizeTabs";
+import {
+  QUEUE_NAV_EXPANDED_KEY,
+  QUEUE_TABS,
+  queueHref,
+  readStoredQueueTab,
+  type QueueTabId,
+  isQueueTabId,
+} from "./queueTabs";
 import {
   MEDIA_NAV_EXPANDED_KEY,
   MEDIA_SECTIONS,
@@ -328,55 +338,57 @@ export const Sidebar: Component<{
       </button>
       <For each={NAV_ITEMS}>
         {(item) => (
-          <Show
-            when={item.href === "/organize"}
+          <Switch
             fallback={
-              <Show
-                when={item.group}
-                fallback={
-                  <A
-                    href={item.href}
-                    title={item.label}
-                    onClick={closeMobile}
-                    class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
-                    activeClass="!bg-white/10 !text-chrome-fg"
-                  >
-                    <span class="flex shrink-0 items-center">{item.icon({})}</span>
-                    <Show when={!props.collapsed()}>
-                      <span>{item.label}</span>
-                    </Show>
-                    <Show when={lock.isLocked(item.section)}>
-                      <span
-                        class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
-                        title={`${item.label} is locked`}
-                        aria-label={`${item.label} is locked`}
-                      >
-                        <LockGlyph />
-                      </span>
-                    </Show>
-                  </A>
-                }
+              <A
+                href={item.href}
+                title={item.label}
+                onClick={closeMobile}
+                class="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg"
+                activeClass="!bg-white/10 !text-chrome-fg"
               >
-                {(group) => (
-                  <MediaNavGroup
-                    root={group()}
-                    label={item.label}
-                    icon={item.icon}
-                    sections={mediaSections()}
-                    collapsed={props.collapsed}
-                    locked={lock.isLocked(group())}
-                    onCloseMobile={closeMobile}
-                  />
-                )}
-              </Show>
+                <span class="flex shrink-0 items-center">{item.icon({})}</span>
+                <Show when={!props.collapsed()}>
+                  <span>{item.label}</span>
+                </Show>
+                <Show when={lock.isLocked(item.section)}>
+                  <span
+                    class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+                    title={`${item.label} is locked`}
+                    aria-label={`${item.label} is locked`}
+                  >
+                    <LockGlyph />
+                  </span>
+                </Show>
+              </A>
             }
           >
-            <OrganizeNavGroup
-              collapsed={props.collapsed}
-              locked={lock.isLocked("organize")}
-              onCloseMobile={closeMobile}
-            />
-          </Show>
+            <Match when={item.href === "/organize"}>
+              <OrganizeNavGroup
+                collapsed={props.collapsed}
+                locked={lock.isLocked("organize")}
+                onCloseMobile={closeMobile}
+              />
+            </Match>
+            <Match when={item.href === "/queue"}>
+              <QueueNavGroup
+                collapsed={props.collapsed}
+                locked={lock.isLocked("queue")}
+                onCloseMobile={closeMobile}
+              />
+            </Match>
+            <Match when={item.group}>
+              <MediaNavGroup
+                root={item.group!}
+                label={item.label}
+                icon={item.icon}
+                sections={mediaSections()}
+                collapsed={props.collapsed}
+                locked={lock.isLocked(item.group!)}
+                onCloseMobile={closeMobile}
+              />
+            </Match>
+          </Switch>
         )}
       </For>
     </nav>
@@ -740,6 +752,187 @@ const OrganizeNavGroup: Component<{
                 }}
               >
                 {wf.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+};
+
+// Claude 2026-08-29: Queue collapsible group + icon-collapsed flyout.
+// Reason: queue-sidebar-nest — nested Downloads/Requests/Calendar.
+// Troubleshooting: parent click navigates to last ?tab= and expands children.
+// Review if: nested path routes replace query params.
+const QueueNavGroup: Component<{
+  collapsed: () => boolean;
+  locked: boolean;
+  onCloseMobile: () => void;
+}> = (props) => {
+  const loc = useLocation();
+  const navigate = useNavigate();
+  const [groupOpen, setGroupOpen] = createPersistedBool(
+    QUEUE_NAV_EXPANDED_KEY,
+    true,
+  );
+  const [flyoutOpen, setFlyoutOpen] = createSignal(false);
+  let flyoutTimer: ReturnType<typeof setTimeout> | undefined;
+  let rootEl: HTMLDivElement | undefined;
+
+  const onQueue = () =>
+    loc.pathname === "/queue" || loc.pathname === "/queue/";
+  const activeTab = (): QueueTabId => {
+    const q = new URLSearchParams(loc.search).get("tab");
+    return isQueueTabId(q) ? q : readStoredQueueTab();
+  };
+
+  const openFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(true);
+  };
+  const scheduleCloseFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    flyoutTimer = setTimeout(() => setFlyoutOpen(false), 150);
+  };
+  const closeFlyoutNow = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(false);
+  };
+
+  const goQueue = (tab?: QueueTabId) => {
+    const t = tab ?? readStoredQueueTab();
+    setGroupOpen(true);
+    navigate(queueHref(t));
+    closeFlyoutNow();
+    props.onCloseMobile();
+  };
+
+  createEffect(() => {
+    if (!flyoutOpen()) return;
+    const onDoc = (e: MouseEvent) => {
+      if (rootEl && !rootEl.contains(e.target as Node)) closeFlyoutNow();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeFlyoutNow();
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+  onCleanup(() => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+  });
+
+  const linkClass =
+    "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg";
+  const activeLink = "!bg-white/10 !text-chrome-fg";
+
+  return (
+    <div
+      ref={rootEl}
+      class="relative"
+      onMouseEnter={() => {
+        if (props.collapsed()) openFlyout();
+      }}
+      onMouseLeave={() => {
+        if (props.collapsed()) scheduleCloseFlyout();
+      }}
+    >
+      <button
+        type="button"
+        title="Queue"
+        aria-label="Queue"
+        aria-expanded={props.collapsed() ? flyoutOpen() : groupOpen()}
+        aria-haspopup={props.collapsed() ? "menu" : undefined}
+        onClick={() => {
+          if (props.collapsed()) {
+            if (flyoutOpen()) goQueue();
+            else openFlyout();
+            return;
+          }
+          goQueue();
+        }}
+        class={linkClass}
+        classList={{ [activeLink]: onQueue() }}
+      >
+        <span class="flex shrink-0 items-center">
+          <IconQueue />
+        </span>
+        <Show when={!props.collapsed()}>
+          <span class="flex-1 text-left">Queue</span>
+          <span
+            class="flex shrink-0 items-center text-chrome-fg/60"
+            onClick={(e) => {
+              e.stopPropagation();
+              setGroupOpen(!groupOpen());
+            }}
+            role="presentation"
+          >
+            <IconChevron collapsed={!groupOpen()} />
+          </span>
+        </Show>
+        <Show when={props.locked}>
+          <span
+            class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+            title="Queue is locked"
+            aria-label="Queue is locked"
+          >
+            <LockGlyph />
+          </span>
+        </Show>
+      </button>
+
+      <Show when={!props.collapsed() && groupOpen()}>
+        <div class="ml-3 flex flex-col gap-0.5 border-l border-chrome-fg/15 pl-2">
+          <For each={[...QUEUE_TABS]}>
+            {(tab) => (
+              <A
+                href={queueHref(tab.id)}
+                title={tab.label}
+                onClick={() => {
+                  setGroupOpen(true);
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onQueue() && activeTab() === tab.id,
+                }}
+              >
+                {tab.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+
+      <Show when={props.collapsed() && flyoutOpen()}>
+        <div
+          role="menu"
+          aria-label="Queue sections"
+          class="absolute left-full top-0 z-50 ml-1 min-w-[9rem] rounded-md border border-border bg-chrome p-1 shadow-lg"
+          onMouseEnter={openFlyout}
+          onMouseLeave={scheduleCloseFlyout}
+        >
+          <For each={[...QUEUE_TABS]}>
+            {(tab) => (
+              <A
+                href={queueHref(tab.id)}
+                role="menuitem"
+                title={tab.label}
+                onClick={() => {
+                  closeFlyoutNow();
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onQueue() && activeTab() === tab.id,
+                }}
+              >
+                {tab.label}
               </A>
             )}
           </For>

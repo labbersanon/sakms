@@ -64,6 +64,7 @@ import {
 import { tmdbPoster } from "../../api/discover";
 import { fetchUsenetAutoGrabEnabled } from "../../api/usenet";
 import { ErrorText, Muted, ScreenTabBar } from "../../components/ui";
+import { matchesQueueSearch } from "../queueSearch";
 import { cells, dayKey, monthRange, pad2 } from "./grid";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -101,6 +102,7 @@ export const Upcoming: Component<{
   year: number;
   month: number;
   display: "grid" | "list";
+  search?: string;
 }> = (props) => {
   const [content, setContent] = createSignal<UpcomingContent>("movies");
 
@@ -129,13 +131,28 @@ export const Upcoming: Component<{
   // dialog once already (see CLAUDE.md's GrabDialog note). Gate every read on
   // state === "ready" rather than on a truthiness check.
   const loaded = () => (data.state === "ready" ? data() : undefined);
+
+  const query = () => props.search ?? "";
   const movies = (): UpcomingMovieEntry[] => {
     const d = loaded();
-    return d && d.kind === "movies" ? d.movies : [];
+    if (!d || d.kind !== "movies") return [];
+    return d.movies.filter((m) =>
+      matchesQueueSearch(query(), m.title, m.releaseKind, "movies", "Movies"),
+    );
   };
   const series = (): UpcomingSeriesEntry[] => {
     const d = loaded();
-    return d && d.kind === "series" ? d.series : [];
+    if (!d || d.kind !== "series") return [];
+    return d.series.filter((e) =>
+      matchesQueueSearch(
+        query(),
+        e.seriesTitle,
+        e.episodeTitle,
+        episodeCode(e),
+        "series",
+        "Series",
+      ),
+    );
   };
 
   const movieBuckets = createMemo(() =>

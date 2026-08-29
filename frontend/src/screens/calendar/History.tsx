@@ -55,6 +55,7 @@ import {
 import { type Grab, fetchGrabs } from "../../api/grab";
 import type { Mode } from "../../api/discover";
 import { ErrorText, ModeTabs, Muted } from "../../components/ui";
+import { matchesQueueSearch } from "../queueSearch";
 import { cells, dayKey, monthRange } from "./grid";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -98,6 +99,7 @@ export const History: Component<{
   year: number;
   month: number;
   display: "grid" | "list";
+  search?: string;
 }> = (props) => {
   const [mode, setMode] = createSignal<Mode>("movies");
   const [grabs] = createResource(mode, (m) => fetchGrabs(m));
@@ -111,12 +113,23 @@ export const History: Component<{
   // Gate on the state, never on a truthiness check.
   const loaded = () => (grabs.state === "ready" ? grabs() : undefined);
 
-  // completed is the client-side filter (§2.2). Order is left as the endpoint
-  // returned it (created_at DESC) — the list view must not re-sort it. Every
-  // downstream memo (buckets, monthGrabs) derives from THIS, so routing it
-  // through loaded() is what keeps all three reads guarded.
+  // completed is the client-side filter (§2.2) — the status whitelist plus
+  // Calendar's search query. Order is left as the endpoint returned it
+  // (created_at DESC) — the list view must not re-sort it. Every downstream
+  // memo (buckets, monthGrabs) derives from THIS, so routing it through
+  // loaded() is what keeps all three reads guarded.
   const completed = createMemo(() =>
-    (loaded() ?? []).filter((g) => HISTORY_STATUSES.has(g.status)),
+    (loaded() ?? []).filter(
+      (g) =>
+        HISTORY_STATUSES.has(g.status) &&
+        matchesQueueSearch(
+          props.search ?? "",
+          g.title,
+          g.status,
+          g.mode,
+          MODE_LABELS[g.mode],
+        ),
+    ),
   );
 
   // buckets keys the filtered grabs by their UTC YYYY-MM-DD grab day. Memoized

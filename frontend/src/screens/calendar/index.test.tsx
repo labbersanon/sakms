@@ -75,6 +75,7 @@ describe("Calendar — view switch", () => {
     expect(screen.getByRole("button", { name: "Upcoming" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Grid" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "List" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Search")).toBeInTheDocument();
 
     // History is the default view: its three-mode ModeTabs is mounted.
     expect(await screen.findByRole("button", { name: "Adult" })).toBeInTheDocument();

@@ -15,6 +15,7 @@ import {
   For,
   Show,
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   onCleanup,
@@ -31,6 +32,7 @@ import {
 } from "../api/downloads";
 import { Button, ErrorText, Muted } from "../components/ui";
 import { useBulkSelection } from "./workflowHooks";
+import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
 
 // formatBps renders a bytes/sec value: <1024 → "X B/s", <1MB → "X KB/s",
 // else "X.X MB/s" (same scale as Dashboard's formatBps).
@@ -184,6 +186,7 @@ const DownloadRow: Component<{
 
 export const Downloads: Component = () => {
   const [downloads, setDownloads] = createSignal<Download[]>([]);
+  const [search, setSearch] = createSignal("");
   const [reconnecting, setReconnecting] = createSignal(false);
   const [actionError, setActionError] = createSignal<string | null>(null);
   // hasData tracks whether at least one stream frame has arrived, so the empty
@@ -222,6 +225,12 @@ export const Downloads: Component = () => {
 
   onCleanup(() => es?.close());
 
+  const visible = createMemo(() =>
+    downloads().filter((d) =>
+      matchesQueueSearch(search(), d.filename, d.status, d.protocol, d.errorMessage),
+    ),
+  );
+
   // runAction fires a mutating call and surfaces its error; the SSE stream
   // reflects the resulting queue change on the next frame, so there's nothing
   // to optimistically update here.
@@ -234,7 +243,9 @@ export const Downloads: Component = () => {
     }
   };
 
-  const gids = (): string[] => downloads().map((d) => d.gid);
+  // Scoped to the search-visible rows: a row the operator cannot see is never
+  // part of "Select all" or a bulk cancel.
+  const gids = (): string[] => visible().map((d) => d.gid);
   const allSelected = (): boolean => {
     const all = gids();
     return all.length > 0 && all.every((g) => selection.has(g));
@@ -275,6 +286,14 @@ export const Downloads: Component = () => {
 
   return (
     <div>
+      <div class="mb-3">
+        <QueueSearchField
+          id="downloads-search"
+          value={search()}
+          onInput={setSearch}
+          placeholder="Search filename, status…"
+        />
+      </div>
       {/* Global pause control + banner live OUTSIDE the queue-length gate below
           on purpose: their whole point is blocking NEW grabs, which is exactly
           when the live queue may be empty. */}
@@ -312,27 +331,32 @@ export const Downloads: Component = () => {
           when={downloads().length > 0}
           fallback={<Muted>No active downloads</Muted>}
         >
-          <label class="mb-2 flex items-center gap-2 text-xs text-muted">
-            <input
-              type="checkbox"
-              aria-label="Select all"
-              checked={allSelected()}
-              onChange={toggleSelectAll}
-            />
-            Select all
-          </label>
-          <ul class="flex flex-col gap-2">
-            <For each={downloads()}>
-              {(dl) => (
-                <DownloadRow
-                  dl={dl}
-                  onAction={runAction}
-                  selected={selection.has(dl.gid)}
-                  onToggle={() => selection.toggle(dl.gid)}
-                />
-              )}
-            </For>
-          </ul>
+          <Show
+            when={visible().length > 0}
+            fallback={<Muted>No downloads match this search.</Muted>}
+          >
+            <label class="mb-2 flex items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                aria-label="Select all"
+                checked={allSelected()}
+                onChange={toggleSelectAll}
+              />
+              Select all
+            </label>
+            <ul class="flex flex-col gap-2">
+              <For each={visible()}>
+                {(dl) => (
+                  <DownloadRow
+                    dl={dl}
+                    onAction={runAction}
+                    selected={selection.has(dl.gid)}
+                    onToggle={() => selection.toggle(dl.gid)}
+                  />
+                )}
+              </For>
+            </ul>
+          </Show>
         </Show>
       </Show>
     </div>

@@ -43,9 +43,12 @@ const stubGrabs = (byMode: Partial<Record<string, Grab[]>>) => {
 
 // The whole suite views July 2026, which is the month every fixture's
 // createdAt falls in.
-const renderHistory = (display: "grid" | "list" = "grid") =>
+const renderHistory = (
+  display: "grid" | "list" = "grid",
+  search = "",
+) =>
   render(() => (
-    <History year={2026} month={6} display={display} />
+    <History year={2026} month={6} display={display} search={search} />
   ));
 
 // dayCell returns the month-grid cell for one day of July 2026. Cells are the
@@ -123,6 +126,20 @@ describe("History — the completed/imported filter", () => {
 
     expect(await screen.findByText("Actually Landed")).toBeInTheDocument();
     expect(screen.queryByText("Unreleased Blockbuster")).not.toBeInTheDocument();
+  });
+
+  it("filters completed grabs by the search prop (title / status)", async () => {
+    stubGrabs({
+      movies: [
+        grab({ id: 1, title: "Alpha Landed", status: "imported" }),
+        grab({ id: 2, title: "Beta Landed", status: "completed" }),
+      ],
+    });
+
+    renderHistory("list", "alpha");
+
+    expect(await screen.findByText("Alpha Landed")).toBeInTheDocument();
+    expect(screen.queryByText("Beta Landed")).not.toBeInTheDocument();
   });
 
   it("renders a completed grab as well as an imported one", async () => {

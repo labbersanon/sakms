@@ -78,6 +78,37 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("Downloads — search", () => {
+  it("filters the live queue by filename and status", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({ gid: "g1", filename: "Alpha.mkv", status: "active" }),
+      dl({ gid: "g2", filename: "Beta.mkv", status: "paused" }),
+    ]);
+
+    expect(await screen.findByText("Alpha.mkv")).toBeInTheDocument();
+    expect(screen.getByText("Beta.mkv")).toBeInTheDocument();
+
+    const search = screen.getByLabelText("Search");
+    fireEvent.input(search, { target: { value: "beta" } });
+    expect(screen.getByText("Beta.mkv")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha.mkv")).not.toBeInTheDocument();
+
+    fireEvent.input(search, { target: { value: "active" } });
+    expect(screen.getByText("Alpha.mkv")).toBeInTheDocument();
+    expect(screen.queryByText("Beta.mkv")).not.toBeInTheDocument();
+
+    fireEvent.input(search, { target: { value: "zzz-nope" } });
+    expect(screen.getByText("No downloads match this search.")).toBeInTheDocument();
+  });
+});
+
 describe("Downloads — single cancel (confirm reflects file deletion)", () => {
   it("cancels via DELETE only after a confirm that mentions deleting files", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);

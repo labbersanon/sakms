@@ -127,7 +127,7 @@ describe("Requests", () => {
     expect(screen.getByText("Queued Movie")).toBeInTheDocument();
   });
 
-  it("mode chips follow All, Movies, Series, Adult order below which Status sits", async () => {
+  it("mode chips follow All, Movies, Series, Adult; Search sits left of Status", async () => {
     stubRequests({
       items: [
         item({ mode: "adult", title: "A Scene", tmdbId: 0, status: "In Library" }),
@@ -145,11 +145,50 @@ describe("Requests", () => {
       .filter((t) => t === "All" || t === "Movies" || t === "Series" || t === "Adult");
     expect(modeButtons).toEqual(["All", "Movies", "Series", "Adult"]);
 
+    const search = screen.getByLabelText("Search");
     const status = screen.getByLabelText("Status");
     expect(
       status.compareDocumentPosition(screen.getByRole("button", { name: "Movies" })) &
         Node.DOCUMENT_POSITION_PRECEDING,
     ).toBeTruthy();
+    // Search precedes Status in document order (left of Status on sm+).
+    expect(
+      status.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+  });
+
+  it("filters rows by search across title, status, and mode label", async () => {
+    stubRequests({
+      items: [
+        item({ title: "Owned Movie", status: "In Library" }),
+        item({
+          mode: "series",
+          title: "Queued Show",
+          tmdbId: 2,
+          status: "Pending",
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Owned Movie");
+
+    const search = screen.getByLabelText("Search");
+    fireEvent.input(search, { target: { value: "queued" } });
+    expect(screen.getByText("Queued Show")).toBeInTheDocument();
+    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
+
+    fireEvent.input(search, { target: { value: "pending" } });
+    expect(screen.getByText("Queued Show")).toBeInTheDocument();
+    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
+
+    fireEvent.input(search, { target: { value: "movies" } });
+    expect(screen.getByText("Owned Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Queued Show")).not.toBeInTheDocument();
+
+    fireEvent.input(search, { target: { value: "" } });
+    expect(screen.getByText("Owned Movie")).toBeInTheDocument();
+    expect(screen.getByText("Queued Show")).toBeInTheDocument();
   });
 
   // Base rows for the "Has Missing Episodes" cases: a movie and a series with

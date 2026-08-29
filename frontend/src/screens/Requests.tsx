@@ -14,8 +14,9 @@
 // Status honesty: "Pending" is a queued grab awaiting first search/download;
 // live transfer progress lives on the Downloads tab, so there is no
 // "Downloading" filter option (rare Downloading badges still appear under All).
-// Mode chips follow MODES order (All, Movies, Series, Adult). Status is a
-// dropdown BELOW the mode chips. "Has Missing Episodes" stays a boolean chip.
+// Mode chips follow MODES order (All, Movies, Series, Adult). Below them: a
+// row with Search (left) and Status dropdown (right). "Has Missing Episodes"
+// stays a boolean chip under that row. Search is local to this tab.
 
 import {
   type Component,
@@ -33,10 +34,11 @@ import {
   fetchRequests,
 } from "../api/requests";
 import type { DiscoverItem } from "../api/discover";
-import { Button, ErrorText, MODES, Muted, SelectField } from "../components/ui";
+import { Button, ErrorText, FILTER_BAR_FIELDS_CLASS, MODES, Muted, SelectField } from "../components/ui";
 import { type GrabTarget, GrabDialog } from "./discover/shared";
 import { type DetailTarget, DetailPopup } from "./discover/DetailPopup";
 import { useBulkSelection } from "./workflowHooks";
+import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
 
 type RequestItem = RequestStatusResponse["items"][number];
 
@@ -153,6 +155,7 @@ function statusBlurb(item: RequestItem): string | null {
 
 export const Requests: Component = () => {
   const [data, { refetch }] = createResource(fetchRequests);
+  const [search, setSearch] = createSignal("");
   const [statusFilter, setStatusFilter] = createSignal<string | null>(null);
   const [modeFilter, setModeFilter] = createSignal<string | null>(null);
   const [missingOnly, setMissingOnly] = createSignal(false);
@@ -173,12 +176,18 @@ export const Requests: Component = () => {
   });
 
   const filtered = () =>
-    items().filter(
-      (i) =>
-        (statusFilter() === null || i.status === statusFilter()) &&
-        (modeFilter() === null || i.mode === modeFilter()) &&
-        (!missingOnly() || i.missingCount > 0),
-    );
+    items().filter((i) => {
+      if (statusFilter() !== null && i.status !== statusFilter()) return false;
+      if (modeFilter() !== null && i.mode !== modeFilter()) return false;
+      if (missingOnly() && i.missingCount <= 0) return false;
+      return matchesQueueSearch(
+        search(),
+        i.title,
+        i.status,
+        i.mode,
+        MODE_LABELS[i.mode],
+      );
+    });
 
   const openRow = (item: RequestItem) => {
     const target = detailTargetFor(item);
@@ -246,15 +255,23 @@ export const Requests: Component = () => {
             labelOf={(m) => MODE_LABELS[m] ?? m}
           />
         </Show>
-        <SelectField
-          id="requests-filter-status"
-          label="Status"
-          value={statusFilter() ?? ""}
-          onChange={(v) => setStatusFilter(v === "" ? null : v)}
-        >
-          <option value="">All</option>
-          <For each={statuses()}>{(s) => <option value={s}>{s}</option>}</For>
-        </SelectField>
+        <div class={FILTER_BAR_FIELDS_CLASS}>
+          <QueueSearchField
+            id="requests-search"
+            value={search()}
+            onInput={setSearch}
+            placeholder="Search titles, status, mode…"
+          />
+          <SelectField
+            id="requests-filter-status"
+            label="Status"
+            value={statusFilter() ?? ""}
+            onChange={(v) => setStatusFilter(v === "" ? null : v)}
+          >
+            <option value="">All</option>
+            <For each={statuses()}>{(s) => <option value={s}>{s}</option>}</For>
+          </SelectField>
+        </div>
         <div class="flex flex-wrap gap-1">
           <button
             type="button"

@@ -44,6 +44,7 @@
 import { batch, type Component, createSignal, Show } from "solid-js";
 import { Button, ScreenTabBar, type TabDef } from "../../components/ui";
 import { createPersistedString } from "../AppShell";
+import { QueueSearchField } from "../queueSearch";
 import { History } from "./History";
 import { Upcoming } from "./Upcoming";
 
@@ -80,6 +81,10 @@ export const Calendar: Component = () => {
       ? (storedDisplay() as "grid" | "list")
       : "grid";
 
+  // Not persisted: unmounting with Queue's <Show> clears the query, so it
+  // never leaks into another Queue tab.
+  const [search, setSearch] = createSignal("");
+
   // The month is NOT persisted, deliberately: reopening Calendar should show
   // the current month, not whatever month the operator last browsed to.
   const now = new Date();
@@ -107,6 +112,14 @@ export const Calendar: Component = () => {
 
   return (
     <div>
+      <div class="mb-3">
+        <QueueSearchField
+          id="calendar-search"
+          value={search()}
+          onInput={setSearch}
+          placeholder="Search titles, status, mode…"
+        />
+      </div>
       <ScreenTabBar
         tabs={VIEW_TABS}
         current={view}
@@ -138,10 +151,10 @@ export const Calendar: Component = () => {
           fetching, and Upcoming's movies endpoint costs up to 22 TMDB calls per
           month view. */}
       <Show when={view() === "history"}>
-        <History year={year()} month={month()} display={display()} />
+        <History year={year()} month={month()} display={display()} search={search()} />
       </Show>
       <Show when={view() === "upcoming"}>
-        <Upcoming year={year()} month={month()} display={display()} />
+        <Upcoming year={year()} month={month()} display={display()} search={search()} />
       </Show>
     </div>
   );

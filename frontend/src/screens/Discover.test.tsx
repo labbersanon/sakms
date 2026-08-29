@@ -108,7 +108,14 @@ const mainstreamDefaults = (url: string): Response | null => {
   // test meaning to exercise the grid would pass against the old surface.
   if (url.includes("/discover/detail"))
     return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
-  if (url.includes("/discover/genres")) return null;
+  // Genre list for MainstreamFilterSortBar — MUST precede the generic
+  // "/discover" match. Returning null here forces the error UI across every
+  // Discover test; a small healthy list keeps the dropdown on the success path.
+  if (url.includes("/discover/genres"))
+    return jsonResponse([
+      { id: 28, name: "Action" },
+      { id: 35, name: "Comedy" },
+    ]);
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });

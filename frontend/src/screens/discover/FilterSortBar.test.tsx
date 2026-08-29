@@ -208,6 +208,31 @@ describe("MainstreamFilterSortBar", () => {
     expect(screen.queryByText("All genres")).not.toBeInTheDocument();
   });
 
+  it("Retry reloads genres after a failed fetch", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (!url.includes("/api/modes/movies/discover/genres")) {
+          throw new Error("unexpected fetch: " + url);
+        }
+        calls++;
+        if (calls === 1) {
+          return new Response("tmdb down", { status: 502 });
+        }
+        return jsonResponse([{ id: 28, name: "Action" }]);
+      }),
+    );
+    renderBar();
+    await waitFor(() =>
+      expect(screen.getByText("Retry")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("Retry"));
+    expect(await screen.findByText("Action")).toBeInTheDocument();
+    expect(screen.queryByText(/Could not load genres/i)).not.toBeInTheDocument();
+  });
+
   it("fetches genres for lockedContentType even when filters differ", async () => {
     const fn = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

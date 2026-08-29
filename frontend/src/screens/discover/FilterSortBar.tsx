@@ -169,6 +169,9 @@ export const MainstreamFilterSortBar: Component<{
             Genre
           </label>
           <Switch>
+            {/* loading before error: resource.error stays set until the retry
+                completes, so reversing these arms would freeze on the error
+                UI for the whole in-flight refetch. */}
             <Match when={genres.loading}>
               <select id="discover-filter-genre" class={SELECT_CLASS} disabled>
                 <option>Loading genres…</option>

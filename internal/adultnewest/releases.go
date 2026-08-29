@@ -230,11 +230,9 @@ func (s *ReleaseStore) Insert(ctx context.Context, m MatchedRelease) error {
 			performers = CASE WHEN (adult_newest_releases.performers IS NULL OR adult_newest_releases.performers = '' OR adult_newest_releases.performers = '[]')
 			                       AND excluded.performers IS NOT NULL AND excluded.performers != '' AND excluded.performers != '[]'
 			                  THEN excluded.performers ELSE adult_newest_releases.performers END,
-			tags_resolved = CASE WHEN excluded.tags_resolved = 1 THEN 1
-			                     WHEN (adult_newest_releases.genres IS NULL OR adult_newest_releases.genres = '' OR adult_newest_releases.genres = '[]')
-			                          AND excluded.genres IS NOT NULL AND excluded.genres != '' AND excluded.genres != '[]'
-			                     THEN 1
-			                     ELSE adult_newest_releases.tags_resolved END
+			-- excluded.tags_resolved is 1 iff incoming genres are non-empty, so
+			-- GREATEST is enough (the old second WHEN was unreachable).
+			tags_resolved = GREATEST(adult_newest_releases.tags_resolved, excluded.tags_resolved)
 	`, string(m.RowType), m.EntityID, m.EntitySource, m.EntityTitle, m.EntityStudio, m.EntityImage, m.EntityDate,
 		m.EntityDurationSeconds, m.FirstSeenReleaseTitle, string(genresJSON), string(performersJSON), m.Gender,
 		m.DownloadURL, m.DownloadProtocol, m.SizeBytes, m.BrowseConfirmed, m.FeedID, m.FeedItemKey, m.LastConfirmedSeen, tagsResolved)

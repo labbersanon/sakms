@@ -88,6 +88,16 @@ const (
 	// airDateRetryBackoff is what bounds that accumulated stock.
 	maxAirDateGrabsPerCycle = 20
 
+	// maxAirDateGrabsPerSeriesPerCycle bounds how many of a cycle's slots any
+	// ONE series may consume. Without it, oldest-first ordering lets a
+	// multi-thousand-episode classic (Red Skelton / Three Stooges) exhaust the
+	// global cap every cycle, so a newly monitored modern series never cues.
+	//
+	// It is only safe because monitor-on kicks an immediate series-scoped
+	// search (seriesbackfill.go): dropping a single-series backlog from 20 to 5
+	// per background cycle without that kick would be a net regression.
+	maxAirDateGrabsPerSeriesPerCycle = 5
+
 	// airDateRetryReason is written by the backoff sweep. It is BOTH the
 	// operator-facing explanation on the Requests screen AND the
 	// "already-backed-off this cycle" flag: a row carrying it is skipped by the
@@ -278,15 +288,28 @@ type airDateCandidate struct {
 	episode library.Episode
 }
 
-// dispatchAirDateGrabs runs detection over the freshly-synced catalog and
-// dispatches up to maxAirDateGrabsPerCycle of the result, oldest air date
-// first.
+// dispatchAirDateGrabs is the background cycle's entry point: detection over
+// the freshly-synced catalog, dispatching oldest air date first under the
+// cycle's global and per-series caps.
 //
 // The ordering (air date, then series title, season, episode) is what makes a
 // backlog drain predictably instead of the same 20 rows being retried every
 // cycle, and it is what makes the cap deterministic across runs.
 func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Session,
 	libStore *library.Store, seriesList []library.Series, excluded map[string]bool, now time.Time) {
+	dispatchAirDateGrabsScoped(ctx, deps, sess, libStore, seriesList, nil,
+		maxAirDateGrabsPerCycle, maxAirDateGrabsPerSeriesPerCycle, excluded, now)
+}
+
+// dispatchAirDateGrabsScoped is the shared dispatcher for the background
+// air-date cycle and the monitor-on series backfill.
+//
+// seasons, when non-nil, restricts candidates to those season numbers (the
+// seasons the operator just turned on). limit is the total attempt budget;
+// perSeriesLimit caps attempts per series ID (0 = uncapped per series).
+func dispatchAirDateGrabsScoped(ctx context.Context, deps AutoGrabDeps, sess *mode.Session,
+	libStore *library.Store, seriesList []library.Series, seasons map[int]bool,
+	limit, perSeriesLimit int, excluded map[string]bool, now time.Time) {
 
 	today := now.UTC().Format("2006-01-02")
 
@@ -299,6 +322,18 @@ func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Ses
 		}
 		if len(monitored) == 0 {
 			continue
+		}
+		if seasons != nil {
+			filtered := map[int]bool{}
+			for sn, on := range monitored {
+				if on && seasons[sn] {
+					filtered[sn] = true
+				}
+			}
+			monitored = filtered
+			if len(monitored) == 0 {
+				continue
+			}
 		}
 		missing, err := libStore.MissingEpisodes(ctx, series.ID)
 		if err != nil {
@@ -332,11 +367,15 @@ func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Ses
 	// so the cycle does not do an N+1, and a per-dispatch re-read would
 	// reintroduce exactly that, up to 20× for one series.
 	rechecked := map[int64]map[int]bool{}
+	perSeries := map[int64]int{}
 
 	attempts := 0
 	for _, c := range candidates {
-		if attempts >= maxAirDateGrabsPerCycle {
+		if attempts >= limit {
 			return
+		}
+		if perSeriesLimit > 0 && perSeries[c.series.ID] >= perSeriesLimit {
+			continue
 		}
 		// An operator who excluded this title from the Requests worklist has
 		// said "stop working on this" — identical treatment retryDueGrabs gives
@@ -373,6 +412,7 @@ func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Ses
 		}
 
 		attempts++
+		perSeries[c.series.ID]++
 		out, err := RunAutoGrab(ctx, deps, sess, AutoGrabRequest{
 			Mode: mode.Series, Title: c.series.Title,
 			TMDBID: c.series.TMDBID, TVDBID: c.series.TVDBID,
@@ -825,6 +865,15 @@ type seasonCatalog struct {
 	scStore    *serviceconn.Store
 	settings   *settings.Store
 	lib        *library.Store
+	// Claude 2026-08-29: monitor-on immediate backfill (seriesbackfill.go).
+	// Reason: enabling monitoring only wrote flags; the shared air-date cycle
+	//   can starve new series behind classic backlogs.
+	// Troubleshooting: monitor on → no grabs until next cycle / never.
+	// Review if: air-date cycle is per-series fair without a kick, or monitor
+	//   enable gains a synchronous search response.
+	// Related files: internal/api/seriesbackfill.go
+	// May be nil, in which case kick is a no-op.
+	backfill *seriesBackfill
 }
 
 // states returns seriesID's merged season list, ascending.
@@ -1022,7 +1071,10 @@ func listSeasonStatesByTMDBHandler(catalog seasonCatalog) http.HandlerFunc {
 //
 // Un-monitoring is NOT a pure flag write: it also cancels the season's queued
 // air-date retries in the same request (see cancelAirDateRetriesForSeasons).
-func putSeasonMonitoredHandler(libStore *library.Store, grabsStore *grabs.Store) http.HandlerFunc {
+// Monitoring kicks an immediate series-scoped backfill for already-aired
+// missing episodes (see seriesBackfill) — the flag write alone does not grab.
+func putSeasonMonitoredHandler(catalog seasonCatalog, grabsStore *grabs.Store) http.HandlerFunc {
+	libStore := catalog.lib
 	return func(w http.ResponseWriter, r *http.Request) {
 		seriesID, ok := seriesIDPathValue(w, r)
 		if !ok {
@@ -1056,6 +1108,8 @@ func putSeasonMonitoredHandler(libStore *library.Store, grabsStore *grabs.Store)
 		}
 		if !req.Monitored {
 			cancelAirDateRetriesForSeasons(ctx, grabsStore, series.TMDBID, map[int]bool{seasonNumber: true}, time.Now())
+		} else {
+			catalog.backfill.kick(series.ID, map[int]bool{seasonNumber: true})
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -1067,8 +1121,8 @@ func putSeasonMonitoredHandler(libStore *library.Store, grabsStore *grabs.Store)
 //
 // It exists because an absent row means unmonitored, so an operator adopting
 // this feature on a large library would otherwise click a toggle per season. It
-// is one round trip, not a queue-wide action, and it still only writes a
-// monitored flag — it grabs nothing.
+// is one round trip, not a queue-wide action. Monitoring also kicks an
+// immediate backfill for already-aired missing episodes of the seasons written.
 //
 // The season set comes from seasonCatalog.states rather than from episode rows
 // alone, and NOT from bare ListSeasonStates either. It must be the exact same
@@ -1105,7 +1159,8 @@ func putAllSeasonsMonitoredHandler(catalog seasonCatalog, grabsStore *grabs.Stor
 		// inside the loop would leave those seasons un-monitored but still
 		// retrying, the exact orphan state cancelAirDateRetriesForSeasons exists
 		// to prevent. A DB transaction would not help: the cancellation is
-		// grabs-store work, outside any library-store transaction.
+		// grabs-store work, outside any library-store transaction. The same
+		// applies to monitor-on backfill: seasons that landed still get kicked.
 		touched := map[int]bool{}
 		var writeErr error
 		for _, st := range states {
@@ -1117,6 +1172,8 @@ func putAllSeasonsMonitoredHandler(catalog seasonCatalog, grabsStore *grabs.Stor
 		}
 		if !req.Monitored {
 			cancelAirDateRetriesForSeasons(ctx, grabsStore, series.TMDBID, touched, time.Now())
+		} else {
+			catalog.backfill.kick(series.ID, touched)
 		}
 		if writeErr != nil {
 			http.Error(w, writeErr.Error(), http.StatusInternalServerError)
@@ -1161,6 +1218,8 @@ func putSeasonMonitoredByTMDBHandler(catalog seasonCatalog, grabsStore *grabs.St
 		}
 		if !req.Monitored {
 			cancelAirDateRetriesForSeasons(ctx, grabsStore, series.TMDBID, map[int]bool{seasonNumber: true}, time.Now())
+		} else {
+			catalog.backfill.kick(series.ID, map[int]bool{seasonNumber: true})
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -1203,6 +1262,8 @@ func putAllSeasonsMonitoredByTMDBHandler(catalog seasonCatalog, grabsStore *grab
 		}
 		if !req.Monitored {
 			cancelAirDateRetriesForSeasons(ctx, grabsStore, series.TMDBID, touched, time.Now())
+		} else {
+			catalog.backfill.kick(series.ID, touched)
 		}
 		if writeErr != nil {
 			http.Error(w, writeErr.Error(), http.StatusInternalServerError)

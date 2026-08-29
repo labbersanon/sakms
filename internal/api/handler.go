@@ -200,10 +200,21 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// as the Discover detail popup's availability check, and deliberately shared
 	// by both routes so the "All seasons" switch acts on exactly what the panel
 	// shows (see seasonCatalog's doc).
-	seasons := seasonCatalog{httpClient: httpClient, connStore: connStore, scStore: scStore, settings: settingsStore, lib: libStore}
+	// Claude 2026-08-29: wire seriesBackfill into seasonCatalog so monitor-on
+	//   kicks an immediate already-aired search (see seriesbackfill.go).
+	// Reason: NewMux already carries dl/nzb/whStore; building here avoids a
+	//   signature change (discoverRefreshDeps precedent).
+	// Troubleshooting: monitor enable returned 204 but no grabs until cycle.
+	// Review if: excludes.Store is threaded into NewMux and should be honored.
+	seasons := seasonCatalog{
+		httpClient: httpClient, connStore: connStore, scStore: scStore,
+		settings: settingsStore, lib: libStore,
+		backfill: newSeriesBackfill(httpClient, connStore, scStore, settingsStore,
+			grabsStore, whStore, nzb, adultNewestReleaseStore, dl, libStore),
+	}
 	mux.HandleFunc("GET /api/modes/series/library/{seriesID}/seasons", listSeasonStatesHandler(seasons))
 	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/seasons/monitored", putAllSeasonsMonitoredHandler(seasons, grabsStore))
-	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/seasons/{seasonNumber}/monitored", putSeasonMonitoredHandler(libStore, grabsStore))
+	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/seasons/{seasonNumber}/monitored", putSeasonMonitoredHandler(seasons, grabsStore))
 	// Claude 2026-08-19: TMDB-keyed aliases so Discover can read/write the
 	// same library_season_monitored rows Library uses (library series id vs
 	// TMDB id). All-seasons is PUT on the collection, not

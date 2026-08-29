@@ -91,6 +91,9 @@ func fakeTMDBSeries(t *testing.T, env *airDateEnv, seasons map[int][]fakeTMDBEpi
 		writeFakeTMDBJSON(w, map[string]any{"tvdb_id": 4321})
 	})
 	mux.HandleFunc("GET /tv/{id}/season/{season}", func(w http.ResponseWriter, r *http.Request) {
+		if hold := env.enterTMDBSeason(); hold != nil {
+			<-hold
+		}
 		season, err := strconv.Atoi(r.PathValue("season"))
 		if err != nil {
 			http.Error(w, "bad season", http.StatusBadRequest)
@@ -166,10 +169,18 @@ type airDateEnv struct {
 	prowlarrMu   sync.Mutex
 	prowlarrBody string
 
+	// tmdbMu guards the fake TMDB's knobs below.
+	tmdbMu sync.Mutex
 	// tvDetailsFail makes the fake TMDB's /tv/{id} return 500 while the other
 	// two endpoints keep working — a transient discovery-half failure.
-	tmdbMu        sync.Mutex
-	tvDetailsFail bool
+	tvDetailsFail  bool
+	tmdbSeasonHits int
+	// tmdbSeasonGate, when non-nil, blocks each /season/{n} handler until closed.
+	// Used by coalescing tests so a second kick lands while the first run is in flight.
+	tmdbSeasonGate <-chan struct{}
+
+	backfill     *seriesBackfill
+	backfillIdle chan struct{}
 }
 
 func (e *airDateEnv) setProwlarrBody(body string) {
@@ -188,6 +199,39 @@ func (e *airDateEnv) tvDetailsFailing() bool {
 	e.tmdbMu.Lock()
 	defer e.tmdbMu.Unlock()
 	return e.tvDetailsFail
+}
+
+// enterTMDBSeason counts one /season/{n} hit and returns the gate the handler
+// must block on, nil unless a test set one.
+func (e *airDateEnv) enterTMDBSeason() <-chan struct{} {
+	e.tmdbMu.Lock()
+	defer e.tmdbMu.Unlock()
+	e.tmdbSeasonHits++
+	return e.tmdbSeasonGate
+}
+
+func (e *airDateEnv) tmdbSeasonHitCount() int {
+	e.tmdbMu.Lock()
+	defer e.tmdbMu.Unlock()
+	return e.tmdbSeasonHits
+}
+
+func (e *airDateEnv) setTMDBSeasonGate(ch <-chan struct{}) {
+	e.tmdbMu.Lock()
+	defer e.tmdbMu.Unlock()
+	e.tmdbSeasonGate = ch
+}
+
+func (e *airDateEnv) waitBackfillIdle(t *testing.T) {
+	t.Helper()
+	if e.backfill == nil {
+		return
+	}
+	select {
+	case <-e.backfillIdle:
+	case <-time.After(15 * time.Second):
+		t.Fatal("series backfill did not go idle within 15s")
+	}
 }
 
 func newAirDateEnv(t *testing.T, seasons map[int][]fakeTMDBEpisode, prowlarrBody string) *airDateEnv {
@@ -235,6 +279,30 @@ func newAirDateEnv(t *testing.T, seasons map[int][]fakeTMDBEpisode, prowlarrBody
 		return mode.Build(ctx, connStore, scStore, settingsStore, testHTTPClient(), dl, m)
 	}
 	env.deps = AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+	idle := make(chan struct{}, 16)
+	bf := &seriesBackfill{
+		deps: env.deps, build: env.build, libStore: libStore,
+		running: map[int64]bool{}, pending: map[int64]map[int]bool{},
+		idleNotify: func() {
+			select {
+			case idle <- struct{}{}:
+			default:
+			}
+		},
+	}
+	env.backfill, env.backfillIdle = bf, idle
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			bf.mu.Lock()
+			done := len(bf.running) == 0
+			bf.mu.Unlock()
+			if done {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 	return env
 }
 
@@ -243,7 +311,7 @@ func newAirDateEnv(t *testing.T, seasons map[int][]fakeTMDBEpisode, prowlarrBody
 func (e *airDateEnv) catalog() seasonCatalog {
 	return seasonCatalog{
 		httpClient: testHTTPClient(), connStore: e.conns, scStore: e.scConns,
-		settings: e.settings, lib: e.lib,
+		settings: e.settings, lib: e.lib, backfill: e.backfill,
 	}
 }
 
@@ -733,7 +801,12 @@ func TestAirDateSkipsExcludedSeries(t *testing.T) {
 
 // TestAirDateCapsDispatchesAtTwentyOldestFirst (T-4.5). The cap bounds NEW
 // dispatch attempts only, and the ordering is what makes a backlog drain
-// predictably instead of the same 20 rows being retried every cycle.
+// predictably instead of the same rows being retried every cycle.
+//
+// A single series is also bounded by maxAirDateGrabsPerSeriesPerCycle (fairness
+// vs classic backlogs). That sub-cap is what this case asserts for one series;
+// TestAirDatePerSeriesCycleCapFairness covers multi-series drain toward the
+// global maxAirDateGrabsPerCycle budget.
 func TestAirDateCapsDispatchesAtTwentyOldestFirst(t *testing.T) {
 	now := time.Now()
 	episodes := []fakeTMDBEpisode{}
@@ -750,21 +823,22 @@ func TestAirDateCapsDispatchesAtTwentyOldestFirst(t *testing.T) {
 	env.runCycle(t, now)
 
 	list := env.seriesGrabs(t)
-	if len(list) != maxAirDateGrabsPerCycle {
-		t.Fatalf("dispatched %d episodes, want exactly %d", len(list), maxAirDateGrabsPerCycle)
+	want := maxAirDateGrabsPerSeriesPerCycle
+	if len(list) != want {
+		t.Fatalf("dispatched %d episodes, want exactly %d (per-series cycle cap)", len(list), want)
 	}
 	dispatched := map[int]bool{}
 	for _, g := range list {
 		dispatched[g.EpisodeNumber] = true
 	}
 	// Episode N airs on day -(30-N), so lower numbers are OLDER: the cap must
-	// take 1..20 and leave 21..25 for the next cycle.
-	for i := 1; i <= maxAirDateGrabsPerCycle; i++ {
+	// take the oldest want episodes and leave the rest for later cycles.
+	for i := 1; i <= want; i++ {
 		if !dispatched[i] {
 			t.Errorf("episode %d (older) was skipped while newer episodes were dispatched", i)
 		}
 	}
-	for i := maxAirDateGrabsPerCycle + 1; i <= 25; i++ {
+	for i := want + 1; i <= 25; i++ {
 		if dispatched[i] {
 			t.Errorf("episode %d (newer) was dispatched ahead of an older one", i)
 		}
@@ -1051,7 +1125,7 @@ func TestUnMonitoringCancelsQueuedAirDateRetries(t *testing.T) {
 		strings.NewReader(`{"monitored":false}`))
 	req.SetPathValue("seriesID", strconv.FormatInt(series.ID, 10))
 	req.SetPathValue("seasonNumber", "3")
-	putSeasonMonitoredHandler(env.lib, env.grabs)(rec, req)
+	putSeasonMonitoredHandler(env.catalog(), env.grabs)(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("PUT monitored=false: status %d, body %q", rec.Code, rec.Body.String())
 	}
@@ -1206,7 +1280,7 @@ func TestDispatchedThenReparkedAirDateRowTwoTierBound(t *testing.T) {
 		strings.NewReader(`{"monitored":false}`))
 	req.SetPathValue("seriesID", strconv.FormatInt(series.ID, 10))
 	req.SetPathValue("seasonNumber", "3")
-	putSeasonMonitoredHandler(env.lib, env.grabs)(rec, req)
+	putSeasonMonitoredHandler(env.catalog(), env.grabs)(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("PUT monitored=false: status %d, body %q", rec.Code, rec.Body.String())
 	}
@@ -1432,7 +1506,7 @@ func TestPutSeasonMonitoredRejectsANegativeSeason(t *testing.T) {
 			strings.NewReader(`{"monitored":true}`))
 		req.SetPathValue("seriesID", strconv.FormatInt(series.ID, 10))
 		req.SetPathValue("seasonNumber", season)
-		putSeasonMonitoredHandler(env.lib, env.grabs)(rec, req)
+		putSeasonMonitoredHandler(env.catalog(), env.grabs)(rec, req)
 		return rec
 	}
 
@@ -1655,7 +1729,7 @@ func TestDiscoverAndLibrarySeasonMonitoringShareOneFlag(t *testing.T) {
 		strings.NewReader(`{"monitored":false}`))
 	req.SetPathValue("seriesID", strconv.FormatInt(series.ID, 10))
 	req.SetPathValue("seasonNumber", "1")
-	putSeasonMonitoredHandler(env.lib, env.grabs)(rec, req)
+	putSeasonMonitoredHandler(env.catalog(), env.grabs)(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("PUT library season 1 off: status %d, body %q", rec.Code, rec.Body.String())
 	}

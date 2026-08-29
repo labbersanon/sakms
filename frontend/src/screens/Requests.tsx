@@ -7,20 +7,15 @@
 //   - the Downloads tab is the live download-client queue status.
 // Neither rolls up state ACROSS modes, and neither surfaces what's still
 // MISSING. The Requests tab does both: one row per title spanning Movies/Series/Adult,
-// each tagged In Library (tracked) / Downloading (an active grab) / Pending Retry
-// (an auto-grab awaiting re-search). Missing is NOT one of those tags — it is a
-// Series-only missing-episode count that co-occurs with any of them (episodes TMDB
-// knows about that aren't on disk yet). It is pure derive-on-read aggregation
-// (GET /api/requests) — no new persisted table, no grab affordance on
-// already-in-library rows.
+// each tagged In Library / Pending (queued grab) / Pending Retry / Scheduled.
+// Missing is NOT one of those tags — it is a Series-only missing-episode count
+// that co-occurs with any of them. Pure derive-on-read (GET /api/requests).
 //
-// Status honesty (single-operator model): there is no approval queue, so
-// "Requested" collapses into Downloading (a grab IS the request), and the
-// missing-episode count is Series-only (Movies/Adult don't track not-owned
-// titles) — the backend documents both. The status chips render whatever statuses
-// the backend returns; the "Has Missing Episodes" chip is the one hand-written,
-// non-data-derived filter on this screen, and it intersects with the status/mode
-// chips rather than acting as a fourth status.
+// Status honesty: "Pending" is a queued grab awaiting first search/download;
+// live transfer progress lives on the Downloads tab, so there is no
+// "Downloading" filter option (rare Downloading badges still appear under All).
+// Mode chips follow MODES order (All, Movies, Series, Adult). Status is a
+// dropdown BELOW the mode chips. "Has Missing Episodes" stays a boolean chip.
 
 import {
   type Component,
@@ -38,14 +33,11 @@ import {
   fetchRequests,
 } from "../api/requests";
 import type { DiscoverItem } from "../api/discover";
-import { Button, ErrorText, Muted } from "../components/ui";
+import { Button, ErrorText, MODES, Muted, SelectField } from "../components/ui";
 import { type GrabTarget, GrabDialog } from "./discover/shared";
 import { type DetailTarget, DetailPopup } from "./discover/DetailPopup";
 import { useBulkSelection } from "./workflowHooks";
 
-// RequestItem is one row of the response's Items array — the generated DTO's
-// element type (RequestStatusResponse.items[number]) rather than a re-declared
-// shape, so field names stay generated, never hand-duplicated.
 type RequestItem = RequestStatusResponse["items"][number];
 
 const MODE_LABELS: Record<string, string> = {
@@ -54,10 +46,18 @@ const MODE_LABELS: Record<string, string> = {
   adult: "Adult",
 };
 
-// FilterChips is a small "All + one per distinct value" chip row. Values are
-// derived from the data so the chips always match whatever the backend emits
-// (status strings and mode set), rather than hardcoding labels that could drift
-// from the server's own values.
+// REQUEST_STATUS_ORDER is lifecycle order for the status dropdown. Presence
+// is still data-derived (only statuses the backend emitted appear); this list
+// only orders them and excludes "Downloading" (redundant with the Downloads
+// Queue tab).
+const REQUEST_STATUS_ORDER = [
+  "Pending",
+  "Pending Retry",
+  "Scheduled",
+  "In Library",
+] as const;
+
+// FilterChips is "All + one per distinct value" for the mode row.
 const FilterChips: Component<{
   values: string[];
   selected: string | null;
@@ -94,10 +94,6 @@ const FilterChips: Component<{
   </div>
 );
 
-// detailTargetFor synthesizes a DiscoverItem (id = tmdbId) so a Movies/Series
-// row can open the existing DetailPopup — the same synthetic-item pattern the
-// Mainstream library row already uses. Adult rows have no TMDB id, so they don't
-// open the popup (returns null; the row stays non-clickable).
 function detailTargetFor(item: RequestItem): DetailTarget | null {
   if (item.mode === "adult" || !item.tmdbId) return null;
   const mode = item.mode === "series" ? "series" : "movies";
@@ -113,18 +109,10 @@ function detailTargetFor(item: RequestItem): DetailTarget | null {
   return { mode, item: discoverItem };
 }
 
-// keyOf is the selection key for a row — a synthetic mode:tmdbId:title string,
-// because a row's identity is that tuple (Adult rows all carry tmdbId 0, so the
-// bare id can't distinguish them). The generic useBulkSelection<string> holds
-// these keys; excludeReqFor maps a row back to its exclude body.
 function keyOf(item: RequestItem): string {
   return `${item.mode}:${item.tmdbId}:${item.title}`;
 }
 
-// excludeReqFor builds one ExcludeTitleRequest from a row: TMDBID only when the
-// row actually has one (>0), Title always present — covers Movies/Series (by
-// tmdbId) and Adult (by title) in one shape, matching the DTO's "at least one of
-// TMDBID/Title" contract.
 function excludeReqFor(item: RequestItem): ExcludeTitleRequest {
   return {
     mode: item.mode,
@@ -133,8 +121,6 @@ function excludeReqFor(item: RequestItem): ExcludeTitleRequest {
   };
 }
 
-// retryDuration renders a millisecond delta as a short human span ("6h",
-// "2d") for the retry countdown line — never a raw ISO timestamp.
 function retryDuration(ms: number): string {
   const hours = Math.round(ms / (60 * 60 * 1000));
   if (hours < 1) return "under an hour";
@@ -142,12 +128,6 @@ function retryDuration(ms: number): string {
   return `${Math.round(hours / 24)}d`;
 }
 
-// retryBlurb turns a Pending Retry row's retryAfter/retryReason into one
-// human-readable line, e.g. "Retrying in 6h — no candidate cleared the
-// quality floor". The backend's RetryAfter (a UTC sqliteTimeLayout string)
-// and RetryReason are independent fields — a freshly parked row can have a
-// reason with no scheduled time yet, or vice versa — so each is optional
-// here too. Returns null when there's nothing to show.
 function retryBlurb(item: RequestItem): string | null {
   const parts: string[] = [];
   if (item.retryAfter) {
@@ -160,34 +140,11 @@ function retryBlurb(item: RequestItem): string | null {
   return parts.length > 0 ? parts.join(" — ") : null;
 }
 
-// scheduledBlurb is retryBlurb's sibling for a HELD Calendar pre-release
-// request — a row the operator click-requested for a film that has not come out
-// yet. Without it the row rendered a bare "Scheduled" chip with no date and no
-// explanation, which against a film six months out is indistinguishable from a
-// stuck request.
-//
-// It renders holdUntil (the release date), not a retryDuration delta: the
-// countdown shape retryBlurb uses reads badly across months, and the operator's
-// actual question here is "when does this film come out", which is a date.
-// Sliced to YYYY-MM-DD rather than parsed into a local Date, matching what
-// calendar/History.tsx does with the same class of UTC timestamp — and keeping
-// this line off the raw-ISO-string display retryBlurb also avoids.
-//
-// COPY HONESTY, and it is a correctness requirement rather than polish: this
-// must NOT promise that the film will be searched for automatically. Per
-// Upcoming.tsx's §5.7 note, that promise is a lie whenever
-// usenet_autograb_enabled is off — the default on every install, where the
-// retry cycle never starts and nothing will ever promote this row on its own.
-// Requests does not read that toggle (and should not grow a fetch for it), so
-// the copy states the HOLD, which is true either way, and never the search.
 function scheduledBlurb(item: RequestItem): string | null {
   if (!item.holdUntil) return null;
   return `Held until ${item.holdUntil.slice(0, 10)} — its release date`;
 }
 
-// statusBlurb picks the one explanatory line a row gets, if any. Two statuses
-// carry one; everything else ("In Library", "Downloading") is self-explanatory
-// from the chip alone.
 function statusBlurb(item: RequestItem): string | null {
   if (item.status === "Scheduled") return scheduledBlurb(item);
   if (item.status === "Pending Retry") return retryBlurb(item);
@@ -206,12 +163,14 @@ export const Requests: Component = () => {
 
   const items = () => data()?.items ?? [];
 
-  const statuses = createMemo(() =>
-    [...new Set(items().map((i) => i.status))].filter(Boolean).sort(),
-  );
-  const modes = createMemo(() =>
-    [...new Set(items().map((i) => i.mode))].filter(Boolean).sort(),
-  );
+  const statuses = createMemo(() => {
+    const present = new Set(items().map((i) => i.status).filter(Boolean));
+    return REQUEST_STATUS_ORDER.filter((s) => present.has(s));
+  });
+  const modes = createMemo(() => {
+    const present = new Set(items().map((i) => i.mode).filter(Boolean));
+    return MODES.map((m) => m.id).filter((id) => present.has(id));
+  });
 
   const filtered = () =>
     items().filter(
@@ -226,8 +185,6 @@ export const Requests: Component = () => {
     if (target) setDetailTarget(target);
   };
 
-  // Select-all acts on the currently-filtered rows (only what's on screen),
-  // mirroring Rename's pendingIds select-all.
   const filteredKeys = (): string[] => filtered().map(keyOf);
   const allSelected = (): boolean => {
     const keys = filteredKeys();
@@ -238,9 +195,6 @@ export const Requests: Component = () => {
     else selection.selectAll(filteredKeys());
   };
 
-  // removeOne excludes a single row after the destructive-action confirm, then
-  // refetches so the now-suppressed title leaves the list (GET /api/requests
-  // filters excluded titles server-side).
   const removeOne = async (item: RequestItem): Promise<void> => {
     if (
       !confirm(
@@ -258,8 +212,6 @@ export const Requests: Component = () => {
     }
   };
 
-  // removeSelected excludes every checked row in one exclude-batch call, behind
-  // the same confirm, then clears the selection and refetches.
   const removeSelected = async (): Promise<void> => {
     const chosen = filtered().filter((i) => selection.has(keyOf(i)));
     if (chosen.length === 0) return;
@@ -286,11 +238,6 @@ export const Requests: Component = () => {
       </Show>
 
       <div class="mb-3 flex flex-col gap-2">
-        <FilterChips
-          values={statuses()}
-          selected={statusFilter()}
-          onSelect={setStatusFilter}
-        />
         <Show when={modes().length > 1}>
           <FilterChips
             values={modes()}
@@ -299,14 +246,15 @@ export const Requests: Component = () => {
             labelOf={(m) => MODE_LABELS[m] ?? m}
           />
         </Show>
-        {/* A standalone boolean toggle, deliberately NOT a FilterChips instance:
-            FilterChips always renders its own "All" button, and its semantics are
-            "All + one-of-N", not on/off. Rendered unconditionally (never gated on
-            the data) so it can't flicker during a refetch or strand an active
-            filter with no affordance to clear it. The predicate is missingCount > 0
-            alone — Series-only-ness is a backend guarantee (Movies/Adult are
-            constructed without a MissingCount), and a mode clause here would mask
-            a violation of it rather than surface one. */}
+        <SelectField
+          id="requests-filter-status"
+          label="Status"
+          value={statusFilter() ?? ""}
+          onChange={(v) => setStatusFilter(v === "" ? null : v)}
+        >
+          <option value="">All</option>
+          <For each={statuses()}>{(s) => <option value={s}>{s}</option>}</For>
+        </SelectField>
         <div class="flex flex-wrap gap-1">
           <button
             type="button"
@@ -384,8 +332,12 @@ export const Requests: Component = () => {
                     <span
                       class="rounded-full px-2 py-0.5 text-[11px]"
                       classList={{
-                        "bg-warn/20 text-warn": item.status === "Pending Retry",
-                        "bg-surface-2 text-muted": item.status !== "Pending Retry",
+                        "bg-warn/20 text-warn":
+                          item.status === "Pending Retry" ||
+                          item.status === "Pending",
+                        "bg-surface-2 text-muted":
+                          item.status !== "Pending Retry" &&
+                          item.status !== "Pending",
                       }}
                     >
                       {item.status}
@@ -409,9 +361,6 @@ export const Requests: Component = () => {
       <Show when={grabTarget()}>
         {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
       </Show>
-      {/* keyed for the same reason as Mainstream's: a "More like this" click
-          swaps detailTarget from one truthy target to another, so the popup must
-          remount to reset its component-local selector/grab signals. */}
       <Show when={detailTarget()} keyed>
         {(t) => (
           <DetailPopup

@@ -1,9 +1,9 @@
 // Request-status data access (F4). One read-only, cross-mode aggregation
 // endpoint (GET /api/requests) that rolls up, per title: In Library (from
-// tracked items), Downloading (from active grabs), and Missing (Series episodes
-// TMDB knows about with no file on disk). Pure derive-on-read — no new persisted
-// table, no write path. Goes through api() so it inherits the session cookie and
-// the global 401 → re-boot fallback, same as every other data module.
+// tracked items), Pending (queued grabs), Pending Retry / Scheduled, and
+// Missing (Series episodes TMDB knows about with no file on disk). Pure
+// derive-on-read — no new persisted table. Goes through api() so it inherits
+// the session cookie and the global 401 → re-boot fallback.
 
 import { api } from "./client";
 import type {

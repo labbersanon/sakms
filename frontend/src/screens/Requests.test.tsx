@@ -79,7 +79,7 @@ describe("Requests", () => {
           mode: "series",
           title: "Grabbing Show",
           tmdbId: 7,
-          status: "Downloading",
+          status: "Pending",
         }),
         // "In Library" with a count, not a "Missing" status: Missing is an
         // annotation the backend hangs off a real status, never a status itself.
@@ -98,30 +98,58 @@ describe("Requests", () => {
     expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
     expect(screen.getByText("Grabbing Show")).toBeInTheDocument();
     expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
-    // Missing count surfaced.
     expect(screen.getByText(/3 missing/)).toBeInTheDocument();
   });
 
-  it("filters rows by status chip", async () => {
+  it("filters rows by status dropdown", async () => {
     stubRequests({
       items: [
         item({ title: "Owned Movie", status: "In Library" }),
-        item({ title: "Grabbing Movie", tmdbId: 2, status: "Downloading" }),
+        item({ title: "Queued Movie", tmdbId: 2, status: "Pending" }),
       ],
     });
 
     render(() => <Requests />);
     await screen.findByText("Owned Movie");
 
-    // Clicking the "Downloading" status chip hides the In Library row.
-    fireEvent.click(screen.getByRole("button", { name: "Downloading" }));
-    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
-    expect(screen.getByText("Grabbing Movie")).toBeInTheDocument();
+    const status = screen.getByLabelText("Status");
+    // Downloading is not offered (redundant with the Downloads Queue tab).
+    expect(
+      Array.from((status as HTMLSelectElement).options).map((o) => o.value),
+    ).not.toContain("Downloading");
 
-    // "All" restores both.
-    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    fireEvent.change(status, { target: { value: "Pending" } });
+    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
+    expect(screen.getByText("Queued Movie")).toBeInTheDocument();
+
+    fireEvent.change(status, { target: { value: "" } });
     expect(screen.getByText("Owned Movie")).toBeInTheDocument();
-    expect(screen.getByText("Grabbing Movie")).toBeInTheDocument();
+    expect(screen.getByText("Queued Movie")).toBeInTheDocument();
+  });
+
+  it("mode chips follow All, Movies, Series, Adult order below which Status sits", async () => {
+    stubRequests({
+      items: [
+        item({ mode: "adult", title: "A Scene", tmdbId: 0, status: "In Library" }),
+        item({ mode: "series", title: "A Show", tmdbId: 2, status: "In Library" }),
+        item({ mode: "movies", title: "A Movie", tmdbId: 3, status: "In Library" }),
+      ],
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("A Movie");
+
+    const modeButtons = screen
+      .getAllByRole("button")
+      .map((b) => b.textContent)
+      .filter((t) => t === "All" || t === "Movies" || t === "Series" || t === "Adult");
+    expect(modeButtons).toEqual(["All", "Movies", "Series", "Adult"]);
+
+    const status = screen.getByLabelText("Status");
+    expect(
+      status.compareDocumentPosition(screen.getByRole("button", { name: "Movies" })) &
+        Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
   });
 
   // Base rows for the "Has Missing Episodes" cases: a movie and a series with
@@ -171,7 +199,7 @@ describe("Requests", () => {
   it("the missing chip is an independent filter, not a fourth status", async () => {
     // Both extra rows are reachable backend states: the In-Library pass sets
     // MissingCount on the series row, and the grab pass then overwrites only
-    // Status — so a Downloading/Pending Retry series keeps its count.
+    // Status — so a Pending/Pending Retry series keeps its count.
     stubRequests({
       items: [
         ...missingRows(),
@@ -179,7 +207,7 @@ describe("Requests", () => {
           mode: "series",
           title: "Grabbing Show",
           tmdbId: 9,
-          status: "Downloading",
+          status: "Pending",
           missingCount: 2,
         }),
         item({
@@ -200,9 +228,10 @@ describe("Requests", () => {
     expect(screen.getByText("Retrying Show")).toBeInTheDocument();
     expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
 
-    // Adding a status chip intersects with the missing chip rather than
-    // replacing it.
-    fireEvent.click(screen.getByRole("button", { name: "In Library" }));
+    // Status dropdown intersects with the missing chip rather than replacing it.
+    fireEvent.change(screen.getByLabelText("Status"), {
+      target: { value: "In Library" },
+    });
     expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
     expect(screen.queryByText("Grabbing Show")).not.toBeInTheDocument();
     expect(screen.queryByText("Retrying Show")).not.toBeInTheDocument();
@@ -322,9 +351,8 @@ describe("Requests", () => {
     render(() => <Requests />);
 
     expect(await screen.findByText("No Match Movie")).toBeInTheDocument();
-    // Status badge reads the honest state, not "Downloading" (there are two
-    // "Pending Retry" texts on screen — the filter chip button and the row's
-    // status badge span — so scope to the non-button one).
+    // Status badge reads the honest state (option + badge both say Pending
+    // Retry — scope to the badge span).
     expect(
       screen.getByText("Pending Retry", { selector: "span" }),
     ).toBeInTheDocument();

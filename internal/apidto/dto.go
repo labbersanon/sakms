@@ -1112,13 +1112,13 @@ type TitleDetail struct {
 // existing /grabs (raw per-mode grab log) and /downloads (download-client
 // status) screens.
 
-// RequestStatusItem is one title's cross-mode status. Status is "In Library"
-// (a tracked item) or "Downloading" (an in-flight grab — "Requested" collapses
-// into this in sakms's single-operator model: a grab IS the request, there is
-// no separate approval queue). GrabID is set only for a Downloading row.
-// MissingCount is an annotation, Series-only: the number of episodes TMDB
-// knows about with no file on disk for an otherwise In-Library series (0 for
-// Movies/Adult, which don't track not-owned titles).
+// RequestStatusItem is one title's cross-mode status. Status is one of:
+// "In Library" (tracked), "Pending" (queued grab awaiting first search /
+// download progress — see Downloads for live transfer), "Pending Retry"
+// (auto-grab awaiting re-search), "Scheduled" (Calendar pre-release hold),
+// or rarely "Downloading" (check-import path). GrabID is set for grab-derived
+// rows. MissingCount is Series-only: episodes TMDB knows about with no file
+// on disk (0 for Movies/Adult).
 type RequestStatusItem struct {
 	Mode         string `json:"mode"`
 	Title        string `json:"title"`

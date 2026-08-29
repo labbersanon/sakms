@@ -445,8 +445,10 @@ func TestGrabStatusLabel(t *testing.T) {
 		{"a held request, hold_until in the future", grabs.Grab{Status: grabs.PendingRetry, HoldUntil: future}, "Scheduled"},
 		{"a promoted request, hold_until in the past", grabs.Grab{Status: grabs.PendingRetry, HoldUntil: past}, "Pending Retry"},
 		{"an ordinary retry row with no hold", grabs.Grab{Status: grabs.PendingRetry}, "Pending Retry"},
-		{"a queued grab carrying inert hold provenance", grabs.Grab{Status: grabs.Queued, HoldUntil: past}, "Downloading"},
+		{"a queued grab carrying inert hold provenance", grabs.Grab{Status: grabs.Queued, HoldUntil: past}, "Pending"},
+		{"a bare queued grab", grabs.Grab{Status: grabs.Queued}, "Pending"},
 		{"an ordinary in-flight grab", grabs.Grab{Status: grabs.Downloading}, "Downloading"},
+		{"a completed-awaiting-import grab", grabs.Grab{Status: grabs.Completed}, "Downloading"},
 	} {
 		if got := grabStatusLabel(tc.g); got != tc.want {
 			t.Errorf("%s: label = %q, want %q", tc.name, got, tc.want)

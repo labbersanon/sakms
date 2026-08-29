@@ -35,7 +35,7 @@ func requestsTestStores(t *testing.T) (*grabs.Store, *library.Store, *excludes.S
 }
 
 // TestRequestsHandler_AggregatesAndDedups exercises all four behaviors at once:
-// In-Library rows (Movies/Series/Adult), Series MissingCount, a Downloading row
+// In-Library rows (Movies/Series/Adult), Series MissingCount, a Pending row
 // for a grab with no tracked match, and the dedup where a tracked title that is
 // also actively grabbing collapses to one row with the grab status winning.
 func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
@@ -102,8 +102,8 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 		t.Fatalf("expected 5 rows, got %d: %+v", len(out.Items), out.Items)
 	}
 
-	if a := byTitle["Movie A"]; a.Status != "Downloading" || a.GrabID != grabA.ID {
-		t.Errorf("Movie A should dedup to Downloading with the grab id, got %+v", a)
+	if a := byTitle["Movie A"]; a.Status != "Pending" || a.GrabID != grabA.ID {
+		t.Errorf("Movie A should dedup to Pending with the grab id, got %+v", a)
 	}
 	if e := byTitle["Movie E"]; e.Status != "In Library" || e.GrabID != 0 {
 		t.Errorf("Movie E should stay In Library, got %+v", e)
@@ -114,8 +114,8 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 	if c := byTitle["Scene C"]; c.Mode != "adult" || c.Status != "In Library" {
 		t.Errorf("Scene C should be an In Library adult row, got %+v", c)
 	}
-	if d := byTitle["Movie D"]; d.Status != "Downloading" || d.GrabID == 0 {
-		t.Errorf("Movie D should be a standalone Downloading row, got %+v", d)
+	if d := byTitle["Movie D"]; d.Status != "Pending" || d.GrabID == 0 {
+		t.Errorf("Movie D should be a standalone Pending row, got %+v", d)
 	}
 }
 

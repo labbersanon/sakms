@@ -36,6 +36,36 @@ export const labelClass = "block text-xs font-medium text-muted";
 export const FILTER_BAR_FIELDS_CLASS =
   "flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end";
 
+// SELECT_CLASS is the canonical native <select> chrome shared by Discover's
+// filter bar and Requests' status dropdown — keep one string so the two don't
+// drift.
+export const SELECT_CLASS =
+  "mt-1 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent sm:w-auto";
+
+// SelectField is a labeled native <select> (label above, select below). `for`/
+// `id` pair so tests and screen readers resolve it by label text.
+export const SelectField: Component<{
+  id: string;
+  label: string;
+  value: string | number;
+  onChange: (value: string) => void;
+  children: JSX.Element;
+}> = (props) => (
+  <div class="flex w-full flex-col sm:w-auto">
+    <label class={labelClass} for={props.id}>
+      {props.label}
+    </label>
+    <select
+      id={props.id}
+      class={SELECT_CLASS}
+      value={props.value}
+      onChange={(e) => props.onChange(e.currentTarget.value)}
+    >
+      {props.children}
+    </select>
+  </div>
+);
+
 // AuthScreen centers a single auth panel on the page — the setup wizard, the
 // login form, and the SSO notice all share this frame. The full logo (not
 // just the favicon glyph) gets its one prominent moment here — this is the

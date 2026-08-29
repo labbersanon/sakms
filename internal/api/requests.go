@@ -196,37 +196,35 @@ func isActiveGrab(s grabs.Status) bool {
 }
 
 // grabStatusLabel is the worklist status string for an in-flight grab.
-// Everything still moving collapses to "Downloading" (in sakms's
-// single-operator model a grab IS the request, so there is no "Requested"
-// stage), but a pending_retry grab is NOT downloading anything — reporting it
-// as such would hide a request that found no qualifying release and is waiting
-// on a re-search. It gets its own honest state instead.
 //
-// It takes the whole Grab rather than just its Status (it took only the Status
-// until 2026-08-02) because a HELD Calendar pre-release request is also
-// pending_retry, and "Pending Retry" is a LIE for it: nothing has been tried,
-// the row has never been searched, and an operator seeing it against a film
-// released in six months reasonably concludes something is failing repeatedly.
-// Three cases:
+//	hold_until in the FUTURE  -> "Scheduled"   (Calendar pre-release hold)
+//	PendingRetry otherwise    -> "Pending Retry"
+//	Queued                    -> "Pending"     (grab exists; first search /
+//	                                           download has not finished —
+//	                                           the Downloads tab shows live
+//	                                           transfer progress)
+//	Downloading / Completed   -> "Downloading" (rare; check-import path)
 //
-//	hold_until in the FUTURE  -> "Scheduled"
-//	hold_until in the PAST    -> "Pending Retry" (promoted; it really is on the
-//	                             retry track now — provenance does not override
-//	                             current state, and hold_until is never cleared)
-//	no hold_until             -> "Pending Retry", unchanged
+// "Pending" is deliberately NOT "Downloading": the Downloads Queue tab is
+// where live transfer progress lives, and collapsing Queued into Downloading
+// made the Requests filter redundant with that tab. The filter UI excludes
+// "Downloading" from its dropdown; rows can still carry that badge under All.
 //
-// The discriminator is hold_until and NOTHING ELSE. It reads no retry_reason and
-// no retry_count, deliberately: inferring a row's origin from those is the
-// fragility class the column was added to eliminate (see heldRequestReason and
-// airDateShaped's doc for what it costs when it goes wrong). The comparison is
-// lexicographic on grabs.FormatTime's sortable layout, the same string
-// comparison DueForRetry and DueForRelease already depend on.
+// It takes the whole Grab rather than just its Status because a HELD Calendar
+// pre-release request is also pending_retry, and "Pending Retry" is a LIE for
+// it: nothing has been tried. The discriminator is hold_until and NOTHING ELSE
+// — see heldRequestReason and airDateShaped's doc for why origin must not be
+// inferred from retry_reason/retry_count. Lexicographic comparison on
+// grabs.FormatTime's sortable layout, same as DueForRetry / DueForRelease.
 func grabStatusLabel(g grabs.Grab) string {
-	if g.Status != grabs.PendingRetry {
-		return "Downloading"
+	if g.Status == grabs.PendingRetry {
+		if g.HoldUntil != "" && g.HoldUntil > grabs.FormatTime(time.Now()) {
+			return "Scheduled"
+		}
+		return "Pending Retry"
 	}
-	if g.HoldUntil != "" && g.HoldUntil > grabs.FormatTime(time.Now()) {
-		return "Scheduled"
+	if g.Status == grabs.Queued {
+		return "Pending"
 	}
-	return "Pending Retry"
+	return "Downloading"
 }

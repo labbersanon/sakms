@@ -8,8 +8,8 @@
 // filter/sort actually renders (a filtered grid replaces the carousels; see
 // Mainstream.tsx/Adult.tsx).
 
-import { type Component, type JSX, createResource, For, Match, Show, Switch } from "solid-js";
-import { ErrorText, labelClass, FILTER_BAR_FIELDS_CLASS } from "../../components/ui";
+import { type Component, createResource, For, Match, Show, Switch } from "solid-js";
+import { ErrorText, labelClass, FILTER_BAR_FIELDS_CLASS, SELECT_CLASS, SelectField } from "../../components/ui";
 import { type AdultSortBy, type DiscoverSortBy } from "../../api/discover";
 import { fetchGenres } from "../../api/discoverSliders";
 
@@ -85,35 +85,6 @@ const YEAR_OPTIONS: number[] = (() => {
   for (let y = max; y >= 1950; y--) years.push(y);
   return years;
 })();
-
-const SELECT_CLASS =
-  "mt-1 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent sm:w-auto";
-
-// SelectField is the one labeled native <select> the filter bar repeats for
-// each control (label above, select below) so the whole bar reads as one
-// consistent inline row of dropdowns. `for`/`id` pair the label to the select
-// so tests (and screen readers) resolve it by label text.
-const SelectField: Component<{
-  id: string;
-  label: string;
-  value: string | number;
-  onChange: (value: string) => void;
-  children: JSX.Element;
-}> = (props) => (
-  <div class="flex w-full flex-col sm:w-auto">
-    <label class={labelClass} for={props.id}>
-      {props.label}
-    </label>
-    <select
-      id={props.id}
-      class={SELECT_CLASS}
-      value={props.value}
-      onChange={(e) => props.onChange(e.currentTarget.value)}
-    >
-      {props.children}
-    </select>
-  </div>
-);
 
 // MainstreamFilterSortBar renders the Movies/Series filter surface as a single
 // row of native <select> dropdowns. value is a Solid accessor (the parent owns

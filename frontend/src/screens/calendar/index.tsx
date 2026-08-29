@@ -14,13 +14,11 @@
 // selector that is correct for both.
 //
 // THE VIEW SWITCH IS ScreenTabBar, NOT ScreenTabs — this is the load-bearing
-// choice in this file. The app shell has exactly ONE tab slot, and Queue.tsx
-// already owns it with its own Downloads/Requests/Calendar bar (this component
-// is Queue's third tab). ScreenTabs would REGISTER with that slot and clobber
-// Queue's bar; ScreenTabBar just draws inline in the body, which is what a
-// within-screen control should do. Upcoming.tsx's own content selector made the
-// same call for the same reason. If a future session "upgrades" this to
-// ScreenTabs, Queue's tab switcher disappears.
+// choice in this file. The app shell has exactly ONE tab slot. Calendar is a
+// Queue sidebar child (?tab=calendar); Queue wraps children in a shadowing
+// ScreenTabsContext.Provider so History's ModeTabs cannot claim that slot.
+// ScreenTabs here would still fight that contract; ScreenTabBar draws inline.
+// Upcoming.tsx's own content selector made the same call for the same reason.
 //
 // EXPORT SHAPE: a named `Calendar: Component` taking no props, so Queue.tsx can
 // render `<Calendar />` exactly as it renders `<Downloads />` / `<Requests />`.
@@ -35,12 +33,13 @@
 // deliberate-duplication stance grid.ts's header sets out in full (§0.3).
 // MONTH_NAMES is duplicated here for the same reason.
 //
-// BOTH PERSISTED KEYS SANITIZE FOR DISPLAY WITHOUT REWRITING STORAGE, mirroring
-// Queue.tsx:46-50 exactly: an unreadable or unrecognized stored value falls back
-// to the default for DISPLAY only, and storage is left untouched until the
-// operator actually picks something. These are brand-new keys with no legacy
-// values in the wild, so there is nothing to migrate — the sanitization exists
-// for corruption and for future value changes (§7.2).
+// BOTH PERSISTED KEYS SANITIZE FOR DISPLAY WITHOUT REWRITING STORAGE: an
+// unreadable or unrecognized stored value falls back to the default for DISPLAY
+// only, and storage is left untouched until the operator actually picks
+// something. (Queue's own ?tab= key now canonicalizes like Organize; these
+// Calendar keys keep the older display-only sanitize.) These are brand-new keys
+// with no legacy values in the wild — the sanitization exists for corruption
+// and for future value changes (§7.2).
 
 import { batch, type Component, createSignal, Show } from "solid-js";
 import { Button, ScreenTabBar, type TabDef } from "../../components/ui";

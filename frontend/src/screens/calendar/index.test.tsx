@@ -173,8 +173,8 @@ describe("Calendar — corrupt persisted values", () => {
 
     // Rendered as the default...
     expect(await screen.findByRole("button", { name: "Adult" })).toBeInTheDocument();
-    // ...and storage is untouched until the operator actually picks a view,
-    // mirroring Queue.tsx's sanitize-without-rewriting contract exactly.
+    // ...and storage is untouched until the operator actually picks a view
+    // (Calendar keeps display-only sanitize; Queue's ?tab= key now rewrites).
     expect(localStorage.getItem(VIEW_KEY)).toBe("not-a-real-view");
   });
 

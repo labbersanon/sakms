@@ -845,6 +845,32 @@ func TestAirDateCapsDispatchesAtTwentyOldestFirst(t *testing.T) {
 	}
 }
 
+func TestAirDateHonorsConfiguredCycleSlots(t *testing.T) {
+	now := time.Now()
+	episodes := []fakeTMDBEpisode{}
+	for i := 1; i <= 10; i++ {
+		episodes = append(episodes, fakeTMDBEpisode{Number: i, Name: fmt.Sprintf("Ep %d", i), AirDate: dayOffset(now, -(30 - i))})
+	}
+	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: episodes}, noQualifyingRelease)
+	if err := env.settings.Set(env.ctx, usenetAutoGrabSlotsPerCycleKey, "3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.settings.Set(env.ctx, usenetAutoGrabSlotsPerSeriesKey, "10"); err != nil {
+		t.Fatal(err)
+	}
+	series := env.trackSeries(t)
+	for _, e := range episodes {
+		env.seedMissingEpisode(t, series.ID, 1, e.Number, e.AirDate)
+	}
+	env.monitor(t, series.ID, 1, true)
+
+	env.runCycle(t, now)
+
+	if got := len(env.seriesGrabs(t)); got != 3 {
+		t.Fatalf("dispatched %d, want configured cycle cap 3", got)
+	}
+}
+
 // TestAirDatePreFilterExcludesAPendingRetryEpisode (T-4.6): pending_retry is an
 // active status for isActiveGrab, so a parked episode masks itself and never
 // gets a duplicate row. There is deliberately NO Failed special case — the retry

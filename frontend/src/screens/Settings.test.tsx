@@ -72,6 +72,10 @@ function defaultGet(url: string): Response | undefined {
   // that with an explicit error override instead.
   if (url.includes("/api/settings/usenet-autograb-enabled"))
     return jsonResponse({ enabled: false });
+  if (url.includes("/api/settings/usenet-autograb-slots"))
+    return jsonResponse({ perCycle: 20, perSeries: 5 });
+  if (url.includes("/api/settings/torrent-autograb-slots"))
+    return jsonResponse({ perCycle: 0, perSeries: 5 });
   // The Series-only new-season discovery toggle (Library tab, Series mode).
   // Answered as OFF because off IS the default. Without this line the GET falls
   // through to the 204 default, api() resolves null, and every Series-mode
@@ -3313,6 +3317,28 @@ describe("Usenet auto-grab toggle", () => {
     expect(
       calls.some((c) => c.url.includes("/api/settings/usenet-retry-interval")),
     ).toBe(false);
+  });
+
+  it("slot fields PUT usenet-autograb-slots on save", async () => {
+    const calls = stubFetch();
+    renderSettings();
+    await goToUsenet();
+    const cycle = (await screen.findByLabelText(
+      "Usenet slots per cycle",
+    )) as HTMLInputElement;
+    await waitFor(() => expect(cycle.value).toBe("20"));
+    fireEvent.input(cycle, { target: { value: "40" } });
+    clickSectionSave();
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/settings/usenet-autograb-slots") &&
+            JSON.stringify(c.body).includes('"perCycle":40'),
+        ),
+      ).toBe(true),
+    );
   });
 
   it("turning it back off fires the off PUT, same single-request shape", async () => {

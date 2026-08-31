@@ -42,6 +42,7 @@ import {
   fetchUsenetAutoGrabEnabled,
   putUsenetAutoGrabEnabled,
 } from "../../api/usenet";
+import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
 import {
   Button,
   ErrorText,
@@ -50,9 +51,11 @@ import {
   labelClass,
 } from "../../components/ui";
 import {
+  AutoGrabSlotFields,
   Card,
   SaveStatus,
   SectionSave,
+  autoGrabSlotsValid,
   useSaveStatus,
   useSectionSaveItem,
 } from "./shared";
@@ -479,6 +482,8 @@ const SubscriptionsCard: Component = () => {
 // source of truth is the whole point of coupling them there.
 const AutoGrabCard: Component = () => {
   const [enabled, setEnabled] = createSignal(false);
+  const [perCycle, setPerCycle] = createSignal(20);
+  const [perSeries, setPerSeries] = createSignal(5);
   const [dirty, setDirty] = createSignal(false);
   // loadError is set when the initial GET fails. The route is registered
   // unconditionally (internal/api/handler.go), so this is never "the feature
@@ -490,14 +495,22 @@ const AutoGrabCard: Component = () => {
   const status = useSaveStatus();
 
   onMount(() => {
-    void fetchUsenetAutoGrabEnabled()
-      .then((v) => setEnabled(v))
+    void Promise.all([fetchUsenetAutoGrabEnabled(), fetchAutoGrabSlots("usenet")])
+      .then(([on, slots]) => {
+        setEnabled(on);
+        setPerCycle(slots.perCycle);
+        setPerSeries(slots.perSeries);
+      })
       .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
   });
 
   const save = async () => {
     try {
       await putUsenetAutoGrabEnabled(enabled());
+      await putAutoGrabSlots("usenet", {
+        perCycle: perCycle(),
+        perSeries: perSeries(),
+      });
       setDirty(false);
       status.set("✓ saved");
     } catch (e) {
@@ -510,6 +523,7 @@ const AutoGrabCard: Component = () => {
     id: "usenet-autograb",
     label: "auto-grab",
     dirty,
+    valid: () => autoGrabSlotsValid(perCycle(), perSeries(), 1),
     save,
   });
 
@@ -536,6 +550,24 @@ const AutoGrabCard: Component = () => {
         re-searches every 24 hours once the retry loop is running. Toggling this on
         takes effect for new searches immediately, but the 24-hour retry loop itself
         only starts after the next restart.
+      </Muted>
+      <AutoGrabSlotFields
+        protocol="Usenet"
+        minPerCycle={1}
+        disabled={loadError() !== null}
+        perCycle={perCycle()}
+        perSeries={perSeries()}
+        onChange={(patch) => {
+          if (patch.perCycle !== undefined) setPerCycle(patch.perCycle);
+          if (patch.perSeries !== undefined) setPerSeries(patch.perSeries);
+          setDirty(true);
+        }}
+      />
+      <Muted class="mt-2">
+        The nightly auto-grab pass searches oldest-air-date first. Cycle slots
+        are the total searches; the per-series cap stops one classic backlog
+        from taking every slot. Monitor-on still kicks an immediate search for
+        that show.
       </Muted>
       <Show when={loadError()}>
         <ErrorText>

@@ -677,6 +677,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// (RunUsenetRetry) is started once from main.
 	mux.HandleFunc("GET /api/settings/usenet-autograb-enabled", getUsenetAutoGrabEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/usenet-autograb-enabled", putUsenetAutoGrabEnabledHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/usenet-autograb-slots", getAutoGrabSlotsHandler(settingsStore, autoGrabSlotsProtocolUsenet))
+	mux.HandleFunc("PUT /api/settings/usenet-autograb-slots", putAutoGrabSlotsHandler(settingsStore, autoGrabSlotsProtocolUsenet))
+	mux.HandleFunc("GET /api/settings/torrent-autograb-slots", getAutoGrabSlotsHandler(settingsStore, autoGrabSlotsProtocolTorrent))
+	mux.HandleFunc("PUT /api/settings/torrent-autograb-slots", putAutoGrabSlotsHandler(settingsStore, autoGrabSlotsProtocolTorrent))
 	mux.HandleFunc("GET /api/settings/usenet-retry-interval", getUsenetRetryIntervalHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/usenet-retry-interval", putUsenetRetryIntervalHandler(settingsStore))
 

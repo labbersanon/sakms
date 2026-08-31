@@ -49,12 +49,15 @@ import {
   putDownloaderConfig,
 } from "../../api/torrent";
 import { fetchUsenetAutoGrabEnabled } from "../../api/usenet";
+import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
 import { ErrorText, Muted, inputClass, labelClass } from "../../components/ui";
 import {
+  AutoGrabSlotFields,
   Card,
   SaveStatus,
   SectionSave,
   type SectionSaveOutcome,
+  autoGrabSlotsValid,
   useSaveStatus,
   useSectionSaveItem,
 } from "./shared";
@@ -75,6 +78,7 @@ export const TorrentSection: Component = () => (
   <div>
     <SectionSave>
       <TorrentSettingsCard />
+      <TorrentAutoGrabSlotsCard />
     </SectionSave>
   </div>
 );
@@ -517,6 +521,79 @@ const TorrentSettingsCard: Component = () => {
         >
           {applyNote()!.text}
         </p>
+      </Show>
+      <div class="mt-3">
+        <SaveStatus text={status.status().text} error={status.status().error} />
+      </div>
+    </Card>
+  );
+};
+
+// TorrentAutoGrabSlotsCard is the torrent half of the slot budget the Usenet
+// tab's auto-grab card owns for usenet. perCycle 0 (the default) means torrent
+// grabs share the Usenet cycle budget rather than getting slots of their own.
+const TorrentAutoGrabSlotsCard: Component = () => {
+  const [perCycle, setPerCycle] = createSignal(0);
+  const [perSeries, setPerSeries] = createSignal(5);
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<Error | null>(null);
+  const status = useSaveStatus();
+
+  onMount(() => {
+    void fetchAutoGrabSlots("torrent")
+      .then((slots) => {
+        setPerCycle(slots.perCycle);
+        setPerSeries(slots.perSeries);
+      })
+      .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
+  });
+
+  const save = async () => {
+    try {
+      await putAutoGrabSlots("torrent", {
+        perCycle: perCycle(),
+        perSeries: perSeries(),
+      });
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  useSectionSaveItem({
+    id: "torrent-autograb-slots",
+    label: "torrent auto-grab slots",
+    dirty,
+    valid: () => autoGrabSlotsValid(perCycle(), perSeries(), 0),
+    save,
+  });
+
+  return (
+    <Card title="Auto-grab slots">
+      <Muted>
+        Dedicated torrent slots on the nightly auto-grab pass. 0 shares the
+        Usenet cycle budget (the default). A positive number adds torrent-only
+        slots on top of Usenet's, so a classic Usenet backlog cannot spend every
+        search.
+      </Muted>
+      <AutoGrabSlotFields
+        protocol="Torrent"
+        minPerCycle={0}
+        disabled={loadError() !== null}
+        perCycle={perCycle()}
+        perSeries={perSeries()}
+        onChange={(patch) => {
+          if (patch.perCycle !== undefined) setPerCycle(patch.perCycle);
+          if (patch.perSeries !== undefined) setPerSeries(patch.perSeries);
+          setDirty(true);
+        }}
+      />
+      <Show when={loadError()}>
+        <ErrorText>
+          Couldn't load auto-grab slots: {loadError()?.message}
+        </ErrorText>
       </Show>
       <div class="mt-3">
         <SaveStatus text={status.status().text} error={status.status().error} />

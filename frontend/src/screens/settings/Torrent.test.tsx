@@ -86,6 +86,10 @@ const stubFetch = (
     }
     if (url.includes("/api/settings/usenet-autograb-enabled"))
       return json({ enabled: opts.autoGrab ?? true });
+    if (url.includes("/api/settings/torrent-autograb-slots"))
+      return json({ perCycle: 0, perSeries: 5 });
+    if (url.includes("/api/settings/usenet-autograb-slots"))
+      return json({ perCycle: 20, perSeries: 5 });
     throw new Error(`unexpected request: ${method} ${url}`);
   });
   vi.stubGlobal("fetch", fn);
@@ -101,6 +105,39 @@ const json = (body: unknown, status = 200) =>
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("Torrent auto-grab slots", () => {
+  it("loads defaults and PUTs dedicated torrent slots", async () => {
+    const puts: { url: string; body: unknown }[] = [];
+    const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/downloader/config"))
+        return json(FIXTURE);
+      if (url.includes("/api/settings/usenet-autograb-enabled"))
+        return json({ enabled: true });
+      if (url.includes("/api/settings/torrent-autograb-slots")) {
+        if (method === "PUT") {
+          puts.push({ url, body: init?.body ? JSON.parse(init.body as string) : undefined });
+          return new Response(null, { status: 204 });
+        }
+        return json({ perCycle: 0, perSeries: 5 });
+      }
+      throw new Error(`unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fn);
+
+    render(() => <TorrentSection />);
+    const cycle = (await screen.findByLabelText(
+      "Torrent slots per cycle",
+    )) as HTMLInputElement;
+    await waitFor(() => expect(cycle.value).toBe("0"));
+    fireEvent.input(cycle, { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(puts.length).toBe(1));
+    expect(puts[0]!.body).toEqual({ perCycle: 10, perSeries: 5 });
+  });
 });
 
 // mountLoaded renders the section and waits for the initial GET to land.

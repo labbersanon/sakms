@@ -21,6 +21,9 @@ export function seriesMonitorDefaults(
   if (url.includes("/usenet-autograb-enabled")) {
     return jsonResponse({ enabled: true });
   }
+  if (url.includes("/usenet-autograb-slots")) {
+    return jsonResponse({ perCycle: 20, perSeries: 5 });
+  }
   if (url.endsWith("/monitored")) {
     return noContent();
   }

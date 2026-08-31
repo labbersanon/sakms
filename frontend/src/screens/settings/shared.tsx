@@ -15,7 +15,7 @@ import {
   useContext,
 } from "solid-js";
 import type { Mode } from "../../api/discover";
-import { Button } from "../../components/ui";
+import { Button, inputClass, labelClass } from "../../components/ui";
 
 export const MODE_LABELS: Record<Mode, string> = {
   movies: "Movies",
@@ -58,6 +58,73 @@ export function useSaveStatus() {
     set: (text: string) => setStatus({ text, error: false }),
   };
 }
+
+// ---- Auto-grab slot budgets (Usenet and Torrent cards render the same pair) --
+
+// AUTOGRAB_SLOTS_MAX mirrors the PUT handler's own upper bound, so the inputs
+// and autoGrabSlotsValid can't drift from what the server accepts.
+export const AUTOGRAB_SLOTS_MAX = 100;
+
+// autoGrabSlotsValid is the client-side half of the PUT's range check, wired
+// into SectionSaveItem.valid so an out-of-range field blocks Save up front.
+// minPerCycle differs per protocol: Usenet needs at least 1, Torrent accepts 0.
+export function autoGrabSlotsValid(
+  perCycle: number,
+  perSeries: number,
+  minPerCycle: number,
+): boolean {
+  return (
+    perCycle >= minPerCycle &&
+    perCycle <= AUTOGRAB_SLOTS_MAX &&
+    perSeries >= 0 &&
+    perSeries <= AUTOGRAB_SLOTS_MAX
+  );
+}
+
+// AutoGrabSlotFields renders the per-cycle / per-series slot inputs shared by
+// the Usenet and Torrent auto-grab cards. `protocol` prefixes the aria-labels
+// so both cards' fields stay distinguishable on the Download tab.
+export const AutoGrabSlotFields: Component<{
+  protocol: "Usenet" | "Torrent";
+  minPerCycle: number;
+  disabled: boolean;
+  perCycle: number;
+  perSeries: number;
+  onChange: (patch: { perCycle?: number; perSeries?: number }) => void;
+}> = (props) => (
+  <div class="mt-4 grid gap-3 sm:grid-cols-2">
+    <label class="block">
+      <span class={labelClass}>Slots per cycle</span>
+      <input
+        type="number"
+        min={props.minPerCycle}
+        max={AUTOGRAB_SLOTS_MAX}
+        class={`${inputClass} mt-1`}
+        aria-label={`${props.protocol} slots per cycle`}
+        disabled={props.disabled}
+        value={props.perCycle}
+        onInput={(e) =>
+          props.onChange({ perCycle: Number(e.currentTarget.value) || 0 })
+        }
+      />
+    </label>
+    <label class="block">
+      <span class={labelClass}>Slots per series per cycle</span>
+      <input
+        type="number"
+        min={0}
+        max={AUTOGRAB_SLOTS_MAX}
+        class={`${inputClass} mt-1`}
+        aria-label={`${props.protocol} slots per series per cycle`}
+        disabled={props.disabled}
+        value={props.perSeries}
+        onInput={(e) =>
+          props.onChange({ perSeries: Number(e.currentTarget.value) || 0 })
+        }
+      />
+    </label>
+  </div>
+);
 
 // ---- Section-level batched save (one Save button per Settings tab) ----------
 //

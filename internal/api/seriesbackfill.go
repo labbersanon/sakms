@@ -1,7 +1,7 @@
 // This file is the monitor-on series backfill: enabling season monitoring kicks
 // an immediate one-shot search for already-aired missing episodes of those
 // seasons, instead of waiting on the shared air-date cycle. That cycle is
-// capped at maxAirDateGrabsPerCycle and ordered oldest-air-date-first across
+// capped at the configured cycle slots and ordered oldest-air-date-first across
 // the whole library, so a multi-thousand-episode classic can exhaust every
 // cycle's slots and a newly monitored modern series never cues.
 //
@@ -33,10 +33,10 @@ import (
 )
 
 const (
-	// maxSeriesBackfillGrabsPerKick bounds one kick's dispatch attempts,
-	// matching maxAirDateGrabsPerCycle so a single monitor-on click cannot
-	// flood Prowlarr harder than one background cycle.
-	maxSeriesBackfillGrabsPerKick = 20
+	// maxSeriesBackfillGrabsPerKick is the unconfigured per-kick bound. runOnce
+	// spends the same budget airDateDispatchCaps gives a background cycle, so a
+	// single monitor-on click cannot flood Prowlarr harder than one cycle.
+	maxSeriesBackfillGrabsPerKick = defaultAutoGrabSlotsPerCycle
 
 	// seriesBackfillTimeout is the wall-clock bound on one kick's sync+dispatch.
 	// Detached from the HTTP request (see kick); without this a hung TMDB or
@@ -195,9 +195,10 @@ func (b *seriesBackfill) runOnce(seriesID int64, seasons map[int]bool) {
 	// would skip the sync after a Calendar/Library page load, exactly when the
 	// operator is most likely to click monitor.
 	syncSeriesCatalog(ctx, sess, b.libStore, *series, false)
+	limit, _ := airDateDispatchCaps(ctx, b.deps.SettingsStore)
 	dispatchAirDateGrabsScoped(ctx, b.deps, sess, b.libStore,
 		[]library.Series{*series}, seasons,
-		maxSeriesBackfillGrabsPerKick, 0, nil, time.Now())
+		limit, 0, nil, time.Now())
 }
 
 func mergeSeasonSet(dst map[int64]map[int]bool, seriesID int64, seasons map[int]bool) {

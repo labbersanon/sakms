@@ -73,30 +73,17 @@ const (
 	// there is no proven demand for one.
 	seriesNewSeasonDiscoveryKey = "series_new_season_discovery_enabled"
 
-	// maxAirDateGrabsPerCycle bounds how many NEW dispatch attempts one cycle
-	// may start, mirroring the ≤20 cap the Discover bulk-grab path already
-	// established. Each attempt costs one Prowlarr SearchByID + two TMDB calls,
-	// sequential — never an errgroup fan-out, which would recreate the exact
-	// concurrent-indexer-query pattern that got the per-card availability badge
-	// permanently banned.
+	// maxAirDateGrabsPerCycle / maxAirDateGrabsPerSeriesPerCycle are the caps an
+	// install with nothing configured runs at; airDateDispatchCaps reads the
+	// operator's values at dispatch time instead.
 	//
-	// It bounds DISPATCH ONLY. The catalog sync completes for every tracked
-	// series every cycle regardless, or MissingCount and the season UI would lag
-	// reality by however long the backlog takes to drain. It is also not a
-	// Prowlarr cap in any full-system sense: every attempt that finds nothing
-	// leaves a pending_retry row whose re-searches belong to retryDueGrabs.
-	// airDateRetryBackoff is what bounds that accumulated stock.
-	maxAirDateGrabsPerCycle = 20
-
-	// maxAirDateGrabsPerSeriesPerCycle bounds how many of a cycle's slots any
-	// ONE series may consume. Without it, oldest-first ordering lets a
-	// multi-thousand-episode classic (Red Skelton / Three Stooges) exhaust the
-	// global cap every cycle, so a newly monitored modern series never cues.
-	//
-	// It is only safe because monitor-on kicks an immediate series-scoped
-	// search (seriesbackfill.go): dropping a single-series backlog from 20 to 5
-	// per background cycle without that kick would be a net regression.
-	maxAirDateGrabsPerSeriesPerCycle = 5
+	// Either way they bound DISPATCH ONLY — the catalog sync completes for every
+	// tracked series every cycle regardless, and every attempt is a sequential
+	// Prowlarr/TMDB call, never an errgroup fan-out. The per-series cap is what
+	// stops a classic backlog taking every slot; monitor-on backfill
+	// (seriesbackfill.go) is what still lets a newly monitored show cue at once.
+	maxAirDateGrabsPerCycle          = defaultAutoGrabSlotsPerCycle
+	maxAirDateGrabsPerSeriesPerCycle = defaultAutoGrabSlotsPerSeries
 
 	// airDateRetryReason is written by the backoff sweep. It is BOTH the
 	// operator-facing explanation on the Requests screen AND the
@@ -297,8 +284,9 @@ type airDateCandidate struct {
 // cycle, and it is what makes the cap deterministic across runs.
 func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Session,
 	libStore *library.Store, seriesList []library.Series, excluded map[string]bool, now time.Time) {
+	limit, perSeries := airDateDispatchCaps(ctx, deps.SettingsStore)
 	dispatchAirDateGrabsScoped(ctx, deps, sess, libStore, seriesList, nil,
-		maxAirDateGrabsPerCycle, maxAirDateGrabsPerSeriesPerCycle, excluded, now)
+		limit, perSeries, excluded, now)
 }
 
 // dispatchAirDateGrabsScoped is the shared dispatcher for the background

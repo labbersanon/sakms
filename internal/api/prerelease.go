@@ -48,11 +48,12 @@ import (
 )
 
 const (
-	// maxPreReleaseGrabsPerCycle bounds how many held requests one cycle may
-	// actually dispatch. Mirrors maxAirDateGrabsPerCycle in value and in
-	// reasoning: each attempt costs one Prowlarr search plus TMDB calls,
-	// SEQUENTIALLY — never an errgroup fan-out, which is the concurrent-indexer
-	// pattern that got the per-card availability badge permanently banned.
+	// maxPreReleaseGrabsPerCycle is the unconfigured bound on how many held
+	// requests one cycle may dispatch; releaseDueGrabs runs at the operator's
+	// Usenet cycle slots (loadUsenetCycleSlots) instead. Either way, each attempt
+	// costs one Prowlarr search plus TMDB calls, SEQUENTIALLY — never an errgroup
+	// fan-out, which is the concurrent-indexer pattern that got the per-card
+	// availability badge permanently banned.
 	//
 	// It matters most at one specific moment. Unattended auto-grab is off by
 	// default, and while it is off the retry cycle never runs at all, so held
@@ -66,7 +67,7 @@ const (
 	// dispatch attempt. An exclusion skip or a duplicate suppression must not
 	// consume budget: neither costs a Prowlarr search, which is what the cap
 	// exists to bound.
-	maxPreReleaseGrabsPerCycle = 20
+	maxPreReleaseGrabsPerCycle = defaultAutoGrabSlotsPerCycle
 
 	// preReleaseSupersededReason explains a held request this pass terminated
 	// because the operator got the film some other way before its release date
@@ -134,6 +135,7 @@ func releaseDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 	}
 
 	attempts := 0
+	cycleCap := loadUsenetCycleSlots(ctx, deps.SettingsStore)
 	for _, g := range due {
 		// An operator who excluded this title from the Requests worklist has said
 		// "stop working on this" — identical treatment retryDueGrabs gives it, and
@@ -155,8 +157,8 @@ func releaseDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 		// and incremented before the session build, because a build failure
 		// re-parks the row (writing a retry_after) and therefore costs the row its
 		// promotion just as surely as a real search does.
-		if attempts >= maxPreReleaseGrabsPerCycle {
-			log.Printf("pre-release: reached this cycle's dispatch cap (%d) — the rest stay held for the next one", maxPreReleaseGrabsPerCycle)
+		if attempts >= cycleCap {
+			log.Printf("pre-release: reached this cycle's dispatch cap (%d) — the rest stay held for the next one", cycleCap)
 			return
 		}
 		attempts++

@@ -34,9 +34,10 @@ import (
 // and is recorded as the Trigger in RunAutoGrab for logging/observability.
 const TriggerAdultMonitor AutoGrabTrigger = "adultmonitor"
 
-// maxMonitorGrabsPerCycle bounds how many new dispatch attempts the monitor
-// pass may start per cycle, mirroring maxAirDateGrabsPerCycle.
-const maxMonitorGrabsPerCycle = 20
+// maxMonitorGrabsPerCycle is the unconfigured bound on how many new dispatch
+// attempts the monitor pass may start per cycle; the operator's Usenet cycle
+// slots (loadUsenetCycleSlots) are what it actually runs at.
+const maxMonitorGrabsPerCycle = defaultAutoGrabSlotsPerCycle
 
 // monitorUnmonitoredReason is the retry_reason written to grabs the un-monitor
 // PUT cancels. Operator-facing copy only — nothing branches on it.
@@ -78,8 +79,9 @@ func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionB
 	activeGrabTitles := activeAdultMonitorGrabKeys(ctx, deps)
 
 	attempts := 0
+	cycleCap := loadUsenetCycleSlots(ctx, deps.SettingsStore)
 	for _, entity := range monitored {
-		if attempts >= maxMonitorGrabsPerCycle {
+		if attempts >= cycleCap {
 			break
 		}
 		if entity.MonitoredSince == "" {
@@ -93,7 +95,7 @@ func monitorAdultEntities(ctx context.Context, deps AutoGrabDeps, build sessionB
 		}
 
 		for _, scene := range scenes {
-			if attempts >= maxMonitorGrabsPerCycle {
+			if attempts >= cycleCap {
 				break
 			}
 			// Watermark: only grab scenes added after monitoring was enabled.

@@ -57,6 +57,8 @@ import {
   createResource,
   createSignal,
   For,
+  onCleanup,
+  onMount,
   Show,
 } from "solid-js";
 import type { AvailabilityCandidate, AvailabilityPreview, OfficialRating, TitleDetail } from "@dto";
@@ -526,6 +528,79 @@ const OfficialRatingsRow: Component<{ ratings: OfficialRating[] }> = (props) => 
     </div>
   </Show>
 );
+
+
+// ExpandableClampedText — DetailPopup synopsis/Adult description with a
+// line-clamp-4 default and an inline More/Less control that appears ONLY when
+// the clamped box actually overflows (scrollHeight > clientHeight). Short
+// copy stays clamp-only with no link.
+// Claude 2026-09-01: shared by Movies/Series header overview and Adult scene
+// description so both surfaces behave the same.
+// Reason: operator asked a More link for overflow in the popup description.
+// Troubleshooting: line-clamp-4 hid the rest of the plot with no way to open it.
+// Review if: a nested full-text modal replaces inline expand, or clamp lines change.
+export const ExpandableClampedText: Component<{
+  text: string;
+  // Paragraph classes excluding line-clamp-4 (added while collapsed). Pinned
+  // callers pass the historical mt-1/mt-3 + text-sm text-muted strings so
+  // DetailPopup tests keep matching p.mt-1.line-clamp-4 / p.mt-3.line-clamp-4.
+  class?: string;
+}> = (props) => {
+  const [expanded, setExpanded] = createSignal(false);
+  const [overflows, setOverflows] = createSignal(false);
+  let pEl: HTMLParagraphElement | undefined;
+
+  const measure = () => {
+    const el = pEl;
+    if (!el) return;
+    // Only measure while clamped — expanded text's scrollHeight equals
+    // clientHeight and would falsely clear the More affordance mid-read.
+    if (expanded()) return;
+    setOverflows(el.scrollHeight > el.clientHeight + 1);
+  };
+
+  createEffect(() => {
+    props.text;
+    expanded();
+    // After Solid commits class/text changes.
+    requestAnimationFrame(measure);
+  });
+
+  onMount(() => {
+    measure();
+    if (typeof ResizeObserver === "undefined" || !pEl) return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(pEl);
+    onCleanup(() => ro.disconnect());
+  });
+
+  // Reset expand when the text identity changes (recommendation retarget).
+  createEffect(() => {
+    props.text;
+    setExpanded(false);
+  });
+
+  return (
+    <div>
+      <p
+        ref={pEl}
+        class={`${props.class ?? ""} ${expanded() ? "" : "line-clamp-4"}`.trim()}
+        title={expanded() || !overflows() ? undefined : props.text}
+      >
+        {props.text}
+      </p>
+      <Show when={overflows() || expanded()}>
+        <button
+          type="button"
+          class="mt-0.5 text-xs font-medium text-accent hover:underline"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded() ? "Less" : "More"}
+        </button>
+      </Show>
+    </div>
+  );
+};
 
 // SectionHeading is the small uppercase label above each DetailPopup detail
 // section (Cast / Currently Streaming On / More like this) — one place so
@@ -1019,7 +1094,10 @@ export const DetailPopup: Component<{
             <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
           </Show>
           <Show when={overviewText()}>
-            <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
+            <ExpandableClampedText
+              text={overviewText()}
+              class="mt-1 text-sm text-muted"
+            />
           </Show>
           <a
             href={externalDetailURL(props.target)}
@@ -1101,9 +1179,10 @@ export const DetailPopup: Component<{
             popup open. Absent entirely when no catalog has real data (AC5): no
             placeholder, no empty section, no AI fallback. */}
         <Show when={mode() === "adult" && sceneDescription()}>
-          <p class="mt-3 line-clamp-4 text-sm text-muted" title={sceneDescription()}>
-            {sceneDescription()}
-          </p>
+          <ExpandableClampedText
+            text={sceneDescription()}
+            class="mt-3 text-sm text-muted"
+          />
         </Show>
 
         <Show when={mode() === "adult" && sceneGenres().length}>

@@ -389,6 +389,111 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     expect(screen.getByRole("button", { name: "Torrent" })).not.toBeDisabled();
   });
 
+
+describe("DetailPopup — ExpandableClampedText More/Less", () => {
+  const longOverview =
+    "Word ".repeat(80) + "end."; // long enough that a mocked clamp overflows
+
+  const mockClampOverflow = () => {
+    // jsdom does not layout line-clamp; fake overflow only while clamped.
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(64);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.classList.contains("line-clamp-4")) {
+          return (this.textContent?.length ?? 0) > 40 ? 200 : 40;
+        }
+        return 64;
+      },
+    );
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows More only when the Movies synopsis overflows the clamp", async () => {
+    mockClampOverflow();
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/discover/detail"))
+        return jsonResponse(emptyDetail());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ overview: longOverview }) }}
+        onClose={() => {}}
+      />
+    ));
+
+    expect(await screen.findByRole("button", { name: "More" })).toBeInTheDocument();
+    expect(overviewParagraphs(document.body)).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("button", { name: "Less" })).toBeInTheDocument();
+    expect(overviewParagraphs(document.body)).toHaveLength(0); // clamp removed
+
+    fireEvent.click(screen.getByRole("button", { name: "Less" }));
+    expect(screen.getByRole("button", { name: "More" })).toBeInTheDocument();
+    expect(overviewParagraphs(document.body)).toHaveLength(1);
+  });
+
+  it("does not show More for a short Movies synopsis that fits", async () => {
+    mockClampOverflow();
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/discover/detail"))
+        return jsonResponse(emptyDetail());
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ overview: "Short." }) }}
+        onClose={() => {}}
+      />
+    ));
+
+    expect(await screen.findByText("Short.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
+  });
+
+  it("shows More for an overflowing Adult scene description", async () => {
+    mockClampOverflow();
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 0, protocol: "" });
+      if (url.includes("/discover/description"))
+        return jsonResponse({ text: longOverview, source: "stashdb" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "adult",
+          item: adultScene({ source: "stashdb", id: "s1" }),
+        }}
+        onClose={() => {}}
+      />
+    ));
+
+    // Adult header still shows studio · year; description is the mt-3 block.
+    expect(await screen.findByRole("button", { name: "More" })).toBeInTheDocument();
+    expect(descriptionParagraphs(document.body)).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("button", { name: "Less" })).toBeInTheDocument();
+  });
+});
+
   it("Series shows the synopsis in the header while the season picker is still open", async () => {
     stubFetch((url) => {
       if (url.includes("/discover/detail"))

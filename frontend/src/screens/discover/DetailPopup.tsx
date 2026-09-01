@@ -989,6 +989,92 @@ export const DetailPopup: Component<{
       <Show when={allowGrab() && mode() === "series"}>
         <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
       </Show>
+      {/* Claude 2026-09-01: poster + synopsis + More/Trailer/Play sit ABOVE
+          the Series ready() gate. Discover Series used to hide this whole
+          header until a season was picked, so the description the card hover
+          already showed was missing on the exact screen operators open first.
+          Availability/grab/F1 stay gated; only the title header is ungated.
+          Reason: operator screenshot (Lanterns) — seasons toggles + picker,
+          no plot text.
+          Troubleshooting: overview lived inside <Show when={ready()}>.
+          Review if: Series stops gating availability behind the picker. */}
+      <div class="flex items-start gap-3">
+        <a
+          href={externalDetailURL(props.target)}
+          target="_blank"
+          rel="noreferrer"
+          class="aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
+        >
+          <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
+            <img
+              src={posterSrc()}
+              alt={item().title}
+              class="h-full w-full object-cover"
+            />
+          </Show>
+        </a>
+        <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+          <Show when={props.lead}>{props.lead}</Show>
+          <Show when={mode() === "adult" && ratingValue() > 0}>
+            <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
+          </Show>
+          <Show when={overviewText()}>
+            <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
+          </Show>
+          <a
+            href={externalDetailURL(props.target)}
+            target="_blank"
+            rel="noreferrer"
+            class={HEADER_ACTION_CLASS}
+          >
+            More on {sourceLabel(props.target)} →
+          </a>
+          {/* Trailer, elevated from the old header text link into a
+              distinct button (F1 item 2) — styling/placement only,
+              TrailerURL is already wired. Deliberately a SIBLING of the
+              availability/grab block below, not nested inside it: the
+              trailer resource is independent of the Prowlarr preview, so
+              it must keep rendering even while that preview is loading
+              or has errored (a code-review catch — it used to disappear
+              whenever preview.error was set, coupling two unrelated
+              states). */}
+          <Show
+            when={
+              trailer()?.startsWith("https://") ||
+              trailer()?.startsWith("http://")
+            }
+          >
+            <a
+              href={trailer()}
+              target="_blank"
+              rel="noreferrer"
+              class={HEADER_ACTION_CLASS}
+            >
+              Watch Trailer →
+            </a>
+          </Show>
+          {/* Claude 2026-08-14: Play Movie/Show/Scene in the same stack as
+              Watch Trailer. Reason: a second-row control under only the
+              trailer button left a ragged header. Discover has no playSrc.
+              Review if: Series episode playback lands. */}
+          <Show when={(props.playSrc ?? "").trim()}>
+            <PlayFullscreenLink
+              src={props.playSrc ?? ""}
+              noun={
+                mode() === "adult"
+                  ? "Scene"
+                  : mode() === "series"
+                    ? "Show"
+                    : "Movie"
+              }
+              title={item().title}
+              class={HEADER_ACTION_CLASS}
+            />
+          </Show>
+        </div>
+      </div>
+
+
       <Show
         when={ready()}
         fallback={
@@ -1010,82 +1096,6 @@ export const DetailPopup: Component<{
           </div>
         }
       >
-        <div class="flex items-start gap-3">
-          <a
-            href={externalDetailURL(props.target)}
-            target="_blank"
-            rel="noreferrer"
-            class="aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
-          >
-            <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
-              <img
-                src={posterSrc()}
-                alt={item().title}
-                class="h-full w-full object-cover"
-              />
-            </Show>
-          </a>
-          <div class="flex min-w-0 flex-1 flex-col gap-1.5">
-            <Show when={props.lead}>{props.lead}</Show>
-            <Show when={mode() === "adult" && ratingValue() > 0}>
-              <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
-            </Show>
-            <Show when={overviewText()}>
-              <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
-            </Show>
-            <a
-              href={externalDetailURL(props.target)}
-              target="_blank"
-              rel="noreferrer"
-              class={HEADER_ACTION_CLASS}
-            >
-              More on {sourceLabel(props.target)} →
-            </a>
-            {/* Trailer, elevated from the old header text link into a
-                distinct button (F1 item 2) — styling/placement only,
-                TrailerURL is already wired. Deliberately a SIBLING of the
-                availability/grab block below, not nested inside it: the
-                trailer resource is independent of the Prowlarr preview, so
-                it must keep rendering even while that preview is loading
-                or has errored (a code-review catch — it used to disappear
-                whenever preview.error was set, coupling two unrelated
-                states). */}
-            <Show
-              when={
-                trailer()?.startsWith("https://") ||
-                trailer()?.startsWith("http://")
-              }
-            >
-              <a
-                href={trailer()}
-                target="_blank"
-                rel="noreferrer"
-                class={HEADER_ACTION_CLASS}
-              >
-                Watch Trailer →
-              </a>
-            </Show>
-            {/* Claude 2026-08-14: Play Movie/Show/Scene in the same stack as
-                Watch Trailer. Reason: a second-row control under only the
-                trailer button left a ragged header. Discover has no playSrc.
-                Review if: Series episode playback lands. */}
-            <Show when={(props.playSrc ?? "").trim()}>
-              <PlayFullscreenLink
-                src={props.playSrc ?? ""}
-                noun={
-                  mode() === "adult"
-                    ? "Scene"
-                    : mode() === "series"
-                      ? "Show"
-                      : "Movie"
-                }
-                title={item().title}
-                class={HEADER_ACTION_CLASS}
-              />
-            </Show>
-          </div>
-        </div>
-
         {/* Adult scene description — sourced from the entity's own catalog
             (entity_source, AC4) via GET /api/modes/adult/discover/description, once per
             popup open. Absent entirely when no catalog has real data (AC5): no

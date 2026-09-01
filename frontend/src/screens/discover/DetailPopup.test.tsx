@@ -389,6 +389,45 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     expect(screen.getByRole("button", { name: "Torrent" })).not.toBeDisabled();
   });
 
+  it("Series shows the synopsis in the header while the season picker is still open", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({
+          seasons: [seasonFixture(1), seasonFixture(2)],
+          overview: "A Green Lantern investigation.",
+        });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      // No availability — picker not submitted yet.
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({
+        id: 5,
+        title: "Lanterns",
+        mediaType: "tv",
+        overview: "A Green Lantern investigation.",
+      }),
+    };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    // Picker still up (Series not ready) AND synopsis already in the header.
+    expect(
+      await screen.findByText(
+        "Pick a season (and optionally an episode) to check availability.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("A Green Lantern investigation."),
+    ).toBeInTheDocument();
+    expect(overviewParagraphs(container)).toHaveLength(1);
+  });
+
   it("Series gates the availability fetch behind season/episode — no call until the picker is submitted", async () => {
     const preview = emptyPreview();
     preview.res1080.high.torrent = candidate();

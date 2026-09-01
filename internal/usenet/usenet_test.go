@@ -986,6 +986,56 @@ func TestPool_PutAfterClose_TerminatesConnection(t *testing.T) {
 	}
 }
 
+// TestPool_HardCapsLiveConnections is the NZBGet ServerX.Connections regression:
+// with MaxConns=1, a second get must wait for put rather than dialing a second
+// socket (the pre-fix behavior that blew past provider limits).
+func TestPool_HardCapsLiveConnections(t *testing.T) {
+	srv := newFakeNNTP(t)
+	cfg := srv.cfg()
+	cfg.MaxConns = 1
+	p := newPool(cfg)
+
+	first, err := p.get()
+	if err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+	if got := len(p.live); got != 1 {
+		t.Fatalf("live tokens after first dial: got %d, want 1", got)
+	}
+
+	type getResult struct {
+		err error
+	}
+	done := make(chan getResult, 1)
+	go func() {
+		c, err := p.get()
+		if err != nil {
+			done <- getResult{err: err}
+			return
+		}
+		p.put(c, true)
+		done <- getResult{}
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("second get returned while MaxConns=1 connection was still checked out — pool dialed past the hard cap")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: blocked until put.
+	}
+
+	p.put(first, true)
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("second get after put: %v", res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second get stayed blocked after put returned the only connection")
+	}
+}
+
 // deadPort returns a port that is guaranteed to refuse connections: bind it,
 // read the assigned number, then release it. Avoids assuming anything about the
 // host (e.g. that nothing listens on port 1).

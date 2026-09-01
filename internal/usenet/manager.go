@@ -502,6 +502,15 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 			// unclassified error (a dial or decode failure) alike as
 			// retryable, since neither proves the article is really gone.
 			dl.err = err
+			// Claude 2026-09-01: mirror NZBGet ErrorTarget=both — UI alone was
+			// losing the reason on every container restart (in-memory queue).
+			// Reason: Downloads showed red errors, docker logs had none, and
+			//   the retry sweep skips unknown GIDs after restart, so failures
+			//   were undiagnosable from the host.
+			// Troubleshooting: "downloads all erroring" with empty sakms logs.
+			// Review if: per-NZB log files (NZBGet NzbLog) are added later.
+			// Related: internal/usenet/pool.go live-socket hard cap.
+			log.Printf("usenet: download %s (%s) error: %v", gid, dl.name, err)
 		}
 		m.mu.Unlock()
 		return

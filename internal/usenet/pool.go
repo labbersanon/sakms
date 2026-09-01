@@ -61,21 +61,41 @@ func effectiveMaxConns(cfg ServerConfig) int {
 	return cfg.MaxConns
 }
 
-// pool recycles authenticated NNTP connections to a single server. It does not
-// cap concurrency itself — the Manager limits parallel segment fetches via
-// errgroup.SetLimit(MaxConns).
+// pool recycles authenticated NNTP connections to a single server and hard-caps
+// how many live sockets exist for that server.
+//
+// Claude 2026-09-01: live-socket hard cap (NZBGet ServerX.Connections pattern).
+// Reason: get() used to dial whenever idle was empty, so N concurrent NZBs each
+//   running errgroup.SetLimit(MaxConns) could open N×MaxConns sockets against a
+//   provider that only allows MaxConns — downloads started, then died with
+//   in-memory-only errors and stranded grabs.
+// Troubleshooting: usenet downloads that write a bit then stall/error while
+//   Eweka auth still works for a single connection.
+// Review if: multi-server fill logic needs per-server budgets that differ from
+//   the Manager's segment SetLimit.
+// Related: NZBGet nzbget.conf ServerX.Connections / ArticleRetries.
 type pool struct {
 	cfg    ServerConfig
 	idle   chan *nntp.Conn
+	// live has capacity effectiveMaxConns and one token per live TCP socket
+	// (idle or checked out). Taking from idle does not consume a new token;
+	// dialing does; closing a socket (failed put / drained idle) releases one.
+	live   chan struct{}
 	mu     sync.Mutex
 	closed bool
 }
 
 func newPool(cfg ServerConfig) *pool {
-	return &pool{cfg: cfg, idle: make(chan *nntp.Conn, effectiveMaxConns(cfg))}
+	n := effectiveMaxConns(cfg)
+	return &pool{
+		cfg:  cfg,
+		idle: make(chan *nntp.Conn, n),
+		live: make(chan struct{}, n),
+	}
 }
 
-// get returns an idle authenticated connection or dials a new one.
+// get returns an idle authenticated connection or dials a new one, never
+// exceeding effectiveMaxConns live sockets for this server.
 // Returns an error immediately if the pool has been closed.
 func (p *pool) get() (*nntp.Conn, error) {
 	p.mu.Lock()
@@ -84,11 +104,25 @@ func (p *pool) get() (*nntp.Conn, error) {
 		return nil, errors.New("usenet: pool is closed")
 	}
 	p.mu.Unlock()
+
+	// Prefer an already-open idle connection — it already holds a live token.
 	select {
 	case c := <-p.idle:
 		return c, nil
 	default:
-		return p.dial()
+	}
+
+	// No idle conn: wait for either a free live slot (dial) or a returned idle.
+	select {
+	case p.live <- struct{}{}:
+		c, err := p.dial()
+		if err != nil {
+			<-p.live
+			return nil, err
+		}
+		return c, nil
+	case c := <-p.idle:
+		return c, nil
 	}
 }
 
@@ -107,15 +141,25 @@ func (p *pool) get() (*nntp.Conn, error) {
 // Troubleshooting: NNTP connections left ESTABLISHED after a subscription edit.
 // Review if: pool gains a context-aware acquire/release that tracks checked-out
 // connections directly.
+//
+// Claude 2026-09-01: releasing the live token on discard/close paths.
+// Reason: every dial consumes a live token; discarding the socket without
+//   releasing it permanently shrinks the pool's effective MaxConns to zero
+//   after enough failures.
+// Troubleshooting: usenet downloads that stop making progress after a burst of
+//   article/dial errors even though MaxConns is still configured high.
+// Review if: the live-token accounting moves into a dedicated counter.
 func (p *pool) put(c *nntp.Conn, ok bool) {
 	if !ok {
 		c.Quit()
+		p.releaseLive()
 		return
 	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		c.Quit()
+		p.releaseLive()
 		return
 	}
 	select {
@@ -125,6 +169,15 @@ func (p *pool) put(c *nntp.Conn, ok bool) {
 		// Pool is full (shouldn't happen if callers respect MaxConns, but be safe).
 		p.mu.Unlock()
 		c.Quit()
+		p.releaseLive()
+	}
+}
+
+func (p *pool) releaseLive() {
+	select {
+	case <-p.live:
+	default:
+		// Defensive: a put without a matching dial should not deadlock callers.
 	}
 }
 
@@ -148,6 +201,7 @@ func (p *pool) close() {
 	// Quit does network I/O — never hold p.mu across it.
 	for _, c := range drained {
 		c.Quit()
+		p.releaseLive()
 	}
 }
 

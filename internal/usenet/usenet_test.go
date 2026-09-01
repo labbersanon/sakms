@@ -230,6 +230,22 @@ func TestSanitizeName_Empty(t *testing.T) {
 	}
 }
 
+func TestPreferredOutputName_UsesSubjectWhenYencLacksExt(t *testing.T) {
+	subj := `[9/9] "Furious.S01E01.The.Gorgon.mkv" yEnc (1/8149)`
+	got := preferredOutputName("358657cf85216d96aa33ea5cfe210d9239860178c68722852e5ef03792eb", subj)
+	if got != "Furious.S01E01.The.Gorgon.mkv" {
+		t.Fatalf("got %q, want subject-derived .mkv name", got)
+	}
+}
+
+func TestPreferredOutputName_KeepsYencWhenExtPresent(t *testing.T) {
+	subj := `[1/1] "ignored.mkv" yEnc (1/1)`
+	got := preferredOutputName("real.vol001+02.par2", subj)
+	if got != "real.vol001+02.par2" {
+		t.Fatalf("got %q, want yEnc name with .par2", got)
+	}
+}
+
 // -- parseDNZBHeaders --
 
 func TestParseDNZBHeaders_AllPresent(t *testing.T) {

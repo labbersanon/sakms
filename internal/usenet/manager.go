@@ -572,10 +572,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		return "", fmt.Errorf("segment 1: %w", err)
 	}
 
-	filename := first.filename
-	if filename == "" {
-		filename = sanitizeName(nzbFile.Subject)
-	}
+	filename := preferredOutputName(first.filename, nzbFile.Subject)
 	outPath := filepath.Join(dl.stagingDir, filename)
 
 	f, err := os.Create(outPath)
@@ -783,6 +780,63 @@ func sameDownloads(a, b []Download) bool {
 // yEnc filename can be used safely as a filesystem path component.
 func sanitizeName(s string) string {
 	return strings.NewReplacer("/", "_", "\\", "_", "\x00", "_").Replace(s)
+}
+
+// knownOutputExt reports whether name ends with a media/par2 extension the
+// importer and PAR2 repair path recognize.
+func knownOutputExt(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".mkv", ".mp4", ".avi", ".m4v", ".wmv", ".mov", ".ts", ".m2ts",
+		".mpg", ".mpeg", ".iso", ".img", ".vob",
+		".rar", ".zip", ".7z",
+		".par2", ".nfo", ".srt", ".sub", ".idx", ".ass", ".ssa":
+		return true
+	default:
+		return false
+	}
+}
+
+// filenameFromSubject extracts the quoted base name from a typical NZB subject
+// like `[9/9] "Show.S01E01.mkv" yEnc (1/100)`. Empty when no quoted token is
+// present. NZBGet's subject-filename path does the same for posters that put a
+// useless hash in the yEnc =ybegin name.
+func filenameFromSubject(subject string) string {
+	start := strings.Index(subject, "\"")
+	if start < 0 {
+		return ""
+	}
+	rest := subject[start+1:]
+	end := strings.Index(rest, "\"")
+	if end <= 0 {
+		return ""
+	}
+	return sanitizeName(rest[:end])
+}
+
+// preferredOutputName chooses the on-disk name for an assembled NZB file.
+//
+// Claude 2026-09-01: fall back to the NZB subject when yEnc name lacks an ext.
+// Reason: some posters put a bare hex hash in =ybegin; import then fails with
+//   "no video files found" despite a complete Matroska sitting in staging.
+// Troubleshooting: usenet download status=complete but import finds no video.
+// Review if: import gains content-sniffing for extensionless files.
+// Related: NZBGet subject-filename handling / NzbLog diagnostics.
+func preferredOutputName(yencName, subject string) string {
+	yencName = sanitizeName(yencName)
+	if yencName != "" && knownOutputExt(yencName) {
+		return yencName
+	}
+	if fromSub := filenameFromSubject(subject); fromSub != "" && knownOutputExt(fromSub) {
+		return fromSub
+	}
+	if yencName != "" {
+		return yencName
+	}
+	if fromSub := filenameFromSubject(subject); fromSub != "" {
+		return fromSub
+	}
+	return sanitizeName(subject)
 }
 
 // verifyAndRepair runs PAR2 verification and best-effort repair on the files

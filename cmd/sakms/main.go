@@ -857,10 +857,13 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 		staging = filepath.Join(dataDir, "downloads")
 	}
 
+	maxConcurrentDownloads := settingInt(ctx, settingsStore, api.UsenetMaxConcurrentDownloadsKey, usenet.DefaultMaxConcurrentDownloads)
+
 	m := usenet.New(usenet.Config{
-		Servers:    servers,
-		StagingDir: staging,
-		HTTPClient: httpClient,
+		Servers:                 servers,
+		StagingDir:              staging,
+		HTTPClient:              httpClient,
+		MaxConcurrentDownloads:  maxConcurrentDownloads,
 	})
 	return m, err
 }

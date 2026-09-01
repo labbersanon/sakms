@@ -82,13 +82,21 @@ type Manager struct {
 	pools       []*pool // one per enabled subscription; swapped by SetSubscriptions
 	downloads   map[string]*dlState
 	subscribers map[int]chan []Download
-	nextSubID   int
-	// semaphore caps concurrent downloads at the summed MaxConns of the current
-	// pool set. It is a field rather than a constant-sized channel because
-	// SetSubscriptions changes that sum; runDownload captures the channel it
-	// acquired from so a swap never releases into the wrong one.
-	semaphore chan struct{}
+	nextSubID int
+	// Claude 2026-09-01: job semaphore is MaxConcurrentDownloads, not Σ MaxConns.
+	// Reason: operators need "how many NZBs at once" separate from per-server
+	//   NNTP sockets; PAR2/unpack must not hold a download slot.
+	// Troubleshooting: many NZBs each opening MaxConns and saturating the
+	//   provider; Downloads stuck while one job repairs.
+	// Review if: a separate repair-concurrency knob is added.
+	// Related: SetMaxConcurrentDownloads; runDownload releases before PAR2.
+	maxConcurrentDownloads int
+	semaphore              chan struct{}
 }
+
+// DefaultMaxConcurrentDownloads is used when Config.MaxConcurrentDownloads is
+// unset (<=0). One NZB at a time is the safe default for provider fairness.
+const DefaultMaxConcurrentDownloads = 1
 
 // Config parameterises a Manager.
 type Config struct {
@@ -98,9 +106,13 @@ type Config struct {
 	Server ServerConfig
 	// Servers is the set of enabled Usenet subscriptions. Segment retrieval
 	// falls back across them in order.
-	Servers    []ServerConfig
-	StagingDir string
-	HTTPClient *http.Client
+	Servers []ServerConfig
+	// MaxConcurrentDownloads caps how many NZBs may fetch segments at once.
+	// It does not include PAR2/repair/import. <=0 means DefaultMaxConcurrentDownloads.
+	// Per-server MaxConns still bound the NNTP pool and segment fan-out.
+	MaxConcurrentDownloads int
+	StagingDir             string
+	HTTPClient             *http.Client
 }
 
 // New constructs a Manager for the given NNTP server configuration(s).
@@ -111,14 +123,19 @@ func New(cfg Config) *Manager {
 	if len(servers) == 0 && cfg.Server.Host != "" {
 		servers = []ServerConfig{cfg.Server}
 	}
+	maxDL := cfg.MaxConcurrentDownloads
+	if maxDL < 1 {
+		maxDL = DefaultMaxConcurrentDownloads
+	}
 	m := &Manager{
-		httpClient:  cfg.HTTPClient,
-		stagingDir:  cfg.StagingDir,
-		downloads:   map[string]*dlState{},
-		subscribers: map[int]chan []Download{},
+		httpClient:             cfg.HTTPClient,
+		stagingDir:             cfg.StagingDir,
+		downloads:              map[string]*dlState{},
+		subscribers:            map[int]chan []Download{},
+		maxConcurrentDownloads: maxDL,
 	}
 	m.pools = newPools(servers)
-	m.semaphore = make(chan struct{}, concurrencyBudget(m.pools))
+	m.semaphore = make(chan struct{}, maxDL)
 	return m
 }
 
@@ -159,10 +176,9 @@ func concurrencyBudget(pools []*pool) int {
 // already read m.pools continues against the old set for its current segment
 // and picks up the new set on the next one.
 //
-// The download semaphore is replaced too, since the budget changes with the
-// pool set. Downloads already holding a token release into the channel they
-// took it from, so during the overlap up to (held + newCapacity) downloads can
-// run concurrently. That is transient and benign; it is not a leak.
+// The job-download semaphore is NOT resized here — it is owned by
+// MaxConcurrentDownloads / SetMaxConcurrentDownloads. Segment fan-out still
+// follows concurrencyBudget(pools) inside downloadAll.
 func (m *Manager) SetSubscriptions(cfgs []ServerConfig) {
 	fresh := make([]*pool, 0, len(cfgs))
 
@@ -190,13 +206,33 @@ func (m *Manager) SetSubscriptions(cfgs []ServerConfig) {
 		}
 	}
 	m.pools = fresh
-	m.semaphore = make(chan struct{}, concurrencyBudget(fresh))
 	m.mu.Unlock()
 
 	// close() does network I/O — never hold m.mu across it.
 	for _, p := range retired {
 		p.close()
 	}
+}
+
+// SetMaxConcurrentDownloads replaces the NZB job semaphore capacity. Downloads
+// already holding a token release into the channel they took it from, so during
+// the overlap up to (held + newCapacity) NZBs can fetch concurrently. That is
+// transient and benign. n < 1 is clamped to DefaultMaxConcurrentDownloads.
+func (m *Manager) SetMaxConcurrentDownloads(n int) {
+	if n < 1 {
+		n = DefaultMaxConcurrentDownloads
+	}
+	m.mu.Lock()
+	m.maxConcurrentDownloads = n
+	m.semaphore = make(chan struct{}, n)
+	m.mu.Unlock()
+}
+
+// MaxConcurrentDownloads returns the current NZB job concurrency cap.
+func (m *Manager) MaxConcurrentDownloads() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxConcurrentDownloads
 }
 
 // HasSubscriptions reports whether any Usenet subscription is configured.
@@ -480,16 +516,23 @@ func (m *Manager) Subscribe() (<-chan []Download, func()) {
 // pipeline: download all segments → assemble files → optional par2 repair →
 // fire onComplete callback.
 func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb *NZB) {
-	// Acquire a semaphore slot before heavy work so at most the summed MaxConns
-	// of the configured subscriptions' downloads fetch segments concurrently,
-	// preventing account connection-limit overruns. The channel is captured
-	// locally so a concurrent SetSubscriptions swap releases into the same one
-	// the token came from.
+	// Claude 2026-09-01: job slot covers segment fetch only, not PAR2/import.
+	// Reason: max concurrent downloads must not count unpacking; MaxConns stay
+	//   on the pool/segment path (concurrencyBudget in downloadAll).
+	// Troubleshooting: one NZB repairing blocked every other NZB from starting.
+	// Review if: repair gets its own concurrency cap.
 	sem := m.currentSemaphore()
 	sem <- struct{}{}
-	defer func() { <-sem }()
+	released := false
+	defer func() {
+		if !released {
+			<-sem
+		}
+	}()
 
 	files, err := m.downloadAll(ctx, gid, dl, nzb)
+	<-sem
+	released = true
 	if err != nil {
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
@@ -519,6 +562,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	// Optional PAR2 verify + best-effort repair. Failure is non-fatal: the
 	// download is marked complete with whatever files landed (the repair is
 	// unvalidated against real-world par2cmdline output — see research notes).
+	// Job slot already released above so another NZB can download meanwhile.
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
 	if repairErr != nil {
 		log.Printf("usenet: par2 repair %s: %v (marking complete with unrepaired files)", gid, repairErr)

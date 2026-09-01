@@ -40,7 +40,9 @@ import {
 } from "../../api/serviceConnections";
 import {
   fetchUsenetAutoGrabEnabled,
+  fetchUsenetMaxConcurrentDownloads,
   putUsenetAutoGrabEnabled,
+  putUsenetMaxConcurrentDownloads,
 } from "../../api/usenet";
 import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
 import {
@@ -68,6 +70,7 @@ export const UsenetSection: Component = () => (
   <div>
     <SectionSave>
       <SubscriptionsCard />
+      <DownloadsCard />
       <AutoGrabCard />
     </SectionSave>
   </div>
@@ -479,6 +482,88 @@ const SubscriptionsCard: Component = () => {
 //
 // The single PUT this fires also sets the retry cadence server-side (on →
 // 86400s, off → 0). Do not add a second request to the interval route: one
+// DownloadsCard is the global NZB job concurrency cap. Deliberately separate
+// from each subscription's Max connections: that knob is NNTP sockets per
+// server; this one is how many NZBs may fetch segments at once. PAR2/repair
+// does not count against this cap (server-enforced).
+const DownloadsCard: Component = () => {
+  const [maxConcurrentDownloads, setMaxConcurrentDownloads] = createSignal(1);
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<Error | null>(null);
+  const status = useSaveStatus();
+
+  onMount(() => {
+    void fetchUsenetMaxConcurrentDownloads()
+      .then((n) => setMaxConcurrentDownloads(n))
+      .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
+  });
+
+  const save = async () => {
+    try {
+      await putUsenetMaxConcurrentDownloads(maxConcurrentDownloads());
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "usenet-downloads",
+    label: "downloads",
+    dirty,
+    valid: () => maxConcurrentDownloads() >= 1,
+    save,
+  });
+
+  return (
+    <Card title="Downloads">
+      <label class="mb-3 block">
+        <span class={labelClass}>Max concurrent downloads</span>
+        <input
+          type="number"
+          min={1}
+          class={`${inputClass} mt-1 !w-40`}
+          aria-label="Max concurrent downloads"
+          value={maxConcurrentDownloads()}
+          disabled={loadError() !== null}
+          onInput={(e) => {
+            const n = Number(e.currentTarget.value);
+            if (Number.isNaN(n)) return;
+            setMaxConcurrentDownloads(n);
+            setDirty(true);
+          }}
+        />
+        <Muted class="mt-1">
+          How many NZBs may download segments at once. At least 1. Does not
+          count PAR2 repair or import — a download finishes its segment fetch,
+          frees this slot, then repairs in the background. Separate from each
+          subscription's Max connections (NNTP sockets). Applies immediately.
+        </Muted>
+      </label>
+      <Show when={loadError()}>
+        <ErrorText>
+          Couldn't load downloads settings: {loadError()?.message}
+        </ErrorText>
+      </Show>
+      <Show when={!batched()}>
+        <div class="mt-3 flex items-center gap-2">
+          <Button
+            variant="primary"
+            class="!px-2 !py-1 !text-xs"
+            disabled={!dirty() || maxConcurrentDownloads() < 1}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+    </Card>
+  );
+};
+
 // source of truth is the whole point of coupling them there.
 const AutoGrabCard: Component = () => {
   const [enabled, setEnabled] = createSignal(false);

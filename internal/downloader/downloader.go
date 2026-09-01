@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,7 @@ const pollInterval = 500 * time.Millisecond
 // which is worse than not applying it at all.
 type Config struct {
 	StagingDir string // torrent download directory (anacrolix DataDir)
-	MaxConc    int    // reserved; all torrents download concurrently today
+	MaxConc    int    // max torrents actively downloading; extras wait in "waiting"
 	MaxConn    int    // EstablishedConnsPerTorrent in the torrent client config
 
 	// DownloadRateLimit caps aggregate download throughput in bytes/sec.
@@ -146,6 +147,14 @@ type entry struct {
 	t        *torrentlib.Torrent // nil in test-mode entries
 	status   string
 	errorMsg string
+	// Claude 2026-09-01: metaReady distinguishes pre-metadata "waiting" from
+	//   post-metadata queue waiting for a MaxConc slot. Rebuild refusal only
+	//   blocks the former; admitWaiting promotes the latter FIFO by addedAt.
+	// Reason: maxConcurrent was stored but never enforced.
+	// Troubleshooting: too many torrents saturating the network at once.
+	// Review if: a separate "queued" status is introduced in the wire DTO.
+	metaReady bool
+	addedAt   time.Time
 	files    []string // full absolute paths, populated after GotInfo
 	dir      string   // per-torrent folder or stagingDir
 	filename string   // display: files[0] when known
@@ -589,6 +598,16 @@ func (m *Manager) Reconfigure(ctx context.Context, next Config) error {
 			t.DisallowDataUpload()
 		}
 	}
+	// MaxConc is live: admit/demote without rebuilding the client.
+	m.mu.Lock()
+	toAllow, toDeny := m.syncConcurrencyLocked()
+	m.mu.Unlock()
+	for _, t := range toAllow {
+		t.AllowDataDownload()
+	}
+	for _, t := range toDeny {
+		t.DisallowDataDownload()
+	}
 	return nil
 }
 
@@ -623,7 +642,9 @@ func (m *Manager) rebuildRefusalLocked(old, next Config) error {
 	// readdTorrents' seedBaselineUp reset). Widening this to every rebuild
 	// class would make that path unreachable.
 	for gid, e := range m.entries {
-		if e.status == "waiting" {
+		// Post-metadata "waiting" means queued for a MaxConc slot and HAS
+		// metainfo to snapshot — only block pre-metadata waiting.
+		if e.status == "waiting" && !e.metaReady {
 			return &RebuildRefusedError{Reason: fmt.Sprintf(
 				"torrent %s is still fetching its metadata — try again in a moment", gid)}
 		}
@@ -637,9 +658,11 @@ func (m *Manager) rebuildRefusalLocked(old, next Config) error {
 // forcing a fresh metadata fetch for a torrent whose info this process already
 // holds.
 type rebuildTorrent struct {
-	gid    string
-	mi     metainfo.MetaInfo
-	status string
+	gid       string
+	mi        metainfo.MetaInfo
+	status    string
+	metaReady bool
+	addedAt   time.Time
 }
 
 // snapshotMetainfo captures a live torrent's metainfo in a form that can
@@ -677,11 +700,18 @@ func (m *Manager) rebuildClient(old Config) error {
 		}
 		switch e.status {
 		case "active", "paused", "complete":
+		case "waiting":
+			if !e.metaReady {
+				continue // no metainfo yet — rebuildRefusal should have blocked
+			}
 		default:
 			// "removed"/"error" entries have nothing live to carry over.
 			continue
 		}
-		snaps = append(snaps, rebuildTorrent{gid: gid, mi: snapshotMetainfo(e.t), status: e.status})
+		snaps = append(snaps, rebuildTorrent{
+			gid: gid, mi: snapshotMetainfo(e.t), status: e.status,
+			metaReady: e.metaReady, addedAt: e.addedAt,
+		})
 	}
 	m.tc = nil
 	m.rateLimiter = nil
@@ -753,6 +783,10 @@ func (m *Manager) readdTorrents(newTC *torrentlib.Client, snaps []rebuildTorrent
 			// only protects against the other interleaving. Re-asserting the
 			// pre-rebuild status covers both.
 			e.status = s.status
+			e.metaReady = s.metaReady
+			if !s.addedAt.IsZero() {
+				e.addedAt = s.addedAt
+			}
 
 			// Re-baseline a seeding entry against the NEW handle. seedBaselineUp
 			// was measured off the OLD handle's BytesWrittenData counter, and
@@ -799,15 +833,15 @@ func (m *Manager) readdTorrents(newTC *torrentlib.Client, snaps []rebuildTorrent
 			t.DisallowDataUpload()
 		}
 
-		// Restore pause before the watcher runs, so its GotInfo arm observes
-		// the paused status and leaves it alone.
-		if s.status == "paused" {
+		// Restore pause / queued-waiting before the watcher runs, so its
+		// GotInfo arm observes the status and leaves data download disallowed.
+		if s.status == "paused" || s.status == "waiting" {
 			t.DisallowDataDownload()
 		}
 		// A "complete" entry's original watcher already returned when
 		// Complete() fired. Relaunching one would re-fire Complete().On()
 		// immediately and trigger a DUPLICATE import.
-		if s.status == "active" || s.status == "paused" {
+		if s.status == "active" || s.status == "paused" || s.status == "waiting" {
 			go m.watchTorrent(t, s.gid)
 		}
 	}
@@ -909,6 +943,7 @@ func (m *Manager) AddTorrent(ctx context.Context, uri string) (string, error) {
 		t:      t,
 		status: "waiting",
 		dir:    m.cfg.StagingDir,
+		addedAt: time.Now(),
 		// Start the stale clock at add time: a torrent that never makes its
 		// first byte of progress is exactly the case stale detection exists for.
 		lastProgressAt: time.Now(),
@@ -928,10 +963,18 @@ func (m *Manager) Pause(gid string) error {
 		return fmt.Errorf("download not found: %s", gid)
 	}
 	t := e.t
+	wasActive := e.status == "active"
 	e.status = "paused"
+	var toAllow []*torrentlib.Torrent
+	if wasActive {
+		toAllow = m.admitWaitingLocked()
+	}
 	m.mu.Unlock()
 	if t != nil {
 		t.DisallowDataDownload()
+	}
+	for _, at := range toAllow {
+		at.AllowDataDownload()
 	}
 	return nil
 }
@@ -945,13 +988,25 @@ func (m *Manager) Resume(gid string) error {
 		return fmt.Errorf("download not found: %s", gid)
 	}
 	t := e.t
-	e.status = "active"
 	// Reset the stale clock: the entry made no progress while paused by
 	// design, and that dead time must not count toward the stale threshold.
 	e.lastProgressAt = time.Now()
+	admitted := false
+	if e.metaReady {
+		admitted = m.tryAdmitLocked(e)
+		if !admitted {
+			e.status = "waiting"
+		}
+	} else {
+		e.status = "waiting"
+	}
 	m.mu.Unlock()
 	if t != nil {
-		t.AllowDataDownload()
+		if admitted {
+			t.AllowDataDownload()
+		} else {
+			t.DisallowDataDownload()
+		}
 	}
 	return nil
 }
@@ -990,9 +1045,13 @@ func (m *Manager) Cancel(gid string) error {
 	// copy of its content until the next process restart's sweep.
 	importRoot := e.importRoot
 	delete(m.entries, gid)
+	toAllow := m.admitWaitingLocked()
 	m.mu.Unlock()
 	if t != nil {
 		t.Drop()
+	}
+	for _, at := range toAllow {
+		at.AllowDataDownload()
 	}
 	m.deleteDownloadFiles(files)
 	m.removeImportRoot(importRoot)
@@ -1112,20 +1171,29 @@ func (m *Manager) watchTorrent(t *torrentlib.Torrent, gid string) {
 		filename = files[0]
 	}
 	m.mu.Lock()
+	admitted := false
 	if e, ok := m.entries[gid]; ok && e.t == t {
-		// A rebuild re-adds a paused entry with data download already
-		// disallowed; don't resurrect it as active behind the operator's back.
-		if e.status != "paused" {
-			e.status = "active"
-		}
+		e.metaReady = true
 		e.files = files
 		e.dir = dir
 		e.filename = filename
 		e.cachedTotal = t.Length()
+		// A rebuild re-adds a paused entry with data download already
+		// disallowed; don't resurrect it as active behind the operator's back.
+		if e.status != "paused" {
+			admitted = m.tryAdmitLocked(e)
+			if !admitted {
+				e.status = "waiting"
+			}
+		}
 	}
 	m.mu.Unlock()
 
 	t.DownloadAll()
+	if !admitted {
+		// Queued (or paused): register piece interest but don't pull data yet.
+		t.DisallowDataDownload()
+	}
 
 	select {
 	case <-t.Closed():
@@ -1145,7 +1213,11 @@ func (m *Manager) watchTorrent(t *torrentlib.Torrent, gid string) {
 		e.speed = 0
 		e.upSpeed = 0
 		seedingEnabled := m.cfg.SeedingEnabled
+		toAllow := m.admitWaitingLocked()
 		m.mu.Unlock()
+		for _, at := range toAllow {
+			at.AllowDataDownload()
+		}
 
 		// Copy-then-move INVERSION. The originals stay exactly where the
 		// torrent client wrote them and are what keeps seeding — the storage
@@ -1863,4 +1935,98 @@ func diffKeys(dls []Download) map[string]seenKey {
 		out[d.GID] = seenKey{status: d.Status, completed: d.CompletedLength}
 	}
 	return out
+}
+
+// maxConcCap returns the effective MaxConc floor of 1.
+func (m *Manager) maxConcCap() int {
+	n := m.cfg.MaxConc
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+func (m *Manager) countActiveLocked() int {
+	n := 0
+	for _, e := range m.entries {
+		if e.status == "active" {
+			n++
+		}
+	}
+	return n
+}
+
+// tryAdmitLocked promotes e to active if a MaxConc slot is free. Caller holds
+// m.mu. e must already be metaReady and not paused. Returns whether it is
+// (now) active.
+func (m *Manager) tryAdmitLocked(e *entry) bool {
+	if e.status == "paused" || e.status == "complete" || e.status == "error" || e.status == "removed" {
+		return false
+	}
+	if !e.metaReady {
+		return false
+	}
+	if e.status == "active" {
+		return true
+	}
+	if m.countActiveLocked() >= m.maxConcCap() {
+		return false
+	}
+	e.status = "active"
+	return true
+}
+
+// admitWaitingLocked promotes waiting+metaReady entries FIFO by addedAt until
+// MaxConc is full. Returns torrents that should AllowDataDownload. Caller holds m.mu.
+func (m *Manager) admitWaitingLocked() []*torrentlib.Torrent {
+	var ready []*entry
+	for _, e := range m.entries {
+		// t may be nil in tests; still flip status so MaxConc accounting works.
+		if e.status == "waiting" && e.metaReady {
+			ready = append(ready, e)
+		}
+	}
+	sort.Slice(ready, func(i, j int) bool {
+		if ready[i].addedAt.Equal(ready[j].addedAt) {
+			return ready[i].filename < ready[j].filename
+		}
+		return ready[i].addedAt.Before(ready[j].addedAt)
+	})
+	var out []*torrentlib.Torrent
+	for _, e := range ready {
+		if m.countActiveLocked() >= m.maxConcCap() {
+			break
+		}
+		e.status = "active"
+		if e.t != nil {
+			out = append(out, e.t)
+		}
+	}
+	return out
+}
+
+// syncConcurrencyLocked admits up to MaxConc and demotes newest active excess
+// back to waiting. Returns (allow, deny) torrent handles. Caller holds m.mu.
+func (m *Manager) syncConcurrencyLocked() (allow, deny []*torrentlib.Torrent) {
+	allow = m.admitWaitingLocked()
+	var active []*entry
+	for _, e := range m.entries {
+		if e.status == "active" {
+			active = append(active, e)
+		}
+	}
+	sort.Slice(active, func(i, j int) bool {
+		// Demote newest first so older downloads keep their slots.
+		return active[i].addedAt.After(active[j].addedAt)
+	})
+	capN := m.maxConcCap()
+	for len(active) > capN {
+		e := active[0]
+		active = active[1:]
+		e.status = "waiting"
+		if e.t != nil {
+			deny = append(deny, e.t)
+		}
+	}
+	return allow, deny
 }

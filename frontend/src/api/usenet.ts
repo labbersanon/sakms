@@ -44,3 +44,24 @@ export function putUsenetAutoGrabEnabled(enabled: boolean): Promise<void> {
     body: JSON.stringify({ enabled }),
   });
 }
+
+
+// fetchUsenetMaxConcurrentDownloads reads how many NZBs may fetch segments at
+// once — GET /api/settings/usenet-max-concurrent-downloads. Default 1. Does not
+// count PAR2/repair.
+export function fetchUsenetMaxConcurrentDownloads(): Promise<number> {
+  return api<{ maxConcurrentDownloads: number }>(
+    "/api/settings/usenet-max-concurrent-downloads",
+  ).then((r) => r.maxConcurrentDownloads);
+}
+
+// putUsenetMaxConcurrentDownloads sets the NZB job concurrency cap — PUT
+// /api/settings/usenet-max-concurrent-downloads, 204 No Content. Applies live.
+export function putUsenetMaxConcurrentDownloads(
+  maxConcurrentDownloads: number,
+): Promise<void> {
+  return api<void>("/api/settings/usenet-max-concurrent-downloads", {
+    method: "PUT",
+    body: JSON.stringify({ maxConcurrentDownloads }),
+  });
+}

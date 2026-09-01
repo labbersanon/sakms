@@ -869,10 +869,14 @@ func TestSetSubscriptions_SwapWhileIdle(t *testing.T) {
 	// Double-close must be safe.
 	poolA.close()
 
-	// Growing the set must grow the concurrency budget.
+	// Growing the set must NOT resize the job semaphore — that cap is
+	// MaxConcurrentDownloads (default 1), independent of Σ MaxConns.
 	m.SetSubscriptions([]ServerConfig{srvA.cfg(), srvB.cfg()})
-	if got, want := cap(m.currentSemaphore()), srvA.cfg().MaxConns+srvB.cfg().MaxConns; got != want {
-		t.Errorf("semaphore capacity after growing the set: got %d, want %d", got, want)
+	if got, want := cap(m.currentSemaphore()), DefaultMaxConcurrentDownloads; got != want {
+		t.Errorf("job semaphore after growing subscriptions: got %d, want %d (MaxConcurrentDownloads)", got, want)
+	}
+	if got, want := concurrencyBudget(m.currentPools()), srvA.cfg().MaxConns+srvB.cfg().MaxConns; got != want {
+		t.Errorf("segment concurrency budget after growing the set: got %d, want %d", got, want)
 	}
 
 	// And the engine still downloads afterwards.
@@ -1105,4 +1109,31 @@ func TestAddNZB_ReturnsOpaqueGID(t *testing.T) {
 		t.Errorf("AddNZB gid %q: want nzb- + 16 hex chars", gid)
 	}
 	m.Cancel(gid)
+}
+
+
+func TestMaxConcurrentDownloads_DefaultAndSet(t *testing.T) {
+	m := New(Config{})
+	if got, want := m.MaxConcurrentDownloads(), DefaultMaxConcurrentDownloads; got != want {
+		t.Fatalf("default MaxConcurrentDownloads = %d, want %d", got, want)
+	}
+	if got, want := cap(m.currentSemaphore()), DefaultMaxConcurrentDownloads; got != want {
+		t.Fatalf("default semaphore cap = %d, want %d", got, want)
+	}
+	m.SetMaxConcurrentDownloads(3)
+	if got, want := m.MaxConcurrentDownloads(), 3; got != want {
+		t.Fatalf("after Set: MaxConcurrentDownloads = %d, want %d", got, want)
+	}
+	if got, want := cap(m.currentSemaphore()), 3; got != want {
+		t.Fatalf("after Set: semaphore cap = %d, want %d", got, want)
+	}
+	// SetSubscriptions must leave the job cap alone.
+	m.SetSubscriptions([]ServerConfig{{Host: "x", Port: 119, MaxConns: 8}})
+	if got, want := cap(m.currentSemaphore()), 3; got != want {
+		t.Fatalf("SetSubscriptions resized job semaphore to %d, want %d", got, want)
+	}
+	m.SetMaxConcurrentDownloads(0) // clamp
+	if got, want := m.MaxConcurrentDownloads(), DefaultMaxConcurrentDownloads; got != want {
+		t.Fatalf("clamp: MaxConcurrentDownloads = %d, want %d", got, want)
+	}
 }

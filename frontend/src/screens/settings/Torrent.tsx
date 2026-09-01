@@ -17,14 +17,9 @@
 //      from the keys that happen to have controls — omitted fields arrive as
 //      zero values and overwrite stored settings, silently for the booleans and
 //      the rate/ratio/duration/stale numbers (see api/torrent.ts).
-//   2. `maxConcurrent` RENDERS NO CONTROL BUT MUST STILL ROUND-TRIP. It is
-//      documented server-side as reserved/unimplemented (all torrents download
-//      concurrently today), so exposing a knob for it would be a knob that does
-//      nothing. But the PUT handler rejects `maxConcurrent < 1` with a 400, so
-//      dropping it fails EVERY save — including a save that touched nothing but
-//      the seed ratio. Because the field is invisible on screen, that 400 looks
-//      like it came from an unrelated control. Rule 1 is what keeps this correct
-//      for free.
+//   2. `maxConcurrent` IS ENFORCED: torrents beyond the cap stay "waiting" until
+//      a slot frees (queue, not pause). It still round-trips via the full-document
+//      PUT; the Performance control below owns the value.
 //   3. THERE IS NO LOCAL-PEER-DISCOVERY TOGGLE, deliberately. The torrent
 //      library this ships against has no LPD implementation at all — there is no
 //      field to wire one to, and a toggle wired to nothing is a stored-and-
@@ -408,6 +403,25 @@ const TorrentSettingsCard: Component = () => {
         </Group>
 
         <Group title="Performance">
+          <label class="mb-3 block">
+            <span class={labelClass}>Max concurrent downloads</span>
+            <input
+              type="number"
+              min={1}
+              class={`${inputClass} mt-1 !w-40`}
+              aria-label="Max concurrent downloads"
+              value={config()!.maxConcurrent}
+              onInput={(e) => {
+                const n = Number(e.currentTarget.value);
+                if (Number.isNaN(n)) return;
+                patch("maxConcurrent", n);
+              }}
+            />
+            <Muted class="mt-1">
+              How many torrents may download at once. Extras wait in queue until
+              a slot frees. At least 1. Applies immediately — no engine restart.
+            </Muted>
+          </label>
           <label class="mb-3 block">
             <span class={labelClass}>Max connections per torrent</span>
             <input

@@ -258,11 +258,11 @@ describe("Torrent settings — whole-document round trip", () => {
     });
   }
 
-  it("maxConcurrent survives a save even though it renders no control", async () => {
+  it("maxConcurrent round-trips through save", async () => {
     const puts = stubFetch(() => json(LIVE_RESULT));
     await mountLoaded();
 
-    // No control exists for it, by design (the field is reserved/unimplemented
+    // Control exists in Performance; still must round-trip the full document (the field is enforced
     // server-side, so a knob for it would do nothing).
     expect(screen.queryByLabelText(/max concurrent/i)).toBeNull();
 

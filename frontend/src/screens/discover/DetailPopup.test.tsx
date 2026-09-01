@@ -389,6 +389,45 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     expect(screen.getByRole("button", { name: "Torrent" })).not.toBeDisabled();
   });
 
+  it("Series shows the synopsis in the header while the season picker is still open", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({
+          seasons: [seasonFixture(1), seasonFixture(2)],
+          overview: "A Green Lantern investigation.",
+        });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      // No availability — picker not submitted yet.
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({
+        id: 5,
+        title: "Lanterns",
+        mediaType: "tv",
+        overview: "A Green Lantern investigation.",
+      }),
+    };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} />
+    ));
+
+    // Picker still up (Series not ready) AND synopsis already in the header.
+    expect(
+      await screen.findByText(
+        "Pick a season (and optionally an episode) to check availability.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("A Green Lantern investigation."),
+    ).toBeInTheDocument();
+    expect(overviewParagraphs(container)).toHaveLength(1);
+  });
+
   it("Series gates the availability fetch behind season/episode — no call until the picker is submitted", async () => {
     const preview = emptyPreview();
     preview.res1080.high.torrent = candidate();
@@ -1310,7 +1349,53 @@ describe("DetailPopup — AC5: no placeholder description in any mode", () => {
     ));
 
     expect(await screen.findByText("An overview.")).toBeInTheDocument();
-    expect(overviewParagraphs(container)).toHaveLength(0);
+    // Claude 2026-09-01: Movies/Series synopsis now fills the header slot
+    // (overviewParagraphs), so this flips from 0 → 1. findByText also guards
+    // against a duplicate F1 copy (throws on multiple matches).
+    expect(overviewParagraphs(container)).toHaveLength(1);
+  });
+
+  it("fills the Library tracked-row header synopsis once detail lands", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/discover/detail"))
+        return jsonResponse(titleDetail({ overview: "Detail synopsis." }));
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "movies",
+      item: movie({ overview: "" }),
+    };
+    const { container } = render(() => (
+      <DetailPopup target={target} onClose={() => {}} allowGrab={false} />
+    ));
+
+    expect(await screen.findByText("Detail synopsis.")).toBeInTheDocument();
+    expect(overviewParagraphs(container)).toHaveLength(1);
+  });
+
+  it("renders the synopsis exactly once when item and detail share the same text", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/discover/detail"))
+        return jsonResponse(titleDetail({ overview: "Shared synopsis." }));
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "movies",
+      item: movie({ overview: "Shared synopsis." }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    expect(await screen.findAllByText("Shared synopsis.")).toHaveLength(1);
   });
 });
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
@@ -303,14 +304,15 @@ func TestDiscoverHandler_PageParamForwarded(t *testing.T) {
 }
 
 // TestPosterHandler_ReturnsPosterPath proves the lazy per-card poster lookup
-// resolves a Movies tmdbId to its TMDB poster_path via /movie/{id}.
+// resolves a Movies tmdbId to its TMDB poster_path via /movie/{id}, and
+// returns the overview MovieDetails already fetched (no longer dropped).
 func TestPosterHandler_ReturnsPosterPath(t *testing.T) {
 	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/movie/99" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"id":99,"title":"A Movie","poster_path":"/p99.jpg"}`))
+		w.Write([]byte(`{"id":99,"title":"A Movie","poster_path":"/p99.jpg","overview":"A movie plot."}`))
 	})
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
@@ -329,12 +331,55 @@ func TestPosterHandler_ReturnsPosterPath(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	var got map[string]string
+	var got apidto.PosterResponse
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
-	if got["posterPath"] != "/p99.jpg" {
+	if got.PosterPath != "/p99.jpg" {
 		t.Errorf("expected poster path, got %+v", got)
+	}
+	if got.Overview != "A movie plot." {
+		t.Errorf("expected overview, got %+v", got)
+	}
+}
+
+// TestPosterHandler_ReturnsSeriesOverview proves the Series branch returns
+// overview from TVDetails (a separate struct from MovieDetails — one movie
+// case does not cover it).
+func TestPosterHandler_ReturnsSeriesOverview(t *testing.T) {
+	fake := fakeTMDB(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tv/77" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":77,"name":"A Show","poster_path":"/s77.jpg","overview":"A show plot."}`))
+	})
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	overrideFixedURL(t, "tmdb", fake.URL)
+	if err := connStore.Upsert(context.Background(), "tmdb", fake.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/poster?tmdbId=77")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got apidto.PosterResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got.PosterPath != "/s77.jpg" {
+		t.Errorf("expected poster path, got %+v", got)
+	}
+	if got.Overview != "A show plot." {
+		t.Errorf("expected overview, got %+v", got)
 	}
 }
 

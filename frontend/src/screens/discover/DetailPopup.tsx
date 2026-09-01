@@ -813,9 +813,16 @@ export const DetailPopup: Component<{
   // the only place a scene's studio and date appear at all — the Modal title is
   // bare item().title. The two coexist; neither replaces the other.
   //
-  // Movies/Series synopsis lives under the keyword chips (titleOverview), not
-  // here: Library tracked rows send overview "" and Discover's card overview
-  // would otherwise duplicate the TMDB detail text.
+  // Claude 2026-09-01: Movies/Series synopsis now lives HERE (header slot next
+  // to the poster), not under the keyword chips. detail() first (full TMDB
+  // synopsis) then the list-payload overview, so a Library tracked row — which
+  // sends overview "" — still fills in once /discover/detail lands, and a
+  // Discover card shows text immediately with no blank frame. The F1 copy below
+  // is commented out so the same paragraph never appears twice.
+  // Reason: operator asked for the description near the top of the popup (the
+  // same text already shown on card hover).
+  // Review if: the header slot becomes Adult-only again, or a long-synopsis
+  // "read more" disclosure is intentionally restored in the F1 block.
   //
   // Neither branch has a placeholder fallback any more (AC5): an item with
   // nothing to say renders no <p> at all, not "No description available." —
@@ -840,7 +847,8 @@ export const DetailPopup: Component<{
         ]
           .filter(Boolean)
           .join(" · ")
-      : "";
+      : (detail()?.overview ?? "").trim() ||
+        ((item() as DiscoverItem).overview ?? "").trim();
   const ratingValue = () =>
     mode() === "adult"
       ? (item() as AdultDiscoverItem).rating
@@ -981,6 +989,92 @@ export const DetailPopup: Component<{
       <Show when={allowGrab() && mode() === "series"}>
         <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
       </Show>
+      {/* Claude 2026-09-01: poster + synopsis + More/Trailer/Play sit ABOVE
+          the Series ready() gate. Discover Series used to hide this whole
+          header until a season was picked, so the description the card hover
+          already showed was missing on the exact screen operators open first.
+          Availability/grab/F1 stay gated; only the title header is ungated.
+          Reason: operator screenshot (Lanterns) — seasons toggles + picker,
+          no plot text.
+          Troubleshooting: overview lived inside <Show when={ready()}>.
+          Review if: Series stops gating availability behind the picker. */}
+      <div class="flex items-start gap-3">
+        <a
+          href={externalDetailURL(props.target)}
+          target="_blank"
+          rel="noreferrer"
+          class="aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
+        >
+          <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
+            <img
+              src={posterSrc()}
+              alt={item().title}
+              class="h-full w-full object-cover"
+            />
+          </Show>
+        </a>
+        <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+          <Show when={props.lead}>{props.lead}</Show>
+          <Show when={mode() === "adult" && ratingValue() > 0}>
+            <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
+          </Show>
+          <Show when={overviewText()}>
+            <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
+          </Show>
+          <a
+            href={externalDetailURL(props.target)}
+            target="_blank"
+            rel="noreferrer"
+            class={HEADER_ACTION_CLASS}
+          >
+            More on {sourceLabel(props.target)} →
+          </a>
+          {/* Trailer, elevated from the old header text link into a
+              distinct button (F1 item 2) — styling/placement only,
+              TrailerURL is already wired. Deliberately a SIBLING of the
+              availability/grab block below, not nested inside it: the
+              trailer resource is independent of the Prowlarr preview, so
+              it must keep rendering even while that preview is loading
+              or has errored (a code-review catch — it used to disappear
+              whenever preview.error was set, coupling two unrelated
+              states). */}
+          <Show
+            when={
+              trailer()?.startsWith("https://") ||
+              trailer()?.startsWith("http://")
+            }
+          >
+            <a
+              href={trailer()}
+              target="_blank"
+              rel="noreferrer"
+              class={HEADER_ACTION_CLASS}
+            >
+              Watch Trailer →
+            </a>
+          </Show>
+          {/* Claude 2026-08-14: Play Movie/Show/Scene in the same stack as
+              Watch Trailer. Reason: a second-row control under only the
+              trailer button left a ragged header. Discover has no playSrc.
+              Review if: Series episode playback lands. */}
+          <Show when={(props.playSrc ?? "").trim()}>
+            <PlayFullscreenLink
+              src={props.playSrc ?? ""}
+              noun={
+                mode() === "adult"
+                  ? "Scene"
+                  : mode() === "series"
+                    ? "Show"
+                    : "Movie"
+              }
+              title={item().title}
+              class={HEADER_ACTION_CLASS}
+            />
+          </Show>
+        </div>
+      </div>
+
+
       <Show
         when={ready()}
         fallback={
@@ -1002,82 +1096,6 @@ export const DetailPopup: Component<{
           </div>
         }
       >
-        <div class="flex items-start gap-3">
-          <a
-            href={externalDetailURL(props.target)}
-            target="_blank"
-            rel="noreferrer"
-            class="aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
-          >
-            <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
-              <img
-                src={posterSrc()}
-                alt={item().title}
-                class="h-full w-full object-cover"
-              />
-            </Show>
-          </a>
-          <div class="flex min-w-0 flex-1 flex-col gap-1.5">
-            <Show when={props.lead}>{props.lead}</Show>
-            <Show when={mode() === "adult" && ratingValue() > 0}>
-              <div class="text-xs text-muted">★ {ratingValue().toFixed(1)}</div>
-            </Show>
-            <Show when={overviewText()}>
-              <p class="mt-1 line-clamp-4 text-sm text-muted">{overviewText()}</p>
-            </Show>
-            <a
-              href={externalDetailURL(props.target)}
-              target="_blank"
-              rel="noreferrer"
-              class={HEADER_ACTION_CLASS}
-            >
-              More on {sourceLabel(props.target)} →
-            </a>
-            {/* Trailer, elevated from the old header text link into a
-                distinct button (F1 item 2) — styling/placement only,
-                TrailerURL is already wired. Deliberately a SIBLING of the
-                availability/grab block below, not nested inside it: the
-                trailer resource is independent of the Prowlarr preview, so
-                it must keep rendering even while that preview is loading
-                or has errored (a code-review catch — it used to disappear
-                whenever preview.error was set, coupling two unrelated
-                states). */}
-            <Show
-              when={
-                trailer()?.startsWith("https://") ||
-                trailer()?.startsWith("http://")
-              }
-            >
-              <a
-                href={trailer()}
-                target="_blank"
-                rel="noreferrer"
-                class={HEADER_ACTION_CLASS}
-              >
-                Watch Trailer →
-              </a>
-            </Show>
-            {/* Claude 2026-08-14: Play Movie/Show/Scene in the same stack as
-                Watch Trailer. Reason: a second-row control under only the
-                trailer button left a ragged header. Discover has no playSrc.
-                Review if: Series episode playback lands. */}
-            <Show when={(props.playSrc ?? "").trim()}>
-              <PlayFullscreenLink
-                src={props.playSrc ?? ""}
-                noun={
-                  mode() === "adult"
-                    ? "Scene"
-                    : mode() === "series"
-                      ? "Show"
-                      : "Movie"
-                }
-                title={item().title}
-                class={HEADER_ACTION_CLASS}
-              />
-            </Show>
-          </div>
-        </div>
-
         {/* Adult scene description — sourced from the entity's own catalog
             (entity_source, AC4) via GET /api/modes/adult/discover/description, once per
             popup open. Absent entirely when no catalog has real data (AC5): no
@@ -1252,10 +1270,18 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
-                {/* Claude 2026-08-14: synopsis first, then year+genre chips.
-                    Keywords used to dump into the same pill row and covered
-                    the plot on a phone. They now sit behind a Keywords
-                    disclosure. Review if: GET /tracked starts carrying overview. */}
+                {/* Claude 2026-09-01: synopsis moved UP to the header slot next
+                    to the poster (overviewText) — the previous in-place render
+                    is kept commented below so the paragraph never renders twice.
+                    Reason: operator asked for the description near the top
+                    rather than below the availability grid / keyword chips.
+                    Troubleshooting: synopsis was only reachable after scrolling
+                    past the grid; on Library it read as missing entirely when
+                    the F1 block had not settled.
+                    Review if: the header slot ever becomes Adult-only again, or
+                    a long-synopsis "read more" disclosure is added down here on
+                    purpose. */}
+                {/*
                 <Show
                   when={
                     (d().overview ?? "").trim() ||
@@ -1267,6 +1293,7 @@ export const DetailPopup: Component<{
                       ((item() as DiscoverItem).overview ?? "").trim()}
                   </p>
                 </Show>
+                */}
 
                 <Show when={chips().length}>
                   <div class="mb-3 flex flex-wrap gap-1">

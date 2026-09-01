@@ -409,13 +409,23 @@ type PerformerSummary struct {
 }
 
 // PosterResponse is GET /api/modes/{mode}/poster's response — the lazily
-// resolved TMDB poster path for one library card, keyed by tmdbId (Movies/
-// Series only). PosterPath is a bare TMDB path (e.g. "/abc.jpg") the client
-// turns into a proxied image URL, or "" when TMDB has no art on file (the
-// card then renders its text fallback). Mirrors the availability probe's
-// per-card, on-demand shape rather than an N+1 on the library list endpoint.
+// resolved TMDB poster path (and synopsis) for one library card, keyed by
+// tmdbId (Movies/Series only). PosterPath is a bare TMDB path (e.g.
+// "/abc.jpg") the client turns into a proxied image URL, or "" when TMDB has
+// no art on file (the card then renders its text fallback). Overview is the
+// TMDB plot synopsis already fetched by MovieDetails/TVDetails; it used to be
+// discarded here. Library card hover and DetailPopup's header reuse it so a
+// second /discover/detail round-trip is not needed just for prose.
+// Claude 2026-09-01: Overview added — free on this call; GET /tracked still
+// carries no overview column.
+// Reason: Library Movies/Series hover + DetailPopup header need the synopsis
+// without an extra TMDB fan-out per card.
+// Review if: a dedicated per-card metadata endpoint is added, or GET /tracked
+// starts carrying overview (then the card can read it from the list payload
+// and this field can go back to poster-only).
 type PosterResponse struct {
 	PosterPath string `json:"posterPath"`
+	Overview   string `json:"overview"`
 }
 
 // --- Connections (reference implementation of the three-state secret rule) -

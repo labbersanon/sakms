@@ -39,7 +39,7 @@ import {
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { AdultDiscoverItem, DiscoverItem, Mode } from "../api/discover";
-import { fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
+import { fetchTitleCard, fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
 import { SeasonsPanel } from "../components/SeasonsPanel";
 import {
   type TrackedItem,
@@ -110,8 +110,12 @@ const firstFrameSrc = (videoUrl: string) => `${videoUrl}#t=0.1`;
 
 // trackedToDiscoverItem is the same synthetic DiscoverItem Discover's
 // LibraryCard builds so DetailPopup can resolve trailer/title-detail by tmdbId.
-// overview/voteAverage stay empty: GET /tracked does not carry them, and this
-// mapper must not fetch TMDB per card.
+// overview/voteAverage stay empty on purpose: GET /tracked still does not carry
+// them, and this mapper must not fetch TMDB per card. Hover prose comes from
+// PosterCard's own fetchTitleCard resource, the header synopsis from
+// DetailPopup's /discover/detail resource — neither goes through here.
+// Review if: this mapper gains access to the per-card overview, or DetailPopup
+// stops fetching /discover/detail.
 const trackedToDiscoverItem = (
   item: TrackedItem,
   mode: PosterMode,
@@ -175,8 +179,9 @@ const playableLibrarySrc = (mode: Mode, item: TrackedItem): string => {
   return "";
 };
 
-// adultHoverText matches AdultCard's studio/date overlay. Movies/Series have
-// no overview on the tracked payload, so those cards skip the overlay.
+// adultHoverText matches AdultCard's studio/date overlay. Movies/Series hover
+// text comes from fetchTitleCard's overview (see PosterCard), not the tracked
+// payload — GET /tracked still carries none.
 const adultHoverText = (item: TrackedItem): string =>
   [item.studio, yearOf(item.date ?? "")].filter(Boolean).join(" · ");
 
@@ -199,12 +204,19 @@ const PosterCard: Component<{
 }> = (props) => {
   // Key the resource on tmdbId — when absent, the source accessor returns
   // undefined and Solid skips the fetch entirely.
-  const [posterPath] = createResource(
+  // Claude 2026-09-01: fetchTitleCard (posterPath + overview) replaces the
+  // poster-only fetch; the empty fallback keeps the never-throws convention.
+  // Reason: Library hover shows the same description Discover cards do, with no
+  // extra round-trip — the poster endpoint already had the overview in hand.
+  // Review if: GET /tracked starts carrying overview (drop the prose half) or
+  // Adult catalog descriptions become available for library scenes.
+  const [card] = createResource(
     () =>
       props.mode !== "adult" && props.item.tmdbId
         ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
         : undefined,
-    ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId).catch(() => ""),
+    ({ mode, tmdbId }) =>
+      fetchTitleCard(mode, tmdbId).catch(() => ({ posterPath: "", overview: "" })),
   );
 
   // Claude 2026-08-14: Adult catalog posterUrl (proxied) beats TMDB path and
@@ -213,9 +225,13 @@ const PosterCard: Component<{
   // Review if: 2B is revisited once catalog art is the common case.
   const posterUrl = () => {
     if (props.mode === "adult") return proxyImage(props.item.posterUrl ?? "");
-    const path = posterPath();
+    const path = card()?.posterPath ?? "";
     return path ? tmdbPoster(path) : "";
   };
+  const hoverText = () =>
+    props.mode === "adult"
+      ? adultHoverText(props.item) || props.item.title
+      : (card()?.overview ?? "").trim();
   const adultVideoUrl = () =>
     props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";
   const [videoVisible, setVideoVisible] = createSignal(false);
@@ -286,15 +302,18 @@ const PosterCard: Component<{
             class="h-full w-full object-cover"
           />
         </Show>
-        {/* Claude 2026-08-14: Discover-style hover overlay for Adult
-            (studio/date). Movies/Series have no overview on tracked rows.
-            Reason: enrichment same as Discover minus grab; overlay is CSS-only
-            like AdultCard. Review if: overview is stored on library items. */}
-        <Show when={props.mode === "adult"}>
+        {/* Claude 2026-09-01: Discover-style hover overlay for every mode.
+            Adult keeps studio/date; Movies/Series show fetchTitleCard's
+            overview. Gating the Show on hoverText() rather than the mode skips
+            an empty black rectangle when TMDB has no overview (AC5's
+            no-placeholder rule).
+            Reason: enrichment same as Discover minus grab; overlay stays
+            CSS-only. Adult path unchanged.
+            Review if: overview lands on the tracked list payload, or Adult
+            catalog descriptions become available for library scenes. */}
+        <Show when={hoverText()}>
           <div class="absolute inset-0 flex items-end bg-black/70 p-2 opacity-0 transition-opacity group-hover:opacity-100">
-            <p class="line-clamp-4 text-xs text-white">
-              {adultHoverText(props.item) || props.item.title}
-            </p>
+            <p class="line-clamp-4 text-xs text-white">{hoverText()}</p>
           </div>
         </Show>
       </div>

@@ -217,19 +217,30 @@ export function fetchTitleDetail(
   );
 }
 
-// fetchTitlePoster lazily resolves one library card's TMDB poster path by
-// tmdbId (Movies/Series only) — the library caches no poster art, so each
-// rendered existing-library card fetches its own poster on demand. The library
-// row paginates, so only one page's worth of these fetch at a time rather than
-// an N+1 across the whole tracked list. Returns "" when TMDB has no art (the
-// card then renders its text fallback).
+// fetchTitleCard returns both fields the per-card poster lookup already
+// resolves — posterPath AND overview (the backend calls MovieDetails/TVDetails
+// and used to drop the overview). Cheaper than a second /discover/detail fetch,
+// which pulls the whole F1 bundle for one string.
+// Claude 2026-09-01: sibling of fetchTitlePoster so Library hover can show
+// overview without changing every poster-only caller.
+// Reason: Library Movies/Series hover + free overview on an existing round-trip.
+// Review if: GET /tracked starts carrying overview (then cards can skip this
+// for prose) or a dedicated per-card metadata endpoint lands.
+export function fetchTitleCard(
+  mode: Exclude<Mode, "adult">,
+  tmdbId: number,
+): Promise<PosterResponse> {
+  return api<PosterResponse>(`/api/modes/${mode}/poster?tmdbId=${tmdbId}`);
+}
+
+// fetchTitlePoster stays the poster-only view of the same call — unchanged
+// contract for every existing caller (Mainstream LibraryCard, DetailPopup lazy
+// poster, TraktWatchlistRow, Library DetailPanel).
 export function fetchTitlePoster(
   mode: Exclude<Mode, "adult">,
   tmdbId: number,
 ): Promise<string> {
-  return api<PosterResponse>(
-    `/api/modes/${mode}/poster?tmdbId=${tmdbId}`,
-  ).then((r) => r.posterPath);
+  return fetchTitleCard(mode, tmdbId).then((r) => r.posterPath ?? "");
 }
 
 // fetchDiscoverCalendar returns the Movies-release / TV-premiere items whose

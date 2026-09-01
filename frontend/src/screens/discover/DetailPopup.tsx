@@ -813,9 +813,16 @@ export const DetailPopup: Component<{
   // the only place a scene's studio and date appear at all — the Modal title is
   // bare item().title. The two coexist; neither replaces the other.
   //
-  // Movies/Series synopsis lives under the keyword chips (titleOverview), not
-  // here: Library tracked rows send overview "" and Discover's card overview
-  // would otherwise duplicate the TMDB detail text.
+  // Claude 2026-09-01: Movies/Series synopsis now lives HERE (header slot next
+  // to the poster), not under the keyword chips. detail() first (full TMDB
+  // synopsis) then the list-payload overview, so a Library tracked row — which
+  // sends overview "" — still fills in once /discover/detail lands, and a
+  // Discover card shows text immediately with no blank frame. The F1 copy below
+  // is commented out so the same paragraph never appears twice.
+  // Reason: operator asked for the description near the top of the popup (the
+  // same text already shown on card hover).
+  // Review if: the header slot becomes Adult-only again, or a long-synopsis
+  // "read more" disclosure is intentionally restored in the F1 block.
   //
   // Neither branch has a placeholder fallback any more (AC5): an item with
   // nothing to say renders no <p> at all, not "No description available." —
@@ -840,7 +847,8 @@ export const DetailPopup: Component<{
         ]
           .filter(Boolean)
           .join(" · ")
-      : "";
+      : (detail()?.overview ?? "").trim() ||
+        ((item() as DiscoverItem).overview ?? "").trim();
   const ratingValue = () =>
     mode() === "adult"
       ? (item() as AdultDiscoverItem).rating
@@ -1252,10 +1260,18 @@ export const DetailPopup: Component<{
                   </div>
                 </Show>
 
-                {/* Claude 2026-08-14: synopsis first, then year+genre chips.
-                    Keywords used to dump into the same pill row and covered
-                    the plot on a phone. They now sit behind a Keywords
-                    disclosure. Review if: GET /tracked starts carrying overview. */}
+                {/* Claude 2026-09-01: synopsis moved UP to the header slot next
+                    to the poster (overviewText) — the previous in-place render
+                    is kept commented below so the paragraph never renders twice.
+                    Reason: operator asked for the description near the top
+                    rather than below the availability grid / keyword chips.
+                    Troubleshooting: synopsis was only reachable after scrolling
+                    past the grid; on Library it read as missing entirely when
+                    the F1 block had not settled.
+                    Review if: the header slot ever becomes Adult-only again, or
+                    a long-synopsis "read more" disclosure is added down here on
+                    purpose. */}
+                {/*
                 <Show
                   when={
                     (d().overview ?? "").trim() ||
@@ -1267,6 +1283,7 @@ export const DetailPopup: Component<{
                       ((item() as DiscoverItem).overview ?? "").trim()}
                   </p>
                 </Show>
+                */}
 
                 <Show when={chips().length}>
                   <div class="mb-3 flex flex-wrap gap-1">

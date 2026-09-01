@@ -177,6 +177,9 @@ const makeHandler = (
     onPost?: (url: string) => Response;
     onDelete?: (url: string) => Response;
     onPut?: (url: string) => Response;
+    // Claude 2026-09-01: optional poster payload so hover-overview tests can
+    // return a synopsis without rewriting every call site.
+    onPoster?: (url: string) => Response;
   } = {},
 ) => {
   return (url: string, init?: RequestInit): Response => {
@@ -193,7 +196,10 @@ const makeHandler = (
         return jsonResponse(overrides.adultVertical ?? []);
       return jsonResponse(overrides.adult ?? []);
     }
-    if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+    if (url.includes("/poster"))
+      return overrides.onPoster
+        ? overrides.onPoster(url)
+        : jsonResponse({ posterPath: "", overview: "" });
     const enrichment = libraryEnrichmentResponse(url);
     if (enrichment) return enrichment;
     // Season state — only ever reached from a SERIES detail panel. Answered
@@ -305,7 +311,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(screen.queryByText("Dir One")).toBeNull();
   });
 
-  it("shows official catalog ratings above the overview on a Library movie", async () => {
+  it("shows overview above official catalog ratings on a Library movie", async () => {
     stubFetch((url, init) => {
       const extra = libraryEnrichmentResponse(url);
       if (url.includes("/discover/detail")) {
@@ -343,8 +349,10 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     const overview = screen.getByText(
       "A thief who steals corporate secrets through dream-sharing.",
     );
+    // Claude 2026-09-01: synopsis moved into DetailPopup's header slot (above
+    // the F1 ratings row). Ratings still render; they now FOLLOW the overview.
     expect(
-      (row.compareDocumentPosition(overview) &
+      (overview.compareDocumentPosition(row) &
         Node.DOCUMENT_POSITION_FOLLOWING) !==
         0,
     ).toBe(true);
@@ -359,7 +367,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
           posterPath: "/inception.jpg",
         });
       }
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "/grid.jpg" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "/grid.jpg", overview: "" });
       if (extra) return extra;
       return makeHandler([inception()])(url, init);
     });
@@ -387,7 +395,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       if (url.includes("/api/modes/movies/tags")) return jsonResponse(vocab(["hd"]));
       if (url.includes("/api/modes/movies/tracked"))
         return jsonResponse([inception({ tags: added ? ["hd", "fresh"] : ["hd"] })]);
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "", overview: "" });
       if (method === "POST" && url.includes("/api/modes/movies/items/10/tags")) {
         added = true;
         return noContent();
@@ -903,7 +911,7 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "", overview: "" });
       if (url.includes("/usenet-autograb-enabled"))
         return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
@@ -957,7 +965,7 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "", overview: "" });
       if (url.includes("/usenet-autograb-enabled"))
         return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
@@ -1007,7 +1015,7 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "", overview: "" });
       if (url.includes("/usenet-autograb-enabled"))
         return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
@@ -1058,7 +1066,7 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "", overview: "" });
       if (url.includes("/usenet-autograb-enabled"))
         return jsonResponse({ enabled: true });
       if (url.includes("/seasons")) {
@@ -1093,7 +1101,7 @@ describe("Library — per-season monitoring (Series only)", () => {
       if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
       if (url.includes("/api/modes/series/tracked"))
         return jsonResponse([breakingBad]);
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "", overview: "" });
       if (url.includes("/seasons"))
         return new Response("seasons unavailable", { status: 500 });
       const extra = libraryEnrichmentResponse(url);
@@ -1191,6 +1199,68 @@ describe("Library — Adult catalog", () => {
     const card = await screen.findByRole("button", { name: "Adult Scene" });
     expect(card.className).toContain("group");
     const overlay = screen.getByText("Studio A · 2024");
+    expect(overlay.parentElement?.className).toContain("group-hover:opacity-100");
+  });
+
+  it("Movies cards show an overview hover overlay from the poster endpoint", async () => {
+    stubFetch(
+      makeHandler([inception()], {
+        onPoster: () =>
+          jsonResponse({
+            posterPath: "/inception.jpg",
+            overview: "A thief who steals corporate secrets.",
+          }),
+      }),
+    );
+    renderLibrary();
+    const card = await screen.findByRole("button", { name: /Inception/i });
+    expect(card.className).toContain("group");
+    const overlay = await screen.findByText(
+      "A thief who steals corporate secrets.",
+    );
+    expect(overlay.parentElement?.className).toContain("group-hover:opacity-100");
+  });
+
+  it("a Movies card with no overview renders no hover overlay", async () => {
+    stubFetch(
+      makeHandler([inception()], {
+        onPoster: () =>
+          jsonResponse({ posterPath: "/inception.jpg", overview: "" }),
+      }),
+    );
+    renderLibrary();
+    await screen.findByRole("button", { name: /Inception/i });
+    expect(
+      document.querySelector(".group-hover\\:opacity-100"),
+    ).toBeNull();
+  });
+
+  it("Series cards show an overview hover overlay from the poster endpoint", async () => {
+    stubFetch(
+      makeHandler([], {
+        series: [
+          item({
+            id: 10,
+            title: "Hero Show",
+            tmdbId: 600,
+            year: 2020,
+            qualityTiers: ["high"],
+          }),
+        ],
+        onPoster: () =>
+          jsonResponse({
+            posterPath: "/show.jpg",
+            overview: "A hero saves the town every week.",
+          }),
+      }),
+    );
+    // Series lives under /library/mainstream?mode=series (not a separate route).
+    renderLibrary("/library?mode=series");
+    const card = await screen.findByRole("button", { name: /Hero Show/i });
+    expect(card.className).toContain("group");
+    const overlay = await screen.findByText(
+      "A hero saves the town every week.",
+    );
     expect(overlay.parentElement?.className).toContain("group-hover:opacity-100");
   });
 
@@ -1328,7 +1398,7 @@ describe("Library — Adult catalog", () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/adult/scenes/tags")) return jsonResponse(vocab(["reviewed"]));
       if (url.includes("/api/modes/adult/tracked")) return trackedPending;
-      if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
+      if (url.includes("/poster")) return jsonResponse({ posterPath: "", overview: "" });
       const extra = libraryEnrichmentResponse(url);
       if (extra) return extra;
       throw new Error("unexpected fetch: " + url);

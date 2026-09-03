@@ -514,7 +514,7 @@ func (m *Manager) Subscribe() (<-chan []Download, func()) {
 
 // runDownload is the per-download background goroutine. It drives the full
 // pipeline: download all segments → assemble files → optional par2 repair →
-// fire onComplete callback.
+// unpack archives → fire onComplete callback.
 func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb *NZB) {
 	// Claude 2026-09-01: job slot covers segment fetch only, not PAR2/import.
 	// Reason: max concurrent downloads must not count unpacking; MaxConns stay
@@ -568,6 +568,19 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		log.Printf("usenet: par2 repair %s: %v (marking complete with unrepaired files)", gid, repairErr)
 	} else {
 		files = repaired
+	}
+
+	// Claude 2026-09-03: unpack rar/zip/7z after PAR2, before import.
+	// Reason: most Usenet releases are multi-part RAR; import only resolves
+	//   flat videos in the GID staging dir (non-recursive).
+	// Troubleshooting: staging full of .partNN.rar, "no video files found".
+	// Review if: password-protected archives need a setting.
+	// Related: unpack.go; Dockerfile unrar + p7zip-full.
+	unpacked, unpackErr := unpackArchives(dl.stagingDir, files)
+	if unpackErr != nil {
+		log.Printf("usenet: unpack %s: %v (marking complete with packed files)", gid, unpackErr)
+	} else {
+		files = unpacked
 	}
 
 	m.mu.Lock()

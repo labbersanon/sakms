@@ -107,10 +107,19 @@ RUN set -eux; \
 # which is where sakms resolves the bare `ffmpeg`/`ffprobe` names it exec's
 # (internal/phash, internal/videophash, internal/vmaf).
 FROM debian:trixie-slim AS base
+# Claude 2026-09-03: unrar (non-free) + p7zip-full for Usenet post-PAR2 unpack.
+# Reason: releases are usually multi-part RAR; import needs a flat video in the
+#   GID staging dir. unrar is in non-free; enable contrib/non-free on the
+#   DEB822 debian.sources shipped by trixie-slim.
+# Troubleshooting: staging full of .partNN.rar after download completes.
+# Review if: a pure-Go unpacker replaces the binaries.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gosu \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's/Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gosu unrar p7zip-full \
     && useradd --create-home --home-dir /data --uid 1000 sakms
 
 COPY --from=ffmpeg /out/ffmpeg  /usr/local/bin/ffmpeg

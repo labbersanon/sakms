@@ -489,8 +489,21 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
+			// Claude 2026-09-04: disk fallback when the in-memory usenet Manager
+			// forgot a GID (container restart) but staging still has a video.
+			// Reason: batch-unpack of stranded nzb-* dirs + check-import must
+			//   work without re-downloading; Manager state is not durable.
+			// Troubleshooting: 409 "no longer knows" with video already on disk.
+			// Review if: Manager gains durable queue restore across restarts.
 			if nzbItem == nil {
-				http.Error(w, "the usenet engine no longer knows about this download", http.StatusConflict)
+				stagingPath := filepath.Join(nzb.StagingDir(), g.DownloadGID)
+				if _, err := library.ResolveVideoFile(stagingPath); err != nil {
+					http.Error(w, "the usenet engine no longer knows about this download", http.StatusConflict)
+					return
+				}
+				if err := importUsenetFromDisk(ctx, w, httpClient, connStore, scStore, settingsStore, dl, grabsStore, libStore, prober, videoHasher, g, id, stagingPath, "complete"); err != nil {
+					return
+				}
 				return
 			}
 			newStatus := classifyDownloadState(nzbItem.Status, nzbItem.Err)
@@ -514,30 +527,10 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			}
 			if newStatus == grabs.Completed {
 				contentPath := downloadContentPath(nzbItem.Files, nzbItem.Dir, nzb.StagingDir())
-				sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
-				if err != nil {
-					// Layer 2 rejects an Adult g.Mode here. The security
-					// property already held via the generic 400 below — the
-					// grab was refused either way — but the SHAPE did not: a
-					// plaintext 400 cannot raise the frontend's PIN overlay,
-					// which keys on this exact code. Same mapping
-					// proposals.go's two single-item handlers use.
-					if errors.Is(err, sectionlock.ErrSectionLocked) {
-						writeSectionLocked(w, sectionlock.SectionAdultContent)
-						return
-					}
-					http.Error(w, err.Error(), http.StatusBadRequest)
+				if err := importUsenetFromDisk(ctx, w, httpClient, connStore, scStore, settingsStore, dl, grabsStore, libStore, prober, videoHasher, g, id, contentPath, nzbItem.Status); err != nil {
 					return
 				}
-				changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)), settingsStore, sess, videoHasher, prober)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadGateway)
-					return
-				}
-				postGrabRuntimeReview(ctx, prober, grabsStore, sess, g, changes)
-				sess.NotifyPlayers(ctx, changes)
-				_ = grabsStore.SetDownloadStatus(ctx, id, nzbItem.Status, contentPath)
-				newStatus = grabs.Imported
+				return
 			}
 			_ = grabsStore.UpdateStatus(ctx, id, newStatus)
 			updated, err := grabsStore.Get(ctx, id)
@@ -640,6 +633,64 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(updated)
 	}
+}
+
+
+// importUsenetFromDisk runs the shared grab-import path for a usenet staging
+// directory that already contains a video (Manager still tracking it, or the
+// disk-fallback after a restart). On handler-facing errors it writes the HTTP
+// response and returns a non-nil error so the caller can return immediately.
+func importUsenetFromDisk(
+	ctx context.Context,
+	w http.ResponseWriter,
+	httpClient *http.Client,
+	connStore *connections.Store,
+	scStore *serviceconn.Store,
+	settingsStore *settings.Store,
+	dl *downloader.Manager,
+	grabsStore *grabs.Store,
+	libStore *library.Store,
+	prober dedup.Prober,
+	videoHasher rename.PHasher,
+	g *grabs.Grab,
+	id int64,
+	contentPath string,
+	downloadStatus string,
+) error {
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, g.Mode)
+	if err != nil {
+		// Layer 2 rejects an Adult g.Mode here. The security property already
+		// held via the generic 400 below — the grab was refused either way —
+		// but the SHAPE did not: a plaintext 400 cannot raise the frontend's
+		// PIN overlay, which keys on this exact code. Same mapping
+		// proposals.go's two single-item handlers use.
+		if errors.Is(err, sectionlock.ErrSectionLocked) {
+			writeSectionLocked(w, sectionlock.SectionAdultContent)
+			return err
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return err
+	}
+	changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)), settingsStore, sess, videoHasher, prober)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return err
+	}
+	postGrabRuntimeReview(ctx, prober, grabsStore, sess, g, changes)
+	sess.NotifyPlayers(ctx, changes)
+	_ = grabsStore.SetDownloadStatus(ctx, id, downloadStatus, contentPath)
+	if err := grabsStore.UpdateStatus(ctx, id, grabs.Imported); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return err
+	}
+	updated, err := grabsStore.Get(ctx, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updated)
+	return nil
 }
 
 // classifyDownloadState maps the download engine's status vocabulary to grabs'

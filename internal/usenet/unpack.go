@@ -276,13 +276,10 @@ func deleteArchiveMembers(dir string) error {
 		// Claude 2026-09-11: also drop .par2 after successful unpack
 		// Reason: import left PAR2 repair volumes behind after RAR delete; user
 		//         wants archive-family cleanup complete once video exists
-		if IsStagingMetaFile(name) {
-			// Keep .sakms-owned until the dir is removed; drop resume sidecars/tmps.
-			if name == OwnedMarkerFile {
-				continue
-			}
-			// fall through to Remove for ResumeFileName / tmp
-		} else if archiveKind(name) == "" &&
+		if name == OwnedMarkerFile {
+			continue
+		}
+		if !IsStagingMetaFile(name) && archiveKind(name) == "" &&
 			!strings.HasSuffix(lower, ".sfv") &&
 			!strings.HasSuffix(lower, ".par2") {
 			continue

@@ -23,7 +23,7 @@ import (
 // Reason: usenet/torrent managers are memory-only; after restart GIDs look
 //         unknown and queued grabs were stranded forever (sweep skips unknown)
 // Troubleshooting: journal "download reconcile:"; never parks solely on unknown GID
-// Review if: usenet gains true segment resume (phase 2) or torrent metainfo column
+// Review if: torrent metainfo column lands so relaunch does not need DownloadURL
 // Related: usenet.RelaunchNZB, sweepUsenetFailures, UsenetCompleteImporter
 
 // restoreMissingURLReason is parked only when a forgotten in-flight grab has no

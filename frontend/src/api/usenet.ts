@@ -66,8 +66,8 @@ export function putUsenetMaxConcurrentDownloads(
   });
 }
 
-// fetchUsenetSegmentResume reads Phase-2 segment resume knobs —
-// GET /api/settings/usenet-segment-resume. Defaults enabled=true, forceFull=false.
+// fetchUsenetSegmentResume — GET /api/settings/usenet-segment-resume.
+// Defaults enabled=true, forceFull=false.
 export function fetchUsenetSegmentResume(): Promise<{
   enabled: boolean;
   forceFull: boolean;
@@ -77,8 +77,7 @@ export function fetchUsenetSegmentResume(): Promise<{
   );
 }
 
-// putUsenetSegmentResume sets segment resume / force-full rollback —
-// PUT /api/settings/usenet-segment-resume, 204 No Content. Applies live.
+// putUsenetSegmentResume — PUT /api/settings/usenet-segment-resume, 204. Applies live.
 export function putUsenetSegmentResume(body: {
   enabled?: boolean;
   forceFull?: boolean;

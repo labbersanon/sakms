@@ -21,44 +21,39 @@ import (
 // Must be removed by post-unpack / post-import cleanup (see deleteArchiveMembers).
 const ResumeFileName = ".sakms-resume.json"
 
-// resumeTmpName is the atomic-replace sibling of ResumeFileName.
 const resumeTmpName = ".sakms-resume.json.tmp"
 
-// ResumeSnapshot is the JSON shape of ResumeFileName.
 type ResumeSnapshot struct {
 	Version int                    `json:"v"`
 	GID     string                 `json:"gid"`
 	Files   map[string]*ResumeFile `json:"files"`
 }
 
-// ResumeFile tracks one assembled output file inside a staging dir.
 type ResumeFile struct {
 	Size int64                `json:"size,omitempty"`
-	Done map[string]ResumeSeg `json:"done"` // key = segment MsgID
+	Done map[string]ResumeSeg `json:"done"` // key = MsgID
 }
 
-// ResumeSeg is one completed segment write.
 type ResumeSeg struct {
 	Number int   `json:"n"`
 	Offset int64 `json:"off"`
 	Length int   `json:"len"`
 }
 
-// ResumeMirror is the optional DB mirror of the staging sidecar (UI/debug).
+// ResumeMirror is the optional DB copy of the staging sidecar (UI/debug).
 // Implementations must be safe for concurrent use; Clear is called after import.
 type ResumeMirror interface {
 	SaveResume(gid string, snap ResumeSnapshot) error
 	ClearResume(gid string) error
 }
 
-// resumeTracker is the per-download in-memory + sidecar writer used by assembleFile.
 type resumeTracker struct {
 	mu       sync.Mutex
 	dir      string
 	gid      string
 	snap     ResumeSnapshot
 	mirror   ResumeMirror
-	disabled bool // force-full / resume disabled — never write
+	disabled bool // force-full / resume off — never write
 }
 
 func loadResumeTracker(dir, gid string, mirror ResumeMirror, disabled bool) *resumeTracker {
@@ -76,8 +71,7 @@ func loadResumeTracker(dir, gid string, mirror ResumeMirror, disabled bool) *res
 	if disabled {
 		return t
 	}
-	path := filepath.Join(dir, ResumeFileName)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join(dir, ResumeFileName))
 	if err != nil {
 		return t
 	}
@@ -115,14 +109,39 @@ func (t *resumeTracker) hasSegment(filename, msgID string) bool {
 	return ok
 }
 
-func (t *resumeTracker) fileSize(filename string) int64 {
+func (t *resumeTracker) priorFile(firstMsg string) (name string, size int64, done int) {
+	if t == nil || t.disabled {
+		return "", 0, 0
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	f := t.snap.Files[filename]
-	if f == nil {
+	for name, rf := range t.snap.Files {
+		if rf == nil || len(rf.Done) == 0 {
+			continue
+		}
+		if _, ok := rf.Done[firstMsg]; ok || len(t.snap.Files) == 1 {
+			return name, rf.Size, len(rf.Done)
+		}
+	}
+	return "", 0, 0
+}
+
+func (t *resumeTracker) skippedBytes(filename, msgID string, fallback int) int {
+	n := 0
+	if t != nil {
+		t.mu.Lock()
+		if rf := t.snap.Files[filename]; rf != nil {
+			n = rf.Done[msgID].Length
+		}
+		t.mu.Unlock()
+	}
+	if n <= 0 {
+		n = fallback
+	}
+	if n < 0 {
 		return 0
 	}
-	return f.Size
+	return n
 }
 
 func (t *resumeTracker) markSegment(filename, msgID string, number int, offset int64, length int, fileSize int64) error {
@@ -161,8 +180,7 @@ func (t *resumeTracker) persistLocked() error {
 		return err
 	}
 	if t.mirror != nil {
-		snapCopy := cloneResumeSnapshot(t.snap)
-		if err := t.mirror.SaveResume(t.gid, snapCopy); err != nil {
+		if err := t.mirror.SaveResume(t.gid, cloneResumeSnapshot(t.snap)); err != nil {
 			return fmt.Errorf("resume mirror: %w", err)
 		}
 	}

@@ -567,11 +567,6 @@ const DownloadsCard: Component = () => {
   );
 };
 
-// source of truth is the whole point of coupling them there.
-
-// ResumeCard toggles Phase-2 NNTP segment resume and the force-full rollback.
-// Enabled (default): skip segments recorded in .sakms-resume.json after restart.
-// Force full: clear sidecars and re-fetch every segment (operator rollback).
 const ResumeCard: Component = () => {
   const [enabled, setEnabled] = createSignal(true);
   const [forceFull, setForceFull] = createSignal(false);
@@ -676,6 +671,7 @@ const ResumeCard: Component = () => {
   );
 };
 
+// source of truth is the whole point of coupling them there.
 const AutoGrabCard: Component = () => {
   const [enabled, setEnabled] = createSignal(false);
   const [perCycle, setPerCycle] = createSignal(20);

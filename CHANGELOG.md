@@ -8114,3 +8114,25 @@ Changes:
   `usenet_stale_staging_orphan_days` (default 7; `0` = no orphan deletes),
   `usenet_stale_staging_sweep_seconds` (default 3600; `0` = disable loop).
 - New staging dirs get a `.sakms-owned` marker at allocation time.
+
+## 2026-09-11 — ARR-parity in-flight download reconcile (built-in engines)
+
+**Problem:** Usenet and torrent managers keep their queues in memory only. After a
+restart every in-flight grab looked like an unknown GID; the usenet failure sweep
+correctly refused to mass-park those (anti-boot-storm), but nothing restored or
+imported them either — leftovers sat `queued` forever while staging filled with
+orphans.
+
+**Fix (phase 1):** `ReconcileInFlightDownloads` runs once at boot and at the start
+of every usenet-retry cycle:
+
+1. Unknown usenet GID + importable video in owned staging → import + owned cleanup
+2. Unknown torrent GID → `AddTorrent` from durable `DownloadURL` (piece reuse)
+3. Unknown usenet GID + incomplete staging → `RelaunchNZB` into the same `nzb-*` dir
+4. Missing `DownloadURL` → park `pending_retry` (the only park this pass does)
+
+Unknown GID alone never parks. True usenet segment resume remains phase 2.
+
+**Files:** `internal/api/downloadreconcile.go`, `internal/usenet/manager.go`
+(`RelaunchNZB`), `cmd/sakms/main.go`, `internal/api/usenetretry.go`.
+

@@ -37,6 +37,9 @@ type Download struct {
 	DownloadSpeed   int64    // bytes/sec (computed per 500 ms poll tick)
 	Files           []string // absolute paths of assembled files (populated on complete)
 	ErrorMessage    string
+	// ResumeMode is how this job started: "resumed", "full", "forced-full", or "disabled".
+	// Empty until runDownload sets it. Surfaced on the downloads SSE for operators.
+	ResumeMode string
 	// Err is the unflattened retrieval failure, Go-side only — it is never
 	// serialised (the api layer maps this struct field-by-field into
 	// apidto.Download, which carries ErrorMessage for the UI). Callers use
@@ -53,6 +56,7 @@ type dlState struct {
 	name       string
 	stagingDir string
 	resume     *resumeTracker // sidecar writer; set in runDownload (disabled=true when resume is off)
+	resumeMode string         // "resumed" | "full" | "forced-full" | "disabled"
 	status     string
 	errorMsg   string
 	err        error // classified retrieval failure; surfaced as Download.Err
@@ -305,11 +309,98 @@ func (m *Manager) SetOnComplete(fn func(gid string, files []string)) {
 func (m *Manager) StagingDir() string { return m.stagingDir }
 
 // SetResumePolicy updates segment-resume knobs at runtime without rebuilding the Manager.
-func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
+// ResumeMode values surfaced on Download / downloads SSE.
+const (
+	ResumeModeResumed    = "resumed"
+	ResumeModeFull       = "full"
+	ResumeModeForcedFull = "forced-full"
+	ResumeModeDisabled   = "disabled"
+)
+
+// ResumePolicy returns the live (enabled, forceFull) knobs.
+func (m *Manager) ResumePolicy() (enabled, forceFull bool) {
+	if m == nil {
+		return true, false
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.segmentResume, m.forceFullDownload
+}
+
+// SetResumePolicy updates segment-resume knobs at runtime. When forceFull is
+// true (or resume is disabled), in-flight sidecars are cleared immediately and
+// force-full also sweeps every owned staging dir on disk — not only the next
+// runDownload. Matches the Settings UI promise to clear sidecars on toggle.
+func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
 	m.segmentResume = enabled
 	m.forceFullDownload = forceFull
+	type live struct {
+		gid, dir string
+		resume   *resumeTracker
+	}
+	var lives []live
+	if forceFull || !enabled {
+		for gid, dl := range m.downloads {
+			lives = append(lives, live{gid: gid, dir: dl.stagingDir, resume: dl.resume})
+			if forceFull {
+				dl.resumeMode = ResumeModeForcedFull
+			} else {
+				dl.resumeMode = ResumeModeDisabled
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	if forceFull || !enabled {
+		for _, item := range lives {
+			item.resume.disable()
+			if err := ClearResumeArtifacts(item.dir); err != nil {
+				log.Printf("usenet: clear resume artifacts %s: %v", item.dir, err)
+			}
+			m.ClearResumeMirror(item.gid)
+		}
+	}
+	if forceFull {
+		n := m.SweepResumeArtifacts()
+		log.Printf("usenet: force-full — swept resume artifacts in %d owned staging dir(s)", n)
+	}
+}
+
+// SweepResumeArtifacts removes resume sidecars (+ DB mirrors) under every
+// sakms-owned staging directory. Safe to call with no downloads running.
+func (m *Manager) SweepResumeArtifacts() int {
+	if m == nil {
+		return 0
+	}
+	root := m.StagingDir()
+	if root == "" {
+		return 0
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		log.Printf("usenet: sweep resume artifacts: read %s: %v", root, err)
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		if !IsOwnedStagingPath(root, dir) {
+			continue
+		}
+		if err := ClearResumeArtifacts(dir); err != nil {
+			log.Printf("usenet: sweep clear %s: %v", dir, err)
+		}
+		m.ClearResumeMirror(e.Name())
+		n++
+	}
+	return n
 }
 
 // ClearResumeMirror drops the optional DB resume row for gid. Staging sidecar
@@ -583,6 +674,7 @@ func (m *Manager) Cancel(gid string) error {
 	}
 	dl.cancel()
 	m.deleteDownloadDir(dl.stagingDir)
+	m.ClearResumeMirror(gid)
 	return nil
 }
 
@@ -700,12 +792,21 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		}
 	}
 	dl.resume = loadResumeTracker(dl.stagingDir, gid, mirror, !resumeOn || forceFull)
-	if resumeOn && !forceFull {
-		if skipped := dl.resume.skippedSegments(); skipped > 0 {
-			log.Printf("usenet: download %s (%s) resuming — %d segment(s) already complete on disk", gid, dl.name, skipped)
-		} else {
-			log.Printf("usenet: download %s (%s) starting (resume enabled, no prior segments)", gid, dl.name)
-		}
+	skipped := 0
+	if dl.resume != nil {
+		skipped = dl.resume.skippedSegments()
+	}
+	switch {
+	case forceFull:
+		dl.resumeMode = ResumeModeForcedFull
+	case !resumeOn:
+		dl.resumeMode = ResumeModeDisabled
+	case skipped > 0:
+		dl.resumeMode = ResumeModeResumed
+		log.Printf("usenet: download %s (%s) resuming — %d segment(s) already complete on disk", gid, dl.name, skipped)
+	default:
+		dl.resumeMode = ResumeModeFull
+		log.Printf("usenet: download %s (%s) starting (resume enabled, no prior segments)", gid, dl.name)
 	}
 
 	files, err := m.downloadAll(ctx, gid, dl, nzb)
@@ -864,7 +965,6 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		firstData = first.data
 		firstOffset = first.offset
 	}
-
 
 	writeSeg := func(msgID string, number int, data []byte, offset int64) error {
 		if resume != nil && !resume.disabled && resume.segmentCovered(filename, msgID, fileBytes) {
@@ -1033,6 +1133,7 @@ func (m *Manager) snapshot() []Download {
 			Dir:             dl.stagingDir,
 			TotalLength:     dl.total,
 			CompletedLength: dl.completed,
+			ResumeMode:      dl.resumeMode,
 			DownloadSpeed:   speed,
 			Files:           dl.files,
 			ErrorMessage:    dl.errorMsg,

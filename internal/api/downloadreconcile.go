@@ -104,7 +104,19 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 	}
 
 	stagingPath := filepath.Join(deps.NZB.StagingDir(), g.DownloadGID)
-	if video, err := library.ResolveVideoFile(stagingPath); err == nil && video != "" {
+	// Claude 2026-09-11: force-full must not take the video-present import shortcut.
+	// Reason: hollow/partial files after a bad resume still ResolveVideoFile; the
+	//         Settings force-full toggle promises a real re-download, not import.
+	// Troubleshooting: journal "force-full — skipping staging import"
+	// Review if: force-full becomes a one-shot that auto-clears after relaunch
+	_, forceFull := deps.NZB.ResumePolicy()
+	if forceFull {
+		if err := usenet.ClearResumeArtifacts(stagingPath); err != nil {
+			log.Printf("download reconcile: clear resume artifacts %s: %v", stagingPath, err)
+		}
+		deps.NZB.ClearResumeMirror(g.DownloadGID)
+		log.Printf("download reconcile: grab %d force-full — skipping staging import, will relaunch", g.ID)
+	} else if video, err := library.ResolveVideoFile(stagingPath); err == nil && video != "" {
 		if err := reconcileImportUsenet(ctx, deps, g, stagingPath); err != nil {
 			log.Printf("download reconcile: importing completed usenet staging for grab %d: %v", g.ID, err)
 		} else {

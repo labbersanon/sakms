@@ -8156,3 +8156,11 @@ Hardened segment resume skip safety (require on-disk coverage before skipping;
 no Truncate-up on resume), clear sidecars when resume is disabled, store
 torrent seed columns as bigint, and persist credited upload so SeedRatioLimit
 survives process restart.
+
+## 2026-09-11 — Force-full staging sweep + downloads resumeMode
+
+Force-full (and resume-disabled) now clears in-flight sidecars immediately;
+force-full also sweeps every owned staging dir on disk. Reconcile skips the
+video-present import shortcut while force-full is on. Usenet downloads expose
+`resumeMode` (`resumed` | `full` | `forced-full` | `disabled`) on the queue/SSE
+and Downloads UI.

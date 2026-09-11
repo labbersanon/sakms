@@ -88,6 +88,15 @@ func loadResumeTracker(dir, gid string, mirror ResumeMirror, disabled bool) *res
 	return t
 }
 
+func (t *resumeTracker) disable() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.disabled = true
+	t.mu.Unlock()
+}
+
 func (t *resumeTracker) skippedSegments() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -68,6 +68,21 @@ const STATUS_BADGE: Record<string, string> = {
   removed: "bg-surface-2 text-muted",
 };
 
+// resumeModeLabel is the Downloads badge text for Download.resumeMode.
+// Wire values stay "resumed" | "full" | "forced-full" | "disabled".
+function resumeModeLabel(mode: string): string {
+  switch (mode) {
+    case "resumed":
+      return "resumed";
+    case "forced-full":
+      return "forced full";
+    case "disabled":
+      return "no resume";
+    default:
+      return "full";
+  }
+}
+
 const ProgressBar: Component<{ percent: number }> = (props) => {
   const clamped = () => Math.max(0, Math.min(100, props.percent));
   return (
@@ -135,13 +150,7 @@ const DownloadRow: Component<{
             title="How this Usenet job started after the last (re)launch"
             aria-label={`Resume mode ${props.dl.resumeMode}`}
           >
-            {props.dl.resumeMode === "resumed"
-              ? "resumed"
-              : props.dl.resumeMode === "forced-full"
-                ? "forced full"
-                : props.dl.resumeMode === "disabled"
-                  ? "no resume"
-                  : "full"}
+            {resumeModeLabel(props.dl.resumeMode ?? "")}
           </span>
         </Show>
       </div>

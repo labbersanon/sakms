@@ -56,7 +56,7 @@ type dlState struct {
 	name       string
 	stagingDir string
 	resume     *resumeTracker // sidecar writer; set in runDownload (disabled=true when resume is off)
-	resumeMode string         // "resumed" | "full" | "forced-full" | "disabled"
+	resumeMode string
 	status     string
 	errorMsg   string
 	err        error // classified retrieval failure; surfaced as Download.Err
@@ -308,7 +308,6 @@ func (m *Manager) SetOnComplete(fn func(gid string, files []string)) {
 // StagingDir returns the directory where assembled NZB files are written.
 func (m *Manager) StagingDir() string { return m.stagingDir }
 
-// SetResumePolicy updates segment-resume knobs at runtime without rebuilding the Manager.
 // ResumeMode values surfaced on Download / downloads SSE.
 const (
 	ResumeModeResumed    = "resumed"
@@ -335,6 +334,7 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 	if m == nil {
 		return
 	}
+	clearSidecars := forceFull || !enabled
 	m.mu.Lock()
 	m.segmentResume = enabled
 	m.forceFullDownload = forceFull
@@ -343,7 +343,7 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 		resume   *resumeTracker
 	}
 	var lives []live
-	if forceFull || !enabled {
+	if clearSidecars {
 		for gid, dl := range m.downloads {
 			lives = append(lives, live{gid: gid, dir: dl.stagingDir, resume: dl.resume})
 			if forceFull {
@@ -355,7 +355,7 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 	}
 	m.mu.Unlock()
 
-	if forceFull || !enabled {
+	if clearSidecars {
 		for _, item := range lives {
 			item.resume.disable()
 			if err := ClearResumeArtifacts(item.dir); err != nil {
@@ -792,10 +792,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		}
 	}
 	dl.resume = loadResumeTracker(dl.stagingDir, gid, mirror, !resumeOn || forceFull)
-	skipped := 0
-	if dl.resume != nil {
-		skipped = dl.resume.skippedSegments()
-	}
+	skipped := dl.resume.skippedSegments()
 	switch {
 	case forceFull:
 		dl.resumeMode = ResumeModeForcedFull

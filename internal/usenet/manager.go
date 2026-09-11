@@ -404,6 +404,10 @@ func (m *Manager) allocateStaging() (gid, dlDir string, err error) {
 			}
 			return "", "", fmt.Errorf("usenet: creating staging dir %s: %w", dlDir, err)
 		}
+		// Claude 2026-09-11: ownership marker for safe staging sweeps/deletes
+		// Reason: sweeper must only RemoveAll dirs sakms minted; name pattern alone
+		//         is legacy-safe, marker proves ownership if naming ever changes
+		writeOwnedMarker(dlDir)
 		return gid, dlDir, nil
 	}
 	return "", "", fmt.Errorf("usenet: could not allocate a free nzb GID")

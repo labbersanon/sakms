@@ -683,6 +683,17 @@ func importUsenetFromDisk(
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err
 	}
+	// Claude 2026-09-11: remove sakms-owned staging after successful import
+	// Reason: RARs/PAR2 were left on disk after import; only delete if ownership
+	//         gate says this dir is under staging and minted by sakms
+	// Troubleshooting: no-op when contentPath is not an owned staging dir
+	stagingDir := contentPath
+	if fi, err := os.Stat(contentPath); err == nil && !fi.IsDir() {
+		stagingDir = filepath.Dir(contentPath)
+	}
+	if err := usenet.RemoveOwnedStagingDir(filepath.Dir(stagingDir), stagingDir); err != nil {
+		log.Printf("usenet: post-import staging cleanup %s: %v", stagingDir, err)
+	}
 	updated, err := grabsStore.Get(ctx, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

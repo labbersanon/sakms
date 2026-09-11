@@ -153,3 +153,27 @@ func writeZipWithFile(zipPath, name string, body []byte) error {
 	}
 	return w.Close()
 }
+
+
+func TestDeleteArchiveMembers_RemovesPar2AndSFV(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.mkv", "a.par2", "a.vol00+01.par2", "a.sfv", "a.nfo"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := deleteArchiveMembers(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.mkv")); err != nil {
+		t.Fatalf("video should remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.nfo")); err != nil {
+		t.Fatalf("non-archive should remain: %v", err)
+	}
+	for _, name := range []string{"a.par2", "a.vol00+01.par2", "a.sfv"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s should be deleted, err=%v", name, err)
+		}
+	}
+}

@@ -8092,3 +8092,25 @@ that root and returns to Files if you were inside `/adult` when the
 toggle flips. `resolveBrowsablePath` still allows `/adult` — this is
 visibility, not a new access gate — so rename/move and background jobs
 keep working.
+
+
+## 2026-09-11 — Usenet staging ownership + stale archive sweep
+
+After a successful unpack, sakms already deleted RAR/ZIP/7z/SFV but left
+`.par2` behind, and a successful import never removed the staging directory.
+Failed/abandoned grabs left orphan `nzb-*` trees (tens of GB of RARs) under
+the downloader staging root.
+
+Changes:
+- **Ownership gate** (`internal/usenet/ownership.go`): deletes only apply to
+  direct children of the configured staging root whose names match sakms GIDs
+  (`nzb-` + 16 hex, or legacy `nzb-` + digits), or that contain `.sakms-owned`.
+  Paths outside staging / non-sakms names are never removed.
+- **Unpack**: also deletes `.par2` after a successful unpack.
+- **Import**: after marking a grab `imported`, removes the owned staging dir.
+- **Background sweeper** (`internal/stagingsweep`, hourly by default): removes
+  owned staging for `imported` grabs immediately, and **orphans** (no grab row
+  for that GID) after **7 days**. Settings:
+  `usenet_stale_staging_orphan_days` (default 7; `0` = no orphan deletes),
+  `usenet_stale_staging_sweep_seconds` (default 3600; `0` = disable loop).
+- New staging dirs get a `.sakms-owned` marker at allocation time.

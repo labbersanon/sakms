@@ -273,7 +273,12 @@ func deleteArchiveMembers(dir string) error {
 		}
 		name := e.Name()
 		lower := strings.ToLower(name)
-		if archiveKind(name) == "" && !strings.HasSuffix(lower, ".sfv") {
+		// Claude 2026-09-11: also drop .par2 after successful unpack
+		// Reason: import left PAR2 repair volumes behind after RAR delete; user
+		//         wants archive-family cleanup complete once video exists
+		if archiveKind(name) == "" &&
+			!strings.HasSuffix(lower, ".sfv") &&
+			!strings.HasSuffix(lower, ".par2") {
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && first == nil {

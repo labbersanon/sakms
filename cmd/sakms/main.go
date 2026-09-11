@@ -46,6 +46,7 @@ import (
 	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/stagingsweep"
 	"github.com/labbersanon/sakms/internal/trakt"
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/videophash"
@@ -537,6 +538,12 @@ func run() error {
 	if nzbManager != nil {
 		nzbManager.SetOnComplete(api.UsenetCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager, nzbManager, videoHasher))
 		go nzbManager.Start(ctx)
+		// Claude 2026-09-11: sweep sakms-owned stale usenet staging dirs
+		// Reason: imported leftovers + aged orphan RAR trees (~122G); only deletes
+		//         paths usenet.IsOwnedStagingPath accepts (staging root + nzb-* / marker)
+		// Troubleshooting: journal "stagingsweep:"; settings usenet_stale_staging_*
+		// Review if: staging root setting changes
+		go stagingsweep.Run(ctx, stagingsweep.LoadInterval(ctx, settingsStore), nzbManager.StagingDir(), grabsStore, settingsStore)
 	}
 
 	// DELIBERATE, opt-in exception to this project's "manual by default, no

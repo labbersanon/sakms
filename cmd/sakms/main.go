@@ -33,10 +33,10 @@ import (
 	"github.com/labbersanon/sakms/internal/nodekeys"
 	"github.com/labbersanon/sakms/internal/nodes"
 	"github.com/labbersanon/sakms/internal/nodesettings"
+	"github.com/labbersanon/sakms/internal/organizeevents"
 	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/phash"
 	"github.com/labbersanon/sakms/internal/proposals"
-	"github.com/labbersanon/sakms/internal/organizeevents"
 	"github.com/labbersanon/sakms/internal/pruning"
 	"github.com/labbersanon/sakms/internal/recheck"
 	"github.com/labbersanon/sakms/internal/rename"
@@ -546,6 +546,15 @@ func run() error {
 		go stagingsweep.Run(ctx, stagingsweep.LoadInterval(ctx, settingsStore), nzbManager.StagingDir(), grabsStore, settingsStore)
 	}
 
+	// Claude 2026-09-11: ARR-parity reconcile once at boot (also runs each usenet-retry tick).
+	// Reason: in-memory usenet/torrent queues are empty after restart; restore or import
+	//         before the failure sweep can strand unknown-GID grabs as forever-queued.
+	// Troubleshooting: journal "download reconcile:"; never parks solely on unknown GID
+	api.ReconcileInFlightDownloads(ctx, api.DownloadReconcileDeps{
+		HTTPClient: &http.Client{Timeout: outboundTimeout}, ConnStore: connStore, SCStore: serviceConnStore,
+		SettingsStore: settingsStore, GrabsStore: grabsStore, LibStore: libStore,
+		Prober: prober, VideoHasher: videoHasher, DL: dlManager, NZB: nzbManager,
+	})
 	// DELIBERATE, opt-in exception to this project's "manual by default, no
 	// background pollers" rule (see internal/recheck's package doc + CLAUDE.md):
 	// one background availability-recheck loop, gated OFF by default (interval
@@ -633,7 +642,7 @@ func run() error {
 	// and this line.
 	go api.RunUsenetRetry(ctx, api.LoadUsenetRetryInterval(ctx, settingsStore), &http.Client{Timeout: outboundTimeout},
 		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, libStore, dlManager, nzbManager,
-		adultMonitoredStore, adultNewestReleaseStore)
+		adultMonitoredStore, adultNewestReleaseStore, prober, videoHasher)
 
 	// General Rename/Purge/Dedup scan scheduler — the fourth deliberate
 	// exception to "manual by default" (see internal/scanschedule's package doc
@@ -867,10 +876,10 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 	maxConcurrentDownloads := settingInt(ctx, settingsStore, api.UsenetMaxConcurrentDownloadsKey, usenet.DefaultMaxConcurrentDownloads)
 
 	m := usenet.New(usenet.Config{
-		Servers:                 servers,
-		StagingDir:              staging,
-		HTTPClient:              httpClient,
-		MaxConcurrentDownloads:  maxConcurrentDownloads,
+		Servers:                servers,
+		StagingDir:             staging,
+		HTTPClient:             httpClient,
+		MaxConcurrentDownloads: maxConcurrentDownloads,
 	})
 	return m, err
 }

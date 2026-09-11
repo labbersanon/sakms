@@ -106,11 +106,13 @@ import (
 
 	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -207,7 +209,8 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 	connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store,
 	grabsStore *grabs.Store, excludesStore *excludes.Store, whStore *webhooks.Store,
 	libStore *library.Store, dl *downloader.Manager, nzb *usenet.Manager,
-	monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore) {
+	monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore,
+	prober dedup.Prober, videoHasher rename.PHasher) {
 
 	if interval <= 0 {
 		return // opt-in gate: off by default, honoring "manual first"
@@ -223,6 +226,11 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 	var lookup usenetDownloadLookup
 	if nzb != nil {
 		lookup = nzb.FindByGID
+	}
+	reconcile := DownloadReconcileDeps{
+		HTTPClient: httpClient, ConnStore: connStore, SCStore: scStore,
+		SettingsStore: settingsStore, GrabsStore: grabsStore, LibStore: libStore,
+		Prober: prober, VideoHasher: videoHasher, DL: dl, NZB: nzb,
 	}
 
 	ticker := time.NewTicker(interval)
@@ -243,6 +251,10 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 				interval = cur
 				ticker.Reset(cur)
 			}
+			// Claude 2026-09-11: ARR-parity reconcile before the failure sweep.
+			// Reason: unknown-GID grabs must be restored/imported, never left stranded
+			// Troubleshooting: journal "download reconcile:"
+			ReconcileInFlightDownloads(ctx, reconcile)
 			runUsenetRetryCycle(ctx, deps, build, lookup, libStore, monitoredStore, releaseStore, excludedRequestKeys(ctx, excludesStore), time.Now())
 		}
 	}

@@ -82,7 +82,7 @@ type Manager struct {
 	pools       []*pool // one per enabled subscription; swapped by SetSubscriptions
 	downloads   map[string]*dlState
 	subscribers map[int]chan []Download
-	nextSubID int
+	nextSubID   int
 	// Claude 2026-09-01: job semaphore is MaxConcurrentDownloads, not Σ MaxConns.
 	// Reason: operators need "how many NZBs at once" separate from per-server
 	//   NNTP sockets; PAR2/unpack must not hold a download slot.
@@ -127,8 +127,12 @@ func New(cfg Config) *Manager {
 	if maxDL < 1 {
 		maxDL = DefaultMaxConcurrentDownloads
 	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	m := &Manager{
-		httpClient:             cfg.HTTPClient,
+		httpClient:             httpClient,
 		stagingDir:             cfg.StagingDir,
 		downloads:              map[string]*dlState{},
 		subscribers:            map[int]chan []Download{},
@@ -371,6 +375,84 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	return gid, nil
 }
 
+// Claude 2026-09-11: RelaunchNZB — post-restart attach into an existing nzb-* dir
+// Reason: ARR-parity queue reconcile must not mint a new GID (and orphan partial
+//
+//	staging) when the in-memory engine forgot a grab after reboot
+//
+// Troubleshooting: reconcile logs "relaunch"; dir must pass IsOwnedStagingPath
+// Review if: true segment-resume lands (phase 2) and replaces this re-fetch
+// Related: internal/api/downloadreconcile.go
+//
+// RelaunchNZB re-fetches the NZB at url and starts a download into the existing
+// staging directory named gid. It is NOT true segment resume — phase 1 of the
+// built-in-downloader ARR-parity plan: keep the same owned nzb-* tree (and any
+// already-assembled video) instead of allocateStaging's fresh GID. Returns nil
+// when gid is already in flight.
+func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error {
+	if !IsOwnedStagingName(gid) {
+		return fmt.Errorf("usenet: refusing relaunch into non-owned gid %q", gid)
+	}
+	if existing, err := m.FindByGID(gid); err != nil {
+		return err
+	} else if existing != nil {
+		return nil
+	}
+
+	nzb, dnzb, err := fetchNZB(m.httpClient, url)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		name = dnzb.Name
+	}
+	if name == "" {
+		name = "usenet-download"
+	}
+
+	if err := os.MkdirAll(m.stagingDir, 0o755); err != nil {
+		return fmt.Errorf("usenet: creating staging dir %s: %w", m.stagingDir, err)
+	}
+	dlDir := filepath.Join(m.stagingDir, gid)
+	if !IsOwnedStagingPath(m.stagingDir, dlDir) {
+		return fmt.Errorf("usenet: refusing relaunch path %s", dlDir)
+	}
+	if err := os.MkdirAll(dlDir, 0o755); err != nil {
+		return fmt.Errorf("usenet: ensuring staging dir %s: %w", dlDir, err)
+	}
+	writeOwnedMarker(dlDir)
+
+	var totalBytes int64
+	for _, f := range nzb.Files {
+		for _, s := range f.Segs {
+			totalBytes += s.Bytes
+		}
+	}
+
+	base := m.baseContext()
+	dlCtx, cancel := context.WithCancel(base)
+	dl := &dlState{
+		gid:        gid,
+		name:       name,
+		stagingDir: dlDir,
+		status:     "active",
+		total:      totalBytes,
+		cancel:     cancel,
+	}
+
+	m.mu.Lock()
+	if _, taken := m.downloads[gid]; taken {
+		m.mu.Unlock()
+		cancel()
+		return nil
+	}
+	m.downloads[gid] = dl
+	m.mu.Unlock()
+
+	go m.runDownload(dlCtx, gid, dl, nzb)
+	return nil
+}
+
 const (
 	// 8 random bytes → "nzb-" + 16 hex chars, a shape no historical nzb-1..n
 	// counter value can collide with.
@@ -494,6 +576,25 @@ func (m *Manager) FindByGID(gid string) (*Download, error) {
 		}
 	}
 	return nil, nil
+}
+
+// InjectDownloadForTest registers a live download entry so API tests can
+// simulate "engine still knows this GID" without driving a real NZB fetch.
+func (m *Manager) InjectDownloadForTest(gid string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.downloads == nil {
+		m.downloads = map[string]*dlState{}
+	}
+	if _, ok := m.downloads[gid]; ok {
+		return
+	}
+	m.downloads[gid] = &dlState{
+		gid:    gid,
+		name:   "test",
+		status: "active",
+		cancel: func() {},
+	}
 }
 
 // Subscribe registers a new SSE subscriber. Returns a buffered channel (cap 1)
@@ -879,7 +980,9 @@ func filenameFromSubject(subject string) string {
 //
 // Claude 2026-09-01: fall back to the NZB subject when yEnc name lacks an ext.
 // Reason: some posters put a bare hex hash in =ybegin; import then fails with
-//   "no video files found" despite a complete Matroska sitting in staging.
+//
+//	"no video files found" despite a complete Matroska sitting in staging.
+//
 // Troubleshooting: usenet download status=complete but import finds no video.
 // Review if: import gains content-sniffing for extensionless files.
 // Related: NZBGet subject-filename handling / NzbLog diagnostics.

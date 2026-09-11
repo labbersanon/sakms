@@ -205,9 +205,7 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 	if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
 		return err
 	}
-	if deps.NZB != nil {
-		clearOwnedUsenetStaging(deps.NZB.StagingDir(), g.DownloadGID)
-	}
+	clearOwnedUsenetStaging(deps.NZB, g.DownloadGID)
 	return nil
 }
 

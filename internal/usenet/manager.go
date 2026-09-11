@@ -52,6 +52,7 @@ type dlState struct {
 	gid        string
 	name       string
 	stagingDir string
+	resume     *resumeTracker // segment-resume sidecar writer; nil when disabled
 	status     string
 	errorMsg   string
 	err        error // classified retrieval failure; surfaced as Download.Err
@@ -77,6 +78,13 @@ type Manager struct {
 	stagingDir string
 	onComplete func(gid string, files []string)
 	startCtx   context.Context // set by Start under mu; nil until then
+
+	// Claude 2026-09-11: segment resume policy (Phase 2 ARR-parity)
+	// Reason: after restart RelaunchNZB must skip durable completed segments
+	// Troubleshooting: settings usenet_segment_resume_enabled / _force_full
+	segmentResume     bool
+	forceFullDownload bool
+	resumeMirror      ResumeMirror
 
 	mu          sync.Mutex
 	pools       []*pool // one per enabled subscription; swapped by SetSubscriptions
@@ -113,6 +121,13 @@ type Config struct {
 	MaxConcurrentDownloads int
 	StagingDir             string
 	HTTPClient             *http.Client
+	// SegmentResume enables skip-completed-segment behavior using .sakms-resume.json.
+	// Default false when unset by callers that predate Phase 2.
+	SegmentResume bool
+	// ForceFullDownload ignores/clears any resume sidecar (operator rollback).
+	ForceFullDownload bool
+	// ResumeMirror optionally persists a copy of the sidecar for UI/debug.
+	ResumeMirror ResumeMirror
 }
 
 // New constructs a Manager for the given NNTP server configuration(s).
@@ -134,6 +149,9 @@ func New(cfg Config) *Manager {
 	m := &Manager{
 		httpClient:             httpClient,
 		stagingDir:             cfg.StagingDir,
+		segmentResume:          cfg.SegmentResume,
+		forceFullDownload:      cfg.ForceFullDownload,
+		resumeMirror:           cfg.ResumeMirror,
 		downloads:              map[string]*dlState{},
 		subscribers:            map[int]chan []Download{},
 		maxConcurrentDownloads: maxDL,
@@ -285,6 +303,42 @@ func (m *Manager) SetOnComplete(fn func(gid string, files []string)) {
 
 // StagingDir returns the directory where assembled NZB files are written.
 func (m *Manager) StagingDir() string { return m.stagingDir }
+
+// SetResumePolicy updates segment-resume knobs at runtime (settings toggle /
+// operator rollback without rebuilding the Manager).
+func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.segmentResume = enabled
+	m.forceFullDownload = forceFull
+}
+
+// ResumePolicy returns the current (enabled, forceFull) resume knobs.
+func (m *Manager) ResumePolicy() (enabled, forceFull bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.segmentResume, m.forceFullDownload
+}
+
+// ClearResumeMirror drops the optional DB resume row for gid after a successful
+// import (or any other path that no longer needs the mirror). Staging sidecar
+// cleanup is handled by RemoveOwnedStagingDir / ClearResumeArtifacts.
+func (m *Manager) ClearResumeMirror(gid string) {
+	if m == nil || gid == "" {
+		return
+	}
+	m.mu.Lock()
+	mirror := m.resumeMirror
+	m.mu.Unlock()
+	if mirror == nil {
+		return
+	}
+	if err := mirror.ClearResume(gid); err != nil {
+		log.Printf("usenet: clear resume mirror %s: %v", gid, err)
+	}
+}
+
+
 
 // Start runs the 500 ms progress-poll loop and blocks until ctx is cancelled.
 // Intended to run as `go m.Start(ctx)`.
@@ -635,6 +689,28 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		}
 	}()
 
+	m.mu.Lock()
+	resumeOn, forceFull := m.segmentResume, m.forceFullDownload
+	mirror := m.resumeMirror
+	m.mu.Unlock()
+	if forceFull {
+		if err := ClearResumeArtifacts(dl.stagingDir); err != nil {
+			log.Printf("usenet: clearing resume artifacts for %s: %v", gid, err)
+		}
+		if mirror != nil {
+			_ = mirror.ClearResume(gid)
+		}
+		log.Printf("usenet: download %s (%s) full restart (force-full / rollback)", gid, dl.name)
+	}
+	dl.resume = loadResumeTracker(dl.stagingDir, gid, mirror, !resumeOn || forceFull)
+	if resumeOn && !forceFull {
+		if skipped := dl.resume.skippedSegments(); skipped > 0 {
+			log.Printf("usenet: download %s (%s) resuming — %d segment(s) already complete on disk", gid, dl.name, skipped)
+		} else {
+			log.Printf("usenet: download %s (%s) starting (resume enabled, no prior segments)", gid, dl.name)
+		}
+	}
+
 	files, err := m.downloadAll(ctx, gid, dl, nzb)
 	<-sem
 	released = true
@@ -718,6 +794,12 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 // assembleFile downloads all segments of one NZB file and writes the assembled
 // output to dl.stagingDir. Segments are downloaded concurrently up to maxConc,
 // written to a pre-allocated file via io.WriterAt at the offsets in yEnc metadata.
+//
+// Claude 2026-09-11: skip segments recorded in .sakms-resume.json (Phase 2).
+// Reason: RelaunchNZB after restart re-fetched every segment; ARR-parity needs
+//         durable skip of completed MsgIDs while keeping the same nzb-* dir.
+// Troubleshooting: journal "resuming — N segment(s)"; force-full clears sidecar.
+// Review if: PAR2 repair requires invalidating specific MsgIDs after a bad write.
 func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int) (string, error) {
 	if len(nzbFile.Segs) == 0 {
 		return "", fmt.Errorf("no segments")
@@ -727,31 +809,97 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	copy(segs, nzbFile.Segs)
 	sort.Slice(segs, func(i, j int) bool { return segs[i].Number < segs[j].Number })
 
-	// Fetch segment 1 first to learn the filename and total file size from the
-	// yEnc =ybegin header.
-	first, err := m.fetchSegmentAny(segs[0].MsgID)
-	if err != nil {
-		return "", fmt.Errorf("segment 1: %w", err)
+	resume := dl.resume
+	firstMsg := strings.TrimSpace(segs[0].MsgID)
+
+	filename, fileSize, priorDone := "", int64(0), 0
+	if resume != nil && !resume.disabled {
+		resume.mu.Lock()
+		for name, rf := range resume.snap.Files {
+			if rf == nil || len(rf.Done) == 0 {
+				continue
+			}
+			if _, ok := rf.Done[firstMsg]; ok || len(resume.snap.Files) == 1 {
+				filename = name
+				fileSize = rf.Size
+				priorDone = len(rf.Done)
+				break
+			}
+		}
+		resume.mu.Unlock()
 	}
 
-	filename := preferredOutputName(first.filename, nzbFile.Subject)
-	outPath := filepath.Join(dl.stagingDir, filename)
+	var firstData []byte
+	var firstOffset int64
+	needFirst := filename == "" || resume == nil || resume.disabled || !resume.hasSegment(filename, firstMsg)
+	if needFirst {
+		first, err := m.fetchSegmentAny(segs[0].MsgID)
+		if err != nil {
+			return "", fmt.Errorf("segment 1: %w", err)
+		}
+		filename = preferredOutputName(first.filename, nzbFile.Subject)
+		if first.fileSize > 0 {
+			fileSize = first.fileSize
+		}
+		firstData = first.data
+		firstOffset = first.offset
+	}
 
-	f, err := os.Create(outPath)
+	outPath := filepath.Join(dl.stagingDir, filename)
+	flags := os.O_RDWR | os.O_CREATE
+	if priorDone == 0 {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(outPath, flags, 0o644)
 	if err != nil {
-		return "", fmt.Errorf("creating %s: %w", outPath, err)
+		return "", fmt.Errorf("opening %s: %w", outPath, err)
 	}
 	defer f.Close()
 
-	if first.fileSize > 0 {
-		if err := f.Truncate(first.fileSize); err != nil {
-			return "", fmt.Errorf("pre-allocating %s: %w", outPath, err)
+	if fileSize > 0 {
+		fi, statErr := f.Stat()
+		if statErr != nil || fi.Size() < fileSize {
+			if err := f.Truncate(fileSize); err != nil {
+				return "", fmt.Errorf("pre-allocating %s: %w", outPath, err)
+			}
 		}
 	}
-	if _, err := f.WriteAt(first.data, first.offset); err != nil {
-		return "", fmt.Errorf("writing segment 1: %w", err)
+
+	writeSeg := func(msgID string, number int, data []byte, offset int64) error {
+		if resume != nil && !resume.disabled && resume.hasSegment(filename, msgID) {
+			m.addCompleted(gid, int64(len(data)))
+			return nil
+		}
+		if _, err := f.WriteAt(data, offset); err != nil {
+			return fmt.Errorf("writing segment %d: %w", number, err)
+		}
+		m.addCompleted(gid, int64(len(data)))
+		if resume != nil {
+			if err := resume.markSegment(filename, msgID, number, offset, len(data), fileSize); err != nil {
+				log.Printf("usenet: resume persist %s seg %d: %v", gid, number, err)
+			}
+		}
+		return nil
 	}
-	m.addCompleted(gid, int64(len(first.data)))
+
+	if needFirst {
+		if err := writeSeg(firstMsg, segs[0].Number, firstData, firstOffset); err != nil {
+			return "", err
+		}
+	} else if resume != nil {
+		resume.mu.Lock()
+		segLen := 0
+		if rf := resume.snap.Files[filename]; rf != nil {
+			segLen = rf.Done[firstMsg].Length
+		}
+		resume.mu.Unlock()
+		if segLen <= 0 {
+			segLen = int(segs[0].Bytes)
+		}
+		if segLen > 0 {
+			m.addCompleted(gid, int64(segLen))
+		}
+	}
 
 	if len(segs) > 1 {
 		var g errgroup.Group
@@ -759,15 +907,27 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		for _, seg := range segs[1:] {
 			seg := seg
 			g.Go(func() error {
+				msgID := strings.TrimSpace(seg.MsgID)
+				if resume != nil && !resume.disabled && resume.hasSegment(filename, msgID) {
+					resume.mu.Lock()
+					n := 0
+					if rf := resume.snap.Files[filename]; rf != nil {
+						n = rf.Done[msgID].Length
+					}
+					resume.mu.Unlock()
+					if n <= 0 {
+						n = int(seg.Bytes)
+					}
+					if n > 0 {
+						m.addCompleted(gid, int64(n))
+					}
+					return nil
+				}
 				res, err := m.fetchSegmentAny(seg.MsgID)
 				if err != nil {
 					return fmt.Errorf("segment %d: %w", seg.Number, err)
 				}
-				if _, werr := f.WriteAt(res.data, res.offset); werr != nil {
-					return fmt.Errorf("writing segment %d: %w", seg.Number, werr)
-				}
-				m.addCompleted(gid, int64(len(res.data)))
-				return nil
+				return writeSeg(msgID, seg.Number, res.data, res.offset)
 			})
 		}
 		if err := g.Wait(); err != nil {

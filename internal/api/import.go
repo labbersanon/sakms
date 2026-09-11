@@ -185,25 +185,27 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			log.Printf("usenet import: grab %d marking imported: %v", g.ID, err)
 			return
 		}
-		// Claude 2026-09-11: clear owned staging on the automatic complete path
-		// Reason: critic — only manual/reconcile paths cleaned up; auto-import left
-		//         nzb-* dirs until hourly sweep (or forever if sweep disabled)
-		// Troubleshooting: journal "post-import staging cleanup"; RemoveOwnedStagingDir no-op if not owned
+		// Claude 2026-09-11: clear owned staging + resume mirror on automatic complete
+		// Reason: critic — auto-import left nzb-* dirs; Phase 2 mirror must not orphan
+		// Troubleshooting: journal "post-import staging cleanup"; ClearResumeMirror after dir wipe
 		// Review if: hardlink imports need a delay before wipe
-		clearOwnedUsenetStaging(nzb.StagingDir(), gid)
+		clearOwnedUsenetStaging(nzb, gid)
 	}
 }
 
-// clearOwnedUsenetStaging removes stagingRoot/gid when the ownership gate allows.
-// Shared by UsenetCompleteImporter, importUsenetFromDisk, and reconcileImportUsenet.
-func clearOwnedUsenetStaging(stagingRoot, gid string) {
-	if stagingRoot == "" || gid == "" {
+// clearOwnedUsenetStaging removes nzb staging for gid when ownership allows,
+// then drops the optional DB resume mirror. Shared by UsenetCompleteImporter,
+// importUsenetFromDisk, and reconcileImportUsenet.
+func clearOwnedUsenetStaging(nzb *usenet.Manager, gid string) {
+	if nzb == nil || gid == "" {
 		return
 	}
-	gidDir := filepath.Join(stagingRoot, gid)
-	if err := usenet.RemoveOwnedStagingDir(stagingRoot, gidDir); err != nil {
+	root := nzb.StagingDir()
+	gidDir := filepath.Join(root, gid)
+	if err := usenet.RemoveOwnedStagingDir(root, gidDir); err != nil {
 		log.Printf("usenet: post-import staging cleanup %s: %v", gidDir, err)
 	}
+	nzb.ClearResumeMirror(gid)
 }
 
 // importGrabContent is the shared import core: it relocates a completed

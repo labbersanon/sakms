@@ -501,7 +501,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 					http.Error(w, "the usenet engine no longer knows about this download", http.StatusConflict)
 					return
 				}
-				if err := importUsenetFromDisk(ctx, w, httpClient, connStore, scStore, settingsStore, dl, grabsStore, libStore, prober, videoHasher, g, id, stagingPath, "complete"); err != nil {
+				if err := importUsenetFromDisk(ctx, w, httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober, videoHasher, g, id, stagingPath, "complete"); err != nil {
 					return
 				}
 				return
@@ -527,7 +527,7 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 			}
 			if newStatus == grabs.Completed {
 				contentPath := downloadContentPath(nzbItem.Files, nzbItem.Dir, nzb.StagingDir())
-				if err := importUsenetFromDisk(ctx, w, httpClient, connStore, scStore, settingsStore, dl, grabsStore, libStore, prober, videoHasher, g, id, contentPath, nzbItem.Status); err != nil {
+				if err := importUsenetFromDisk(ctx, w, httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober, videoHasher, g, id, contentPath, nzbItem.Status); err != nil {
 					return
 				}
 				return
@@ -648,6 +648,7 @@ func importUsenetFromDisk(
 	scStore *serviceconn.Store,
 	settingsStore *settings.Store,
 	dl *downloader.Manager,
+	nzb *usenet.Manager,
 	grabsStore *grabs.Store,
 	libStore *library.Store,
 	prober dedup.Prober,
@@ -695,7 +696,7 @@ func importUsenetFromDisk(
 	if gid == "" {
 		gid = filepath.Base(stagingDir)
 	}
-	clearOwnedUsenetStaging(filepath.Dir(stagingDir), gid)
+	clearOwnedUsenetStaging(nzb, gid)
 	updated, err := grabsStore.Get(ctx, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

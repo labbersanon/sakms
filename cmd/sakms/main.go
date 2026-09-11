@@ -24,6 +24,7 @@ import (
 	"github.com/labbersanon/sakms/internal/discoverrefresh"
 	"github.com/labbersanon/sakms/internal/discoversliders"
 	"github.com/labbersanon/sakms/internal/downloader"
+	"github.com/labbersanon/sakms/internal/downloadstate"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/imageproxy"
@@ -137,6 +138,7 @@ func run() error {
 	// URL commonly embeds an API key, and the retry path is what needs the URL
 	// persisted at all (see migration 0054).
 	grabsStore := grabs.New(sqlDB, secretStore)
+	downloadStateStore := downloadstate.New(sqlDB)
 	libStore := library.New(sqlDB)
 	// Claude 2026-08-10: register Rename Undo's archive store.
 	// Reason: deep-interview-rename-undo — process-wide default for the same
@@ -163,7 +165,7 @@ func run() error {
 	// (it owns a torrent client + a poll goroutine — never per-request like
 	// mode.Session's cheap clients) and injected as the same pointer into every
 	// mode.Build call that needs it.
-	dlManager, err := buildDownloader(context.Background(), cfg.DataDir, settingsStore, &http.Client{Timeout: outboundTimeout})
+	dlManager, err := buildDownloader(context.Background(), cfg.DataDir, settingsStore, &http.Client{Timeout: outboundTimeout}, downloadStateStore)
 	if err != nil {
 		log.Printf("downloader: not starting (%v) — torrent grabbing will be unavailable until fixed", err)
 		dlManager = nil
@@ -202,7 +204,7 @@ func run() error {
 	// Constructed unconditionally (even with zero subscriptions configured),
 	// so nzbManager is never nil; must run after BackfillUsenetURL above, since
 	// a freshly migrated legacy row has no host/port until that normalizes it.
-	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, serviceConnStore, settingsStore, &http.Client{Timeout: outboundTimeout})
+	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, serviceConnStore, settingsStore, &http.Client{Timeout: outboundTimeout}, downloadStateStore)
 	if err != nil {
 		// buildUsenetManager always returns a non-nil Manager (see its doc
 		// comment) — an error here means a subscription/settings read failed,
@@ -801,7 +803,7 @@ func seedBundledOllamaDefaults(ctx context.Context, connStore *connections.Store
 // their documented defaults) and constructs the process-lifetime download
 // Manager. It does NOT start the engine — the caller does that with
 // `go m.Start(ctx)`.
-func buildDownloader(ctx context.Context, dataDir string, settingsStore *settings.Store, httpClient *http.Client) (*downloader.Manager, error) {
+func buildDownloader(ctx context.Context, dataDir string, settingsStore *settings.Store, httpClient *http.Client, seedStore downloader.SeedStore) (*downloader.Manager, error) {
 	staging, err := settingsStore.Get(ctx, api.DownloaderStagingDirKey)
 	if err != nil && !errors.Is(err, settings.ErrNotFound) {
 		return nil, err
@@ -835,6 +837,7 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 		SeedRatioLimit:        settingFloat(ctx, settingsStore, api.TorrentSeedRatioLimitKey, api.TorrentDefaultSeedRatioLimit),
 		SeedDurationMinutes:   settingInt(ctx, settingsStore, api.TorrentSeedDurationMinutesKey, api.TorrentDefaultSeedDurationMinutes),
 		StaleThresholdMinutes: settingInt(ctx, settingsStore, api.TorrentStaleThresholdMinutesKey, api.TorrentDefaultStaleThresholdMinutes),
+		SeedStore: seedStore,
 	}, httpClient), nil
 }
 
@@ -857,7 +860,7 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 // read here — see DownloaderMaxConnectionsKey's doc comment: it is
 // torrent-only now. Each subscription carries its own MaxConns, with
 // usenet.defaultMaxConnsPerServer covering an unset (<=0) value.
-func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client) (*usenet.Manager, error) {
+func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client, resumeMirror usenet.ResumeMirror) (*usenet.Manager, error) {
 	var servers []usenet.ServerConfig
 	subs, err := serviceConnStore.ListByKind(ctx, serviceconn.KindUsenet)
 	if err != nil {
@@ -892,11 +895,16 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 
 	maxConcurrentDownloads := settingInt(ctx, settingsStore, api.UsenetMaxConcurrentDownloadsKey, usenet.DefaultMaxConcurrentDownloads)
 
+	resumeEnabled := settingBool(ctx, settingsStore, api.UsenetSegmentResumeEnabledKey, true)
+	forceFull := settingBool(ctx, settingsStore, api.UsenetSegmentResumeForceFullKey, false)
 	m := usenet.New(usenet.Config{
 		Servers:                servers,
 		StagingDir:             staging,
 		HTTPClient:             httpClient,
 		MaxConcurrentDownloads: maxConcurrentDownloads,
+		SegmentResume:          resumeEnabled,
+		ForceFullDownload:      forceFull,
+		ResumeMirror:           resumeMirror,
 	})
 	return m, err
 }

@@ -107,12 +107,18 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 	}
 
 	stagingPath := filepath.Join(deps.NZB.StagingDir(), g.DownloadGID)
-	// Claude 2026-09-11: import only when staging is owned+complete; else fall through
-	// Reason: critic — any ResolveVideoFile hit (sample/mid-download) was treated as
-	//         complete and wiped owned staging; failed imports skipped relaunch
-	// Troubleshooting: journal "staging not import-ready" / import error then relaunch
-	// Review if: Phase 2 resume sidecar becomes an additional incompleteness signal
-	if ok, why := usenetStagingReadyForImport(deps.NZB.StagingDir(), stagingPath); ok {
+	// Claude 2026-09-11: force-full skips import; otherwise require owned+complete staging
+	// Reason: force-full promises re-download; ResolveVideoFile alone still false-completes
+	// Troubleshooting: journal "force-full" / "staging not import-ready"; then relaunch
+	// Review if: force-full becomes a one-shot that auto-clears after relaunch
+	_, forceFull := deps.NZB.ResumePolicy()
+	if forceFull {
+		if err := usenet.ClearResumeArtifacts(stagingPath); err != nil {
+			log.Printf("download reconcile: clear resume artifacts %s: %v", stagingPath, err)
+		}
+		deps.NZB.ClearResumeMirror(g.DownloadGID)
+		log.Printf("download reconcile: grab %d force-full — skipping staging import, will relaunch", g.ID)
+	} else if ok, why := usenetStagingReadyForImport(deps.NZB.StagingDir(), stagingPath); ok {
 		if err := reconcileImportUsenet(ctx, deps, g, stagingPath); err != nil {
 			log.Printf("download reconcile: importing usenet staging for grab %d: %v — will relaunch", g.ID, err)
 		} else {
@@ -218,6 +224,11 @@ const minUsenetReconcileImportBytes = 1 << 20 // 1 MiB
 func usenetStagingReadyForImport(stagingRoot, stagingPath string) (ok bool, reason string) {
 	if !usenet.IsOwnedStagingPath(stagingRoot, stagingPath) {
 		return false, "not owned staging"
+	}
+	if _, err := os.Stat(filepath.Join(stagingPath, usenet.ResumeFileName)); err == nil {
+		return false, "resume sidecar present"
+	} else if err != nil && !os.IsNotExist(err) {
+		return false, "resume sidecar stat failed"
 	}
 	video, err := library.ResolveVideoFile(stagingPath)
 	if err != nil || video == "" {

@@ -129,6 +129,21 @@ const DownloadRow: Component<{
         >
           {props.dl.status}
         </span>
+        <Show when={props.dl.protocol === "usenet" && props.dl.resumeMode}>
+          <span
+            class="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted"
+            title="How this Usenet job started after the last (re)launch"
+            aria-label={`Resume mode ${props.dl.resumeMode}`}
+          >
+            {props.dl.resumeMode === "resumed"
+              ? "resumed"
+              : props.dl.resumeMode === "forced-full"
+                ? "forced full"
+                : props.dl.resumeMode === "disabled"
+                  ? "no resume"
+                  : "full"}
+          </span>
+        </Show>
       </div>
 
       <ProgressBar percent={percent()} />

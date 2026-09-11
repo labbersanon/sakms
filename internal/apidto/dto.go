@@ -2704,6 +2704,9 @@ type Download struct {
 	UploadSpeed     int64  `json:"uploadSpeed"`
 	Protocol        string `json:"protocol"` // "torrent" | "usenet"
 	ErrorMessage    string `json:"errorMessage"`
+	// ResumeMode is usenet-only: "resumed" | "full" | "forced-full" | "disabled".
+	// Empty for torrents and for usenet jobs that have not entered runDownload yet.
+	ResumeMode string `json:"resumeMode,omitempty"`
 }
 
 // DownloadProtocolTorrent and DownloadProtocolUsenet are the two values

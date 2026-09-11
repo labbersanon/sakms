@@ -540,19 +540,14 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	return gid, nil
 }
 
-// Claude 2026-09-11: RelaunchNZB — post-restart attach into an existing nzb-* dir
-// Reason: ARR-parity queue reconcile must not mint a new GID (and orphan partial
-//
-//	staging) when the in-memory engine forgot a grab after reboot
-//
+// Claude 2026-09-11: RelaunchNZB reattaches into an existing nzb-* dir
+// Reason: reconcile must reuse the GID; a new GID orphans partial staging after reboot
 // Troubleshooting: reconcile logs "relaunch"; dir must pass IsOwnedStagingPath
 // Review if: PAR2-aware invalidation or cross-host resume replaces this relaunch
 // Related: internal/api/downloadreconcile.go
 //
-// RelaunchNZB re-fetches the NZB at url and starts a download into the existing
-// staging directory named gid (same owned nzb-* tree, not allocateStaging's
-// fresh GID). assembleFile skips segments already recorded in .sakms-resume.json.
-// Returns nil when gid is already in flight.
+// RelaunchNZB re-fetches the NZB at url and downloads into the existing gid
+// directory. Returns nil when gid is already in flight.
 func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error {
 	if !IsOwnedStagingName(gid) {
 		return fmt.Errorf("usenet: refusing relaunch into non-owned gid %q", gid)

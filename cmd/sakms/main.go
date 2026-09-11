@@ -548,9 +548,9 @@ func run() error {
 		go stagingsweep.Run(ctx, stagingsweep.LoadInterval(ctx, settingsStore), nzbManager.StagingDir(), grabsStore, settingsStore)
 	}
 
-	// Claude 2026-09-11: ARR-parity reconcile once at boot (also runs each usenet-retry tick).
-	// Reason: in-memory usenet/torrent queues are empty after restart; restore or import
-	//         before the failure sweep can strand unknown-GID grabs as forever-queued.
+	// Claude 2026-09-11: ARR-parity reconcile once at boot (also each usenet-retry tick)
+	// Reason: in-memory queues are empty after restart; restore/import before the
+	//         failure sweep can leave unknown-GID grabs forever-queued
 	// Troubleshooting: journal "download reconcile:"; never parks solely on unknown GID
 	api.ReconcileInFlightDownloads(ctx, api.DownloadReconcileDeps{
 		HTTPClient: &http.Client{Timeout: outboundTimeout}, ConnStore: connStore, SCStore: serviceConnStore,

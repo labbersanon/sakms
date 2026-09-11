@@ -251,9 +251,9 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 				interval = cur
 				ticker.Reset(cur)
 			}
-			// Claude 2026-09-11: ARR-parity reconcile before the failure sweep.
-			// Reason: unknown-GID grabs must be restored/imported, never left stranded
-			// Troubleshooting: journal "download reconcile:"
+			// Claude 2026-09-11: reconcile before the failure sweep
+			// Reason: unknown-GID grabs must be restored/imported, never stranded
+			// Troubleshooting: journal "download reconcile:"; never parks solely on unknown GID
 			ReconcileInFlightDownloads(ctx, reconcile)
 			runUsenetRetryCycle(ctx, deps, build, lookup, libStore, monitoredStore, releaseStore, excludedRequestKeys(ctx, excludesStore), time.Now())
 		}

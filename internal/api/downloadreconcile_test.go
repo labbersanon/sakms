@@ -9,8 +9,6 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// TestReconcileInFlightDownloads_SkipsLiveEngineGID ensures a grab whose usenet
-// engine still knows the GID is left alone — restore is only for forgotten jobs.
 func TestReconcileInFlightDownloads_SkipsLiveEngineGID(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
@@ -35,8 +33,7 @@ func TestReconcileInFlightDownloads_SkipsLiveEngineGID(t *testing.T) {
 	}
 }
 
-// TestReconcileInFlightDownloads_ParksOnlyWhenURLMissing is the sole park path:
-// unknown GID + empty DownloadURL. Unknown GID alone must never park.
+// Sole park path: unknown GID + empty DownloadURL. Unknown GID alone must never park.
 func TestReconcileInFlightDownloads_ParksOnlyWhenURLMissing(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
@@ -71,9 +68,7 @@ func TestReconcileInFlightDownloads_ParksOnlyWhenURLMissing(t *testing.T) {
 	}
 }
 
-// TestReconcileInFlightDownloads_UnknownGIDWithURLDoesNotPark guards the
-// anti-boot-storm rule: a forgotten grab that still has a durable URL stays
-// queued (relaunch attempted) rather than mass-parking on restart.
+// Forgotten grab with a durable URL stays queued (relaunch attempted), never mass-parked.
 func TestReconcileInFlightDownloads_UnknownGIDWithURLDoesNotPark(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
@@ -81,8 +76,6 @@ func TestReconcileInFlightDownloads_UnknownGIDWithURLDoesNotPark(t *testing.T) {
 	nzb := usenet.New(usenet.Config{StagingDir: staging})
 
 	g := dispatchedUsenetGrab(t, grabsStore, "nzb-cccccccccccccccc")
-	// Engine does not know the GID; URL is present (dispatchedUsenetGrab sets one).
-	// Relaunch will fail (no NZB HTTP), but must NOT park.
 	ReconcileInFlightDownloads(ctx, DownloadReconcileDeps{
 		SettingsStore: settingsStore, GrabsStore: grabsStore, NZB: nzb,
 	})

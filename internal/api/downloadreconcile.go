@@ -26,13 +26,12 @@ import (
 // Review if: torrent metainfo column lands so relaunch does not need DownloadURL
 // Related: usenet.RelaunchNZB, sweepUsenetFailures, UsenetCompleteImporter
 
-// restoreMissingURLReason is parked only when a forgotten in-flight grab has no
-// durable DownloadURL to relaunch from. Detail-free: rendered on Requests.
+// restoreMissingURLReason is used only when a forgotten in-flight grab has no
+// durable DownloadURL. Detail-free: rendered on Requests.
 const restoreMissingURLReason = "the in-flight download could not be restored after a restart — it will be re-searched"
 
-// DownloadReconcileDeps is everything ReconcileInFlightDownloads needs to
-// import completed staging or re-attach forgotten engine jobs. Nil managers
-// / stores are skipped safely so tests and partial boots stay quiet.
+// DownloadReconcileDeps wires ReconcileInFlightDownloads. Nil managers and
+// stores are skipped so tests and partial boots stay quiet.
 type DownloadReconcileDeps struct {
 	HTTPClient    *http.Client
 	ConnStore     *connections.Store
@@ -46,19 +45,15 @@ type DownloadReconcileDeps struct {
 	NZB           *usenet.Manager
 }
 
-// ReconcileInFlightDownloads is the ARR-style queue sync for sakms's built-in
-// downloaders. For every queued/downloading grab whose live engine no longer
-// knows the GID:
+// ReconcileInFlightDownloads restores queued/downloading grabs whose engine no
+// longer knows the GID:
 //
-//  1. Usenet staging already has an importable video → import (same path as
-//     check-import's disk fallback) and clear owned staging.
-//  2. Torrent → re-AddTorrent from the durable DownloadURL (anacrolix reuses
-//     pieces under StagingDir).
-//  3. Usenet incomplete/empty → RelaunchNZB into the same nzb-* directory.
-//  4. Missing DownloadURL → park pending_retry (the only park this pass does).
+//  1. Usenet staging has an importable video → import and clear owned staging
+//  2. Torrent → re-AddTorrent from the durable DownloadURL
+//  3. Usenet incomplete/empty → RelaunchNZB into the same nzb-* directory
+//  4. Missing DownloadURL → park pending_retry (the only park this pass does)
 //
-// An unknown GID alone NEVER parks — that was the boot-storm trap the failure
-// sweep correctly avoids, and this pass exists to restore rather than give up.
+// Unknown GID alone never parks.
 func ReconcileInFlightDownloads(ctx context.Context, deps DownloadReconcileDeps) {
 	if deps.GrabsStore == nil {
 		return
@@ -177,8 +172,8 @@ func reconcileTorrentInFlight(ctx context.Context, deps DownloadReconcileDeps, g
 	log.Printf("download reconcile: grab %d (%s) torrent re-added as %s", g.ID, g.Title, newGID)
 }
 
-// reconcileImportUsenet is the non-HTTP twin of importUsenetFromDisk / the
-// UsenetCompleteImporter success path: import, mark imported, clear owned staging.
+// reconcileImportUsenet is the non-HTTP twin of importUsenetFromDisk: import,
+// mark imported, clear owned staging.
 func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab, contentPath string) error {
 	if deps.LibStore == nil || deps.SettingsStore == nil {
 		return nil

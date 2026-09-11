@@ -18,7 +18,6 @@ func TestRelaunchNZB_ReusesExistingStagingDir(t *testing.T) {
 	if err := os.MkdirAll(dlDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Pre-existing partial artifact in the owned staging dir — relaunch must keep it.
 	leftover := filepath.Join(dlDir, "partial.bin")
 	if err := os.WriteFile(leftover, []byte("partial"), 0o644); err != nil {
 		t.Fatal(err)
@@ -62,11 +61,9 @@ func TestRelaunchNZB_ReusesExistingStagingDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dlDir, OwnedMarkerFile)); err != nil {
 		t.Fatalf("owned marker missing after relaunch: %v", err)
 	}
-	// Second relaunch is a no-op while live.
 	if err := m.RelaunchNZB(context.Background(), gid, srv.URL, "Relaunch Test"); err != nil {
 		t.Fatalf("second RelaunchNZB: %v", err)
 	}
-	// Refuse non-owned names.
 	if err := m.RelaunchNZB(context.Background(), "../escape", srv.URL, "x"); err == nil || !strings.Contains(err.Error(), "non-owned") {
 		t.Fatalf("expected non-owned refusal, got %v", err)
 	}

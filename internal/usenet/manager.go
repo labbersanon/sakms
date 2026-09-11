@@ -892,6 +892,15 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	}
 	m.mu.Unlock()
 
+	// Claude 2026-09-11: clear resume sidecar on complete — reconcile treats it as incomplete
+	// Reason: flat (non-RAR) completes left the sidecar and blocked post-restart import
+	// Troubleshooting: import gate "resume sidecar present" after a finished download
+	// Review if: unpack always clears resume for every release shape
+	if err := ClearResumeArtifacts(dl.stagingDir); err != nil {
+		log.Printf("usenet: clear resume artifacts after complete %s: %v", gid, err)
+	}
+	m.ClearResumeMirror(gid)
+
 	if m.onComplete != nil {
 		filesCopy := append([]string(nil), files...)
 		go m.onComplete(gid, filesCopy)

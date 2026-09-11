@@ -548,15 +548,30 @@ func run() error {
 		go stagingsweep.Run(ctx, stagingsweep.LoadInterval(ctx, settingsStore), nzbManager.StagingDir(), grabsStore, settingsStore)
 	}
 
-	// Claude 2026-09-11: ARR-parity reconcile once at boot (also each usenet-retry tick)
-	// Reason: in-memory queues are empty after restart; restore/import before the
-	//         failure sweep can leave unknown-GID grabs forever-queued
-	// Troubleshooting: journal "download reconcile:"; never parks solely on unknown GID
-	api.ReconcileInFlightDownloads(ctx, api.DownloadReconcileDeps{
+	// Claude 2026-09-11: boot reconcile + wait for torrent engine (Start is async)
+	// Reason: in-memory GIDs are lost on restart; AddTorrent races "engine not running"
+	// Troubleshooting: journal "download reconcile:" / "torrent engine not ready"
+	// Review if: Start exposes a ready channel instead of polling
+	reconcileDeps := api.DownloadReconcileDeps{
 		HTTPClient: &http.Client{Timeout: outboundTimeout}, ConnStore: connStore, SCStore: serviceConnStore,
 		SettingsStore: settingsStore, GrabsStore: grabsStore, LibStore: libStore,
 		Prober: prober, VideoHasher: videoHasher, DL: dlManager, NZB: nzbManager,
-	})
+	}
+	if dlManager != nil {
+		waitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		err := dlManager.WaitForEngine(waitCtx)
+		cancel()
+		if err != nil {
+			log.Printf("download reconcile: torrent engine not ready after wait: %v — deferring torrent restores", err)
+			go func() {
+				if err := dlManager.WaitForEngine(ctx); err != nil {
+					return
+				}
+				api.ReconcileInFlightDownloads(ctx, reconcileDeps)
+			}()
+		}
+	}
+	api.ReconcileInFlightDownloads(ctx, reconcileDeps)
 	// DELIBERATE, opt-in exception to this project's "manual by default, no
 	// background pollers" rule (see internal/recheck's package doc + CLAUDE.md):
 	// one background availability-recheck loop, gated OFF by default (interval

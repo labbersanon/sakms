@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/searchterm"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -26,12 +29,9 @@ import (
 // Review if: torrent metainfo column lands so relaunch does not need DownloadURL
 // Related: usenet.RelaunchNZB, sweepUsenetFailures, UsenetCompleteImporter
 
-// restoreMissingURLReason is used only when a forgotten in-flight grab has no
-// durable DownloadURL. Detail-free: rendered on Requests.
 const restoreMissingURLReason = "the in-flight download could not be restored after a restart — it will be re-searched"
 
-// DownloadReconcileDeps wires ReconcileInFlightDownloads. Nil managers and
-// stores are skipped so tests and partial boots stay quiet.
+// DownloadReconcileDeps wires ReconcileInFlightDownloads; nil fields are skipped.
 type DownloadReconcileDeps struct {
 	HTTPClient    *http.Client
 	ConnStore     *connections.Store
@@ -95,7 +95,7 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 		return
 	}
 	if live != nil {
-		return // engine still owns it — failure sweep / completion path apply
+		return
 	}
 
 	stagingPath := filepath.Join(deps.NZB.StagingDir(), g.DownloadGID)
@@ -111,13 +111,15 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 		}
 		deps.NZB.ClearResumeMirror(g.DownloadGID)
 		log.Printf("download reconcile: grab %d force-full — skipping staging import, will relaunch", g.ID)
-	} else if video, err := library.ResolveVideoFile(stagingPath); err == nil && video != "" {
+	} else if ok, why := usenetStagingReadyForImport(deps.NZB.StagingDir(), stagingPath); ok {
 		if err := reconcileImportUsenet(ctx, deps, g, stagingPath); err != nil {
-			log.Printf("download reconcile: importing completed usenet staging for grab %d: %v", g.ID, err)
+			log.Printf("download reconcile: importing usenet staging for grab %d: %v — will relaunch", g.ID, err)
 		} else {
 			log.Printf("download reconcile: grab %d (%s) imported from staging after engine forget", g.ID, g.Title)
+			return
 		}
-		return
+	} else if why != "" {
+		log.Printf("download reconcile: grab %d staging not import-ready (%s) — will relaunch", g.ID, why)
 	}
 
 	if strings.TrimSpace(g.DownloadURL) == "" {
@@ -158,6 +160,15 @@ func reconcileTorrentInFlight(ctx context.Context, deps DownloadReconcileDeps, g
 		return
 	}
 
+	// Claude 2026-09-11: defer until torrent client is up (boot races Start)
+	// Reason: AddTorrent failed with "engine not running"; usenet-retry often off
+	// Troubleshooting: journal "engine not ready"; main WaitForEngine before reconcile
+	// Review if: Start exposes a ready channel instead of polling
+	if !deps.DL.EngineReady() {
+		log.Printf("download reconcile: torrent grab %d — engine not ready, deferring restore", g.ID)
+		return
+	}
+
 	newGID, err := deps.DL.AddTorrent(ctx, g.DownloadURL)
 	if err != nil {
 		log.Printf("download reconcile: re-adding torrent grab %d: %v", g.ID, err)
@@ -172,11 +183,9 @@ func reconcileTorrentInFlight(ctx context.Context, deps DownloadReconcileDeps, g
 	log.Printf("download reconcile: grab %d (%s) torrent re-added as %s", g.ID, g.Title, newGID)
 }
 
-// reconcileImportUsenet is the non-HTTP twin of importUsenetFromDisk: import,
-// mark imported, clear owned staging.
 func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab, contentPath string) error {
 	if deps.LibStore == nil || deps.SettingsStore == nil {
-		return nil
+		return fmt.Errorf("library/settings store unavailable for reconcile import")
 	}
 	sess, err := mode.Build(ctx, deps.ConnStore, deps.SCStore, deps.SettingsStore, deps.HTTPClient, deps.DL, g.Mode)
 	if err != nil {
@@ -200,4 +209,33 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 		deps.NZB.ClearResumeMirror(g.DownloadGID)
 	}
 	return nil
+}
+
+const minUsenetReconcileImportBytes = 1 << 20 // 1 MiB
+
+// usenetStagingReadyForImport gates reconcile import: owned dir, no resume sidecar, real video.
+func usenetStagingReadyForImport(stagingRoot, stagingPath string) (ok bool, reason string) {
+	if !usenet.IsOwnedStagingPath(stagingRoot, stagingPath) {
+		return false, "not owned staging"
+	}
+	if _, err := os.Stat(filepath.Join(stagingPath, usenet.ResumeFileName)); err == nil {
+		return false, "resume sidecar present"
+	} else if err != nil && !os.IsNotExist(err) {
+		return false, "resume sidecar stat failed"
+	}
+	video, err := library.ResolveVideoFile(stagingPath)
+	if err != nil || video == "" {
+		return false, "no video"
+	}
+	if searchterm.IsSampleVideo(video) {
+		return false, "sample video"
+	}
+	fi, err := os.Stat(video)
+	if err != nil {
+		return false, "video stat failed"
+	}
+	if fi.Size() < minUsenetReconcileImportBytes {
+		return false, "video too small"
+	}
+	return true, ""
 }

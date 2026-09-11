@@ -120,13 +120,43 @@ func TestSegmentCovered(t *testing.T) {
 	if err := tr.markSegment("a.bin", "<m@x>", 1, 0, 100, 200); err != nil {
 		t.Fatal(err)
 	}
-	if tr.segmentCovered("a.bin", "<m@x>", 50) {
+	if tr.segmentCovered(nil, "a.bin", "<m@x>", 50) {
 		t.Fatal("short file must not be covered")
 	}
-	if !tr.segmentCovered("a.bin", "<m@x>", 100) {
+	if !tr.segmentCovered(nil, "a.bin", "<m@x>", 100) {
 		t.Fatal("exact length should be covered")
 	}
-	if tr.segmentCovered("a.bin", "<missing@x>", 100) {
+	if tr.segmentCovered(nil, "a.bin", "<missing@x>", 100) {
 		t.Fatal("unknown msg must not be covered")
 	}
+}
+
+func TestSegmentCovered_RejectsHollowRange(t *testing.T) {
+	dir := t.TempDir()
+	tr := loadResumeTracker(dir, "gid", nil, false)
+	if err := tr.markSegment("a.bin", "<m@x>", 1, 0, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "a.bin")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(200); err != nil {
+		t.Fatal(err)
+	}
+	// Size says 200 but range is a sparse/NUL hole — must NOT skip re-download.
+	if tr.segmentCovered(f, "a.bin", "<m@x>", 200) {
+		t.Fatal("hollow range must not be covered")
+	}
+	if _, err := f.WriteAt([]byte("payload-data-not-all-nul-bytes!!"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if !tr.segmentCovered(f, "a.bin", "<m@x>", 200) {
+		t.Fatal("populated range should be covered")
+	}
+	_ = f.Close()
 }

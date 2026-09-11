@@ -118,24 +118,30 @@ func (t *resumeTracker) hasSegment(filename, msgID string) bool {
 	return ok
 }
 
-// segmentCovered reports whether msgID is marked done AND the on-disk file is
-// large enough to contain that segment's recorded [offset, offset+length).
-// Skipping without this check leaves sparse/truncated holes that still import.
-func (t *resumeTracker) segmentCovered(filename, msgID string, fileBytes int64) bool {
+// segmentCovered reports whether msgID is marked done, the on-disk file is
+// large enough to contain that segment's recorded [offset, offset+length), AND
+// that byte range looks populated (not a sparse hole / all-NUL fill).
+// Skipping without these checks leaves hollow videos that still import.
+// f may be nil — then only the size check runs (tests / callers without an FD).
+func (t *resumeTracker) segmentCovered(f *os.File, filename, msgID string, fileBytes int64) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	f := t.snap.Files[filename]
+	rf := t.snap.Files[filename]
+	var seg ResumeSeg
+	ok := false
+	if rf != nil {
+		seg, ok = rf.Done[msgID]
+	}
+	t.mu.Unlock()
+	if !ok || seg.Length <= 0 {
+		return false
+	}
+	if fileBytes < seg.Offset+int64(seg.Length) {
+		return false
+	}
 	if f == nil {
-		return false
+		return true
 	}
-	seg, ok := f.Done[msgID]
-	if !ok {
-		return false
-	}
-	if seg.Length <= 0 {
-		return false
-	}
-	return fileBytes >= seg.Offset+int64(seg.Length)
+	return rangeLooksPopulated(f, seg.Offset, int64(seg.Length))
 }
 
 func (t *resumeTracker) priorFile(firstMsg string) (name string, size int64, done int) {

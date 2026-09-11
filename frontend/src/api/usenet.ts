@@ -77,13 +77,17 @@ export function fetchUsenetSegmentResume(): Promise<{
   );
 }
 
-// putUsenetSegmentResume — PUT /api/settings/usenet-segment-resume, 204. Applies live.
+// putUsenetSegmentResume — PUT /api/settings/usenet-segment-resume. Applies live.
+// forceFull is one-shot: response.forceFull is false after a successful apply.
 export function putUsenetSegmentResume(body: {
   enabled?: boolean;
   forceFull?: boolean;
-}): Promise<void> {
-  return api<void>("/api/settings/usenet-segment-resume", {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+}): Promise<{ enabled: boolean; forceFull: boolean }> {
+  return api<{ enabled: boolean; forceFull: boolean }>(
+    "/api/settings/usenet-segment-resume",
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
 }

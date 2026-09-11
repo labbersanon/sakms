@@ -585,10 +585,12 @@ const ResumeCard: Component = () => {
 
   const save = async () => {
     try {
-      await putUsenetSegmentResume({
+      const r = await putUsenetSegmentResume({
         enabled: enabled(),
         forceFull: forceFull(),
       });
+      setEnabled(r.enabled);
+      setForceFull(r.forceFull);
       setDirty(false);
       status.set("✓ saved");
     } catch (e) {
@@ -642,9 +644,9 @@ const ResumeCard: Component = () => {
         <span>
           <span class={labelClass}>Force full re-download</span>
           <Muted class="mt-1">
-            Rollback switch: clear resume sidecars and re-download every
-            segment even if resume is enabled. Turn off again once the bad
-            resume state is flushed.
+            One-shot: clears resume sidecars, cancels live usenet jobs, and
+            wipes owned staging payloads, then turns itself off so later
+            downloads can resume normally.
           </Muted>
         </span>
       </label>

@@ -48,8 +48,8 @@ func TestSetResumePolicy_ForceFullSweepsStaging(t *testing.T) {
 
 	m.SetResumePolicy(true, true)
 	enabled, force := m.ResumePolicy()
-	if !enabled || !force {
-		t.Fatalf("policy = (%v,%v), want (true,true)", enabled, force)
+	if !enabled || force {
+		t.Fatalf("policy = (%v,%v), want (true,false) — force-full is one-shot", enabled, force)
 	}
 	if _, err := os.Stat(filepath.Join(owned, ResumeFileName)); !os.IsNotExist(err) {
 		t.Fatal("force-full should clear owned sidecar immediately")
@@ -80,5 +80,18 @@ func TestSweepForceFull_WipesPayloads(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(owned, OwnedMarkerFile)); err != nil {
 		t.Fatal("owned marker must remain")
+	}
+}
+
+func TestSetResumePolicy_ForceFullIsOneShot(t *testing.T) {
+	staging := t.TempDir()
+	m := New(Config{StagingDir: staging})
+	m.SetResumePolicy(true, true)
+	enabled, force := m.ResumePolicy()
+	if !enabled {
+		t.Fatal("resume should stay enabled after force-full one-shot")
+	}
+	if force {
+		t.Fatal("force-full must clear itself after apply")
 	}
 }

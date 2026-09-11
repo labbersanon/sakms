@@ -110,7 +110,7 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 	// Claude 2026-09-11: force-full skips import; otherwise require owned+complete staging
 	// Reason: force-full promises re-download; ResolveVideoFile alone still false-completes
 	// Troubleshooting: journal "force-full" / "staging not import-ready"; then relaunch
-	// Review if: force-full becomes a one-shot that auto-clears after relaunch
+	// Review if: force-full skip can be removed now that SetResumePolicy one-shots
 	_, forceFull := deps.NZB.ResumePolicy()
 	if forceFull {
 		if err := usenet.ClearResumeArtifacts(stagingPath); err != nil {

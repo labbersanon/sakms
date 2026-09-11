@@ -113,3 +113,33 @@ func TestDeleteArchiveMembers_RemovesResumeSidecar(t *testing.T) {
 		t.Fatalf("video should remain: %v", err)
 	}
 }
+
+func TestSegmentCovered(t *testing.T) {
+	dir := t.TempDir()
+	tr := loadResumeTracker(dir, "gid", nil, false)
+	if err := tr.markSegment("a.bin", "<m@x>", 1, 0, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	if tr.segmentCovered("a.bin", "<m@x>", 50) {
+		t.Fatal("short file must not be covered")
+	}
+	if !tr.segmentCovered("a.bin", "<m@x>", 100) {
+		t.Fatal("exact length should be covered")
+	}
+	if tr.segmentCovered("a.bin", "<missing@x>", 100) {
+		t.Fatal("unknown msg must not be covered")
+	}
+}
+
+func TestClearResumeArtifacts_OnDisablePath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ResumeFileName), []byte(`{"v":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearResumeArtifacts(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ResumeFileName)); !os.IsNotExist(err) {
+		t.Fatal("expected sidecar removed")
+	}
+}

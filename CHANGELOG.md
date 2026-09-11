@@ -8150,6 +8150,13 @@ when the whole owned staging dir is deleted.
 Settings → Download → Usenet gains a Segment resume card
 (`GET/PUT /api/settings/usenet-segment-resume`). Defaults: resume on, force-full off.
 
+## 2026-09-11 — Phase 2 resume critic fixes
+
+Hardened segment resume skip safety (require on-disk coverage before skipping;
+no Truncate-up on resume), clear sidecars when resume is disabled, store
+torrent seed columns as bigint, and persist credited upload so SeedRatioLimit
+survives process restart.
+
 ## 2026-09-11 — Queue reconcile + unpacking/staging critic fixes
 
 **Problem:** Morning queue reconcile and owned-staging unpack/sweep work had not

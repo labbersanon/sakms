@@ -681,14 +681,23 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	resumeOn, forceFull := m.segmentResume, m.forceFullDownload
 	mirror := m.resumeMirror
 	m.mu.Unlock()
-	if forceFull {
+	// Claude 2026-09-11: clear sidecars on force-full OR resume-disabled
+	// Reason: disable→re-enable left a stale sidecar that skipped into a
+	//         truncated file (hollow import). Force-full is the rollback.
+	// Troubleshooting: journal "full restart" / "resume disabled — cleared"
+	// Review if: PUT force-full also sweeps all nzb-* dirs immediately
+	if forceFull || !resumeOn {
 		if err := ClearResumeArtifacts(dl.stagingDir); err != nil {
 			log.Printf("usenet: clearing resume artifacts for %s: %v", gid, err)
 		}
 		if mirror != nil {
 			_ = mirror.ClearResume(gid)
 		}
-		log.Printf("usenet: download %s (%s) full restart (force-full / rollback)", gid, dl.name)
+		if forceFull {
+			log.Printf("usenet: download %s (%s) full restart (force-full / rollback)", gid, dl.name)
+		} else {
+			log.Printf("usenet: download %s (%s) resume disabled — cleared sidecars", gid, dl.name)
+		}
 	}
 	dl.resume = loadResumeTracker(dl.stagingDir, gid, mirror, !resumeOn || forceFull)
 	if resumeOn && !forceFull {
@@ -827,22 +836,46 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 	defer f.Close()
 
-	if fileSize > 0 {
-		fi, statErr := f.Stat()
-		if statErr != nil || fi.Size() < fileSize {
-			if err := f.Truncate(fileSize); err != nil {
-				return "", fmt.Errorf("pre-allocating %s: %w", outPath, err)
-			}
+	// Claude 2026-09-11: only preallocate on a fresh assemble (no prior segments).
+	// Reason: Truncate-up + skip left sparse zero holes that ResolveVideoFile
+	//         still treated as importable video.
+	// Troubleshooting: hollow mkv after resume; file size matches but content is NUL
+	// Review if: sparse-aware coverage checks replace this guard
+	if fileSize > 0 && priorDone == 0 {
+		if err := f.Truncate(fileSize); err != nil {
+			return "", fmt.Errorf("pre-allocating %s: %w", outPath, err)
 		}
 	}
 
+	fileBytes := int64(0)
+	if fi, statErr := f.Stat(); statErr == nil {
+		fileBytes = fi.Size()
+	}
+
+	if !needFirst && !resume.segmentCovered(filename, firstMsg, fileBytes) {
+		needFirst = true
+		first, err := m.fetchSegmentAny(segs[0].MsgID)
+		if err != nil {
+			return "", fmt.Errorf("segment 1: %w", err)
+		}
+		if first.fileSize > 0 {
+			fileSize = first.fileSize
+		}
+		firstData = first.data
+		firstOffset = first.offset
+	}
+
+
 	writeSeg := func(msgID string, number int, data []byte, offset int64) error {
-		if resume != nil && !resume.disabled && resume.hasSegment(filename, msgID) {
+		if resume != nil && !resume.disabled && resume.segmentCovered(filename, msgID, fileBytes) {
 			m.addCompleted(gid, int64(len(data)))
 			return nil
 		}
 		if _, err := f.WriteAt(data, offset); err != nil {
 			return fmt.Errorf("writing segment %d: %w", number, err)
+		}
+		if end := offset + int64(len(data)); end > fileBytes {
+			fileBytes = end
 		}
 		m.addCompleted(gid, int64(len(data)))
 		if resume != nil {
@@ -868,7 +901,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			seg := seg
 			g.Go(func() error {
 				msgID := strings.TrimSpace(seg.MsgID)
-				if resume != nil && !resume.disabled && resume.hasSegment(filename, msgID) {
+				if resume != nil && !resume.disabled && resume.segmentCovered(filename, msgID, fileBytes) {
 					if n := resume.skippedBytes(filename, msgID, int(seg.Bytes)); n > 0 {
 						m.addCompleted(gid, int64(n))
 					}

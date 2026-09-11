@@ -114,7 +114,7 @@ type Config struct {
 	noPortForwarding bool
 
 	// SeedStore optionally persists seed-window baselines across process restarts.
-	// When nil, seeding ratio/duration accounting resets on every boot (pre-Phase-2).
+	// When nil, ratio/duration accounting resets on every boot.
 	SeedStore SeedStore
 }
 
@@ -169,9 +169,9 @@ type entry struct {
 	// Review if: a separate "queued" status is introduced in the wire DTO.
 	metaReady bool
 	addedAt   time.Time
-	files    []string // full absolute paths, populated after GotInfo
-	dir      string   // per-torrent folder or stagingDir
-	filename string   // display: files[0] when known
+	files     []string // full absolute paths, populated after GotInfo
+	dir       string   // per-torrent folder or stagingDir
+	filename  string   // display: files[0] when known
 
 	// Speed (delta across poll ticks).
 	prevBytes int64
@@ -987,9 +987,9 @@ func (m *Manager) AddTorrent(ctx context.Context, uri string) (string, error) {
 	gid := t.InfoHash().HexString()
 	m.mu.Lock()
 	m.entries[gid] = &entry{
-		t:      t,
-		status: "waiting",
-		dir:    m.cfg.StagingDir,
+		t:       t,
+		status:  "waiting",
+		dir:     m.cfg.StagingDir,
 		addedAt: time.Now(),
 		// Start the stale clock at add time: a torrent that never makes its
 		// first byte of progress is exactly the case stale detection exists for.
@@ -1346,8 +1346,8 @@ func (m *Manager) torrentHTTPClient() *http.Client {
 	}
 	return &http.Client{
 		Transport: base.Transport,
-		Timeout:    base.Timeout,
-		Jar:        base.Jar,
+		Timeout:   base.Timeout,
+		Jar:       base.Jar,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL != nil && strings.EqualFold(req.URL.Scheme, "magnet") {
 				return http.ErrUseLastResponse
@@ -1733,14 +1733,9 @@ func (m *Manager) beginSeeding(gid string, t *torrentlib.Torrent, seedPaths []st
 		} else if ok && !prevStarted.IsZero() {
 			// Keep the original window start so duration limits accumulate across boots.
 			started = prevStarted
-			// Re-baseline against the NEW handle's current written counter while
-			// preserving previously credited upload via an adjusted baseline:
-			// effectiveUploaded = (currentWritten - baseline) + priorUploaded.
-			// We don't have priorUploaded stored separately; prevBaseline was the
-			// handle's BytesWrittenData at last beginSeeding. After restart the
-			// new handle starts near 0, so using `baseline - priorCredited` is
-			// wrong. Store totalBytes + startedAt only and accept upload credit
-			// resets across handle recreation — duration limit still persists.
+			// prevBaseline is the previous handle's BytesWrittenData; a new
+			// handle starts near 0, so credited upload cannot be recovered.
+			// Duration still persists via startedAt; upload credit resets.
 			_ = prevBaseline
 			if prevTotal > 0 {
 				total = prevTotal

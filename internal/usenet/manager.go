@@ -52,7 +52,7 @@ type dlState struct {
 	gid        string
 	name       string
 	stagingDir string
-	resume     *resumeTracker // segment-resume sidecar writer; nil when disabled
+	resume     *resumeTracker // sidecar writer; set in runDownload (disabled=true when resume is off)
 	status     string
 	errorMsg   string
 	err        error // classified retrieval failure; surfaced as Download.Err
@@ -121,8 +121,8 @@ type Config struct {
 	MaxConcurrentDownloads int
 	StagingDir             string
 	HTTPClient             *http.Client
-	// SegmentResume enables skip-completed-segment behavior using .sakms-resume.json.
-	// Default false when unset by callers that predate Phase 2.
+	// SegmentResume skips completed segments recorded in .sakms-resume.json.
+	// Zero value is false so callers that predate Phase 2 keep full re-fetch.
 	SegmentResume bool
 	// ForceFullDownload ignores/clears any resume sidecar (operator rollback).
 	ForceFullDownload bool
@@ -304,8 +304,7 @@ func (m *Manager) SetOnComplete(fn func(gid string, files []string)) {
 // StagingDir returns the directory where assembled NZB files are written.
 func (m *Manager) StagingDir() string { return m.stagingDir }
 
-// SetResumePolicy updates segment-resume knobs at runtime (settings toggle /
-// operator rollback without rebuilding the Manager).
+// SetResumePolicy updates segment-resume knobs at runtime without rebuilding the Manager.
 func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -313,15 +312,7 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 	m.forceFullDownload = forceFull
 }
 
-// ResumePolicy returns the current (enabled, forceFull) resume knobs.
-func (m *Manager) ResumePolicy() (enabled, forceFull bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.segmentResume, m.forceFullDownload
-}
-
-// ClearResumeMirror drops the optional DB resume row for gid after a successful
-// import (or any other path that no longer needs the mirror). Staging sidecar
+// ClearResumeMirror drops the optional DB resume row for gid. Staging sidecar
 // cleanup is handled by RemoveOwnedStagingDir / ClearResumeArtifacts.
 func (m *Manager) ClearResumeMirror(gid string) {
 	if m == nil || gid == "" {
@@ -337,8 +328,6 @@ func (m *Manager) ClearResumeMirror(gid string) {
 		log.Printf("usenet: clear resume mirror %s: %v", gid, err)
 	}
 }
-
-
 
 // Start runs the 500 ms progress-poll loop and blocks until ctx is cancelled.
 // Intended to run as `go m.Start(ctx)`.
@@ -435,14 +424,13 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 //	staging) when the in-memory engine forgot a grab after reboot
 //
 // Troubleshooting: reconcile logs "relaunch"; dir must pass IsOwnedStagingPath
-// Review if: true segment-resume lands (phase 2) and replaces this re-fetch
+// Review if: PAR2-aware invalidation or cross-host resume replaces this relaunch
 // Related: internal/api/downloadreconcile.go
 //
 // RelaunchNZB re-fetches the NZB at url and starts a download into the existing
-// staging directory named gid. It is NOT true segment resume — phase 1 of the
-// built-in-downloader ARR-parity plan: keep the same owned nzb-* tree (and any
-// already-assembled video) instead of allocateStaging's fresh GID. Returns nil
-// when gid is already in flight.
+// staging directory named gid (same owned nzb-* tree, not allocateStaging's
+// fresh GID). assembleFile skips segments already recorded in .sakms-resume.json.
+// Returns nil when gid is already in flight.
 func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error {
 	if !IsOwnedStagingName(gid) {
 		return fmt.Errorf("usenet: refusing relaunch into non-owned gid %q", gid)
@@ -796,8 +784,7 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 // written to a pre-allocated file via io.WriterAt at the offsets in yEnc metadata.
 //
 // Claude 2026-09-11: skip segments recorded in .sakms-resume.json (Phase 2).
-// Reason: RelaunchNZB after restart re-fetched every segment; ARR-parity needs
-//         durable skip of completed MsgIDs while keeping the same nzb-* dir.
+// Reason: RelaunchNZB after restart re-fetched every segment; ARR-parity needs durable skip of completed MsgIDs while keeping the same nzb-* dir.
 // Troubleshooting: journal "resuming — N segment(s)"; force-full clears sidecar.
 // Review if: PAR2 repair requires invalidating specific MsgIDs after a bad write.
 func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int) (string, error) {
@@ -811,23 +798,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 
 	resume := dl.resume
 	firstMsg := strings.TrimSpace(segs[0].MsgID)
-
-	filename, fileSize, priorDone := "", int64(0), 0
-	if resume != nil && !resume.disabled {
-		resume.mu.Lock()
-		for name, rf := range resume.snap.Files {
-			if rf == nil || len(rf.Done) == 0 {
-				continue
-			}
-			if _, ok := rf.Done[firstMsg]; ok || len(resume.snap.Files) == 1 {
-				filename = name
-				fileSize = rf.Size
-				priorDone = len(rf.Done)
-				break
-			}
-		}
-		resume.mu.Unlock()
-	}
+	filename, fileSize, priorDone := resume.priorFile(firstMsg)
 
 	var firstData []byte
 	var firstOffset int64
@@ -886,19 +857,8 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		if err := writeSeg(firstMsg, segs[0].Number, firstData, firstOffset); err != nil {
 			return "", err
 		}
-	} else if resume != nil {
-		resume.mu.Lock()
-		segLen := 0
-		if rf := resume.snap.Files[filename]; rf != nil {
-			segLen = rf.Done[firstMsg].Length
-		}
-		resume.mu.Unlock()
-		if segLen <= 0 {
-			segLen = int(segs[0].Bytes)
-		}
-		if segLen > 0 {
-			m.addCompleted(gid, int64(segLen))
-		}
+	} else if n := resume.skippedBytes(filename, firstMsg, int(segs[0].Bytes)); n > 0 {
+		m.addCompleted(gid, int64(n))
 	}
 
 	if len(segs) > 1 {
@@ -909,16 +869,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			g.Go(func() error {
 				msgID := strings.TrimSpace(seg.MsgID)
 				if resume != nil && !resume.disabled && resume.hasSegment(filename, msgID) {
-					resume.mu.Lock()
-					n := 0
-					if rf := resume.snap.Files[filename]; rf != nil {
-						n = rf.Done[msgID].Length
-					}
-					resume.mu.Unlock()
-					if n <= 0 {
-						n = int(seg.Bytes)
-					}
-					if n > 0 {
+					if n := resume.skippedBytes(filename, msgID, int(seg.Bytes)); n > 0 {
 						m.addCompleted(gid, int64(n))
 					}
 					return nil

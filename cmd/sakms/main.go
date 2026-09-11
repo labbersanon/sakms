@@ -837,7 +837,7 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 		SeedRatioLimit:        settingFloat(ctx, settingsStore, api.TorrentSeedRatioLimitKey, api.TorrentDefaultSeedRatioLimit),
 		SeedDurationMinutes:   settingInt(ctx, settingsStore, api.TorrentSeedDurationMinutesKey, api.TorrentDefaultSeedDurationMinutes),
 		StaleThresholdMinutes: settingInt(ctx, settingsStore, api.TorrentStaleThresholdMinutesKey, api.TorrentDefaultStaleThresholdMinutes),
-		SeedStore: seedStore,
+		SeedStore:             seedStore,
 	}, httpClient), nil
 }
 

@@ -16,6 +16,11 @@ import (
 //   UsenetSegmentResumeForceFullKey; staging file .sakms-resume.json
 // Review if: resume policy moves into the downloader config document.
 
+const (
+	UsenetSegmentResumeEnabledKey   = "usenet_segment_resume_enabled"    // default true
+	UsenetSegmentResumeForceFullKey = "usenet_segment_resume_force_full" // default false
+)
+
 type usenetSegmentResumeResponse struct {
 	Enabled   bool `json:"enabled"`
 	ForceFull bool `json:"forceFull"`
@@ -26,8 +31,6 @@ type usenetSegmentResumeRequest struct {
 	ForceFull *bool `json:"forceFull"`
 }
 
-// getUsenetSegmentResumeHandler reports segment-resume + force-full knobs.
-// Defaults: enabled=true, forceFull=false when unset.
 func getUsenetSegmentResumeHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -45,9 +48,8 @@ func getUsenetSegmentResumeHandler(settingsStore *settings.Store) http.HandlerFu
 	}
 }
 
-// putUsenetSegmentResumeHandler stores resume knobs and applies them live to
-// the running usenet Manager when one is wired. nzb may be nil in tests.
-// Omitted fields keep their stored (or default) values.
+// putUsenetSegmentResumeHandler stores resume knobs and applies them live.
+// nzb may be nil in tests. Omitted fields keep their stored (or default) values.
 func putUsenetSegmentResumeHandler(settingsStore *settings.Store, nzb *usenet.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req usenetSegmentResumeRequest

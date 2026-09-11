@@ -36,12 +36,6 @@ import (
 // should inherit "torrent engine only" wording rather than re-litigate it.
 const (
 	DownloaderStagingDirKey     = "downloader_staging_dir"
-
-	// UsenetSegmentResumeEnabledKey toggles Phase-2 skip of completed NNTP segments.
-	// Default true when unset. Pair with UsenetSegmentResumeForceFullKey for rollback.
-	UsenetSegmentResumeEnabledKey = "usenet_segment_resume_enabled"
-	// UsenetSegmentResumeForceFullKey forces a full re-download (clears resume sidecars).
-	UsenetSegmentResumeForceFullKey = "usenet_segment_resume_force_full"
 	DownloaderMaxConcurrentKey  = "downloader_max_concurrent"
 	DownloaderMaxConnectionsKey = "downloader_max_connections"
 

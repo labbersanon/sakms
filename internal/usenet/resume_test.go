@@ -9,9 +9,9 @@ import (
 
 func TestIsStagingMetaFile(t *testing.T) {
 	cases := map[string]bool{
-		OwnedMarkerFile:                            true,
+		OwnedMarkerFile:                    true,
 		ResumeFileName:                     true,
-		resumeTmpName:                        true,
+		resumeTmpName:                      true,
 		"movie.mkv":                        false,
 		"release.rar":                      false,
 		filepath.Join("x", ResumeFileName): true,

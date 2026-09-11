@@ -365,14 +365,40 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 		}
 	}
 	if forceFull {
-		n := m.SweepResumeArtifacts()
-		log.Printf("usenet: force-full — swept resume artifacts in %d owned staging dir(s)", n)
+		// Claude 2026-09-11: cancel live jobs + wipe payloads, not just sidecars.
+		// Reason: in-flight assembleFile already skipped holes; deleting only
+		//         .sakms-resume.json left hollow video importable. Cancel drops
+		//         the open FD + staging dir; idle dirs get payloads wiped so
+		//         ResolveVideoFile fails and reconcile relaunches.
+		// Troubleshooting: force-full still imports hollow mkv → wipe/cancel path
+		// Review if: force-full becomes a one-shot that auto-clears after relaunch
+		liveGIDs := make([]string, 0, len(lives))
+		for _, item := range lives {
+			liveGIDs = append(liveGIDs, item.gid)
+		}
+		for _, gid := range liveGIDs {
+			if err := m.Cancel(gid); err != nil {
+				log.Printf("usenet: force-full cancel %s: %v", gid, err)
+			}
+		}
+		n := m.SweepForceFull()
+		log.Printf("usenet: force-full — swept %d owned staging dir(s) (sidecars + payloads)", n)
 	}
 }
 
 // SweepResumeArtifacts removes resume sidecars (+ DB mirrors) under every
 // sakms-owned staging directory. Safe to call with no downloads running.
 func (m *Manager) SweepResumeArtifacts() int {
+	return m.sweepOwnedStaging(false)
+}
+
+// SweepForceFull removes resume sidecars, DB mirrors, AND non-meta payloads
+// under every owned staging dir so hollow videos cannot be imported.
+func (m *Manager) SweepForceFull() int {
+	return m.sweepOwnedStaging(true)
+}
+
+func (m *Manager) sweepOwnedStaging(wipePayloads bool) int {
 	if m == nil {
 		return 0
 	}
@@ -382,7 +408,7 @@ func (m *Manager) SweepResumeArtifacts() int {
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		log.Printf("usenet: sweep resume artifacts: read %s: %v", root, err)
+		log.Printf("usenet: sweep staging: read %s: %v", root, err)
 		return 0
 	}
 	n := 0
@@ -395,7 +421,12 @@ func (m *Manager) SweepResumeArtifacts() int {
 			continue
 		}
 		if err := ClearResumeArtifacts(dir); err != nil {
-			log.Printf("usenet: sweep clear %s: %v", dir, err)
+			log.Printf("usenet: sweep clear sidecars %s: %v", dir, err)
+		}
+		if wipePayloads {
+			if err := wipeStagingPayloads(dir); err != nil {
+				log.Printf("usenet: sweep wipe payloads %s: %v", dir, err)
+			}
 		}
 		m.ClearResumeMirror(e.Name())
 		n++
@@ -1161,8 +1192,9 @@ func (m *Manager) fanout(snap []Download) {
 }
 
 type snapKey struct {
-	status    string
-	completed int64
+	status     string
+	completed  int64
+	resumeMode string
 }
 
 func sameDownloads(a, b []Download) bool {
@@ -1171,11 +1203,11 @@ func sameDownloads(a, b []Download) bool {
 	}
 	ka := make(map[string]snapKey, len(a))
 	for _, d := range a {
-		ka[d.GID] = snapKey{d.Status, d.CompletedLength}
+		ka[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode}
 	}
 	kb := make(map[string]snapKey, len(b))
 	for _, d := range b {
-		kb[d.GID] = snapKey{d.Status, d.CompletedLength}
+		kb[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode}
 	}
 	return reflect.DeepEqual(ka, kb)
 }

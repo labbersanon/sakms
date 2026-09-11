@@ -811,7 +811,23 @@ func (m *Manager) readdTorrents(newTC *torrentlib.Client, snaps []rebuildTorrent
 			// obfuscation) hits this; the staging-dir change is refused
 			// separately by rebuildRefusalLocked.
 			if !e.seedStartedAt.IsZero() {
-				e.seedBaselineUp = 0
+				// Claude 2026-09-11: restore CREDITED upload across handle swap.
+				// Reason: new handle BytesWrittenData≈0; baseline must be
+				//         written-credited (typically -credited) so
+				//         SeedRatioLimit keeps prior progress. Zeroing
+				//         baseline wiped credit on every rebuild.
+				// Troubleshooting: ratio resets after listen-port/DHT change
+				// Review if: anacrolix exposes durable uploaded counters
+				credited := int64(0)
+				if store := m.cfg.SeedStore; store != nil {
+					if _, prevCredited, _, ok, err := store.LoadSeed(s.gid); err != nil {
+						log.Printf("downloader: load seed state %s on rebuild: %v", s.gid, err)
+					} else if ok {
+						credited = prevCredited
+					}
+				}
+				// newWritten≈0 → baseline = 0 - credited
+				e.seedBaselineUp = -credited
 				// Claude 2026-08-04: reset the upload-speed delta base
 				// alongside seedBaselineUp, same handle-swap hazard (F-4).
 				// Reason: prevUpBytes is a snapshot of the OLD handle's
@@ -1722,11 +1738,13 @@ func (m *Manager) beginSeeding(gid string, t *torrentlib.Torrent, seedPaths []st
 			log.Printf("downloader: restored seed window for %s (started %s, credited %d)", gid, started.UTC().Format(time.RFC3339), credited)
 		}
 	}
-	// written - baseline == credited (+ new upload on this handle)
+	// Claude 2026-09-11: baseline MAY be negative after restore.
+	// Reason: new handle BytesWrittenData≈0; baseline=written-credited
+	//         (e.g. 0-1GiB=-1GiB) so uploaded=written-baseline recovers credit.
+	//         Clamping to 0 wiped SeedRatioLimit progress every restart.
+	// Troubleshooting: ratio resets after sakms restart → this clamp returned
+	// Review if: anacrolix exposes durable uploaded counters
 	baseline = baseline - credited
-	if baseline < 0 {
-		baseline = 0
-	}
 
 	m.mu.Lock()
 	e, ok := m.entries[gid]
@@ -1744,14 +1762,16 @@ func (m *Manager) beginSeeding(gid string, t *torrentlib.Torrent, seedPaths []st
 	}
 	if current {
 		if store := m.cfg.SeedStore; store != nil {
-			// Persist credited upload (written - baseline), not the raw baseline counter.
-			creditedNow := int64(0)
+			// Persist credited upload (written - baseline). With a restored
+			// negative baseline and written≈0 this equals prior credit.
+			written := int64(0)
 			if t != nil {
 				stats := t.Stats()
-				creditedNow = stats.BytesWrittenData.Int64() - baseline
-				if creditedNow < 0 {
-					creditedNow = 0
-				}
+				written = stats.BytesWrittenData.Int64()
+			}
+			creditedNow := written - baseline
+			if creditedNow < 0 {
+				creditedNow = 0
 			}
 			if err := store.SaveSeed(gid, started, creditedNow, total); err != nil {
 				log.Printf("downloader: save seed state %s: %v", gid, err)

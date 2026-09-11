@@ -174,11 +174,16 @@ func (t *resumeTracker) skippedBytes(filename, msgID string, fallback int) int {
 }
 
 func (t *resumeTracker) markSegment(filename, msgID string, number int, offset int64, length int, fileSize int64) error {
-	if t == nil || t.disabled {
+	if t == nil {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// Re-check under lock so SetResumePolicy(force-full) cannot race a persist
+	// that recreates the sidecar after SweepResumeArtifacts.
+	if t.disabled {
+		return nil
+	}
 	f := t.snap.Files[filename]
 	if f == nil {
 		f = &ResumeFile{Done: map[string]ResumeSeg{}}
@@ -249,4 +254,31 @@ func ClearResumeArtifacts(dir string) error {
 func IsStagingMetaFile(name string) bool {
 	base := filepath.Base(name)
 	return base == OwnedMarkerFile || base == ResumeFileName || base == resumeTmpName
+}
+
+// wipeStagingPayloads removes non-meta files under dir (videos/archives) while
+// keeping ownership + resume markers for the caller to clear separately.
+// Used by force-full so hollow ResolveVideoFile hits cannot be imported.
+func wipeStagingPayloads(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var first error
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if IsStagingMetaFile(name) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) && first == nil {
+			first = err
+		}
+	}
+	return first
 }

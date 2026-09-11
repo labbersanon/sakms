@@ -8171,3 +8171,19 @@ Critic pass over the full Phase-2 branch: keep negative seed baselines so
 credited upload survives restart/rebuild; force-full now cancels live usenet
 jobs and wipes non-meta staging payloads (not sidecars only); resumeMode
 included in downloads SSE equality; markSegment disabled re-check under lock.
+
+## 2026-09-11 — Phase 1 reconcile critic fixes (boot race + import gate)
+
+**Problem:** Phase-1 critic REVISE — boot torrent restore raced `Start()`, and any
+`ResolveVideoFile` hit (sample / mid-download) was treated as complete import then
+owned staging wipe; failed imports skipped relaunch; thin tests.
+
+**Fix:**
+- `downloader.EngineReady` / `WaitForEngine`; boot waits (45s) then defers torrent restores
+- Usenet import gate: owned staging + no resume sidecar + non-sample + ≥1MiB; import
+  failure falls through to `RelaunchNZB`; nil lib/settings returns error (not success)
+- Clear resume artifacts when a usenet download marks complete (flat completes)
+- Tests: engine-not-ready deferral, sample/resume non-import, owned complete import+cleanup
+
+**Outcome:** critic blockers addressed; reconcile tests green.
+

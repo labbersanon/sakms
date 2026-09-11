@@ -572,6 +572,39 @@ func rebuildRequired(old, next Config) bool {
 //     metainfo to snapshot yet, and accepting the rebuild would silently strand
 //     an in-flight download. The window is seconds-to-minutes, so retrying
 //     costs the operator almost nothing.
+
+// EngineReady reports whether AddTorrent can succeed (client up, or test mode).
+func (m *Manager) EngineReady() bool {
+	if m == nil {
+		return false
+	}
+	if m.testMode {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tc != nil
+}
+
+// WaitForEngine blocks until EngineReady or ctx is done.
+func (m *Manager) WaitForEngine(ctx context.Context) error {
+	if m == nil || m.EngineReady() {
+		return nil
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if m.EngineReady() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *Manager) Reconfigure(ctx context.Context, next Config) error {
 	m.mu.Lock()
 	old := m.cfg

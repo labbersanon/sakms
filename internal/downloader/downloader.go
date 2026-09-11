@@ -59,7 +59,6 @@ const pollInterval = 500 * time.Millisecond
 // SeedStore persists torrent seed-window state (start time, CREDITED upload
 // bytes, total bytes) so SeedRatioLimit / SeedDurationMinutes survive restart.
 // baselineUp on the wire is credited upload, not the live handle counter.
-// Claude 2026-09-11: Phase-2 ARR-parity — in-memory-only baselines reset every boot.
 type SeedStore interface {
 	SaveSeed(gid string, startedAt time.Time, baselineUp, totalBytes int64) error
 	LoadSeed(gid string) (startedAt time.Time, baselineUp, totalBytes int64, ok bool, err error)

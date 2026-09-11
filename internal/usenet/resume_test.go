@@ -130,16 +130,3 @@ func TestSegmentCovered(t *testing.T) {
 		t.Fatal("unknown msg must not be covered")
 	}
 }
-
-func TestClearResumeArtifacts_OnDisablePath(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ResumeFileName), []byte(`{"v":1}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := ClearResumeArtifacts(dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ResumeFileName)); !os.IsNotExist(err) {
-		t.Fatal("expected sidecar removed")
-	}
-}

@@ -601,7 +601,6 @@ const ResumeCard: Component = () => {
     id: "usenet-segment-resume",
     label: "segment resume",
     dirty,
-    valid: () => true,
     save,
   });
 

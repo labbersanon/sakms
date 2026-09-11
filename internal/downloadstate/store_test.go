@@ -1,8 +1,8 @@
 package downloadstate
 
 import (
-	"math"
 	"context"
+	"math"
 	"testing"
 	"time"
 

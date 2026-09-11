@@ -65,3 +65,25 @@ export function putUsenetMaxConcurrentDownloads(
     body: JSON.stringify({ maxConcurrentDownloads }),
   });
 }
+
+// fetchUsenetSegmentResume — GET /api/settings/usenet-segment-resume.
+// Defaults enabled=true, forceFull=false.
+export function fetchUsenetSegmentResume(): Promise<{
+  enabled: boolean;
+  forceFull: boolean;
+}> {
+  return api<{ enabled: boolean; forceFull: boolean }>(
+    "/api/settings/usenet-segment-resume",
+  );
+}
+
+// putUsenetSegmentResume — PUT /api/settings/usenet-segment-resume, 204. Applies live.
+export function putUsenetSegmentResume(body: {
+  enabled?: boolean;
+  forceFull?: boolean;
+}): Promise<void> {
+  return api<void>("/api/settings/usenet-segment-resume", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}

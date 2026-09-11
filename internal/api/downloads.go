@@ -248,6 +248,7 @@ func toUsenetDTODownload(d usenet.Download) apidto.Download {
 		DownloadSpeed:   d.DownloadSpeed,
 		Protocol:        apidto.DownloadProtocolUsenet,
 		ErrorMessage:    d.ErrorMessage,
+		ResumeMode:      d.ResumeMode,
 	}
 }
 

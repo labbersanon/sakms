@@ -343,10 +343,10 @@ func TestSeedStopReason_DurationLimitStopsSeeding(t *testing.T) {
 	started := time.Now()
 	e, original := seedingEntry(t, m, "dur", started)
 
-	if reason := m.seedStopReason(e, started.Add(30*time.Second)); reason != "" {
+	if reason := m.seedStopReason("gid-test", e, started.Add(30*time.Second)); reason != "" {
 		t.Fatalf("seedStopReason before the limit = %q, want empty", reason)
 	}
-	reason := m.seedStopReason(e, started.Add(2*time.Minute))
+	reason := m.seedStopReason("gid-test", e, started.Add(2*time.Minute))
 	if reason == "" {
 		t.Fatal("seedStopReason after the duration limit = empty, want a reason")
 	}
@@ -367,7 +367,7 @@ func TestSeedStopReason_BothLimitsZeroNeverStops(t *testing.T) {
 	e, _ := seedingEntry(t, m, "unbounded", started)
 
 	for _, after := range []time.Duration{time.Minute, 48 * time.Hour, 365 * 24 * time.Hour} {
-		if reason := m.seedStopReason(e, started.Add(after)); reason != "" {
+		if reason := m.seedStopReason("gid-test", e, started.Add(after)); reason != "" {
 			t.Errorf("seedStopReason after %s = %q, want empty (both limits disabled)", after, reason)
 		}
 	}

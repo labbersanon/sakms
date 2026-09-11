@@ -8136,6 +8136,42 @@ Unknown GID alone never parks. True usenet segment resume remains phase 2.
 **Files:** `internal/api/downloadreconcile.go`, `internal/usenet/manager.go`
 (`RelaunchNZB`), `cmd/sakms/main.go`, `internal/api/usenetretry.go`.
 
+## 2026-09-11 — Usenet segment resume (Phase 2) + post-import cleanup
+
+ARR-parity Phase 2 for built-in Usenet: durable per-staging `.sakms-resume.json`
+sidecars skip completed NNTP segments after restart (with optional DB mirror for
+UI/debug), torrent seed-window baselines persist across boots, and a
+force-full setting clears sidecars for operator rollback.
+
+Post-import / post-unpack cleanup now removes resume sidecars (and the DB
+mirror) on the check-import, complete-importer, and reconcile paths — not only
+when the whole owned staging dir is deleted.
+
+Settings → Download → Usenet gains a Segment resume card
+(`GET/PUT /api/settings/usenet-segment-resume`). Defaults: resume on, force-full off.
+
+## 2026-09-11 — Phase 2 resume critic fixes
+
+Hardened segment resume skip safety (require on-disk coverage before skipping;
+no Truncate-up on resume), clear sidecars when resume is disabled, store
+torrent seed columns as bigint, and persist credited upload so SeedRatioLimit
+survives process restart.
+
+## 2026-09-11 — Force-full staging sweep + downloads resumeMode
+
+Force-full (and resume-disabled) now clears in-flight sidecars immediately;
+force-full also sweeps every owned staging dir on disk. Reconcile skips the
+video-present import shortcut while force-full is on. Usenet downloads expose
+`resumeMode` (`resumed` | `full` | `forced-full` | `disabled`) on the queue/SSE
+and Downloads UI.
+
+## 2026-09-11 — Session review fixes: seed credit + force-full payloads
+
+Critic pass over the full Phase-2 branch: keep negative seed baselines so
+credited upload survives restart/rebuild; force-full now cancels live usenet
+jobs and wipes non-meta staging payloads (not sidecars only); resumeMode
+included in downloads SSE equality; markSegment disabled re-check under lock.
+
 ## 2026-09-11 — Queue reconcile + unpacking/staging critic fixes
 
 **Problem:** Morning queue reconcile and owned-staging unpack/sweep work had not
@@ -8151,4 +8187,3 @@ owned staging (only manual/reconcile/hourly sweep). Boot torrent restore raced
 - Tests for auto-import cleanup, engine-not-ready deferral, sample reject
 
 **Outcome:** critic blockers addressed; targeted api tests green.
-

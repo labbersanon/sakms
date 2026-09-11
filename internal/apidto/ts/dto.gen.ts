@@ -2662,6 +2662,11 @@ export interface Download {
   uploadSpeed: number /* int64 */;
   protocol: string; // "torrent" | "usenet"
   errorMessage: string;
+  /**
+   * ResumeMode is usenet-only: "resumed" | "full" | "forced-full" | "disabled".
+   * Empty for torrents and for usenet jobs that have not entered runDownload yet.
+   */
+  resumeMode?: string;
 }
 /**
  * DownloadProtocolTorrent and DownloadProtocolUsenet are the two values

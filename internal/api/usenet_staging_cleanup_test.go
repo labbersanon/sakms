@@ -27,8 +27,9 @@ func TestClearOwnedUsenetStaging_RemovesOwnedOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	clearOwnedUsenetStaging(root, "nzb-aaaaaaaaaaaaaaaa")
-	clearOwnedUsenetStaging(root, "other-client")
+	nzb := usenet.New(usenet.Config{StagingDir: root})
+	clearOwnedUsenetStaging(nzb, "nzb-aaaaaaaaaaaaaaaa")
+	clearOwnedUsenetStaging(nzb, "other-client")
 
 	if _, err := os.Stat(owned); !os.IsNotExist(err) {
 		t.Fatalf("owned staging should be gone, err=%v", err)

@@ -276,7 +276,10 @@ func deleteArchiveMembers(dir string) error {
 		// Claude 2026-09-11: also drop .par2 after successful unpack
 		// Reason: import left PAR2 repair volumes behind after RAR delete; user
 		//         wants archive-family cleanup complete once video exists
-		if archiveKind(name) == "" &&
+		if name == OwnedMarkerFile {
+			continue
+		}
+		if !IsStagingMetaFile(name) && archiveKind(name) == "" &&
 			!strings.HasSuffix(lower, ".sfv") &&
 			!strings.HasSuffix(lower, ".par2") {
 			continue
@@ -296,6 +299,9 @@ func listStagingFiles(dir string, fallback []string) []string {
 	var out []string
 	for _, e := range entries {
 		if e.IsDir() {
+			continue
+		}
+		if IsStagingMetaFile(e.Name()) {
 			continue
 		}
 		out = append(out, filepath.Join(dir, e.Name()))
